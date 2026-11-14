@@ -334,7 +334,7 @@ fn software_encoder(config: Config, bitrate: u32) -> Result<SoftwareEncoder> {
             })
             .num_threads(
                 std::thread::available_parallelism()
-                    .map_or(2, |count| count.get().clamp(2, 8) as u16),
+                    .map_or(2, |count| count.get().clamp(2, 4) as u16),
             ),
     };
     SoftwareEncoder::with_api_config(OpenH264API::from_source(), settings)

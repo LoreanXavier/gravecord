@@ -6,9 +6,9 @@
 use super::audio::{AudioCapture, AudioChunk};
 use super::capture::{Capture, Frame};
 use super::{LocalSink, Settings, thumbnail_from};
-use crate::convert::{Chroma, PixelOrder, Raw, downscale_rgba, to_yuv420};
+use crate::convert::{PixelOrder, Raw, SourceMeta, downscale_rgba, to_yuv420_vec};
 use crate::encode::{Backend, Config, Content, Encoder, Profile};
-use crate::{EncodedFrame, Error, Layout, Picture, Result, h264, rtp_ticks};
+use crate::{EncodedFrame, Error, Picture, Result, h264, rtp_ticks};
 use std::sync::{
     Arc, Mutex,
     atomic::{AtomicBool, AtomicU8, AtomicU32, AtomicU64, Ordering},
@@ -17,8 +17,11 @@ use std::sync::{
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
-/// The widest preview kept for the stream's uploaded thumbnail.
+/// The widest preview kept for the stream's uploaded thumbnail and local self-preview.
 pub const PREVIEW_WIDTH: u32 = 640;
+const PREVIEW_HEIGHT: u32 = 360;
+/// Self-preview renders into the UI at most 30 fps to avoid saturating GPUI with 1440p60 textures.
+const LOCAL_PREVIEW_INTERVAL: Duration = Duration::from_millis(33);
 /// A preview is only produced while someone is taking them.
 const PREVIEW_ACTIVE: Duration = Duration::from_secs(2);
 const PREVIEW_INTERVAL: Duration = Duration::from_millis(66);
@@ -275,6 +278,7 @@ fn run(
     mut video: impl FnMut(EncodedFrame),
     started: &mpsc::SyncSender<Result<()>>,
 ) -> Result<()> {
+    let _unthrottled = crate::throttle::Guard::acquire();
     let (frames_send, frames) = mpsc::sync_channel::<Frame>(1);
     let gate = state.clone();
     let want = move || {
@@ -304,6 +308,7 @@ fn run(
     let _capture = Capture::start(
         settings.source,
         settings.cursor,
+        settings.fps,
         &state.stop,
         want,
         deliver,
@@ -325,6 +330,8 @@ fn run(
     let mut last_frame: Option<Frame> = None;
     let mut last_encoded = Instant::now();
     let mut last_preview = Instant::now() - PREVIEW_INTERVAL;
+    let mut last_local = Instant::now() - LOCAL_PREVIEW_INTERVAL;
+    let mut initial_preview_sent = false;
     let mut keyframe_wait: Option<Instant> = None;
 
     while !state.stop.load(Ordering::Acquire) {
@@ -344,7 +351,7 @@ fn run(
             Some(frame) => {
                 keyframe_wait = None;
                 last_frame = Some(frame);
-                last_frame.as_ref()
+                last_frame.as_mut()
             }
             None => {
                 // A still desktop: repeat the last picture for a keyframe request or to keep the stream alive.
@@ -358,7 +365,7 @@ fn run(
                 if !due {
                     continue;
                 }
-                match last_frame.as_ref() {
+                match last_frame.as_mut() {
                     Some(frame) => {
                         keyframe_wait = None;
                         Some(frame)
@@ -368,21 +375,17 @@ fn run(
             }
         };
         let Some(frame) = frame else { continue };
-        let raw = Raw {
-            width: frame.width as usize,
-            height: frame.height as usize,
-            stride: frame.width as usize * 4,
-            order: PixelOrder::Bgra,
-            data: &frame.data,
-        };
+        let (frame_w, frame_h) = (frame.width, frame.height);
 
         let taken = state.preview_taken.load(Ordering::Acquire);
-        let active = taken == 0 && state.origin.elapsed() < PREVIEW_ACTIVE
-            || taken != 0
-                && micros(state.origin).saturating_sub(taken) < PREVIEW_ACTIVE.as_micros() as u64;
+        let active = !initial_preview_sent
+            || (taken != 0
+                && micros(state.origin).saturating_sub(taken)
+                    < PREVIEW_ACTIVE.as_micros() as u64);
         let preview_due = active && last_preview.elapsed() >= PREVIEW_INTERVAL;
         if preview_due {
             last_preview = Instant::now();
+            initial_preview_sent = true;
         }
 
         if encoder.is_none() {
@@ -395,50 +398,23 @@ fn run(
         };
         encoder.set_bitrate(settings.clamp_bitrate(state.bitrate.load(Ordering::Acquire)))?;
         let chroma = encoder.chroma();
-        to_yuv420(
-            raw,
+        to_yuv420_vec(
+            &mut frame.data,
+            SourceMeta {
+                width: frame_w as usize,
+                height: frame_h as usize,
+                stride: frame_w as usize * 4,
+                order: PixelOrder::Bgra,
+            },
             settings.width as usize,
             settings.height as usize,
             chroma,
             &mut yuv,
         )?;
-        // The picture is converted: the capture side may read back the next one while this one encodes. Waiting for
-        // the encoder too made every picture cost read-back, conversion and encoding in a row (about 20 ms at
-        // 2560x1440 here), more than a 60 Hz display's 16.7 ms, so the share took every other refresh: 30 fps.
+        // The picture is converted: the capture side may read back the next one while this one encodes.
         state.pending.store(false, Ordering::Release);
         let force = state.keyframe.swap(false, Ordering::AcqRel);
-        let local = state
-            .local
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .clone();
-        // The thumbnail (8 ms at 2560x1440) and the owner's own picture (a copy of the encoder's input) are made on
-        // other cores while the hardware encodes.
-        let output = std::thread::scope(|scope| {
-            if let Some(local) = local {
-                let yuv = &yuv;
-                scope.spawn(move || {
-                    let picture = Picture {
-                        width: settings.width,
-                        height: settings.height,
-                        layout: match chroma {
-                            Chroma::Interleaved => Layout::Nv12,
-                            Chroma::Planar => Layout::I420,
-                        },
-                        data: yuv.clone(),
-                    };
-                    local(picture);
-                });
-            }
-            if preview_due {
-                scope.spawn(|| {
-                    if let Ok(preview) = downscale_rgba(raw, PREVIEW_WIDTH, PREVIEW_WIDTH) {
-                        *state.preview.lock().unwrap_or_else(|e| e.into_inner()) = Some(preview);
-                    }
-                });
-            }
-            encoder.encode(&yuv, chroma, force)
-        })?;
+        let output = encoder.encode(&yuv, chroma, force)?;
         state.backend.store(
             match encoder.backend() {
                 Backend::Hardware => 1,
@@ -469,6 +445,39 @@ fn run(
                 }
             }
         }
+
+        let local = state
+            .local
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone();
+        let local_due = local.is_some() && last_local.elapsed() >= LOCAL_PREVIEW_INTERVAL;
+        if local_due || preview_due {
+            let raw = Raw {
+                width: frame_w as usize,
+                height: frame_h as usize,
+                stride: frame_w as usize * 4,
+                order: PixelOrder::Bgra,
+                data: &frame.data,
+            };
+            if let Ok(downscaled) = downscale_rgba(raw, PREVIEW_WIDTH, PREVIEW_HEIGHT) {
+                if preview_due && local_due {
+                    last_local = Instant::now();
+                    *state.preview.lock().unwrap_or_else(|e| e.into_inner()) =
+                        Some(downscaled.clone());
+                    if let Some(sink) = local {
+                        sink(downscaled);
+                    }
+                } else if local_due {
+                    last_local = Instant::now();
+                    if let Some(sink) = local {
+                        sink(downscaled);
+                    }
+                } else {
+                    *state.preview.lock().unwrap_or_else(|e| e.into_inner()) = Some(downscaled);
+                }
+            }
+        }
     }
     if let Some(error) = state
         .error
@@ -492,6 +501,7 @@ pub(super) fn thumbnail(
     let _capture = Capture::start(
         source,
         false,
+        30,
         &cancel,
         || true,
         move |frame| {

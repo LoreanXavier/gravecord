@@ -39,20 +39,15 @@ pub(crate) fn ticks() -> Result<mpsc::Receiver<()>, &'static str> {
     Ok(receive)
 }
 
-/// The longest a waiting pacer thread sleeps before it looks at its deadline again, so a deadline moved earlier is met
-/// within this much (`PacingController::kMinSleepTime`, 1 ms).
-const PACER_POLL: Duration = Duration::from_millis(1);
-
 struct PacerShared {
     /// The next deadline, and whether the owner is gone.
     state: std::sync::Mutex<(Option<Instant>, bool)>,
     changed: std::sync::Condvar,
 }
 
-/// Wakes a media loop at its pacer's deadlines with the high-resolution sleep of [`ticks`], not tokio's timer, which
-/// rounds up to the 15.6 ms system tick on Windows: libwebrtc's pacer posts its process task as a high-precision delayed
-/// task for the same reason (`PostDelayedHighPrecisionTask` in `task_queue_paced_sender.cc`). The thread waits on a
-/// condition variable while there is no deadline and sleeps in steps of at most `PACER_POLL` while there is one.
+/// Wakes a media loop at its pacer's deadlines. The thread waits on a condition variable until either
+/// no deadline is set (`wait`), a deadline arrives (`wait_timeout`), or [`PacerClock::set`] moves the
+/// deadline earlier.
 pub(crate) struct PacerClock {
     shared: std::sync::Arc<PacerShared>,
 }
@@ -69,35 +64,33 @@ impl PacerClock {
         std::thread::Builder::new()
             .name("dc-voice-pacer".into())
             .spawn(move || {
+                let mut state = thread.state.lock().unwrap_or_else(|e| e.into_inner());
                 loop {
-                    let deadline = {
-                        let mut state = thread.state.lock().unwrap_or_else(|e| e.into_inner());
-                        while state.0.is_none() && !state.1 {
-                            state = thread
-                                .changed
-                                .wait(state)
-                                .unwrap_or_else(|e| e.into_inner());
-                        }
-                        if state.1 {
-                            return;
-                        }
-                        state.0
+                    if state.1 {
+                        return;
+                    }
+                    let Some(deadline) = state.0 else {
+                        state = thread
+                            .changed
+                            .wait(state)
+                            .unwrap_or_else(|e| e.into_inner());
+                        continue;
                     };
-                    let Some(deadline) = deadline else { continue };
                     let now = Instant::now();
                     if deadline > now {
-                        std::thread::sleep((deadline - now).min(PACER_POLL));
+                        let (next_state, _) = thread
+                            .changed
+                            .wait_timeout(state, deadline - now)
+                            .unwrap_or_else(|e| e.into_inner());
+                        state = next_state;
                         continue;
                     }
-                    {
-                        let mut state = thread.state.lock().unwrap_or_else(|e| e.into_inner());
-                        if state.0 == Some(deadline) {
-                            state.0 = None;
-                        }
-                    }
+                    state.0 = None;
+                    drop(state);
                     if let Err(mpsc::error::TrySendError::Closed(())) = send.try_send(()) {
                         return;
                     }
+                    state = thread.state.lock().unwrap_or_else(|e| e.into_inner());
                 }
             })
             .map_err(|_| "Pacer clock thread could not start")?;

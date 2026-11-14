@@ -156,17 +156,18 @@ pub(super) fn was_moved(known_channel: u64, update_channel: Option<u64>) -> bool
 
 /// `Sl`: the sound for the connection coming up, going down. `started`: this attempt has begun; `connected`: media is
 /// up. With the experiment the join sound waits for the connection; without it, it plays when connecting starts.
+/// Only Guild Stage channels suppress `Sl`; AFK channels still play the local join/disconnect sounds.
 pub(super) fn connect_start_sound(rtc_join_sounds: bool, room: Room) -> Option<&'static str> {
-    (!rtc_join_sounds && !room.is_silent()).then_some("user_join")
+    (!rtc_join_sounds && room.kind != STAGE_VOICE).then_some("user_join")
 }
 
 pub(super) fn connected_sound(rtc_join_sounds: bool, room: Room) -> Option<&'static str> {
-    (rtc_join_sounds && !room.is_silent()).then_some("user_join")
+    (rtc_join_sounds && room.kind != STAGE_VOICE).then_some("user_join")
 }
 
 /// Media went down after it had come up.
 pub(super) fn disconnect_sound(room: Room) -> Option<&'static str> {
-    (!room.is_silent()).then_some("disconnect")
+    (room.kind != STAGE_VOICE).then_some("disconnect")
 }
 
 #[cfg(test)]
@@ -278,6 +279,10 @@ mod tests {
         assert_eq!(connect_start_sound(true, ROOM), None);
         assert_eq!(connected_sound(true, ROOM), Some("user_join"));
         assert_eq!(disconnect_sound(ROOM), Some("disconnect"));
+        let afk = Room { is_afk: true, ..ROOM };
+        assert_eq!(connect_start_sound(false, afk), Some("user_join"));
+        assert_eq!(connected_sound(true, afk), Some("user_join"));
+        assert_eq!(disconnect_sound(afk), Some("disconnect"));
         let stage = Room { kind: 13, ..ROOM };
         assert_eq!(disconnect_sound(stage), None);
         assert_eq!(connect_start_sound(false, stage), None);

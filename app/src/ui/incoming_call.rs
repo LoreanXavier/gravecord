@@ -12,6 +12,7 @@
 //! - Ring sounds: `call_ringing` while a call rings us, `call_calling` while we ring somebody who has not joined.
 
 use super::dm_call_view::RingKind;
+use super::tooltip::{Side, Tip};
 use super::{Root, color, icon};
 use gpui::{
     AnyElement, Context, InteractiveElement, IntoElement, ParentElement, Styled, Window, div,
@@ -110,7 +111,7 @@ impl RingAudio {
             } else {
                 name
             };
-            self.current = crate::sounds::play_event(played).map(|handle| (name, handle));
+            self.current = crate::sounds::play_ring_loop(played).map(|handle| (name, handle));
         }
     }
 }
@@ -133,18 +134,24 @@ impl Root {
         let streamer = crate::notifications::switch_value("streaming_enable_streamer_mode", user)
             .unwrap_or(false)
             && crate::notifications::switch_value("streamer_mode_disable_sounds", user)
-                .unwrap_or(false);
+                .unwrap_or(true);
+        let incoming = self
+            .stores
+            .calls
+            .get_incoming_calls(gated)
+            .iter()
+            .any(|call| !self.dm_call_in(Some(call.channel)));
         let outgoing = self.call.as_ref().is_some_and(|call| {
             call.guild == 0
                 && self
                     .stores
                     .calls
                     .get_call(call.channel)
-                    .is_some_and(|ring| !ring.ringing.is_empty())
+                    .is_some_and(|ring| ring.ringing.iter().any(|id| Some(*id) != user))
                 && self.stores.voice_members(0, call.channel).len() < 2
         });
         RingInputs {
-            incoming: self.stores.calls.has_incoming_calls(gated),
+            incoming,
             outgoing,
             streamer_sounds_off: streamer,
         }
@@ -152,9 +159,12 @@ impl Root {
 
     /// Run after every change of the calls and on every tick while something rings.
     pub(super) fn ring_reconcile(&mut self, cx: &mut Context<Self>) {
+        crate::sounds::set_current_user(self.stores.current_user.as_ref().map(|user| user.id));
+        crate::sounds::prefetch_call_sounds();
         let inputs = self.ring_inputs();
         self.ring_audio.reconcile(ring_sound(inputs));
         self.dmc.incoming = inputs.incoming;
+        self.dmc.outgoing = inputs.outgoing;
         if inputs.incoming || inputs.outgoing {
             self.start_dm_call_tick(cx);
         }
@@ -185,14 +195,36 @@ impl Root {
         self.camera_test_image()
     }
 
-    /// The cards that are up: every call that rings us, hidden while that DM is the open channel (596339 `UH`).
+    fn dm_banner_covered(&self) -> bool {
+        self.settings.is_some()
+            || self.server_settings.is_some()
+            || self.channel_settings.is_some()
+            || self.profile_editor.is_some()
+            || self.boost_page.is_some()
+            || self.lightbox.is_some()
+            || self.vv.fullscreen
+            || self.nitro_open
+            || self.discover_active()
+            || self.quests_active()
+            || self.shop_active()
+            || self.message_requests_active()
+            || (self.guild.is_some() && (self.guild_guide_open || self.channel_browser_open))
+            || self.voice_view_open()
+    }
+
+    /// The cards that are up: every call that rings us, hidden only while that DM's call area is uncovered on screen
+    /// (`596339` `UH`).
     fn incoming_visible(&self) -> Vec<dc_state::calls::IncomingCall> {
         let gated = self.incoming_gated();
+        let viewing_uncovered = self.guild.is_none() && !self.dm_banner_covered();
         self.stores
             .calls
             .get_incoming_calls(gated)
             .iter()
-            .filter(|call| !(self.guild.is_none() && self.channel == Some(call.channel)))
+            .filter(|call| {
+                !self.dm_call_in(Some(call.channel))
+                    && !(viewing_uncovered && self.channel == Some(call.channel))
+            })
             .cloned()
             .collect()
     }
@@ -266,9 +298,9 @@ impl Root {
                 .iter()
                 .any(|state| state.self_video || state.self_stream);
             let subtitle = if video_mode {
-                "Incoming Video Call..."
+                dc_intl::t!("KcnWCO")
             } else {
-                "Incoming Call..."
+                dc_intl::t!("Js8cK3")
             };
             // 760571 `T`: the video card needs video support and at least one camera. A capture run has the
             // synthetic source standing in for one.
@@ -285,213 +317,372 @@ impl Root {
             };
             // `translateX: [0, -|475 - 232| / 2]` while the card widens.
             let left = if preview {
-                left - (475. - 232.) / 2.
+                (left - (475. - 232.) / 2.).clamp(0., (width - 475.).max(0.))
             } else {
                 left
             };
             let picture = preview.then(|| self.camera_preview_picture()).flatten();
-            let button = |key: &'static str, fill: &'static str, glyph: &'static str| {
-                div()
-                    .id(key)
-                    .size(px(40.))
-                    .rounded(px(8.))
-                    .bg(color(fill))
-                    .flex()
-                    .items_center()
-                    .justify_center()
-                    .cursor_pointer()
-                    .child(icon(glyph, 20., "--white"))
+            let button = |this: &Self,
+                          key: &'static str,
+                          fill: &'static str,
+                          hover: &'static str,
+                          glyph: &'static str,
+                          tip: &'static str,
+                          cx: &mut Context<Self>| {
+                this.with_tip(
+                    format!("{key}-{id}"),
+                    Tip::text(tip, Side::Top),
+                    div()
+                        .id(key)
+                        .w(px(66.))
+                        .h(px(50.))
+                        .rounded(px(12.))
+                        .border_1()
+                        .border_color(color("--border-muted"))
+                        .bg(color(fill))
+                        .hover(|style| style.bg(color(hover)))
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .cursor_pointer()
+                        .child(icon(glyph, 20., "--white")),
+                    cx,
+                )
             };
-            cards.push(
+            let dismiss_btn = button(
+                self,
+                "incoming-dismiss",
+                "--control-critical-primary-background-default",
+                "--control-critical-primary-background-hover",
+                "close",
+                dc_intl::t!("WAI6xu"),
+                cx,
+            );
+            let video_btn = can_video.then(|| {
+                button(
+                    self,
+                    "incoming-join-video",
+                    "--green-360",
+                    "--green-360",
+                    "dm_video",
+                    dc_intl::t!("YbjQQ/"),
+                    cx,
+                )
+            });
+            let join_btn = button(
+                self,
+                "incoming-join",
+                "--green-360",
+                "--green-360",
+                "dm_call",
+                dc_intl::t!("0D/6Rz"),
+                cx,
+            );
+            let header = if preview {
+                // `previewChannelHeader_dcNks8`: 16px from top/left, horizontal 40px avatar + 16px gap + text.
                 div()
-                    .id(gpui::SharedString::from(format!("incoming-call-{id}")))
                     .absolute()
-                    .left(px(left))
-                    .top(px(top))
-                    .w(px(card_w))
-                    .h(px(card_h))
-                    .p(px(16.))
-                    .rounded(px(8.))
-                    .overflow_hidden()
-                    .bg(color(if preview {
-                        "--black"
-                    } else {
-                        "--background-surface-high"
-                    }))
-                    .shadow(card_shadow())
-                    .children(picture.map(|image| {
-                        div().absolute().inset_0().child(
-                            gpui::img(image)
-                                .size_full()
-                                .object_fit(gpui::ObjectFit::Cover),
-                        )
-                    }))
-                    .on_mouse_down(
-                        gpui::MouseButton::Left,
-                        cx.listener(move |this, event: &gpui::MouseDownEvent, _, cx| {
-                            this.dmc.incoming_drag = Some(CardDrag {
-                                channel: id,
-                                pointer: event.position,
-                                from: (left, top),
-                                now: (left, top),
-                                moved: false,
-                            });
-                            cx.notify();
-                        }),
-                    )
-                    .on_mouse_move(
-                        cx.listener(move |this, event: &gpui::MouseMoveEvent, _, cx| {
-                            if let Some(drag) = this.dmc.incoming_drag.as_mut()
-                                && drag.channel == id
-                                && !drag.moved
-                                && event.dragging()
-                            {
-                                let delta = event.position - drag.pointer;
-                                if f32::from(delta.x).abs() + f32::from(delta.y).abs() > 3. {
-                                    drag.moved = true;
-                                    cx.notify();
-                                }
-                            }
-                        }),
-                    )
-                    .on_mouse_up(
-                        gpui::MouseButton::Left,
-                        cx.listener(|this, _: &gpui::MouseUpEvent, _, _| {
-                            if this.dmc.incoming_drag.is_some_and(|drag| !drag.moved) {
-                                this.dmc.incoming_drag = None;
-                            }
-                        }),
-                    )
+                    .top(px(16.))
+                    .left_0()
+                    .right_0()
+                    .px(px(16.))
                     .flex()
-                    .flex_col()
+                    .flex_row()
                     .items_center()
-                    .justify_between()
+                    .child(div().flex_none().mr(px(16.)).child(self.call_avatar_kind(
+                        &sender,
+                        &person,
+                        40.,
+                        RingKind::Incoming,
+                    )))
                     .child(
                         div()
+                            .flex_1()
+                            .min_w(px(0.))
                             .flex()
                             .flex_col()
-                            .items_center()
-                            .child(div().mt(px(16.)).child(self.call_avatar_kind(
-                                &sender,
-                                &person,
-                                if preview { 40. } else { 80. },
-                                RingKind::Incoming,
-                            )))
                             .child(
                                 div()
-                                    .mt(px(16.))
-                                    .text_size(px(16.))
-                                    .line_height(px(22.))
+                                    .truncate()
+                                    .text_size(px(14.))
+                                    .line_height(px(18.))
                                     .font_weight(gpui::FontWeight(600.))
-                                    .text_color(color("--text-strong"))
+                                    .text_color(color("--white"))
                                     .child(name),
                             )
                             .child(
                                 div()
-                                    .mt(px(4.))
-                                    .text_size(px(14.))
-                                    .line_height(px(18.))
-                                    .text_color(color("--text-default"))
+                                    .truncate()
+                                    .text_size(px(12.))
+                                    .line_height(px(16.))
+                                    .text_color(color("--white"))
                                     .child(subtitle),
                             ),
                     )
+                    .into_any_element()
+            } else {
+                div()
+                    .flex()
+                    .flex_col()
+                    .items_center()
+                    .w_full()
+                    .child(div().my(px(16.)).child(self.call_avatar_kind(
+                        &sender,
+                        &person,
+                        80.,
+                        RingKind::Incoming,
+                    )))
                     .child(
                         div()
-                            .flex()
-                            .gap(px(8.))
-                            .child(
-                                button(
-                                    "incoming-dismiss",
-                                    "--control-critical-primary-background-default",
-                                    "close",
-                                )
-                                .on_click(cx.listener(
-                                    move |this, _, _, cx| {
-                                        if this.dmc.incoming_preview.take().is_some() {
-                                            this.camera_test_stop(cx);
-                                        }
-                                        this.dismiss_incoming(id, cx)
-                                    },
-                                )),
-                            )
-                            .children(can_video.then(|| {
-                                // `K.A` with `join` and `color: "green"`: joins with the camera on.
-                                button("incoming-join-video", "--green-360", "dm_video").on_click(
-                                    cx.listener(move |this, _, _, cx| {
-                                        this.dmc.incoming_preview = None;
-                                        this.join_dm_call(id, true, cx);
-                                    }),
-                                )
-                            }))
-                            .child(button("incoming-join", "--green-360", "dm_call").on_click(
-                                cx.listener(move |this, _, _, cx| {
-                                    if this.dmc.incoming_preview.take().is_some() {
-                                        this.camera_test_stop(cx);
-                                    }
-                                    this.join_dm_call(id, false, cx);
-                                }),
-                            )),
-                    )
-                    // 760571: "Preview my camera" (8B0UDr), a full-width small secondary button under the row.
-                    .children((can_video && !preview).then(|| {
-                        div()
-                            .id("incoming-preview")
                             .w_full()
-                            .h(px(32.))
-                            .mt(px(8.))
-                            .rounded(px(8.))
-                            .bg(color("--control-secondary-background-default"))
-                            .hover(|style| style.bg(color("--control-secondary-background-hover")))
-                            .flex()
-                            .items_center()
-                            .justify_center()
-                            .cursor_pointer()
+                            .mb(px(2.))
+                            .truncate()
+                            .text_center()
+                            .text_size(px(16.))
+                            .line_height(px(20.))
+                            .font_weight(gpui::FontWeight(600.))
+                            .text_color(color("--text-strong"))
+                            .child(name),
+                    )
+                    .child(
+                        div()
+                            .w_full()
+                            .mb(px(24.))
+                            .truncate()
+                            .text_center()
                             .text_size(px(14.))
                             .line_height(px(18.))
-                            .font_weight(gpui::FontWeight(500.))
-                            .text_color(color("--control-secondary-text-default"))
-                            .child("Preview my camera")
-                            .on_click(cx.listener(move |this, _, _, cx| {
-                                this.dmc.incoming_preview = Some(id);
-                                this.incoming_preview_start(cx);
-                            }))
-                    }))
-                    .into_any_element(),
+                            .text_color(color("--text-default"))
+                            .child(subtitle),
+                    )
+                    .into_any_element()
+            };
+            cards.push(
+                gpui::deferred(
+                    div()
+                        .id(gpui::SharedString::from(format!("incoming-call-{id}")))
+                        .absolute()
+                        .left(px(left))
+                        .top(px(top))
+                        .w(px(card_w))
+                        .h(px(card_h))
+                        .p(px(16.))
+                        .rounded(px(8.))
+                        .overflow_hidden()
+                        .bg(color(if preview {
+                            "--background-mod-normal"
+                        } else {
+                            "--background-surface-high"
+                        }))
+                        .shadow(card_shadow())
+                        .children(preview.then(|| {
+                            div()
+                                .absolute()
+                                .inset_0()
+                                .flex()
+                                .items_center()
+                                .justify_center()
+                                .child(super::voice_view::spinner())
+                        }))
+                        .children(picture.map(|image| {
+                            div().absolute().inset_0().child(
+                                gpui::img(image)
+                                    .size_full()
+                                    .object_fit(gpui::ObjectFit::Cover),
+                            )
+                        }))
+                        .children(preview.then(|| {
+                            div()
+                                .absolute()
+                                .top_0()
+                                .left_0()
+                                .right_0()
+                                .h(px(84.))
+                                .bg(gpui::linear_gradient(
+                                    180.,
+                                    gpui::linear_color_stop(gpui::rgba(0x18191cff), 0.),
+                                    gpui::linear_color_stop(gpui::rgba(0x18191c00), 1.),
+                                ))
+                        }))
+                        .children(preview.then(|| {
+                            div()
+                                .absolute()
+                                .bottom_0()
+                                .left_0()
+                                .right_0()
+                                .h(px(84.))
+                                .bg(gpui::linear_gradient(
+                                    180.,
+                                    gpui::linear_color_stop(gpui::rgba(0x18191c00), 0.),
+                                    gpui::linear_color_stop(gpui::rgba(0x18191cff), 1.),
+                                ))
+                        }))
+                        .on_mouse_down(
+                            gpui::MouseButton::Left,
+                            cx.listener(move |this, event: &gpui::MouseDownEvent, _, cx| {
+                                this.dmc.incoming_drag = Some(CardDrag {
+                                    channel: id,
+                                    pointer: event.position,
+                                    from: (left, top),
+                                    now: (left, top),
+                                    moved: false,
+                                });
+                                cx.notify();
+                            }),
+                        )
+                        .on_mouse_move(
+                            cx.listener(move |this, event: &gpui::MouseMoveEvent, _, cx| {
+                                if let Some(drag) = this.dmc.incoming_drag.as_mut()
+                                    && drag.channel == id
+                                    && !drag.moved
+                                    && event.dragging()
+                                {
+                                    let delta = event.position - drag.pointer;
+                                    if f32::from(delta.x).abs() + f32::from(delta.y).abs() > 3. {
+                                        drag.moved = true;
+                                        cx.notify();
+                                    }
+                                }
+                            }),
+                        )
+                        .on_mouse_up(
+                            gpui::MouseButton::Left,
+                            cx.listener(|this, _: &gpui::MouseUpEvent, _, _| {
+                                if this.dmc.incoming_drag.is_some_and(|drag| !drag.moved) {
+                                    this.dmc.incoming_drag = None;
+                                }
+                            }),
+                        )
+                        .flex()
+                        .flex_col()
+                        .items_center()
+                        .map(|card| {
+                            if preview {
+                                card.justify_end()
+                            } else {
+                                card.justify_between()
+                            }
+                        })
+                        .child(header)
+                        .child(
+                            div()
+                                .relative()
+                                .flex()
+                                .gap(px(8.))
+                                .child(
+                                    dismiss_btn
+                                        .on_mouse_down(gpui::MouseButton::Left, |_, _, cx| {
+                                            cx.stop_propagation();
+                                        })
+                                        .on_click(cx.listener(move |this, _, _, cx| {
+                                            this.tip = None;
+                                            if this.dmc.incoming_preview.take().is_some() {
+                                                this.camera_test_stop(cx);
+                                            }
+                                            this.dismiss_incoming(id, cx)
+                                        })),
+                                )
+                                .children(video_btn.map(|btn| {
+                                    // `K.A` with `join` and `color: "green"`: joins with the camera on.
+                                    btn.on_mouse_down(gpui::MouseButton::Left, |_, _, cx| {
+                                        cx.stop_propagation();
+                                    })
+                                    .on_click(cx.listener(move |this, _, _, cx| {
+                                        this.tip = None;
+                                        this.dmc.incoming_preview = None;
+                                        this.join_dm_call(id, true, cx);
+                                    }))
+                                }))
+                                .child(
+                                    join_btn
+                                        .on_mouse_down(gpui::MouseButton::Left, |_, _, cx| {
+                                            cx.stop_propagation();
+                                        })
+                                        .on_click(cx.listener(move |this, _, _, cx| {
+                                            this.tip = None;
+                                            if this.dmc.incoming_preview.take().is_some() {
+                                                this.camera_test_stop(cx);
+                                            }
+                                            this.join_dm_call(id, false, cx);
+                                        })),
+                                ),
+                        )
+                        // 760571: "Preview my camera" (8B0UDr), a full-width small secondary button under the row.
+                        .children((can_video && !preview).then(|| {
+                            div()
+                                .id("incoming-preview")
+                                .w_full()
+                                .h(px(32.))
+                                .mt(px(16.))
+                                .rounded(px(8.))
+                                .bg(color("--control-secondary-background-default"))
+                                .hover(|style| {
+                                    style.bg(color("--control-secondary-background-hover"))
+                                })
+                                .flex()
+                                .items_center()
+                                .justify_center()
+                                .cursor_pointer()
+                                .text_size(px(14.))
+                                .line_height(px(18.))
+                                .font_weight(gpui::FontWeight(500.))
+                                .text_color(color("--control-secondary-text-default"))
+                                .child(dc_intl::t!("8B0UDr"))
+                                .on_mouse_down(gpui::MouseButton::Left, |_, _, cx| {
+                                    cx.stop_propagation();
+                                })
+                                .on_click(cx.listener(move |this, _, _, cx| {
+                                    this.dmc.incoming_preview = Some(id);
+                                    this.incoming_preview_start(cx);
+                                }))
+                        })),
+                )
+                .with_priority(6)
+                .into_any_element(),
             );
         }
         if self.dmc.incoming_drag.is_some_and(|drag| drag.moved) {
             // A transparent sheet follows the pointer so a fast drag cannot leave the card behind.
             cards.push(
-                div()
-                    .id("incoming-drag-sheet")
-                    .absolute()
-                    .inset_0()
-                    .on_mouse_move(cx.listener(
-                        move |this, event: &gpui::MouseMoveEvent, window, cx| {
-                            let size = window.viewport_size();
-                            if let Some(drag) = this.dmc.incoming_drag.as_mut() {
-                                let delta = event.position - drag.pointer;
-                                // `maxX` / `maxY` of the draggable are the window's size.
-                                let x = (drag.from.0 + f32::from(delta.x))
-                                    .clamp(0., (f32::from(size.width) - 232.).max(0.));
-                                let y = (drag.from.1 + f32::from(delta.y))
-                                    .clamp(0., (f32::from(size.height) - 267.).max(0.));
-                                drag.now = (x, y);
+                gpui::deferred(
+                    div()
+                        .id("incoming-drag-sheet")
+                        .absolute()
+                        .inset_0()
+                        .on_mouse_move(cx.listener(
+                            move |this, event: &gpui::MouseMoveEvent, window, cx| {
+                                let size = window.viewport_size();
+                                if let Some(drag) = this.dmc.incoming_drag.as_mut() {
+                                    let delta = event.position - drag.pointer;
+                                    let card_w =
+                                        if this.dmc.incoming_preview == Some(drag.channel) {
+                                            475.
+                                        } else {
+                                            232.
+                                        };
+                                    // `maxX` / `maxY` of the draggable are the window's size.
+                                    let x = (drag.from.0 + f32::from(delta.x))
+                                        .clamp(0., (f32::from(size.width) - card_w).max(0.));
+                                    let y = (drag.from.1 + f32::from(delta.y))
+                                        .clamp(0., (f32::from(size.height) - 267.).max(0.));
+                                    drag.now = (x, y);
+                                    cx.notify();
+                                }
+                            },
+                        ))
+                        .on_mouse_up(
+                            gpui::MouseButton::Left,
+                            cx.listener(|this, _: &gpui::MouseUpEvent, _, cx| {
+                                // `onDragEnd` -> `INCOMING_CALL_MOVE {x: left, y: top}`.
+                                if let Some(drag) = this.dmc.incoming_drag.take() {
+                                    this.dmc.incoming_origin = Some(drag.now);
+                                }
                                 cx.notify();
-                            }
-                        },
-                    ))
-                    .on_mouse_up(
-                        gpui::MouseButton::Left,
-                        cx.listener(|this, _: &gpui::MouseUpEvent, _, cx| {
-                            // `onDragEnd` -> `INCOMING_CALL_MOVE {x: left, y: top}`.
-                            if let Some(drag) = this.dmc.incoming_drag.take() {
-                                this.dmc.incoming_origin = Some(drag.now);
-                            }
-                            cx.notify();
-                        }),
-                    )
-                    .into_any_element(),
+                            }),
+                        ),
+                )
+                .with_priority(6)
+                .into_any_element(),
             );
         }
         cards

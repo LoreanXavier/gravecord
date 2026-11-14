@@ -11,6 +11,7 @@
 //! - 85448 / 479464 (CSS `401425...css`): `CallAvatar`, the ringing pulse and the muted/deafened badge.
 //! - 778712: avatar sizes (`SIZE_80 {status: 16, offset: 4}`, `SIZE_40 {status: 12, offset: 0}`).
 
+use super::tooltip::{Side, Tip};
 use super::{Root, avatar_source, color, icon};
 use crate::parity::Parity;
 use dc_state::{Id, User};
@@ -150,6 +151,12 @@ pub struct State {
     pub incoming_preview: Option<dc_state::Id>,
     /// A call rings this account (its card is up).
     pub incoming: bool,
+    /// Somebody is being rung by us in the current DM call.
+    pub outgoing: bool,
+    /// Active 180-second alone-in-DM-call timeout `(channel, generation)`.
+    pub idle_timer: Option<(dc_state::Id, u64)>,
+    /// Monotonic token for DM call idle timers so stale tasks never fire.
+    pub idle_generation: u64,
     /// Capture only: the call controls stay shown (the idle fade would hide them before the frame is taken).
     #[cfg(feature = "capture")]
     pub pin_controls: bool,
@@ -457,28 +464,65 @@ impl Root {
 
     /// The tray of a call this account has not joined (`eb` in module 105225): join with video, Join Call and, while
     /// the call rings this account, Decline. `wrapper_9bvEB0` is a row with a 12px gap; each button is a
-    /// `centerButton_K9Xq13` (radius 8, padding 10, a 20px icon) coloured `join` (`--green-360`, white icon) or
-    /// `disconnect` (`--control-critical-primary-background-*`). Unconfirmed until a real incoming call is captured.
+    /// `centerButton_K9Xq13.fullRegionButton_K9Xq13` (66 x 50, radius 12, `--border-muted` border, 20px icon) coloured
+    /// `join` (`--green-360`, white icon) or `disconnect` (`--control-critical-primary-background-*`).
     fn dm_join_tray(
         &mut self,
         channel: Id,
         ringing_me: bool,
         cx: &mut Context<Self>,
     ) -> AnyElement {
-        let button =
-            |key: &'static str, fill: &'static str, hover: &'static str, glyph: &'static str| {
+        let button = |key: &'static str,
+                      fill: &'static str,
+                      hover: &'static str,
+                      glyph: &'static str,
+                      tip: &'static str,
+                      cx: &mut Context<Self>| {
+            self.with_tip(
+                key,
+                Tip::text(tip, Side::Top),
                 div()
-                    .id(key)
-                    .size(px(40.))
-                    .rounded(px(8.))
+                    .w(px(66.))
+                    .h(px(50.))
+                    .rounded(px(12.))
+                    .border_1()
+                    .border_color(color("--border-muted"))
                     .bg(color(fill))
                     .hover(|style| style.bg(color(hover)))
                     .flex()
                     .items_center()
                     .justify_center()
                     .cursor_pointer()
-                    .child(icon(glyph, 20., "--white"))
-            };
+                    .child(icon(glyph, 20., "--white")),
+                cx,
+            )
+        };
+        let join_video = button(
+            "dm-join-video",
+            "--green-360",
+            "--green-360",
+            "dm_video",
+            dc_intl::t!("YbjQQ/"),
+            cx,
+        );
+        let join_call = button(
+            "dm-join-call",
+            "--green-360",
+            "--green-360",
+            "dm_call",
+            dc_intl::t!("0D/6Rz"),
+            cx,
+        );
+        let decline = ringing_me.then(|| {
+            button(
+                "dm-decline-call",
+                "--control-critical-primary-background-default",
+                "--control-critical-primary-background-hover",
+                "close",
+                dc_intl::t!("BVN4pL"),
+                cx,
+            )
+        });
         div()
             .absolute()
             .left_0()
@@ -490,30 +534,27 @@ impl Root {
             .justify_center()
             .gap(px(12.))
             .child(
-                button("dm-join-video", "--green-360", "--green-360", "dm_video").on_click(
-                    cx.listener(move |this, _, _, cx| this.join_dm_call(channel, true, cx)),
-                ),
+                join_video
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        this.tip = None;
+                        this.join_dm_call(channel, true, cx);
+                    })),
             )
             .child(
-                button("dm-join-call", "--green-360", "--green-360", "dm_call").on_click(
-                    cx.listener(move |this, _, _, cx| this.join_dm_call(channel, false, cx)),
-                ),
-            )
-            .when(ringing_me, |this| {
-                this.child(
-                    button(
-                        "dm-decline-call",
-                        "--control-critical-primary-background-default",
-                        "--control-critical-primary-background-hover",
-                        "close",
-                    )
+                join_call
                     .on_click(cx.listener(move |this, _, _, cx| {
-                        // `710801`: `stopRinging(channel.id)`, no recipients.
-                        this.stop_ringing(channel, None);
-                        cx.notify();
+                        this.tip = None;
+                        this.join_dm_call(channel, false, cx);
                     })),
-                )
-            })
+            )
+            .children(decline.map(|button| {
+                button.on_click(cx.listener(move |this, _, _, cx| {
+                    this.tip = None;
+                    // `710801`: `stopRinging(channel.id)`, no recipients.
+                    this.stop_ringing(channel, None);
+                    cx.notify();
+                }))
+            }))
             .into_any_element()
     }
 
@@ -679,7 +720,7 @@ impl Root {
                     .await;
                 let Ok(keep) = this.update(cx, |this, cx| {
                     this.ring_reconcile(cx);
-                    let keep = this.dmc.pulsing || this.dmc.incoming;
+                    let keep = this.dmc.pulsing || this.dmc.incoming || this.dmc.outgoing;
                     if keep {
                         cx.notify();
                     } else {

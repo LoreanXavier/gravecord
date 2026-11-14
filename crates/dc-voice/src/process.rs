@@ -358,7 +358,10 @@ fn gain_config() -> Config {
 
 fn webrtc_config(settings: Settings) -> Config {
     Config {
-        echo_canceller: settings.echo.then(EchoCanceller::default),
+        echo_canceller: settings.echo.then_some(EchoCanceller {
+            enforce_high_pass_filtering: true,
+            transparent_mode: sonora::config::TransparentModeType::Hmm,
+        }),
         noise_suppression: (settings.suppression == Suppression::Standard).then(|| {
             NoiseSuppression {
                 level: NoiseSuppressionLevel::High,
@@ -471,10 +474,9 @@ impl Processor {
         for block in frame.as_chunks_mut::<BLOCK>().0 {
             if use_webrtc {
                 let mut output = [0.0; BLOCK];
-                let processed = self.webrtc.set_stream_delay_ms(0).and_then(|()| {
-                    self.webrtc
-                        .process_capture_f32(&[&block[..]], &mut [&mut output])
-                });
+                let processed = self
+                    .webrtc
+                    .process_capture_f32(&[&block[..]], &mut [&mut output]);
                 match processed {
                     Ok(()) => block.copy_from_slice(&output),
                     Err(_) => debug!("WebRTC could not process the microphone"),
@@ -503,7 +505,7 @@ impl Processor {
 
     /// DeepFilterNet is loaded and running (tests, and the log).
     #[cfg(test)]
-    fn deep_ready(&self) -> bool {
+    pub(crate) fn deep_ready(&self) -> bool {
         self.deep.as_ref().is_some_and(Deep::ready)
     }
 }

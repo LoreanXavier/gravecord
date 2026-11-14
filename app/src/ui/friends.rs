@@ -560,14 +560,16 @@ impl Root {
         };
         div()
             .relative()
+            .w_full()
+            .min_w(px(0.))
             .pl(px(14.))
             .pr(px(26.))
             .child(
                 div()
                     .absolute()
                     .left(px(30.))
+                    .right(px(36.))
                     .top(px(0.))
-                    .w(px(479.))
                     .h(px(1.))
                     .bg(color("--background-mod-subtle")),
             )
@@ -633,6 +635,8 @@ impl Root {
                     .child(
                         div()
                             .ml(px(12.))
+                            .min_w(px(0.))
+                            .overflow_hidden()
                             .flex()
                             .flex_col()
                             .child(
@@ -679,7 +683,7 @@ impl Root {
                             ),
                     )
                     .child(div().flex_1())
-                    .child(div().flex().gap(px(10.)).children(actions)),
+                    .child(div().flex_none().flex().gap(px(10.)).children(actions)),
             )
             .into_any_element()
     }
@@ -956,6 +960,8 @@ impl Root {
                     ),
             );
         div()
+            .w_full()
+            .min_w(px(0.))
             .flex()
             .flex_col()
             .child(
@@ -973,11 +979,11 @@ impl Root {
                             .child(body_text(dc_intl::tr("You can add friends with their Discord username.")))
                             .child(wrapper)
                             .child(helper)
-                            // "Wumpus Waving", 84x72, 385px in and 36px above the subtitle.
+                            // "Wumpus Waving", 84x72, 16px from right edge and 36px above the subtitle.
                             .children(wumpus.map(|image| {
                                 div()
                                     .absolute()
-                                    .left(px(385.))
+                                    .right(px(16.))
                                     .top(px(-36.))
                                     .child(img(image).w(px(84.)).h(px(72.)))
                             })),
@@ -1082,6 +1088,8 @@ impl Root {
             .flex()
             .flex_col()
             .flex_1()
+            .w_full()
+            .min_w(px(0.))
             .min_h(px(0.))
             .child(
                 div()
@@ -1094,7 +1102,7 @@ impl Root {
                     .flex_none()
                     .mt(px(12.))
                     .ml(px(24.))
-                    .w(px(505.))
+                    .mr(px(16.))
                     .h(px(40.))
                     .rounded(px(8.))
                     .bg(color("--input-background-default"))
@@ -1179,6 +1187,11 @@ impl Root {
                         div()
                             .id("people-list")
                             .flex_1()
+                            .w_full()
+                            .min_w(px(0.))
+                            .min_h(px(0.))
+                            .flex()
+                            .flex_col()
                             .overflow_y_scroll()
                             .children(
                                 people

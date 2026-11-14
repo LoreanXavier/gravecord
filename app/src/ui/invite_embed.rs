@@ -185,7 +185,11 @@ impl Root {
             .images
             .get(&format!("guild:{guild}"))
             .and_then(|picture| image::load_from_memory(picture.bytes()).ok())
-            .map(|decoded| crate::palette::avatar_palette(decoded.to_rgba8().as_raw())[0]);
+            .and_then(|decoded| {
+                crate::palette::avatar_palette(decoded.to_rgba8().as_raw())
+                    .first()
+                    .copied()
+            });
         base.unwrap_or_else(|| {
             let token = color("--guild-profile-banner-background-default");
             [

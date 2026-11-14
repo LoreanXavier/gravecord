@@ -12,7 +12,7 @@
 //! gravecord has no overlay for), Frequently Used and the sticky section headers, the sound button's locked-click
 //! upsell modal, the tooltip delay (app tooltips open at once), and a per-user "mute soundboard" (no setting for it).
 
-use super::audio_menu::{slider_to_volume, volume_to_slider};
+use super::audio_menu::volume_to_slider;
 use super::motion::{PopKind, PopSide, Popout as _};
 use super::tooltip::{Body, Side, Tip};
 use super::voice_panel::Popout;
@@ -24,8 +24,8 @@ use dc_state::{Id, permissions};
 use dc_voice::sound::{self, Decoded, Handle, Output};
 use gpui::{
     AnyElement, BoxShadow, Context, Entity, Focusable, FontWeight, IntoElement, MouseButton,
-    MouseDownEvent, MouseMoveEvent, ScrollHandle, SharedString, Subscription, Window, deferred,
-    div, hsla, img, linear_color_stop, linear_gradient, point, prelude::*, px, svg,
+    MouseDownEvent, ScrollHandle, SharedString, Subscription, Window, deferred, div, hsla, img,
+    linear_color_stop, linear_gradient, point, prelude::*, px, svg,
 };
 use serde_json::{Value, json};
 use std::collections::{HashMap, HashSet};
@@ -67,16 +67,11 @@ const ROW_HEIGHT: f32 = 48.;
 const BUTTON_WIDTH: f32 = 148.;
 const BUTTON_HEIGHT: f32 = 40.;
 const PER_ROW: usize = 3;
-/// The volume menu inside the picker's box, and where its slider is in the window.
+/// The volume menu inside the picker's box.
 const MENU_LEFT: f32 = 507.;
 const MENU_TOP: f32 = 30.;
 const MENU_WIDTH: f32 = 155.7;
 const MENU_HEIGHT: f32 = 76.;
-const SLIDER_WIDTH: f32 = 121.7;
-/// The grabber's centre travels this far, from `track_OnqacX`'s left edge, which is 5px in from the bar's.
-const TRACK_WIDTH: f32 = 111.7;
-const SLIDER_LEFT: f32 = PICKER_LEFT + MENU_LEFT + 1. + 8. + 8.;
-const TRACK_LEFT: f32 = SLIDER_LEFT + 5.;
 /// A section is "current" once its top is this close to the list's top (the official scroll spy's slack).
 const SPY_SLACK: f32 = 20.;
 
@@ -482,7 +477,6 @@ pub(crate) struct Picker {
     scroll: ScrollHandle,
     rail: ScrollHandle,
     menu: bool,
-    dragging: bool,
     _events: Subscription,
 }
 
@@ -641,7 +635,6 @@ impl Root {
             scroll: ScrollHandle::new(),
             rail: ScrollHandle::new(),
             menu: false,
-            dragging: false,
             _events: events,
         });
         self.soundboard_request();
@@ -1121,7 +1114,6 @@ impl Root {
                 scroll: ScrollHandle::new(),
                 rail: ScrollHandle::new(),
                 menu: false,
-                dragging: false,
                 _events: events,
             },
             at,
@@ -1722,18 +1714,11 @@ impl Root {
     /// `gift` is the window x of the gift picker's left edge when the menu hangs from that picker, whose header is
     /// 48px taller.
     fn soundboard_menu(&self, gift: Option<f32>, cx: &mut Context<Self>) -> AnyElement {
-        let fraction = slider_gain(super::settings::soundboard_volume()).clamp(0., 1.);
-        let track_left = gift.map_or(TRACK_LEFT, |left| left + MENU_LEFT + 1. + 8. + 8. + 5.);
         let is_gift = gift.is_some();
-        let set = move |this: &mut Self, x: gpui::Pixels, cx: &mut Context<Self>| {
-            let fraction = ((f32::from(x) - track_left) / TRACK_WIDTH).clamp(0., 1.);
-            let volume = slider_to_volume((fraction * 100.).round())
-                .round()
-                .clamp(0., 100.);
-            super::settings::set_soundboard_volume(volume);
-            let _ = this;
-            cx.notify();
-        };
+        let value = super::menu_slider::amplitude_to_perceptual(
+            super::settings::soundboard_volume() / 100.,
+            100,
+        );
         div()
             .id("soundboard-menu")
             .absolute()
@@ -1758,90 +1743,30 @@ impl Root {
             .occlude()
             .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
             .child(
-                div()
-                    .p(px(8.))
-                    .child(
-                        div()
-                            .p(px(8.))
-                            .h(px(34.))
-                            .text_size(px(14.))
-                            .line_height(px(18.))
-                            .font_weight(FontWeight(500.))
-                            .text_color(color("--text-strong"))
-                            .child("Soundboard Volume"),
-                    )
-                    .child(
-                        div()
-                            .id("soundboard-slider")
-                            .relative()
-                            .ml(px(8.))
-                            .w(px(SLIDER_WIDTH))
-                            .h(px(24.))
-                            .cursor_pointer()
-                            .on_mouse_down(
-                                MouseButton::Left,
-                                cx.listener(move |this, event: &MouseDownEvent, _, cx| {
-                                    if let Some(picker) = this.soundboard_picker_mut(is_gift) {
-                                        picker.dragging = true;
-                                    }
-                                    set(this, event.position.x, cx);
-                                    cx.stop_propagation();
-                                }),
-                            )
-                            .on_mouse_move(cx.listener(
-                                move |this, event: &MouseMoveEvent, _, cx| {
-                                    if this
-                                        .soundboard_picker_mut(is_gift)
-                                        .is_some_and(|picker| picker.dragging)
-                                        && event.dragging()
-                                    {
-                                        set(this, event.position.x, cx);
-                                    }
-                                },
-                            ))
-                            .on_mouse_up(
-                                MouseButton::Left,
-                                cx.listener(move |this, _, _, cx| {
-                                    if let Some(picker) = this.soundboard_picker_mut(is_gift) {
-                                        picker.dragging = false;
-                                    }
-                                    cx.notify();
-                                }),
-                            )
-                            .child(
-                                div()
-                                    .absolute()
-                                    .left_0()
-                                    .top(px(10.))
-                                    .w(px(SLIDER_WIDTH))
-                                    .h(px(4.))
-                                    .rounded(px(4.))
-                                    .overflow_hidden()
-                                    .bg(color("--slider-track-background"))
-                                    .child(
-                                        div()
-                                            .h_full()
-                                            .w(px(5. + TRACK_WIDTH * fraction))
-                                            .bg(color("--background-brand")),
-                                    ),
-                            )
-                            .child(
-                                div()
-                                    .absolute()
-                                    .left(px(5. + TRACK_WIDTH * fraction - 8.))
-                                    .top(px(4.))
-                                    .size(px(16.))
-                                    .rounded_full()
-                                    .bg(gpui::rgb(0xffffff))
-                                    .shadow(vec![BoxShadow {
-                                        color: hsla(0., 0., 0., 0.14),
-                                        offset: point(px(0.), px(1.)),
-                                        blur_radius: px(4.),
-                                        spread_radius: px(0.),
-                                        inset: false,
-                                    }]),
-                            ),
-                    ),
+                div().p(px(8.)).child(self.menu_slider_row(
+                    super::menu_slider::MenuSliderConfig {
+                        id: if is_gift {
+                            "gift-soundboard-slider".into()
+                        } else {
+                            "soundboard-slider".into()
+                        },
+                        label: dc_intl::t!("kbFsAD").to_owned(),
+                        min: 0,
+                        max: 100,
+                        value,
+                        palette: super::menu_slider::ThemePalette::Default,
+                        format: super::menu_slider::percent_format(),
+                        on_change: std::rc::Rc::new(|_, pct, cx| {
+                            let volume = (super::menu_slider::perceptual_to_amplitude(pct, 100)
+                                * 100.)
+                                .round()
+                                .clamp(0., 100.);
+                            super::settings::set_soundboard_volume(volume);
+                            cx.notify();
+                        }),
+                    },
+                    cx,
+                )),
             )
             .into_any_element()
     }
@@ -2650,7 +2575,7 @@ mod tests {
     #[test]
     fn the_slider_position_round_trips_through_the_stored_volume() {
         for position in [0., 50., 90., 100.] {
-            let stored = slider_to_volume(position).round();
+            let stored = super::super::audio_menu::slider_to_volume(position).round();
             assert!(
                 (volume_to_slider(stored) - position).abs() < 1.5,
                 "{position}"

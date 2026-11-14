@@ -190,6 +190,7 @@ impl Root {
             .set_status(status, expires_at(now, duration), now);
         self.patch_settings(patch);
         self.refresh_own_presence();
+        self.ring_reconcile(cx);
         self.status_popout = None;
         cx.notify();
     }

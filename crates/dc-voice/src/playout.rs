@@ -170,7 +170,10 @@ struct PlayoutCore {
     render_tap: Option<rtrb::Producer<Frame>>,
     ref_frame: Frame,
     ref_half: usize,
-    ref_active: bool,
+    loopback_rx: Option<rtrb::Consumer<Stereo>>,
+    loopback_frame: Stereo,
+    loopback_half: usize,
+    loopback_primed: bool,
     blocks_pulled: u64,
     underruns: u64,
     stream_underruns: u64,
@@ -295,9 +298,64 @@ impl PlayoutCore {
         }
     }
 
+    fn push_render_tap(&mut self) {
+        if self.ref_half == 0 {
+            self.ref_half = 1;
+        } else {
+            if let Some(tap) = self.render_tap.as_mut() {
+                let _ = tap.push(self.ref_frame);
+            }
+            self.ref_half = 0;
+        }
+    }
+
+    fn mix_loopback(&mut self, out: &mut [f32; OUTPUT_SIZE * 2], loopback: bool) {
+        let Some(rx) = self.loopback_rx.as_mut() else {
+            return;
+        };
+        if !loopback {
+            while rx.pop().is_ok() {}
+            self.loopback_half = 0;
+            self.loopback_primed = false;
+            return;
+        }
+        if self.loopback_half == 0 {
+            if !self.loopback_primed && rx.slots() >= 2 {
+                self.loopback_primed = true;
+            }
+            self.loopback_frame = if self.loopback_primed {
+                match rx.pop() {
+                    Ok(frame) => frame,
+                    Err(_) => {
+                        self.loopback_primed = false;
+                        [0.0; OUTPUT_SIZE * 4]
+                    }
+                }
+            } else {
+                [0.0; OUTPUT_SIZE * 4]
+            };
+            let src = &self.loopback_frame[..OUTPUT_SIZE * 2];
+            for (dst, &sample) in out.iter_mut().zip(src.iter()) {
+                *dst = (*dst + sample).clamp(-1.0, 1.0);
+            }
+            self.loopback_half = 1;
+        } else {
+            let src = &self.loopback_frame[OUTPUT_SIZE * 2..];
+            for (dst, &sample) in out.iter_mut().zip(src.iter()) {
+                *dst = (*dst + sample).clamp(-1.0, 1.0);
+            }
+            self.loopback_half = 0;
+        }
+    }
+
     /// Mixes the next 10 ms stereo block (`960` interleaved samples) into `out` with zero heap allocations.
     /// Returns `true` when any voice or watched stream produced unmuted audio.
-    fn pull_10ms(&mut self, out: &mut [f32; OUTPUT_SIZE * 2], playing: bool) -> bool {
+    fn pull_10ms_with_loopback(
+        &mut self,
+        out: &mut [f32; OUTPUT_SIZE * 2],
+        playing: bool,
+        loopback: bool,
+    ) -> bool {
         let dropped_ingress = self.drain_ingress_nonblocking();
 
         if !playing {
@@ -305,11 +363,12 @@ impl PlayoutCore {
                 self.voice_mixer.clear();
                 self.stream_mixer.clear();
                 self.speaking_mask.store(0, Ordering::Release);
-                self.ref_half = 0;
-                self.ref_active = false;
                 self.last_playing = false;
             }
             out.fill(0.0);
+            self.ref_frame[self.ref_half * OUTPUT_SIZE..(self.ref_half + 1) * OUTPUT_SIZE].fill(0.0);
+            self.push_render_tap();
+            self.mix_loopback(out, loopback);
             self.blocks_pulled += 1;
             if self
                 .blocks_pulled
@@ -355,18 +414,8 @@ impl PlayoutCore {
         }
 
         let active = voice_active || stream_active;
-        self.ref_active |= active;
-        if self.ref_half == 0 {
-            self.ref_half = 1;
-        } else {
-            if self.ref_active
-                && let Some(tap) = self.render_tap.as_mut()
-            {
-                let _ = tap.push(self.ref_frame);
-            }
-            self.ref_half = 0;
-            self.ref_active = false;
-        }
+        self.push_render_tap();
+        self.mix_loopback(out, loopback);
 
         self.blocks_pulled += 1;
         if self
@@ -387,10 +436,23 @@ pub(crate) struct PlayoutReader {
 
 impl PlayoutReader {
     /// Pulls 10 ms (`480` stereo pairs) non-blockingly for the speaker callback.
+    #[cfg(test)]
     pub(crate) fn pull_10ms(&mut self, out: &mut [f32; OUTPUT_SIZE * 2], playing: bool) -> bool {
+        self.pull_10ms_with_loopback(out, playing, false)
+    }
+
+    pub(crate) fn pull_10ms_with_loopback(
+        &mut self,
+        out: &mut [f32; OUTPUT_SIZE * 2],
+        playing: bool,
+        loopback: bool,
+    ) -> bool {
         match self.core.try_lock() {
-            Ok(mut core) => core.pull_10ms(out, playing),
-            Err(TryLockError::Poisoned(e)) => e.into_inner().pull_10ms(out, playing),
+            Ok(mut core) => core.pull_10ms_with_loopback(out, playing, loopback),
+            Err(TryLockError::Poisoned(e)) => {
+                e.into_inner()
+                    .pull_10ms_with_loopback(out, playing, loopback)
+            }
             Err(TryLockError::WouldBlock) => {
                 self.contention_underruns.fetch_add(1, Ordering::Relaxed);
                 out.fill(0.0);
@@ -401,7 +463,7 @@ impl PlayoutReader {
 
     pub(crate) fn clear(&mut self) {
         let mut dummy = [0.0f32; OUTPUT_SIZE * 2];
-        let _ = self.pull_10ms(&mut dummy, false);
+        let _ = self.pull_10ms_with_loopback(&mut dummy, false, false);
     }
 }
 
@@ -446,7 +508,10 @@ impl CallPlayout {
             render_tap: None,
             ref_frame: [0.0; 960],
             ref_half: 0,
-            ref_active: false,
+            loopback_rx: None,
+            loopback_frame: [0.0; 1920],
+            loopback_half: 0,
+            loopback_primed: false,
             blocks_pulled: 0,
             underruns: 0,
             stream_underruns: 0,
@@ -654,7 +719,6 @@ impl CallPlayout {
             let mut core = self.core.lock().unwrap_or_else(|e| e.into_inner());
             core.render_tap = Some(tap_prod);
             core.ref_half = 0;
-            core.ref_active = false;
         }
         (
             PlayoutReader {
@@ -665,13 +729,23 @@ impl CallPlayout {
         )
     }
 
+    /// Creates a lock-free loopback producer played directly inside `PlayoutReader` without feeding AEC3 `render_tap`.
+    pub(crate) fn open_loopback(&self) -> rtrb::Producer<Stereo> {
+        let (prod, cons) = rtrb::RingBuffer::new(16);
+        let mut core = self.core.lock().unwrap_or_else(|e| e.into_inner());
+        core.loopback_rx = Some(cons);
+        core.loopback_half = 0;
+        core.loopback_primed = false;
+        prod
+    }
+
     /// Pulls one 20 ms stereo frame (two 10 ms blocks) for headless/simulated operation; returns `None` when silent.
     pub(crate) fn pull_20ms(&self, playing: bool) -> Option<Stereo> {
         let mut out = [0.0f32; 1920];
         let mut core = self.core.lock().unwrap_or_else(|e| e.into_inner());
         let (first, second) = out.split_at_mut(OUTPUT_SIZE * 2);
-        let a = core.pull_10ms(first.try_into().expect("first 10 ms half"), playing);
-        let b = core.pull_10ms(second.try_into().expect("second 10 ms half"), playing);
+        let a = core.pull_10ms_with_loopback(first.try_into().expect("first 10 ms half"), playing, false);
+        let b = core.pull_10ms_with_loopback(second.try_into().expect("second 10 ms half"), playing, false);
         (a || b).then_some(out)
     }
 
@@ -791,10 +865,15 @@ mod tests {
         // Drain any tap frames from active period.
         while tap.pop().is_ok() {}
 
-        // Pulling with playing=false silences output and flushes NetEq.
+        // Pulling with playing=false silences output, flushes NetEq, and emits a continuous silent reference frame.
         assert!(!reader.pull_10ms(&mut half, false));
         assert!(half.iter().all(|&s| s == 0.0));
-        assert!(tap.pop().is_err());
+        let trailing = tap.pop().expect("continuous 20 ms render reference on deafen");
+        assert!(!reader.pull_10ms(&mut half, false));
+        assert!(!reader.pull_10ms(&mut half, false));
+        let silent = tap.pop().expect("continuous silence frame while deafened");
+        assert!(silent.iter().all(|&s| s == 0.0));
+        let _ = trailing;
 
         let mut speakers = Vec::new();
         playout.speaking_users(&mut speakers);
@@ -878,5 +957,28 @@ mod tests {
         playout.remove(42);
         let _ = reader.pull_10ms(&mut half, true);
         assert_eq!(playout.reap_garbage(), 1);
+    }
+
+    #[test]
+    fn open_loopback_plays_audio_without_polluting_render_tap() {
+        let sidechain = Arc::new(AtomicU32::new(0));
+        let playout = CallPlayout::new(sidechain);
+        let (mut reader, mut tap) = playout.open_reader();
+        let mut loopback_tx = playout.open_loopback();
+
+        loopback_tx.push([0.4f32; 1920]).unwrap();
+        loopback_tx.push([0.4f32; 1920]).unwrap();
+
+        let mut half = [0.0f32; 960];
+        let _ = reader.pull_10ms_with_loopback(&mut half, false, true);
+        assert!(half.iter().all(|&s| (s - 0.4).abs() < 1e-6));
+        let _ = reader.pull_10ms_with_loopback(&mut half, false, true);
+        assert!(half.iter().all(|&s| (s - 0.4).abs() < 1e-6));
+
+        let reference = tap.pop().expect("continuous render_tap frame");
+        assert!(
+            reference.iter().all(|&s| s == 0.0),
+            "Mic Test loopback audio must never enter AEC3 render_tap"
+        );
     }
 }

@@ -162,6 +162,7 @@ mod media_image;
 mod member_avatars;
 pub(crate) mod memory_trim;
 mod menu;
+mod menu_slider;
 mod mod_view;
 mod modal;
 mod mosaic;
@@ -700,6 +701,7 @@ pub struct Root {
     tip: Option<tooltip::Active>,
     /// The target whose delayed tooltip is waiting for the pointer to rest.
     tip_pending: Option<SharedString>,
+    pub(super) active_menu_slider_drag: Option<menu_slider::ActiveSliderDrag>,
     /// Channels whose first message has been loaded: the welcome goes above it.
     /// Width of a message's content column, set each frame: media never grows past it (`max-width: 100%`).
     content_width: f32,
@@ -1049,6 +1051,7 @@ impl Root {
             last_typing_sent: None,
             tip: None,
             tip_pending: None,
+            active_menu_slider_drag: None,
             content_width: 793.,
             profile: None,
             call: None,
@@ -1178,6 +1181,10 @@ impl Root {
                 self.official_messages.dispatch(&name, &data);
                 self.gateway_screens_dispatch(&name, &data, cx);
                 self.channel_info_check();
+                // Another session changed the status or the custom status: the account's own presence follows.
+                if name == "USER_SETTINGS_PROTO_UPDATE" || name == "SESSIONS_REPLACE" {
+                    self.refresh_own_presence();
+                }
                 self.calls_after_dispatch(&name, cx);
                 self.interaction_dispatched(&name, &data, cx);
                 if name == "READY" {
@@ -1186,10 +1193,7 @@ impl Root {
                     self.detect_ready();
                     self.clips_connection_open(cx);
                 }
-                // Another session changed the status or the custom status: the account's own presence follows.
-                if name == "USER_SETTINGS_PROTO_UPDATE" || name == "SESSIONS_REPLACE" {
-                    self.refresh_own_presence();
-                }
+                self.sync_dm_call_idle_timer(cx);
                 // The server in view is gone (left, removed from it, or deleted): back to Home, as the official
                 // client goes. An outage keeps the server and the view.
                 if name == "GUILD_DELETE"
@@ -1319,6 +1323,7 @@ impl Root {
                 }
                 if matches!(name.as_str(), "VOICE_STATE_UPDATE" | "VOICE_SERVER_UPDATE") {
                     self.voice_after_dispatch(&name, cx);
+                    self.sync_dm_call_idle_timer(cx);
                     self.maybe_connect_voice();
                 }
                 if matches!(
@@ -4931,6 +4936,7 @@ impl Root {
                 };
                 (forum.name.clone(), channel_icon::name(&facts))
             });
+        let dm_channel = self.current_dm().map(|channel| channel.id);
         let dm_user = self
             .current_dm()
             .and_then(|channel| self.stores.dm_recipient(channel))
@@ -5134,12 +5140,40 @@ impl Root {
                         .ml(px(1.))
                         .relative()
                         .size(px(20.))
+                        .when_some(dm_channel, |d, channel| {
+                            d.on_mouse_down(
+                                MouseButton::Right,
+                                cx.listener(move |this, event: &gpui::MouseDownEvent, _, cx| {
+                                    cx.stop_propagation();
+                                    this.open_context_menu(
+                                        context_menu::Target::Dm(channel),
+                                        event.position,
+                                        cx,
+                                    );
+                                }),
+                            )
+                        })
                         .children(picture.map(|picture| img(picture).size(px(20.)).rounded_full()))
                         .child(status_dot_small(&presence, "--background-base-lower")),
                 )
             })
             .when_some(group_channel.clone(), |this, channel| {
-                this.child(self.group_header_name(&channel, cx))
+                let id = channel.id;
+                this.child(
+                    div()
+                        .on_mouse_down(
+                            MouseButton::Right,
+                            cx.listener(move |this, event: &gpui::MouseDownEvent, _, cx| {
+                                cx.stop_propagation();
+                                this.open_context_menu(
+                                    context_menu::Target::Dm(id),
+                                    event.position,
+                                    cx,
+                                );
+                            }),
+                        )
+                        .child(self.group_header_name(&channel, cx)),
+                )
             })
             .when(group_channel.is_none() && !one_box, |this| {
                 // At a high zoom the search box gives its width up first (down to 64px, chat-200 and chat-150
@@ -5157,6 +5191,19 @@ impl Root {
                         .line_height(px(20.))
                         .font_weight(FontWeight(500.))
                         .text_color(color("--text-strong"))
+                        .when_some(dm_channel, |d, channel| {
+                            d.on_mouse_down(
+                                MouseButton::Right,
+                                cx.listener(move |this, event: &gpui::MouseDownEvent, _, cx| {
+                                    cx.stop_propagation();
+                                    this.open_context_menu(
+                                        context_menu::Target::Dm(channel),
+                                        event.position,
+                                        cx,
+                                    );
+                                }),
+                            )
+                        })
                         // 849205: a DM's header title applies only the other person's display-name font class (`73392`),
                         // never the colour/animation effect.
                         .child(name_styles::name(
@@ -5192,7 +5239,19 @@ impl Root {
                         )
                     }),
             )
-            .child(div().flex_1())
+            .child(div().flex_1().h_full().when_some(dm_channel, |d, channel| {
+                d.on_mouse_down(
+                    MouseButton::Right,
+                    cx.listener(move |this, event: &gpui::MouseDownEvent, _, cx| {
+                        cx.stop_propagation();
+                        this.open_context_menu(
+                            context_menu::Target::Dm(channel),
+                            event.position,
+                            cx,
+                        );
+                    }),
+                )
+            }))
             .when(dm_user.is_some(), |this| {
                 let shown = self.show_dm_profile;
                 // `l2` of module 289287: the button is disabled while the call panel shows, joined or not, and in a
@@ -7438,7 +7497,7 @@ impl Root {
             .child(
                 div()
                     .mt(px(8.))
-                    .w(px(795.))
+                    .w_full()
                     .min_h(px(58.))
                     .rounded(px(8.))
                     .bg(color("--chat-background-default"))
@@ -9040,6 +9099,8 @@ impl Render for Root {
             // inside such a layer left the ring on. This one asks no hitbox.
             .child({
                 let root = cx.entity().downgrade();
+                let root_move = root.clone();
+                let root_up = root.clone();
                 gpui::canvas(
                     |_, _, _| (),
                     move |_, (), window, _| {
@@ -9054,6 +9115,30 @@ impl Render for Root {
                                 }
                             });
                         });
+                        window.on_mouse_event(
+                            move |event: &gpui::MouseMoveEvent, phase, window, cx| {
+                                if phase != gpui::DispatchPhase::Capture {
+                                    return;
+                                }
+                                let _ = root_move.update(cx, |this, cx| {
+                                    if this.active_menu_slider_drag.is_some() {
+                                        this.menu_slider_mouse_move(event, window, cx);
+                                    }
+                                });
+                            },
+                        );
+                        window.on_mouse_event(
+                            move |event: &gpui::MouseUpEvent, phase, window, cx| {
+                                if phase != gpui::DispatchPhase::Capture {
+                                    return;
+                                }
+                                let _ = root_up.update(cx, |this, cx| {
+                                    if this.active_menu_slider_drag.is_some() {
+                                        this.menu_slider_mouse_up(event, window, cx);
+                                    }
+                                });
+                            },
+                        );
                     },
                 )
                 .absolute()

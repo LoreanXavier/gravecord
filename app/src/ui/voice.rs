@@ -38,6 +38,8 @@ pub(crate) struct Call {
     pub dave_version: u16,
     /// The flags each participant's client announced (`RTC_CONNECTION_FLAGS`).
     pub flags: std::collections::HashMap<u64, u64>,
+    /// Unexpected `DisconnectReason::Failed` auto-reconnect attempts on this call.
+    failed_reconnects: u8,
 }
 
 impl Call {
@@ -110,6 +112,37 @@ fn source_letter(name: &str) -> String {
         .unwrap_or_else(|| "?".to_owned())
 }
 
+/// Maximum automatic reconnects after an unexpected [`dc_voice::DisconnectReason::Failed`].
+const MAX_FAILED_RECONNECTS: u8 = 3;
+
+/// What a call does after an unexpected [`dc_voice::DisconnectReason::Failed`] backoff fires.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum AfterFailedWait {
+    /// The call reconnected, ended, or moved to another connection meanwhile.
+    Nothing,
+    /// Restart using the stored voice server if `server` is true, else request a fresh voice state/server.
+    Restart { tell: bool },
+    /// Retry budget is exhausted: tear down the dead call cleanly.
+    End,
+}
+
+fn after_failed_wait(
+    call: Option<(bool, bool, u64, u8)>,
+    generation: u64,
+    server: bool,
+) -> AfterFailedWait {
+    match call {
+        Some((true, false, now, attempts)) if now == generation => {
+            if attempts < MAX_FAILED_RECONNECTS {
+                AfterFailedWait::Restart { tell: !server }
+            } else {
+                AfterFailedWait::End
+            }
+        }
+        _ => AfterFailedWait::Nothing,
+    }
+}
+
 /// The connection the wait after a move started over ([`MOVE_SERVER_WAIT`]); 0 for none.
 static MOVE_RETRY: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
@@ -155,6 +188,7 @@ impl Root {
         // A new connection of this session (`S = null`): the notice of a call taken elsewhere goes.
         self.vv.notices.clear();
         info!("joining voice");
+        crate::sounds::prefetch_call_sounds();
         self.open_call(guild, channel);
         super::voice_panel::rtc_debug::on_voice_channel_select(Some(channel), cx);
         if let Some(sound) = super::voice_sounds::connect_start_sound(
@@ -168,6 +202,7 @@ impl Root {
         self.sync_ptt_hook();
         self.vv.invite_dismissed = false;
         self.show_call_channel(guild, channel, cx);
+        self.sync_dm_call_idle_timer(cx);
         cx.notify();
     }
 
@@ -190,20 +225,20 @@ impl Root {
             dave_version: 0,
             tracker: Default::default(),
             generation: 0,
+            failed_reconnects: 0,
         });
         self.stores.voice_server = None;
     }
 
     /// The voice connection of the call starts over, in the same channel: the service named another voice server
     /// (a region change, a failover), or the gateway session is a new one and the voice state has to be sent again
-    /// (`tell`). The streams of the old connection end with it, and the camera is off until it is turned on again.
+    /// (`tell`). Active Go Live streams remain running, and the camera is off until it is turned on again.
     fn restart_call(&mut self, tell: bool, cx: &mut Context<Self>) {
         let Some(call) = self.call.take() else {
             return;
         };
         info!("voice: connection starts over");
         call.controls.disconnect();
-        self.streams_stop_all(cx);
         self.speaking.clear();
         let server = self.stores.voice_server.take();
         self.open_call(call.guild, call.channel);
@@ -221,7 +256,9 @@ impl Root {
 
     /// After a dispatch reached the stores: what it means for the voice connection of the call here.
     pub(super) fn voice_after_dispatch(&mut self, name: &str, cx: &mut Context<Self>) {
+        crate::sounds::set_current_user(self.stores.current_user.as_ref().map(|user| user.id));
         if name == "READY" {
+            crate::sounds::prefetch_call_sounds();
             self.vv.notices.clear();
         }
         let Some(call) = &self.call else {
@@ -252,8 +289,24 @@ impl Root {
             {
                 self.restart_call(false, cx);
             }
+            "CALL_DELETE" if call.guild == 0 => {
+                // `dc-state` already deleted the DM call record and channel voice states for the deleted channel.
+                // Clean up only if this active DM call's channel no longer has a call or our voice state.
+                let channel = call.channel;
+                let me = self.stores.current_user.as_ref().map(|user| user.id);
+                let has_own_state = me.is_some_and(|own| {
+                    self.stores
+                        .voice_members(0, channel)
+                        .iter()
+                        .any(|state| state.user_id == own)
+                });
+                if self.stores.calls.get_call(channel).is_none() && !has_own_state {
+                    self.end_voice(false, cx);
+                }
+            }
             _ => {}
         }
+        self.sync_dm_call_idle_timer(cx);
     }
 
     #[cfg(feature = "capture")]
@@ -291,8 +344,10 @@ impl Root {
             dave_version: 1,
             tracker: Default::default(),
             generation: 0,
+            failed_reconnects: 0,
         });
         self.start_voice_tick(cx);
+        self.sync_dm_call_idle_timer(cx);
     }
 
     /// Harness only: this account "in" a Stage of a guild, as above: no voice state, no media, nothing leaves the
@@ -315,6 +370,7 @@ impl Root {
             dave_version,
             tracker: Default::default(),
             generation: 0,
+            failed_reconnects: 0,
         });
     }
 
@@ -399,11 +455,13 @@ impl Root {
         // The layout chosen in a call is that call's: the next one starts with its chat, its people and the grid.
         self.dmc.no_chat = false;
         self.vv.members_hidden = false;
+        self.vv.hovered_controls.clear();
         self.vv.focus.tile = None;
         // The popped-out window and what was dragged belong to the call, whether or not the main window draws.
         self.call_popout_frame(cx);
         self.close_rtc_debug(cx);
         super::voice_panel::rtc_debug::clear_live_rtc_stats(cx);
+        self.sync_dm_call_idle_timer(cx);
         self.sync_ptt_hook();
         cx.notify();
     }
@@ -509,6 +567,13 @@ impl Root {
         if self.call.as_ref().map(|call| call.generation) != Some(generation) {
             return;
         }
+        let sync_idle = matches!(
+            event,
+            dc_voice::Event::Connected
+                | dc_voice::Event::ClientConnected { .. }
+                | dc_voice::Event::ClientDisconnected { .. }
+                | dc_voice::Event::Disconnected { .. }
+        );
         match event {
             dc_voice::Event::Connected => {
                 info!("voice connected");
@@ -520,6 +585,7 @@ impl Root {
                     call.connected = true;
                     call.connected_at = Some(std::time::Instant::now());
                     call.dave_version = u16::from(!is_stage);
+                    call.failed_reconnects = 0;
                 }
                 if let Some(call) = &self.call
                     && let Some(sound) = super::voice_sounds::connected_sound(
@@ -654,11 +720,57 @@ impl Root {
                         });
                     })
                     .detach();
+                } else if matches!(reason, dc_voice::DisconnectReason::Failed(_)) {
+                    let attempts = self
+                        .call
+                        .as_ref()
+                        .map_or(MAX_FAILED_RECONNECTS, |call| call.failed_reconnects);
+                    if attempts >= MAX_FAILED_RECONNECTS {
+                        self.end_voice(true, cx);
+                    } else {
+                        let delay =
+                            std::time::Duration::from_millis(1000 << u32::from(attempts));
+                        cx.spawn(async move |this, cx| {
+                            cx.background_executor().timer(delay).await;
+                            let _ = this.update(cx, |root, cx| {
+                                let call = root.call.as_ref().map(|call| {
+                                    (
+                                        call.started,
+                                        call.connected,
+                                        call.generation,
+                                        call.failed_reconnects,
+                                    )
+                                });
+                                let server = root.call.as_ref().is_some_and(|call| {
+                                    root.stores.voice_server.as_ref().is_some_and(|server| {
+                                        server.guild_id == call.guild
+                                            && (call.guild != 0
+                                                || server.channel_id == Some(call.channel))
+                                    })
+                                });
+                                match after_failed_wait(call, generation, server) {
+                                    AfterFailedWait::Restart { tell } => {
+                                        root.restart_call(tell, cx);
+                                        if let Some(restarted) = root.call.as_mut() {
+                                            restarted.failed_reconnects = attempts + 1;
+                                        }
+                                        root.maybe_connect_voice();
+                                    }
+                                    AfterFailedWait::End => root.end_voice(true, cx),
+                                    AfterFailedWait::Nothing => {}
+                                }
+                            });
+                        })
+                        .detach();
+                    }
                 }
             }
             other => {
                 self.on_video_event(&other);
             }
+        }
+        if sync_idle {
+            self.sync_dm_call_idle_timer(cx);
         }
         cx.notify();
     }
@@ -746,24 +858,31 @@ impl Root {
             {
                 if let Some(call) = self.call.as_mut() {
                     call.channel = to;
+                    call.tracker = Default::default();
                 }
+                self.video.clear_watched_owners();
                 crate::sounds::play_event("user_moved");
+                return;
             }
-            return;
         }
         // `stream_started` and `stream_ended` come first in `SE`, before the join and leave sounds.
         if let (Some(before), Some(after)) = (streams_before, self.streamers_in_call()) {
-            let held: Vec<Id> = self.video.owners();
-            if let Some(sound) = super::voice_sounds::stream_sound(
+            let held: Vec<Id> = self.video.held_owners();
+            let sound = super::voice_sounds::stream_sound(
                 self.room(guild, channel),
                 me,
                 &before,
                 &after,
                 &held,
-            ) {
+            );
+            self.video.prune_watched_owners(&after);
+            if let Some(sound) = sound {
                 crate::sounds::play_event(sound);
                 return;
             }
+        }
+        if user == Some(me) {
+            return;
         }
         if self.rtc_join_sounds() {
             return;
@@ -1557,7 +1676,36 @@ fn source_color(name: &str) -> u32 {
 
 #[cfg(test)]
 mod session_tests {
-    use super::{AfterMoveWait, after_move_wait, taken_elsewhere};
+    use super::{
+        AfterFailedWait, AfterMoveWait, MAX_FAILED_RECONNECTS, after_failed_wait, after_move_wait,
+        taken_elsewhere,
+    };
+
+    #[test]
+    fn unexpected_failed_disconnect_retries_within_budget_then_ends() {
+        assert_eq!(
+            after_failed_wait(Some((true, false, 7, 0)), 7, true),
+            AfterFailedWait::Restart { tell: false }
+        );
+        assert_eq!(
+            after_failed_wait(Some((true, false, 7, 2)), 7, false),
+            AfterFailedWait::Restart { tell: true }
+        );
+        assert_eq!(
+            after_failed_wait(Some((true, false, 7, MAX_FAILED_RECONNECTS)), 7, true),
+            AfterFailedWait::End
+        );
+        // Reconnected, replaced, or already ended: do nothing.
+        assert_eq!(
+            after_failed_wait(Some((true, true, 7, 0)), 7, true),
+            AfterFailedWait::Nothing
+        );
+        assert_eq!(
+            after_failed_wait(Some((true, false, 8, 0)), 7, true),
+            AfterFailedWait::Nothing
+        );
+        assert_eq!(after_failed_wait(None, 7, true), AfterFailedWait::Nothing);
+    }
 
     #[test]
     fn a_moved_call_without_a_new_server_restarts_or_ends_once_the_wait_ran_out() {

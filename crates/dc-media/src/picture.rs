@@ -208,37 +208,84 @@ impl Picture {
             }
             return Some(());
         }
-        let planes = Planes {
-            luma: &self.data[..width * height],
-            chroma: &self.data[width * height..],
-            width,
-            height,
-            interleaved: self.layout == Layout::Nv12,
-        };
-        let bands = std::thread::available_parallelism()
-            .map_or(1, |count| count.get())
-            .clamp(1, 8)
-            .min(height / 64)
-            .max(1);
+        let luma_len = width * height;
+        let interleaved = self.layout == Layout::Nv12;
+        let bands = crate::band_pool::band_count(height);
         let band_rows = height.div_ceil(bands);
-        std::thread::scope(|scope| {
-            let mut rest = out;
-            let mut first = 0;
-            while first < height {
-                let count = band_rows.min(height - first);
-                let (band, tail) = std::mem::take(&mut rest).split_at_mut(count * width * 4);
-                rest = tail;
-                let planes = &planes;
-                if first + count >= height {
-                    planes.rows(first, band);
-                } else {
-                    scope.spawn(move || planes.rows(first, band));
-                }
-                first += count;
+        let mut worker_tasks = Vec::with_capacity(bands.saturating_sub(1));
+        let mut worker_targets = Vec::with_capacity(bands.saturating_sub(1));
+        let mut caller: Option<(usize, &mut [u8])> = None;
+
+        let mut rest = out;
+        let mut first = 0;
+        while first < height {
+            let count = band_rows.min(height - first);
+            let (band, tail) = std::mem::take(&mut rest).split_at_mut(count * width * 4);
+            rest = tail;
+            if first + count >= height {
+                caller = Some((first, band));
+            } else {
+                worker_targets.push(band);
+                worker_tasks.push(crate::band_pool::Task::Bgra(BgraBand {
+                    width,
+                    height,
+                    interleaved,
+                    first,
+                    rows: count,
+                }));
             }
-        });
+            first += count;
+        }
+        let (caller_first, caller_band) = caller?;
+        crate::band_pool::dispatch(
+            crate::band_pool::Input::Slice(&self.data),
+            worker_tasks,
+            |source, scratch| {
+                Planes {
+                    luma: &source[..luma_len],
+                    chroma: &source[luma_len..],
+                    width,
+                    height,
+                    interleaved,
+                }
+                .rows_into(caller_first, caller_band, &mut scratch.chroma_line);
+            },
+            |index, bytes| worker_targets[index].copy_from_slice(bytes),
+        );
         Some(())
     }
+}
+
+/// Geometry descriptor for one worker row band of BGRA conversion.
+pub(crate) struct BgraBand {
+    pub(crate) width: usize,
+    pub(crate) height: usize,
+    pub(crate) interleaved: bool,
+    pub(crate) first: usize,
+    pub(crate) rows: usize,
+}
+
+impl BgraBand {
+    pub(crate) fn out_len(&self) -> usize {
+        self.rows * self.width * 4
+    }
+}
+
+pub(crate) fn run_band(
+    source: &[u8],
+    out: &mut [u8],
+    scratch: &mut crate::band_pool::Scratch,
+    job: &BgraBand,
+) {
+    let luma_len = job.width * job.height;
+    Planes {
+        luma: &source[..luma_len],
+        chroma: &source[luma_len..],
+        width: job.width,
+        height: job.height,
+        interleaved: job.interleaved,
+    }
+    .rows_into(job.first, out, &mut scratch.chroma_line);
 }
 
 /// The planes of an even-sized 4:2:0 picture, for the banded BGRA conversion.
@@ -267,11 +314,11 @@ impl Planes<'_> {
         }
     }
 
-    /// Converts the `out.len() / (width * 4)` rows from `first` on.
-    fn rows(&self, first: usize, out: &mut [u8]) {
+    /// Converts the `out.len() / (width * 4)` rows from `first` on using caller-provided scratch storage.
+    fn rows_into(&self, first: usize, out: &mut [u8], line: &mut Vec<(i32, i32)>) {
         let (width, chroma_width, chroma_height) = (self.width, self.width / 2, self.height / 2);
         // The vertically blended chroma row, times 4.
-        let mut line = vec![(0i32, 0i32); chroma_width];
+        line.resize(chroma_width, (0, 0));
         for (row, pixels) in out.chunks_exact_mut(width * 4).enumerate() {
             let y = first + row;
             let k = y / 2;

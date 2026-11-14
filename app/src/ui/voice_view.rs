@@ -106,29 +106,16 @@ fn own_preview_paused() -> AnyElement {
         .into_any_element()
 }
 
-/// The wandering-cubes spinner of a tile that waits for its picture (module 259264): two diamonds in a 32px box.
-fn spinner() -> AnyElement {
+/// The wandering-cubes spinner of a tile that waits for its picture (module 259264): two cubes in a 32px box.
+pub(super) fn spinner() -> AnyElement {
     div()
         .absolute()
         .inset_0()
+        .size_full()
         .flex()
         .items_center()
         .justify_center()
-        .child(
-            div()
-                .relative()
-                .size(px(32.))
-                .child(div().absolute().left(px(23.42)).top(px(5.07)).child(icon(
-                    "spinner_cube",
-                    7.16,
-                    "--brand-400",
-                )))
-                .child(div().absolute().left(px(1.42)).top(px(19.78)).child(icon(
-                    "spinner_cube",
-                    7.16,
-                    "--brand-400",
-                ))),
-        )
+        .child(super::login::wandering_cubes())
         .into_any_element()
 }
 
@@ -155,6 +142,8 @@ pub(super) struct State {
     pub forced_idle: bool,
     /// A task is waiting for the idle time to run out.
     watching: bool,
+    /// Identifiers of call control regions the pointer is currently over.
+    pub hovered_controls: HashSet<&'static str>,
     /// A task redraws every second for the call timer.
     ticking: bool,
     pub menu: Option<Menu>,
@@ -231,6 +220,7 @@ impl Default for State {
             notices: Default::default(),
             colors: RefCell::new(HashMap::new()),
             background: Default::default(),
+            hovered_controls: HashSet::new(),
         }
     }
 }
@@ -570,8 +560,25 @@ impl Root {
     /// `onMouseLeave: onForceIdle` of the call's root (module 156652): the pointer left the call area, so it is idle at
     /// once unless something holds the idle off.
     pub(super) fn voice_view_left(&mut self, cx: &mut Context<Self>) {
-        if !self.vv.forced_idle {
+        let hovered = !self.vv.hovered_controls.is_empty();
+        self.vv.hovered_controls.clear();
+        if !self.vv.forced_idle || hovered {
             self.vv.forced_idle = true;
+            cx.notify();
+        }
+    }
+
+    fn set_control_hover(&mut self, id: &'static str, inside: bool, cx: &mut Context<Self>) {
+        let changed = if inside {
+            self.vv.hovered_controls.insert(id)
+        } else {
+            self.vv.hovered_controls.remove(id)
+        };
+        if changed {
+            if inside {
+                self.vv.forced_idle = false;
+                self.vv.last_move = Instant::now();
+            }
             cx.notify();
         }
     }
@@ -604,6 +611,7 @@ impl Root {
         }
         // The zoom controls hold the idle off while hovered or pressed (`onPreventIdle("interact")`, 117029).
         (self.vv.last_move.elapsed() < IDLE && !self.vv.forced_idle)
+            || !self.vv.hovered_controls.is_empty()
             || self.vv.menu.is_some()
             || self.audio_menu.as_ref().is_some_and(|menu| menu.call)
             || self.panel.popout.is_some()
@@ -651,7 +659,9 @@ impl Root {
             .or_insert_with(|| {
                 let picture = self.images.get(&key)?;
                 let decoded = image::load_from_memory(picture.bytes()).ok()?;
-                Some(crate::palette::avatar_palette(decoded.to_rgba8().as_raw())[0])
+                crate::palette::avatar_palette(decoded.to_rgba8().as_raw())
+                    .first()
+                    .copied()
             });
         match found {
             Some(rgb) => rgba(
@@ -923,43 +933,58 @@ impl Root {
                         .flex()
                         .justify_center()
                         .child(
-                            self.with_tip(
-                                "call-members-toggle-tip",
-                                Tip::text(
-                                    if members_open {
-                                        "Hide Members"
-                                    } else {
-                                        "Show Members"
-                                    },
-                                    Side::Top,
+                            div()
+                                .id("call-members-toggle-wrap")
+                                .on_mouse_down(gpui::MouseButton::Left, |_, _, cx| {
+                                    cx.stop_propagation();
+                                })
+                                .on_click(|_, _, cx| cx.stop_propagation())
+                                .child(
+                                    self.with_tip(
+                                        "call-members-toggle-tip",
+                                        Tip::text(
+                                            if members_open {
+                                                "Hide Members"
+                                            } else {
+                                                "Show Members"
+                                            },
+                                            Side::Top,
+                                        ),
+                                        div()
+                                            .id("call-members-toggle")
+                                            .h(px(32.))
+                                            .px(px(8.))
+                                            .rounded(px(8.))
+                                            .bg(gpui::hsla(0., 0., 0., 0.6))
+                                            .flex()
+                                            .items_center()
+                                            .gap(px(4.))
+                                            .cursor_pointer()
+                                            .on_hover(cx.listener(|this, inside: &bool, _, cx| {
+                                                this.set_control_hover(
+                                                    "call-members-toggle",
+                                                    *inside,
+                                                    cx,
+                                                );
+                                            }))
+                                            .child(icon(
+                                                if members_open {
+                                                    "clips_chevron_down"
+                                                } else {
+                                                    "clips_chevron_up"
+                                                },
+                                                24.,
+                                                "--white",
+                                            ))
+                                            .child(icon("members", 24., "--white"))
+                                            .on_click(cx.listener(|this, _, _, cx| {
+                                                cx.stop_propagation();
+                                                this.vv.members_hidden = !this.vv.members_hidden;
+                                                cx.notify();
+                                            })),
+                                        cx,
+                                    ),
                                 ),
-                                div()
-                                    .id("call-members-toggle")
-                                    .occlude()
-                                    .h(px(32.))
-                                    .px(px(8.))
-                                    .rounded(px(8.))
-                                    .bg(gpui::hsla(0., 0., 0., 0.6))
-                                    .flex()
-                                    .items_center()
-                                    .gap(px(4.))
-                                    .cursor_pointer()
-                                    .child(icon(
-                                        if members_open {
-                                            "clips_chevron_down"
-                                        } else {
-                                            "clips_chevron_up"
-                                        },
-                                        24.,
-                                        "--white",
-                                    ))
-                                    .child(icon("members", 24., "--white"))
-                                    .on_click(cx.listener(|this, _, _, cx| {
-                                        this.vv.members_hidden = !this.vv.members_hidden;
-                                        cx.notify();
-                                    })),
-                                cx,
-                            ),
                         ),
                 )
             })
@@ -2108,7 +2133,6 @@ impl Root {
         let tray = |id: &'static str, glyph: &'static str| {
             div()
                 .id(id)
-                .occlude()
                 .size(px(24.))
                 .cursor_pointer()
                 .child(icon(glyph, 24., "--interactive-icon-default"))
@@ -2320,9 +2344,7 @@ impl Root {
             });
         let streaming = self.own_stream().is_some();
         let section = |children: Vec<AnyElement>| {
-            // A press on the tray stays on the tray: it never reaches the tile or the background under it.
             div()
-                .occlude()
                 .flex()
                 .flex_none()
                 .items_center()
@@ -2608,7 +2630,6 @@ impl Root {
                 // `onPopoutClick`: the chevron exists while other streams are watched, more than one beside Stop
                 // Watching (module 105225: `N.length > 0`, `N.length > 1`).
                 div()
-                    .occlude()
                     .relative()
                     .h(px(50.))
                     .flex()
@@ -2688,11 +2709,19 @@ impl Root {
                         let hidden = self.dm_call_chat_hidden();
                         this.child(
                             div()
+                                .id("call-bar-left")
                                 .capture_any_mouse_down(cx.listener(
                                     |this, event: &gpui::MouseDownEvent, _, _| {
                                         this.vv.bar_press.set(Some(event.position));
                                     },
                                 ))
+                                .on_hover(cx.listener(|this, inside: &bool, _, cx| {
+                                    this.set_control_hover("call-bar-left", *inside, cx);
+                                }))
+                                .on_mouse_down(gpui::MouseButton::Left, |_, _, cx| {
+                                    cx.stop_propagation();
+                                })
+                                .on_click(|_, _, cx| cx.stop_propagation())
                                 .child(
                                     self.with_tip(
                                         "call-chat-tip",
@@ -2726,11 +2755,19 @@ impl Root {
                     .when(guild != 0, |this| {
                         this.child(
                             div()
+                                .id("call-bar-left")
                                 .capture_any_mouse_down(cx.listener(
                                     |this, event: &gpui::MouseDownEvent, _, _| {
                                         this.vv.bar_press.set(Some(event.position));
                                     },
                                 ))
+                                .on_hover(cx.listener(|this, inside: &bool, _, cx| {
+                                    this.set_control_hover("call-bar-left", *inside, cx);
+                                }))
+                                .on_mouse_down(gpui::MouseButton::Left, |_, _, cx| {
+                                    cx.stop_propagation();
+                                })
+                                .on_click(|_, _, cx| cx.stop_propagation())
                                 .child(self.with_tip(
                                     "call-invite-tip",
                                     Tip::text(dc_intl::tr("Invite"), Side::Top),
@@ -2744,17 +2781,26 @@ impl Root {
             )
             .child(
                 div()
+                    .id("call-bar-centre")
                     .flex_none()
                     .capture_any_mouse_down(cx.listener(
                         |this, event: &gpui::MouseDownEvent, _, _| {
                             this.vv.bar_press.set(Some(event.position));
                         },
                     ))
+                    .on_hover(cx.listener(|this, inside: &bool, _, cx| {
+                        this.set_control_hover("call-bar-centre", *inside, cx);
+                    }))
+                    .on_mouse_down(gpui::MouseButton::Left, |_, _, cx| {
+                        cx.stop_propagation();
+                    })
+                    .on_click(|_, _, cx| cx.stop_propagation())
                     .child(centre),
             )
             .child(
                 div().flex_1().flex().items_center().justify_end().child(
                     div()
+                        .id("call-bar-right")
                         .flex()
                         .items_center()
                         .gap(px(20.))
@@ -2763,10 +2809,14 @@ impl Root {
                                 this.vv.bar_press.set(Some(event.position));
                             },
                         ))
-                        .children(
-                            self.call_volume_control(cx)
-                                .map(|control| div().occlude().child(control)),
-                        )
+                        .on_hover(cx.listener(|this, inside: &bool, _, cx| {
+                            this.set_control_hover("call-bar-right", *inside, cx);
+                        }))
+                        .on_mouse_down(gpui::MouseButton::Left, |_, _, cx| {
+                            cx.stop_propagation();
+                        })
+                        .on_click(|_, _, cx| cx.stop_propagation())
+                        .children(self.call_volume_control(cx))
                         // `canStayOnTop`: in the popped-out window (module 619344).
                         .when(self.vv.popout_render, |this| {
                             let on = self.vv.popout_on_top;

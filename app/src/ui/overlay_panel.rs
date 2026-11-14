@@ -391,14 +391,15 @@ impl Root {
 
     /// The Max Users slider held at `x` (logical px of the window).
     pub(super) fn overlay_menu_slide(&mut self, x: f32) {
-        let left = self
+        let track = self
             .overlay
             .bounds
             .borrow()
             .get("overlay-menu-slider")
-            .map(|bounds| f32::from(bounds.origin.x));
-        if let Some(left) = left {
-            let value = menus::max_users_at((x - left) / SLIDER_WIDTH);
+            .copied();
+        if let Some(bounds) = track {
+            let width = f32::from(bounds.size.width).max(1.);
+            let value = menus::max_users_at((x - f32::from(bounds.origin.x)) / width);
             self.overlay_menu_action(Action::MaxUsers(value));
         }
     }
@@ -625,78 +626,93 @@ impl Root {
         )
     }
 
-    /// Max Users Displayed (`voice-widget-max-users-displayed`): the label and the value (`renderValue`: "Off" under
-    /// 1), then the 0 to 25 slider.
+    /// Max Users Displayed (`voice-widget-max-users-displayed`): top label only, 58px height, `5px` inset
+    /// track (`4->6px` bar, `16->20px` grabber), and live tooltip bubble while sliding.
     fn overlay_menu_slider(&self, cx: &mut Context<Self>) -> AnyElement {
         let stored = self.overlay_layout().voice_max_shown();
         let fraction = menus::max_users_fraction(stored);
         let value = match menus::max_users_label(stored as f32) {
             Some(count) => count.to_string(),
-            None => dc_intl::t("nrUzFL").to_owned(),
+            None => dc_intl::t!("nrUzFL").to_owned(),
         };
-        div()
-            .id("voice-widget-max-users-displayed")
-            .p(px(8.))
-            .flex()
-            .flex_col()
-            .gap(px(8.))
-            .child(
-                div()
-                    .flex()
-                    .justify_between()
-                    .child(text(14., 18., 500., "--text-strong").child(dc_intl::t("X/Uyzc")))
-                    .child(text(14., 18., 500., "--text-muted").child(value)),
+        let active = self.overlay.menu.as_ref().is_some_and(|menu| menu.sliding);
+        let (bar, grabber) = super::menu_slider::track_layers(
+            "overlay-max-users-slider",
+            fraction,
+            active,
+            super::menu_slider::ThemePalette::Onyx,
+        );
+        let slider = div()
+            .id("overlay-menu-slider")
+            .relative()
+            .mx(px(8.))
+            .w(px(SLIDER_WIDTH))
+            .h(px(super::menu_slider::SLIDER_HEIGHT))
+            .cursor_ew_resize()
+            .on_mouse_down(
+                gpui::MouseButton::Left,
+                cx.listener(|this, event: &gpui::MouseDownEvent, _, cx| {
+                    cx.stop_propagation();
+                    if let Some(menu) = this.overlay.menu.as_mut() {
+                        menu.sliding = true;
+                    }
+                    this.overlay_menu_slide(f32::from(event.position.x));
+                    cx.notify();
+                }),
             )
+            .child(bar)
             .child(
                 div()
-                    .id("overlay-menu-slider")
-                    .relative()
-                    .w(px(SLIDER_WIDTH))
-                    .h(px(16.))
-                    .cursor_pointer()
+                    .absolute()
+                    .left(px(super::menu_slider::TRACK_INSET))
+                    .right(px(super::menu_slider::TRACK_INSET))
+                    .top_0()
+                    .bottom_0()
                     .child(super::overlay_widgets::probe(
                         &self.overlay.bounds,
                         "overlay-menu-slider".into(),
                     ))
-                    .on_mouse_down(
-                        gpui::MouseButton::Left,
-                        cx.listener(|this, event: &gpui::MouseDownEvent, _, cx| {
-                            cx.stop_propagation();
-                            if let Some(menu) = this.overlay.menu.as_mut() {
-                                menu.sliding = true;
-                            }
-                            this.overlay_menu_slide(f32::from(event.position.x));
-                            cx.notify();
-                        }),
-                    )
-                    .child(
-                        div()
-                            .absolute()
-                            .top(px(6.))
-                            .left_0()
-                            .w(px(SLIDER_WIDTH))
-                            .h(px(4.))
-                            .rounded(px(4.))
-                            .bg(onyx("--background-mod-strong"))
-                            .child(
-                                div()
-                                    .h_full()
-                                    .w(px(SLIDER_WIDTH * fraction))
-                                    .rounded(px(4.))
-                                    .bg(onyx("--background-brand")),
-                            ),
-                    )
-                    .child(
-                        div()
-                            .absolute()
-                            .top_0()
-                            .left(px(SLIDER_WIDTH * fraction - 8.))
-                            .size(px(16.))
-                            .rounded_full()
-                            .bg(gpui::white()),
-                    ),
+                    .child(grabber)
+                    .when(active, |this| {
+                        this.child(
+                            div()
+                                .absolute()
+                                .left(gpui::relative(fraction))
+                                .bottom(px(super::menu_slider::SLIDER_HEIGHT + 6.))
+                                .ml(px(-20.))
+                                .min_w(px(40.))
+                                .px(px(12.))
+                                .py(px(6.))
+                                .rounded(px(8.))
+                                .bg(onyx("--background-surface-highest"))
+                                .border_1()
+                                .border_color(onyx("--border-subtle"))
+                                .shadow(vec![gpui::BoxShadow {
+                                    color: gpui::hsla(0., 0., 0., 0.24),
+                                    offset: gpui::point(px(0.), px(4.)),
+                                    blur_radius: px(8.),
+                                    spread_radius: px(0.),
+                                    inset: false,
+                                }])
+                                .flex()
+                                .justify_center()
+                                .text_size(px(14.))
+                                .line_height(px(18.))
+                                .font_weight(gpui::FontWeight(500.))
+                                .text_color(onyx("--text-strong"))
+                                .whitespace_nowrap()
+                                .child(value),
+                        )
+                    }),
             )
-            .into_any_element()
+            .into_any_element();
+        super::menu_slider::row_frame(
+            "voice-widget-max-users-displayed",
+            dc_intl::t!("X/Uyzc").to_owned(),
+            super::menu_slider::ThemePalette::Onyx,
+            slider,
+        )
+        .into_any_element()
     }
 
     /// The toolbar's Report button (`OKmenM`).

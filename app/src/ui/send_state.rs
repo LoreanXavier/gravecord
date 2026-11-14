@@ -571,6 +571,12 @@ impl Root {
         self.send_ui.remember_notice(message.clone());
         self.insert_local(message);
         self.rebuild_rows();
+        if self.guild.is_none()
+            && self.channel == Some(channel)
+            && self.list.is_scrolled_to_end() != Some(false)
+        {
+            self.list.scroll_to_end();
+        }
     }
 
     /// A reloaded window keeps no local row: the messages still unconfirmed, and Clyde's notices, are put back.

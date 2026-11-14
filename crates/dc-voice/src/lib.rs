@@ -72,6 +72,8 @@ pub mod rtc_stats;
 mod rtp;
 mod session;
 mod signal;
+#[cfg(test)]
+mod speech_lab;
 #[cfg(feature = "sim")]
 pub mod sim;
 pub mod sound;
@@ -174,6 +176,12 @@ impl Controls {
     pub fn set_self_deaf(&self, deafened: bool) {
         self.state.send_if_modified(|state| {
             std::mem::replace(&mut state.self_deaf, deafened) != deafened
+        });
+    }
+    /// Local Mic Test loopback on the call's own audio worker without opening a duplicate preview stream.
+    pub fn set_loopback(&self, loopback: bool) {
+        self.state.send_if_modified(|state| {
+            std::mem::replace(&mut state.loopback, loopback) != loopback
         });
     }
     /// Close the voice connection. Leaving the channel itself is a main gateway voice state.

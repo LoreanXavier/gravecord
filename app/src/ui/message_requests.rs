@@ -400,10 +400,18 @@ impl Root {
                     .child(self.mr_header(cx))
                     .child(
                         div()
-                            .relative()
                             .flex_1()
                             .min_h(px(0.))
-                            .child(body)
+                            .w_full()
+                            .flex()
+                            .child(
+                                div()
+                                    .relative()
+                                    .flex_1()
+                                    .min_w(px(0.))
+                                    .h_full()
+                                    .child(body),
+                            )
                             .children(sidebar.map(|id| self.mr_sidebar(id, cx))),
                     ),
             )
@@ -516,7 +524,9 @@ impl Root {
             .child(
                 div()
                     .mt(px(8.))
-                    .h(px(20.))
+                    .min_h(px(20.))
+                    .px(px(16.))
+                    .text_center()
                     .line_height(px(20.))
                     .text_color(color("--text-subtle"))
                     .child(note),
@@ -745,6 +755,7 @@ impl Root {
         };
         div()
             .id(SharedString::from(format!("mr-row-{id}")))
+            .w_full()
             .flex()
             .flex_row()
             .overflow_hidden()
@@ -963,11 +974,10 @@ impl Root {
         let scroll = self.message_requests.sidebar_scroll.clone();
         div()
             .id("mr-sidebar")
-            .absolute()
-            .top_0()
-            .right_0()
-            .bottom_0()
+            .flex_none()
             .w(px(450.))
+            .max_w(gpui::relative(0.5))
+            .h_full()
             .flex()
             .flex_col()
             .bg(color("--background-base-lower"))

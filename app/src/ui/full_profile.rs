@@ -2436,6 +2436,13 @@ impl Root {
         let banner_img = self.profile_banner_image_in(id, open_guild);
         let status_bubble = self.full_profile_status_bubble(id, open_guild, me, &palette, cx);
         let connections = self.full_profile_connections(id, body, &palette, cx);
+        let viewport = window.viewport_size();
+        let geo = full_profile_modal_geometry(f32::from(viewport.width), f32::from(viewport.height));
+        let card_bg = if palette.themed {
+            palette.top
+        } else {
+            color("--background-surface-high")
+        };
 
         // `profileHeader_s3DB6Y`: 220px tall (140px banner + 60px avatar overhang + 20px spacer), 8px cutout ring at (24, 72),
         // 120px decorated avatar at (32, 80), and custom status thought bubble at (172, 132).
@@ -2448,15 +2455,13 @@ impl Root {
                     .rounded_t(px(16.))
                     .overflow_hidden()
                     .relative()
-                    .when(!palette.themed, |this| {
-                        this.bg(self.profile_banner_fill(&user, open_guild))
-                    })
+                    .bg(self.profile_banner_fill(&user, open_guild))
                     .children(
                         banner_img
                             .clone()
                             .map(|image| img(image).size_full().object_fit(gpui::ObjectFit::Cover)),
                     )
-                    .children(self.live_banner_in(id, open_guild, 400., 140., cx)),
+                    .children(self.live_banner_in(id, open_guild, geo.card_width, 140., cx)),
             )
             .child(
                 div()
@@ -2465,7 +2470,7 @@ impl Root {
                     .top(px(72.))
                     .size(px(136.))
                     .rounded_full()
-                    .bg(palette.top)
+                    .bg(card_bg)
                     .child(div().size_full().rounded_full().bg(palette.overlay)),
             )
             .child(
@@ -2709,7 +2714,7 @@ impl Root {
             self.profile_effect_layer(
                 "full-profile",
                 sku,
-                super::profile_effects::Surface::profile(400., hovering),
+                super::profile_effects::Surface::profile(geo.card_width, hovering),
                 window,
                 cx,
             )
@@ -2720,14 +2725,14 @@ impl Root {
                 this.profile_effect_hover("full-profile", *inside, cx);
             }))
             .relative()
-            .w(px(400.))
+            .w(px(geo.card_width))
             .h_full()
             .flex_none()
-            .rounded(px(16.))
+            .rounded_t(px(16.))
             .overflow_hidden()
             .border_1()
             .border_color(border_muted)
-            .bg(palette.top)
+            .bg(card_bg)
             .children(palette.card_backdrop(140.))
             .shadow(vec![gpui::BoxShadow {
                 color: hsla(0., 0., 0., 0.16),
@@ -2868,7 +2873,7 @@ impl Root {
             });
         let now_ms = chrono::Utc::now().timestamp_millis();
         let row_hover = palette.token("--user-profile-background-hover");
-        let dot_cutout = palette.theme.map_or("--background-surface-high", |t| {
+        let dot_cutout = palette.theme.map_or("--background-base-lower", |t| {
             if t.light() { "--white" } else { "--black" }
         });
         let tile_bg = palette.tile_background(false);
@@ -2992,7 +2997,7 @@ impl Root {
                 }))
                 .into_any_element(),
         };
-        let columns = div().w(px(880.)).h_full().flex().child(identity).child(
+        let columns = div().w_full().flex_1().min_w(px(0.)).h_full().flex().child(identity).child(
             div()
                 .flex_1()
                 .min_w(px(0.))
@@ -3014,9 +3019,8 @@ impl Root {
                         .child(panel),
                 ),
         );
-        let height = f32::from(window.viewport_size().height);
         let modal_bg = palette.theme.map_or_else(
-            || color("--background-surface-high"),
+            || color("--background-base-lower"),
             |t| t.modal_background,
         );
         let modal_fade_end = palette.theme.map_or(modal_bg, |t| {
@@ -3058,9 +3062,9 @@ impl Root {
             .id("full-profile")
             .occlude()
             .relative()
-            .w(px(960.))
-            .h(px(height))
-            .rounded(px(if palette.themed { 16. } else { 12. }))
+            .w(px(geo.width))
+            .h(px(geo.height))
+            .rounded(px(geo.radius))
             .overflow_hidden()
             .border_1()
             .border_color(border_muted)
@@ -3072,17 +3076,19 @@ impl Root {
                 div()
                     .relative()
                     .size_full()
-                    .pt(px(80.))
-                    .pl(px(48.))
-                    .pr(px(32.))
+                    .flex()
+                    .flex_col()
+                    .pt(px(geo.pad + geo.sys_pad))
+                    .pl(px(geo.pad))
+                    .pr(px(geo.pad - 16.))
                     .child(columns),
             )
             .child(
                 div()
                     .id("full-profile-close")
                     .absolute()
-                    .top(px(40.))
-                    .right(px(7.))
+                    .top(px(geo.close_top))
+                    .right(px(8.))
                     .size(px(32.))
                     .rounded(px(8.))
                     .border_1()
@@ -3115,6 +3121,7 @@ impl Root {
                     .inset_0()
                     .bg(pose.dim(rgba(0x000000b8)))
                     .flex()
+                    .items_center()
                     .justify_center()
                     .on_click(cx.listener(|this, _, _, cx| this.close_full_profile(cx)))
                     .child(modal.posed(pose)),
@@ -3125,11 +3132,53 @@ impl Root {
     }
 }
 
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct ModalGeometry {
+    width: f32,
+    height: f32,
+    card_width: f32,
+    pad: f32,
+    sys_pad: f32,
+    close_top: f32,
+    radius: f32,
+}
+
+/// `.root_ZhNJfE` / `.outer_ZhNJfE` responsive modal bounds (`f4f30bf79660bbe0.css`).
+fn full_profile_modal_geometry(vw: f32, vh: f32) -> ModalGeometry {
+    let wide = vw >= 929.0;
+    let tall = vh >= 785.0;
+    let width = if wide { (vw - 96.0).min(962.0) } else { vw };
+    let height = if tall {
+        (vh - 96.0).clamp(550.0, 800.0)
+    } else {
+        vh
+    };
+    let card_width = if wide {
+        (0.455 * vw - 48.0 * 0.91).clamp(300.0, 400.0)
+    } else {
+        (0.455 * vw).clamp(300.0, 400.0)
+    };
+    let pad = if vw >= 1025.0 { 48.0 } else { 32.0 };
+    let sys_pad = if tall { 0.0 } else { 32.0 };
+    let close_top = 8.0 + sys_pad;
+    let radius = if wide && tall { 16.0 } else { 0.0 };
+    ModalGeometry {
+        width,
+        height,
+        card_width,
+        pad,
+        sys_pad,
+        close_top,
+        radius,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
-        Tab, parse_connected_accounts, parse_custom_status, profile_date, profile_route,
-        profile_tabs, should_apply_guild_member, time_ago, wishlist_is_private,
+        Tab, full_profile_modal_geometry, parse_connected_accounts, parse_custom_status,
+        profile_date, profile_route, profile_tabs, should_apply_guild_member, time_ago,
+        wishlist_is_private,
     };
     use serde_json::json;
 
@@ -3280,5 +3329,37 @@ mod tests {
         assert_eq!(time_ago(30 * 3_600), "1d ago");
         assert_eq!(time_ago(10 * 86_400), "1w ago");
         assert_eq!(time_ago(40 * 86_400), "1mo ago");
+    }
+
+    #[test]
+    fn modal_geometry_matches_responsive_breakpoints() {
+        let laptop = full_profile_modal_geometry(1280., 720.);
+        assert_eq!(laptop.width, 962.);
+        assert_eq!(laptop.height, 720.);
+        assert_eq!(laptop.card_width, 400.);
+        assert_eq!(laptop.pad, 48.);
+        assert_eq!(laptop.sys_pad, 32.);
+        assert_eq!(laptop.close_top, 40.);
+        assert_eq!(laptop.radius, 0.);
+
+        for (vw, vh) in [(1920., 1080.), (2560., 1440.)] {
+            let wide = full_profile_modal_geometry(vw, vh);
+            assert_eq!(wide.width, 962.);
+            assert_eq!(wide.height, 800.);
+            assert_eq!(wide.card_width, 400.);
+            assert_eq!(wide.pad, 48.);
+            assert_eq!(wide.sys_pad, 0.);
+            assert_eq!(wide.close_top, 8.);
+            assert_eq!(wide.radius, 16.);
+        }
+
+        let compact = full_profile_modal_geometry(800., 600.);
+        assert_eq!(compact.width, 800.);
+        assert_eq!(compact.height, 600.);
+        assert!((compact.card_width - 364.).abs() < 0.01);
+        assert_eq!(compact.pad, 32.);
+        assert_eq!(compact.sys_pad, 32.);
+        assert_eq!(compact.close_top, 40.);
+        assert_eq!(compact.radius, 0.);
     }
 }

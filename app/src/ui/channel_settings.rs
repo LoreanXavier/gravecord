@@ -856,9 +856,11 @@ impl Root {
             }
         };
         let sidebar = div()
-            .w(px(372.))
+            .flex_grow(1.)
+            .flex_shrink_0()
+            .flex_basis(px(264.))
+            .min_w(px(264.))
             .h_full()
-            .flex_none()
             .pr(px(8.))
             .flex()
             .justify_end()
@@ -966,7 +968,8 @@ impl Root {
                 .absolute()
                 .left_0()
                 .bottom_0()
-                .w(px(740.))
+                .w_full()
+                .max_w(px(740.))
                 .px(px(20.))
                 .pb(px(20.))
                 .child(
@@ -1041,13 +1044,17 @@ impl Root {
         });
         let content = div()
             .relative()
-            .flex_1()
+            .flex_grow(1.)
+            .flex_shrink(1.)
+            .flex_basis(px(800.))
+            .min_w(px(0.))
             .h_full()
             .bg(color("--background-base-low"))
             .child(
                 div()
                     .id("channel-settings-scroller")
                     .mt(px(32.))
+                    .w_full()
                     .h_full()
                     .overflow_y_scroll()
                     .flex()
@@ -1055,7 +1062,8 @@ impl Root {
                     .items_start()
                     .child(
                         div()
-                            .w(px(740.))
+                            .w_full()
+                            .max_w(px(740.))
                             .pt(px(60.))
                             .px(px(40.))
                             .pb(px(80.))

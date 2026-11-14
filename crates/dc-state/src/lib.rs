@@ -2127,15 +2127,6 @@ impl Stores {
         self.scheduled_events.dispatch(name, data);
         self.channel_status.dispatch(name, data);
         self.stage_instances.dispatch(name, data);
-        {
-            let known: Vec<Id> = self
-                .private_channels
-                .iter()
-                .map(|channel| channel.id)
-                .collect();
-            self.calls
-                .dispatch(name, data, &|channel| known.contains(&channel));
-        }
         if name == "READY" {
             self.content_inventory.connection_open();
             // `CONNECTION_OPEN` empties the scheduled-message list.
@@ -2165,14 +2156,24 @@ impl Stores {
                         }
                     }
                 }
+                let mut lazy_dm_changed = false;
                 for channel in data["lazy_private_channels"]
                     .as_array()
                     .into_iter()
                     .flatten()
                 {
+                    let prev_len = self.private_channels.len();
+                    self.add_private_channel(channel);
+                    if self.private_channels.len() != prev_len {
+                        lazy_dm_changed = true;
+                    }
                     for recipient in channel["recipients"].as_array().into_iter().flatten() {
                         self.merge_embedded_user(recipient);
                     }
+                }
+                if lazy_dm_changed {
+                    self.private_channels
+                        .sort_by_key(|channel| std::cmp::Reverse(channel.last_message_id));
                 }
                 let friends = data["merged_presences"]["friends"].as_array();
                 for presence in friends.into_iter().flatten() {
@@ -2602,6 +2603,17 @@ impl Stores {
             "MESSAGE_REACTION_ADD_MANY" => self.reaction_add_many(data),
             "USER_UPDATE" => self.user_update(data),
             _ => {}
+        }
+        // Populate `private_channels` from `READY`, `READY_SUPPLEMENTAL`, and `CHANNEL_CREATE` before call dispatch
+        // checks `channel_known`.
+        {
+            let known: Vec<Id> = self
+                .private_channels
+                .iter()
+                .map(|channel| channel.id)
+                .collect();
+            self.calls
+                .dispatch(name, data, &|channel| known.contains(&channel));
         }
         self.after_dispatch(name, data);
     }
@@ -5450,7 +5462,21 @@ mod tests {
             .into_iter()
             .map(|u| u.id)
             .collect();
-        assert_eq!(preload_ids, vec![10, 11, 12, 13]);
+        assert_eq!(preload_ids, vec![10, 11, 12, 13, 14]);
+        assert!(stores.private_channels.iter().any(|dm| dm.id == 501));
+
+        stores.dispatch(
+            "CALL_CREATE",
+            &json!({
+                "channel_id": "501",
+                "message_id": "901",
+                "region": "us-east",
+                "ongoing_rings": {"1": "14"},
+                "voice_states": []
+            }),
+        );
+        assert_eq!(stores.calls.get_incoming_calls(false).len(), 1);
+        assert_eq!(stores.calls.get_incoming_calls(false)[0].channel, 501);
     }
 
     #[test]

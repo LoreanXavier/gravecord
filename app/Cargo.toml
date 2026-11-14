@@ -37,7 +37,7 @@ dc-webhost.workspace = true
 dc-webauthn.workspace = true
 gpui = { path = "../vendor/zed/crates/gpui", default-features = false, features = ["windows-manifest"] }
 gpui_platform = { path = "../vendor/zed/crates/gpui_platform" }
-image = { version = "0.25", default-features = false, features = ["png", "jpeg", "ico"] }
+image = { version = "0.25", default-features = false, features = ["png", "jpeg", "ico", "webp", "gif"] }
 md-5 = "0.10"
 # The update setup file is verified against the SHA-256 in the feed (updater.rs).
 sha2 = "0.10"

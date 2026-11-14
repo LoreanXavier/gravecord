@@ -11,9 +11,13 @@
 use crate::ui::color;
 use gpui::{AnyElement, IntoElement, ParentElement, PathBuilder, Styled, canvas, div, point, px};
 
-/// The canvas, CSS pixels.
-pub(super) const WIDTH: f32 = 258.;
+/// The canvas plot width plus right Y-axis label gutter, CSS pixels (`240 + 28 = 268`).
+pub(super) const PLOT_WIDTH: f32 = 240.;
+pub(super) const Y_AXIS_GUTTER: f32 = 28.;
+pub(super) const WIDTH: f32 = PLOT_WIDTH + Y_AXIS_GUTTER;
 pub(super) const HEIGHT: f32 = 80.;
+/// Minimum horizontal clearance from either plot edge so centered bottom timestamps are never clipped.
+const EDGE_LABEL_MARGIN: f32 = 24.;
 /// `fontSize = 11`.
 const FONT_SIZE: f64 = 11.;
 /// `graphContainer_BlzJTq` around the inline canvas: the canvas, the line box's descent under it and `padding-bottom:
@@ -169,13 +173,32 @@ pub(super) fn minute_ticks(start: f64, scale: f64, width: f64) -> Vec<(f64, f64)
     ticks
 }
 
+/// Filters minute ticks so bottom labels near the left/right plot edges are omitted rather than clipped.
+pub(super) fn visible_minute_ticks(
+    ticks: &[(f64, f64)],
+    dpr: f64,
+    plot_css_width: f32,
+) -> Vec<(f64, f64)> {
+    let dpr = if dpr > 0. { dpr } else { 1. };
+    ticks
+        .iter()
+        .copied()
+        .filter(|&(x_dev, _)| {
+            let x_css = (x_dev / dpr) as f32;
+            x_css >= EDGE_LABEL_MARGIN && x_css <= plot_css_width - EDGE_LABEL_MARGIN
+        })
+        .collect()
+}
+
 /// One repaint, in device pixels.
 #[derive(Clone, Debug, PartialEq)]
 pub(super) struct Frame {
     pub dpr: f64,
     pub css_width: f32,
     pub css_height: f32,
-    /// `canvas.width` and `canvas.height`.
+    pub plot_css_width: f32,
+    pub gutter_css_width: f32,
+    /// `canvas.width` and `canvas.height` of the plot area.
     pub width: f64,
     pub height: f64,
     /// The plot above the time labels: `height - ceil(fontSize * dpr) - 4`.
@@ -185,14 +208,17 @@ pub(super) struct Frame {
     /// The time at column 0.
     pub start: f64,
     pub values: Vec<f64>,
+    pub samples: Vec<Sample>,
     pub axis: Axis,
     pub ticks: Vec<(f64, f64)>,
+    pub hover_x: Option<f32>,
 }
 
 impl Frame {
-    /// `updateEndDate()` then `repaint()` at `now` (ms since the epoch) for the connection popout's `258x80` canvas.
+    /// `updateEndDate()` then `repaint()` at `now` (ms since the epoch) for the connection popout's `240x80` plot
+    /// plus `28px` right Y-axis label gutter (`268x80` total).
     pub fn at(points: &[Sample], now: f64, dpr: f64) -> Frame {
-        Self::at_size(points, now, dpr, WIDTH, HEIGHT, None)
+        Self::with_gutter(points, now, dpr, PLOT_WIDTH, HEIGHT, Y_AXIS_GUTTER, None)
     }
 
     /// `updateEndDate()` then `repaint()` at `now` (ms since the epoch) for an arbitrary canvas size and optional
@@ -205,9 +231,21 @@ impl Frame {
         css_height: f32,
         converter: Option<fn(f64) -> f64>,
     ) -> Frame {
+        Self::with_gutter(points, now, dpr, css_width, css_height, 0., converter)
+    }
+
+    fn with_gutter(
+        points: &[Sample],
+        now: f64,
+        dpr: f64,
+        plot_css_width: f32,
+        css_height: f32,
+        gutter_css_width: f32,
+        converter: Option<fn(f64) -> f64>,
+    ) -> Frame {
         let dpr = if dpr > 0. { dpr } else { 1. };
         // `canvas.width = parseInt(width) * devicePixelRatio`, truncated by the canvas.
-        let width = (f64::from(css_width.floor()) * dpr).floor();
+        let width = (f64::from(plot_css_width.floor()) * dpr).floor();
         let height = (f64::from(css_height.floor()) * dpr).floor();
         let scale = 1000. / dpr;
         let length = (now / scale).floor();
@@ -216,6 +254,13 @@ impl Frame {
         let start = position * scale;
         let plot = height - (FONT_SIZE * dpr).ceil() - 4.;
         let values = values_with(points, start, scale, width as usize, converter);
+        let samples = points
+            .iter()
+            .map(|sample| Sample {
+                time: sample.time,
+                value: converter.map_or(sample.value, |map| map(sample.value)),
+            })
+            .collect();
         let (mut low, mut high) = (0f64, 0f64);
         for &value in &values {
             if value > high {
@@ -226,17 +271,54 @@ impl Frame {
         }
         Frame {
             dpr,
-            css_width,
+            css_width: plot_css_width + gutter_css_width,
             css_height,
+            plot_css_width,
+            gutter_css_width,
             width,
             height,
             plot,
             scale,
             start,
+            values,
+            samples,
             axis: layout_labels(low, high, plot, FONT_SIZE * dpr),
             ticks: minute_ticks(start, scale, width),
-            values,
+            hover_x: None,
         }
+    }
+
+    /// Sets the pointer X position relative to the plot area (`0.0..=plot_css_width`).
+    pub fn with_hover(mut self, hover_x: Option<f32>) -> Self {
+        self.hover_x = hover_x.filter(|x| x.is_finite() && *x >= 0. && *x <= self.plot_css_width);
+        self
+    }
+
+    /// Finds the nearest visible sample in time for a plot-local CSS X coordinate, returning
+    /// `(sample, device_x, device_y)`.
+    pub fn nearest_sample(&self, plot_css_x: f32) -> Option<(Sample, f64, f64)> {
+        if !plot_css_x.is_finite() || self.width <= 0. || self.plot <= 1. {
+            return None;
+        }
+        let end = self.start + self.width * self.scale;
+        let clamped_css = plot_css_x.clamp(0., self.plot_css_width);
+        let target_time = self.start + f64::from(clamped_css) * self.dpr * self.scale;
+        let sample = self
+            .samples
+            .iter()
+            .copied()
+            .filter(|s| s.time >= self.start && s.time <= end)
+            .min_by(|a, b| {
+                (a.time - target_time)
+                    .abs()
+                    .total_cmp(&(b.time - target_time).abs())
+            })?;
+        let dot_x = ((sample.time - self.start) / self.scale).clamp(0., self.width - 1.);
+        let bottom = self.plot - 1.;
+        let span = self.axis.max - self.axis.min;
+        let per_unit = if span > 0. { bottom / span } else { 0. };
+        let dot_y = (bottom - js_round((sample.value - self.axis.min) * per_unit)).clamp(1., bottom);
+        Some((sample, dot_x, dot_y))
     }
 
     /// `repaint` draws nothing but the background when the canvas is shorter than four font sizes or narrower than
@@ -302,11 +384,21 @@ fn short_time(ms: f64) -> String {
     }
 }
 
+/// Hover timestamp including seconds (`timeStyle: "medium"`).
+fn hover_time(ms: f64) -> String {
+    use chrono::TimeZone as _;
+    match chrono::Local.timestamp_millis_opt(ms as i64).single() {
+        Some(local) => crate::ui::timestamps::long("LTS", &local),
+        None => String::new(),
+    }
+}
+
 /// The canvas with its labels, sized to `frame.css_width` by `frame.css_height`.
 pub(super) fn graph(frame: Frame) -> AnyElement {
     let dpr = frame.dpr as f32;
     let css_width = frame.css_width;
     let css_height = frame.css_height;
+    let plot_css_width = frame.plot_css_width;
     let font = FONT_SIZE as f32;
     let css = move |device: f64| px(device as f32 / dpr);
     let text = |label: String| {
@@ -322,10 +414,9 @@ pub(super) fn graph(frame: Frame) -> AnyElement {
     };
     let drawable = frame.drawable();
     let time_labels: Vec<AnyElement> = if drawable {
-        frame
-            .ticks
-            .iter()
-            .map(|&(x, time)| {
+        visible_minute_ticks(&frame.ticks, frame.dpr, plot_css_width)
+            .into_iter()
+            .map(|(x, time)| {
                 // Centred on the column, standing on the canvas's bottom edge.
                 text(short_time(time))
                     .left(css(x) - px(40.))
@@ -340,18 +431,87 @@ pub(super) fn graph(frame: Frame) -> AnyElement {
         Vec::new()
     };
     let value_labels: Vec<AnyElement> = if drawable {
-        let right = px(css_width) - css(frame.width - 3.);
         frame
             .label_rows()
             .into_iter()
             .map(|(label, y, hangs)| {
                 let top = if hangs { css(y) } else { css(y) - px(font) };
-                text(label).right(right).top(top).into_any_element()
+                if frame.gutter_css_width > 0. {
+                    text(label)
+                        .left(px(plot_css_width + 4.))
+                        .top(top)
+                        .into_any_element()
+                } else {
+                    let right = px(css_width) - css(frame.width - 3.);
+                    text(label).right(right).top(top).into_any_element()
+                }
             })
             .collect()
     } else {
         Vec::new()
     };
+    let hovered = if drawable {
+        frame.hover_x.and_then(|x| frame.nearest_sample(x))
+    } else {
+        None
+    };
+    let hover_dot = hovered.map(|(_, dot_x, dot_y)| {
+        div()
+            .absolute()
+            .left(css(dot_x) - px(3.))
+            .top(css(dot_y) - px(3.))
+            .size(px(6.))
+            .rounded_full()
+            .bg(color("--brand-500"))
+            .border_1()
+            .border_color(color("--background-base-low"))
+    });
+    // `.hoverReadout_QbZ2-g` pill anchored at top-left of the plot (`top: 4px`, `left: 4px`).
+    let hover_readout = hovered.map(|(sample, _, _)| {
+        div()
+            .absolute()
+            .left(px(4.))
+            .top(px(4.))
+            .px(px(6.))
+            .py(px(4.))
+            .rounded(px(4.))
+            .bg(color("--background-surface-highest"))
+            .shadow_sm()
+            .flex()
+            .flex_col()
+            .gap(px(2.))
+            .child(
+                div()
+                    .text_size(px(10.))
+                    .line_height(px(12.))
+                    .text_color(color("--text-muted"))
+                    .whitespace_nowrap()
+                    .child(hover_time(sample.time)),
+            )
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap(px(6.))
+                    .child(
+                        div()
+                            .size(px(8.))
+                            .rounded(px(2.))
+                            .flex_none()
+                            .bg(color("--brand-500")),
+                    )
+                    .child(
+                        div()
+                            .text_size(px(11.))
+                            .line_height(px(13.))
+                            .font_weight(gpui::FontWeight(600.))
+                            .text_color(color("--text-strong"))
+                            .whitespace_nowrap()
+                            .child(format!("{:.0} ms", sample.value)),
+                    ),
+            )
+    });
+    let crosshair_x = hovered.map(|(_, dot_x, _)| dot_x);
     let paint_frame = frame;
     div()
         .relative()
@@ -403,6 +563,15 @@ pub(super) fn graph(frame: Frame) -> AnyElement {
                         if let Ok(path) = series.build() {
                             window.paint_path(path, color("--brand-500"));
                         }
+                        if let Some(hover_dev_x) = crosshair_x {
+                            let mut guide = color("--text-default");
+                            guide.a = 0.45;
+                            let line_bounds = gpui::Bounds::new(
+                                point(origin.x + css(hover_dev_x), origin.y + css(1.)),
+                                gpui::size(px(1.), css(frame.plot - 1.)),
+                            );
+                            window.paint_quad(gpui::fill(line_bounds, guide));
+                        }
                     });
                 },
             )
@@ -413,6 +582,8 @@ pub(super) fn graph(frame: Frame) -> AnyElement {
         )
         .children(time_labels)
         .children(value_labels)
+        .children(hover_dot)
+        .children(hover_readout)
         .into_any_element()
 }
 
@@ -488,9 +659,12 @@ mod tests {
     fn a_frame_ends_at_now_and_scrolls_by_whole_pixels() {
         let now = 1_700_000_000_500.;
         let frame = Frame::at(&[], now, 1.);
-        assert_eq!((frame.width, frame.height, frame.plot), (258., 80., 65.));
-        assert_eq!(frame.start, (now / 1000.).floor() * 1000. - 258_000.);
-        assert_eq!(frame.values.len(), 258);
+        assert_eq!((frame.width, frame.height, frame.plot), (240., 80., 65.));
+        assert_eq!(frame.css_width, 268.);
+        assert_eq!(frame.plot_css_width, 240.);
+        assert_eq!(frame.gutter_css_width, 28.);
+        assert_eq!(frame.start, (now / 1000.).floor() * 1000. - 240_000.);
+        assert_eq!(frame.values.len(), 240);
         assert!(frame.axis.labels.is_empty());
         // Every column reads 0: a flat line on the plot's last row.
         assert!(frame.line().iter().all(|&(_, y)| y == 64.));
@@ -498,10 +672,68 @@ mod tests {
         let scaled = Frame::at(&[], now, 1.25);
         assert_eq!(
             (scaled.width, scaled.height, scaled.plot),
-            (322., 100., 82.)
+            (300., 100., 82.)
         );
         assert_eq!(scaled.scale, 800.);
         assert!(frame.drawable() && scaled.drawable());
+    }
+
+    #[test]
+    fn edge_clipping_timestamp_filter_drops_edge_labels() {
+        let ticks = [
+            (0., 1. * MINUTE_MS),
+            (23.5, 2. * MINUTE_MS),
+            (24., 3. * MINUTE_MS),
+            (120., 4. * MINUTE_MS),
+            (216., 5. * MINUTE_MS),
+            (216.5, 6. * MINUTE_MS),
+            (239., 7. * MINUTE_MS),
+        ];
+        assert_eq!(
+            visible_minute_ticks(&ticks, 1., 240.),
+            [
+                (24., 3. * MINUTE_MS),
+                (120., 4. * MINUTE_MS),
+                (216., 5. * MINUTE_MS),
+            ]
+        );
+        // Device pixel positions are scaled by dpr before comparing to CSS margins.
+        let hidpi = [
+            (29., 1. * MINUTE_MS),
+            (60., 2. * MINUTE_MS),
+            (270., 3. * MINUTE_MS),
+            (271., 4. * MINUTE_MS),
+        ];
+        assert_eq!(
+            visible_minute_ticks(&hidpi, 1.25, 240.),
+            [(60., 2. * MINUTE_MS), (270., 3. * MINUTE_MS)]
+        );
+    }
+
+    #[test]
+    fn nearest_sample_snaps_to_closest_visible_ping() {
+        let now = 1_700_000_000_000.;
+        let points = [
+            sample(now - 300_000., 999.),
+            sample(now - 180_000., 42.),
+            sample(now - 120_000., 180.),
+            sample(now - 20_000., 75.),
+        ];
+        let frame = Frame::at(&points, now, 1.);
+        // Window starts at now - 240_000: sample at -180s sits at x = 60, -120s at x = 120, -20s at x = 220.
+        let (first, dx1, dy1) = frame.nearest_sample(75.).expect("near first sample");
+        assert_eq!(first.value, 42.);
+        assert_eq!(dx1, 60.);
+        assert!(dy1 < 64.);
+
+        let (mid, dx2, _) = frame.nearest_sample(115.).expect("near middle sample");
+        assert_eq!(mid.value, 180.);
+        assert_eq!(dx2, 120.);
+
+        // Hovering far left still ignores out-of-window -300s sample and snaps to -180s.
+        let (leftmost, _, _) = frame.nearest_sample(0.).expect("left clamp");
+        assert_eq!(leftmost.value, 42.);
+        assert!(frame.nearest_sample(f32::NAN).is_none());
     }
 
     #[test]

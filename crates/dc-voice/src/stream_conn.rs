@@ -1497,11 +1497,8 @@ pub(crate) async fn run(
                                 let was_group_member = dave.is_group_member(user);
                                 let was_ready = dave.ready;
                                 if dave.disconnect(user)? {
-                                    if dave.alone() {
-                                        dave.enter_sole_member_waiting()?;
-                                        deadline = None;
-                                        waiting_announced = true;
-                                    } else if was_ready {
+                                    if was_ready {
+                                        // Keep the epoch-N MLS group intact until the SFU commits removal (including 2 -> 1).
                                         dave.ready = true;
                                         deadline = None;
                                     } else if was_group_member {
@@ -1530,7 +1527,18 @@ pub(crate) async fn run(
                                     text(&mut ws, signal::transition_ready(id)).await?;
                                 }
                             }
-                            Some(VoiceOp::DaveExecuteTransition) => dave.execute(signal::transition(data)?)?,
+                            Some(VoiceOp::DaveExecuteTransition) => {
+                                let id = signal::transition(data)?;
+                                if dave.execute(id).is_err() {
+                                    waiting_announced = false;
+                                    if id != 0 {
+                                        text(&mut ws, signal::invalid_commit_welcome(id)).await?;
+                                    }
+                                    dave.reset()?;
+                                    deadline = Some(Instant::now() + RENEGOTIATION);
+                                    send(&mut ws, Message::Binary(dave.key_package()?.into())).await?;
+                                }
+                            }
                             Some(VoiceOp::DavePrepareEpoch) => {
                                 if signal::number(data, "protocol_version")? != signal::DAVE_PROTOCOL_VERSION {
                                     return Err("Unsupported DAVE protocol version");
@@ -1562,8 +1570,17 @@ pub(crate) async fn run(
                                 .set_external_sender(frame.payload)
                                 .map_err(|_| "DAVE external sender validation failed")?,
                             op if op == VoiceOp::MlsProposals as u8 => {
-                                if let Some(response) = dave.proposals(frame.payload)? {
-                                    send(&mut ws, Message::Binary(response.into())).await?;
+                                match dave.proposals(frame.payload) {
+                                    Ok(Some(response)) => {
+                                        send(&mut ws, Message::Binary(response.into())).await?;
+                                    }
+                                    Ok(None) => {}
+                                    Err(_) => {
+                                        waiting_announced = false;
+                                        dave.reset()?;
+                                        deadline = Some(Instant::now() + RENEGOTIATION);
+                                        send(&mut ws, Message::Binary(dave.key_package()?.into())).await?;
+                                    }
                                 }
                             }
                             op if op == VoiceOp::MlsPrepareCommitTransition as u8 || op == VoiceOp::MlsWelcome as u8 => {

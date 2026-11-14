@@ -245,6 +245,15 @@ pub fn render(sound: &Decoded, rate: u32, channels: usize, gain: f32) -> Vec<f32
 /// Plays `sound` once on `output` at `volume` (the factor `Ak` takes, 1 for most), on its own thread. Returns at once;
 /// a missing speaker is logged at debug level and the handle reports finished.
 pub fn play(sound: Arc<Decoded>, volume: f32, output: Output, handle: &Handle) {
+    spawn_play(sound, volume, output, false, handle);
+}
+
+/// Plays `sound` in a loop on `output` at `volume` until `handle.stop()` is called.
+pub fn play_looped(sound: Arc<Decoded>, volume: f32, output: Output, handle: &Handle) {
+    spawn_play(sound, volume, output, true, handle);
+}
+
+fn spawn_play(sound: Arc<Decoded>, volume: f32, output: Output, looped: bool, handle: &Handle) {
     let handle = handle.clone();
     let done = handle.finished.clone();
     let spawned = std::thread::Builder::new()
@@ -252,7 +261,7 @@ pub fn play(sound: Arc<Decoded>, volume: f32, output: Output, handle: &Handle) {
         .spawn({
             let handle = handle.clone();
             move || {
-                if let Err(error) = run(&sound, volume, output, &handle) {
+                if let Err(error) = run(&sound, volume, output, looped, &handle) {
                     debug!("sound not played: {error}");
                 }
                 handle.finished.store(true, Ordering::Release);
@@ -263,15 +272,46 @@ pub fn play(sound: Arc<Decoded>, volume: f32, output: Output, handle: &Handle) {
     }
 }
 
-fn run(sound: &Decoded, volume: f32, output: Output, handle: &Handle) -> Result<(), &'static str> {
+fn next_sample(samples: &[f32], start: usize, offset: usize, looped: bool) -> f32 {
+    if samples.is_empty() {
+        return 0.0;
+    }
+    if looped {
+        samples[(start + offset) % samples.len()]
+    } else {
+        samples.get(start + offset).copied().unwrap_or(0.0)
+    }
+}
+
+fn advance_position(samples_len: usize, start: usize, count: usize, looped: bool) -> usize {
+    if samples_len == 0 {
+        return 0;
+    }
+    if looped {
+        (start + count) % samples_len
+    } else {
+        start.saturating_add(count)
+    }
+}
+
+fn run(
+    sound: &Decoded,
+    volume: f32,
+    output: Output,
+    looped: bool,
+    handle: &Handle,
+) -> Result<(), &'static str> {
     if handle.is_stopped() {
         return Ok(());
     }
     let host = cpal::default_host();
     let device = match output {
         Output::Voice => pick(host.output_devices().ok(), prefs().output_device())
-            .or_else(|| host.default_output_device()),
-        Output::Default => host.default_output_device(),
+            .or_else(|| host.default_output_device())
+            .or_else(|| host.output_devices().ok().and_then(|mut list| list.next())),
+        Output::Default => host
+            .default_output_device()
+            .or_else(|| host.output_devices().ok().and_then(|mut list| list.next())),
     }
     .ok_or("No speaker is available")?;
     let config = output_config(&device)?;
@@ -283,29 +323,46 @@ fn run(sound: &Decoded, volume: f32, output: Output, handle: &Handle) -> Result<
         gain(prefs().output_gain(), volume),
     ));
     let total = samples.len();
+    if looped && total == 0 {
+        return Ok(());
+    }
     let position = Arc::new(AtomicUsize::new(0));
     let stream_config = config.config();
     let stream = match config.sample_format() {
-        cpal::SampleFormat::F32 => stream::<f32>(&device, &stream_config, &samples, &position),
-        cpal::SampleFormat::I16 => stream::<i16>(&device, &stream_config, &samples, &position),
-        cpal::SampleFormat::I32 => stream::<i32>(&device, &stream_config, &samples, &position),
-        cpal::SampleFormat::U16 => stream::<u16>(&device, &stream_config, &samples, &position),
+        cpal::SampleFormat::F32 => {
+            stream::<f32>(&device, &stream_config, &samples, &position, looped)
+        }
+        cpal::SampleFormat::I16 => {
+            stream::<i16>(&device, &stream_config, &samples, &position, looped)
+        }
+        cpal::SampleFormat::I32 => {
+            stream::<i32>(&device, &stream_config, &samples, &position, looped)
+        }
+        cpal::SampleFormat::U16 => {
+            stream::<u16>(&device, &stream_config, &samples, &position, looped)
+        }
         _ => Err("Speaker sample format is not supported"),
     }?;
     stream
         .play()
         .map_err(|_| "Could not start speaker playback")?;
-    let started = Instant::now();
-    let limit = sound.duration() + Duration::from_secs(2);
-    while !handle.is_stopped()
-        && position.load(Ordering::Acquire) < total
-        && started.elapsed() < limit
-    {
-        std::thread::sleep(Duration::from_millis(10));
-    }
-    // What was handed to the device a moment ago is still in its buffer.
-    if !handle.is_stopped() {
-        std::thread::sleep(Duration::from_millis(120));
+    if looped {
+        while !handle.is_stopped() {
+            std::thread::sleep(Duration::from_millis(10));
+        }
+    } else {
+        let started = Instant::now();
+        let limit = sound.duration() + Duration::from_secs(2);
+        while !handle.is_stopped()
+            && position.load(Ordering::Acquire) < total
+            && started.elapsed() < limit
+        {
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        // What was handed to the device a moment ago is still in its buffer.
+        if !handle.is_stopped() {
+            std::thread::sleep(Duration::from_millis(120));
+        }
     }
     Ok(())
 }
@@ -315,6 +372,7 @@ fn stream<T>(
     config: &cpal::StreamConfig,
     samples: &Arc<Vec<f32>>,
     position: &Arc<AtomicUsize>,
+    looped: bool,
 ) -> Result<cpal::Stream, &'static str>
 where
     T: cpal::SizedSample + cpal::FromSample<f32>,
@@ -326,10 +384,13 @@ where
             move |data: &mut [T], _| {
                 let start = position.load(Ordering::Acquire);
                 for (offset, slot) in data.iter_mut().enumerate() {
-                    let value = samples.get(start + offset).copied().unwrap_or(0.0);
+                    let value = next_sample(&samples, start, offset, looped);
                     *slot = T::from_sample(value);
                 }
-                position.store(start + data.len(), Ordering::Release);
+                position.store(
+                    advance_position(samples.len(), start, data.len(), looped),
+                    Ordering::Release,
+                );
             },
             |_| {},
             None,
@@ -451,7 +512,33 @@ mod tests {
             samples: vec![0.1; 480],
         };
         // Stopped before it starts: returns without opening a device.
-        assert!(run(&sound, 1.0, Output::Default, &handle).is_ok());
+        assert!(run(&sound, 1.0, Output::Default, false, &handle).is_ok());
         assert!(handle.is_stopped() && !handle.is_finished());
+    }
+
+    #[test]
+    fn looped_samples_wrap_cleanly_across_periods() {
+        let samples = [0.1f32, 0.2, 0.3];
+        let mut cursor = 0usize;
+        let mut out = Vec::new();
+        for _ in 0..7 {
+            out.push(next_sample(&samples, cursor, 0, true));
+            cursor = advance_position(samples.len(), cursor, 1, true);
+        }
+        assert_eq!(out, [0.1, 0.2, 0.3, 0.1, 0.2, 0.3, 0.1]);
+        assert_eq!(cursor, 1);
+
+        // Multi-sample block wrapping over two period boundaries in one fill.
+        let block: Vec<f32> = (0..5)
+            .map(|offset| next_sample(&samples, 2, offset, true))
+            .collect();
+        assert_eq!(block, [0.3, 0.1, 0.2, 0.3, 0.1]);
+        assert_eq!(advance_position(samples.len(), 2, 5, true), 1);
+
+        // Non-looped fills pad with silence once the buffer runs out.
+        let one_shot: Vec<f32> = (0..5)
+            .map(|offset| next_sample(&samples, 1, offset, false))
+            .collect();
+        assert_eq!(one_shot, [0.2, 0.3, 0.0, 0.0, 0.0]);
     }
 }

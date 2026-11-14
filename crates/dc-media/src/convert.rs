@@ -7,7 +7,9 @@
 //! Apache-2.0); the source may now be BGRA or RGBA, so the camera shares the path. Coefficients match openh264's
 //! converter, so both encoders look the same.
 
+use crate::band_pool::{self, Input, Scratch, Task};
 use crate::{Error, Picture, Result};
+use std::sync::{Arc, Mutex, OnceLock};
 
 /// Byte order of a packed 4-byte source pixel.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -47,19 +49,15 @@ pub(crate) struct Raw<'a> {
 
 impl Raw<'_> {
     fn validate(&self) -> Result<()> {
-        let row = self
-            .width
-            .checked_mul(4)
-            .ok_or_else(|| Error::invalid("frame width overflows"))?;
-        let needed = self
-            .stride
-            .checked_mul(self.height.saturating_sub(1))
-            .and_then(|bytes| bytes.checked_add(row))
-            .ok_or_else(|| Error::invalid("frame size overflows"))?;
-        if self.width == 0 || self.height == 0 || self.stride < row || self.data.len() < needed {
-            return Err(Error::invalid("frame planes do not match its size"));
-        }
-        Ok(())
+        validate_raw(
+            SourceMeta {
+                width: self.width,
+                height: self.height,
+                stride: self.stride,
+                order: self.order,
+            },
+            self.data.len(),
+        )
     }
 }
 
@@ -124,6 +122,145 @@ impl Axis {
     }
 }
 
+/// Cached source-to-destination bilinear axes shared across bands and frames of constant geometry.
+pub(crate) struct Axes {
+    columns: Axis,
+    rows: Axis,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+struct AxisKey {
+    src_width: usize,
+    src_height: usize,
+    stride: usize,
+    dst_width: usize,
+    dst_height: usize,
+}
+
+type AxisCacheEntry = (AxisKey, Arc<Axes>);
+
+fn cached_axes(key: AxisKey) -> Arc<Axes> {
+    static CACHE: OnceLock<Mutex<Option<AxisCacheEntry>>> = OnceLock::new();
+    let mutex = CACHE.get_or_init(|| Mutex::new(None));
+    {
+        let guard = mutex.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some((cached_key, axes)) = guard.as_ref()
+            && *cached_key == key
+        {
+            return Arc::clone(axes);
+        }
+    }
+    let scale = (key.dst_width as f64 / key.src_width as f64)
+        .min(key.dst_height as f64 / key.src_height as f64);
+    let scaled_width = ((key.src_width as f64 * scale).round() as usize).clamp(1, key.dst_width);
+    let scaled_height =
+        ((key.src_height as f64 * scale).round() as usize).clamp(1, key.dst_height);
+    let axes = Arc::new(Axes {
+        columns: Axis::new(key.src_width, scaled_width, key.dst_width, 4),
+        rows: Axis::new(key.src_height, scaled_height, key.dst_height, key.stride),
+    });
+    let mut guard = mutex.lock().unwrap_or_else(|e| e.into_inner());
+    *guard = Some((key, Arc::clone(&axes)));
+    axes
+}
+
+/// Geometry descriptor for one worker row band of 4:2:0 conversion.
+pub(crate) struct YuvBand {
+    identity: bool,
+    offsets: [usize; 3],
+    axes: Arc<Axes>,
+    width: usize,
+    first: usize,
+    row_count: usize,
+    chroma: Chroma,
+}
+
+impl YuvBand {
+    pub(crate) fn out_len(&self) -> usize {
+        let luma = self.row_count * self.width;
+        let chroma = (self.row_count / 2) * self.width;
+        luma + chroma
+    }
+}
+
+pub(crate) fn run_band(source: &[u8], out: &mut [u8], scratch: &mut Scratch, job: &YuvBand) {
+    let luma_len = job.row_count * job.width;
+    let (luma, chroma_out) = out.split_at_mut(luma_len);
+    let chroma = match job.chroma {
+        Chroma::Interleaved => Out::Interleaved(chroma_out),
+        Chroma::Planar => {
+            let plane = chroma_out.len() / 2;
+            let (u, v) = chroma_out.split_at_mut(plane);
+            Out::Planar(u, v)
+        }
+    };
+    Band {
+        source,
+        identity: job.identity,
+        offsets: job.offsets,
+        columns: &job.axes.columns,
+        rows: &job.axes.rows,
+        width: job.width,
+        first: job.first,
+        luma,
+        chroma,
+    }
+    .run_into(&mut scratch.yuv_top, &mut scratch.yuv_bottom);
+}
+
+#[derive(Clone, Copy)]
+pub(crate) struct SourceMeta {
+    pub(crate) width: usize,
+    pub(crate) height: usize,
+    pub(crate) stride: usize,
+    pub(crate) order: PixelOrder,
+}
+
+enum BandTarget<'a> {
+    Interleaved {
+        luma: &'a mut [u8],
+        uv: &'a mut [u8],
+    },
+    Planar {
+        luma: &'a mut [u8],
+        u: &'a mut [u8],
+        v: &'a mut [u8],
+    },
+}
+
+impl<'a> BandTarget<'a> {
+    fn copy_from_worker(&mut self, bytes: &[u8]) {
+        match self {
+            Self::Interleaved { luma, uv } => {
+                luma.copy_from_slice(&bytes[..luma.len()]);
+                uv.copy_from_slice(&bytes[luma.len()..][..uv.len()]);
+            }
+            Self::Planar { luma, u, v } => {
+                luma.copy_from_slice(&bytes[..luma.len()]);
+                let rest = &bytes[luma.len()..];
+                u.copy_from_slice(&rest[..u.len()]);
+                v.copy_from_slice(&rest[u.len()..][..v.len()]);
+            }
+        }
+    }
+}
+
+fn validate_raw(meta: SourceMeta, data_len: usize) -> Result<()> {
+    let row = meta
+        .width
+        .checked_mul(4)
+        .ok_or_else(|| Error::invalid("frame width overflows"))?;
+    let needed = meta
+        .stride
+        .checked_mul(meta.height.saturating_sub(1))
+        .and_then(|bytes| bytes.checked_add(row))
+        .ok_or_else(|| Error::invalid("frame size overflows"))?;
+    if meta.width == 0 || meta.height == 0 || meta.stride < row || data_len < needed {
+        return Err(Error::invalid("frame planes do not match its size"));
+    }
+    Ok(())
+}
+
 /// Fit `frame` into `width` x `height` 4:2:0 `output` (exactly `width * height * 3 / 2` bytes), keeping the aspect
 /// ratio and filling the rest with black.
 pub(crate) fn to_yuv420(
@@ -133,7 +270,46 @@ pub(crate) fn to_yuv420(
     chroma: Chroma,
     output: &mut [u8],
 ) -> Result<()> {
-    frame.validate()?;
+    to_yuv420_impl(
+        Input::Slice(frame.data),
+        SourceMeta {
+            width: frame.width,
+            height: frame.height,
+            stride: frame.stride,
+            order: frame.order,
+        },
+        width,
+        height,
+        chroma,
+        output,
+    )
+}
+
+/// Same as [`to_yuv420`], sharing `source` across persistent conversion workers without copying pixel bytes.
+pub(crate) fn to_yuv420_vec(
+    source: &mut Vec<u8>,
+    meta: SourceMeta,
+    width: usize,
+    height: usize,
+    chroma: Chroma,
+    output: &mut [u8],
+) -> Result<()> {
+    to_yuv420_impl(Input::Vec(source), meta, width, height, chroma, output)
+}
+
+fn to_yuv420_impl(
+    input: Input<'_>,
+    meta: SourceMeta,
+    width: usize,
+    height: usize,
+    chroma: Chroma,
+    output: &mut [u8],
+) -> Result<()> {
+    let input_len = match &input {
+        Input::Slice(slice) => slice.len(),
+        Input::Vec(vec) => vec.len(),
+    };
+    validate_raw(meta, input_len)?;
     if width == 0
         || height == 0
         || !width.is_multiple_of(2)
@@ -142,65 +318,98 @@ pub(crate) fn to_yuv420(
     {
         return Err(Error::invalid("encoder picture size must be even"));
     }
-    let scale = (width as f64 / frame.width as f64).min(height as f64 / frame.height as f64);
-    let scaled_width = ((frame.width as f64 * scale).round() as usize).clamp(1, width);
-    let scaled_height = ((frame.height as f64 * scale).round() as usize).clamp(1, height);
-    let columns = Axis::new(frame.width, scaled_width, width, 4);
-    let rows = Axis::new(frame.height, scaled_height, height, frame.stride);
+    let axes = cached_axes(AxisKey {
+        src_width: meta.width,
+        src_height: meta.height,
+        stride: meta.stride,
+        dst_width: width,
+        dst_height: height,
+    });
+    let identity = meta.width == width && meta.height == height;
+    let offsets = meta.order.offsets();
 
-    let (luma, chroma_planes) = output.split_at_mut(width * height);
-    // Up to eight bands: at 2560x1440 four took 8.9 ms of the 16.7 ms a 60 fps share has for a picture.
-    let bands = std::thread::available_parallelism()
-        .map_or(1, |count| count.get())
-        .clamp(1, 8)
-        .min(height / 64)
-        .max(1);
+    let (mut luma, chroma_planes) = output.split_at_mut(width * height);
+    let bands = band_pool::band_count(height);
     // Even row counts keep every chroma row inside one band.
     let band_rows = height.div_ceil(bands).next_multiple_of(2);
     let (mut u, mut v): (&mut [u8], &mut [u8]) = match chroma {
         Chroma::Interleaved => (chroma_planes, &mut []),
         Chroma::Planar => chroma_planes.split_at_mut(width * height / 4),
     };
-    std::thread::scope(|scope| {
-        let mut luma = luma;
-        let mut first = 0;
-        while first < height {
-            let count = band_rows.min(height - first);
-            let (band_luma, rest) = luma.split_at_mut(count * width);
-            luma = rest;
-            let chroma_bytes = count / 2 * width / 2;
-            let band_chroma = match chroma {
+
+    let mut worker_tasks = Vec::with_capacity(bands.saturating_sub(1));
+    let mut worker_targets = Vec::with_capacity(bands.saturating_sub(1));
+    let mut caller: Option<(usize, &mut [u8], Out<'_>)> = None;
+
+    let mut first = 0;
+    while first < height {
+        let count = band_rows.min(height - first);
+        let (band_luma, rest_luma) = std::mem::take(&mut luma).split_at_mut(count * width);
+        luma = rest_luma;
+        let chroma_bytes = count / 2 * width / 2;
+        if first + count >= height {
+            let caller_chroma = match chroma {
+                Chroma::Interleaved => Out::Interleaved(std::mem::take(&mut u)),
+                Chroma::Planar => Out::Planar(std::mem::take(&mut u), std::mem::take(&mut v)),
+            };
+            caller = Some((first, band_luma, caller_chroma));
+        } else {
+            let target = match chroma {
                 Chroma::Interleaved => {
                     let (band, rest) = std::mem::take(&mut u).split_at_mut(chroma_bytes * 2);
                     u = rest;
-                    Out::Interleaved(band)
+                    BandTarget::Interleaved {
+                        luma: band_luma,
+                        uv: band,
+                    }
                 }
                 Chroma::Planar => {
                     let (band_u, rest_u) = std::mem::take(&mut u).split_at_mut(chroma_bytes);
                     let (band_v, rest_v) = std::mem::take(&mut v).split_at_mut(chroma_bytes);
                     (u, v) = (rest_u, rest_v);
-                    Out::Planar(band_u, band_v)
+                    BandTarget::Planar {
+                        luma: band_luma,
+                        u: band_u,
+                        v: band_v,
+                    }
                 }
             };
-            let job = Band {
-                source: frame.data,
-                identity: frame.width == width && frame.height == height,
-                offsets: frame.order.offsets(),
-                columns: &columns,
-                rows: &rows,
+            worker_targets.push(target);
+            worker_tasks.push(Task::Yuv420(YuvBand {
+                identity,
+                offsets,
+                axes: Arc::clone(&axes),
                 width,
                 first,
-                luma: band_luma,
-                chroma: band_chroma,
-            };
-            if first + count >= height {
-                job.run();
-            } else {
-                scope.spawn(move || job.run());
-            }
-            first += count;
+                row_count: count,
+                chroma,
+            }));
         }
-    });
+        first += count;
+    }
+
+    let (caller_first, caller_luma, caller_chroma) =
+        caller.ok_or_else(|| Error::invalid("encoder picture size must be even"))?;
+
+    band_pool::dispatch(
+        input,
+        worker_tasks,
+        |source, scratch| {
+            Band {
+                source,
+                identity,
+                offsets,
+                columns: &axes.columns,
+                rows: &axes.rows,
+                width,
+                first: caller_first,
+                luma: caller_luma,
+                chroma: caller_chroma,
+            }
+            .run_into(&mut scratch.yuv_top, &mut scratch.yuv_bottom);
+        },
+        |index, bytes| worker_targets[index].copy_from_worker(bytes),
+    );
     Ok(())
 }
 
@@ -223,14 +432,20 @@ struct Band<'a> {
 }
 
 impl Band<'_> {
-    fn run(mut self) {
+    #[cfg(test)]
+    fn run(self) {
+        let (mut top, mut bottom) = (Vec::new(), Vec::new());
+        self.run_into(&mut top, &mut bottom);
+    }
+
+    fn run_into(mut self, top: &mut Vec<[u32; 3]>, bottom: &mut Vec<[u32; 3]>) {
         let width = self.width;
-        let mut top = vec![[0u32; 3]; width];
-        let mut bottom = vec![[0u32; 3]; width];
+        top.resize(width, [0; 3]);
+        bottom.resize(width, [0; 3]);
         for pair in 0..self.luma.len() / width / 2 {
             let row = self.first + pair * 2;
-            self.sample(row, &mut top);
-            self.sample(row + 1, &mut bottom);
+            self.sample(row, top);
+            self.sample(row + 1, bottom);
             let offset = pair * 2 * width;
             for (x, rgb) in top.iter().enumerate() {
                 self.luma[offset + x] = luma(*rgb);
@@ -594,5 +809,36 @@ mod tests {
         let blue_bgra = vec![255, 0, 0, 255];
         let pixel = downscale_rgba(raw(&blue_bgra, 1, 1, 4, PixelOrder::Bgra), 8, 8).unwrap();
         assert_eq!(pixel.data, [0, 0, 255, 255]);
+    }
+
+    #[test]
+    fn vec_conversion_matches_slice_path_and_preserves_caller_buffer() {
+        let (width, height) = (512, 288);
+        let mut owned = solid(width, height, width * 4, [40, 120, 200, 255]);
+        let ptr = owned.as_ptr();
+        let cap = owned.capacity();
+        let mut expected = vec![0; width * height * 3 / 2];
+        let mut actual = vec![0; width * height * 3 / 2];
+        for chroma in [Chroma::Interleaved, Chroma::Planar] {
+            let frame = raw(&owned, width, height, width * 4, PixelOrder::Bgra);
+            to_yuv420(frame, width, height, chroma, &mut expected).unwrap();
+            to_yuv420_vec(
+                &mut owned,
+                SourceMeta {
+                    width,
+                    height,
+                    stride: width * 4,
+                    order: PixelOrder::Bgra,
+                },
+                width,
+                height,
+                chroma,
+                &mut actual,
+            )
+            .unwrap();
+            assert_eq!(owned.as_ptr(), ptr);
+            assert_eq!(owned.capacity(), cap);
+            assert!(actual == expected, "{chroma:?}");
+        }
     }
 }

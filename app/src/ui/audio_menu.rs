@@ -9,8 +9,8 @@ use super::{Root, color, icon};
 use crate::parity::Parity;
 use crate::storage;
 use gpui::{
-    AnyElement, Context, FontWeight, IntoElement, MouseButton, MouseDownEvent, MouseMoveEvent,
-    Pixels, Point, SharedString, deferred, div, prelude::*, px,
+    AnyElement, Context, FontWeight, IntoElement, Pixels, Point, SharedString, deferred, div,
+    prelude::*, px,
 };
 use serde_json::json;
 
@@ -18,10 +18,12 @@ const INPUT_DEVICE: &str = "audio.input_device";
 const OUTPUT_DEVICE: &str = "audio.output_device";
 const INPUT_VOLUME: &str = "audio.input_volume";
 const OUTPUT_VOLUME: &str = "audio.output_volume";
+use super::menu_slider::{
+    self, MenuSliderConfig, ThemePalette, amplitude_to_perceptual, perceptual_to_amplitude,
+};
 use super::settings::Profile;
 const INPUT_PROFILE: &str = "audio.input_profile";
 const MENU_WIDTH: f32 = 222.;
-const SLIDER_WIDTH: f32 = 188.;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Side {
@@ -57,7 +59,6 @@ pub(crate) struct AudioMenu {
     /// The bottom edge of the control the menu opened from, for a menu that has no room above it.
     pub below: Pixels,
     pub sub: Option<Sub>,
-    pub dragging: bool,
 }
 
 /// The top of a popout `height` tall that prefers to sit `gap` px over a control spanning `above..below`, in a
@@ -110,33 +111,16 @@ pub(super) fn restore_audio_prefs() {
 
 /// 792251 `M`: a stored volume (100 = unity) to its slider position.
 pub(super) fn volume_to_slider(volume: f32) -> f32 {
-    if volume == 0. {
-        return 0.;
-    }
-    let ratio = volume / 100.;
-    let position = if ratio < 1. {
-        ratio.powf(1. / 2.8)
-    } else {
-        20. * ratio.log10() / 6. + 1.
-    };
-    position * 100.
+    menu_slider::amplitude_to_perceptual_raw(volume / 100.)
 }
 
 /// 792251 `w`: a slider position to the stored volume.
 pub(super) fn slider_to_volume(position: f32) -> f32 {
-    if position == 0. {
-        return 0.;
-    }
-    let ratio = position / 100.;
-    let volume = if ratio < 1. {
-        ratio.powf(2.8)
-    } else {
-        10f32.powf((ratio - 1.) * 6. / 20.)
-    };
-    volume * 100.
+    menu_slider::perceptual_to_amplitude_raw(position) * 100.
 }
 
 /// The linear gain of a slider position (0 to 100 for the input, 0 to 200 for the output).
+#[cfg(test)]
 fn slider_gain(position: f32) -> f32 {
     slider_to_volume(position) / 100.
 }
@@ -179,7 +163,6 @@ impl Root {
                 at: gpui::point(bounds.left() - px(33.), bounds.top()),
                 below: bounds.bottom(),
                 sub: None,
-                dragging: false,
             });
         }
         cx.notify();
@@ -197,7 +180,6 @@ impl Root {
                 at: gpui::point(bounds.left() - px(120.5), bounds.top()),
                 below: bounds.bottom(),
                 sub: None,
-                dragging: false,
             });
         }
         cx.notify();
@@ -230,16 +212,57 @@ impl Root {
         cx.notify();
     }
 
-    /// The slider at `x` (window pixels) inside the 188px track that starts at `left`.
-    fn set_volume_at(&mut self, side: Side, x: Pixels, left: f32, cx: &mut Context<Self>) {
-        let fraction = ((f32::from(x) - left) / SLIDER_WIDTH).clamp(0., 1.);
-        // The same perceptual curve and 1-step slider as Voice & Video's (module 792251): both write the same keys.
-        match side {
-            Side::Input => store_gain(side, slider_gain((fraction * 100.).round())),
-            // The output slider runs to 200 %.
-            Side::Output => store_gain(side, slider_gain((fraction * 200.).round())),
-        }
-        cx.notify();
+    fn audio_slider_row(
+        &self,
+        side: Side,
+        id: &'static str,
+        label: String,
+        call: bool,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let prefs = dc_voice::prefs();
+        let max = match side {
+            Side::Input => 100,
+            Side::Output => 200,
+        };
+        let gain = match side {
+            Side::Input => prefs.input_gain(),
+            Side::Output => prefs.output_gain(),
+        };
+        let value = amplitude_to_perceptual(gain, max);
+        let slider_id: SharedString = match side {
+            Side::Input => "audio-input-volume".into(),
+            Side::Output => "audio-output-volume".into(),
+        };
+        div()
+            .id(id)
+            .on_hover(cx.listener(|this, inside: &bool, _, cx| {
+                if *inside && let Some(menu) = this.audio_menu.as_mut() && menu.sub.is_some() {
+                    menu.sub = None;
+                    cx.notify();
+                }
+            }))
+            .child(self.menu_slider_row(
+                MenuSliderConfig {
+                    id: slider_id,
+                    label,
+                    min: 0,
+                    max,
+                    value,
+                    palette: if call {
+                        ThemePalette::Midnight
+                    } else {
+                        ThemePalette::Default
+                    },
+                    format: menu_slider::percent_format(),
+                    on_change: std::rc::Rc::new(move |_, pct, cx| {
+                        store_gain(side, perceptual_to_amplitude(pct, max));
+                        cx.notify();
+                    }),
+                },
+                cx,
+            ))
+            .into_any_element()
     }
 
     fn audio_row(
@@ -295,79 +318,6 @@ impl Root {
                     ),
             )
             .child(icon("menu_caret", 20., "--text-muted"))
-            .into_any_element()
-    }
-
-    fn audio_slider(&self, side: Side, cx: &mut Context<Self>) -> AnyElement {
-        let prefs = dc_voice::prefs();
-        let call = self.audio_menu.as_ref().is_some_and(|menu| menu.call);
-        let fraction = match side {
-            Side::Input => volume_to_slider(prefs.input_gain() * 100.) / 100.,
-            Side::Output => volume_to_slider(prefs.output_gain() * 100.) / 200.,
-        }
-        .clamp(0., 1.);
-        let left = self
-            .audio_menu
-            .as_ref()
-            .map_or(0., |menu| f32::from(menu.at.x))
-            + 1.
-            + 8.
-            + 8.;
-        div()
-            .id("audio-volume")
-            .relative()
-            .mx(px(8.))
-            .h(px(24.))
-            .cursor_pointer()
-            .on_mouse_down(
-                MouseButton::Left,
-                cx.listener(move |this, event: &MouseDownEvent, _, cx| {
-                    if let Some(menu) = this.audio_menu.as_mut() {
-                        menu.dragging = true;
-                    }
-                    this.set_volume_at(side, event.position.x, left, cx);
-                }),
-            )
-            .on_mouse_move(cx.listener(move |this, event: &MouseMoveEvent, _, cx| {
-                if this.audio_menu.as_ref().is_some_and(|menu| menu.dragging) && event.dragging() {
-                    this.set_volume_at(side, event.position.x, left, cx);
-                }
-            }))
-            .on_mouse_up(
-                MouseButton::Left,
-                cx.listener(|this, _, _, cx| {
-                    if let Some(menu) = this.audio_menu.as_mut() {
-                        menu.dragging = false;
-                    }
-                    cx.notify();
-                }),
-            )
-            .child(
-                div()
-                    .absolute()
-                    .left(px(0.))
-                    .top(px(10.))
-                    .w(px(SLIDER_WIDTH))
-                    .h(px(4.))
-                    .rounded(px(4.))
-                    .bg(tone(call, "--background-mod-strong"))
-                    .child(
-                        div()
-                            .h_full()
-                            .w(px(SLIDER_WIDTH * fraction))
-                            .rounded(px(4.))
-                            .bg(tone(call, "--background-brand")),
-                    ),
-            )
-            .child(
-                div()
-                    .absolute()
-                    .left(px(SLIDER_WIDTH * fraction - 8.))
-                    .top(px(4.))
-                    .size(px(16.))
-                    .rounded_full()
-                    .bg(gpui::rgb(0xffffff)),
-            )
             .into_any_element()
     }
 
@@ -612,25 +562,7 @@ impl Root {
             .child(separator());
         let volume_row =
             |side: Side, id: &'static str, label: &'static str, cx: &mut Context<Self>| {
-                div()
-                    .id(id)
-                    .h(px(58.))
-                    .on_hover(cx.listener(|this, inside: &bool, _, cx| {
-                        if *inside && let Some(menu) = this.audio_menu.as_mut() {
-                            menu.sub = None;
-                            cx.notify();
-                        }
-                    }))
-                    .child(
-                        div()
-                            .p(px(8.))
-                            .text_size(px(14.))
-                            .line_height(px(18.))
-                            .font_weight(FontWeight(500.))
-                            .text_color(tone(call, "--text-strong"))
-                            .child(label),
-                    )
-                    .child(self.audio_slider(side, cx))
+                self.audio_slider_row(side, id, label.to_owned(), call, cx)
             };
         let panel = if call {
             let (level, _) = prefs.processing.meter();
@@ -680,7 +612,7 @@ impl Root {
                 .child(volume_row(
                     Side::Input,
                     "audio-input-volume-row",
-                    "Input Volume",
+                    dc_intl::t!("OX2Bnr"),
                     cx,
                 ))
                 .child(
@@ -701,7 +633,7 @@ impl Root {
                 .child(volume_row(
                     Side::Output,
                     "audio-output-volume-row",
-                    "Output Volume",
+                    dc_intl::t!("eATD2B"),
                     cx,
                 ))
                 .child(separator())
@@ -758,9 +690,9 @@ impl Root {
                     side,
                     "audio-volume-row",
                     if side == Side::Input {
-                        "Input Volume"
+                        dc_intl::t!("OX2Bnr")
                     } else {
-                        "Output Volume"
+                        dc_intl::t!("eATD2B")
                     },
                     cx,
                 ))

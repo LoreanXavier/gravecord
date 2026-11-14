@@ -20,6 +20,7 @@ pub mod throttle;
 
 #[cfg(all(test, windows))]
 mod bench;
+mod band_pool;
 mod convert;
 mod encode;
 #[cfg(windows)]

@@ -279,6 +279,8 @@ pub(crate) struct PanelState {
     copied_at: Option<Instant>,
     /// The graph's repaint timer runs (module 229659 repaints on animation frames while the canvas is shown).
     graph_ticking: bool,
+    /// Pointer X coordinate relative to the `240px` ping plot box while hovering.
+    pub ping_hover_x: Option<f32>,
 }
 
 fn same_kind(a: Popout, b: Popout) -> bool {
@@ -308,6 +310,7 @@ impl Root {
     pub(super) fn close_panel_popout(&mut self, cx: &mut Context<Self>) {
         if let Some(open) = self.panel.popout.take() {
             self.panel.closed_at = Some((open, Instant::now()));
+            self.panel.ping_hover_x = None;
             cx.notify();
         }
     }
@@ -491,16 +494,45 @@ impl Root {
                         &stats.pings,
                         now_ms(),
                         f64::from(window.scale_factor()),
-                    );
+                    )
+                    .with_hover(self.panel.ping_hover_x);
                     div()
                         .flex()
                         .flex_col()
                         .child(
                             div()
                                 .id("voice-panel-ping-graph")
+                                .relative()
+                                .w(px(ping_graph::WIDTH))
                                 .h(px(ping_graph::CONTAINER_HEIGHT))
                                 .mb(px(16.))
                                 .bg(color("--background-base-lower"))
+                                .child(self.anchor_probe("voice-panel-ping-graph"))
+                                .on_mouse_move(cx.listener(
+                                    |this, event: &gpui::MouseMoveEvent, _, cx| {
+                                        let Some(bounds) = this
+                                            .tip_anchors
+                                            .borrow()
+                                            .get("voice-panel-ping-graph")
+                                            .copied()
+                                        else {
+                                            return;
+                                        };
+                                        let local_x = f32::from(event.position.x - bounds.origin.x);
+                                        let next = (0. ..=ping_graph::PLOT_WIDTH)
+                                            .contains(&local_x)
+                                            .then_some(local_x);
+                                        if this.panel.ping_hover_x != next {
+                                            this.panel.ping_hover_x = next;
+                                            cx.notify();
+                                        }
+                                    },
+                                ))
+                                .on_hover(cx.listener(|this, inside: &bool, _, cx| {
+                                    if !*inside && this.panel.ping_hover_x.take().is_some() {
+                                        cx.notify();
+                                    }
+                                }))
                                 .child(ping_graph::graph(frame)),
                         )
                         .child(
@@ -753,7 +785,7 @@ impl Root {
             .absolute()
             .left(px(20.))
             .bottom(px(POPOUT_BOTTOM))
-            .w(px(300.))
+            .w(px(310.))
             .p(px(15.))
             .rounded(px(12.))
             .border_1()
@@ -828,6 +860,20 @@ impl Root {
                 self.panel.popout = Some(Popout::Connection(Tab::Privacy));
                 cx.notify();
                 return "the privacy tab is open".to_owned();
+            }
+            ["hover-ping", "clear"] => {
+                self.panel.ping_hover_x = None;
+                cx.notify();
+                return "ping hover cleared".to_owned();
+            }
+            ["hover-ping", frac] => {
+                let Ok(frac) = frac.parse::<f32>() else {
+                    return format!("cannot read {frac}");
+                };
+                let x = frac.clamp(0., 1.) * ping_graph::PLOT_WIDTH;
+                self.panel.ping_hover_x = Some(x);
+                cx.notify();
+                return format!("ping hover x={x:.1}");
             }
             ["rtcdebug", "open"] => {
                 self.close_panel_popout(cx);
@@ -982,7 +1028,7 @@ impl Root {
                     frame.ticks.len()
                 )
             }
-            _ => "usage: pinggraph open | privacy | peer | solo | dave N | code <30|sample> | rtcdebug open|close|section|localip | clear | points N | screenshot | long | host <endpoint> | state"
+            _ => "usage: pinggraph open | privacy | hover-ping <frac|clear> | peer | solo | dave N | code <30|sample> | rtcdebug open|close|section|localip | clear | points N | screenshot | long | host <endpoint> | state"
                 .to_owned(),
         };
         cx.notify();

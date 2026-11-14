@@ -253,12 +253,20 @@ pub(crate) struct Gate {
     capture_generation: AtomicU64,
     /// Bumped when the speaker gate changes; playback drops queued audio.
     playback_generation: AtomicU64,
+    /// Active in-call Mic Test loopback; lets capture/playback run locally without remote transmission.
+    loopback: AtomicBool,
 }
 impl Gate {
     fn capture(&self) -> bool {
         self.ready.load(Ordering::Acquire)
             && !self.muted.load(Ordering::Acquire)
             && !self.stopped.load(Ordering::Acquire)
+    }
+    fn loopback(&self) -> bool {
+        self.loopback.load(Ordering::Acquire) && !self.stopped.load(Ordering::Acquire)
+    }
+    fn capturing(&self) -> bool {
+        self.capture() || self.loopback()
     }
     fn playback(&self) -> bool {
         self.ready.load(Ordering::Acquire)
@@ -271,6 +279,7 @@ enum PlaybackDriver {
     Call {
         playout: Arc<CallPlayout>,
         render_tap: Option<rtrb::Consumer<Frame>>,
+        loopback_send: Option<rtrb::Producer<Stereo>>,
         headless_next: Instant,
     },
     Preview {
@@ -296,6 +305,7 @@ impl Audio {
         let driver = PlaybackDriver::Call {
             playout,
             render_tap: None,
+            loopback_send: None,
             headless_next: Instant::now(),
         };
         let thread = std::thread::Builder::new()
@@ -361,6 +371,13 @@ impl Audio {
             self.gate.playback_generation.fetch_add(1, Ordering::AcqRel);
         }
     }
+    pub fn set_loopback(&self, loopback: bool) {
+        if self.gate.loopback.swap(loopback, Ordering::AcqRel) != loopback {
+            self.gate.capture_generation.fetch_add(1, Ordering::AcqRel);
+            self.gate.playback_generation.fetch_add(1, Ordering::AcqRel);
+            self.thread.unpark();
+        }
+    }
 }
 impl Drop for Audio {
     fn drop(&mut self) {
@@ -413,12 +430,14 @@ fn run(
                 PlaybackDriver::Call {
                     playout,
                     render_tap,
+                    loopback_send,
                     ..
                 } => {
                     let (reader, tap) = playout.open_reader();
                     match Streams::open_call(gate, reader) {
                         Ok(s) => {
                             *render_tap = Some(tap);
+                            *loopback_send = Some(playout.open_loopback());
                             Ok(s)
                         }
                         Err(e) => Err(e),
@@ -459,14 +478,17 @@ fn run(
                 } => {
                     if now >= *headless_next {
                         *headless_next = (*headless_next + Duration::from_millis(20)).max(now);
-                        if let Some(frame) = playout.pull_20ms(gate.playback()) {
+                        let mono = if let Some(frame) = playout.pull_20ms(gate.playback()) {
                             let mono = crate::to_mono(&frame);
-                            processor.render(&mono, &prefs().processing);
                             if let Some(recorder) = &mut recorder {
                                 recorder.record(crate::recorder::Track::Speaker, &mono);
                             }
                             played += 1;
-                        }
+                            mono
+                        } else {
+                            [0.0; 960]
+                        };
+                        processor.render(&mono, &prefs().processing);
                     }
                 }
             }
@@ -489,7 +511,7 @@ fn run(
             }
         }
         // The microphone opening after a gap (mute, a new call) starts the processors afresh.
-        let open = gate.capture();
+        let open = gate.capturing();
         if open != capturing {
             capturing = open;
             if open {
@@ -503,30 +525,7 @@ fn run(
         if call && let Some(change) = watcher.tick(now) {
             prefs().store_input(Some(change), watcher.detected_this_connection());
         }
-        for _ in 0..RING {
-            let Ok(mut frame) = active.input.pop() else {
-                break;
-            };
-            captured += 1;
-            let peak = frame
-                .iter()
-                .fold(0f32, |peak, sample| peak.max(sample.abs()));
-            loudest = loudest.max(peak);
-            if call {
-                watcher.frame(peak, now);
-            }
-            if let Some(recorder) = &mut recorder {
-                recorder.record(crate::recorder::Track::Microphone, &frame);
-            }
-            let sent = gate.capture() && process_frame(&mut frame, &mut processor, &mut voice);
-            if let Some(recorder) = &mut recorder {
-                recorder.record(crate::recorder::Track::Sent, &frame);
-            }
-            if sent {
-                // A full channel means the voice loop is behind; drop rather than block.
-                let _ = capture.try_send(frame);
-            }
-        }
+        // Drain far-end reference before capture so AEC3 always has current render frames.
         match &mut driver {
             PlaybackDriver::Call { render_tap, .. } => {
                 if let Some(tap) = render_tap.as_mut() {
@@ -549,10 +548,9 @@ fn run(
                             break;
                         };
                         if gate.playback() {
-                            // What the speakers play is the echo canceller's reference.
-                            let mono = crate::to_mono(&frame);
-                            processor.render(&mono, &prefs().processing);
+                            // Preview playback carries only the user's own voice, never far-end echo reference.
                             if let Some(recorder) = &mut recorder {
+                                let mono = crate::to_mono(&frame);
                                 recorder.record(crate::recorder::Track::Speaker, &mono);
                             }
                             played += 1;
@@ -560,6 +558,53 @@ fn run(
                         }
                     }
                 }
+            }
+        }
+        let preview_mode = matches!(driver, PlaybackDriver::Preview { .. });
+        let call_loopback = match &mut driver {
+            PlaybackDriver::Call {
+                loopback_send: Some(send),
+                ..
+            } => Some(send),
+            _ => None,
+        };
+        let mut call_loopback = call_loopback;
+        for _ in 0..RING {
+            let Ok(mut frame) = active.input.pop() else {
+                break;
+            };
+            captured += 1;
+            let peak = frame
+                .iter()
+                .fold(0f32, |peak, sample| peak.max(sample.abs()));
+            loudest = loudest.max(peak);
+            if call {
+                watcher.frame(peak, now);
+            }
+            if let Some(recorder) = &mut recorder {
+                recorder.record(crate::recorder::Track::Microphone, &frame);
+            }
+            let active_capture = gate.capture();
+            let active_loopback = gate.loopback();
+            let gate_open = (active_capture || active_loopback)
+                && process_frame(&mut frame, &mut processor, &mut voice);
+            if let Some(recorder) = &mut recorder {
+                recorder.record(crate::recorder::Track::Sent, &frame);
+            }
+            if active_capture && gate_open {
+                // A full channel means the voice loop is behind; drop rather than block.
+                let _ = capture.try_send(frame);
+            } else if preview_mode && active_capture {
+                // Keep Preview's Playback::Loopback ring continuously primed across pauses so onset never cuts out.
+                let _ = capture.try_send([0.0; 960]);
+            }
+            if active_loopback && let Some(send) = call_loopback.as_deref_mut() {
+                let loopback_frame = if gate_open {
+                    crate::to_stereo(&frame)
+                } else {
+                    [0.0; 1920]
+                };
+                let _ = send.push(loopback_frame);
             }
         }
         if now >= tally_at {
@@ -895,7 +940,7 @@ impl Capture {
             self.generation = generation;
             self.reset();
         }
-        if !gate.capture() || channels == 0 {
+        if !gate.capturing() || channels == 0 {
             self.reset();
             return;
         }
@@ -1008,14 +1053,26 @@ impl Playback {
             self.generation = generation;
             self.reset();
         }
-        if !gate.playback() || channels == 0 {
+        let playing = gate.playback();
+        let loopback = gate.loopback();
+        if matches!(self.source, PlaybackSource::Loopback { .. }) && (!playing || channels == 0) {
             self.reset();
             data.fill(T::from_sample(0.0));
             return;
         }
-        let gain = prefs().output_gain();
+        if channels == 0 {
+            self.reset();
+            return;
+        }
+        let gain = if playing || loopback {
+            prefs().output_gain()
+        } else {
+            0.0
+        };
         for frame in data.chunks_mut(channels) {
-            let [left, right] = self.sample().map(|value| (value * gain).clamp(-1.0, 1.0));
+            let [left, right] = self
+                .sample_for(playing, loopback)
+                .map(|value| (value * gain).clamp(-1.0, 1.0));
             if let [only] = frame {
                 *only = T::from_sample((left + right) * 0.5);
                 continue;
@@ -1058,13 +1115,13 @@ impl Playback {
         }
     }
 
-    fn pull(&mut self) -> [f32; 2] {
+    fn pull(&mut self, playing: bool, loopback: bool) -> [f32; 2] {
         match &mut self.source {
             PlaybackSource::Call(reader) => {
                 if self.index >= 480 {
                     let block: &mut [f32; 960] =
                         (&mut self.frame[..960]).try_into().expect("10 ms block");
-                    let _ = reader.pull_10ms(block, true);
+                    let _ = reader.pull_10ms_with_loopback(block, playing, loopback);
                     self.index = 0;
                 }
             }
@@ -1101,10 +1158,10 @@ impl Playback {
         pair.map(sanitize)
     }
 
-    fn sample(&mut self) -> [f32; 2] {
+    fn sample_for(&mut self, playing: bool, loopback: bool) -> [f32; 2] {
         while self.phase >= 1.0 {
             self.previous = self.next;
-            self.next = self.pull();
+            self.next = self.pull(playing, loopback);
             self.phase -= 1.0;
         }
         let t = self.phase as f32;

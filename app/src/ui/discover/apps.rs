@@ -1052,7 +1052,9 @@ impl Root {
         let banner = app
             .banner_url()
             .and_then(|url| self.images.get(&format!("discover:img:{url}")).cloned());
-        let banner_height = width * 72. / 325.;
+        let detail_w = width.min(1248.);
+        let main_w = (detail_w - 352.).max(320.);
+        let banner_height = detail_w * 72. / 325.;
         // `eC` (module 586193): without a banner picture the header is `linear-gradient(45deg, first, second)`, the
         // icon's main color and the first of its complements.
         let gradient = if banner.is_none() && icon_image.is_some() {
@@ -1060,7 +1062,9 @@ impl Root {
             colors.or_else(|| {
                 let picture = icon_image.as_ref()?;
                 let decoded = image::load_from_memory(picture.bytes()).ok()?;
-                let first = crate::palette::avatar_palette(decoded.to_rgba8().as_raw())[0];
+                let first = crate::palette::avatar_palette(decoded.to_rgba8().as_raw())
+                    .first()
+                    .copied()?;
                 let pair = banner_gradient_colors(first);
                 self.discover.apps.banner_colors.insert(id, pair);
                 Some(pair)
@@ -1220,7 +1224,7 @@ impl Root {
             this.child(
                 div()
                     .w_full()
-                    .h(px(545. * 9. / 16.))
+                    .h(px(main_w * 9. / 16.))
                     .rounded(px(5.))
                     .overflow_hidden()
                     .bg(color("--background-base-lowest"))
@@ -1308,94 +1312,126 @@ impl Root {
                     ),
             )
             .child(
-                div().h(px(52.)).flex_none().pl(px(28.)).child(
-                    div()
-                        .mt(px(-52.))
-                        .size(px(104.))
-                        .rounded(px(24.))
-                        .border(px(4.))
-                        .border_color(color("--background-base-low"))
-                        .bg(color("--background-base-low"))
-                        .overflow_hidden()
-                        .children(
-                            icon_image
-                                .map(|image| img(image).size_full().object_fit(ObjectFit::Cover)),
-                        ),
-                ),
-            )
-            .child(
                 div()
-                    .pl(px(32.))
-                    .pr(px(32.))
-                    .pt(px(20.))
-                    .h(px(80.))
-                    .flex_none()
+                    .w_full()
                     .flex()
-                    .justify_between()
-                    .child(
-                        text(32., 40., 600., "--text-strong")
-                            .truncate()
-                            .child(app.name.clone()),
-                    )
+                    .justify_center()
                     .child(
                         div()
+                            .w_full()
+                            .max_w(px(1248.))
                             .flex()
-                            .gap(px(8.))
-                            .when(app.embedded, |this| {
-                                this.child(
-                                    self.app_button(
-                                        "discover-launch",
-                                        "Launch",
-                                        Some(40.),
-                                        true,
-                                        cx,
-                                    )
-                                    .on_click(cx.listener(
-                                        move |this, _, _, cx| {
-                                            this.launch_activity(&id.to_string(), cx)
-                                        },
-                                    )),
-                                )
-                            })
+                            .flex_col()
                             .child(
-                                self.app_button("discover-add", "Add App", Some(40.), false, cx)
-                                    .on_click(
-                                        cx.listener(move |this, _, _, cx| this.app_add(id, cx)),
+                                div().h(px(52.)).flex_none().pl(px(28.)).child(
+                                    div()
+                                        .mt(px(-52.))
+                                        .size(px(104.))
+                                        .rounded(px(24.))
+                                        .border(px(4.))
+                                        .border_color(color("--background-base-low"))
+                                        .bg(color("--background-base-low"))
+                                        .overflow_hidden()
+                                        .children(icon_image.map(|image| {
+                                            img(image).size_full().object_fit(ObjectFit::Cover)
+                                        })),
+                                ),
+                            )
+                            .child(
+                                div()
+                                    .pl(px(32.))
+                                    .pr(px(32.))
+                                    .pt(px(20.))
+                                    .h(px(80.))
+                                    .flex_none()
+                                    .flex()
+                                    .justify_between()
+                                    .child(
+                                        text(32., 40., 600., "--text-strong")
+                                            .flex_1()
+                                            .min_w(px(0.))
+                                            .mr(px(16.))
+                                            .truncate()
+                                            .child(app.name.clone()),
+                                    )
+                                    .child(
+                                        div()
+                                            .flex_none()
+                                            .flex()
+                                            .gap(px(8.))
+                                            .when(app.embedded, |this| {
+                                                this.child(
+                                                    self.app_button(
+                                                        "discover-launch",
+                                                        "Launch",
+                                                        Some(40.),
+                                                        true,
+                                                        cx,
+                                                    )
+                                                    .on_click(cx.listener(
+                                                        move |this, _, _, cx| {
+                                                            this.launch_activity(
+                                                                &id.to_string(),
+                                                                cx,
+                                                            )
+                                                        },
+                                                    )),
+                                                )
+                                            })
+                                            .child(
+                                                self.app_button(
+                                                    "discover-add",
+                                                    "Add App",
+                                                    Some(40.),
+                                                    false,
+                                                    cx,
+                                                )
+                                                .on_click(cx.listener(move |this, _, _, cx| {
+                                                    this.app_add(id, cx)
+                                                })),
+                                            )
+                                            .child(
+                                                self.app_icon_button(
+                                                    "discover-link",
+                                                    "discover_link",
+                                                    40.,
+                                                )
+                                                .on_click(cx.listener(move |_, _, _, cx| {
+                                                    cx.write_to_clipboard(
+                                                        ClipboardItem::new_string(app_link(id)),
+                                                    );
+                                                })),
+                                            )
+                                            .child(
+                                                self.app_icon_button(
+                                                    "discover-more",
+                                                    "discover_more",
+                                                    40.,
+                                                )
+                                                .relative()
+                                                .child(self.anchor_probe("discover-more"))
+                                                .on_click(cx.listener(move |this, _, _, cx| {
+                                                    this.app_more_menu("discover-more", id, cx)
+                                                })),
+                                            ),
                                     ),
                             )
                             .child(
-                                self.app_icon_button("discover-link", "discover_link", 40.)
-                                    .on_click(cx.listener(move |_, _, _, cx| {
-                                        cx.write_to_clipboard(ClipboardItem::new_string(app_link(
-                                            id,
-                                        )));
-                                    })),
-                            )
-                            .child(
-                                self.app_icon_button("discover-more", "discover_more", 40.)
-                                    .relative()
-                                    .child(self.anchor_probe("discover-more"))
-                                    .on_click(cx.listener(move |this, _, _, cx| {
-                                        this.app_more_menu("discover-more", id, cx)
-                                    })),
-                            ),
-                    ),
-            )
-            .child(
-                div()
-                    .w_full()
-                    .pl(px(32.))
-                    .pb(px(32.))
-                    .flex()
-                    .gap(px(48.))
-                    .child(
-                        div()
-                            .flex_none()
-                            .w(px(545.))
-                            .flex()
-                            .flex_col()
-                            .gap(px(32.))
-                            .child(carousel)
+                                div()
+                                    .w_full()
+                                    .pl(px(32.))
+                                    .pr(px(32.))
+                                    .pb(px(32.))
+                                    .flex()
+                                    .gap(px(48.))
+                                    .child(
+                                        div()
+                                            .flex_1()
+                                            .min_w(px(0.))
+                                            .flex()
+                                            .flex_col()
+                                            .gap(px(32.))
+                                            .child(carousel)
                             .child(
                                 div()
                                     .flex()
@@ -1532,6 +1568,8 @@ impl Root {
                             }),
                     )
                     .child(sidebar),
+                        ),
+                    ),
             )
             .into_any_element()
     }

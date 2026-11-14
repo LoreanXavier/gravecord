@@ -50,6 +50,18 @@ pub(super) fn frame_rate_label(fps: u32) -> String {
     format!("{fps} FPS")
 }
 
+fn frame_rate_shows_premium(prefs: &Prefs, account: go_live::Account, fps: u32) -> bool {
+    !go_live::frame_rate_choice(prefs, account, fps).0
+}
+
+fn resolution_shows_premium(
+    prefs: &Prefs,
+    account: go_live::Account,
+    resolution: Resolution,
+) -> bool {
+    !go_live::resolution_choice(prefs, account, resolution).0
+}
+
 /// What a choice of Stream Quality does: apply the pair as Custom, or open the upsell when the account may not use it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum QualityChoice {
@@ -355,13 +367,20 @@ impl Root {
         cx: &mut Context<Self>,
     ) -> Vec<(AnyElement, f32)> {
         let prefs = Prefs::load();
+        let account = self.stream_account();
         let mut rows: Vec<(AnyElement, f32)> =
             vec![(go_live::group_label(dc_intl::tr("Frame Rate"), tint), 36.)];
         for fps in STREAM_FRAME_RATES {
+            let label = frame_rate_label(fps);
+            let content = if frame_rate_shows_premium(&prefs, account, fps) {
+                go_live::premium_label(label)
+            } else {
+                div().child(label).into_any_element()
+            };
             rows.push((
                 go_live::radio_row(
                     SharedString::from(format!("stream-settings-fps-{fps}")),
-                    div().child(frame_rate_label(fps)).into_any_element(),
+                    content,
                     None,
                     prefs.fps == fps,
                     tint,
@@ -378,15 +397,19 @@ impl Root {
         rows.push((go_live::separator(tint), 17.));
         rows.push((go_live::group_label(dc_intl::tr("Resolution"), tint), 36.));
         for resolution in STREAM_RESOLUTIONS {
+            let label = go_live::resolution_text(resolution);
+            let content = if resolution_shows_premium(&prefs, account, resolution) {
+                go_live::premium_label(label)
+            } else {
+                div().child(label).into_any_element()
+            };
             rows.push((
                 go_live::radio_row(
                     SharedString::from(format!(
                         "stream-settings-resolution-{}",
                         resolution.height()
                     )),
-                    div()
-                        .child(go_live::resolution_text(resolution))
-                        .into_any_element(),
+                    content,
                     None,
                     prefs.resolution == resolution,
                     tint,
@@ -642,5 +665,47 @@ mod tests {
             choose_frame_rate(&screenshare, account(2), 15),
             QualityChoice::Apply(Resolution::Source, 15)
         );
+    }
+
+    #[test]
+    fn stream_quality_rows_badge_only_locked_options() {
+        let gaming = Prefs {
+            preset: Preset::Video,
+            resolution: Resolution::P720,
+            fps: 30,
+            ..Prefs::default()
+        };
+        let free = account(0);
+        let basic = account(3);
+        let nitro = account(2);
+        let boosted_t2 = go_live::Account {
+            premium: Some(0),
+            guild_tier: Some(2),
+        };
+        let boosted_t3 = go_live::Account {
+            premium: Some(0),
+            guild_tier: Some(3),
+        };
+
+        assert!(!frame_rate_shows_premium(&gaming, free, 30));
+        assert!(frame_rate_shows_premium(&gaming, free, 60));
+        assert!(resolution_shows_premium(&gaming, free, Resolution::P1080));
+
+        assert!(!frame_rate_shows_premium(&gaming, basic, 30));
+        assert!(frame_rate_shows_premium(&gaming, basic, 60));
+        assert!(resolution_shows_premium(&gaming, basic, Resolution::Source));
+
+        for fps in STREAM_FRAME_RATES {
+            assert!(!frame_rate_shows_premium(&gaming, nitro, fps));
+        }
+        for resolution in STREAM_RESOLUTIONS {
+            assert!(!resolution_shows_premium(&gaming, nitro, resolution));
+        }
+
+        for boosted in [boosted_t2, boosted_t3] {
+            assert!(!frame_rate_shows_premium(&gaming, boosted, 60));
+            assert!(!resolution_shows_premium(&gaming, boosted, Resolution::P1440));
+            assert!(resolution_shows_premium(&gaming, boosted, Resolution::Source));
+        }
     }
 }

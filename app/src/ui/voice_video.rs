@@ -205,6 +205,9 @@ pub(super) struct Video {
     pub(super) images: Slots<Arc<RenderImage>>,
     pumping: bool,
     streams: HashMap<StreamKey, Live>,
+    /// Owners whose streams we started watching in this call, kept across server-side `STREAM_DELETE`
+    /// ordering races until `VOICE_STATE_UPDATE` confirms the stream ended.
+    watched_owners: std::collections::HashSet<u64>,
     /// A stream asked to be watched before this account's voice state of the call arrived (Watch Stream from
     /// outside the call): the owner and whether several were asked for. Sent once the state is there.
     pending_watch: Option<(u64, bool)>,
@@ -214,9 +217,24 @@ pub(super) struct Video {
 }
 
 impl Video {
-    /// The owners of the streams this client sends or watches.
-    pub(super) fn owners(&self) -> Vec<u64> {
-        self.streams.keys().map(|key| key.owner()).collect()
+    /// The owners of the streams this client sends or watches (plus any recently ended server-side).
+    pub(super) fn held_owners(&self) -> Vec<u64> {
+        let mut owners: Vec<u64> = self.streams.keys().map(|key| key.owner()).collect();
+        for owner in &self.watched_owners {
+            if !owners.contains(owner) {
+                owners.push(*owner);
+            }
+        }
+        owners
+    }
+
+    pub(super) fn prune_watched_owners(&mut self, active_streamers: &[u64]) {
+        self.watched_owners
+            .retain(|owner| active_streamers.contains(owner) || self.streams.keys().any(|k| k.owner() == *owner));
+    }
+
+    pub(super) fn clear_watched_owners(&mut self) {
+        self.watched_owners.clear();
     }
 
     /// `describe` for capture logs: pictures received so far and the streams with their status.
@@ -453,7 +471,15 @@ impl Root {
             dc_voice::Event::VideoState { camera } => {
                 info!(camera, "camera state");
                 if let Some(call) = self.call.as_mut() {
+                    let was = call.camera;
                     call.camera = *camera;
+                    if was != *camera {
+                        crate::sounds::play_event(if *camera {
+                            "camera_on"
+                        } else {
+                            "camera_off"
+                        });
+                    }
                     let (guild, channel) = (call.guild, call.channel);
                     self.send_voice_state(guild, Some(channel));
                 }
@@ -810,6 +836,7 @@ impl Root {
     pub(crate) fn streams_stop_all(&mut self, cx: &mut Context<Self>) {
         self.video.pending_watch = None;
         self.video.pending_restart = None;
+        self.video.watched_owners.clear();
         let keys: Vec<StreamKey> = self.video.streams.keys().copied().collect();
         for key in keys {
             self.stream_stop_key(key, cx);
@@ -832,6 +859,7 @@ impl Root {
     }
 
     fn stream_stop_key(&mut self, key: StreamKey, cx: &mut Context<Self>) {
+        self.video.watched_owners.remove(&key.owner());
         let Some(mut live) = self.video.streams.remove(&key) else {
             return;
         };
@@ -854,6 +882,7 @@ impl Root {
             return;
         }
         let generation = STREAM_GENERATION.fetch_add(1, Ordering::Relaxed) + 1;
+        self.video.watched_owners.insert(key.owner());
         let tracker = Tracker::new(key, Role::Watch, me, session, Instant::now());
         let last = tracker.current();
         self.video.streams.insert(
@@ -980,6 +1009,15 @@ impl Root {
         };
         if self.stream_identity().is_none() {
             // The call was just joined: the watch needs the session of our own voice state.
+            let others_count = self
+                .watched_streams()
+                .into_iter()
+                .filter(|(other, _)| *other != owner)
+                .count();
+            if !allows_multiple(force_multiple, others_count) {
+                self.vv.focus.tile = Some((owner, super::video_tiles::TileKind::Stream));
+                cx.notify();
+            }
             self.video.pending_watch = Some((owner, force_multiple));
             return;
         }
@@ -996,6 +1034,7 @@ impl Root {
                 self.unwatch_stream_of(other, cx);
             }
             self.vv.focus.tile = Some((owner, super::video_tiles::TileKind::Stream));
+            cx.notify();
         }
         let key = if guild != 0 {
             StreamKey::Guild {
@@ -1009,14 +1048,18 @@ impl Root {
         self.stream_watch(key, cx);
     }
 
-    /// Watch Stream from a direct message whose call this account has not joined (`handleSelectParticipant` of
-    /// module 540462: `selectVoiceChannel`, then `watchStream`).
+    /// Watch Stream from a call this account has not joined (`handleSelectParticipant` of module 540462:
+    /// `selectVoiceChannel`, then `watchStream`).
     pub(super) fn watch_stream_joining(&mut self, owner: u64, cx: &mut Context<Self>) {
         if self.guild.is_none()
             && !self.dm_call_in(self.channel)
             && let Some(channel) = self.channel
         {
             self.join_dm_call(channel, false, cx);
+        } else if let (Some(guild), Some(channel)) = (self.guild, self.channel)
+            && self.call.as_ref().map(|c| (c.guild, c.channel)) != Some((guild, channel))
+        {
+            self.join_voice(guild, channel, cx);
         }
         self.watch_stream_of(owner, cx);
     }
@@ -1179,6 +1222,9 @@ impl Root {
                         data: streams::delete(&key),
                     });
                 }
+            }
+            if !self.streams_in_call(key.owner()) {
+                self.video.watched_owners.remove(&key.owner());
             }
         } else if let Some(live) = self.video.streams.get_mut(&key) {
             // `SE`: a viewer came or went while the stream stayed live; we are not counted among a stream's viewers.

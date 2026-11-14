@@ -328,13 +328,30 @@ pub const PROTO_PREFS: &[ProtoPref] = &[
     pref("family_center_enabled", &[8, 21], 1),
 ];
 
-/// `notifications.quiet_mode`, read from the merged account settings rather than a settings-page row.
+/// `notifications.quiet_mode`, read from the merged account settings rather than a settings-page row, respecting
+/// `notifications.focus_mode_expires_at_ms` (`6`, fixed64: `0` means no expiry, otherwise quiet mode ends after that time).
 pub fn notification_quiet_mode(settings: &[u8]) -> bool {
-    fields(settings)
-        .find(|(number, _)| *number == 7)
-        .and_then(|(_, notifications)| fields(notifications).find(|(number, _)| *number == 5))
+    let now_ms = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|elapsed| elapsed.as_millis() as u64)
+        .unwrap_or(0);
+    notification_quiet_mode_at(settings, now_ms)
+}
+
+/// [`notification_quiet_mode`] evaluated at `now_ms` (milliseconds since the Unix epoch).
+pub fn notification_quiet_mode_at(settings: &[u8], now_ms: u64) -> bool {
+    let Some((_, notifications)) = fields(settings).find(|(number, _)| *number == 7) else {
+        return false;
+    };
+    let quiet = fields(notifications)
+        .find(|(number, _)| *number == 5)
         .and_then(|(_, wrapper)| varint_of(wrapper, 1))
-        .is_some_and(|value| value != 0)
+        .is_some_and(|value| value != 0);
+    if !quiet {
+        return false;
+    }
+    let expires_at_ms = fixed64_of(notifications, 6).unwrap_or(0);
+    expires_at_ms == 0 || expires_at_ms > now_ms
 }
 
 /// The varint at `field` of the message found by following `path` from the top: `None` when a message on the way is
@@ -2191,5 +2208,51 @@ mod video_background_tests {
         );
         assert_eq!(video_background_in(&settings_with(&[])), None);
         assert_eq!(video_background_in(&[]), None);
+    }
+}
+
+#[cfg(test)]
+mod focus_mode_tests {
+    use super::*;
+
+    fn quiet_settings(quiet: bool, expires_at_ms: Option<u64>) -> Vec<u8> {
+        let mut notifications = Vec::new();
+        let wrapper = [0x08, u8::from(quiet)];
+        push_bytes_field(&mut notifications, 5, &wrapper);
+        if let Some(ms) = expires_at_ms {
+            push_fixed64_field(&mut notifications, 6, ms);
+        }
+        let mut settings = Vec::new();
+        push_bytes_field(&mut settings, 7, &notifications);
+        settings
+    }
+
+    #[test]
+    fn quiet_mode_respects_focus_mode_expiry() {
+        assert!(!notification_quiet_mode_at(&[], 1_000));
+        assert!(!notification_quiet_mode_at(
+            &quiet_settings(false, Some(5_000)),
+            1_000
+        ));
+        assert!(notification_quiet_mode_at(
+            &quiet_settings(true, None),
+            1_000
+        ));
+        assert!(notification_quiet_mode_at(
+            &quiet_settings(true, Some(0)),
+            1_000
+        ));
+        assert!(notification_quiet_mode_at(
+            &quiet_settings(true, Some(5_000)),
+            1_000
+        ));
+        assert!(!notification_quiet_mode_at(
+            &quiet_settings(true, Some(1_000)),
+            1_000
+        ));
+        assert!(!notification_quiet_mode_at(
+            &quiet_settings(true, Some(999)),
+            1_000
+        ));
     }
 }

@@ -5,13 +5,12 @@
 use super::{Config, Output, Profile};
 use crate::mfrt::Runtime;
 use crate::{Error, Result, h264};
-use std::time::{Duration, Instant};
 use windows::{
     Win32::{
         Media::MediaFoundation::*,
         System::{Com::CoTaskMemFree, Variant::VARIANT},
     },
-    core::Interface,
+    core::{IUnknown, Interface},
 };
 
 fn unavailable(what: &str, error: impl std::fmt::Display) -> Error {
@@ -20,6 +19,51 @@ fn unavailable(what: &str, error: impl std::fmt::Display) -> Error {
 
 fn failed(what: &str, error: impl std::fmt::Display) -> Error {
     Error::failed(format!("hardware H.264 encoder: {what}: {error}"))
+}
+
+const SAMPLE_POOL_LIMIT: usize = 4;
+
+struct PooledSample {
+    sample: IMFSample,
+    buffer: IMFMediaBuffer,
+    capacity: u32,
+}
+
+impl PooledSample {
+    unsafe fn new(capacity: u32) -> Result<Self> {
+        // SAFETY: `MFCreateMemoryBuffer` and `MFCreateSample` initialize valid COM objects on this thread.
+        unsafe {
+            let buffer = MFCreateMemoryBuffer(capacity).map_err(|e| failed("buffer", e))?;
+            let sample = MFCreateSample().map_err(|e| failed("sample", e))?;
+            sample
+                .AddBuffer(&buffer)
+                .map_err(|e| failed("add buffer", e))?;
+            Ok(Self {
+                sample,
+                buffer,
+                capacity,
+            })
+        }
+    }
+
+    unsafe fn is_reusable(&self, min_capacity: u32) -> bool {
+        if self.capacity < min_capacity {
+            return false;
+        }
+        // An idle pooled pair has 1 ref on `sample` (ours) and 2 refs on `buffer` (ours + `sample`).
+        // SAFETY: checking COM refcounts via IUnknown AddRef+Release restores counts identically.
+        unsafe { com_refcount(&self.sample) == 1 && com_refcount(&self.buffer) == 2 }
+    }
+}
+
+unsafe fn com_refcount<T: Interface>(object: &T) -> u32 {
+    let raw = object.as_raw();
+    // SAFETY: every COM interface inherits `IUnknown` at offset 0 of its vtable; AddRef then Release is a net no-op.
+    unsafe {
+        let vtable = object.assume_vtable::<IUnknown>();
+        let _ = (vtable.AddRef)(raw);
+        (vtable.Release)(raw)
+    }
 }
 
 pub(super) struct Encoder {
@@ -36,6 +80,8 @@ pub(super) struct Encoder {
     max_bytes: usize,
     max_buffer_bytes: usize,
     size: usize,
+    input_pool: Vec<PooledSample>,
+    output_pool: Vec<PooledSample>,
 }
 
 struct Activated(IMFActivate);
@@ -173,6 +219,8 @@ impl Encoder {
                 have_output: 0,
                 provides_samples,
                 size: config.width as usize * config.height as usize * 3 / 2,
+                input_pool: Vec::with_capacity(SAMPLE_POOL_LIMIT),
+                output_pool: Vec::with_capacity(SAMPLE_POOL_LIMIT),
             })
         }
     }
@@ -202,43 +250,74 @@ impl Encoder {
                     .map_err(|e| failed("force keyframe", e))?;
             }
         }
-        // SAFETY: the allocation is exactly the validated NV12 size; Lock is balanced by Unlock.
+        // SAFETY: the allocation is at least the validated NV12 size; Lock is balanced by Unlock.
         unsafe {
             let length = u32::try_from(nv12.len()).map_err(|e| failed("size", e))?;
-            let buffer = MFCreateMemoryBuffer(length).map_err(|e| failed("input buffer", e))?;
+            let slot = Self::acquire_sample(&mut self.input_pool, length)?;
             let mut data = std::ptr::null_mut();
             let mut capacity = 0;
-            buffer
+            slot.buffer
                 .Lock(&mut data, Some(&mut capacity), None)
                 .map_err(|e| failed("lock", e))?;
             if data.is_null() || capacity < length {
-                let _ = buffer.Unlock();
+                let _ = slot.buffer.Unlock();
+                Self::recycle_sample(&mut self.input_pool, slot);
                 return Err(Error::failed(
                     "hardware H.264 encoder: input buffer too small",
                 ));
             }
             std::ptr::copy_nonoverlapping(nv12.as_ptr(), data, nv12.len());
-            buffer.Unlock().map_err(|e| failed("unlock", e))?;
-            buffer
+            let unlock = slot.buffer.Unlock().map_err(|e| failed("unlock", e));
+            if let Err(err) = unlock {
+                Self::recycle_sample(&mut self.input_pool, slot);
+                return Err(err);
+            }
+            let prep = slot
+                .buffer
                 .SetCurrentLength(length)
-                .map_err(|e| failed("length", e))?;
-            let sample = MFCreateSample().map_err(|e| failed("sample", e))?;
-            sample
-                .AddBuffer(&buffer)
-                .map_err(|e| failed("add buffer", e))?;
-            sample
-                .SetSampleTime(self.frame * self.duration)
-                .map_err(|e| failed("sample time", e))?;
-            sample
-                .SetSampleDuration(self.duration)
-                .map_err(|e| failed("sample duration", e))?;
+                .map_err(|e| failed("length", e))
+                .and_then(|()| {
+                    slot.sample
+                        .SetSampleTime(self.frame * self.duration)
+                        .map_err(|e| failed("sample time", e))
+                })
+                .and_then(|()| {
+                    slot.sample
+                        .SetSampleDuration(self.duration)
+                        .map_err(|e| failed("sample duration", e))
+                });
+            if let Err(err) = prep {
+                Self::recycle_sample(&mut self.input_pool, slot);
+                return Err(err);
+            }
             self.frame += 1;
-            self.transform
-                .ProcessInput(0, &sample, 0)
-                .map_err(|e| failed("process input", e))?;
+            let processed = self
+                .transform
+                .ProcessInput(0, &slot.sample, 0)
+                .map_err(|e| failed("process input", e));
+            Self::recycle_sample(&mut self.input_pool, slot);
+            processed?;
         }
         self.wait_for_output()?;
         self.take_output().map(Some)
+    }
+
+    unsafe fn acquire_sample(pool: &mut Vec<PooledSample>, min_capacity: u32) -> Result<PooledSample> {
+        if let Some(index) = pool
+            .iter()
+            .position(|entry| unsafe { entry.is_reusable(min_capacity) })
+        {
+            return Ok(pool.swap_remove(index));
+        }
+        // Drop any undersized idle slot before creating a larger one so old small allocations don't linger.
+        pool.retain(|entry| !(entry.capacity < min_capacity && unsafe { entry.is_reusable(0) }));
+        unsafe { PooledSample::new(min_capacity) }
+    }
+
+    fn recycle_sample(pool: &mut Vec<PooledSample>, slot: PooledSample) {
+        if pool.len() < SAMPLE_POOL_LIMIT {
+            pool.push(slot);
+        }
     }
 
     fn wait_for_input(&mut self) -> Result<()> {
@@ -254,10 +333,9 @@ impl Encoder {
     }
 
     fn wait_until(&mut self, ready: impl Fn(&Self) -> bool) -> Result<()> {
-        let deadline = Instant::now() + Duration::from_millis(250);
         while !ready(self) {
-            // SAFETY: event polling stays on the thread that owns this transform.
-            let event = unsafe { self.events.GetEvent(MF_EVENT_FLAG_NO_WAIT) };
+            // SAFETY: blocking wait keeps this thread idle in the kernel until Media Foundation posts an event.
+            let event = unsafe { self.events.GetEvent(MF_EVENT_FLAG_NONE) };
             match event {
                 Ok(event) => unsafe {
                     if event
@@ -276,23 +354,17 @@ impl Encoder {
                         _ => {}
                     }
                 },
-                Err(error) if error.code() == MF_E_NO_EVENTS_AVAILABLE => {
-                    if Instant::now() >= deadline {
-                        return Err(Error::failed("hardware H.264 encoder timed out"));
-                    }
-                    std::thread::sleep(Duration::from_millis(1));
-                }
                 Err(error) => return Err(failed("events", error)),
             }
         }
         Ok(())
     }
 
-    fn take_output(&self) -> Result<Output> {
-        // SAFETY: the output struct is fully initialized. We take ownership of either the transform-provided sample or
-        // our cloned sample before releasing its native fields.
+    fn take_output(&mut self) -> Result<Output> {
+        // SAFETY: the output struct is fully initialized. When `!provides_samples`, pooled output samples are
+        // cleared and reused once the MFT releases any extra COM references.
         unsafe {
-            let own = if self.provides_samples {
+            let mut slot = if self.provides_samples {
                 None
             } else {
                 let info = self
@@ -300,16 +372,16 @@ impl Encoder {
                     .GetOutputStreamInfo(0)
                     .map_err(|e| failed("stream info", e))?;
                 let size = output_buffer_size(&info, self.max_buffer_bytes)?;
-                let buffer = MFCreateMemoryBuffer(size).map_err(|e| failed("output buffer", e))?;
-                let sample = MFCreateSample().map_err(|e| failed("sample", e))?;
-                sample
-                    .AddBuffer(&buffer)
-                    .map_err(|e| failed("add buffer", e))?;
-                Some(sample)
+                let slot = Self::acquire_sample(&mut self.output_pool, size)?;
+                slot.buffer
+                    .SetCurrentLength(0)
+                    .map_err(|e| failed("reset output buffer", e))?;
+                Some(slot)
             };
+            let own = slot.as_ref().map(|entry| entry.sample.clone());
             let mut output = MFT_OUTPUT_DATA_BUFFER {
                 dwStreamID: 0,
-                pSample: std::mem::ManuallyDrop::new(own.clone()),
+                pSample: std::mem::ManuallyDrop::new(own),
                 dwStatus: 0,
                 pEvents: std::mem::ManuallyDrop::new(None),
             };
@@ -317,12 +389,21 @@ impl Encoder {
             let result =
                 self.transform
                     .ProcessOutput(0, std::slice::from_mut(&mut output), &mut status);
-            let sample = std::mem::ManuallyDrop::into_inner(output.pSample).or(own);
+            let sample = std::mem::ManuallyDrop::into_inner(output.pSample);
             drop(std::mem::ManuallyDrop::into_inner(output.pEvents));
-            result.map_err(|e| failed("process output", e))?;
-            let sample =
-                sample.ok_or_else(|| Error::failed("hardware H.264 encoder gave no sample"))?;
-            let data = sample_bytes(&sample, self.max_bytes)?;
+            let bytes = match result {
+                Ok(()) => {
+                    let sample = sample
+                        .or_else(|| slot.as_ref().map(|entry| entry.sample.clone()))
+                        .ok_or_else(|| Error::failed("hardware H.264 encoder gave no sample"))?;
+                    sample_bytes(&sample, self.max_bytes)
+                }
+                Err(error) => Err(failed("process output", error)),
+            };
+            if let Some(slot) = slot.take() {
+                Self::recycle_sample(&mut self.output_pool, slot);
+            }
+            let data = bytes?;
             let keyframe = h264::is_keyframe(&data);
             Ok(Output { data, keyframe })
         }
@@ -493,5 +574,35 @@ mod tests {
         let value = force_keyframe_value();
         assert_eq!(value.vt(), windows::Win32::System::Variant::VT_UI4);
         assert_eq!(u32::try_from(&value).unwrap(), 1);
+    }
+
+    #[test]
+    fn pooled_sample_reuses_when_idle_and_skips_when_aliased() {
+        let _runtime = Runtime::open().unwrap();
+        let mut pool = Vec::new();
+        // SAFETY: synthetic MF memory objects owned only by this test.
+        unsafe {
+            let first = Encoder::acquire_sample(&mut pool, 4096).unwrap();
+            let raw = first.sample.as_raw();
+            assert!(first.is_reusable(4096));
+            let alias = first.sample.clone();
+            assert!(!first.is_reusable(4096));
+            drop(alias);
+            assert!(first.is_reusable(4096));
+            Encoder::recycle_sample(&mut pool, first);
+
+            let reused = Encoder::acquire_sample(&mut pool, 2048).unwrap();
+            assert_eq!(reused.sample.as_raw(), raw);
+            let alias = reused.sample.clone();
+            Encoder::recycle_sample(&mut pool, reused);
+
+            let second = Encoder::acquire_sample(&mut pool, 4096).unwrap();
+            assert_ne!(second.sample.as_raw(), raw);
+            drop(alias);
+            Encoder::recycle_sample(&mut pool, second);
+
+            let larger = Encoder::acquire_sample(&mut pool, 8192).unwrap();
+            assert!(larger.capacity >= 8192);
+        }
     }
 }

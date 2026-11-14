@@ -179,6 +179,15 @@ pub(super) fn can_stream(
     })
 }
 
+pub(super) fn option_shows_premium(
+    account: Account,
+    preset: Preset,
+    resolution: Resolution,
+    fps: u32,
+) -> bool {
+    !can_stream(account, preset, resolution, fps)
+}
+
 /// `getStreamSettingsForPreset` (module 476697): the first pair of the preset's list the account may use; none for
 /// Custom, whose pair is the chosen one.
 pub(super) fn preset_settings(preset: Preset, account: Account) -> Option<(Resolution, u32)> {
@@ -1805,10 +1814,10 @@ impl Root {
                                     "stream-option-resolution-{}",
                                     resolution.height()
                                 )),
-                                if resolution == Resolution::P720 {
-                                    div().child(label).into_any_element()
-                                } else {
+                                if option_shows_premium(account, state.prefs.preset, resolution, fps) {
                                     premium_label(label)
+                                } else {
+                                    div().child(label).into_any_element()
                                 },
                                 None,
                                 state.prefs.resolution == resolution,
@@ -1840,7 +1849,7 @@ impl Root {
                         items.push(
                             radio_row(
                                 SharedString::from(format!("stream-option-frame-rate-{fps}")),
-                                if fps == 60 {
+                                if option_shows_premium(account, state.prefs.preset, resolution, fps) {
                                     premium_label(label)
                                 } else {
                                     div().child(label).into_any_element()
@@ -2238,7 +2247,7 @@ fn item_label(label: AnyElement, subtext: Option<String>, tint: Tint) -> gpui::D
 }
 
 /// A label with the Nitro wheel after it (`tA`, `premiumOptionContainer_B6ppCQ`): 4px apart, 32px kept free after.
-fn premium_label(text: String) -> AnyElement {
+pub(super) fn premium_label(text: String) -> AnyElement {
     div()
         .flex()
         .items_center()
@@ -2691,5 +2700,51 @@ mod tests {
         assert_eq!(screen_name("Entire screen"), "Entire Screen");
         assert_eq!(screen_name("Screen 2"), "Screen 2");
         assert_eq!(screen_name("Something"), "Something");
+    }
+
+    #[test]
+    fn nitro_wheel_follows_account_and_boost_entitlements() {
+        let free = account(0);
+        let basic = account(3);
+        let nitro = account(2);
+        let boosted_t2 = Account {
+            premium: Some(0),
+            guild_tier: Some(2),
+        };
+        let boosted_t3 = Account {
+            premium: Some(0),
+            guild_tier: Some(3),
+        };
+
+        // Free user: 720p/30fps has no Nitro wheel; 1080p, 1440p, Source, and 60fps show it.
+        assert!(!option_shows_premium(free, Preset::Custom, Resolution::P720, 30));
+        assert!(option_shows_premium(free, Preset::Custom, Resolution::P720, 60));
+        assert!(option_shows_premium(free, Preset::Custom, Resolution::P1080, 30));
+        assert!(option_shows_premium(free, Preset::Custom, Resolution::P1440, 30));
+        assert!(option_shows_premium(free, Preset::Custom, Resolution::Source, 30));
+
+        // Nitro Basic does not grant StreamMidQuality or StreamHighQuality.
+        assert!(!option_shows_premium(basic, Preset::Custom, Resolution::P720, 30));
+        assert!(option_shows_premium(basic, Preset::Custom, Resolution::P720, 60));
+        assert!(option_shows_premium(basic, Preset::Custom, Resolution::P1080, 30));
+
+        // Nitro grants Mid and High streaming quality everywhere: no Nitro wheel on any option.
+        for resolution in [
+            Resolution::P720,
+            Resolution::P1080,
+            Resolution::P1440,
+            Resolution::Source,
+        ] {
+            for fps in [15, 30, 60] {
+                assert!(!option_shows_premium(nitro, Preset::Custom, resolution, fps));
+            }
+        }
+
+        // Guild Boost Tier 2/3 unlocks up to 1440p 60fps for free users, leaving only Source locked.
+        for boosted in [boosted_t2, boosted_t3] {
+            assert!(!option_shows_premium(boosted, Preset::Custom, Resolution::P1080, 60));
+            assert!(!option_shows_premium(boosted, Preset::Custom, Resolution::P1440, 60));
+            assert!(option_shows_premium(boosted, Preset::Custom, Resolution::Source, 30));
+        }
     }
 }

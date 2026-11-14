@@ -118,8 +118,14 @@ impl Gate {
             .0
             .iter()
             .map(|block| {
-                // WebRTC's float audio runs at 16-bit scale.
-                let scaled: [f32; 480] = block.map(|sample| sample * 32_768.0);
+                // WebRTC's float audio runs at FloatS16 range [-32768.0, 32767.0].
+                let scaled: [f32; 480] = block.map(|sample| {
+                    if sample.is_finite() {
+                        (sample * 32_768.0).clamp(-32_768.0, 32_767.0)
+                    } else {
+                        0.0
+                    }
+                });
                 self.vad.analyze(&scaled)
             })
             .fold(0.0, f32::max)

@@ -19,7 +19,8 @@ use dc_state::experiments::Assignments;
 use dc_voice::sound::{Decoded, Handle, Output};
 use serde_json::{Value, json};
 use std::collections::HashMap;
-use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, Mutex, Once, OnceLock};
 use tracing::debug;
 
 /// Where the build serves its assets.
@@ -382,14 +383,38 @@ pub fn played() -> Vec<String> {
     trace().lock().map(|list| list.clone()).unwrap_or_default()
 }
 
+static CURRENT_USER: AtomicU64 = AtomicU64::new(0);
+
+/// Records the signed-in user id so global sound playback honors Streamer Mode sound suppression.
+pub fn set_current_user(user: Option<u64>) {
+    CURRENT_USER.store(user.unwrap_or(0), Ordering::Relaxed);
+}
+
+fn streamer_sounds_disabled() -> bool {
+    let user = CURRENT_USER.load(Ordering::Relaxed);
+    user != 0
+        && crate::notifications::switch_value("streaming_enable_streamer_mode", Some(user))
+            .unwrap_or(false)
+        && crate::notifications::switch_value("streamer_mode_disable_sounds", Some(user))
+            .unwrap_or(true)
+}
+
 /// `Ak(sound, volume, undefined, undefined, { outputChannel })`: play a sound now (as soon as its file is here).
 pub fn play_with(sound: &str, volume: f32, output: Output) -> Handle {
+    play_inner(sound, volume, output, false)
+}
+
+fn play_inner(sound: &str, volume: f32, output: Output, looped: bool) -> Handle {
     let handle = Handle::new();
-    debug!(sound, volume, ?output, "play sound");
+    if streamer_sounds_disabled() {
+        debug!(sound, "sound suppressed by streamer mode");
+        return handle;
+    }
+    debug!(sound, volume, ?output, looped, "play sound");
     if let Ok(mut list) = trace().lock() {
         list.push(sound.to_owned());
     }
-    if storage::is_capture_run() {
+    if storage::is_capture_run() || std::env::var_os("GRAVECORD_INERT").is_some() {
         return handle;
     }
     let name = pack_sound(current_pack(), sound);
@@ -397,12 +422,19 @@ pub fn play_with(sound: &str, volume: f32, output: Output) -> Handle {
         debug!(sound, "no sound file for this name");
         return handle;
     };
+    let start_playback = move |decoded: Arc<Decoded>, h: &Handle| {
+        if looped {
+            dc_voice::sound::play_looped(decoded, volume, output, h);
+        } else {
+            dc_voice::sound::play(decoded, volume, output, h);
+        }
+    };
     let cached = cache()
         .lock()
         .ok()
         .and_then(|files| files.get(file).cloned());
     if let Some(decoded) = cached {
-        dc_voice::sound::play(decoded, volume, output, &handle);
+        start_playback(decoded, &handle);
         return handle;
     }
     let waiting = handle.clone();
@@ -415,7 +447,7 @@ pub fn play_with(sound: &str, volume: f32, output: Output) -> Handle {
                     files.insert(file, decoded.clone());
                 }
                 if !waiting.is_stopped() {
-                    dc_voice::sound::play(decoded, volume, output, &waiting);
+                    start_playback(decoded, &waiting);
                 }
             }
             Err(error) => debug!(file, "sound unavailable: {error}"),
@@ -429,6 +461,64 @@ pub fn play_with(sound: &str, volume: f32, output: Output) -> Handle {
 /// `Ak(sound)`: volume 1 on the default speaker.
 pub fn play(sound: &str) -> Handle {
     play_with(sound, 1.0, Output::Default)
+}
+
+/// Loops a call ring sound (`call_ringing` / `call_calling`) at full volume (`1.0`) unless disabled.
+pub fn play_ring_loop(sound: &str) -> Option<Handle> {
+    if is_sound_disabled(sound) {
+        debug!(sound, "ring sound switched off");
+        return None;
+    }
+    Some(play_inner(sound, 1.0, Output::Default, true))
+}
+
+/// Pre-fetches core voice, stream, and ring sounds in the background once per process when audio is active.
+pub fn prefetch_call_sounds() {
+    if cfg!(test)
+        || storage::is_capture_run()
+        || std::env::var_os("GRAVECORD_INERT").is_some()
+    {
+        return;
+    }
+    static ONCE: Once = Once::new();
+    ONCE.call_once(|| {
+        const CALL_SOUNDS: &[&str] = &[
+            "call_ringing",
+            "call_calling",
+            "user_join",
+            "user_leave",
+            "user_moved",
+            "stream_started",
+            "stream_ended",
+            "camera_on",
+            "camera_off",
+            "mute",
+            "unmute",
+            "deafen",
+            "undeafen",
+            "disconnect",
+        ];
+        let _ = std::thread::Builder::new()
+            .name("gravecord-sound-prefetch".into())
+            .spawn(|| {
+                let pack = current_pack();
+                for sound in CALL_SOUNDS {
+                    let name = pack_sound(pack, sound);
+                    let Some(file) = asset_file(name) else {
+                        continue;
+                    };
+                    let cached = cache().lock().ok().is_some_and(|files| files.contains_key(file));
+                    if cached {
+                        continue;
+                    }
+                    if let Ok(decoded) = load(file)
+                        && let Ok(mut files) = cache().lock()
+                    {
+                        files.insert(file, Arc::new(decoded));
+                    }
+                }
+            });
+    });
 }
 
 /// `useSound`'s player (module 596339 `Sr`): an event's sound, unless its switch is off, at volume 0.4.
@@ -516,6 +606,7 @@ fn fetch(file: &str) -> Result<Vec<u8>, String> {
 /// A sound file from a CDN URL, on a small runtime of its own (the caller is a plain thread).
 pub(crate) fn fetch_url(url: &str) -> Result<Vec<u8>, String> {
     static RUNTIME: OnceLock<Option<tokio::runtime::Runtime>> = OnceLock::new();
+    static CLIENT: OnceLock<Result<reqwest::Client, String>> = OnceLock::new();
     let runtime = RUNTIME
         .get_or_init(|| {
             tokio::runtime::Builder::new_multi_thread()
@@ -526,13 +617,17 @@ pub(crate) fn fetch_url(url: &str) -> Result<Vec<u8>, String> {
         })
         .as_ref()
         .ok_or("no runtime")?;
+    let client = CLIENT
+        .get_or_init(|| {
+            reqwest::Client::builder()
+                .redirect(reqwest::redirect::Policy::none())
+                .timeout(std::time::Duration::from_secs(20))
+                .build()
+                .map_err(|error| error.to_string())
+        })
+        .clone()?;
     let url = url.to_owned();
     runtime.block_on(async move {
-        let client = reqwest::Client::builder()
-            .redirect(reqwest::redirect::Policy::none())
-            .timeout(std::time::Duration::from_secs(20))
-            .build()
-            .map_err(|error| error.to_string())?;
         let response = client
             .get(&url)
             .send()

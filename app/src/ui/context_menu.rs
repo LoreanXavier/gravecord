@@ -505,9 +505,12 @@ impl Row {
         self
     }
 
-    /// Row heights measured in the captures: 34, 36 with an icon, caret or checkbox, 52 with a second line.
+    /// Row heights measured in the captures: 34, 36 with an icon, caret or checkbox, 52 with a second line,
+    /// 58 for the menu volume slider.
     pub fn height(&self) -> f32 {
-        if self.sub.is_some() {
+        if self.act == Act::Volume {
+            58.
+        } else if self.sub.is_some() {
             52.
         } else if self.icon.is_some() || self.caret || self.check.is_some() {
             36.
@@ -983,8 +986,6 @@ pub(super) struct UserFacts {
     pub voice_muted: bool,
     pub soundboard_muted: bool,
     pub video_disabled: bool,
-    /// The volume as a percentage, 0 to 200.
-    pub volume: u32,
     /// Module 949674: hide `Start a Call` when already in a 1-on-1 DM voice call with this user, or in a popout window.
     pub hide_call: bool,
     /// Module 385913 / 438653: the DM channel is already in Favorites (`Remove from Favorites` moves to a danger group near the end).
@@ -1113,8 +1114,15 @@ pub(super) fn user_items(facts: &UserFacts) -> Vec<Entry> {
             first.push(Row::new(Act::Call, dc_intl::tr("Start a Call")).disabled(facts.blocked));
         }
         match facts.ring {
-            Some(false) => first.push(Row::new(Act::RingUser, dc_intl::tr("Ring"))),
-            Some(true) => first.push(Row::new(Act::StopRinging, dc_intl::tr("Stop Ringing"))),
+            Some(false) => first.push(Row::new(
+                Act::RingUser,
+                if facts.in_guild {
+                    dc_intl::t!("3Hv9qQ")
+                } else {
+                    dc_intl::t!("RDheZm")
+                },
+            )),
+            Some(true) => first.push(Row::new(Act::StopRinging, dc_intl::t!("ygslb0"))),
             None => {}
         }
         first.push(
@@ -1148,7 +1156,7 @@ pub(super) fn user_items(facts: &UserFacts) -> Vec<Entry> {
     if facts.in_call && !facts.me {
         // Module 198229: User Volume, Mute, Mute Soundboard (checkbox), Disable Video (checkbox).
         let mut rows = vec![
-            Row::new(Act::Volume, dc_intl::tr("User Volume")).sub(format!("{}%", facts.volume)),
+            Row::new(Act::Volume, dc_intl::t!("m7TNdF")),
             Row::new(Act::VoiceMute, dc_intl::tr("Mute")).check(facts.voice_muted),
             Row::new(Act::SoundboardMute, dc_intl::tr("Mute Soundboard"))
                 .check(facts.soundboard_muted),
@@ -2113,6 +2121,7 @@ impl Root {
                                 call.connected && call.channel == channel && dm.kind == 1
                             }),
                         invite_servers: !self.invite_servers(self.dm_user(channel)).is_empty(),
+                        ring: self.ring_row_for_channel(channel),
                         ..UserFacts::default()
                     };
                     user_items(&facts)
@@ -2158,7 +2167,13 @@ impl Root {
                     developer,
                     dm: None,
                     invite_servers: !me && !self.invite_servers(Some(user)).is_empty(),
-                    ring: self.ring_row_for(user, guild),
+                    ring: if guild.is_none() {
+                        self.dm_channel_for_user(user)
+                            .and_then(|channel| self.ring_row_for_channel(channel))
+                            .or_else(|| self.ring_row_for(user, guild))
+                    } else {
+                        self.ring_row_for(user, guild)
+                    },
                     server_voice: guild.and_then(|guild| self.server_voice_of(guild, user, me)),
                     in_timeout: guild.is_some_and(|guild| self.is_in_timeout(guild, user))
                         && guild.is_some_and(|guild| {
@@ -2185,11 +2200,6 @@ impl Root {
                     voice_muted: self.context.mix.get(&user).is_some_and(|mix| mix.1),
                     soundboard_muted: self.context.soundboard_muted.contains(&user),
                     video_disabled: super::call_menus::video_disabled(user),
-                    volume: self
-                        .context
-                        .mix
-                        .get(&user)
-                        .map_or(100, |mix| (mix.0 * 100.).round() as u32),
                     hide_call: known.bot
                         || self.vv.popout_render
                         || self.call.as_ref().is_some_and(|call| {
@@ -2576,14 +2586,24 @@ impl Root {
             // "Start a Call" of a person's menu: their DM opens and the voice call rings there.
             (Act::Call, Target::User { user, .. }) => self.start_dm_call_with(user, false, cx),
             // 313998: `ring(channel, [user], "user_context_menu")` and `stopRinging(channel, [user])`.
-            (Act::RingUser, Target::User { user, .. }) => {
-                if let Some(channel) = self.resolved_dm_call_channel() {
-                    self.ring_call(channel, Some(vec![user]), Some("user_context_menu"));
-                }
+            (Act::RingUser | Act::StopRinging, Target::Dm(channel)) => {
+                self.toggle_ring_channel(channel, cx);
             }
-            (Act::StopRinging, Target::User { user, .. }) => {
-                if let Some(channel) = self.resolved_dm_call_channel() {
-                    self.stop_ringing(channel, Some(&[user]));
+            (Act::RingUser | Act::StopRinging, Target::User { user, guild }) => {
+                if guild.is_none()
+                    && let Some(channel) = self
+                        .dm_channel_for_user(user)
+                        .filter(|channel| self.ring_row_for_channel(*channel).is_some())
+                {
+                    self.toggle_ring_channel(channel, cx);
+                } else if let Some(channel) = self.resolved_dm_call_channel() {
+                    match act {
+                        Act::RingUser => {
+                            self.ring_call(channel, Some(vec![user]), Some("user_context_menu"))
+                        }
+                        Act::StopRinging => self.stop_ringing(channel, Some(&[user])),
+                        _ => {}
+                    }
                 }
             }
             // "Add Note": the note field of the full profile.
@@ -2989,6 +3009,14 @@ impl Root {
             .find(|known| known.id == channel)
             .and_then(|dm| self.stores.dm_recipient(dm))
             .map(|user| user.id)
+    }
+
+    fn dm_channel_for_user(&self, user: Id) -> Option<Id> {
+        self.stores
+            .private_channels
+            .iter()
+            .find(|dm| dm.kind == 1 && dm.recipients == [user])
+            .map(|dm| dm.id)
     }
 
     fn toggle_block(&mut self, user: Id, cx: &mut Context<Self>) {
@@ -3852,66 +3880,36 @@ impl Root {
         )
     }
 
-    /// User Volume: the name, the percentage and a track a click sets (0 to 200%).
+    /// User Volume: shared `58px` menu slider (`0..=200%` perceptual curve) with live `%` thumb bubble.
     fn volume_row(&self, row: &Row, target: Target, cx: &mut Context<Self>) -> AnyElement {
-        let Target::User { user, .. } = target else {
-            return div().into_any_element();
+        let user = match target {
+            Target::User { user, .. } => user,
+            Target::Dm(channel) => match self.dm_user(channel) {
+                Some(user) => user,
+                None => return div().into_any_element(),
+            },
+            _ => return div().into_any_element(),
         };
-        let (factor, _) = self.context.mix.get(&user).copied().unwrap_or((1., false));
-        div()
-            .flex_none()
-            .p(px(8.))
-            .flex()
-            .flex_col()
-            .gap(px(8.))
-            .child(
-                div()
-                    .flex()
-                    .justify_between()
-                    .text_size(px(14.))
-                    .line_height(px(18.))
-                    .font_weight(FontWeight(500.))
-                    .text_color(color("--text-strong"))
-                    .child(row.label.clone())
-                    .child(
-                        div()
-                            .text_color(color("--text-muted"))
-                            .child(format!("{}%", (factor * 100.).round() as u32)),
-                    ),
-            )
-            .child(
-                div()
-                    .id("context-volume-track")
-                    .relative()
-                    .h(px(8.))
-                    .w_full()
-                    .rounded(px(4.))
-                    .cursor_pointer()
-                    .bg(color("--background-mod-strong"))
-                    .child(self.anchor_probe("context-volume"))
-                    .child(
-                        div()
-                            .h_full()
-                            .rounded(px(4.))
-                            .bg(color("--control-brand-foreground"))
-                            .w(gpui::relative(factor / 2.)),
-                    )
-                    .on_mouse_down(
-                        gpui::MouseButton::Left,
-                        cx.listener(move |this, event: &gpui::MouseDownEvent, _, cx| {
-                            let track = this.tip_anchors.borrow().get("context-volume").copied();
-                            if let Some(track) = track {
-                                let along = f32::from(event.position.x - track.left())
-                                    / f32::from(track.size.width);
-                                let volume = (along.clamp(0., 1.) * 2. * 20.).round() / 20.;
-                                let muted = this.context.mix.get(&user).is_some_and(|mix| mix.1);
-                                this.set_user_mix(user, volume, muted);
-                                cx.notify();
-                            }
-                        }),
-                    ),
-            )
-            .into_any_element()
+        let factor = self.context.mix.get(&user).map_or(1., |mix| mix.0);
+        let value = super::menu_slider::amplitude_to_perceptual(factor, 200);
+        self.menu_slider_row(
+            super::menu_slider::MenuSliderConfig {
+                id: format!("context-volume-{user}").into(),
+                label: row.label.clone(),
+                min: 0,
+                max: 200,
+                value,
+                palette: super::menu_slider::ThemePalette::Default,
+                format: super::menu_slider::percent_format(),
+                on_change: std::rc::Rc::new(move |this, pct, cx| {
+                    let amp = super::menu_slider::perceptual_to_amplitude(pct, 200);
+                    let muted = this.context.mix.get(&user).is_some_and(|mix| mix.1);
+                    this.set_user_mix(user, amp, muted);
+                    cx.notify();
+                }),
+            },
+            cx,
+        )
     }
 
     fn context_row(
@@ -4498,17 +4496,23 @@ mod tests {
 
     #[test]
     fn a_call_offers_ring_or_stop_ringing_by_who_is_in_it() {
-        let ring = |state| {
+        let ring = |in_guild, state| {
             labels(&user_items(&UserFacts {
                 friend: true,
+                in_guild,
                 ring: state,
                 ..Default::default()
             }))
         };
-        assert!(ring(Some(false)).contains(&"Ring".to_owned()));
-        assert!(ring(Some(true)).contains(&"Stop Ringing".to_owned()));
-        let none = ring(None);
-        assert!(!none.contains(&"Ring".to_owned()) && !none.contains(&"Stop Ringing".to_owned()));
+        assert!(ring(false, Some(false)).contains(&"Ring to Call".to_owned()));
+        assert!(ring(true, Some(false)).contains(&"Ring to Voice".to_owned()));
+        assert!(ring(false, Some(true)).contains(&"Stop Ringing".to_owned()));
+        let none = ring(false, None);
+        assert!(
+            !none.contains(&"Ring to Call".to_owned())
+                && !none.contains(&"Ring to Voice".to_owned())
+                && !none.contains(&"Stop Ringing".to_owned())
+        );
     }
 
     #[test]
@@ -4556,7 +4560,6 @@ mod tests {
         let in_call = UserFacts {
             name: "ann".to_owned(),
             in_call: true,
-            volume: 150,
             ..UserFacts::default()
         };
         let items = user_items(&in_call);
@@ -4564,11 +4567,15 @@ mod tests {
         for want in ["User Volume", "Mute", "Mute Soundboard", "Disable Video"] {
             assert!(shown.contains(&want.to_owned()), "{want}");
         }
-        assert!(
-            items.iter().any(
-                |entry| matches!(entry, Entry::Row(row) if row.sub.as_deref() == Some("150%"))
-            )
-        );
+        let volume_row = items
+            .iter()
+            .find_map(|entry| match entry {
+                Entry::Row(row) if row.act == Act::Volume => Some(row),
+                _ => None,
+            })
+            .expect("User Volume row");
+        assert_eq!(volume_row.sub, None);
+        assert_eq!(volume_row.height(), 58.);
         let muted = UserFacts {
             soundboard_muted: true,
             voice_muted: true,

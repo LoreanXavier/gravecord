@@ -101,6 +101,7 @@ impl Credentials {
 pub(crate) struct ControlState {
     pub self_mute: bool,
     pub self_deaf: bool,
+    pub loopback: bool,
     pub disconnect: bool,
     /// Bumped when the camera wish or the video sink changed, so the loop looks at `Shared` again.
     pub video_request: u32,
@@ -887,6 +888,7 @@ pub(crate) async fn run(
                 if let Some(audio) = &audio {
                     audio.set_ready(enabled || waiting);
                     audio.set_controls(control.self_mute, control.self_deaf);
+                    audio.set_loopback(control.loopback);
                 }
                 // Preserve ordinary callback batches. Only a real stall (four packet
                 // intervals) discards queued speech; mute and security gates always flush.
@@ -1688,15 +1690,8 @@ pub(crate) async fn run(
                                 let was_group_member = dave.is_group_member(user);
                                 let was_ready = dave.ready;
                                 if dave.disconnect(user)? {
-                                    if dave.alone() {
-                                        capture_reset = true;
-                                        playout.clear();
-                                        dave.enter_sole_member_waiting()?;
-                                        deadline = None;
-                                        waiting_announced = true;
-                                        ready_announced = false;
-                                    } else if was_ready {
-                                        // The rest still share the current epoch until the removal commit.
+                                    if was_ready {
+                                        // The rest still share the current epoch until the SFU commits removal (including 2 -> 1).
                                         dave.ready = true;
                                         deadline = None;
                                     } else if was_group_member {
@@ -1729,7 +1724,21 @@ pub(crate) async fn run(
                                     text(&mut ws, signal::transition_ready(id)).await?;
                                 }
                             }
-                            Some(VoiceOp::DaveExecuteTransition) => dave.execute(signal::transition(data)?)?,
+                            Some(VoiceOp::DaveExecuteTransition) => {
+                                let id = signal::transition(data)?;
+                                if dave.execute(id).is_err() {
+                                    ready_announced = false;
+                                    waiting_announced = false;
+                                    capture_reset = true;
+                                    playout.clear();
+                                    if id != 0 {
+                                        text(&mut ws, signal::invalid_commit_welcome(id)).await?;
+                                    }
+                                    dave.reset()?;
+                                    deadline = Some(Instant::now() + RENEGOTIATION);
+                                    send(&mut ws, Message::Binary(dave.key_package()?.into())).await?;
+                                }
+                            }
                             Some(VoiceOp::DavePrepareEpoch) => {
                                 if signal::number(data, "protocol_version")? != signal::DAVE_PROTOCOL_VERSION {
                                     return Err("Unsupported DAVE protocol version; call stopped");
@@ -1785,8 +1794,20 @@ pub(crate) async fn run(
                                 .set_external_sender(frame.payload)
                                 .map_err(|_| "DAVE external sender validation failed")?,
                             op if op == VoiceOp::MlsProposals as u8 => {
-                                if let Some(response) = dave.proposals(frame.payload)? {
-                                    send(&mut ws, Message::Binary(response.into())).await?;
+                                match dave.proposals(frame.payload) {
+                                    Ok(Some(response)) => {
+                                        send(&mut ws, Message::Binary(response.into())).await?;
+                                    }
+                                    Ok(None) => {}
+                                    Err(_) => {
+                                        ready_announced = false;
+                                        waiting_announced = false;
+                                        capture_reset = true;
+                                        playout.clear();
+                                        dave.reset()?;
+                                        deadline = Some(Instant::now() + RENEGOTIATION);
+                                        send(&mut ws, Message::Binary(dave.key_package()?.into())).await?;
+                                    }
                                 }
                             }
                             op if op == VoiceOp::MlsPrepareCommitTransition as u8 || op == VoiceOp::MlsWelcome as u8 => {

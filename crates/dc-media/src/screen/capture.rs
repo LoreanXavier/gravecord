@@ -40,6 +40,41 @@ use windows::{
     core::{IInspectable, Interface},
 };
 
+const FRAME_POOL_LIMIT: usize = 4;
+
+struct BufferPool(Mutex<Vec<Vec<u8>>>);
+
+impl BufferPool {
+    fn new() -> Arc<Self> {
+        Arc::new(Self(Mutex::new(Vec::with_capacity(FRAME_POOL_LIMIT))))
+    }
+
+    fn take(&self, needed: usize) -> Vec<u8> {
+        let mut pool = self.0.lock().unwrap_or_else(|e| e.into_inner());
+        let mut buf = if let Some(index) = pool.iter().position(|b| b.capacity() >= needed) {
+            pool.swap_remove(index)
+        } else {
+            pool.pop().unwrap_or_default()
+        };
+        buf.clear();
+        if buf.capacity() < needed {
+            buf.reserve(needed);
+        }
+        buf
+    }
+
+    fn put(&self, mut buf: Vec<u8>) {
+        if buf.capacity() == 0 {
+            return;
+        }
+        buf.clear();
+        let mut pool = self.0.lock().unwrap_or_else(|e| e.into_inner());
+        if pool.len() < FRAME_POOL_LIMIT {
+            pool.push(buf);
+        }
+    }
+}
+
 /// A captured picture: tightly packed BGRA, alpha ignored.
 pub(crate) struct Frame {
     pub width: u32,
@@ -48,6 +83,16 @@ pub(crate) struct Frame {
     /// When the system handed the picture over, before the read-back: its RTP timestamp, so the encode time does not
     /// jitter the viewers' playout.
     pub at: Instant,
+    pool: Option<Arc<BufferPool>>,
+}
+
+impl Drop for Frame {
+    fn drop(&mut self) {
+        let data = std::mem::take(&mut self.data);
+        if let Some(pool) = self.pool.take() {
+            pool.put(data);
+        }
+    }
 }
 
 /// `E_ACCESSDENIED`; Windows 11's "Screenshots and screen recording" privacy setting returns it.
@@ -69,8 +114,10 @@ struct Reader {
     device: ID3D11Device,
     context: ID3D11DeviceContext,
     d3d: IDirect3DDevice,
-    staging: Option<(ID3D11Texture2D, u32, u32)>,
+    staging: [Option<(ID3D11Texture2D, u32, u32)>; 2],
+    next_staging: usize,
     last_size: SizeInt32,
+    buffers: Arc<BufferPool>,
 }
 
 pub(crate) struct Capture {
@@ -79,8 +126,7 @@ pub(crate) struct Capture {
     item: GraphicsCaptureItem,
     arrived: i64,
     closed: i64,
-    /// A shared game covers every window of the application: the capture, conversion and encode threads keep their
-    /// speed and a 1 ms timer for as long as the capture runs.
+    /// Keeps the capture thread out of Windows EcoQoS throttling for the lifetime of the share.
     _unthrottled: crate::throttle::Guard,
 }
 
@@ -91,6 +137,7 @@ impl Capture {
     pub(crate) fn start(
         source: SourceId,
         cursor: bool,
+        fps: u32,
         cancel: &AtomicBool,
         want: impl Fn() -> bool + Send + Sync + 'static,
         deliver: impl FnMut(Frame) + Send + 'static,
@@ -139,9 +186,11 @@ impl Capture {
         {
             let _ = session.SetIsCursorCaptureEnabled(cursor);
         }
-        // The system hands frames over as they are composed, not at its default pace; the worker's own cadence picks
-        // the ones it wants (as Serein's capture does; 100 ns units). Builds without the property keep the default.
-        let _ = session.SetMinUpdateInterval(windows::Foundation::TimeSpan { Duration: 10_000 });
+        // Pace WGC callbacks proportionally to the requested stream rate (with a 10% phase margin) instead of waking
+        // every 1 ms regardless of stream FPS. Builds without the property keep the default.
+        let _ = session.SetMinUpdateInterval(windows::Foundation::TimeSpan {
+            Duration: min_update_interval_100ns(fps),
+        });
         // Hide the yellow border where the system allows it; older builds keep the default.
         let _ = session.SetIsBorderRequired(false);
         let reader = Arc::new(Mutex::new(Locked((
@@ -149,8 +198,10 @@ impl Capture {
                 device,
                 context,
                 d3d,
-                staging: None,
+                staging: [None, None],
+                next_staging: 0,
                 last_size: size,
+                buffers: BufferPool::new(),
             },
             Box::new(deliver) as Box<dyn FnMut(Frame) + Send>,
         ))));
@@ -164,12 +215,13 @@ impl Capture {
                     return Ok(());
                 };
                 if !want() {
+                    let _ = frame.Close();
                     return Ok(());
                 }
                 let at = Instant::now();
                 let mut guard = reader.lock().unwrap_or_else(|e| e.into_inner());
                 let Locked((reader, deliver)) = &mut *guard;
-                if let Ok(captured) = read_frame(reader, pool, &frame, at) {
+                if let Ok(captured) = read_frame(reader, pool, frame, at) {
                     deliver(captured);
                 }
                 Ok(())
@@ -263,11 +315,12 @@ fn create_device() -> Result<(ID3D11Device, ID3D11DeviceContext)> {
     }
 }
 
-/// Copies the frame's texture to the staging texture and out to a tight BGRA buffer.
+/// Copies the frame's texture to a ping-pong staging texture, releases the WGC frame immediately, and reads BGRA
+/// rows out into a pooled buffer.
 fn read_frame(
     reader: &mut Reader,
     pool: &Direct3D11CaptureFramePool,
-    frame: &windows::Graphics::Capture::Direct3D11CaptureFrame,
+    frame: windows::Graphics::Capture::Direct3D11CaptureFrame,
     at: Instant,
 ) -> windows::core::Result<Frame> {
     let content = frame.ContentSize()?;
@@ -283,8 +336,8 @@ fn read_frame(
     }
     let surface = frame.Surface()?;
     let access: IDirect3DDxgiInterfaceAccess = surface.cast()?;
-    // SAFETY: the texture is the frame's own; the staging texture, the map and the unmap are used in order on this
-    // thread under the reader lock.
+    // SAFETY: the texture is the frame's own; the staging ring, CopyResource, Map and Unmap execute sequentially under
+    // the reader lock, and the WGC frame is closed only after CopyResource queues the GPU copy.
     unsafe {
         let texture: ID3D11Texture2D = access.GetInterface()?;
         let mut desc = D3D11_TEXTURE2D_DESC::default();
@@ -293,8 +346,9 @@ fn read_frame(
             (content.Width.max(1) as u32).min(desc.Width),
             (content.Height.max(1) as u32).min(desc.Height),
         );
-        if reader
-            .staging
+        let slot_index = reader.next_staging & 1;
+        reader.next_staging = reader.next_staging.wrapping_add(1);
+        if reader.staging[slot_index]
             .as_ref()
             .is_none_or(|(_, w, h)| *w != desc.Width || *h != desc.Height)
         {
@@ -317,32 +371,45 @@ fn read_frame(
             reader
                 .device
                 .CreateTexture2D(&staging_desc, None, Some(&mut staging))?;
-            reader.staging = staging.map(|texture| (texture, desc.Width, desc.Height));
+            reader.staging[slot_index] = staging.map(|tex| (tex, desc.Width, desc.Height));
         }
-        let Some((staging, _, _)) = reader.staging.as_ref() else {
+        let Some((staging, _, _)) = reader.staging[slot_index].as_ref() else {
             return Err(windows::core::Error::from_hresult(windows::core::HRESULT(
                 0x8000_4005_u32 as i32,
             )));
         };
         reader.context.CopyResource(staging, &texture);
+        // Release the WGC frame pool slot before the blocking CPU Map so DWM/game swapchains are never held.
+        drop(texture);
+        drop(access);
+        drop(surface);
+        let _ = frame.Close();
+        drop(frame);
+
         let mut mapped = D3D11_MAPPED_SUBRESOURCE::default();
         reader
             .context
             .Map(staging, 0, D3D11_MAP_READ, 0, Some(&mut mapped))?;
-        let mut data = Vec::with_capacity(width as usize * height as usize * 4);
         let row_bytes = width as usize * 4;
+        let needed = row_bytes * height as usize;
+        let mut data = reader.buffers.take(needed);
         let pitch = mapped.RowPitch as usize;
         let source = mapped.pData.cast::<u8>();
         if !source.is_null() && pitch >= row_bytes {
-            for row in 0..height as usize {
-                data.extend_from_slice(std::slice::from_raw_parts(
-                    source.add(row * pitch),
-                    row_bytes,
-                ));
+            if pitch == row_bytes {
+                data.extend_from_slice(std::slice::from_raw_parts(source, needed));
+            } else {
+                for row in 0..height as usize {
+                    data.extend_from_slice(std::slice::from_raw_parts(
+                        source.add(row * pitch),
+                        row_bytes,
+                    ));
+                }
             }
         }
         reader.context.Unmap(staging, 0);
-        if data.len() != row_bytes * height as usize {
+        if data.len() != needed {
+            reader.buffers.put(data);
             return Err(windows::core::Error::from_hresult(windows::core::HRESULT(
                 0x8000_4005_u32 as i32,
             )));
@@ -352,6 +419,7 @@ fn read_frame(
             height,
             data,
             at,
+            pool: Some(Arc::clone(&reader.buffers)),
         })
     }
 }
@@ -402,4 +470,48 @@ fn failed(what: &str, error: &windows::core::Error) -> Error {
     Error::unavailable(format!(
         "Screen capture could not be started ({what}): {error}"
     ))
+}
+
+fn min_update_interval_100ns(fps: u32) -> i64 {
+    (10_000_000_i64 / i64::from(fps.clamp(1, 240))) * 9 / 10
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn min_update_interval_scales_with_target_fps() {
+        assert_eq!(min_update_interval_100ns(30), 299_999);
+        assert_eq!(min_update_interval_100ns(60), 149_999);
+        assert!(min_update_interval_100ns(0) > min_update_interval_100ns(30));
+    }
+
+    #[test]
+    fn frame_drop_recycles_buffer_up_to_pool_limit() {
+        let pool = BufferPool::new();
+        let data = pool.take(4096);
+        let ptr = data.as_ptr();
+        let cap = data.capacity();
+        assert!(cap >= 4096);
+
+        let frame = Frame {
+            width: 32,
+            height: 32,
+            data,
+            at: Instant::now(),
+            pool: Some(Arc::clone(&pool)),
+        };
+        drop(frame);
+
+        let reused = pool.take(4096);
+        assert_eq!(reused.as_ptr(), ptr);
+        assert_eq!(reused.capacity(), cap);
+        assert!(reused.is_empty());
+
+        for _ in 0..(FRAME_POOL_LIMIT + 3) {
+            pool.put(vec![0u8; 4096]);
+        }
+        assert_eq!(pool.0.lock().unwrap().len(), FRAME_POOL_LIMIT);
+    }
 }

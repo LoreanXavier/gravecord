@@ -103,3 +103,64 @@ fn a_stream_flows_end_to_end_and_survives_feedback_changes() {
     });
     assert_eq!(dc_voice::sim::refused_endpoints(), 0);
 }
+
+#[test]
+fn peer_leave_in_two_person_call_keeps_voice_and_go_live_stream_connected() {
+    let dispatches: Arc<Mutex<Vec<(String, Value)>>> = Arc::default();
+    let seen = dispatches.clone();
+    let sim = Sim::start(
+        Setup {
+            me: 1000,
+            my_session: "test-session".into(),
+            guild: 0,
+            channel: 3001,
+            people: vec![2001, 2002],
+        },
+        Arc::new(move |name, data| seen.lock().unwrap().push((name, data))),
+    )
+    .unwrap();
+    sim.peer_add("a", false);
+    sim.peer_add("b", false);
+    wait("both participants connect", Duration::from_secs(15), || {
+        sim.peer_connected("a") && sim.peer_connected("b")
+    });
+
+    // Wait for initial DAVE group readiness before a starts Go Live and b watches.
+    sim.peer_stream_start("a", 320, 180, 30, dc_media::sim::Content::Motion);
+    std::thread::sleep(Duration::from_millis(300));
+    sim.peer_watch("b", "a");
+    wait(
+        "b receives a's stream pictures",
+        Duration::from_secs(10),
+        || {
+            sim.peer_summary("b", "a", "stream", Duration::from_secs(60))
+                .is_some_and(|summary| summary.pictures > 0)
+        },
+    );
+
+    // Remote peer leaves cleanly: SFU sends op 13 ClientDisconnect and op 27 Remove (2 -> 1).
+    sim.peer_leave("b");
+    std::thread::sleep(Duration::from_secs(2));
+
+    // Sole surviving streamer must keep BOTH voice and Go Live stream alive across removal.
+    assert!(sim.peer_connected("a"), "voice disconnected when peer left");
+    assert!(
+        sim.conn_report("a", false).is_some(),
+        "voice connection vanished when peer left"
+    );
+    assert!(
+        sim.conn_report("a", true).is_some(),
+        "Go Live stream connection vanished when peer left"
+    );
+    let events = sim.peer_events("a");
+    assert!(
+        !events.iter().any(|event| event.contains("] Disconnected")),
+        "unexpected disconnect for sole survivor: {events:?}"
+    );
+
+    sim.peer_leave("a");
+    wait("every connection closes", Duration::from_secs(10), || {
+        sim.connections() == 0
+    });
+    assert_eq!(dc_voice::sim::refused_endpoints(), 0);
+}

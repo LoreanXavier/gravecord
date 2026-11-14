@@ -13,6 +13,7 @@ use dc_proto::op::Op;
 use dc_state::{Id, calls::Effect, calls::Recipients};
 use gpui::Context;
 use serde_json::{Value, json};
+use std::time::Duration;
 use tracing::info;
 
 /// Body of `POST /channels/<id>/call/ring`: `{recipients, analytics_location}`; an undefined field is left out of
@@ -99,6 +100,7 @@ impl Root {
         }
         self.calls_after_dispatch_effects();
         self.ring_reconcile(cx);
+        self.sync_dm_call_idle_timer(cx);
         cx.notify();
     }
 
@@ -184,7 +186,7 @@ impl Root {
 
     /// Module 313998 (and 325909 `o`): a person's menu in a DM or group DM offers "Ring" when they are not in the
     /// call and "Stop Ringing" while the call rings them. The person must be a friend, not this account, not a bot,
-    /// and the call must have participants. `Some(false)` is Ring, `Some(true)` is Stop Ringing.
+    /// and the call must have participants (or this client is in it). `Some(false)` is Ring, `Some(true)` is Stop Ringing.
     pub(super) fn ring_row_for(&self, user: Id, guild: Option<Id>) -> Option<bool> {
         if guild.is_some() {
             return None;
@@ -196,7 +198,7 @@ impl Root {
             return None;
         }
         let people = self.dm_call_people(channel);
-        if people.is_empty() {
+        if !self.dm_call_in(Some(channel)) && people.is_empty() {
             return None;
         }
         match people.iter().find(|person| person.user == user) {
@@ -206,8 +208,67 @@ impl Root {
         }
     }
 
-    /// `ring(channel, recipients, location)`: ring now when the call exists, otherwise queue the ring for its
-    /// `CALL_CREATE`.
+    /// Whether `channel` is a 1-on-1 DM call where ringing (`Some(false)`) or stopping ringing (`Some(true)`) applies.
+    pub(super) fn ring_row_for_channel(&self, channel: Id) -> Option<bool> {
+        let dm = self
+            .stores
+            .private_channels
+            .iter()
+            .find(|dm| dm.id == channel)?;
+        if dm.kind != 1 {
+            return None;
+        }
+        let other = self.stores.dm_recipient(dm)?;
+        let me = self.stores.current_user.as_ref().map(|me| me.id);
+        if other.bot || Some(other.id) == me || self.stores.relationships.get(&other.id) != Some(&1)
+        {
+            return None;
+        }
+        if self.stores.calls.is_call_unavailable(channel) {
+            return None;
+        }
+        let people = self.dm_call_people(channel);
+        if !self.dm_call_in(Some(channel)) && people.is_empty() {
+            return None;
+        }
+        if self
+            .stores
+            .voice_members(0, channel)
+            .iter()
+            .any(|state| state.user_id == other.id)
+        {
+            return None;
+        }
+        Some(self.stores.calls.is_ringing(channel, other.id))
+    }
+
+    /// Toggles ringing for a 1-on-1 DM channel ("Ring to Call" / "Stop Ringing").
+    pub(super) fn toggle_ring_channel(&mut self, channel: Id, cx: &mut Context<Self>) {
+        let Some(already_ringing) = self.ring_row_for_channel(channel) else {
+            return;
+        };
+        let Some(other) = self
+            .stores
+            .private_channels
+            .iter()
+            .find(|dm| dm.id == channel)
+            .and_then(|dm| self.stores.dm_recipient(dm))
+            .map(|user| user.id)
+        else {
+            return;
+        };
+        if already_ringing {
+            self.stop_ringing(channel, Some(&[other]));
+        } else {
+            self.ring_call(channel, Some(vec![other]), Some("user_context_menu"));
+        }
+        self.calls_after_dispatch_effects();
+        self.ring_reconcile(cx);
+        cx.notify();
+    }
+
+    /// `ring(channel, recipients, location)`: ring now when the call exists or we are already connected to it,
+    /// otherwise queue the ring for its `CALL_CREATE`.
     pub(super) fn ring_call(
         &mut self,
         channel: Id,
@@ -222,7 +283,12 @@ impl Root {
         {
             return;
         }
-        if self.stores.calls.call_ringable_now(channel) {
+        let in_active_call = !self.stores.calls.is_call_unavailable(channel)
+            && self
+                .call
+                .as_ref()
+                .is_some_and(|call| call.guild == 0 && call.channel == channel && call.connected);
+        if self.stores.calls.call_ringable_now(channel) || in_active_call {
             self.send_ring(channel, recipients.as_deref(), location);
         } else {
             let wanted = match recipients {
@@ -426,6 +492,82 @@ impl Root {
         if ring {
             self.ring_call(channel, None, None);
         }
+    }
+
+    /// Whether the current voice session is alone in a 1-on-1 DM call with no embedded activity running (`566458`).
+    fn call_idle_eligible(&self) -> Option<Id> {
+        let call = self.call.as_ref()?;
+        if call.guild != 0 {
+            return None;
+        }
+        let dm = self
+            .stores
+            .private_channels
+            .iter()
+            .find(|dm| dm.id == call.channel)?;
+        if dm.kind != 1 {
+            return None;
+        }
+        let me = self.stores.current_user.as_ref()?.id;
+        let members = self.stores.voice_members(0, call.channel);
+        if members.len() != 1 || members[0].user_id != me {
+            return None;
+        }
+        if self
+            .activities
+            .running
+            .as_ref()
+            .is_some_and(|running| running.channel == call.channel)
+        {
+            return None;
+        }
+        Some(call.channel)
+    }
+
+    fn emit_idle_disconnect_notice(&mut self, channel: Id, cx: &mut Context<Self>) {
+        let text = dc_intl::t!("XYof5G", number = 3);
+        self.clyde_says(channel, &text, "call_idle_disconnect");
+        cx.notify();
+    }
+
+    fn fire_dm_call_idle_timeout(&mut self, cx: &mut Context<Self>) {
+        let Some(channel) = self.call_idle_eligible() else {
+            self.dmc.idle_timer = None;
+            return;
+        };
+        self.dmc.idle_timer = None;
+        self.emit_idle_disconnect_notice(channel, cx);
+        self.leave_voice(cx);
+    }
+
+    /// Arms or cancels the 180-second alone-in-DM-call idle timer (`CallIdleManager`, module `566458`).
+    /// Never resets an already-armed timer for the same DM channel.
+    pub(super) fn sync_dm_call_idle_timer(&mut self, cx: &mut Context<Self>) {
+        let Some(channel) = self.call_idle_eligible() else {
+            self.dmc.idle_timer = None;
+            return;
+        };
+        if self
+            .dmc
+            .idle_timer
+            .is_some_and(|(armed, _)| armed == channel)
+        {
+            return;
+        }
+        self.dmc.idle_generation = self.dmc.idle_generation.wrapping_add(1);
+        let token = self.dmc.idle_generation;
+        self.dmc.idle_timer = Some((channel, token));
+        cx.spawn(async move |this, cx| {
+            cx.background_executor()
+                .timer(Duration::from_secs(180))
+                .await;
+            let _ = this.update(cx, |root, cx| {
+                if root.dmc.idle_timer == Some((channel, token)) {
+                    root.fire_dm_call_idle_timeout(cx);
+                }
+            });
+        })
+        .detach();
     }
 }
 
@@ -754,8 +896,53 @@ impl Root {
                 let mut gone = state(me, false);
                 gone["channel_id"] = Value::Null;
                 self.stores.dispatch("VOICE_STATE_UPDATE", &gone);
+                self.sync_dm_call_idle_timer(cx);
                 cx.notify();
                 "the call is closed here; nothing was sent".to_owned()
+            }
+            ["idle-timeout"] => {
+                if self.call_idle_eligible().is_some() {
+                    self.fire_dm_call_idle_timeout(cx);
+                } else {
+                    self.select_home(Some(channel));
+                    self.emit_idle_disconnect_notice(channel, cx);
+                    if self.call.is_some() {
+                        self.leave_voice(cx);
+                    }
+                    self.dmc.idle_timer = None;
+                }
+                "triggered the 3-minute idle call disconnect notice".to_owned()
+            }
+            ["incoming-modal"] => {
+                self.dmc.shown_online = true;
+                self.select_home(None);
+                self.inject_call(
+                    "CALL_CREATE",
+                    json!({
+                        "channel_id": channel.to_string(),
+                        "message_id": "1570000000000000001",
+                        "region": "us-east",
+                        "ongoing_rings": rings(other, me),
+                        "voice_states": [state(other, false)],
+                    }),
+                    cx,
+                )
+            }
+            ["outgoing-ring"] => {
+                self.select_home(Some(channel));
+                self.stores.dispatch("VOICE_STATE_UPDATE", &state(me, false));
+                self.fake_dm_call(channel, cx);
+                self.inject_call(
+                    "CALL_CREATE",
+                    json!({
+                        "channel_id": channel.to_string(),
+                        "message_id": "1570000000000000001",
+                        "region": "us-east",
+                        "ongoing_rings": rings(me, other),
+                        "voice_states": [state(me, false)],
+                    }),
+                    cx,
+                )
             }
             ["inject", "callee"] => {
                 // The call's announcement (type 3, no `ended_timestamp`), which carries the "Join the call" link.
@@ -845,7 +1032,7 @@ impl Root {
                 json!({ "channel_id": channel.to_string() }),
                 cx,
             ),
-            _ => "usage: dmcall open | start voice|video | leave | state | fake-join | fake-leave | online | notfriend | group | inject incoming|outgoing|callee|answered|delete"
+            _ => "usage: dmcall open | start voice|video | leave | state | fake-join | fake-leave | idle-timeout | incoming-modal | outgoing-ring | online | notfriend | group | inject incoming|outgoing|callee|answered|delete"
                 .to_owned(),
         }
     }

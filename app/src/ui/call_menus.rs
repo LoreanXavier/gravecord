@@ -1169,25 +1169,9 @@ impl Root {
             .own_started()
             .map(|started| started.quality)
             .unwrap_or_else(|| prefs.shown(account));
-        let mut allowed = Vec::new();
-        for candidate in [
-            dc_media::screen::Resolution::P480,
-            dc_media::screen::Resolution::P720,
-            dc_media::screen::Resolution::P1080,
-            dc_media::screen::Resolution::P1440,
-            dc_media::screen::Resolution::Source,
-        ] {
-            for rate in [15, 30, 60] {
-                if super::go_live::can_stream(
-                    account,
-                    super::go_live::Preset::Custom,
-                    candidate,
-                    rate,
-                ) {
-                    allowed.push((resolution_height(candidate), rate));
-                }
-            }
-        }
+        let mut allowed = allowed_stream_qualities(account);
+        allowed.sort_unstable();
+        allowed.dedup();
         let (guild, channel) = self.vv.shown_call;
         let stage = guild != 0
             && self.stores.guild(guild).is_some_and(|known| {
@@ -1305,27 +1289,25 @@ impl Root {
                 prefs.sound = !prefs.sound;
                 self.restart_stream_with(prefs, cx);
             }
-            Run::Resolution(height) | Run::FrameRate(height) => {
+            Run::Resolution(_) | Run::FrameRate(_) => {
                 let facts = self
                     .stores
                     .current_user
                     .as_ref()
                     .map(|me| self.stream_tile_facts(me.id))
                     .unwrap_or_default();
-                // 600125 `P`: a pair the account may use becomes the Custom stream; any other opens the upsell.
-                let (resolution, fps) = match run {
-                    Run::Resolution(_) => (height, facts.fps),
-                    _ => (facts.resolution, height),
-                };
-                if !facts.allowed.contains(&(resolution, fps)) {
+                let mut prefs = super::go_live::Prefs::load();
+                let Some((preset, resolution, fps)) = select_stream_quality(
+                    &prefs,
+                    self.stream_account(),
+                    (facts.resolution, facts.fps),
+                    &facts.allowed,
+                    &run,
+                ) else {
                     self.open_stream_upsell(false, cx);
                     return;
-                }
-                let Some(resolution) = dc_media::screen::Resolution::from_height(resolution) else {
-                    return;
                 };
-                let mut prefs = super::go_live::Prefs::load();
-                prefs.preset = super::go_live::Preset::Custom;
+                prefs.preset = preset;
                 prefs.resolution = resolution;
                 prefs.fps = fps;
                 self.restart_stream_with(prefs, cx);
@@ -1825,113 +1807,66 @@ impl Root {
         .into_any_element()
     }
 
-    /// A slider row (`aK` with the menu slider of module 964355): the label, then a 24px control with a 4px bar and a
-    /// 16px grabber (`--grabber-size: 16px; --bar-size: 4px`, design/dom/popouts/voice-sb-volume).
+    /// Shared Discord `MenuSliderControl` row for tile/stream volume and attenuation strength.
     fn tile_slider(
         &self,
         key: &'static str,
         label: String,
-        fraction: f32,
+        _fraction: f32,
         slide: Slide,
         cx: &mut Context<Self>,
     ) -> AnyElement {
-        use gpui::{MouseButton, MouseDownEvent, MouseMoveEvent, relative};
-        let probe = format!("tile-slider-{key}");
-        let (down_probe, move_probe) = (probe.clone(), probe.clone());
-        let at = |this: &Root, probe: &str, x: Pixels| -> Option<f32> {
-            let bounds = this.tip_anchors.borrow().get(probe).copied()?;
-            let width = f32::from(bounds.size.width);
-            (width > 0.).then(|| ((f32::from(x) - f32::from(bounds.left())) / width).clamp(0., 1.))
+        use super::menu_slider::{
+            MenuSliderConfig, ThemePalette, amplitude_to_perceptual, percent_format,
+            perceptual_to_amplitude, snap_step, step_fraction,
         };
-        div()
-            .flex_none()
-            .flex()
-            .flex_col()
-            .child(
-                div()
-                    .p(px(8.))
-                    .text_size(px(14.))
-                    .line_height(px(18.))
-                    .font_weight(FontWeight(500.))
-                    .text_color(color("--text-strong"))
-                    .child(label),
-            )
-            .child(
-                div()
-                    .id(SharedString::from(probe.clone()))
-                    .relative()
-                    .mx(px(8.))
-                    .mb(px(4.))
-                    .h(px(24.))
-                    .cursor_pointer()
-                    .child(self.anchor_probe(probe.clone()))
-                    .on_mouse_down(
-                        MouseButton::Left,
-                        cx.listener(move |this, event: &MouseDownEvent, _, cx| {
-                            cx.stop_propagation();
-                            if let Some(fraction) = at(this, &down_probe, event.position.x) {
-                                this.slide_tile(slide, fraction);
-                                cx.notify();
-                            }
-                        }),
-                    )
-                    .on_mouse_move(cx.listener(move |this, event: &MouseMoveEvent, _, cx| {
-                        if event.dragging()
-                            && let Some(fraction) = at(this, &move_probe, event.position.x)
-                        {
-                            this.slide_tile(slide, fraction);
-                            cx.notify();
-                        }
-                    }))
-                    .child(
-                        div()
-                            .absolute()
-                            .left(px(0.))
-                            .top(px(10.))
-                            .w_full()
-                            .h(px(4.))
-                            .rounded(px(4.))
-                            .bg(color("--background-mod-strong"))
-                            .child(
-                                div()
-                                    .h_full()
-                                    .w(relative(fraction))
-                                    .rounded(px(4.))
-                                    .bg(color("--background-brand")),
-                            ),
-                    )
-                    .child(
-                        div()
-                            .absolute()
-                            .left(relative(fraction))
-                            .ml(px(-8.))
-                            .top(px(4.))
-                            .size(px(16.))
-                            .rounded_full()
-                            .bg(gpui::rgb(0xffffff)),
-                    ),
-            )
-            .into_any_element()
-    }
-
-    fn slide_tile(&mut self, slide: Slide, fraction: f32) {
-        use super::audio_menu::slider_to_volume;
-        use super::stream_volume::MAX_PERCENT;
-        let percent = slider_to_volume((fraction * MAX_PERCENT).round());
-        match slide {
+        let (min, max, value) = match slide {
             Slide::UserVolume(user) => {
-                let muted = self.context.mix.get(&user).is_some_and(|mix| mix.1);
-                self.set_user_mix(user, percent / 100., muted);
+                let factor = self.context.mix.get(&user).map_or(1., |mix| mix.0);
+                (0, 200, amplitude_to_perceptual(factor, 200))
             }
-            Slide::StreamVolume(owner) => {
-                super::stream_volume::set_percent(owner, percent);
-                self.apply_stream_volume(owner);
-            }
-            Slide::AttenuationStrength => {
-                self.commit_stream_attenuation(fraction);
-                self.apply_stream_attenuation();
-            }
-        }
+            Slide::StreamVolume(owner) => (
+                0,
+                200,
+                amplitude_to_perceptual(super::stream_volume::percent(owner) / 100., 200),
+            ),
+            Slide::AttenuationStrength => (
+                1,
+                100,
+                snap_step(self.stream_attenuation_fraction(), 1, 100),
+            ),
+        };
+        self.menu_slider_row(
+            MenuSliderConfig {
+                id: format!("tile-slider-{key}").into(),
+                label,
+                min,
+                max,
+                value,
+                palette: ThemePalette::Default,
+                format: percent_format(),
+                on_change: std::rc::Rc::new(move |this, value, cx| {
+                    match slide {
+                        Slide::UserVolume(user) => {
+                            let amp = perceptual_to_amplitude(value, 200);
+                            let muted = this.context.mix.get(&user).is_some_and(|mix| mix.1);
+                            this.set_user_mix(user, amp, muted);
+                        }
+                        Slide::StreamVolume(owner) => {
+                            let vol_pct = perceptual_to_amplitude(value, 200) * 100.;
+                            super::stream_volume::set_percent(owner, vol_pct);
+                            this.apply_stream_volume(owner);
+                        }
+                        Slide::AttenuationStrength => {
+                            this.commit_stream_attenuation(step_fraction(value, 1, 100));
+                            this.apply_stream_attenuation();
+                        }
+                    }
+                    cx.notify();
+                }),
+            },
+            cx,
+        )
     }
 }
 
@@ -1968,6 +1903,66 @@ fn rows_of(items: Option<Vec<Entry>>) -> Vec<Row> {
             Entry::Separator => None,
         })
         .collect()
+}
+
+fn allowed_stream_qualities(account: super::go_live::Account) -> Vec<(u32, u32)> {
+    let mut allowed = Vec::new();
+    for candidate in dc_media::screen::Resolution::ALL {
+        for rate in [5, 15, 30, 60] {
+            let preset = if candidate == dc_media::screen::Resolution::Source && rate == 5 {
+                super::go_live::Preset::Documents
+            } else {
+                super::go_live::Preset::Custom
+            };
+            if super::go_live::can_stream(account, preset, candidate, rate) {
+                allowed.push((resolution_height(candidate), rate));
+            }
+        }
+    }
+    allowed
+}
+
+/// Resolves a Stream Quality menu choice (600125 `P`/`V`), mapping `Preset::Documents` 5 fps cleanly.
+fn select_stream_quality(
+    prefs: &super::go_live::Prefs,
+    account: super::go_live::Account,
+    current: (u32, u32),
+    allowed: &[(u32, u32)],
+    run: &Run,
+) -> Option<(super::go_live::Preset, dc_media::screen::Resolution, u32)> {
+    let (cur_res, cur_fps) = current;
+    let cur_resolution = dc_media::screen::Resolution::from_height(cur_res)
+        .unwrap_or(dc_media::screen::Resolution::Source);
+    let (resolution_h, fps, preset) = match *run {
+        Run::Resolution(height) => {
+            let target = dc_media::screen::Resolution::from_height(height)?;
+            if prefs.preset == super::go_live::Preset::Documents || cur_fps == 5 {
+                if target == dc_media::screen::Resolution::Source {
+                    (height, 5, super::go_live::Preset::Documents)
+                } else {
+                    let (_, next_fps) = super::go_live::resolution_choice(prefs, account, target);
+                    (height, next_fps, super::go_live::Preset::Custom)
+                }
+            } else {
+                (height, cur_fps, super::go_live::Preset::Custom)
+            }
+        }
+        Run::FrameRate(rate) => (
+            cur_res,
+            rate,
+            if cur_resolution == dc_media::screen::Resolution::Source && rate == 5 {
+                super::go_live::Preset::Documents
+            } else {
+                super::go_live::Preset::Custom
+            },
+        ),
+        _ => return None,
+    };
+    if !allowed.contains(&(resolution_h, fps)) {
+        return None;
+    }
+    let resolution = dc_media::screen::Resolution::from_height(resolution_h)?;
+    Some((preset, resolution, fps))
 }
 
 fn resolution_height(resolution: dc_media::screen::Resolution) -> u32 {
@@ -2337,6 +2332,37 @@ mod tests {
              60 FPS ( ); #Resolution; 480p ( ); 720p (o); 1080p ( ); 1440p ( ); Source ( )}; \
              Share Stream Audio [x]; | ~Pop Out Stream; | More Options > {Show My Screen Share [x]; \
              Pause Preview When Discord Isn\u{2019}t Focused [x]; ~Report Problem}"
+        );
+    }
+
+    #[test]
+    fn preset_documents_5fps_stream_quality_selection_matches_go_live_rules() {
+        let free = super::super::go_live::Account::default();
+        let allowed = allowed_stream_qualities(free);
+        assert!(allowed.contains(&(0, 5)));
+        let docs_prefs = super::super::go_live::Prefs {
+            preset: super::super::go_live::Preset::Documents,
+            resolution: dc_media::screen::Resolution::Source,
+            fps: 5,
+            ..Default::default()
+        };
+        // Picking Source while already at 5 fps stays on Preset::Documents without failing check.
+        assert_eq!(
+            select_stream_quality(&docs_prefs, free, (0, 5), &allowed, &Run::Resolution(0)),
+            Some((
+                super::super::go_live::Preset::Documents,
+                dc_media::screen::Resolution::Source,
+                5
+            ))
+        );
+        // Picking 720p from Documents 5 fps promotes to 30 fps Custom stream per go_live::resolution_choice.
+        assert_eq!(
+            select_stream_quality(&docs_prefs, free, (0, 5), &allowed, &Run::Resolution(720)),
+            Some((
+                super::super::go_live::Preset::Custom,
+                dc_media::screen::Resolution::P720,
+                30
+            ))
         );
     }
 }

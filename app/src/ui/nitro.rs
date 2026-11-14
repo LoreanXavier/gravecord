@@ -704,50 +704,62 @@ impl Root {
                 .top(px(y))
                 .child(self.nitro_art(name, w, h))
         };
-        // Offsets are from the sectionsContainer's left (415) and the page top (33).
+        // Offsets are relative to the centered 809px stage inside sectionsContainer.
         div()
-            .relative()
             .h(px(400.))
             .w_full()
-            .child(trinket("star", 398. - 375., 117. - 33., 83., 90.))
-            .child(trinket("hammer", 959. - 375., 103. - 33., 100., 103.))
-            .child(trinket("car", 562. - 375., 242. - 33., 70., 59.))
-            .child(trinket("key", 463. - 375., 349. - 33., 78., 72.))
-            .child(trinket("rocket", 1048. - 375., 214. - 33., 195., 195.))
-            .child(trinket("bolt", 1181. - 375., 348. - 33., 62., 87.))
+            .flex()
+            .justify_center()
             .child(
                 div()
-                    .absolute()
-                    .top(px(120.))
-                    .left(px(119.5))
-                    .w(px(650.))
-                    .flex()
-                    .flex_col()
-                    .items_center()
-                    .child(
-                        Self::nitro_heading("Unlock a World of Perks with Nitro", 48., 48., true)
-                            .w_full()
-                            .text_center(),
-                    )
+                    .relative()
+                    .w(px(809.))
+                    .h(px(400.))
+                    .child(trinket("star", 398. - 375., 117. - 33., 83., 90.))
+                    .child(trinket("hammer", 959. - 375., 103. - 33., 100., 103.))
+                    .child(trinket("car", 562. - 375., 242. - 33., 70., 59.))
+                    .child(trinket("key", 463. - 375., 349. - 33., 78., 72.))
+                    .child(trinket("rocket", 1048. - 375., 214. - 33., 195., 195.))
+                    .child(trinket("bolt", 1181. - 375., 348. - 33., 62., 87.))
                     .child(
                         div()
-                            .mt(px(24.))
+                            .absolute()
+                            .top(px(120.))
+                            .left(px(119.5))
+                            .w(px(650.))
                             .flex()
-                            .gap(px(16.))
-                            .child(self.subscribe_button(
-                                "nitro-hero-subscribe",
-                                false,
-                                None,
-                                true,
-                                self.subscribe_cta(self.hero_upgrade_sku()),
-                                cx,
-                            ))
-                            .child(self.gift_button("nitro-hero-gift", cx)),
-                    )
-                    .child(
-                        Self::nitro_text(note, 12., 16., 500., "--text-muted")
-                            .mt(px(24.))
-                            .text_center(),
+                            .flex_col()
+                            .items_center()
+                            .child(
+                                Self::nitro_heading(
+                                    "Unlock a World of Perks with Nitro",
+                                    48.,
+                                    48.,
+                                    true,
+                                )
+                                .w_full()
+                                .text_center(),
+                            )
+                            .child(
+                                div()
+                                    .mt(px(24.))
+                                    .flex()
+                                    .gap(px(16.))
+                                    .child(self.subscribe_button(
+                                        "nitro-hero-subscribe",
+                                        false,
+                                        None,
+                                        true,
+                                        self.subscribe_cta(self.hero_upgrade_sku()),
+                                        cx,
+                                    ))
+                                    .child(self.gift_button("nitro-hero-gift", cx)),
+                            )
+                            .child(
+                                Self::nitro_text(note, 12., 16., 500., "--text-muted")
+                                    .mt(px(24.))
+                                    .text_center(),
+                            ),
                     ),
             )
             .into_any_element()
@@ -758,25 +770,28 @@ impl Root {
         title: &'static str,
         id: &'static str,
         boxes: &[Bento],
+        bento_w: f32,
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let mut grid = div().flex().flex_wrap().gap(px(32.)).w_full();
         for item in boxes {
-            grid = grid.child(self.bento_box(item, cx));
+            grid = grid.child(self.bento_box(item, bento_w, cx));
         }
         div()
             .id(id)
             .flex()
             .flex_col()
             .items_center()
-            .w_full()
+            .w(px(bento_w))
             .child(Self::nitro_heading(title, 32., 34., true))
             .child(div().w_full().mt(px(32.)).child(grid))
             .into_any_element()
     }
 
-    fn bento_box(&self, item: &Bento, cx: &mut Context<Self>) -> AnyElement {
+    fn bento_box(&self, item: &Bento, bento_w: f32, cx: &mut Context<Self>) -> AnyElement {
         let _ = cx;
+        let large_art_w = ((bento_w - 24.) * (457. / 785.)).round();
+        let small_card_w = (bento_w - 32.) / 2.;
         let wash = if item.youtube {
             linear_gradient(
                 180.,
@@ -795,8 +810,8 @@ impl Root {
             .flex_col()
             .justify_center()
             .px(px(if item.large { 24. } else { 12. }))
-            .when(item.large, |this| this.w(px(328.)).h(px(400.)))
-            .when(!item.large, |this| this.mt(px(24.)).w(px(300.)).pl(px(20.)))
+            .when(item.large, |this| this.flex_1().min_w(px(300.)).h(px(400.)))
+            .when(!item.large, |this| this.mt(px(24.)).w_full().pl(px(20.)))
             .children(
                 item.caption
                     .filter(|caption| *caption != "youtube")
@@ -859,8 +874,10 @@ impl Root {
             }));
         let art = div()
             .rounded(px(if item.large { 8. } else { 12. }))
-            .when(item.large, |this| this.w(px(457.)).h(px(400.)))
-            .when(!item.large, |this| this.w(px(364.)).h(px(225.)))
+            .when(item.large, |this| {
+                this.flex_none().w(px(large_art_w)).h(px(400.))
+            })
+            .when(!item.large, |this| this.w_full().h(px(225.)))
             .overflow_hidden()
             .children(self.images.get(item.poster).map(|image| {
                 img(image.clone())
@@ -876,11 +893,11 @@ impl Root {
             .bg(color("--background-surface-high"))
             .h(px(item.height))
             .when(item.large, |this| {
-                this.w(px(809.))
+                this.w(px(bento_w))
                     .flex()
                     .when(item.art_left, |this| this.flex_row_reverse())
             })
-            .when(!item.large, |this| this.w(px(388.5)).flex().flex_col())
+            .when(!item.large, |this| this.w(px(small_card_w)).flex().flex_col())
             .child(
                 div()
                     .absolute()
@@ -903,6 +920,7 @@ impl Root {
             } else {
                 div()
                     .relative()
+                    .w_full()
                     .flex()
                     .flex_col()
                     .child(art)
@@ -1500,25 +1518,30 @@ impl Root {
             );
         // The floating Subscribe / Gift bar shows once the hero's own buttons are out of view.
         let floating = offset > 300.;
+        let vw = f32::from(window.viewport_size().width);
+        let bento_w = (vw - 375. - 16. - 80.).clamp(320., 1105.);
         let sections = div()
+            .w_full()
             .px(px(40.))
             .flex()
             .flex_col()
             .items_center()
             .child(self.nitro_hero(cx))
-            .child(div().w_full().child(self.bento_section(
+            .child(self.bento_section(
                 "What's New",
                 "nitro-whats-new",
                 &WHATS_NEW,
+                bento_w,
                 cx,
-            )))
+            ))
             .child(div().h(px(164.)))
-            .child(div().w_full().child(self.bento_section(
+            .child(self.bento_section(
                 "Best of Nitro",
                 "nitro-best-of",
                 &BEST_OF,
+                bento_w,
                 cx,
-            )))
+            ))
             .child(div().h(px(164.)))
             .child(self.nitro_plans(cx))
             .child(div().h(px(164.)))
@@ -1578,7 +1601,7 @@ impl Root {
                                         260.,
                                     )),
                             )
-                            .child(div().pr(px(16.)).child(sections)),
+                            .child(div().w_full().pr(px(16.)).child(sections)),
                     ),
             )
             .child(nav)

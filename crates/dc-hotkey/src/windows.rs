@@ -6,8 +6,9 @@
 //! Windows removes a low-level hook whose callback is slow, so the callbacks do a lock, a few comparisons and the
 //! caller's `on_change`, which must be quick too.
 
-use crate::matcher::{Matcher, Part};
+use crate::matcher::{MOUSE_BUTTON, Matcher, Part};
 use std::ptr;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
 use windows_sys::Win32::Foundation::{LPARAM, LRESULT, WPARAM};
@@ -15,14 +16,23 @@ use windows_sys::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows_sys::Win32::System::Threading::GetCurrentThreadId;
 use windows_sys::Win32::UI::WindowsAndMessaging::{
     CallNextHookEx, GetMessageW, HC_ACTION, HHOOK, KBDLLHOOKSTRUCT, MSG, MSLLHOOKSTRUCT,
-    PostThreadMessageW, SetWindowsHookExW, UnhookWindowsHookEx, WH_KEYBOARD_LL, WH_MOUSE_LL,
-    WM_KEYDOWN, WM_KEYUP, WM_MBUTTONDOWN, WM_MBUTTONUP, WM_QUIT, WM_RBUTTONDOWN, WM_RBUTTONUP,
-    WM_SYSKEYDOWN, WM_SYSKEYUP, WM_XBUTTONDOWN, WM_XBUTTONUP,
+    PM_NOREMOVE, PeekMessageW, PostThreadMessageW, SetWindowsHookExW, UnhookWindowsHookEx,
+    WH_KEYBOARD_LL, WH_MOUSE_LL, WM_APP, WM_KEYDOWN, WM_KEYUP, WM_MBUTTONDOWN, WM_MBUTTONUP,
+    WM_QUIT, WM_RBUTTONDOWN, WM_RBUTTONUP, WM_SYSKEYDOWN, WM_SYSKEYUP, WM_XBUTTONDOWN,
+    WM_XBUTTONUP,
 };
+
+const WM_SYNC_MOUSE_HOOK: u32 = WM_APP + 1;
+
+fn has_mouse_part(shortcut: &[Part]) -> bool {
+    shortcut.iter().any(|&[kind, _, _]| kind == MOUSE_BUTTON)
+}
 
 /// What the callbacks share with the thread that started the hook.
 struct Shared {
     matcher: Mutex<Matcher>,
+    want_mouse: AtomicBool,
+    mouse_installed: AtomicBool,
     on_change: Box<dyn Fn(bool) + Send + Sync>,
 }
 
@@ -99,8 +109,18 @@ unsafe extern "system" fn keyboard_proc(code: i32, wparam: WPARAM, lparam: LPARA
 }
 
 unsafe extern "system" fn mouse_proc(code: i32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
+    // Fast-path return for WM_MOUSEMOVE and unbound events without touching TLS or locks.
     if code == HC_ACTION as i32
         && lparam != 0
+        && matches!(
+            wparam as u32,
+            WM_RBUTTONDOWN
+                | WM_RBUTTONUP
+                | WM_MBUTTONDOWN
+                | WM_MBUTTONUP
+                | WM_XBUTTONDOWN
+                | WM_XBUTTONUP
+        )
         && let Some(shared) = active()
     {
         // SAFETY: for HC_ACTION, lParam points at the MSLLHOOKSTRUCT of this event.
@@ -124,8 +144,11 @@ pub fn start(
     shortcut: Vec<Part>,
     on_change: impl Fn(bool) + Send + Sync + 'static,
 ) -> Result<Hook, &'static str> {
+    let want_mouse = has_mouse_part(&shortcut);
     let shared = Arc::new(Shared {
         matcher: Mutex::new(Matcher::new(shortcut)),
+        want_mouse: AtomicBool::new(want_mouse),
+        mouse_installed: AtomicBool::new(false),
         on_change: Box::new(on_change),
     });
     let (ready, installed) = std::sync::mpsc::channel::<Result<u32, &'static str>>();
@@ -133,8 +156,8 @@ pub fn start(
     let thread = std::thread::Builder::new()
         .name("dc-hotkey".into())
         .spawn(move || {
-            ACTIVE.with(|active| *active.borrow_mut() = Some(for_thread));
-            run(&ready);
+            ACTIVE.with(|active| *active.borrow_mut() = Some(for_thread.clone()));
+            run(&ready, &for_thread);
         });
     let thread = match thread {
         Ok(thread) => thread,
@@ -155,22 +178,26 @@ pub fn start(
     }
 }
 
-/// The hook thread: install both hooks, report, pump messages until `WM_QUIT`, remove them.
-fn run(ready: &std::sync::mpsc::Sender<Result<u32, &'static str>>) {
+/// The hook thread: install keyboard hook (and mouse hook only if needed), pump messages until `WM_QUIT`, remove them.
+fn run(ready: &std::sync::mpsc::Sender<Result<u32, &'static str>>, shared: &Shared) {
     // SAFETY: a null name asks for this process's own module handle, which hooks in this process need.
     let module = unsafe { GetModuleHandleW(ptr::null()) };
     // SAFETY: both procedures match HOOKPROC and live as long as the process.
     let keyboard = unsafe { SetWindowsHookExW(WH_KEYBOARD_LL, Some(keyboard_proc), module, 0) };
-    // SAFETY: as above.
-    let mouse = unsafe { SetWindowsHookExW(WH_MOUSE_LL, Some(mouse_proc), module, 0) };
     if keyboard.is_null() {
-        unhook(mouse);
         let _ = ready.send(Err("Windows refused the keyboard hook"));
         return;
     }
+    let mut mouse: HHOOK = if shared.want_mouse.load(Ordering::Acquire) {
+        // SAFETY: as above.
+        unsafe { SetWindowsHookExW(WH_MOUSE_LL, Some(mouse_proc), module, 0) }
+    } else {
+        ptr::null_mut()
+    };
+    shared
+        .mouse_installed
+        .store(!mouse.is_null(), Ordering::Release);
     // The mouse hook is optional: without it, only the keyboard works.
-    // SAFETY: plain call.
-    let _ = ready.send(Ok(unsafe { GetCurrentThreadId() }));
     let mut message = MSG {
         hwnd: ptr::null_mut(),
         message: 0,
@@ -179,10 +206,31 @@ fn run(ready: &std::sync::mpsc::Sender<Result<u32, &'static str>>) {
         time: 0,
         pt: windows_sys::Win32::Foundation::POINT { x: 0, y: 0 },
     };
+    // Create the thread message queue before publishing `thread_id` so an immediate
+    // `PostThreadMessageW` from `set_shortcut` or `Drop` is never dropped.
+    // SAFETY: `message` is valid and `PM_NOREMOVE` initializes the queue without consuming events.
+    unsafe { PeekMessageW(&mut message, ptr::null_mut(), 0, 0, PM_NOREMOVE) };
+    // SAFETY: plain call.
+    let _ = ready.send(Ok(unsafe { GetCurrentThreadId() }));
     // SAFETY: `message` is a valid MSG; GetMessageW returns 0 on WM_QUIT and -1 on error.
-    while unsafe { GetMessageW(&mut message, ptr::null_mut(), 0, 0) } > 0 {}
+    while unsafe { GetMessageW(&mut message, ptr::null_mut(), 0, 0) } > 0 {
+        if message.message == WM_SYNC_MOUSE_HOOK {
+            let wanted = shared.want_mouse.load(Ordering::Acquire);
+            if wanted && mouse.is_null() {
+                // SAFETY: `mouse_proc` matches HOOKPROC and lives as long as the process.
+                mouse = unsafe { SetWindowsHookExW(WH_MOUSE_LL, Some(mouse_proc), module, 0) };
+            } else if !wanted && !mouse.is_null() {
+                unhook(mouse);
+                mouse = ptr::null_mut();
+            }
+            shared
+                .mouse_installed
+                .store(!mouse.is_null(), Ordering::Release);
+        }
+    }
     unhook(keyboard);
     unhook(mouse);
+    shared.mouse_installed.store(false, Ordering::Release);
 }
 
 fn unhook(hook: HHOOK) {
@@ -195,7 +243,13 @@ fn unhook(hook: HHOOK) {
 impl Hook {
     /// The keybind changed on the settings page.
     pub fn set_shortcut(&self, shortcut: Vec<Part>) {
+        let want_mouse = has_mouse_part(&shortcut);
+        let prev = self.shared.want_mouse.swap(want_mouse, Ordering::AcqRel);
         self.shared.apply(|matcher| matcher.set_shortcut(shortcut));
+        if prev != want_mouse {
+            // SAFETY: posts a wakeup so the hook thread reconciles WH_MOUSE_LL on its own thread.
+            unsafe { PostThreadMessageW(self.thread_id, WM_SYNC_MOUSE_HOOK, 0, 0) };
+        }
     }
 
     /// Removes the hooks and releases push to talk.
@@ -230,7 +284,10 @@ mod tests {
     fn shared(shortcut: Vec<Part>) -> (Arc<Shared>, Arc<Mutex<Vec<bool>>>) {
         let log = Arc::new(Mutex::new(Vec::new()));
         let sink = log.clone();
+        let want_mouse = has_mouse_part(&shortcut);
         let shared = Arc::new(Shared {
+            want_mouse: AtomicBool::new(want_mouse),
+            mouse_installed: AtomicBool::new(false),
             matcher: Mutex::new(Matcher::new(shortcut)),
             on_change: Box::new(move |held| sink.lock().unwrap().push(held)),
         });
@@ -300,5 +357,41 @@ mod tests {
         start(Vec::new(), |_| {})
             .expect("a fresh start works")
             .stop();
+    }
+
+    #[test]
+    fn mouse_hook_installs_only_for_mouse_bindings() {
+        use std::time::{Duration, Instant};
+
+        let wait_mouse = |hook: &Hook, expected: bool| {
+            let deadline = Instant::now() + Duration::from_secs(1);
+            while hook.shared.mouse_installed.load(Ordering::Acquire) != expected
+                && Instant::now() < deadline
+            {
+                std::thread::sleep(Duration::from_millis(5));
+            }
+            assert_eq!(hook.shared.mouse_installed.load(Ordering::Acquire), expected);
+        };
+
+        assert!(!has_mouse_part(&[]));
+        assert!(!has_mouse_part(&[[KEYBOARD_KEY, 162, 1]]));
+        assert!(has_mouse_part(&[[MOUSE_BUTTON, 3, 1]]));
+
+        let hook = start(vec![[KEYBOARD_KEY, 135, 1]], |_| {}).expect("keyboard hook installs");
+        assert!(
+            !hook.shared.want_mouse.load(Ordering::Acquire),
+            "keyboard-only binding must not request WH_MOUSE_LL"
+        );
+        wait_mouse(&hook, false);
+
+        hook.set_shortcut(vec![[MOUSE_BUTTON, 3, 1]]);
+        assert!(hook.shared.want_mouse.load(Ordering::Acquire));
+        wait_mouse(&hook, true);
+
+        hook.set_shortcut(vec![[KEYBOARD_KEY, 136, 1]]);
+        assert!(!hook.shared.want_mouse.load(Ordering::Acquire));
+        wait_mouse(&hook, false);
+
+        hook.stop();
     }
 }

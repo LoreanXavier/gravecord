@@ -862,7 +862,7 @@ impl Root {
                             0.95 + 0.05 * progress
                         },
                     })
-                    .with_priority(2)
+                    .with_priority(10)
                     .into_any_element(),
                 )
             })

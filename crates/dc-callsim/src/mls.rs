@@ -169,8 +169,8 @@ impl Group {
                 .into_iter()
                 .filter(|m| *m != member)
                 .collect();
-            if room <= 1 && others.len() <= 1 {
-                // A member alone in the room reinitializes its own group at epoch 0 (`enter_sole_member_waiting`).
+            if room == 0 || others.is_empty() {
+                // No members remain in the room: reset the group back to epoch 0.
                 self.leaves = others.into_iter().map(Some).collect();
                 self.epoch = 0;
                 self.detached.clear();

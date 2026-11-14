@@ -693,7 +693,7 @@ impl Devices {
 /// The voice settings' state on `Root`.
 pub(in crate::ui) struct VoiceState {
     stored: Stored,
-    /// The microphone outside a call, while the page shows (and for Mic Test in a call).
+    /// The microphone outside a call, while the page shows.
     preview: Option<dc_voice::Preview>,
     preview_failed: Option<Instant>,
     repaint: Option<Task<()>>,
@@ -1131,7 +1131,10 @@ impl Root {
                 self.voice.drag = None;
             }
         }
-        let wanted = visible && (self.call.is_none() || self.voice.mic_test.is_some());
+        if let Some(call) = &self.call {
+            call.controls.set_loopback(self.voice.mic_test.is_some());
+        }
+        let wanted = visible && self.call.is_none();
         if !wanted {
             self.voice.preview = None;
         } else if self.voice.preview.is_none()
@@ -1180,6 +1183,9 @@ impl Root {
             return false;
         }
         let connected = self.call.as_ref().is_some_and(|call| call.connected);
+        if self.call.is_some() {
+            self.voice.preview = None;
+        }
         // `S && e && !d && _micTestStop()`: testing in a call that is no longer deafened.
         if self.voice.mic_test.is_some() && connected && !self.self_deaf {
             self.stop_mic_test(cx);
@@ -1212,9 +1218,14 @@ impl Root {
             silent_since: None,
             detecting: true,
         });
-        match &self.voice.preview {
-            Some(preview) => preview.set_loopback(true),
-            None => self.sync_voice_page(cx),
+        if let Some(call) = &self.call {
+            call.controls.set_loopback(true);
+            self.voice.preview = None;
+        } else {
+            match &self.voice.preview {
+                Some(preview) => preview.set_loopback(true),
+                None => self.sync_voice_page(cx),
+            }
         }
         cx.notify();
     }
@@ -1227,6 +1238,9 @@ impl Root {
             seconds = test.started.elapsed().as_secs(),
             "mic test stopped"
         );
+        if let Some(call) = &self.call {
+            call.controls.set_loopback(false);
+        }
         if let Some(preview) = &self.voice.preview {
             preview.set_loopback(false);
         }

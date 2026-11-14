@@ -641,7 +641,7 @@ pub(super) fn cached_palette(key: &str, image: &gpui::Image) -> Vec<[u8; 3]> {
     }
     let palette = image::load_from_memory(image.bytes())
         .map(|decoded| crate::palette::avatar_palette(decoded.to_rgba8().as_raw()))
-        .unwrap_or_else(|_| vec![[0, 0, 0]]);
+        .unwrap_or_default();
     PALETTES.with(|cache| cache.borrow_mut().insert(id, palette.clone()));
     palette
 }
@@ -775,5 +775,24 @@ mod tests {
             light.token("--input-placeholder-text-default"),
             light.token("--text-muted")
         );
+    }
+
+    #[test]
+    fn decode_error_returns_empty_palette_and_webp_decodes() {
+        assert_eq!(palette_pair(&[]), None);
+        let corrupt = gpui::Image::from_bytes(gpui::ImageFormat::Webp, vec![0, 1, 2]);
+        assert!(cached_palette("test:corrupt", &corrupt).is_empty());
+
+        let img = image::RgbaImage::from_pixel(4, 4, image::Rgba([88, 101, 242, 255]));
+        let mut encoded = std::io::Cursor::new(Vec::new());
+        image::DynamicImage::ImageRgba8(img)
+            .write_to(&mut encoded, image::ImageFormat::WebP)
+            .expect("encode webp");
+        let webp = gpui::Image::from_bytes(gpui::ImageFormat::Webp, encoded.into_inner());
+        let palette = cached_palette("test:webp", &webp);
+        assert_eq!(palette.first().copied(), Some([92, 100, 244]));
+        let pair = palette_pair(&palette).expect("webp palette");
+        assert_eq!(pair[0], 0x5c64f4);
+        assert_ne!(pair, [0, 0]);
     }
 }

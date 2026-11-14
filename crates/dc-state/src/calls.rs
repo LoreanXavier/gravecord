@@ -311,15 +311,16 @@ impl CallStore {
         let channel = payload.channel_id;
         let previous = self.calls.get(&channel);
         let region_updated = previous.is_some_and(|call| {
-            call.region_updated || call.region.as_deref() != payload.region.as_deref()
+            call.region_updated
+                || (payload.region.is_some() && call.region.as_deref() != payload.region.as_deref())
         });
         let base = previous.cloned().unwrap_or_default();
         self.calls.insert(
             channel,
             Call {
                 channel_id: channel,
-                message_id: payload.message_id,
-                region: payload.region.clone(),
+                message_id: payload.message_id.or(base.message_id),
+                region: payload.region.clone().or(base.region),
                 ringing: payload.rings.iter().map(|ring| ring.user).collect(),
                 rings: payload.rings.clone(),
                 region_updated,
@@ -722,5 +723,26 @@ mod tests {
         );
         store.dispatch("READY", &json!({"user": {"id": "10"}}), &known);
         assert!(store.get_calls().is_empty());
+    }
+
+    #[test]
+    fn call_update_preserves_message_id_and_region_when_omitted() {
+        let mut store = store();
+        store.dispatch(
+            "CALL_CREATE",
+            &json!({"channel_id": "500", "message_id": "900", "region": "us-east", "ongoing_rings": {"20": "10"}}),
+            &known,
+        );
+        store.dispatch(
+            "CALL_UPDATE",
+            &json!({"channel_id": "500", "ongoing_rings": {}}),
+            &known,
+        );
+        let call = store.get_call(DM).unwrap();
+        assert_eq!(call.message_id, Some(900));
+        assert_eq!(call.region.as_deref(), Some("us-east"));
+        assert!(call.ringing.is_empty());
+        assert!(store.call_ringable_now(DM));
+        assert!(store.is_call_active(DM, None));
     }
 }

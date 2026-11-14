@@ -347,7 +347,7 @@ pub fn avatar_palette(rgba: &[u8]) -> Vec<[u8; 3]> {
         .filter(|pixel| pixel[3] >= 125 && !(pixel[0] > 250 && pixel[1] > 250 && pixel[2] > 250))
         .map(|pixel| [pixel[0], pixel[1], pixel[2]])
         .collect();
-    quantize(&pixels, 5).unwrap_or_else(|| vec![[0, 0, 0]])
+    quantize(&pixels, 5).unwrap_or_default()
 }
 
 /// 654107/823545: reduce HSL saturation, then darken in Lab until overlay text is legible.
@@ -469,5 +469,14 @@ mod tests {
             rgba.extend_from_slice(&pixel);
         }
         assert_eq!(avatar_palette(&rgba)[0], [92, 100, 244]);
+    }
+
+    #[test]
+    fn empty_or_white_pixels_return_empty_palette() {
+        assert!(avatar_palette(&[]).is_empty());
+        let all_white = vec![255u8; 400];
+        assert!(avatar_palette(&all_white).is_empty());
+        let all_transparent = vec![0u8; 400];
+        assert!(avatar_palette(&all_transparent).is_empty());
     }
 }
