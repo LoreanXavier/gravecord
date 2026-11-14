@@ -15,10 +15,12 @@ pub(crate) mod send;
 pub(crate) mod sender;
 pub(crate) mod sps;
 
-use crate::{Frame, Stereo};
+#[cfg(test)]
+use crate::Frame;
+use crate::Stereo;
 use std::{
     collections::{HashMap, VecDeque},
-    sync::{Arc, Mutex, atomic::AtomicU32},
+    sync::{Arc, Mutex, Weak, atomic::AtomicU32},
 };
 
 /// Frames of watched stream audio waiting for the call's clock (120 ms) at most. A stream connection pushes one every
@@ -27,6 +29,7 @@ use std::{
 const STREAM_AUDIO_FRAMES: usize = 6;
 /// RMS (about -50 dBFS) from which a mixed voice frame counts as someone speaking, for stream attenuation. The
 /// official engine's compressor is native code; this threshold is ours (BLOCKED.md, stream attenuation).
+#[cfg(test)]
 const VOICE_AUDIBLE: f32 = 0.003;
 
 /// Where a picture comes from.
@@ -66,6 +69,10 @@ pub struct VideoHub {
     sidechain: Arc<AtomicU32>,
     /// Numbers the stream connections that take a queue.
     stream_connections: Arc<std::sync::atomic::AtomicU64>,
+    /// Shared call/stream low-latency audio playout bus attached by the active call.
+    playout: Arc<Mutex<Option<Weak<crate::playout::CallPlayout>>>>,
+    /// Active Go Live stream telemetry surfaced in [`crate::Controls::rtc_stats`].
+    stream_stats: crate::rtc_stats::StreamStatsMap,
     /// The call simulator's observer of delivered pictures (`sim` feature); it never changes what the sink gets.
     #[cfg(feature = "sim")]
     tap: Arc<Mutex<Option<crate::sim::Tap>>>,
@@ -85,6 +92,8 @@ impl VideoHub {
             stream_audio: Arc::default(),
             sidechain: Arc::default(),
             stream_connections: Arc::default(),
+            playout: Arc::default(),
+            stream_stats: crate::rtc_stats::StreamStatsMap::default(),
             #[cfg(feature = "sim")]
             tap: Arc::default(),
         }
@@ -160,6 +169,7 @@ impl VideoHub {
     /// The next frame of watched stream audio: every watched stream at its own level, summed, and, while stream
     /// attenuation is on and `voices` (what people say in the same step) is audible, scaled by
     /// `(100 - strength) / 100` as the global attenuation maps its percent (module 31595).
+    #[cfg(test)]
     pub(crate) fn pop_stream_audio(&self, voices: Option<&Frame>) -> Option<Stereo> {
         let duck = self.duck(voices);
         let volumes = self
@@ -202,6 +212,7 @@ impl VideoHub {
     }
 
     /// The gain stream attenuation asks for while `voices` speak: 1.0 when it is off or nobody is audible.
+    #[cfg(test)]
     fn duck(&self, voices: Option<&Frame>) -> f32 {
         let strength = self.sidechain_strength();
         if strength == 0 {
@@ -278,10 +289,14 @@ impl VideoHub {
 
     /// The level of `owner`'s stream audio, relative to the 1.0 default.
     pub fn set_stream_volume(&self, owner: u64, volume: f32) {
+        let clamped = volume.clamp(0.0, 2.0);
         self.stream_volumes
             .lock()
             .unwrap_or_else(|e| e.into_inner())
-            .insert(owner, volume.clamp(0.0, 2.0));
+            .insert(owner, clamped);
+        if let Some(playout) = self.playout() {
+            playout.set_stream_volume(owner, clamped);
+        }
     }
 
     pub fn stream_volume(&self, owner: u64) -> f32 {
@@ -292,6 +307,61 @@ impl VideoHub {
             .copied()
             .unwrap_or(1.0)
     }
+
+    pub(crate) fn sidechain_arc(&self) -> Arc<AtomicU32> {
+        Arc::clone(&self.sidechain)
+    }
+
+    pub(crate) fn attach_playout(&self, playout: &Arc<crate::playout::CallPlayout>) {
+        *self.playout.lock().unwrap_or_else(|e| e.into_inner()) = Some(Arc::downgrade(playout));
+        let volumes: Vec<(u64, f32)> = self
+            .stream_volumes
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .iter()
+            .map(|(&owner, &vol)| (owner, vol))
+            .collect();
+        for (owner, vol) in volumes {
+            playout.set_stream_volume(owner, vol);
+        }
+    }
+
+    pub(crate) fn playout(&self) -> Option<Arc<crate::playout::CallPlayout>> {
+        self.playout
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .as_ref()
+            .and_then(Weak::upgrade)
+    }
+
+    pub(crate) fn stream_stats(&self) -> &crate::rtc_stats::StreamStatsMap {
+        &self.stream_stats
+    }
+}
+
+/// Returns true if an Annex-B H.264 access unit contains an IDR slice NAL unit (type 5).
+pub(crate) fn h264_has_idr(frame: &[u8]) -> bool {
+    let mut i = 0;
+    while i + 3 < frame.len() {
+        let nal_offset = if i + 4 < frame.len() && frame[i..i + 4] == [0, 0, 0, 1] {
+            Some(i + 4)
+        } else if frame[i..i + 3] == [0, 0, 1] {
+            Some(i + 3)
+        } else {
+            None
+        };
+        if let Some(pos) = nal_offset {
+            if let Some(&hdr) = frame.get(pos)
+                && (hdr & 0x1f) == 5
+            {
+                return true;
+            }
+            i = pos;
+        } else {
+            i += 1;
+        }
+    }
+    false
 }
 
 /// Watched stream audio between the stream connection's clock and the call's. Both tick every 20 ms but neither
@@ -318,6 +388,7 @@ impl StreamAudio {
         self.queue.push_back(frame);
     }
 
+    #[cfg(test)]
     pub(crate) fn pop(&mut self) -> Option<Stereo> {
         let frame = self.queue.pop_front();
         match frame {

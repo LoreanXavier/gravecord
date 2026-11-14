@@ -8,6 +8,7 @@
 //! `crates/platform/src/audio.rs` (`output_config`), MIT OR Apache-2.0. Dropped: echo
 //! cancellation, noise suppression, input gate, the
 //! microphone preview, macOS permission prompts, PulseAudio buffer sizing and diagnostics.
+use crate::playout::{CallPlayout, PlayoutReader};
 use crate::{Frame, Stereo};
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use std::path::PathBuf;
@@ -266,33 +267,57 @@ impl Gate {
     }
 }
 
+enum PlaybackDriver {
+    Call {
+        playout: Arc<CallPlayout>,
+        render_tap: Option<rtrb::Consumer<Frame>>,
+        headless_next: Instant,
+    },
+    Preview {
+        playback: mpsc::Receiver<Stereo>,
+    },
+}
+
 /// Owns the device worker; dropping it stops the worker and closes both devices.
 pub(crate) struct Audio {
     gate: Arc<Gate>,
     thread: std::thread::Thread,
 }
 impl Audio {
-    /// `capture` receives microphone frames; `playback` supplies mixed stereo frames to play.
+    /// Starts call audio: `capture` receives processed microphone frames while speaker playback pulls directly from
+    /// `playout` inside the device callback.
     pub fn start(
         capture: mpsc::SyncSender<Frame>,
-        playback: mpsc::Receiver<Stereo>,
-    ) -> Result<Self, &'static str> {
-        Self::start_as(capture, playback, true)
-    }
-    /// `call` is false for the settings page's microphone preview: it records nothing and reports no input state.
-    pub(crate) fn start_as(
-        capture: mpsc::SyncSender<Frame>,
-        playback: mpsc::Receiver<Stereo>,
-        call: bool,
+        playout: Arc<CallPlayout>,
     ) -> Result<Self, &'static str> {
         let gate = Arc::new(Gate::default());
         let worker = gate.clone();
-        if call {
-            prefs().store_input(None, false);
-        }
+        prefs().store_input(None, false);
+        let driver = PlaybackDriver::Call {
+            playout,
+            render_tap: None,
+            headless_next: Instant::now(),
+        };
         let thread = std::thread::Builder::new()
             .name("dc-voice-audio".into())
-            .spawn(move || run(&worker, &capture, &playback, call))
+            .spawn(move || run(&worker, &capture, driver, true))
+            .map_err(|_| "Could not start audio device worker")?;
+        Ok(Self {
+            gate,
+            thread: thread.thread().clone(),
+        })
+    }
+    /// Starts the microphone preview (loopback mic test): channel-fed loopback, no call input watcher or recorder.
+    pub(crate) fn start_preview(
+        capture: mpsc::SyncSender<Frame>,
+        playback: mpsc::Receiver<Stereo>,
+    ) -> Result<Self, &'static str> {
+        let gate = Arc::new(Gate::default());
+        let worker = gate.clone();
+        let driver = PlaybackDriver::Preview { playback };
+        let thread = std::thread::Builder::new()
+            .name("dc-voice-audio".into())
+            .spawn(move || run(&worker, &capture, driver, false))
             .map_err(|_| "Could not start audio device worker")?;
         Ok(Self {
             gate,
@@ -300,18 +325,19 @@ impl Audio {
         })
     }
     /// The call simulator's devices (`sim` feature): no device opens. The "microphone" sends the tone of the session's
-    /// plan (or nothing) through the same gate a real one passes, the "speaker" measures what it is handed and drops it.
+    /// plan (or nothing) through the same gate a real one passes, the "speaker" pulls 20 ms frames from `playout`
+    /// every 20 ms independently of the network loop and measures them.
     #[cfg(feature = "sim")]
     pub(crate) fn start_simulated(
         capture: mpsc::SyncSender<Frame>,
-        playback: mpsc::Receiver<Stereo>,
+        playout: Arc<CallPlayout>,
         session: String,
     ) -> Result<Self, &'static str> {
         let gate = Arc::new(Gate::default());
         let worker = gate.clone();
         let thread = std::thread::Builder::new()
             .name("dc-voice-sim-audio".into())
-            .spawn(move || run_simulated(&worker, &capture, &playback, &session))
+            .spawn(move || run_simulated(&worker, &capture, &playout, &session))
             .map_err(|_| "Could not start the simulated audio worker")?;
         Ok(Self {
             gate,
@@ -347,7 +373,7 @@ impl Drop for Audio {
 fn run(
     gate: &Arc<Gate>,
     capture: &mpsc::SyncSender<Frame>,
-    playback: &mpsc::Receiver<Stereo>,
+    mut driver: PlaybackDriver,
     call: bool,
 ) {
     let mut streams: Option<Streams> = None;
@@ -383,7 +409,24 @@ fn run(
             open_at = now + RECOVERY_DELAY;
         }
         if streams.is_none() && now >= open_at {
-            match Streams::open(gate) {
+            let opened = match &mut driver {
+                PlaybackDriver::Call {
+                    playout,
+                    render_tap,
+                    ..
+                } => {
+                    let (reader, tap) = playout.open_reader();
+                    match Streams::open_call(gate, reader) {
+                        Ok(s) => {
+                            *render_tap = Some(tap);
+                            Ok(s)
+                        }
+                        Err(e) => Err(e),
+                    }
+                }
+                PlaybackDriver::Preview { .. } => Streams::open_loopback(gate),
+            };
+            match opened {
                 Ok(opened) => streams = Some(opened),
                 Err(error) => {
                     warn!("voice audio devices unavailable: {error}");
@@ -391,8 +434,42 @@ fn run(
                 }
             }
         }
+        if call {
+            let wanted = prefs().recording_generation.load(Ordering::Acquire);
+            if wanted != recording_generation {
+                recording_generation = wanted;
+                if let Some(done) = recorder.take() {
+                    done.finish();
+                }
+                recorder = prefs()
+                    .recording_folder()
+                    .map(crate::recorder::Recorder::new);
+                prefs()
+                    .recorder_alive
+                    .store(recorder.is_some(), Ordering::Release);
+            }
+        }
         let Some(active) = &mut streams else {
-            while playback.try_recv().is_ok() {}
+            match &mut driver {
+                PlaybackDriver::Preview { playback } => while playback.try_recv().is_ok() {},
+                PlaybackDriver::Call {
+                    playout,
+                    headless_next,
+                    ..
+                } => {
+                    if now >= *headless_next {
+                        *headless_next = (*headless_next + Duration::from_millis(20)).max(now);
+                        if let Some(frame) = playout.pull_20ms(gate.playback()) {
+                            let mono = crate::to_mono(&frame);
+                            processor.render(&mono, &prefs().processing);
+                            if let Some(recorder) = &mut recorder {
+                                recorder.record(crate::recorder::Track::Speaker, &mono);
+                            }
+                            played += 1;
+                        }
+                    }
+                }
+            }
             std::thread::park_timeout(Duration::from_millis(10));
             continue;
         };
@@ -423,23 +500,8 @@ fn run(
                 prefs().store_input(None, watcher.detected_this_connection());
             }
         }
-        if call {
-            let wanted = prefs().recording_generation.load(Ordering::Acquire);
-            if wanted != recording_generation {
-                recording_generation = wanted;
-                if let Some(done) = recorder.take() {
-                    done.finish();
-                }
-                recorder = prefs()
-                    .recording_folder()
-                    .map(crate::recorder::Recorder::new);
-                prefs()
-                    .recorder_alive
-                    .store(recorder.is_some(), Ordering::Release);
-            }
-            if let Some(change) = watcher.tick(now) {
-                prefs().store_input(Some(change), watcher.detected_this_connection());
-            }
+        if call && let Some(change) = watcher.tick(now) {
+            prefs().store_input(Some(change), watcher.detected_this_connection());
         }
         for _ in 0..RING {
             let Ok(mut frame) = active.input.pop() else {
@@ -465,19 +527,39 @@ fn run(
                 let _ = capture.try_send(frame);
             }
         }
-        for _ in 0..RING {
-            let Ok(frame) = playback.try_recv() else {
-                break;
-            };
-            if gate.playback() {
-                // What the speakers play is the echo canceller's reference.
-                let mono = crate::to_mono(&frame);
-                processor.render(&mono, &prefs().processing);
-                if let Some(recorder) = &mut recorder {
-                    recorder.record(crate::recorder::Track::Speaker, &mono);
+        match &mut driver {
+            PlaybackDriver::Call { render_tap, .. } => {
+                if let Some(tap) = render_tap.as_mut() {
+                    for _ in 0..RING * 2 {
+                        let Ok(mono) = tap.pop() else {
+                            break;
+                        };
+                        processor.render(&mono, &prefs().processing);
+                        if let Some(recorder) = &mut recorder {
+                            recorder.record(crate::recorder::Track::Speaker, &mono);
+                        }
+                        played += 1;
+                    }
                 }
-                played += 1;
-                let _ = active.output.push(frame);
+            }
+            PlaybackDriver::Preview { playback } => {
+                if let Some(output) = active.output.as_mut() {
+                    for _ in 0..RING {
+                        let Ok(frame) = playback.try_recv() else {
+                            break;
+                        };
+                        if gate.playback() {
+                            // What the speakers play is the echo canceller's reference.
+                            let mono = crate::to_mono(&frame);
+                            processor.render(&mono, &prefs().processing);
+                            if let Some(recorder) = &mut recorder {
+                                recorder.record(crate::recorder::Track::Speaker, &mono);
+                            }
+                            played += 1;
+                            let _ = output.push(frame);
+                        }
+                    }
+                }
             }
         }
         if now >= tally_at {
@@ -507,7 +589,7 @@ fn run(
 fn run_simulated(
     gate: &Arc<Gate>,
     capture: &mpsc::SyncSender<Frame>,
-    playback: &mpsc::Receiver<Stereo>,
+    playout: &CallPlayout,
     session: &str,
 ) {
     let _live = crate::sim::Live::audio();
@@ -523,10 +605,8 @@ fn run_simulated(
                 crate::sim::sent(session);
             }
         }
-        while let Ok(frame) = playback.try_recv() {
-            if gate.playback() {
-                crate::sim::played(session, &frame);
-            }
+        if let Some(frame) = playout.pull_20ms(gate.playback()) {
+            crate::sim::played(session, &frame);
         }
         next += Duration::from_millis(20);
         let now = Instant::now();
@@ -556,10 +636,25 @@ struct Streams {
     input_stream: Option<cpal::Stream>,
     _output_stream: cpal::Stream,
     input: rtrb::Consumer<Frame>,
-    output: rtrb::Producer<Stereo>,
+    output: Option<rtrb::Producer<Stereo>>,
 }
 impl Streams {
-    fn open(gate: &Arc<Gate>) -> Result<Self, &'static str> {
+    fn open_call(gate: &Arc<Gate>, reader: PlayoutReader) -> Result<Self, &'static str> {
+        let host = cpal::default_host();
+        let device = pick(host.output_devices().ok(), prefs().output_device())
+            .or_else(|| host.default_output_device())
+            .ok_or("No default speaker is available")?;
+        let config = output_config(&device)?;
+        debug!(
+            rate = config.sample_rate(),
+            channels = config.channels(),
+            "voice speaker opened"
+        );
+        let render = Playback::new_call(config.sample_rate(), reader);
+        Self::open_with(host, device, config, gate, render, None)
+    }
+
+    fn open_loopback(gate: &Arc<Gate>) -> Result<Self, &'static str> {
         let host = cpal::default_host();
         let device = pick(host.output_devices().ok(), prefs().output_device())
             .or_else(|| host.default_output_device())
@@ -572,6 +667,17 @@ impl Streams {
         );
         let (output, output_read) = rtrb::RingBuffer::new(RING);
         let render = Playback::new(config.sample_rate(), output_read);
+        Self::open_with(host, device, config, gate, render, Some(output))
+    }
+
+    fn open_with(
+        host: cpal::Host,
+        device: cpal::Device,
+        config: cpal::SupportedStreamConfig,
+        gate: &Arc<Gate>,
+        render: Playback,
+        output: Option<rtrb::Producer<Stereo>>,
+    ) -> Result<Self, &'static str> {
         let stream_config = config.config();
         let stream = match config.sample_format() {
             cpal::SampleFormat::F32 => output_stream::<f32>(&device, &stream_config, render, gate),
@@ -825,16 +931,23 @@ impl Capture {
 /// Resample 48 kHz stereo frames linearly to the device rate. A mono device gets the mean of both channels; on more
 /// than two the front pair carries left and right and every other channel their mean.
 ///
-/// The frames come on the voice loop's 20 ms clock, the device takes them on its own: the two drift apart by the
-/// crystals' error. Playback starts (and starts again after running dry) only once [`PLAYBACK_PRIME`] frames wait, so a
-/// late frame is a single gap rather than one per frame, and the resampling ratio leans by at most
-/// [`PLAYBACK_MAX_LEAN`] to hold the waiting frames near the prime level, so drift never piles frames up to the ring's
-/// end (where they were dropped) nor runs it dry.
+/// For live calls (`Call`), each 10 ms block is pulled directly inside the OS audio callback from [`PlayoutReader`] with
+/// zero priming delay or frame-drop lean; NetEq stretches cleanly inside the mixer on the device cadence. For the local
+/// microphone preview (`Loopback`), `PLAYBACK_PRIME` and `PLAYBACK_MAX_LEAN` cushion channel handoff drift.
+enum PlaybackSource {
+    Call(PlayoutReader),
+    Loopback {
+        input: rtrb::Consumer<Stereo>,
+        level: f64,
+        primed: bool,
+    },
+}
+
 struct Playback {
     generation: u64,
-    input: rtrb::Consumer<Stereo>,
+    source: PlaybackSource,
     frame: Stereo,
-    /// The next sample pair of `frame`; 960 when it is used up.
+    /// The next sample pair of `frame`; 480 (10 ms) for `Call` or 960 (20 ms) for `Loopback` when exhausted.
     index: usize,
     previous: [f32; 2],
     next: [f32; 2],
@@ -842,32 +955,48 @@ struct Playback {
     step: f64,
     /// `step` at the nominal rates.
     base_step: f64,
-    /// Waiting frames, smoothed over about two seconds of frames.
-    level: f64,
-    /// Enough frames waited to start; false after an underrun.
-    primed: bool,
 }
 
-/// Frames that wait before playback starts, and the level the drift correction holds.
+/// Frames that wait before playback starts in loopback preview mode, and the level drift correction holds.
 const PLAYBACK_PRIME: usize = 2;
-/// The largest lean of the playback rate: 0.2 %, far below a pitch anyone hears.
+/// The largest lean of the preview playback rate: 0.2 %.
 const PLAYBACK_MAX_LEAN: f64 = 0.002;
+
 impl Playback {
-    fn new(rate: u32, input: rtrb::Consumer<Stereo>) -> Self {
+    fn new_call(rate: u32, reader: PlayoutReader) -> Self {
+        let base_step = 48_000.0 / f64::from(rate);
         Self {
             generation: 0,
-            input,
+            source: PlaybackSource::Call(reader),
+            frame: [0.0; 1920],
+            index: 480,
+            previous: [0.0; 2],
+            next: [0.0; 2],
+            phase: 1.0,
+            step: base_step,
+            base_step,
+        }
+    }
+
+    fn new(rate: u32, input: rtrb::Consumer<Stereo>) -> Self {
+        let base_step = 48_000.0 / f64::from(rate);
+        Self {
+            generation: 0,
+            source: PlaybackSource::Loopback {
+                input,
+                level: PLAYBACK_PRIME as f64,
+                primed: false,
+            },
             frame: [0.0; 1920],
             index: 960,
             previous: [0.0; 2],
             next: [0.0; 2],
             phase: 1.0,
-            step: 48_000.0 / f64::from(rate),
-            base_step: 48_000.0 / f64::from(rate),
-            level: PLAYBACK_PRIME as f64,
-            primed: false,
+            step: base_step,
+            base_step,
         }
     }
+
     fn render<T: cpal::SizedSample + cpal::FromSample<f32>>(
         &mut self,
         data: &mut [T],
@@ -900,47 +1029,78 @@ impl Playback {
             }
         }
     }
+
     fn reset(&mut self) {
-        for _ in 0..RING {
-            if self.input.pop().is_err() {
-                break;
-            }
-        }
         self.frame.fill(0.0);
-        self.index = 960;
         self.previous = [0.0; 2];
         self.next = [0.0; 2];
         self.phase = 1.0;
-        self.primed = false;
-        self.level = PLAYBACK_PRIME as f64;
         self.step = self.base_step;
-    }
-    fn pull(&mut self) -> [f32; 2] {
-        if self.index == 960 {
-            let waiting = self.input.slots();
-            if !self.primed && waiting >= PLAYBACK_PRIME {
-                self.primed = true;
+        match &mut self.source {
+            PlaybackSource::Call(reader) => {
+                reader.clear();
+                self.index = 480;
             }
-            self.frame = match self.primed.then(|| self.input.pop().ok()).flatten() {
-                Some(frame) => {
-                    self.level = self.level * 0.99 + waiting as f64 * 0.01;
-                    let lean = ((self.level - PLAYBACK_PRIME as f64) * 0.001)
-                        .clamp(-PLAYBACK_MAX_LEAN, PLAYBACK_MAX_LEAN);
-                    self.step = self.base_step * (1.0 + lean);
-                    frame
+            PlaybackSource::Loopback {
+                input,
+                level,
+                primed,
+            } => {
+                for _ in 0..RING {
+                    if input.pop().is_err() {
+                        break;
+                    }
                 }
-                None => {
-                    // Dry: one frame of silence, then wait for the prime again.
-                    self.primed = false;
-                    [0.0; 1920]
+                self.index = 960;
+                *primed = false;
+                *level = PLAYBACK_PRIME as f64;
+            }
+        }
+    }
+
+    fn pull(&mut self) -> [f32; 2] {
+        match &mut self.source {
+            PlaybackSource::Call(reader) => {
+                if self.index >= 480 {
+                    let block: &mut [f32; 960] =
+                        (&mut self.frame[..960]).try_into().expect("10 ms block");
+                    let _ = reader.pull_10ms(block, true);
+                    self.index = 0;
                 }
-            };
-            self.index = 0;
+            }
+            PlaybackSource::Loopback {
+                input,
+                level,
+                primed,
+            } => {
+                if self.index >= 960 {
+                    let waiting = input.slots();
+                    if !*primed && waiting >= PLAYBACK_PRIME {
+                        *primed = true;
+                    }
+                    self.frame = match (*primed).then(|| input.pop().ok()).flatten() {
+                        Some(frame) => {
+                            *level = *level * 0.99 + waiting as f64 * 0.01;
+                            let lean = ((*level - PLAYBACK_PRIME as f64) * 0.001)
+                                .clamp(-PLAYBACK_MAX_LEAN, PLAYBACK_MAX_LEAN);
+                            self.step = self.base_step * (1.0 + lean);
+                            frame
+                        }
+                        None => {
+                            // Dry: one frame of silence, then wait for the prime again.
+                            *primed = false;
+                            [0.0; 1920]
+                        }
+                    };
+                    self.index = 0;
+                }
+            }
         }
         let pair = [self.frame[self.index * 2], self.frame[self.index * 2 + 1]];
         self.index += 1;
         pair.map(sanitize)
     }
+
     fn sample(&mut self) -> [f32; 2] {
         while self.phase >= 1.0 {
             self.previous = self.next;
@@ -951,6 +1111,14 @@ impl Playback {
         let value = [0, 1].map(|c| self.previous[c] + (self.next[c] - self.previous[c]) * t);
         self.phase += self.step;
         value
+    }
+
+    #[cfg(test)]
+    fn loopback_empty(&mut self) -> bool {
+        match &mut self.source {
+            PlaybackSource::Loopback { input, .. } => input.pop().is_err(),
+            PlaybackSource::Call(_) => true,
+        }
     }
 }
 
@@ -966,7 +1134,7 @@ pub struct Preview {
 pub fn preview(loopback: bool) -> Result<Preview, &'static str> {
     let (capture_send, capture) = mpsc::sync_channel::<Frame>(8);
     let (playback, playback_receive) = mpsc::sync_channel::<Stereo>(8);
-    let audio = Audio::start_as(capture_send, playback_receive, false)?;
+    let audio = Audio::start_preview(capture_send, playback_receive)?;
     audio.set_ready(true);
     audio.set_controls(false, false);
     let loopback = Arc::new(AtomicBool::new(loopback));
@@ -1070,7 +1238,7 @@ mod tests {
         ring.push([0.25; 1920]).unwrap();
         playback.render(&mut data, 2, &gate);
         assert!(data.iter().all(|s| *s == 0.0));
-        assert!(playback.input.pop().is_err(), "queued audio was flushed");
+        assert!(playback.loopback_empty(), "queued audio was flushed");
     }
 
     #[test]
@@ -1116,5 +1284,55 @@ mod tests {
         assert_eq!(sanitize(f32::NAN), 0.0);
         assert_eq!(sanitize(3.0), 1.0);
         assert_eq!(sanitize(-0.5), -0.5);
+    }
+
+    #[test]
+    fn call_playout_has_zero_prime_and_handles_arbitrary_buffer_sizes() {
+        use opus2::{Application, Channels, Encoder};
+
+        let sidechain = Arc::new(AtomicU32::new(0));
+        let playout = CallPlayout::new(sidechain);
+        let (reader, mut tap) = playout.open_reader();
+        let mut playback = Playback::new_call(48_000, reader);
+        let gate = open_gate();
+
+        playout.announce(1, 501).unwrap();
+        let mut encoder = Encoder::new(48_000, Channels::Mono, Application::Voip).unwrap();
+        let mut scratch = [0u8; 1275];
+        for pre in -2..0isize {
+            let pcm: Frame =
+                std::array::from_fn(|i| ((pre * 960 + i as isize) as f32 * 0.04).sin() * 0.3);
+            let _ = encoder.encode_float(&pcm, &mut scratch).unwrap();
+        }
+        for seq in 0..8usize {
+            let pcm: Frame = std::array::from_fn(|i| ((seq * 960 + i) as f32 * 0.04).sin() * 0.3);
+            let len = encoder.encode_float(&pcm, &mut scratch).unwrap();
+            playout.push_packet(501, seq as u16, (seq * 960) as u32, &scratch[..len]);
+        }
+
+        // First tiny WASAPI-style buffer (128 stereo frames) renders immediately with zero prime delay!
+        let mut first_buf = vec![0.0f32; 128 * 2];
+        playback.render(&mut first_buf, 2, &gate);
+        assert!(first_buf.iter().any(|s| s.abs() > 0.01));
+
+        // Arbitrary irregular buffer sizes pull seamlessly across 10 ms staging boundaries.
+        for frames in [440usize, 137, 512, 1024] {
+            let mut out = vec![0.0f32; frames * 2];
+            playback.render(&mut out, 2, &gate);
+            assert!(out.iter().any(|s| s.abs() > 0.01));
+        }
+
+        // Mono reference frames arrive in order on render_tap for AEC3/Recorder.
+        let mut tap_count = 0;
+        while tap.pop().is_ok() {
+            tap_count += 1;
+        }
+        assert!(tap_count >= 2);
+
+        // Deafening zeroes the callback buffer and flushes the mixer.
+        gate.deafened.store(true, Ordering::Release);
+        let mut deaf_buf = vec![0.0f32; 480 * 2];
+        playback.render(&mut deaf_buf, 2, &gate);
+        assert!(deaf_buf.iter().all(|&s| s == 0.0));
     }
 }

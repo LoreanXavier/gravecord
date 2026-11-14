@@ -108,6 +108,12 @@ pub(crate) struct VideoSender {
     expected: u64,
     lost: u64,
     next_loss_update: Instant,
+    packets_sent: u64,
+    bytes_sent: u64,
+    frames_encoded: u64,
+    keyframes_encoded: u64,
+    nacks: u64,
+    plis: u64,
 }
 
 /// libwebrtc's `kLossUpdateInterval` (GoogCC, 1 s): how often the loss transport-wide feedback reports is handed to the
@@ -121,6 +127,18 @@ pub(crate) const CALL_START_BITRATE: u32 = 600_000;
 const CALL_MAX_BITRATE: u32 = 10_000_000;
 /// `PacingController::kMaxEarlyProbeProcessing`: a probe burst may leave this much before it is due.
 const MAX_EARLY_PROBE: Duration = Duration::from_millis(1);
+
+#[derive(Clone, Copy, Debug, Default)]
+pub(crate) struct VideoSenderSnapshot {
+    pub video_ssrc: u32,
+    pub rtx_ssrc: u32,
+    pub packets_sent: u64,
+    pub bytes_sent: u64,
+    pub frames_encoded: u64,
+    pub keyframes_encoded: u64,
+    pub nacks: u64,
+    pub plis: u64,
+}
 
 /// What the send-side estimation knows, for the debug log.
 #[derive(Clone, Copy, Debug, Default)]
@@ -193,6 +211,12 @@ impl VideoSender {
             expected: 0,
             lost: 0,
             next_loss_update: now + LOSS_UPDATE,
+            packets_sent: 0,
+            bytes_sent: 0,
+            frames_encoded: 0,
+            keyframes_encoded: 0,
+            nacks: 0,
+            plis: 0,
         };
         sender.rate.set_start(start);
         sender
@@ -349,6 +373,19 @@ impl VideoSender {
         self.video_ssrc
     }
 
+    pub fn stats_snapshot(&self) -> VideoSenderSnapshot {
+        VideoSenderSnapshot {
+            video_ssrc: self.video_ssrc,
+            rtx_ssrc: self.rtx_ssrc,
+            packets_sent: self.packets_sent,
+            bytes_sent: self.bytes_sent,
+            frames_encoded: self.frames_encoded,
+            keyframes_encoded: self.keyframes_encoded,
+            nacks: self.nacks,
+            plis: self.plis,
+        }
+    }
+
     /// The rate control's current target, in bits per second.
     pub fn bitrate(&self) -> u32 {
         self.rate.target
@@ -437,7 +474,9 @@ impl VideoSender {
         if keyframe {
             self.last_keyframe = Some(now);
             self.keyframe_queued = Some(self.sequence.wrapping_sub(1));
+            self.keyframes_encoded += 1;
         }
+        self.frames_encoded += 1;
         Ok(true)
     }
 
@@ -488,6 +527,8 @@ impl VideoSender {
             let wire = transport.seal(&packet.header, &packet.payload, now)?;
             self.alr.sent(wire.len(), now);
             send(&wire)?;
+            self.packets_sent += 1;
+            self.bytes_sent += wire.len() as u64;
             self.pacer
                 .charge_repair(now, packet.payload.len(), self.rate.target);
             self.repairs += 1;
@@ -509,6 +550,8 @@ impl VideoSender {
             let wire = transport.seal(&packet.header, &packet.payload, now)?;
             self.alr.sent(wire.len(), now);
             send(&wire)?;
+            self.packets_sent += 1;
+            self.bytes_sent += wire.len() as u64;
             self.media_sent(packet, now);
         }
         Ok(())
@@ -586,6 +629,8 @@ impl VideoSender {
     ) -> bool {
         self.receiver_reports += u64::from(feedback.loss.is_some());
         self.rembs += u64::from(feedback.bitrate.is_some());
+        self.plis += u64::from(feedback.keyframe);
+        self.nacks += feedback.nacks.len() as u64;
         self.rate.observe(feedback.loss, feedback.bitrate);
         for report in &feedback.transport {
             let packets = transport.sent.feedback(report);

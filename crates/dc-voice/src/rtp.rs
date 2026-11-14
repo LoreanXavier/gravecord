@@ -436,6 +436,12 @@ impl Transport {
             sent: SentHistory::default(),
         }
     }
+    pub fn mode_name(&self) -> &'static str {
+        match self.cipher {
+            Cipher::Aes(_) => "aead_aes256_gcm_rtpsize",
+            Cipher::XChaCha(_) => "aead_xchacha20_poly1305_rtpsize",
+        }
+    }
     /// One RTP packet (Opus, H.264 or a retransmission) with the transport-wide sequence number in a one-byte RFC 8285
     /// extension (`TRANSPORT_EXTENSION`), recorded in [`Self::sent`] as leaving at `now`. As with every `rtpsize`
     /// extension, the four-byte preamble is authenticated in the clear and the element is sealed with the payload.

@@ -65,8 +65,10 @@ mod jitter;
 mod mixer;
 mod neteq;
 pub mod ogg_opus;
+mod playout;
 mod process;
 pub mod recorder;
+pub mod rtc_stats;
 mod rtp;
 mod session;
 mod signal;
@@ -89,6 +91,7 @@ pub use audio::{
 };
 pub use gate::FLOOR_DB;
 pub use process::{ProcessingPrefs, Suppression};
+pub use rtc_stats::RtcStatsSnapshot;
 pub use rtp::Mode;
 
 use session::{ControlState, Credentials, Shared};
@@ -224,22 +227,31 @@ impl Controls {
         });
     }
     /// Sets how one person sounds to us: a volume factor (1.0 is 100%, up to 2.0) and a local mute. Applies from
-    /// the next 20 ms frame, and holds for the rest of the call.
+    /// the next 10 ms block, and holds for the rest of the call.
     pub fn set_user_mix(&self, user: u64, volume: f32, muted: bool) {
+        let clamped = volume.clamp(0.0, 2.0);
         let mut table = self
             .shared
             .user_mix
             .lock()
             .unwrap_or_else(|e| e.into_inner());
-        if volume == 1.0 && !muted {
+        if clamped == 1.0 && !muted {
             table.remove(&user);
         } else {
-            table.insert(user, (volume.clamp(0.0, 2.0), muted));
+            table.insert(user, (clamped, muted));
         }
+        drop(table);
+        self.shared.playout.set_user_mix(user, clamped, muted);
     }
     /// The hub that carries pictures and watched stream audio; pass it to [`connect_stream`].
     pub fn hub(&self) -> VideoHub {
         self.shared.hub.clone()
+    }
+    /// Live snapshot of RTC transport, outbound/inbound media, and Go Live stream statistics (`PopoutWindowRTCDebug`).
+    pub fn rtc_stats(&self) -> rtc_stats::RtcStatsSnapshot {
+        self.shared
+            .rtc_stats
+            .snapshot(self.shared.hub.stream_stats().all())
     }
 }
 

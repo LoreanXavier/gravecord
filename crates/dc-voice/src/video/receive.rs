@@ -15,8 +15,8 @@ use dc_media::decode::{DecodeError, Decoder};
 use std::{
     collections::HashMap,
     sync::{
-        Arc,
-        atomic::{AtomicBool, Ordering},
+        Arc, Mutex,
+        atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering},
         mpsc,
     },
     thread::JoinHandle,
@@ -61,6 +61,32 @@ struct Source {
     awaiting: bool,
     last_pli: Option<Instant>,
     stats: Stats,
+    bytes_received: u64,
+    nacks: u64,
+    plis: u64,
+}
+
+#[derive(Clone, Copy, Debug, Default)]
+pub(crate) struct InboundVideoSourceSnapshot {
+    pub user: u64,
+    pub ssrc: u32,
+    pub rtx_ssrc: u32,
+    pub packets_received: u64,
+    pub packets_lost: u64,
+    pub bytes_received: u64,
+    pub jitter_ms: f32,
+    pub nacks: u64,
+    pub plis: u64,
+}
+
+#[derive(Clone, Debug, Default)]
+pub(crate) struct DecodedVideoSnapshot {
+    pub width: u32,
+    pub height: u32,
+    pub frames_received: u64,
+    pub frames_decoded: u64,
+    pub keyframes_decoded: u64,
+    pub decoder_name: Option<String>,
 }
 
 /// RTP clock rates of the two media kinds.
@@ -149,6 +175,18 @@ impl Stats {
         }
     }
 
+    fn packets_lost(&self) -> u64 {
+        let Some(highest) = self.highest else {
+            return 0;
+        };
+        let expected = i64::from(highest.wrapping_sub(self.base).wrapping_add(1));
+        (expected - i64::from(self.received)).max(0) as u64
+    }
+
+    fn jitter_ms(&self) -> f32 {
+        (self.jitter >> 4) as f32 * 1000.0 / self.clock.max(1) as f32
+    }
+
     /// The block for the interval since the last one, or `None` before the first packet.
     fn block(&mut self, ssrc: u32, now: Instant) -> Option<rtp::ReportBlock> {
         let highest = self.highest?;
@@ -227,6 +265,9 @@ impl Receivers {
             awaiting: true,
             last_pli: None,
             stats: Stats::new(VIDEO_CLOCK),
+            bytes_received: 0,
+            nacks: 0,
+            plis: 0,
         });
         Ok(())
     }
@@ -260,6 +301,7 @@ impl Receivers {
         if original {
             source.stats.observe(sequence, rtp.timestamp, now);
         }
+        source.bytes_received += rtp.payload.len() as u64;
         if source
             .window
             .push(sequence, rtp.timestamp, rtp.marker, &rtp.payload, now)
@@ -380,6 +422,7 @@ impl Receivers {
         let mut out = Vec::new();
         for source in &mut self.sources {
             if let Some(nack) = source.window.nack(own_ssrc, source.ssrc, now) {
+                source.nacks += 1;
                 out.push(nack);
             }
             if source.awaiting
@@ -388,6 +431,7 @@ impl Receivers {
                     .is_none_or(|at| now.saturating_duration_since(at) >= PLI_INTERVAL)
             {
                 source.last_pli = Some(now);
+                source.plis += 1;
                 let (header, body) = rtp::pli(own_ssrc, source.ssrc);
                 out.push((header, body.to_vec()));
             }
@@ -415,6 +459,30 @@ impl Receivers {
             }
         }
         out
+    }
+
+    pub fn audio_jitter_ms(&self, ssrc: u32) -> f32 {
+        self.audio
+            .iter()
+            .find(|(known, _)| *known == ssrc)
+            .map_or(0.0, |(_, stats)| stats.jitter_ms())
+    }
+
+    pub fn video_sources_snapshot(&self) -> Vec<InboundVideoSourceSnapshot> {
+        self.sources
+            .iter()
+            .map(|s| InboundVideoSourceSnapshot {
+                user: s.user,
+                ssrc: s.ssrc,
+                rtx_ssrc: s.rtx,
+                packets_received: u64::from(s.stats.received),
+                packets_lost: s.stats.packets_lost(),
+                bytes_received: s.bytes_received,
+                jitter_ms: s.stats.jitter_ms(),
+                nacks: s.nacks,
+                plis: s.plis,
+            })
+            .collect()
     }
 }
 
@@ -465,11 +533,22 @@ struct Job {
     due: std::time::Instant,
 }
 
+#[derive(Default)]
+struct DecoderStats {
+    width: AtomicU32,
+    height: AtomicU32,
+    frames_received: AtomicU64,
+    frames_decoded: AtomicU64,
+    keyframes_decoded: AtomicU64,
+    backend: Mutex<Option<String>>,
+}
+
 struct Slot {
     send: mpsc::SyncSender<Job>,
     /// The decoder refused something and wants a keyframe.
     lost: Arc<AtomicBool>,
     playout: Playout,
+    stats: Arc<DecoderStats>,
     thread: Option<JoinHandle<()>>,
 }
 
@@ -535,6 +614,7 @@ impl Decoders {
         let Some(slot) = self.slots.get_mut(&user) else {
             return Offer::Dropped;
         };
+        slot.stats.frames_received.fetch_add(1, Ordering::Relaxed);
         let due = slot.playout.due(timestamp, now).into_std();
         match slot.send.try_send(Job { data, due }) {
             Ok(()) => Offer::Queued,
@@ -561,18 +641,42 @@ impl Decoders {
         self.failed.remove(&user);
     }
 
+    pub fn video_stats(&self, user: u64) -> Option<DecodedVideoSnapshot> {
+        let slot = self.slots.get(&user)?;
+        Some(DecodedVideoSnapshot {
+            width: slot.stats.width.load(Ordering::Relaxed),
+            height: slot.stats.height.load(Ordering::Relaxed),
+            frames_received: slot.stats.frames_received.load(Ordering::Relaxed),
+            frames_decoded: slot.stats.frames_decoded.load(Ordering::Relaxed),
+            keyframes_decoded: slot.stats.keyframes_decoded.load(Ordering::Relaxed),
+            decoder_name: slot
+                .stats
+                .backend
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .clone(),
+        })
+    }
+
     fn spawn(&self, user: u64) -> Option<Slot> {
         let (send, receive) = mpsc::sync_channel::<Job>(DECODER_QUEUE);
         let lost = Arc::new(AtomicBool::new(false));
         let flag = lost.clone();
         let hub = self.hub.clone();
         let source = (self.kind)(user);
+        let stats = Arc::new(DecoderStats::default());
+        let decoder_stats = Arc::clone(&stats);
         let (started_send, started) = mpsc::sync_channel::<bool>(1);
         let thread = std::thread::Builder::new()
             .name("dc-voice-decode".into())
             .spawn(move || {
                 let mut decoder = match Decoder::new() {
                     Ok(decoder) => {
+                        *decoder_stats
+                            .backend
+                            .lock()
+                            .unwrap_or_else(|e| e.into_inner()) =
+                            Some(format!("{:?}", decoder.backend()));
                         let _ = started_send.send(true);
                         decoder
                     }
@@ -615,11 +719,23 @@ impl Decoders {
                     };
                     let decoding = std::time::Instant::now();
                     match decoder.decode(&job.data) {
-                        Ok(Some(picture)) => hub.deliver(RemoteFrame {
-                            user,
-                            source,
-                            picture,
-                        }),
+                        Ok(Some(picture)) => {
+                            decoder_stats.width.store(picture.width, Ordering::Relaxed);
+                            decoder_stats
+                                .height
+                                .store(picture.height, Ordering::Relaxed);
+                            decoder_stats.frames_decoded.fetch_add(1, Ordering::Relaxed);
+                            if super::h264_has_idr(&job.data) {
+                                decoder_stats
+                                    .keyframes_decoded
+                                    .fetch_add(1, Ordering::Relaxed);
+                            }
+                            hub.deliver(RemoteFrame {
+                                user,
+                                source,
+                                picture,
+                            });
+                        }
                         Ok(None) => {}
                         Err(DecodeError::NeedKeyframe | DecodeError::Failed) => {
                             flag.store(true, Ordering::Release);
@@ -641,6 +757,7 @@ impl Decoders {
             send,
             lost,
             playout: Playout::default(),
+            stats,
             thread: Some(thread),
         })
     }

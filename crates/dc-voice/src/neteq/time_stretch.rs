@@ -167,8 +167,16 @@ struct Analysis {
 
 /// `TimeStretch::Process` up to `CheckCriteriaAndStretch`. `input` is interleaved in 16-bit units.
 fn analyse(input: &[f32], channels: usize) -> Option<Analysis> {
-    let signal: Vec<f32> = input.iter().step_by(channels).copied().collect();
-    let downsampled = downsample_to_4khz(&signal)?;
+    let mut signal_buf = [0.0f32; 2 * FS_MULT_120];
+    let len = (input.len() / channels).min(signal_buf.len());
+    for (dst, sample) in signal_buf[..len]
+        .iter_mut()
+        .zip(input.iter().step_by(channels))
+    {
+        *dst = *sample;
+    }
+    let signal = &signal_buf[..len];
+    let downsampled = downsample_to_4khz(signal)?;
     // `AutoCorrelation`: lags kMinLag..kMaxLag of the 4 kHz copy.
     let mut correlation = [0.0f32; CORRELATION_LEN];
     for (i, value) in correlation.iter_mut().enumerate() {

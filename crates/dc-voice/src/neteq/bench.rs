@@ -8,8 +8,9 @@
 //! Two receivers: the old one (Serein's fixed window, `crate::jitter::Jitter`, and the old mixer's decode loop, kept
 //! here test-only so the comparison can be re-run) and [`super::NetEq`].
 use super::{NetEq, OUTPUT_SIZE};
+use crate::playout::{CallPlayout, PlayoutReader};
 use opus2::{Application, Bitrate, Channels, Decoder, Encoder};
-use std::sync::OnceLock;
+use std::sync::{Arc, OnceLock, atomic::AtomicU32};
 
 const RATE: usize = 48_000;
 const FRAME: usize = 960;
@@ -330,6 +331,10 @@ trait Receiver {
     fn loop_stalled(&mut self);
     /// Frames owed after a stall are popped at once (`FrameClock`) by the new path, not by the old.
     fn catches_up(&self) -> bool;
+    /// Decoupled hardware-pull playout continues pulling on device cadence across ingest stalls.
+    fn decoupled(&self) -> bool {
+        false
+    }
 }
 
 #[derive(Default, Clone, Copy, Debug)]
@@ -458,6 +463,67 @@ impl Receiver for NetEq {
     }
 }
 
+struct DecoupledPlayout {
+    playout: Arc<CallPlayout>,
+    reader: PlayoutReader,
+    _tap: rtrb::Consumer<crate::Frame>,
+}
+
+impl DecoupledPlayout {
+    fn new() -> Self {
+        let playout = Arc::new(CallPlayout::new(Arc::new(AtomicU32::new(0))));
+        playout.announce(1, 1).expect("speaker slot");
+        let (reader, tap) = playout.open_reader();
+        Self {
+            playout,
+            reader,
+            _tap: tap,
+        }
+    }
+}
+
+impl Receiver for DecoupledPlayout {
+    fn push(&mut self, packet: &Sent) {
+        self.playout
+            .push_packet(1, packet.sequence, packet.timestamp, &packet.payload);
+    }
+
+    fn pop(&mut self) -> Option<[f32; FRAME]> {
+        let mut frame = [0.0f32; FRAME];
+        let mut stereo_half = [0.0f32; OUTPUT_SIZE * 2];
+        for half in frame.as_chunks_mut::<OUTPUT_SIZE>().0 {
+            self.reader.pull_10ms(&mut stereo_half, true);
+            for (dst, lr) in half.iter_mut().zip(stereo_half.as_chunks::<2>().0) {
+                *dst = (lr[0] + lr[1]) * 0.5;
+            }
+        }
+        Some(frame)
+    }
+
+    fn counters(&self) -> Counters {
+        let snap = self.playout.publish_stats_now();
+        snap.voice_speakers
+            .first()
+            .map_or(Counters::default(), |spk| Counters {
+                concealed_samples: spk.stats.concealed_samples,
+                stretched_samples: spk.stats.accelerated_samples + spk.stats.expanded_samples,
+                fec_recovered: spk.stats.fec_recovered,
+                late_packets: spk.stats.packets_late,
+                flushes: spk.stats.flushes,
+            })
+    }
+
+    fn loop_stalled(&mut self) {}
+
+    fn catches_up(&self) -> bool {
+        true
+    }
+
+    fn decoupled(&self) -> bool {
+        true
+    }
+}
+
 /// What a run measured.
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct Measured {
@@ -503,16 +569,19 @@ fn run(receiver: &mut dyn Receiver, network: &Network, seed: u64) -> Measured {
             next_loop_stall =
                 now + 100.0 + rng.exponential(1000.0 / network.loop_stalls_per_second);
         }
-        if now < stall_until {
-            // The loop is busy: packets wait in the socket, no frame is made.
+        let stalled_now = now < stall_until;
+        if stalled_now && !receiver.decoupled() {
+            // Legacy coupled loop: packets wait in the socket, no frame is made.
             owed += 1;
             continue;
         }
-        while next_packet < packets.len() && packets[next_packet].0 <= now {
-            receiver.push(&packets[next_packet].1);
-            next_packet += 1;
+        if !stalled_now {
+            while next_packet < packets.len() && packets[next_packet].0 <= now {
+                receiver.push(&packets[next_packet].1);
+                next_packet += 1;
+            }
         }
-        let frames = if owed > 0 {
+        let frames = if !stalled_now && owed > 0 {
             let stalled = owed;
             owed = 0;
             if receiver.catches_up() {
@@ -696,7 +765,11 @@ pub(crate) fn measure_new(network: &Network) -> Measured {
     run(&mut NetEq::new(false).unwrap(), network, 7)
 }
 
-/// The whole table, old against new. `cargo test -p dc-voice --release bench_table -- --ignored --nocapture`.
+pub(crate) fn measure_playout(network: &Network) -> Measured {
+    run(&mut DecoupledPlayout::new(), network, 7)
+}
+
+/// The whole table, old against new and decoupled CallPlayout. `cargo test -p dc-voice --release bench_table -- --ignored --nocapture`.
 #[test]
 #[ignore = "prints the before/after table; slow in debug builds"]
 fn bench_table() {
@@ -707,6 +780,10 @@ fn bench_table() {
     for network in conditions() {
         println!("{}", row(network.name, "old", &measure_old(&network)));
         println!("{}", row(network.name, "NetEq", &measure_new(&network)));
+        println!(
+            "{}",
+            row(network.name, "CallPlayout", &measure_playout(&network))
+        );
     }
 }
 
@@ -770,4 +847,17 @@ fn sender_drift_is_absorbed_by_stretching() {
         assert_eq!(m.underruns, 0, "{drift_ppm}: {m:?}");
         assert!(m.added_latency_max_ms < 250.0, "{drift_ppm}: {m:?}");
     }
+}
+
+#[test]
+fn late_receive_ticks_has_zero_underruns_with_decoupled_playout() {
+    let network = Network {
+        jitter_ms: 15.0,
+        loop_stalls_per_second: 0.25,
+        ..Network::constant("late receive ticks", 50.0)
+    };
+    let m = measure_playout(&network);
+    assert_eq!(m.underruns, 0, "{m:?}");
+    assert_eq!(m.discontinuities, 0, "{m:?}");
+    assert!(m.similarity > 0.97, "{m:?}");
 }

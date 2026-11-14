@@ -9,10 +9,16 @@ use crate::{
     DisconnectReason, clock,
     dave::Dave,
     mixer::Mixer,
+    playout::CallPlayout,
+    rtc_stats::{
+        InboundAudioStats, InboundUserStats, InboundVideoStats, OutboundAudioStats, OutboundStats,
+        OutboundVideoStats, StreamStats, TransportStats,
+    },
     rtp::{self, Mode, Transport},
     session::{
         DISCOVERY_TIMEOUT, HELLO_TIMEOUT, MAX_RESUMES, NEGOTIATION, PEER_GRACE, RENEGOTIATION,
-        Socket, UDP_KEEPALIVE, UdpFailures, open, send, text, transient_receive,
+        Socket, UDP_KEEPALIVE, UdpFailures, log_ws_close, log_ws_stage_err, log_ws_stage_ok,
+        open_with_stages, sanitized_ws_error, send, text, transient_receive,
     },
     signal::{self, CLOSE_DISCONNECTED, Context, Limits},
     streams::{Role, StreamJoin},
@@ -31,7 +37,7 @@ use dc_proto::voice_op::{VoiceOp, close};
 use futures_util::StreamExt;
 use opus2::{Application, Bitrate, Channels, Encoder};
 use std::{
-    collections::VecDeque,
+    collections::{HashMap, VecDeque},
     net::SocketAddr,
     sync::{
         Arc,
@@ -403,12 +409,22 @@ const HOLD_AT: usize = 2;
 /// Longest stream audio backlog before the oldest frame goes.
 const AUDIO_BACKLOG: usize = 1920 * 6;
 
-/// Drops a watched stream's audio queue from the hub when its connection ends.
-struct ForgetAudio(VideoHub, u64, u64);
+/// Drops a watched stream's audio queue, playout slot, and stream telemetry when its connection ends.
+struct ForgetAudio {
+    hub: VideoHub,
+    playout: Option<Arc<CallPlayout>>,
+    owner: u64,
+    audio_queue: u64,
+    stream_key: String,
+}
 
 impl Drop for ForgetAudio {
     fn drop(&mut self) {
-        self.0.forget_stream_audio(self.1, self.2);
+        self.hub.forget_stream_audio(self.owner, self.audio_queue);
+        if let Some(playout) = &self.playout {
+            playout.remove_stream(self.owner);
+        }
+        self.hub.stream_stats().remove(&self.stream_key);
     }
 }
 
@@ -424,9 +440,17 @@ pub(crate) async fn run(
     let url = signal::endpoint_url(&join.endpoint)?;
     let own = join.user_id;
     let owner = join.key.owner();
-    // However this connection ends, the audio that waited for the call goes with it.
+    let stream_key_str = join.key.to_string();
+    let playout = hub.playout();
+    // However this connection ends, the audio that waited for the call and telemetry go with it.
     let audio_queue = hub.begin_stream_audio(owner);
-    let _audio = ForgetAudio(hub.clone(), owner, audio_queue);
+    let _audio = ForgetAudio {
+        hub: hub.clone(),
+        playout: playout.clone(),
+        owner,
+        audio_queue,
+        stream_key: stream_key_str.clone(),
+    };
     let sending = join.role == Role::Send;
     if sending && source.is_none() {
         return Err("A stream sender needs a source");
@@ -443,7 +467,12 @@ pub(crate) async fn run(
         session_id: &session_id,
         token: &token,
     };
-    let mut ws: Socket = open(&url).await?;
+    let opened = open_with_stages("stream", &url).await?;
+    let mut ws: Socket = opened.ws;
+    let mut diag_host = opened.host;
+    let mut diag_port = opened.port;
+    let mut tls_version = opened.tls_version;
+    let mut connect_started = opened.opened_at;
     text(&mut ws, signal::identify(&ids(), Context::Stream)).await?;
 
     let mut dave = Dave::new(own, join.channel_id)?;
@@ -455,14 +484,19 @@ pub(crate) async fn run(
     let mut next_udp_ping = Instant::now();
     let mut udp_ping_sequence = 0u32;
     let mut discovering = false;
+    let mut discovery_started = Instant::now();
     let mut discovery_deadline = Instant::now();
+    let mut routing_time_ms: Option<u64> = None;
     let mut ssrc = 0u32;
     let mut video_ssrc = 0u32;
     let mut rtx_ssrc = 0u32;
+    let mut media_session_id: Option<String> = None;
     let mut seq_ack: i64 = -1;
     let mut server_version = 0u64;
     let mut heartbeat_ms: Option<u64> = None;
     let mut heartbeat_at = Instant::now();
+    let mut heartbeat_sent = Instant::now();
+    let mut ping_ms: Option<u64> = None;
     let mut hello_deadline = Instant::now() + HELLO_TIMEOUT;
     let mut awaiting_ack = None;
     let mut heartbeat_nonce = 0u64;
@@ -530,12 +564,33 @@ pub(crate) async fn run(
     // Watcher state.
     let mut receivers = Receivers::default();
     let mut decoders = Decoders::new(hub.clone(), VideoSource::Stream);
-    // The owner's soundshare is stereo; a mono decoder folded it down.
+    // The owner's soundshare is stereo; fallback headless mixer used when no CallPlayout is attached.
     let mut mixer = Mixer::stereo();
     let mut audio_clock = clock::FrameClock::default();
+    let mut stream_audio_ssrc: Option<u32> = None;
+    let mut was_watch_active = false;
     let mut sink_wants_at = Instant::now();
     let mut tally = [0u32; 4];
     let mut tally_at = Instant::now() + Duration::from_secs(5);
+    let mut stats_at = Instant::now() + Duration::from_millis(250);
+    let mut fps_at = Instant::now() + Duration::from_secs(1);
+    let mut last_fps_at = Instant::now();
+    let mut prev_encoded_frames = 0u64;
+    let mut encoded_fps = 0u32;
+    let mut prev_decoded_frames = 0u64;
+    let mut decoded_fps = 0u32;
+    let mut outbound_audio_packets = 0u64;
+    let mut outbound_audio_bytes = 0u64;
+    let mut outbound_audio_frames = 0u64;
+    let mut inbound_packets = 0u64;
+    let mut inbound_bytes = 0u64;
+    let mut stream_audio_packets = 0u64;
+    let mut stream_audio_bytes = 0u64;
+    let mut decryption_failures = 0u64;
+    let sent_dims = source.map(|s| {
+        let l = s.limits();
+        (l.width, l.height)
+    });
 
     loop {
         if let Some(reason) = reconnect.take() {
@@ -551,7 +606,14 @@ pub(crate) async fn run(
             heartbeat_ms = None;
             awaiting_ack = None;
             missed_acks = 0;
-            ws = open(&url).await.map_err(|_| "Stream resume failed")?;
+            let reopened = open_with_stages("stream", &url)
+                .await
+                .map_err(|_| "Stream resume failed")?;
+            ws = reopened.ws;
+            diag_host = reopened.host;
+            diag_port = reopened.port;
+            tls_version = reopened.tls_version;
+            connect_started = reopened.opened_at;
             text(&mut ws, signal::resume(&ids(), seq_ack)).await?;
         }
         pacer_clock.set(
@@ -566,6 +628,7 @@ pub(crate) async fn run(
                     if announced && sending {
                         let _ = text(&mut ws, signal::video(ssrc, None)).await;
                     }
+                    log_ws_close("stream", &diag_host, diag_port, connect_started.elapsed().as_millis() as u64, 1000, 0);
                     let _ = timeout(Duration::from_secs(1), ws.close(None)).await;
                     return Ok(DisconnectReason::Requested);
                 }
@@ -646,6 +709,14 @@ pub(crate) async fn run(
                     continue;
                 }
                 if discovering && now >= discovery_deadline {
+                    log_ws_stage_err(
+                        "stream",
+                        "udp_discovery",
+                        &diag_host,
+                        diag_port,
+                        discovery_started.elapsed().as_millis() as u64,
+                        "timed_out",
+                    );
                     return Err("Stream voice UDP discovery timed out");
                 }
                 if !discovering && now >= next_udp_ping && let Some(socket) = &udp {
@@ -662,6 +733,7 @@ pub(crate) async fn run(
                         }
                     }
                     heartbeat_nonce = heartbeat_nonce.wrapping_add(1);
+                    heartbeat_sent = Instant::now();
                     text(&mut ws, signal::heartbeat(heartbeat_nonce, seq_ack, server_version)).await?;
                     awaiting_ack = Some(heartbeat_nonce);
                     heartbeat_at = now + Duration::from_millis(interval);
@@ -783,7 +855,11 @@ pub(crate) async fn run(
                         let data = dave.session.encrypt_opus(&encoded[..length]).map_err(|_| "DAVE stream audio encryption failed")?.into_owned();
                         let header = rtp::header(audio_sequence, audio_timestamp, ssrc);
                         if let (Some(crypto), Some(socket)) = (transport.as_mut(), udp.as_ref()) {
-                            udp_failures.send(socket, &crypto.seal_soundshare(&header, &data, now)?, "Stream audio UDP send failed")?;
+                            let wire = crypto.seal_soundshare(&header, &data, now)?;
+                            udp_failures.send(socket, &wire, "Stream audio UDP send failed")?;
+                            outbound_audio_packets += 1;
+                            outbound_audio_bytes += wire.len() as u64;
+                            outbound_audio_frames += 1;
                         }
                         audio_sequence = audio_sequence.wrapping_add(1);
                         audio_timestamp = audio_timestamp.wrapping_add(rtp::FRAME_SAMPLES);
@@ -819,12 +895,17 @@ pub(crate) async fn run(
                         }
                     }
                 } else {
-                    // Watching: audio from the mixer into the call's bus; keep the sink wants alive; feedback upstream.
+                    // Watching: audio flows directly into CallPlayout (or legacy VideoHub fallback if headless).
                     if secure {
-                        // One frame per 20 ms of real time: a late tick that the clock skipped owes two.
-                        for _ in 0..audio_clock.due(now.into_std()) {
-                            if let Some(frame) = mixer.pop_stereo() {
-                                hub.push_stream_audio(owner, audio_queue, frame);
+                        if let Some(p) = &playout {
+                            was_watch_active = true;
+                            let _ = p;
+                        } else {
+                            // One frame per 20 ms of real time: fallback path when no CallPlayout is attached.
+                            for _ in 0..audio_clock.due(now.into_std()) {
+                                if let Some(frame) = mixer.pop_stereo() {
+                                    hub.push_stream_audio(owner, audio_queue, frame);
+                                }
                             }
                         }
                         // Repairs that expired since the last packet; arrivals are handed over as they come.
@@ -838,6 +919,11 @@ pub(crate) async fn run(
                             text(&mut ws, signal::media_sink_wants(100)).await?;
                             sink_wants_at = now + SINK_WANTS_INTERVAL;
                         }
+                    } else if let Some(p) = &playout {
+                        if was_watch_active {
+                            p.clear_stream(owner);
+                            was_watch_active = false;
+                        }
                     } else {
                         mixer.clear();
                         hub.clear_stream_audio_of(owner);
@@ -846,6 +932,10 @@ pub(crate) async fn run(
                 }
                 if now >= tally_at {
                     let (numbered, unnumbered) = receivers.transport_counts();
+                    let (stream_audio_underruns, stream_audio_trimmed) = playout.as_ref().map_or_else(
+                        || hub.stream_audio_counts(owner),
+                        |p| (p.stats_snapshot().stream_underruns, 0),
+                    );
                     debug!(
                         received = tally[0],
                         opened = tally[1],
@@ -855,8 +945,8 @@ pub(crate) async fn run(
                         ready = dave.ready,
                         transport_cc_packets = numbered,
                         without_transport_cc = unnumbered,
-                        stream_audio_underruns = hub.stream_audio_counts(owner).0,
-                        stream_audio_trimmed = hub.stream_audio_counts(owner).1,
+                        stream_audio_underruns,
+                        stream_audio_trimmed,
                         repairs_sent = sender.as_ref().map_or(0, |sender| sender.repairs),
                         bitrate = sender.as_ref().map_or(0, VideoSender::bitrate),
                         "stream packet tally"
@@ -893,6 +983,183 @@ pub(crate) async fn run(
                     tally = [0; 4];
                     tally_at = now + Duration::from_secs(5);
                 }
+                if now >= stats_at {
+                    let sf_version = if dave.ready {
+                        signal::DAVE_PROTOCOL_VERSION as u32
+                    } else {
+                        0
+                    };
+                    let video_snap = sender.as_ref().map(VideoSender::stats_snapshot);
+                    let est = sender.as_ref().map(|s| s.estimation(transport.as_ref()));
+                    let video_sources = receivers.video_sources_snapshot();
+                    let dec = (!sending).then(|| decoders.video_stats(owner)).flatten();
+
+                    if now >= fps_at {
+                        let secs = now.saturating_duration_since(last_fps_at).as_secs_f32().max(0.25);
+                        let enc_total = video_snap.as_ref().map_or(0, |v| v.frames_encoded);
+                        encoded_fps = ((enc_total.saturating_sub(prev_encoded_frames)) as f32 / secs).round() as u32;
+                        prev_encoded_frames = enc_total;
+                        let dec_total = dec.as_ref().map_or(0, |d| d.frames_decoded);
+                        decoded_fps = ((dec_total.saturating_sub(prev_decoded_frames)) as f32 / secs).round() as u32;
+                        prev_decoded_frames = dec_total;
+                        last_fps_at = now;
+                        fps_at = now + Duration::from_secs(1);
+                    }
+
+                    let mut inbound: HashMap<u64, InboundUserStats> = HashMap::new();
+                    if !sending {
+                        let mut owner_stats = InboundUserStats::default();
+                        if let Some(p) = &playout {
+                            let snap = p.stats_snapshot();
+                            if let Some(spk) = snap.stream_speakers.iter().find(|s| s.user == owner) {
+                                owner_stats.audio = Some(InboundAudioStats {
+                                    ssrc: spk.ssrc,
+                                    codec: "opus",
+                                    payload_type: rtp::OPUS_PAYLOAD_TYPE,
+                                    bytes_received: stream_audio_bytes,
+                                    packets_received: stream_audio_packets.max(spk.stats.packets_received),
+                                    packets_lost: spk.stats.packets_lost,
+                                    packets_late: spk.stats.packets_late,
+                                    packets_discarded: spk.packets_discarded,
+                                    fec_recovered: spk.stats.fec_recovered,
+                                    jitter_ms: receivers.audio_jitter_ms(spk.ssrc),
+                                    jitter_buffer_ms: spk.jitter_buffer_ms as u32,
+                                    jitter_buffer_preferred_ms: spk.target_delay_ms,
+                                    audio_level: spk.audio_level,
+                                    decoding_muted_output: spk.decoding_muted_output,
+                                    concealed_samples: spk.stats.concealed_samples,
+                                    concealment_events: spk.stats.concealment_events,
+                                    accelerated_samples: spk.stats.accelerated_samples,
+                                    expanded_samples: spk.stats.expanded_samples,
+                                    underrun_samples: spk.stats.underrun_samples,
+                                    flushes: spk.stats.flushes,
+                                    op_normal: spk.stats.op_normal,
+                                    op_expand: spk.stats.op_expand,
+                                    op_accelerate: spk.stats.op_accelerate,
+                                    op_preemptive_expand: spk.stats.op_preemptive_expand,
+                                    op_cng: spk.stats.op_cng,
+                                    secure_frames_protocol_version: sf_version,
+                                });
+                            }
+                        }
+                        if let Some(src) = video_sources.iter().find(|s| s.user == owner) {
+                            owner_stats.video = Some(InboundVideoStats {
+                                ssrc: src.ssrc,
+                                rtx_ssrc: src.rtx_ssrc,
+                                codec: "H264",
+                                payload_type: rtp::H264_PAYLOAD_TYPE,
+                                width: dec.as_ref().map_or(0, |d| d.width),
+                                height: dec.as_ref().map_or(0, |d| d.height),
+                                bytes_received: src.bytes_received,
+                                packets_received: src.packets_received,
+                                packets_lost: src.packets_lost,
+                                frames_received: dec.as_ref().map_or(0, |d| d.frames_received),
+                                frames_decoded: dec.as_ref().map_or(0, |d| d.frames_decoded),
+                                key_frames_decoded: dec.as_ref().map_or(0, |d| d.keyframes_decoded),
+                                fps_decoded: decoded_fps,
+                                jitter_ms: src.jitter_ms,
+                                nacks: src.nacks,
+                                plis: src.plis,
+                                firs: 0,
+                                freeze_count: 0,
+                                total_freezes_duration_ms: 0,
+                                decoder_implementation_name: dec.and_then(|d| d.decoder_name),
+                                secure_frames_protocol_version: sf_version,
+                            });
+                        }
+                        if owner_stats.audio.is_some() || owner_stats.video.is_some() {
+                            inbound.insert(owner, owner_stats);
+                        }
+                    }
+
+                    let avail_bitrate = est.as_ref().map_or(0, |e| e.target);
+                    let delay_ms = est.as_ref().map_or(0, |e| e.delay_estimate);
+                    let (out_w, out_h) = sent_dims.unwrap_or((0, 0));
+                    let outbound = if sending {
+                        OutboundStats {
+                            audio: (ssrc != 0).then_some(OutboundAudioStats {
+                                ssrc,
+                                codec: "opus",
+                                payload_type: rtp::OPUS_PAYLOAD_TYPE,
+                                bitrate: 128_000,
+                                bytes_sent: outbound_audio_bytes,
+                                packets_sent: outbound_audio_packets,
+                                packets_lost: 0,
+                                fraction_lost: 0.0,
+                                frames_captured: outbound_audio_frames,
+                                audio_level: 0.0,
+                                audio_detected: None,
+                                encrypt_success_count: outbound_audio_frames,
+                                encrypt_failure_count: 0,
+                                secure_frames_protocol_version: sf_version,
+                            }),
+                            video: video_snap.as_ref().map(|vs| OutboundVideoStats {
+                                ssrc: vs.video_ssrc,
+                                rtx_ssrc: vs.rtx_ssrc,
+                                codec: "H264",
+                                payload_type: rtp::H264_PAYLOAD_TYPE,
+                                bitrate_target: avail_bitrate,
+                                bitrate_actual: est.as_ref().map_or(0, |e| e.encoder_rate),
+                                bytes_sent: vs.bytes_sent,
+                                packets_sent: vs.packets_sent,
+                                width: out_w,
+                                height: out_h,
+                                fps_encoded: encoded_fps,
+                                frames_encoded: vs.frames_encoded,
+                                frames_dropped: est.as_ref().map_or(0, |e| e.dropped_pictures),
+                                key_frames_encoded: vs.keyframes_encoded,
+                                qp_sum: 0,
+                                nacks: vs.nacks,
+                                plis: vs.plis,
+                                firs: 0,
+                                encoder_implementation_name: Some("OpenH264".into()),
+                                average_encode_time_ms: 0.0,
+                                encrypt_success_count: vs.frames_encoded,
+                                encrypt_failure_count: 0,
+                                secure_frames_protocol_version: sf_version,
+                            }),
+                        }
+                    } else {
+                        OutboundStats::default()
+                    };
+
+                    hub.stream_stats().upsert(StreamStats {
+                        stream_key: stream_key_str.clone(),
+                        owner_id: owner,
+                        sending,
+                        connected: enabled || waiting,
+                        transport: TransportStats {
+                            hostname: Some(diag_host.clone()),
+                            local_address: udp
+                                .as_ref()
+                                .and_then(|s| s.local_addr().ok())
+                                .map(|a| a.to_string()),
+                            media_session_id: media_session_id.clone(),
+                            ping_ms,
+                            available_outgoing_bitrate: avail_bitrate,
+                            outbound_bitrate_estimate: avail_bitrate,
+                            inbound_bitrate_estimate: 0,
+                            outbound_bytes: udp_failures.sent_bytes,
+                            inbound_bytes,
+                            outbound_packets: udp_failures.sent_packets,
+                            inbound_packets,
+                            delay_estimate_ms: delay_ms,
+                            pacer_delay_ms: 0,
+                            decryption_failures,
+                            routing_time_ms,
+                            tls_version: tls_version.map(str::to_string),
+                            mode: transport.as_ref().map(|t| t.mode_name().to_string()),
+                            secure_frames_protocol_version: sf_version,
+                            output_device_underruns: playout
+                                .as_ref()
+                                .map_or(0, |p| p.stats_snapshot().stream_underruns),
+                            receiver_reports: Vec::new(),
+                        },
+                        outbound,
+                        inbound,
+                    });
+                    stats_at = now + Duration::from_millis(250);
+                }
             },
             result = async { match &udp { Some(socket) => socket.recv(&mut packet).await, None => std::future::pending().await } } => {
                 let length = match result {
@@ -905,15 +1172,25 @@ pub(crate) async fn run(
                 }
                 if discovering {
                     let (address, port) = rtp::discovery_response(&packet[..length], ssrc)?;
+                    let elapsed_ms = discovery_started.elapsed().as_millis() as u64;
+                    routing_time_ms = Some(elapsed_ms);
+                    log_ws_stage_ok("stream", "udp_discovery", &diag_host, diag_port, elapsed_ms, None);
                     let mode = mode.ok_or("Missing voice encryption mode")?;
                     text(&mut ws, signal::select_protocol(address, port, mode)).await?;
                     discovering = false;
                     continue;
                 }
+                inbound_packets += 1;
+                inbound_bytes += length as u64;
                 tally[0] += 1;
                 let Some(crypto) = &transport else { continue };
                 if rtp::is_rtcp(&packet[..length]) {
-                    let Some(compound) = crypto.open_rtcp(&packet[..length]) else { continue };
+                    let Some(compound) = crypto.open_rtcp(&packet[..length]) else {
+                        if length >= 12 {
+                            decryption_failures += 1;
+                        }
+                        continue;
+                    };
                     if !sending {
                         receivers.sender_reports(&compound, Instant::now());
                     }
@@ -936,7 +1213,12 @@ pub(crate) async fn run(
                 if sending {
                     continue;
                 }
-                let Some(rtp) = crypto.open(&packet[..length]) else { continue };
+                let Some(rtp) = crypto.open(&packet[..length]) else {
+                    if length >= 12 {
+                        decryption_failures += 1;
+                    }
+                    continue;
+                };
                 tally[1] += 1;
                 let arrived = Instant::now();
                 receivers.observe_transport(rtp.ssrc, rtp.transport_sequence, arrived);
@@ -946,12 +1228,26 @@ pub(crate) async fn run(
                 match rtp.payload_type {
                     rtp::OPUS_PAYLOAD_TYPE => {
                         receivers.observe_audio(rtp.ssrc, rtp.sequence, rtp.timestamp, arrived);
-                        let Some(user) = mixer.user(rtp.ssrc) else { continue };
-                        if !dave.contains(user) {
-                            continue;
+                        if let Some(p) = &playout {
+                            if stream_audio_ssrc == Some(rtp.ssrc) && dave.contains(owner) {
+                                stream_audio_packets += 1;
+                                stream_audio_bytes += rtp.payload.len() as u64;
+                                match dave.session.decrypt(owner, davey::MediaType::AUDIO, &rtp.payload) {
+                                    Ok(opus) => p.push_stream_packet(owner, rtp.ssrc, rtp.sequence, rtp.timestamp, &opus),
+                                    Err(_) => decryption_failures += 1,
+                                }
+                            }
+                        } else {
+                            let Some(user) = mixer.user(rtp.ssrc) else { continue };
+                            if !dave.contains(user) {
+                                continue;
+                            }
+                            let Ok(opus) = dave.session.decrypt(user, davey::MediaType::AUDIO, &rtp.payload) else {
+                                decryption_failures += 1;
+                                continue;
+                            };
+                            mixer.push(rtp.ssrc, rtp.sequence, rtp.timestamp, &opus);
                         }
-                        let Ok(opus) = dave.session.decrypt(user, davey::MediaType::AUDIO, &rtp.payload) else { continue };
-                        mixer.push(rtp.ssrc, rtp.sequence, rtp.timestamp, &opus);
                     }
                     rtp::H264_PAYLOAD_TYPE | rtp::H264_RTX_PAYLOAD_TYPE => {
                         tally[2] += 1;
@@ -973,7 +1269,28 @@ pub(crate) async fn run(
             event = ws.next() => {
                 let event = match event {
                     Some(Ok(message)) if !matches!(&message, Message::Close(Some(frame)) if u16::from(frame.code) == close::SERVER_CRASH) => message,
+                    Some(Ok(Message::Close(frame))) => {
+                        let (code, reason_len) = frame.as_ref().map_or((u16::from(CloseCode::Status), 0usize), |f| {
+                            (u16::from(f.code), f.reason.len())
+                        });
+                        log_ws_close("stream", &diag_host, diag_port, connect_started.elapsed().as_millis() as u64, code, reason_len);
+                        reconnect = Some("Stream voice socket failed");
+                        continue;
+                    }
+                    Some(Err(err)) => {
+                        log_ws_stage_err(
+                            "stream",
+                            "ws_close",
+                            &diag_host,
+                            diag_port,
+                            connect_started.elapsed().as_millis() as u64,
+                            &sanitized_ws_error(&err),
+                        );
+                        reconnect = Some("Stream voice socket failed");
+                        continue;
+                    }
                     _ => {
+                        log_ws_close("stream", &diag_host, diag_port, connect_started.elapsed().as_millis() as u64, u16::from(CloseCode::Abnormal), 0);
                         reconnect = Some("Stream voice socket failed");
                         continue;
                     }
@@ -1003,9 +1320,20 @@ pub(crate) async fn run(
                                 heartbeat_ms = Some(hello.interval_ms);
                                 server_version = hello.version;
                                 heartbeat_at = Instant::now();
+                                log_ws_stage_ok(
+                                    "stream",
+                                    "op8_hello",
+                                    &diag_host,
+                                    diag_port,
+                                    connect_started.elapsed().as_millis() as u64,
+                                    tls_version,
+                                );
                             }
                             Some(VoiceOp::HeartbeatAck) => {
                                 if signal::acknowledges(awaiting_ack, missed_acks, data["t"].as_u64()) {
+                                    if missed_acks == 0 {
+                                        ping_ms = Some(heartbeat_sent.elapsed().as_millis() as u64);
+                                    }
                                     awaiting_ack = None;
                                     missed_acks = 0;
                                     if !resuming {
@@ -1021,6 +1349,14 @@ pub(crate) async fn run(
                                 if !rtp::public_ip(ready.ip) {
                                     return Err("Voice server advertised a nonpublic address");
                                 }
+                                log_ws_stage_ok(
+                                    "stream",
+                                    "op2_ready",
+                                    &diag_host,
+                                    diag_port,
+                                    connect_started.elapsed().as_millis() as u64,
+                                    None,
+                                );
                                 ssrc = ready.ssrc;
                                 video_ssrc = ready.video_ssrc;
                                 rtx_ssrc = ready.rtx_ssrc;
@@ -1041,6 +1377,7 @@ pub(crate) async fn run(
                                     .map_err(|_| "Stream UDP discovery failed")?;
                                 udp = Some(socket);
                                 discovering = true;
+                                discovery_started = Instant::now();
                                 discovery_deadline = Instant::now() + DISCOVERY_TIMEOUT;
                             }
                             Some(VoiceOp::SelectProtocolAck) => {
@@ -1052,9 +1389,18 @@ pub(crate) async fn run(
                                     keyframe_interval = interval;
                                     debug!(interval, "stream keyframe interval");
                                 }
+                                media_session_id = data["media_session_id"].as_str().map(str::to_owned);
                                 let key = signal::session_description(data, mode)?;
                                 transport = Some(Transport::new(mode, &key));
                                 secured_at = Some(Instant::now());
+                                log_ws_stage_ok(
+                                    "stream",
+                                    "op4_session_description",
+                                    &diag_host,
+                                    diag_port,
+                                    connect_started.elapsed().as_millis() as u64,
+                                    tls_version,
+                                );
                                 text(&mut ws, signal::speaking_flags(0, ssrc)).await?;
                                 send(&mut ws, Message::Binary(dave.key_package()?.into())).await?;
                                 if !sending && hub.has_sink() {
@@ -1076,7 +1422,12 @@ pub(crate) async fn run(
                                 let user = signal::id(data, "user_id")?;
                                 if !sending && user == owner && dave.contains(user) {
                                     let value = u32::try_from(signal::number(data, "ssrc")?).map_err(|_| "Invalid voice SSRC")?;
-                                    mixer.announce(user, value)?;
+                                    stream_audio_ssrc = Some(value);
+                                    if let Some(p) = &playout {
+                                        p.announce_stream(owner, value, hub.stream_volume(owner));
+                                    } else {
+                                        mixer.announce(user, value)?;
+                                    }
                                 }
                             }
                             Some(VoiceOp::Video) => {
@@ -1086,7 +1437,12 @@ pub(crate) async fn run(
                                         let _ = events.send(StreamEvent::Quality { height, fps });
                                     }
                                     if remote.audio_ssrc != 0 && dave.contains(remote.user) {
-                                        mixer.announce(remote.user, remote.audio_ssrc)?;
+                                        stream_audio_ssrc = Some(remote.audio_ssrc);
+                                        if let Some(p) = &playout {
+                                            p.announce_stream(owner, remote.audio_ssrc, hub.stream_volume(owner));
+                                        } else {
+                                            mixer.announce(remote.user, remote.audio_ssrc)?;
+                                        }
                                     }
                                     match remote.video {
                                         Some((video, rtx)) => {
@@ -1123,7 +1479,14 @@ pub(crate) async fn run(
                             }
                             Some(VoiceOp::ClientDisconnect) => {
                                 let user = signal::id(data, "user_id")?;
-                                mixer.remove(user);
+                                if let Some(p) = &playout {
+                                    if user == owner {
+                                        p.remove_stream(owner);
+                                        stream_audio_ssrc = None;
+                                    }
+                                } else {
+                                    mixer.remove(user);
+                                }
                                 if clients.remove(&user) {
                                     let _ = events.send(StreamEvent::Participants { count: clients.len() });
                                 }
@@ -1233,7 +1596,11 @@ pub(crate) async fn run(
                                 if let Some(capture) = &capture {
                                     capture.force_keyframe();
                                 }
-                                mixer.clear();
+                                if let Some(p) = &playout {
+                                    p.clear_stream(owner);
+                                } else {
+                                    mixer.clear();
+                                }
                             }
                             _ => return Err("Unsupported DAVE opcode; stream stopped"),
                         }
@@ -1241,7 +1608,18 @@ pub(crate) async fn run(
                     Message::Ping(data) => send(&mut ws, Message::Pong(data)).await?,
                     Message::Pong(_) => {}
                     Message::Close(frame) => {
-                        let code = frame.map_or(u16::from(CloseCode::Status), |frame| u16::from(frame.code));
+                        let (code, reason_len) = frame.as_ref().map_or(
+                            (u16::from(CloseCode::Status), 0usize),
+                            |frame| (u16::from(frame.code), frame.reason.len()),
+                        );
+                        log_ws_close(
+                            "stream",
+                            &diag_host,
+                            diag_port,
+                            connect_started.elapsed().as_millis() as u64,
+                            code,
+                            reason_len,
+                        );
                         return Ok(if code == CLOSE_DISCONNECTED {
                             DisconnectReason::Kicked
                         } else {

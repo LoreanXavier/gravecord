@@ -79,6 +79,18 @@ pub(crate) struct Stats {
     pub flushes: u64,
     /// Samples output as zeros because nothing at all was ready.
     pub underrun_samples: u64,
+    /// 10 ms blocks finished in normal decoding mode.
+    pub op_normal: u64,
+    /// 10 ms blocks filled by codec PLC / expansion.
+    pub op_expand: u64,
+    /// 10 ms blocks shortened by accelerate.
+    pub op_accelerate: u64,
+    /// 10 ms blocks lengthened by preemptive expand.
+    pub op_preemptive_expand: u64,
+    /// 10 ms blocks filled by internal comfort noise.
+    pub op_cng: u64,
+    /// Samples output while in NetEq's post-concealment muted state.
+    pub muted_samples: u64,
 }
 
 /// The decoded-but-unplayed audio and a little of what was played (`SyncBuffer`), interleaved.
@@ -108,12 +120,14 @@ impl SyncBuffer {
         self.end_timestamp = self.end_timestamp.wrapping_add(increment);
     }
 
-    /// `ReadInterleavedFromEnd` and the length reduction of a borrow: the last `frames`, taken off the end. The play
-    /// position stays, so frames borrowed from what was already played count as played again once they are put back.
-    fn take_from_end(&mut self, frames: usize) -> Vec<f32> {
+    /// `ReadInterleavedFromEnd` and the length reduction of a borrow: the last `frames`, appended to `out` and removed
+    /// from the end. The play position stays, so frames borrowed from what was already played count as played again once
+    /// they are put back.
+    fn take_from_end(&mut self, frames: usize, out: &mut Vec<f32>) {
         let frames = frames.min(self.frames());
         let at = (self.frames() - frames) * self.channels;
-        self.samples.split_off(at)
+        out.extend_from_slice(&self.samples[at..]);
+        self.samples.truncate(at);
     }
 
     /// Plays `out.len() / channels` frames; zeros where nothing is ready. The number of zero frames.
@@ -224,6 +238,9 @@ pub(crate) struct NetEq {
     stats: Stats,
     decoded: Vec<f32>,
     scratch: Vec<f32>,
+    stretch_in: Vec<f32>,
+    extracted_packets: Vec<Packet>,
+    free_payloads: Vec<Vec<u8>>,
 }
 
 impl NetEq {
@@ -238,6 +255,10 @@ impl NetEq {
             },
         )
         .map_err(|_| "Opus decoder initialization failed")?;
+        let mut free_payloads = Vec::with_capacity(MAX_PACKETS_IN_BUFFER + 8);
+        for _ in 0..(MAX_PACKETS_IN_BUFFER + 8) {
+            free_payloads.push(Vec::with_capacity(1275));
+        }
         Ok(Self {
             channels,
             decoder,
@@ -245,7 +266,7 @@ impl NetEq {
             controller: DecisionLogic::new(MAX_PACKETS_IN_BUFFER as i32, MINIMUM_DELAY_MS, 0),
             sync: SyncBuffer {
                 channels,
-                samples: Vec::with_capacity((HISTORY + MAX_FRAME * 2) * channels),
+                samples: Vec::with_capacity((HISTORY + MAX_FRAME * 3) * channels),
                 next: 0,
                 end_timestamp: 0,
             },
@@ -265,12 +286,39 @@ impl NetEq {
             first_sequence: 0,
             stats: Stats::default(),
             decoded: vec![0.0; MAX_FRAME * 2 * channels],
-            scratch: Vec::with_capacity(MAX_FRAME * 2 * channels),
+            scratch: Vec::with_capacity((MAX_FRAME + SAMPLES_30_MS) * channels),
+            stretch_in: Vec::with_capacity((MAX_FRAME + SAMPLES_30_MS) * channels),
+            extracted_packets: Vec::with_capacity(16),
+            free_payloads,
         })
     }
 
     pub(crate) fn stats(&self) -> Stats {
         self.stats
+    }
+
+    pub(crate) fn packets_discarded(&self) -> (u64, u64) {
+        (
+            self.packet_buffer.discarded_primary,
+            self.packet_buffer.discarded_secondary,
+        )
+    }
+
+    fn recycle_packet(free_payloads: &mut Vec<Vec<u8>>, mut packet: Packet) {
+        if free_payloads.len() < free_payloads.capacity() {
+            packet.payload.clear();
+            free_payloads.push(packet.payload);
+        }
+    }
+
+    fn take_payload(&mut self, data: &[u8]) -> Vec<u8> {
+        let mut buf = self
+            .free_payloads
+            .pop()
+            .unwrap_or_else(|| Vec::with_capacity(1275));
+        buf.clear();
+        buf.extend_from_slice(data);
+        buf
     }
 
     /// `TargetDelayMs`: the delay the buffer aims for now.
@@ -294,7 +342,10 @@ impl NetEq {
 
     /// `FlushBuffers`: everything waiting goes; the next packet starts the stream again.
     pub(crate) fn flush(&mut self) {
-        let _ = self.packet_buffer.flush();
+        let free = &mut self.free_payloads;
+        let _ = self
+            .packet_buffer
+            .flush_with(|packet| Self::recycle_packet(free, packet));
         self.sync.clear();
         self.first_packet = true;
         self.generated_noise_start = None;
@@ -328,7 +379,10 @@ impl NetEq {
         self.count_sequence(sequence);
         let was_first = self.first_packet;
         if was_first {
-            let _ = self.packet_buffer.flush();
+            let free = &mut self.free_payloads;
+            let _ = self
+                .packet_buffer
+                .flush_with(|packet| Self::recycle_packet(free, packet));
             self.sync
                 .increase_end_timestamp(timestamp.wrapping_sub(self.timestamp));
             self.timestamp = timestamp;
@@ -336,36 +390,44 @@ impl NetEq {
             self.new_codec = true;
         }
         // `AudioDecoderOpusImpl::ParsePayload`: the FEC copy first, then the primary.
-        let mut parsed = Vec::with_capacity(2);
+        let mut parsed: [Option<Packet>; 2] = [None, None];
+        let mut count = 0;
         let redundant = fec_duration(payload);
         let fec_ts = timestamp.wrapping_sub(redundant as u32);
         if redundant > 0
             && !self.new_codec
             && !decision::is_obsolete_timestamp(fec_ts, self.sync.end_timestamp, 0)
         {
-            parsed.push(Packet {
+            parsed[count] = Some(Packet {
                 timestamp: fec_ts,
                 priority: 1,
-                payload: payload.to_vec(),
+                payload: self.take_payload(payload),
                 duration: redundant,
                 inserted: self.ticks,
             });
+            count += 1;
         }
-        parsed.push(Packet {
+        parsed[count] = Some(Packet {
             timestamp,
             priority: 0,
-            payload: payload.to_vec(),
+            payload: self.take_payload(payload),
             duration: packet_duration(payload),
             inserted: self.ticks,
         });
-        for packet in parsed {
+        count += 1;
+        for packet in parsed.into_iter().take(count).flatten() {
             let primary = packet.priority == 0;
             let mut info = PacketArrivedInfo {
                 packet_length_samples: packet.duration,
                 main_timestamp: packet.timestamp,
                 buffer_flush: false,
             };
-            if self.packet_buffer.insert(packet) == Insert::Flushed {
+            let free = &mut self.free_payloads;
+            if self
+                .packet_buffer
+                .insert_with(packet, |discarded| Self::recycle_packet(free, discarded))
+                == Insert::Flushed
+            {
                 self.new_codec = true;
                 info.buffer_flush = true;
                 self.stats.flushes += 1;
@@ -390,13 +452,20 @@ impl NetEq {
         {
             out.fill(0.0);
             self.muted = true;
+            self.stats.muted_samples += OUTPUT_SIZE as u64;
             return;
         }
         self.muted = false;
-        let mut packets = Vec::new();
+        let mut packets = std::mem::take(&mut self.extracted_packets);
+        packets.clear();
         let operation = self.get_decision(&mut packets);
         let decoded_frames = self.decode(&packets, operation);
-        let operation = if decoded_frames.is_none() && !packets.is_empty() {
+        let had_packets = !packets.is_empty();
+        for packet in packets.drain(..) {
+            Self::recycle_packet(&mut self.free_payloads, packet);
+        }
+        self.extracted_packets = packets;
+        let operation = if decoded_frames.is_none() && had_packets {
             // A decoding error: conceal instead.
             Operation::Expand
         } else {
@@ -405,12 +474,25 @@ impl NetEq {
         let decoded_frames = decoded_frames.unwrap_or(0);
         match operation {
             Operation::Normal | Operation::Merge | Operation::Undefined => {
-                self.do_normal(decoded_frames)
+                self.stats.op_normal += 1;
+                self.do_normal(decoded_frames);
             }
-            Operation::Expand => self.do_codec_plc(),
-            Operation::Accelerate | Operation::FastAccelerate => self.do_accelerate(decoded_frames),
-            Operation::PreemptiveExpand => self.do_preemptive_expand(decoded_frames),
-            Operation::CodecInternalCng => self.do_codec_internal_cng(),
+            Operation::Expand => {
+                self.stats.op_expand += 1;
+                self.do_codec_plc();
+            }
+            Operation::Accelerate | Operation::FastAccelerate => {
+                self.stats.op_accelerate += 1;
+                self.do_accelerate(decoded_frames);
+            }
+            Operation::PreemptiveExpand => {
+                self.stats.op_preemptive_expand += 1;
+                self.do_preemptive_expand(decoded_frames);
+            }
+            Operation::CodecInternalCng => {
+                self.stats.op_cng += 1;
+                self.do_codec_internal_cng();
+            }
         }
         let missing = self.sync.read(out);
         self.stats.underrun_samples += missing as u64;
@@ -426,9 +508,12 @@ impl NetEq {
     fn get_decision(&mut self, packets: &mut Vec<Packet>) -> Operation {
         let mut end_timestamp = self.sync.end_timestamp;
         if !self.new_codec {
-            self.stats.packets_late += self
-                .packet_buffer
-                .discard_old_packets(end_timestamp, 5 * 48_000);
+            let free = &mut self.free_payloads;
+            self.stats.packets_late +=
+                self.packet_buffer
+                    .discard_old_packets_with(end_timestamp, 5 * 48_000, |packet| {
+                        Self::recycle_packet(free, packet)
+                    });
         }
         let next = self.packet_buffer.peek_next().map(|packet| NextPacket {
             timestamp: packet.timestamp,
@@ -590,7 +675,12 @@ impl NetEq {
                 break;
             }
         }
-        let _ = self.packet_buffer.discard_old_packets(self.timestamp, 0);
+        let free = &mut self.free_payloads;
+        let _ = self
+            .packet_buffer
+            .discard_old_packets_with(self.timestamp, 0, |packet| {
+                Self::recycle_packet(free, packet)
+            });
         extracted
     }
 
@@ -694,63 +784,67 @@ impl NetEq {
         self.generated_noise_start.get_or_insert(self.ticks);
     }
 
-    /// 30 ms to work on: what was decoded, with what it lacks borrowed from the end of the sync buffer. Returns the
-    /// input (16-bit units) and how many borrowed frames had already been played.
-    fn stretch_input(&mut self, decoded_frames: usize) -> (Vec<f32>, usize) {
+    /// 30 ms to work on: what was decoded, with what it lacks borrowed from the end of the sync buffer. Populates
+    /// `self.stretch_in` (in 16-bit units) and returns how many borrowed frames had already been played.
+    fn stretch_input(&mut self, decoded_frames: usize) -> usize {
         let channels = self.channels;
         let future = self.sync.future_length();
-        let mut input = Vec::with_capacity(SAMPLES_30_MS * channels);
+        self.stretch_in.clear();
         let mut old_borrowed = 0;
         if decoded_frames < SAMPLES_30_MS {
             let borrowed = SAMPLES_30_MS - decoded_frames;
             old_borrowed = borrowed.saturating_sub(future);
-            input.extend(self.sync.take_from_end(borrowed));
+            self.sync.take_from_end(borrowed, &mut self.stretch_in);
         }
-        input.extend_from_slice(&self.decoded[..decoded_frames * channels]);
-        for sample in &mut input {
+        self.stretch_in
+            .extend_from_slice(&self.decoded[..decoded_frames * channels]);
+        for sample in &mut self.stretch_in {
             *sample *= 32768.0;
         }
-        (input, old_borrowed)
+        old_borrowed
     }
 
-    fn put_back(&mut self, output: &[f32]) {
-        let scaled: Vec<f32> = output.iter().map(|sample| sample / 32768.0).collect();
-        self.sync.push_back(&scaled);
+    fn put_back_scratch(&mut self) {
+        for sample in &mut self.scratch {
+            *sample /= 32768.0;
+        }
+        self.sync.push_back(&self.scratch);
         self.sync.next = self.sync.next.min(self.sync.frames());
     }
 
     /// `DoAccelerate` (`enable_fast_accelerate` is false by default, so fast accelerate stretches as accelerate does).
     fn do_accelerate(&mut self, decoded_frames: usize) {
-        let (input, _) = self.stretch_input(decoded_frames);
+        let _ = self.stretch_input(decoded_frames);
         self.scratch.clear();
-        let mut output = std::mem::take(&mut self.scratch);
-        let (result, removed) = time_stretch::accelerate(&input, self.channels, false, &mut output);
+        let (result, removed) =
+            time_stretch::accelerate(&self.stretch_in, self.channels, false, &mut self.scratch);
         self.stats.accelerated_samples += removed as u64;
         self.last_mode = match result {
             Stretch::Success => Mode::AccelerateSuccess,
             Stretch::SuccessLowEnergy => Mode::AccelerateLowEnergy,
             Stretch::Unchanged | Stretch::Error => Mode::AccelerateFail,
         };
-        self.put_back(&output);
-        self.scratch = output;
+        self.put_back_scratch();
         self.concealment_run = 0;
     }
 
     /// `DoPreemptiveExpand`.
     fn do_preemptive_expand(&mut self, decoded_frames: usize) {
-        let (input, old_borrowed) = self.stretch_input(decoded_frames);
+        let old_borrowed = self.stretch_input(decoded_frames);
         self.scratch.clear();
-        let mut output = std::mem::take(&mut self.scratch);
-        let (result, added) =
-            time_stretch::preemptive_expand(&input, self.channels, old_borrowed, &mut output);
+        let (result, added) = time_stretch::preemptive_expand(
+            &self.stretch_in,
+            self.channels,
+            old_borrowed,
+            &mut self.scratch,
+        );
         self.stats.expanded_samples += added as u64;
         self.last_mode = match result {
             Stretch::Success => Mode::PreemptiveExpandSuccess,
             Stretch::SuccessLowEnergy => Mode::PreemptiveExpandLowEnergy,
             Stretch::Unchanged | Stretch::Error => Mode::PreemptiveExpandFail,
         };
-        self.put_back(&output);
-        self.scratch = output;
+        self.put_back_scratch();
         self.concealment_run = 0;
     }
 }
@@ -851,5 +945,56 @@ mod tests {
         neteq.insert_packet(1, 960, &packets[1]);
         neteq.get_audio(&mut out);
         assert_eq!(neteq.stats().packets_received, 2);
+    }
+
+    #[test]
+    fn get_audio_and_steady_insert_never_reallocate_scratch_buffers() {
+        let packets = packets(60);
+        let mut neteq = NetEq::new(false).unwrap();
+        let mut out = [0.0f32; OUTPUT_SIZE];
+        // Pre-warm with one packet so the initial payload pool capacity is established.
+        neteq.insert_packet(0, 0, &packets[0]);
+        neteq.get_audio(&mut out);
+
+        let sync_ptr = neteq.sync.samples.as_ptr();
+        let sync_cap = neteq.sync.samples.capacity();
+        let decoded_ptr = neteq.decoded.as_ptr();
+        let decoded_cap = neteq.decoded.capacity();
+        let scratch_ptr = neteq.scratch.as_ptr();
+        let scratch_cap = neteq.scratch.capacity();
+        let stretch_ptr = neteq.stretch_in.as_ptr();
+        let stretch_cap = neteq.stretch_in.capacity();
+        let extracted_ptr = neteq.extracted_packets.as_ptr();
+        let extracted_cap = neteq.extracted_packets.capacity();
+
+        for (k, packet) in packets.iter().enumerate().skip(1) {
+            if k % 17 != 0 {
+                neteq.insert_packet(k as u16, k as u32 * 960, packet);
+            }
+            for _ in 0..2 {
+                neteq.get_audio(&mut out);
+            }
+        }
+        // Trigger extra PLC and accelerate/preemptive expand ticks via jitter burst.
+        for _ in 0..30 {
+            neteq.get_audio(&mut out);
+        }
+        for (k, packet) in packets[..10].iter().enumerate() {
+            neteq.insert_packet((60 + k) as u16, (60 + k) as u32 * 960, packet);
+        }
+        for _ in 0..20 {
+            neteq.get_audio(&mut out);
+        }
+
+        assert_eq!(neteq.sync.samples.as_ptr(), sync_ptr);
+        assert_eq!(neteq.sync.samples.capacity(), sync_cap);
+        assert_eq!(neteq.decoded.as_ptr(), decoded_ptr);
+        assert_eq!(neteq.decoded.capacity(), decoded_cap);
+        assert_eq!(neteq.scratch.as_ptr(), scratch_ptr);
+        assert_eq!(neteq.scratch.capacity(), scratch_cap);
+        assert_eq!(neteq.stretch_in.as_ptr(), stretch_ptr);
+        assert_eq!(neteq.stretch_in.capacity(), stretch_cap);
+        assert_eq!(neteq.extracted_packets.as_ptr(), extracted_ptr);
+        assert_eq!(neteq.extracted_packets.capacity(), extracted_cap);
     }
 }

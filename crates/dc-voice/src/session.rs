@@ -15,7 +15,11 @@ use crate::{
     capture::CapturePacer,
     clock,
     dave::Dave,
-    mixer::Mixer,
+    playout::CallPlayout,
+    rtc_stats::{
+        CameraStats, InboundAudioStats, InboundUserStats, InboundVideoStats, OutboundAudioStats,
+        OutboundStats, OutboundVideoStats, RtcStatsSnapshot, RtcStatsStore, TransportStats,
+    },
     rtp::{self, MAX_PACKET, Mode, Transport},
     signal::{self, CLOSE_DISCONNECTED, Context, Ids, MAX_SIGNAL},
     video::{
@@ -32,11 +36,11 @@ use dc_proto::voice_op::{VoiceOp, close};
 use futures_util::{SinkExt, StreamExt};
 use opus2::{Application, Bitrate, Channels, Encoder, SoftClip};
 use std::{
-    collections::BTreeSet,
+    collections::{BTreeSet, HashMap},
     net::SocketAddr,
     sync::{
         Arc, Mutex,
-        atomic::{AtomicBool, Ordering},
+        atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering},
         mpsc as std_mpsc,
     },
     time::Duration,
@@ -103,13 +107,31 @@ pub(crate) struct ControlState {
 }
 
 /// What the app hands the call besides the copyable control state.
-#[derive(Default)]
 pub(crate) struct Shared {
     /// The camera wish: `Some(device id)`, empty for the default camera, `None` for off.
     pub camera: Mutex<Option<String>>,
     pub hub: VideoHub,
     /// Per-user volume (a factor, 1.0 is 100%) and local mute, as chosen in a user's menu.
     pub user_mix: Mutex<std::collections::HashMap<u64, (f32, bool)>>,
+    /// Lock-free / device-pulled playout bus shared with the playback callback and watched streams.
+    pub playout: Arc<CallPlayout>,
+    /// Periodic WebRTC-shaped telemetry read by [`crate::Controls::rtc_stats`].
+    pub rtc_stats: Arc<RtcStatsStore>,
+}
+
+impl Default for Shared {
+    fn default() -> Self {
+        let hub = VideoHub::new();
+        let playout = Arc::new(CallPlayout::new(hub.sidechain_arc()));
+        hub.attach_playout(&playout);
+        Self {
+            camera: Mutex::default(),
+            hub,
+            user_mix: Mutex::default(),
+            playout,
+            rtc_stats: Arc::default(),
+        }
+    }
 }
 
 /// Video senders announce this much; the camera encoder runs at `camera::BITRATE`.
@@ -131,7 +153,191 @@ pub(crate) async fn text(ws: &mut Socket, value: String) -> Result<(), &'static 
     send(ws, Message::Text(value.into())).await
 }
 
-pub(crate) async fn open(url: &str) -> Result<Socket, &'static str> {
+pub(crate) struct OpenedSocket {
+    pub ws: Socket,
+    pub host: String,
+    pub port: u16,
+    pub tls_version: Option<&'static str>,
+    pub opened_at: Instant,
+}
+
+fn ws_target(url: &str) -> Result<(String, u16), &'static str> {
+    let parsed = url::Url::parse(url).map_err(|_| "Invalid Discord voice endpoint")?;
+    if !parsed.username().is_empty() || parsed.password().is_some() {
+        return Err("Invalid Discord voice endpoint");
+    }
+    match parsed.scheme() {
+        "wss" => {
+            let host = parsed.host_str().ok_or("Missing Discord voice host")?;
+            let raw = match parsed.port() {
+                Some(port) => format!("{host}:{port}"),
+                None => host.to_string(),
+            };
+            signal::validate_endpoint_host(&raw)
+        }
+        #[cfg(feature = "sim")]
+        "ws" if crate::sim::active() && parsed.host_str() == Some("127.0.0.1") => {
+            let port = parsed
+                .port()
+                .filter(|p| *p != 0)
+                .ok_or("Invalid Discord voice endpoint")?;
+            Ok(("127.0.0.1".to_string(), port))
+        }
+        _ => Err("Invalid Discord voice endpoint"),
+    }
+}
+
+pub(crate) fn sanitized_ws_error(err: &tokio_tungstenite::tungstenite::Error) -> String {
+    use tokio_tungstenite::tungstenite::Error;
+    match err {
+        Error::Io(io_err) => format!("io:{:?}", io_err.kind()),
+        Error::Tls(_) => "tls".to_string(),
+        Error::Http(resp) => format!("http:{}", resp.status().as_u16()),
+        Error::HttpFormat(_) => "http_format".to_string(),
+        Error::Protocol(_) => "protocol".to_string(),
+        Error::Url(_) => "url".to_string(),
+        Error::Capacity(_) => "capacity".to_string(),
+        Error::WriteBufferFull(_) => "write_buffer_full".to_string(),
+        Error::Utf8(_) => "utf8".to_string(),
+        Error::AttackAttempt => "attack_attempt".to_string(),
+        Error::ConnectionClosed | Error::AlreadyClosed => "closed".to_string(),
+    }
+}
+
+pub(crate) fn log_ws_stage_ok(
+    kind: &'static str,
+    stage: &'static str,
+    host: &str,
+    port: u16,
+    elapsed_ms: u64,
+    tls_version: Option<&'static str>,
+) {
+    debug!(
+        kind,
+        stage, host, port, elapsed_ms, tls_version, "voice transport stage completed"
+    );
+}
+
+pub(crate) fn log_ws_stage_err(
+    kind: &'static str,
+    stage: &'static str,
+    host: &str,
+    port: u16,
+    elapsed_ms: u64,
+    error_kind: &str,
+) {
+    debug!(
+        kind,
+        stage, host, port, elapsed_ms, error_kind, "voice transport stage failed"
+    );
+}
+
+pub(crate) fn log_ws_close(
+    kind: &'static str,
+    host: &str,
+    port: u16,
+    elapsed_ms: u64,
+    close_code: u16,
+    reason_len: usize,
+) {
+    debug!(
+        kind,
+        stage = "ws_close",
+        host,
+        port,
+        elapsed_ms,
+        close_code,
+        reason_len,
+        "voice websocket closed"
+    );
+}
+
+pub(crate) async fn open_with_stages(
+    kind: &'static str,
+    url: &str,
+) -> Result<OpenedSocket, &'static str> {
+    let (host, port) = ws_target(url)?;
+    let opened_at = Instant::now();
+
+    let dns_start = Instant::now();
+    let addrs: Vec<SocketAddr> = match timeout(
+        Duration::from_secs(5),
+        tokio::net::lookup_host((host.as_str(), port)),
+    )
+    .await
+    {
+        Ok(Ok(iter)) => {
+            let list: Vec<_> = iter.collect();
+            let elapsed_ms = dns_start.elapsed().as_millis() as u64;
+            if list.is_empty() {
+                log_ws_stage_err(kind, "dns", &host, port, elapsed_ms, "empty");
+                return Err("Voice DNS resolution failed");
+            }
+            log_ws_stage_ok(kind, "dns", &host, port, elapsed_ms, None);
+            list
+        }
+        Ok(Err(err)) => {
+            log_ws_stage_err(
+                kind,
+                "dns",
+                &host,
+                port,
+                dns_start.elapsed().as_millis() as u64,
+                &format!("io:{:?}", err.kind()),
+            );
+            return Err("Voice DNS resolution failed");
+        }
+        Err(_) => {
+            log_ws_stage_err(
+                kind,
+                "dns",
+                &host,
+                port,
+                dns_start.elapsed().as_millis() as u64,
+                "timed_out",
+            );
+            return Err("Voice connection timed out");
+        }
+    };
+
+    let tcp_start = Instant::now();
+    let tcp = match timeout(Duration::from_secs(5), TcpStream::connect(&addrs[..])).await {
+        Ok(Ok(stream)) => {
+            let _ = stream.set_nodelay(true);
+            log_ws_stage_ok(
+                kind,
+                "tcp",
+                &host,
+                port,
+                tcp_start.elapsed().as_millis() as u64,
+                None,
+            );
+            stream
+        }
+        Ok(Err(err)) => {
+            log_ws_stage_err(
+                kind,
+                "tcp",
+                &host,
+                port,
+                tcp_start.elapsed().as_millis() as u64,
+                &format!("io:{:?}", err.kind()),
+            );
+            return Err("Voice TLS connection failed");
+        }
+        Err(_) => {
+            log_ws_stage_err(
+                kind,
+                "tcp",
+                &host,
+                port,
+                tcp_start.elapsed().as_millis() as u64,
+                "timed_out",
+            );
+            return Err("Voice connection timed out");
+        }
+    };
+
     let mut request = url
         .into_client_request()
         .map_err(|_| "Invalid Discord voice endpoint")?;
@@ -149,20 +355,73 @@ pub(crate) async fn open(url: &str) -> Result<Socket, &'static str> {
         .max_frame_size(Some(MAX_SIGNAL))
         .write_buffer_size(0)
         .max_write_buffer_size(MAX_SIGNAL * 2);
-    let (ws, _) = timeout(
-        Duration::from_secs(15),
-        tokio_tungstenite::connect_async_with_config(request, Some(config), false),
+
+    let tls_start = Instant::now();
+    let (ws, _) = match timeout(
+        Duration::from_secs(10),
+        tokio_tungstenite::client_async_tls_with_config(request, tcp, Some(config), None),
     )
     .await
-    .map_err(|_| "Voice connection timed out")?
-    .map_err(|_| "Voice TLS connection failed")?;
-    Ok(ws)
+    {
+        Ok(Ok(pair)) => pair,
+        Ok(Err(err)) => {
+            log_ws_stage_err(
+                kind,
+                "tls_ws",
+                &host,
+                port,
+                tls_start.elapsed().as_millis() as u64,
+                &sanitized_ws_error(&err),
+            );
+            return Err("Voice TLS connection failed");
+        }
+        Err(_) => {
+            log_ws_stage_err(
+                kind,
+                "tls_ws",
+                &host,
+                port,
+                tls_start.elapsed().as_millis() as u64,
+                "timed_out",
+            );
+            return Err("Voice connection timed out");
+        }
+    };
+
+    let tls_version = match ws.get_ref() {
+        MaybeTlsStream::Rustls(tls) => match tls.get_ref().1.protocol_version() {
+            Some(rustls::ProtocolVersion::TLSv1_3) => Some("TLSv1.3"),
+            Some(rustls::ProtocolVersion::TLSv1_2) => Some("TLSv1.2"),
+            Some(_) => Some("TLS"),
+            None => None,
+        },
+        _ => None,
+    };
+    log_ws_stage_ok(
+        kind,
+        "tls_ws",
+        &host,
+        port,
+        tls_start.elapsed().as_millis() as u64,
+        tls_version,
+    );
+    Ok(OpenedSocket {
+        ws,
+        host,
+        port,
+        tls_version,
+        opened_at,
+    })
 }
 
 /// Media datagrams are lossy by design: a full buffer or a stray ICMP unreachable drops
 /// one packet. Never wait for socket capacity, that would stall audio and signaling.
 #[derive(Default)]
-pub(crate) struct UdpFailures(Option<Instant>);
+pub(crate) struct UdpFailures {
+    since: Option<Instant>,
+    pub sent_packets: u64,
+    pub sent_bytes: u64,
+}
 impl UdpFailures {
     pub(crate) fn send(
         &mut self,
@@ -171,11 +430,13 @@ impl UdpFailures {
         outage: &'static str,
     ) -> Result<(), &'static str> {
         if socket.try_send(data).is_ok() {
-            self.0 = None;
+            self.since = None;
+            self.sent_packets += 1;
+            self.sent_bytes += data.len() as u64;
             return Ok(());
         }
         let now = Instant::now();
-        if now.duration_since(*self.0.get_or_insert(now)) >= UDP_OUTAGE {
+        if now.duration_since(*self.since.get_or_insert(now)) >= UDP_OUTAGE {
             return Err(outage);
         }
         Ok(())
@@ -260,6 +521,19 @@ pub(crate) fn emit(events: &mpsc::UnboundedSender<Event>, event: Event) {
     let _ = events.send(event);
 }
 
+struct SessionGuard {
+    playout: Arc<CallPlayout>,
+    rtc_stats: Arc<RtcStatsStore>,
+}
+
+impl Drop for SessionGuard {
+    fn drop(&mut self) {
+        self.playout.clear();
+        self.rtc_stats
+            .update(|snap| *snap = RtcStatsSnapshot::default());
+    }
+}
+
 pub(crate) async fn run(
     credentials: Credentials,
     mut controls: watch::Receiver<ControlState>,
@@ -272,8 +546,20 @@ pub(crate) async fn run(
     if controls.borrow_and_update().disconnect {
         return Ok(DisconnectReason::Requested);
     }
+    let playout = Arc::clone(&shared.playout);
+    let _guard = SessionGuard {
+        playout: Arc::clone(&playout),
+        rtc_stats: Arc::clone(&shared.rtc_stats),
+    };
+    playout.clear();
+    playout.sync_user_mix_table(&shared.user_mix.lock().unwrap_or_else(|e| e.into_inner()));
     let own = credentials.user_id;
-    let mut ws = open(&url).await?;
+    let opened = open_with_stages("call", &url).await?;
+    let mut ws = opened.ws;
+    let mut diag_host = opened.host;
+    let mut diag_port = opened.port;
+    let mut tls_version = opened.tls_version;
+    let mut connect_started = opened.opened_at;
     // Only voice-scoped credentials go to this validated endpoint.
     text(&mut ws, signal::identify(&credentials.ids(), Context::Call)).await?;
 
@@ -296,11 +582,22 @@ pub(crate) async fn run(
     let mut udp_ping_sequence = 0u32;
     let mut udp_failures = UdpFailures::default();
     let mut discovering = false;
+    let mut discovery_started = Instant::now();
     let mut discovery_deadline = Instant::now();
+    let mut routing_time_ms: Option<u64> = None;
     let mut ssrc = 0u32;
-    let mut mixer = Mixer::default();
-    // The playout side of the receive path: one 20 ms frame per 20 ms of real time, even across a skipped tick.
-    let mut receive_clock = clock::FrameClock::default();
+    let mut media_session_id: Option<String> = None;
+    let mut ping_ms: Option<u64> = None;
+    let mut outbound_loss_percent = 0.0f32;
+    let mut inbound_packets = 0u64;
+    let mut inbound_bytes = 0u64;
+    let mut inbound_audio_packets: HashMap<u32, u64> = HashMap::new();
+    let mut inbound_audio_bytes: HashMap<u32, u64> = HashMap::new();
+    let mut decryption_failures = 0u64;
+    let mut outbound_audio_packets = 0u64;
+    let mut outbound_audio_bytes = 0u64;
+    let mut outbound_audio_frames = 0u64;
+    let mut local_audio_encrypt_ok = 0u64;
     let mut seq_ack: i64 = -1;
     let mut server_version = 0u64;
     let mut heartbeat_ms: Option<u64> = None;
@@ -333,22 +630,34 @@ pub(crate) async fn run(
     let (pacer_clock, mut pacer_wakes) = clock::PacerClock::start()?;
     // The camera's encoded pictures that found the channel full: the chain needs a keyframe.
     let camera_overflow = Arc::new(AtomicBool::new(false));
+    let camera_dims = Arc::new((AtomicU32::new(0), AtomicU32::new(0)));
+    let camera_frames_captured = Arc::new(AtomicU64::new(0));
     let mut signal_window = Instant::now();
     let mut signal_count = 0u16;
 
     // Devices open only once the call is secured (or waiting alone), never before.
     let (capture_send, capture) = std_mpsc::sync_channel::<Frame>(8);
-    let (playback, playback_receive) = std_mpsc::sync_channel::<crate::Stereo>(8);
-    let mut device_ends = Some((capture_send, playback_receive));
+    let mut capture_sender_end = Some(capture_send);
     let mut audio: Option<Audio> = None;
     let mut capture_pacer = CapturePacer::default();
     let mut capture_at = Instant::now();
     let mut capture_enabled = false;
     let mut capture_reset = true;
+    let mut was_playout_active = false;
     let mut local_activity = 0u8;
     let mut speakers_at = Instant::now();
+    let mut speaking_buf: Vec<u64> = Vec::with_capacity(crate::dave::MAX_PARTICIPANTS);
     let mut last_speakers = BTreeSet::new();
     let mut clients = BTreeSet::new();
+    let mut stats_at = Instant::now() + Duration::from_millis(250);
+    let mut fps_at = Instant::now() + Duration::from_secs(1);
+    let mut last_fps_at = Instant::now();
+    let mut prev_camera_frames = 0u64;
+    let mut camera_fps = 0u32;
+    let mut prev_encoded_frames = 0u64;
+    let mut encoded_fps = 0u32;
+    let mut prev_decoded_frames: HashMap<u64, u64> = HashMap::new();
+    let mut decoded_fps: HashMap<u64, u32> = HashMap::new();
 
     // Video: what arrives from the others, and our camera.
     let hub = shared.hub.clone();
@@ -384,13 +693,19 @@ pub(crate) async fn run(
             waiting_announced = false;
             capture_reset = true;
             deadline = Some(Instant::now() + RENEGOTIATION);
+            heartbeat_at = Instant::now();
             hello_deadline = Instant::now() + HELLO_TIMEOUT;
             heartbeat_ms = None;
             awaiting_ack = None;
             missed_acks = 0;
-            ws = open(&url)
+            let reopened = open_with_stages("call", &url)
                 .await
                 .map_err(|_| "Voice resume failed; rejoin the call")?;
+            ws = reopened.ws;
+            diag_host = reopened.host;
+            diag_port = reopened.port;
+            tls_version = reopened.tls_version;
+            connect_started = reopened.opened_at;
             text(&mut ws, signal::resume(&credentials.ids(), seq_ack)).await?;
         }
         pacer_clock.set(
@@ -402,6 +717,7 @@ pub(crate) async fn run(
         tokio::select! {
             changed = controls.changed() => {
                 if changed.is_err() || controls.borrow().disconnect {
+                    log_ws_close("call", &diag_host, diag_port, connect_started.elapsed().as_millis() as u64, 1000, 0);
                     let _ = timeout(Duration::from_secs(1), ws.close(None)).await;
                     return Ok(DisconnectReason::Requested);
                 }
@@ -467,6 +783,14 @@ pub(crate) async fn run(
                     continue;
                 }
                 if discovering && now >= discovery_deadline {
+                    log_ws_stage_err(
+                        "call",
+                        "udp_discovery",
+                        &diag_host,
+                        diag_port,
+                        discovery_started.elapsed().as_millis() as u64,
+                        "timed_out",
+                    );
                     return Err("Discord voice UDP discovery timed out; check the network firewall");
                 }
                 if !discovering && now >= next_udp_ping && let Some(socket) = &udp {
@@ -515,15 +839,15 @@ pub(crate) async fn run(
                     emit(&events, Event::Connected);
                     presence = Some(Presence::begin());
                 }
-                if (enabled || waiting) && audio.is_none() && let Some((capture_send, playback_receive)) = device_ends.take() {
+                if (enabled || waiting) && audio.is_none() && let Some(capture_send) = capture_sender_end.take() {
                     #[cfg(feature = "sim")]
                     let started = if crate::sim::active() {
-                        Audio::start_simulated(capture_send, playback_receive, credentials.session_id.to_string())
+                        Audio::start_simulated(capture_send, Arc::clone(&playout), credentials.session_id.to_string())
                     } else {
-                        Audio::start(capture_send, playback_receive)
+                        Audio::start(capture_send, Arc::clone(&playout))
                     };
                     #[cfg(not(feature = "sim"))]
-                    let started = Audio::start(capture_send, playback_receive);
+                    let started = Audio::start(capture_send, Arc::clone(&playout));
                     audio = Some(started?);
                 }
                 // Quality of Service follows the setting while the call runs.
@@ -591,8 +915,14 @@ pub(crate) async fn run(
                 if !active && speaking && silence == 0 {
                     silence = 5;
                 }
+                let local_audio_level = if active {
+                    latest.as_ref().map_or(0.0, |frame| activity::energy(frame).min(1.0))
+                } else {
+                    0.0
+                };
                 if enabled && (active || silence > 0) {
                     let data = if let Some(frame) = latest.filter(|_| active) {
+                        outbound_audio_frames += 1;
                         // The user's own voice, as it leaves, for the clip buffer of a live stream (off otherwise).
                         dc_clips::recorder().push_voice(&frame);
                         for (sample, pair) in frame.iter().zip(stereo.as_chunks_mut::<2>().0) {
@@ -602,7 +932,13 @@ pub(crate) async fn run(
                         }
                         soft_clip.apply(&mut stereo);
                         let length = encoder.encode_float(&stereo, &mut encoded).map_err(|_| "Opus encoding failed")?;
-                        dave.session.encrypt_opus(&encoded[..length]).map_err(|_| "DAVE audio encryption failed")?.into_owned()
+                        let encrypted = dave
+                            .session
+                            .encrypt_opus(&encoded[..length])
+                            .map_err(|_| "DAVE audio encryption failed")?
+                            .into_owned();
+                        local_audio_encrypt_ok += 1;
+                        encrypted
                     } else {
                         silence -= 1;
                         // Encode silence so Opus LBRR clears the final syllable of the finished spurt.
@@ -614,6 +950,8 @@ pub(crate) async fn run(
                     let wire = transport.as_mut().ok_or("Missing voice transport key")?.seal(&header, &data, now)?;
                     if let Some(socket) = &udp {
                         udp_failures.send(socket, &wire, "Voice UDP send failed")?;
+                        outbound_audio_packets += 1;
+                        outbound_audio_bytes += wire.len() as u64;
                         tally[4] += 1;
                     }
                     sequence = sequence.wrapping_add(1);
@@ -626,34 +964,13 @@ pub(crate) async fn run(
                     }
                 }
                 timestamp = timestamp.wrapping_add(rtp::FRAME_SAMPLES);
-                if enabled && !control.self_deaf {
-                    // A late tick is not a reason to flush: each speaker's jitter buffer absorbs it, and the frames
-                    // the skipped ticks owed are made now (the old flush on a stall cut speech on every hiccup).
-                    mixer.set_table(&shared.user_mix.lock().unwrap_or_else(|e| e.into_inner()));
-                    for _ in 0..receive_clock.due(now.into_std()) {
-                        let voices = mixer.pop();
-                        // Voices play on both channels; watched stream audio joins in stereo at its own level.
-                        let mut frame = voices.as_ref().map(crate::to_stereo);
-                        if let Some(extra) = hub.pop_stream_audio(voices.as_ref()) {
-                            match frame.as_mut() {
-                                Some(frame) => {
-                                    for (sample, extra) in frame.iter_mut().zip(extra) {
-                                        *sample = (*sample + extra).clamp(-1.0, 1.0);
-                                    }
-                                }
-                                None => frame = Some(extra),
-                            }
-                        }
-                        if let Some(frame) = frame {
-                            // A full queue means the device is behind; drop rather than block.
-                            let _ = playback.try_send(frame);
-                        }
-                    }
-                } else {
-                    mixer.clear();
-                    receive_clock.reset();
+                let playout_active = enabled && !control.self_deaf;
+                if was_playout_active && !playout_active {
+                    playout.clear();
+                    playout.clear_all_streams();
                     hub.clear_stream_audio();
                 }
+                was_playout_active = playout_active;
                 // Video never gates audio: every step here fails alone.
                 secure = enabled && dave.session.is_ready() && !dave.transitioning();
                 if !secure {
@@ -674,8 +991,11 @@ pub(crate) async fn run(
                     if let (Some(crypto), Some(socket)) = (transport.as_mut(), udp.as_ref()) {
                         for (header, body) in receivers.feedback(ssrc, now) {
                             // Feedback is best effort: a failed send is only a lost datagram.
-                            if let Ok(wire) = crypto.seal_rtcp(&header, &body) {
-                                let _ = socket.try_send(&wire);
+                            if let Ok(wire) = crypto.seal_rtcp(&header, &body)
+                                && socket.try_send(&wire).is_ok()
+                            {
+                                udp_failures.sent_packets += 1;
+                                udp_failures.sent_bytes += wire.len() as u64;
                             }
                         }
                     }
@@ -683,10 +1003,20 @@ pub(crate) async fn run(
                 // Our camera: start, announce, stop.
                 if let Some(device) = camera_wish.clone() {
                     if camera.is_none() && camera_task.is_none() && transport.is_some() && !discovering && !resuming {
-                        let (frames, hub, own, overflow) = (camera_send.clone(), hub.clone(), own, camera_overflow.clone());
+                        let (frames, hub, own, overflow, dims, frames_count) = (
+                            camera_send.clone(),
+                            hub.clone(),
+                            own,
+                            camera_overflow.clone(),
+                            Arc::clone(&camera_dims),
+                            Arc::clone(&camera_frames_captured),
+                        );
                         camera_task = Some(tokio::task::spawn_blocking(move || {
                             let device = (!device.is_empty()).then_some(device);
                             Camera::start(device.as_deref(), move |frame: CameraFrame| {
+                                dims.0.store(frame.preview.width, Ordering::Relaxed);
+                                dims.1.store(frame.preview.height, Ordering::Relaxed);
+                                frames_count.fetch_add(1, Ordering::Relaxed);
                                 hub.deliver(RemoteFrame { user: own, source: VideoSource::Camera, picture: frame.preview });
                                 if let Some(encoded) = frame.encoded
                                     && frames.try_send(encoded).is_err()
@@ -727,6 +1057,8 @@ pub(crate) async fn run(
                     camera = None;
                     video_sender = None;
                     camera_sent_keyframe = false;
+                    camera_dims.0.store(0, Ordering::Relaxed);
+                    camera_dims.1.store(0, Ordering::Relaxed);
                     while camera_frames.try_recv().is_ok() {}
                     if video_announced {
                         text(&mut ws, signal::video(ssrc, None)).await?;
@@ -821,7 +1153,8 @@ pub(crate) async fn run(
                         "voice packet tally"
                     );
                     tally = [0; 5];
-                    let receive = mixer.report();
+                    let playout_snap = playout.stats_snapshot();
+                    let receive = &playout_snap.voice_report;
                     debug!(
                         speakers = receive.speakers,
                         target_delay_ms = receive.target_delay_ms,
@@ -836,12 +1169,15 @@ pub(crate) async fn run(
                         accelerated_ms = receive.since.accelerated_samples / 48,
                         expanded_ms = receive.since.expanded_samples / 48,
                         underrun_ms = receive.since.underrun_samples / 48,
+                        underruns = playout_snap.underruns,
+                        dropped_ingress = playout_snap.dropped_ingress,
                         "voice receive"
                     );
                     tally_at = now + Duration::from_secs(5);
                 }
                 if now >= speakers_at {
-                    let mut current: BTreeSet<u64> = mixer.speaking().collect();
+                    playout.speaking_users(&mut speaking_buf);
+                    let mut current: BTreeSet<u64> = speaking_buf.iter().copied().collect();
                     if local_activity > 0 {
                         current.insert(own);
                     }
@@ -860,6 +1196,194 @@ pub(crate) async fn run(
                     last_speakers = current;
                     speakers_at = now + Duration::from_millis(100);
                 }
+                if now >= stats_at {
+                    let playout_snap = playout.stats_snapshot();
+                    let cam_captured = camera_frames_captured.load(Ordering::Relaxed);
+                    let cam_w = camera_dims.0.load(Ordering::Relaxed);
+                    let cam_h = camera_dims.1.load(Ordering::Relaxed);
+                    let video_snap = video_sender.as_ref().map(VideoSender::stats_snapshot);
+                    let video_sources = receivers.video_sources_snapshot();
+                    let sf_version = if dave.ready {
+                        signal::DAVE_PROTOCOL_VERSION as u32
+                    } else {
+                        0
+                    };
+                    if now >= fps_at {
+                        let secs = now.saturating_duration_since(last_fps_at).as_secs_f32().max(0.25);
+                        camera_fps = ((cam_captured.saturating_sub(prev_camera_frames)) as f32 / secs).round() as u32;
+                        prev_camera_frames = cam_captured;
+                        let total_enc = video_snap.as_ref().map_or(0, |v| v.frames_encoded);
+                        encoded_fps = ((total_enc.saturating_sub(prev_encoded_frames)) as f32 / secs).round() as u32;
+                        prev_encoded_frames = total_enc;
+                        for src in &video_sources {
+                            if let Some(dec) = decoders.video_stats(src.user) {
+                                let prev = prev_decoded_frames.insert(src.user, dec.frames_decoded).unwrap_or(dec.frames_decoded);
+                                let fps = ((dec.frames_decoded.saturating_sub(prev)) as f32 / secs).round() as u32;
+                                decoded_fps.insert(src.user, fps);
+                            }
+                        }
+                        last_fps_at = now;
+                        fps_at = now + Duration::from_secs(1);
+                    }
+
+                    let est = video_sender.as_ref().map(|s| s.estimation(transport.as_ref()));
+                    let avail_bitrate = est.as_ref().map_or(64_000, |e| e.target);
+                    let delay_ms = est.as_ref().map_or(0, |e| e.delay_estimate);
+
+                    let mut inbound: HashMap<u64, InboundUserStats> = HashMap::new();
+                    for spk in &playout_snap.voice_speakers {
+                        inbound.entry(spk.user).or_default().audio = Some(InboundAudioStats {
+                            ssrc: spk.ssrc,
+                            codec: "opus",
+                            payload_type: rtp::OPUS_PAYLOAD_TYPE,
+                            bytes_received: inbound_audio_bytes.get(&spk.ssrc).copied().unwrap_or(0),
+                            packets_received: inbound_audio_packets
+                                .get(&spk.ssrc)
+                                .copied()
+                                .unwrap_or(spk.stats.packets_received),
+                            packets_lost: spk.stats.packets_lost,
+                            packets_late: spk.stats.packets_late,
+                            packets_discarded: spk.packets_discarded,
+                            fec_recovered: spk.stats.fec_recovered,
+                            jitter_ms: receivers.audio_jitter_ms(spk.ssrc),
+                            jitter_buffer_ms: spk.jitter_buffer_ms as u32,
+                            jitter_buffer_preferred_ms: spk.target_delay_ms,
+                            audio_level: spk.audio_level,
+                            decoding_muted_output: spk.decoding_muted_output,
+                            concealed_samples: spk.stats.concealed_samples,
+                            concealment_events: spk.stats.concealment_events,
+                            accelerated_samples: spk.stats.accelerated_samples,
+                            expanded_samples: spk.stats.expanded_samples,
+                            underrun_samples: spk.stats.underrun_samples,
+                            flushes: spk.stats.flushes,
+                            op_normal: spk.stats.op_normal,
+                            op_expand: spk.stats.op_expand,
+                            op_accelerate: spk.stats.op_accelerate,
+                            op_preemptive_expand: spk.stats.op_preemptive_expand,
+                            op_cng: spk.stats.op_cng,
+                            secure_frames_protocol_version: sf_version,
+                        });
+                    }
+                    for src in &video_sources {
+                        let dec = decoders.video_stats(src.user);
+                        inbound.entry(src.user).or_default().video = Some(InboundVideoStats {
+                            ssrc: src.ssrc,
+                            rtx_ssrc: src.rtx_ssrc,
+                            codec: "H264",
+                            payload_type: rtp::H264_PAYLOAD_TYPE,
+                            width: dec.as_ref().map_or(0, |d| d.width),
+                            height: dec.as_ref().map_or(0, |d| d.height),
+                            bytes_received: src.bytes_received,
+                            packets_received: src.packets_received,
+                            packets_lost: src.packets_lost,
+                            frames_received: dec.as_ref().map_or(0, |d| d.frames_received),
+                            frames_decoded: dec.as_ref().map_or(0, |d| d.frames_decoded),
+                            key_frames_decoded: dec.as_ref().map_or(0, |d| d.keyframes_decoded),
+                            fps_decoded: decoded_fps.get(&src.user).copied().unwrap_or(0),
+                            jitter_ms: src.jitter_ms,
+                            nacks: src.nacks,
+                            plis: src.plis,
+                            firs: 0,
+                            freeze_count: 0,
+                            total_freezes_duration_ms: 0,
+                            decoder_implementation_name: dec.and_then(|d| d.decoder_name),
+                            secure_frames_protocol_version: sf_version,
+                        });
+                    }
+
+                    let out_audio = (ssrc != 0).then_some(OutboundAudioStats {
+                        ssrc,
+                        codec: "opus",
+                        payload_type: rtp::OPUS_PAYLOAD_TYPE,
+                        bitrate: 64_000,
+                        bytes_sent: outbound_audio_bytes,
+                        packets_sent: outbound_audio_packets,
+                        packets_lost: 0,
+                        fraction_lost: (outbound_loss_percent / 100.0).clamp(0.0, 1.0),
+                        frames_captured: outbound_audio_frames,
+                        audio_level: local_audio_level,
+                        audio_detected: input_reported,
+                        encrypt_success_count: local_audio_encrypt_ok,
+                        encrypt_failure_count: 0,
+                        secure_frames_protocol_version: sf_version,
+                    });
+                    let out_video = video_snap.as_ref().map(|vs| OutboundVideoStats {
+                        ssrc: vs.video_ssrc,
+                        rtx_ssrc: vs.rtx_ssrc,
+                        codec: "H264",
+                        payload_type: rtp::H264_PAYLOAD_TYPE,
+                        bitrate_target: avail_bitrate,
+                        bitrate_actual: est.as_ref().map_or(0, |e| e.encoder_rate),
+                        bytes_sent: vs.bytes_sent,
+                        packets_sent: vs.packets_sent,
+                        width: cam_w,
+                        height: cam_h,
+                        fps_encoded: encoded_fps,
+                        frames_encoded: vs.frames_encoded,
+                        frames_dropped: est.as_ref().map_or(0, |e| e.dropped_pictures),
+                        key_frames_encoded: vs.keyframes_encoded,
+                        qp_sum: 0,
+                        nacks: vs.nacks,
+                        plis: vs.plis,
+                        firs: 0,
+                        encoder_implementation_name: Some("OpenH264".into()),
+                        average_encode_time_ms: 0.0,
+                        encrypt_success_count: vs.frames_encoded,
+                        encrypt_failure_count: 0,
+                        secure_frames_protocol_version: sf_version,
+                    });
+                    let camera_stat = camera.as_ref().map(|_| CameraStats {
+                        device_name: camera_wish
+                            .as_deref()
+                            .filter(|s| !s.is_empty())
+                            .map(str::to_owned),
+                        width: cam_w,
+                        height: cam_h,
+                        fps: camera_fps,
+                        frames_captured: cam_captured,
+                        frames_dropped: 0,
+                        captured: true,
+                        encoded: video_snap.is_some(),
+                    });
+                    let local_address = udp
+                        .as_ref()
+                        .and_then(|s| s.local_addr().ok())
+                        .map(|a| a.to_string());
+                    let mode_str = transport.as_ref().map(|t| t.mode_name().to_string());
+
+                    shared.rtc_stats.update(|snap| {
+                        snap.connected = enabled || waiting;
+                        snap.transport = TransportStats {
+                            hostname: Some(diag_host.clone()),
+                            local_address,
+                            media_session_id: media_session_id.clone(),
+                            ping_ms,
+                            available_outgoing_bitrate: avail_bitrate,
+                            outbound_bitrate_estimate: avail_bitrate,
+                            inbound_bitrate_estimate: 0,
+                            outbound_bytes: udp_failures.sent_bytes,
+                            inbound_bytes,
+                            outbound_packets: udp_failures.sent_packets,
+                            inbound_packets,
+                            delay_estimate_ms: delay_ms,
+                            pacer_delay_ms: 0,
+                            decryption_failures,
+                            routing_time_ms,
+                            tls_version: tls_version.map(str::to_string),
+                            mode: mode_str,
+                            secure_frames_protocol_version: sf_version,
+                            output_device_underruns: playout_snap.underruns,
+                            receiver_reports: Vec::new(),
+                        };
+                        snap.outbound = OutboundStats {
+                            audio: out_audio,
+                            video: out_video,
+                        };
+                        snap.camera = camera_stat;
+                        snap.inbound = inbound;
+                    });
+                    stats_at = now + Duration::from_millis(250);
+                }
             },
             result = async { match &udp { Some(socket) => socket.recv(&mut packet).await, None => std::future::pending().await } } => {
                 let length = match result {
@@ -872,11 +1396,16 @@ pub(crate) async fn run(
                 }
                 if discovering {
                     let (address, port) = rtp::discovery_response(&packet[..length], ssrc)?;
+                    let elapsed_ms = discovery_started.elapsed().as_millis() as u64;
+                    routing_time_ms = Some(elapsed_ms);
+                    log_ws_stage_ok("call", "udp_discovery", &diag_host, diag_port, elapsed_ms, None);
                     let mode = mode.ok_or("Missing voice encryption mode")?;
                     text(&mut ws, signal::select_protocol(address, port, mode)).await?;
                     discovering = false;
                     continue;
                 }
+                inbound_packets += 1;
+                inbound_bytes += length as u64;
                 tally[0] += 1;
                 if tally[0] <= 2 {
                     debug!(length, first = packet[0], second = packet[1], "voice packet received");
@@ -886,6 +1415,7 @@ pub(crate) async fn run(
                     if let Some(compound) = crypto.open_rtcp(&packet[..length]) {
                         receivers.sender_reports(&compound, Instant::now());
                         if let Some(percent) = rtp::outbound_loss(&compound, ssrc) {
+                            outbound_loss_percent = percent;
                             emit(&events, Event::OutboundLoss { percent });
                         }
                         // A viewer of our camera: keyframe requests, repairs and rate hints; and the transport-wide
@@ -904,10 +1434,17 @@ pub(crate) async fn run(
                                 started.force_keyframe();
                             }
                         }
+                    } else if length >= 12 {
+                        decryption_failures += 1;
                     }
                     continue;
                 }
-                let Some(rtp) = crypto.open(&packet[..length]) else { continue };
+                let Some(rtp) = crypto.open(&packet[..length]) else {
+                    if length >= 12 {
+                        decryption_failures += 1;
+                    }
+                    continue;
+                };
                 let arrived = Instant::now();
                 receivers.observe_transport(rtp.ssrc, rtp.transport_sequence, arrived);
                 if rtp.payload_type != rtp::OPUS_PAYLOAD_TYPE {
@@ -921,8 +1458,11 @@ pub(crate) async fn run(
                             // NACK for a hole and PLI for a lost chain go as soon as they are due, not on the tick.
                             if let (Some(crypto), Some(socket)) = (transport.as_mut(), udp.as_ref()) {
                                 for (header, body) in receivers.feedback(ssrc, now) {
-                                    if let Ok(wire) = crypto.seal_rtcp(&header, &body) {
-                                        let _ = socket.try_send(&wire);
+                                    if let Ok(wire) = crypto.seal_rtcp(&header, &body)
+                                        && socket.try_send(&wire).is_ok()
+                                    {
+                                        udp_failures.sent_packets += 1;
+                                        udp_failures.sent_bytes += wire.len() as u64;
                                     }
                                 }
                             }
@@ -931,21 +1471,47 @@ pub(crate) async fn run(
                     continue;
                 }
                 receivers.observe_audio(rtp.ssrc, rtp.sequence, rtp.timestamp, arrived);
+                *inbound_audio_packets.entry(rtp.ssrc).or_default() += 1;
+                *inbound_audio_bytes.entry(rtp.ssrc).or_default() += rtp.payload.len() as u64;
                 tally[1] += 1;
-                let Some(user) = mixer.user(rtp.ssrc) else { continue };
+                let Some(user) = playout.user_for_ssrc(rtp.ssrc) else { continue };
                 tally[2] += 1;
                 if !dave.ready || !dave.contains(user) || controls.borrow().self_deaf {
                     continue;
                 }
-                let Ok(opus) = dave.session.decrypt(user, davey::MediaType::AUDIO, &rtp.payload) else { continue };
+                let Ok(opus) = dave.session.decrypt(user, davey::MediaType::AUDIO, &rtp.payload) else {
+                    decryption_failures += 1;
+                    continue;
+                };
                 tally[3] += 1;
-                mixer.push(rtp.ssrc, rtp.sequence, rtp.timestamp, &opus);
+                playout.push_packet(rtp.ssrc, rtp.sequence, rtp.timestamp, &opus);
             },
             event = ws.next() => {
                 let event = match event {
                     // A server crash preserves the voice session; other close codes are terminal.
                     Some(Ok(message)) if !matches!(&message, Message::Close(Some(frame)) if u16::from(frame.code) == close::SERVER_CRASH) => message,
+                    Some(Ok(Message::Close(frame))) => {
+                        let (code, reason_len) = frame.as_ref().map_or((u16::from(CloseCode::Status), 0usize), |f| {
+                            (u16::from(f.code), f.reason.len())
+                        });
+                        log_ws_close("call", &diag_host, diag_port, connect_started.elapsed().as_millis() as u64, code, reason_len);
+                        reconnect = Some("Voice socket failed; rejoin the call");
+                        continue;
+                    }
+                    Some(Err(err)) => {
+                        log_ws_stage_err(
+                            "call",
+                            "ws_close",
+                            &diag_host,
+                            diag_port,
+                            connect_started.elapsed().as_millis() as u64,
+                            &sanitized_ws_error(&err),
+                        );
+                        reconnect = Some("Voice socket failed; rejoin the call");
+                        continue;
+                    }
                     _ => {
+                        log_ws_close("call", &diag_host, diag_port, connect_started.elapsed().as_millis() as u64, u16::from(CloseCode::Abnormal), 0);
                         reconnect = Some("Voice socket failed; rejoin the call");
                         continue;
                     }
@@ -975,11 +1541,20 @@ pub(crate) async fn run(
                                 heartbeat_ms = Some(hello.interval_ms);
                                 server_version = hello.version;
                                 heartbeat_at = Instant::now();
+                                log_ws_stage_ok(
+                                    "call",
+                                    "op8_hello",
+                                    &diag_host,
+                                    diag_port,
+                                    connect_started.elapsed().as_millis() as u64,
+                                    tls_version,
+                                );
                             }
                             Some(VoiceOp::HeartbeatAck) => {
                                 if signal::acknowledges(awaiting_ack, missed_acks, data["t"].as_u64()) {
                                     if missed_acks == 0 {
                                         let ms = heartbeat_sent.elapsed().as_secs_f64() * 1000.;
+                                        ping_ms = Some(ms.round() as u64);
                                         emit(&events, Event::Ping { ms });
                                     }
                                     awaiting_ack = None;
@@ -998,6 +1573,14 @@ pub(crate) async fn run(
                                 if !rtp::public_ip(ready.ip) {
                                     return Err("Voice server advertised a nonpublic address");
                                 }
+                                log_ws_stage_ok(
+                                    "call",
+                                    "op2_ready",
+                                    &diag_host,
+                                    diag_port,
+                                    connect_started.elapsed().as_millis() as u64,
+                                    None,
+                                );
                                 ssrc = ready.ssrc;
                                 video_ssrc = ready.video_ssrc;
                                 rtx_ssrc = ready.rtx_ssrc;
@@ -1018,6 +1601,7 @@ pub(crate) async fn run(
                                     .map_err(|_| "Voice UDP discovery failed")?;
                                 udp = Some(socket);
                                 discovering = true;
+                                discovery_started = Instant::now();
                                 discovery_deadline = Instant::now() + DISCOVERY_TIMEOUT;
                             }
                             Some(VoiceOp::SelectProtocolAck) => {
@@ -1029,9 +1613,18 @@ pub(crate) async fn run(
                                     keyframe_interval = interval;
                                     debug!(interval, "voice keyframe interval");
                                 }
+                                media_session_id = data["media_session_id"].as_str().map(str::to_owned);
                                 let key = signal::session_description(data, mode)?;
                                 transport = Some(Transport::new(mode, &key));
                                 secured_at = Some(Instant::now());
+                                log_ws_stage_ok(
+                                    "call",
+                                    "op4_session_description",
+                                    &diag_host,
+                                    diag_port,
+                                    connect_started.elapsed().as_millis() as u64,
+                                    tls_version,
+                                );
                                 // Register the audio SSRC without sending media.
                                 text(&mut ws, signal::speaking(false, ssrc)).await?;
                                 send(&mut ws, Message::Binary(dave.key_package()?.into())).await?;
@@ -1056,7 +1649,7 @@ pub(crate) async fn run(
                                 let user = signal::id(data, "user_id")?;
                                 if user != own && dave.contains(user) {
                                     let value = u32::try_from(signal::number(data, "ssrc")?).map_err(|_| "Invalid voice SSRC")?;
-                                    mixer.announce(user, value)?;
+                                    playout.announce(user, value)?;
                                 }
                             }
                             Some(VoiceOp::Flags) => {
@@ -1080,13 +1673,13 @@ pub(crate) async fn run(
                                     } else {
                                         deadline = Some(Instant::now() + NEGOTIATION);
                                         capture_reset = true;
-                                        mixer.clear();
+                                        playout.clear();
                                     }
                                 }
                             }
                             Some(VoiceOp::ClientDisconnect) => {
                                 let user = signal::id(data, "user_id")?;
-                                mixer.remove(user);
+                                playout.remove(user);
                                 receivers.remove(user);
                                 decoders.remove(user);
                                 if clients.remove(&user) {
@@ -1097,7 +1690,7 @@ pub(crate) async fn run(
                                 if dave.disconnect(user)? {
                                     if dave.alone() {
                                         capture_reset = true;
-                                        mixer.clear();
+                                        playout.clear();
                                         dave.enter_sole_member_waiting()?;
                                         deadline = None;
                                         waiting_announced = true;
@@ -1109,7 +1702,7 @@ pub(crate) async fn run(
                                     } else if was_group_member {
                                         deadline = Some(Instant::now() + RENEGOTIATION);
                                         capture_reset = true;
-                                        mixer.clear();
+                                        playout.clear();
                                     }
                                 }
                             }
@@ -1162,7 +1755,7 @@ pub(crate) async fn run(
                                 let remote = signal::remote_video(data)?;
                                 if remote.user != own {
                                     if remote.audio_ssrc != 0 && dave.contains(remote.user) {
-                                        mixer.announce(remote.user, remote.audio_ssrc)?;
+                                        playout.announce(remote.user, remote.audio_ssrc)?;
                                     }
                                     match remote.video {
                                         Some((video, rtx)) => {
@@ -1219,7 +1812,7 @@ pub(crate) async fn run(
                                     deadline = None;
                                 } else {
                                     capture_reset = true;
-                                    mixer.clear();
+                                    playout.clear();
                                     deadline = Some(Instant::now() + RENEGOTIATION);
                                 }
                             }
@@ -1230,7 +1823,18 @@ pub(crate) async fn run(
                     Message::Pong(_) => {}
                     Message::Close(frame) => {
                         // No close frame reads as 1005, "no status received".
-                        let code = frame.map_or(u16::from(CloseCode::Status), |frame| u16::from(frame.code));
+                        let (code, reason_len) = frame.as_ref().map_or(
+                            (u16::from(CloseCode::Status), 0usize),
+                            |frame| (u16::from(frame.code), frame.reason.len()),
+                        );
+                        log_ws_close(
+                            "call",
+                            &diag_host,
+                            diag_port,
+                            connect_started.elapsed().as_millis() as u64,
+                            code,
+                            reason_len,
+                        );
                         return Ok(if code == CLOSE_DISCONNECTED {
                             DisconnectReason::Kicked
                         } else {
@@ -1275,5 +1879,115 @@ mod tests {
         assert!(encoder.get_inband_fec().unwrap());
         assert_eq!(encoder.get_packet_loss_perc().unwrap(), 30);
         assert!(!encoder.get_dtx().unwrap());
+    }
+
+    #[test]
+    fn diagnostic_logs_include_stage_host_and_elapsed_without_secrets_ids_or_nat_ip() {
+        struct Capture(Arc<Mutex<Vec<String>>>);
+        impl tracing::Subscriber for Capture {
+            fn enabled(&self, _: &tracing::Metadata<'_>) -> bool {
+                true
+            }
+            fn new_span(&self, _: &tracing::span::Attributes<'_>) -> tracing::span::Id {
+                tracing::span::Id::from_u64(1)
+            }
+            fn record(&self, _: &tracing::span::Id, _: &tracing::span::Record<'_>) {}
+            fn record_follows_from(&self, _: &tracing::span::Id, _: &tracing::span::Id) {}
+            fn event(&self, event: &tracing::Event<'_>) {
+                struct Visitor(String);
+                impl tracing::field::Visit for Visitor {
+                    fn record_debug(
+                        &mut self,
+                        field: &tracing::field::Field,
+                        value: &dyn std::fmt::Debug,
+                    ) {
+                        use std::fmt::Write;
+                        let _ = write!(self.0, "{}={:?} ", field.name(), value);
+                    }
+                }
+                let mut visitor = Visitor(String::new());
+                event.record(&mut visitor);
+                self.0.lock().unwrap().push(visitor.0);
+            }
+            fn enter(&self, _: &tracing::span::Id) {}
+            fn exit(&self, _: &tracing::span::Id) {}
+        }
+
+        let captured = Arc::new(Mutex::new(Vec::new()));
+        let _guard = tracing::subscriber::set_default(Capture(Arc::clone(&captured)));
+
+        let join = crate::Join {
+            endpoint: "c-ams01-abcd.discord.media:2096".into(),
+            token: "SECRET_VOICE_TOKEN_ABC".into(),
+            session_id: "SECRET_SESSION_XYZ".into(),
+            server_id: 987654321012345,
+            channel_id: 876543210987654,
+            user_id: 765432109876543,
+        };
+        tracing::debug!(?join, "join struct debug");
+
+        let (host, port) = ws_target("wss://c-ams01-abcd.discord.media:2096/?v=9").unwrap();
+        assert_eq!((host.as_str(), port), ("c-ams01-abcd.discord.media", 2096));
+
+        for stage in [
+            "dns",
+            "tcp",
+            "tls_ws",
+            "op8_hello",
+            "op2_ready",
+            "udp_discovery",
+            "op4_session_description",
+        ] {
+            log_ws_stage_ok("call", stage, &host, port, 12, Some("TLSv1.3"));
+        }
+        log_ws_close("call", &host, port, 44, 4014, 19);
+
+        let err = tokio_tungstenite::tungstenite::Error::Http(Box::new(
+            tokio_tungstenite::tungstenite::http::Response::builder()
+                .status(401)
+                .body(Some(b"SECRET_VOICE_TOKEN_ABC 203.0.113.77".to_vec()))
+                .unwrap(),
+        ));
+        let category = sanitized_ws_error(&err);
+        assert_eq!(category, "http:401");
+        log_ws_stage_err("call", "tls_ws", &host, port, 5, &category);
+
+        let rejection = ws_target("wss://evil.example/?token=SECRET_VOICE_TOKEN_ABC");
+        assert!(rejection.is_err());
+
+        let joined = captured.lock().unwrap().join("\n");
+        for required in [
+            "c-ams01-abcd.discord.media",
+            "2096",
+            "stage=\"dns\"",
+            "stage=\"tcp\"",
+            "stage=\"tls_ws\"",
+            "stage=\"op8_hello\"",
+            "stage=\"op2_ready\"",
+            "stage=\"udp_discovery\"",
+            "stage=\"op4_session_description\"",
+            "stage=\"ws_close\"",
+            "close_code=4014",
+            "reason_len=19",
+            "elapsed_ms=",
+            "http:401",
+        ] {
+            assert!(joined.contains(required), "missing {required} in {joined}");
+        }
+        for forbidden in [
+            "SECRET_VOICE_TOKEN_ABC",
+            "SECRET_SESSION_XYZ",
+            "987654321012345",
+            "876543210987654",
+            "765432109876543",
+            "203.0.113.77",
+            "?v=9",
+            "token=",
+        ] {
+            assert!(
+                !joined.contains(forbidden),
+                "leaked sensitive string {forbidden} in {joined}"
+            );
+        }
     }
 }

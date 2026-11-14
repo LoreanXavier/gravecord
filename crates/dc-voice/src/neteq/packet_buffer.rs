@@ -42,18 +42,23 @@ impl PacketBuffer {
     pub(crate) fn new(max_number_of_packets: usize) -> Self {
         Self {
             max_number_of_packets,
-            buffer: Vec::new(),
+            buffer: Vec::with_capacity(max_number_of_packets),
             discarded_primary: 0,
             discarded_secondary: 0,
         }
     }
 
-    /// Empties the buffer; the number of primary packets that went.
-    pub(crate) fn flush(&mut self) -> u64 {
+    /// Empties the buffer, forwarding removed packets to `recycle` for buffer reuse; returns primary count.
+    pub(crate) fn flush_with<F: FnMut(Packet)>(&mut self, mut recycle: F) -> u64 {
         let mut primary = 0;
-        for packet in std::mem::take(&mut self.buffer) {
+        for packet in self.buffer.drain(..) {
             primary += u64::from(packet.priority == 0);
-            self.log_discarded(packet.priority);
+            if packet.priority > 0 {
+                self.discarded_secondary += 1;
+            } else {
+                self.discarded_primary += 1;
+            }
+            recycle(packet);
         }
         primary
     }
@@ -75,12 +80,15 @@ impl PacketBuffer {
         }
     }
 
-    /// `PacketBuffer::InsertPacket`. For two packets of one timestamp the primary wins over FEC, which is what the
-    /// `Packet` ordering by priority does there.
-    pub(crate) fn insert(&mut self, packet: Packet) -> Insert {
+    /// `PacketBuffer::InsertPacket` with buffer recycling on flush or duplicate replacement.
+    pub(crate) fn insert_with<F: FnMut(Packet)>(
+        &mut self,
+        packet: Packet,
+        mut recycle: F,
+    ) -> Insert {
         let mut result = Insert::Ok;
         if self.buffer.len() >= self.max_number_of_packets {
-            let _ = self.flush();
+            let _ = self.flush_with(&mut recycle);
             result = Insert::Flushed;
         }
         // The last packet from the back that the new one is not older than.
@@ -94,14 +102,23 @@ impl PacketBuffer {
             if packet.priority < self.buffer[index].priority {
                 let old = std::mem::replace(&mut self.buffer[index], packet);
                 self.log_discarded(old.priority);
+                recycle(old);
             } else {
                 self.log_discarded(packet.priority);
+                recycle(packet);
             }
             return result;
         }
         let at = position.map_or(0, |index| index + 1);
         self.buffer.insert(at, packet);
         result
+    }
+
+    /// `PacketBuffer::InsertPacket`. For two packets of one timestamp the primary wins over FEC, which is what the
+    /// `Packet` ordering by priority does there.
+    #[cfg(test)]
+    pub(crate) fn insert(&mut self, packet: Packet) -> Insert {
+        self.insert_with(packet, |_| {})
     }
 
     pub(crate) fn peek_next(&self) -> Option<&Packet> {
@@ -112,27 +129,42 @@ impl PacketBuffer {
         (!self.buffer.is_empty()).then(|| self.buffer.remove(0))
     }
 
+    /// `DiscardOldPackets` in-place (zero allocation), passing discarded packets to `recycle`.
+    pub(crate) fn discard_old_packets_with<F: FnMut(Packet)>(
+        &mut self,
+        timestamp_limit: u32,
+        horizon_samples: u32,
+        mut recycle: F,
+    ) -> u64 {
+        let mut primary = 0;
+        let mut i = 0;
+        while i < self.buffer.len() {
+            let obsolete = {
+                let packet = &self.buffer[i];
+                packet.timestamp != timestamp_limit
+                    && is_obsolete_timestamp(packet.timestamp, timestamp_limit, horizon_samples)
+            };
+            if obsolete {
+                let packet = self.buffer.remove(i);
+                primary += u64::from(packet.priority == 0);
+                self.log_discarded(packet.priority);
+                recycle(packet);
+            } else {
+                i += 1;
+            }
+        }
+        primary
+    }
+
     /// `DiscardOldPackets`: everything older than `timestamp_limit` within `horizon_samples` (0: any age). The number of
     /// primary packets that went: they came too late to be played.
+    #[cfg(test)]
     pub(crate) fn discard_old_packets(
         &mut self,
         timestamp_limit: u32,
         horizon_samples: u32,
     ) -> u64 {
-        let mut primary = 0;
-        let mut kept = Vec::with_capacity(self.buffer.len());
-        for packet in std::mem::take(&mut self.buffer) {
-            if packet.timestamp != timestamp_limit
-                && is_obsolete_timestamp(packet.timestamp, timestamp_limit, horizon_samples)
-            {
-                primary += u64::from(packet.priority == 0);
-                self.log_discarded(packet.priority);
-            } else {
-                kept.push(packet);
-            }
-        }
-        self.buffer = kept;
-        primary
+        self.discard_old_packets_with(timestamp_limit, horizon_samples, |_| {})
     }
 
     /// `GetSpanSamples`: from the first packet's timestamp to the end of the last one, or to now counting how long it

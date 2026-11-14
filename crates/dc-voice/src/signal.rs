@@ -17,28 +17,54 @@ pub(crate) const DAVE_PROTOCOL_VERSION: u64 = 1;
 /// the pinned bundle's list in `voice_op::close`; taken from Serein, which stops on it.
 pub(crate) const CLOSE_DISCONNECTED: u16 = 4014;
 
-/// `wss://<endpoint>/?v=9`. Like Serein, only `*.discord.media` hosts receive the token.
-pub(crate) fn endpoint_url(raw: &str) -> Result<String, &'static str> {
-    #[cfg(feature = "sim")]
-    if crate::sim::active() {
-        return crate::sim::endpoint_url(raw);
-    }
+/// Validates a voice gateway endpoint string (`host` or `host:port`) and returns `(host, port)`.
+/// Only non-empty `*.discord.media` hostnames are accepted so secrets and tokens never leave Discord media hosts.
+pub(crate) fn validate_endpoint_host(raw: &str) -> Result<(String, u16), &'static str> {
     if raw.is_empty()
         || raw.len() > 256
         || raw.contains('/')
+        || raw.contains('\\')
         || raw.contains('@')
         || raw.contains('?')
         || raw.contains('#')
+        || raw.chars().any(|c| c.is_whitespace() || c.is_control())
     {
         return Err("Invalid Discord voice endpoint");
     }
     let url = url::Url::parse(&format!("wss://{raw}/?v=9"))
         .map_err(|_| "Invalid Discord voice endpoint")?;
     let host = url.host_str().ok_or("Missing Discord voice host")?;
-    if !host.ends_with(".discord.media") || !url.username().is_empty() || url.password().is_some() {
+    if !url.username().is_empty() || url.password().is_some() {
         return Err("Voice endpoint is outside Discord media");
     }
-    Ok(url.into())
+    if host.starts_with('[') || host.parse::<IpAddr>().is_ok() {
+        return Err("Voice endpoint is outside Discord media");
+    }
+    if host
+        .strip_suffix(".discord.media")
+        .is_none_or(|prefix| prefix.is_empty() || prefix.ends_with('.'))
+    {
+        return Err("Voice endpoint is outside Discord media");
+    }
+    let port = url.port_or_known_default().unwrap_or(443);
+    if port == 0 {
+        return Err("Invalid Discord voice endpoint");
+    }
+    Ok((host.to_string(), port))
+}
+
+/// `wss://<endpoint>/?v=9`. Like Serein, only `*.discord.media` hosts receive the token.
+pub(crate) fn endpoint_url(raw: &str) -> Result<String, &'static str> {
+    #[cfg(feature = "sim")]
+    if crate::sim::active() {
+        return crate::sim::endpoint_url(raw);
+    }
+    let (host, port) = validate_endpoint_host(raw)?;
+    if port == 443 {
+        Ok(format!("wss://{host}/?v=9"))
+    } else {
+        Ok(format!("wss://{host}:{port}/?v=9"))
+    }
 }
 
 fn op(op: VoiceOp, d: Value) -> String {
@@ -493,13 +519,30 @@ mod tests {
             "",
             "evil.example:443",
             "discord.media.evil.example",
+            "discord.media",
+            ".discord.media",
+            "127.0.0.1:443",
+            "x.discord.media:0",
             "x.discord.media/../",
             "user@x.discord.media",
             "x.discord.media?v=1",
             "wss://x.discord.media",
         ] {
             assert!(endpoint_url(bad).is_err(), "{bad}");
+            assert!(validate_endpoint_host(bad).is_err(), "{bad}");
         }
+        assert_eq!(
+            validate_endpoint_host("c-ams01-abcd.discord.media:443").unwrap(),
+            ("c-ams01-abcd.discord.media".into(), 443)
+        );
+        assert_eq!(
+            validate_endpoint_host("c-ams01-abcd.discord.media:2096").unwrap(),
+            ("c-ams01-abcd.discord.media".into(), 2096)
+        );
+        assert_eq!(
+            validate_endpoint_host("rotterdam1234.discord.media").unwrap(),
+            ("rotterdam1234.discord.media".into(), 443)
+        );
     }
 
     #[test]
