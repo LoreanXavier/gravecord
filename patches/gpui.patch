@@ -1,5 +1,5 @@
 diff --git a/crates/gpui/src/app.rs b/crates/gpui/src/app.rs
-index 75da2eb..9b0c895 100644
+index 75da2eb..3c02255 100644
 --- a/crates/gpui/src/app.rs
 +++ b/crates/gpui/src/app.rs
 @@ -1341,6 +1341,9 @@ impl App {
@@ -75,7 +75,7 @@ index 75da2eb..9b0c895 100644
          self.platform.open_with_system(path)
      }
  
-@@ -3888,3 +3914,43 @@ mod test {
+@@ -3888,3 +3914,50 @@ mod test {
          MissingGlyph::new(grapheme.into(), FallbackFontClass::Proportional)
      }
  }
@@ -90,11 +90,18 @@ index 75da2eb..9b0c895 100644
 +}
 +
 +/// Inert mode only: records one painted line of text and where it went (the harness crawler names controls by it).
-+pub(crate) fn inert_text(origin: Point<Pixels>, width: Pixels, height: Pixels, text: &SharedString) {
++pub(crate) fn inert_text(
++    origin: Point<Pixels>,
++    width: Pixels,
++    height: Pixels,
++    text: &SharedString,
++) {
 +    if INERT.load(std::sync::atomic::Ordering::Relaxed) && !text.is_empty() {
 +        TEXT_LOG.with(|log| {
-+            log.borrow_mut()
-+                .push((Bounds::new(origin, crate::size(width, height)), text.clone()))
++            log.borrow_mut().push((
++                Bounds::new(origin, crate::size(width, height)),
++                text.clone(),
++            ))
 +        });
 +    }
 +}
@@ -209,7 +216,7 @@ index 8f980bd..f6040e9 100644
      where
          E: 'static + Element,
 diff --git a/crates/gpui/src/elements/anchored.rs b/crates/gpui/src/elements/anchored.rs
-index 12f3f08..79d3133 100644
+index 12f3f08..90e35f9 100644
 --- a/crates/gpui/src/elements/anchored.rs
 +++ b/crates/gpui/src/elements/anchored.rs
 @@ -96,6 +96,12 @@ impl Anchored {
@@ -225,14 +232,16 @@ index 12f3f08..79d3133 100644
      /// Snap to window edge and leave some margins.
      pub fn snap_to_window_with_margin(mut self, edges: impl Into<Edges<Pixels>>) -> Self {
          self.fit_mode = AnchoredFitMode::SnapToWindowWithMargin(edges.into());
-@@ -256,9 +262,25 @@ impl Element for Anchored {
+@@ -256,9 +262,27 @@ impl Element for Anchored {
              }
          }
  
 +        // A menu that runs past the window's right edge opens to the left of its pointer instead; the vertical axis
 +        // only snaps.
-+        if matches!(self.fit_mode, AnchoredFitMode::FlipHorizontalSnapWithMargin(_))
-+            && desired.right() > limits.right()
++        if matches!(
++            self.fit_mode,
++            AnchoredFitMode::FlipHorizontalSnapWithMargin(_)
++        ) && desired.right() > limits.right()
 +        {
 +            let switched = Bounds::from_anchor_and_size(
 +                self.anchor.other_side_along(Axis::Horizontal),
@@ -252,7 +261,7 @@ index 12f3f08..79d3133 100644
              _ => Edges::default(),
          }
          .map(|edge| *edge + client_inset);
-@@ -339,6 +361,8 @@ pub enum AnchoredFitMode {
+@@ -339,6 +363,8 @@ pub enum AnchoredFitMode {
      SnapToWindow,
      /// Snap to window edge and leave some margins.
      SnapToWindowWithMargin(Edges<Pixels>),
@@ -516,10 +525,37 @@ index b84bcc5..2e58cab 100644
      }
  
 diff --git a/crates/gpui/src/scene.rs b/crates/gpui/src/scene.rs
-index a4116aa..0b3bb0b 100644
+index a4116aa..363393f 100644
 --- a/crates/gpui/src/scene.rs
 +++ b/crates/gpui/src/scene.rs
-@@ -138,6 +138,11 @@ impl Scene {
+@@ -43,6 +43,7 @@ pub struct Scene {
+     primitive_bounds: BoundsTree<ScaledPixels>,
+     layer_stack: Vec<DrawOrder>,
+     pub shadows: Vec<Shadow>,
++    pub backdrop_blurs: Vec<BackdropBlur>,
+     pub quads: Vec<Quad>,
+     pub paths: Vec<Path<ScaledPixels>>,
+     pub underlines: Vec<Underline>,
+@@ -60,6 +61,7 @@ impl Scene {
+         self.layer_stack.clear();
+         self.paths.clear();
+         self.shadows.clear();
++        self.backdrop_blurs.clear();
+         self.quads.clear();
+         self.underlines.clear();
+         self.monochrome_sprites.clear();
+@@ -104,6 +106,10 @@ impl Scene {
+                 shadow.order = order;
+                 self.shadows.push(*shadow);
+             }
++            Primitive::BackdropBlur(backdrop_blur) => {
++                backdrop_blur.order = order;
++                self.backdrop_blurs.push(*backdrop_blur);
++            }
+             Primitive::Quad(quad) => {
+                 quad.order = order;
+                 self.quads.push(*quad);
+@@ -138,6 +144,11 @@ impl Scene {
              .push(PaintOperation::Primitive(primitive));
      }
  
@@ -531,7 +567,32 @@ index a4116aa..0b3bb0b 100644
      pub fn replay(&mut self, range: Range<usize>, prev_scene: &Scene) {
          for operation in &prev_scene.paint_operations[range] {
              match operation {
-@@ -211,12 +216,115 @@ pub(crate) enum PrimitiveKind {
+@@ -150,6 +161,7 @@ impl Scene {
+ 
+     pub fn finish(&mut self) {
+         self.shadows.sort_by_key(|shadow| shadow.order);
++        self.backdrop_blurs.sort_by_key(|blur| blur.order);
+         self.quads.sort_by_key(|quad| quad.order);
+         self.paths.sort_by_key(|path| path.order);
+         self.underlines.sort_by_key(|underline| underline.order);
+@@ -173,6 +185,8 @@ impl Scene {
+         BatchIterator {
+             shadows_start: 0,
+             shadows_iter: self.shadows.iter().peekable(),
++            backdrop_blurs_start: 0,
++            backdrop_blurs_iter: self.backdrop_blurs.iter().peekable(),
+             quads_start: 0,
+             quads_iter: self.quads.iter().peekable(),
+             paths_start: 0,
+@@ -201,6 +215,7 @@ impl Scene {
+ )]
+ pub(crate) enum PrimitiveKind {
+     Shadow,
++    BackdropBlur,
+     #[default]
+     Quad,
+     Path,
+@@ -211,16 +226,129 @@ pub(crate) enum PrimitiveKind {
      Surface,
  }
  
@@ -602,6 +663,15 @@ index a4116aa..0b3bb0b 100644
 +                element_corner_radii: sc(s.element_corner_radii),
 +                ..*s
 +            }),
++            Primitive::BackdropBlur(b) => Primitive::BackdropBlur(BackdropBlur {
++                blur_radius: sv(b.blur_radius),
++                bounds: sb(b.bounds),
++                corner_radii: sc(b.corner_radii),
++                content_mask: sm(b.content_mask),
++                opacity: b.opacity * opacity,
++                fade_top: sv(b.fade_top),
++                ..*b
++            }),
 +            Primitive::Underline(u) => Primitive::Underline(Underline {
 +                bounds: sb(u.bounds),
 +                content_mask: sm(u.content_mask),
@@ -647,7 +717,111 @@ index a4116aa..0b3bb0b 100644
  #[derive(Clone)]
  #[expect(missing_docs)]
  pub enum Primitive {
-@@ -817,6 +925,19 @@ impl Path<Pixels> {
+     Shadow(Shadow),
++    BackdropBlur(BackdropBlur),
+     Quad(Quad),
+     Path(Path<ScaledPixels>),
+     Underline(Underline),
+@@ -235,6 +363,7 @@ impl Primitive {
+     pub fn bounds(&self) -> &Bounds<ScaledPixels> {
+         match self {
+             Primitive::Shadow(shadow) => &shadow.bounds,
++            Primitive::BackdropBlur(blur) => &blur.bounds,
+             Primitive::Quad(quad) => &quad.bounds,
+             Primitive::Path(path) => &path.bounds,
+             Primitive::Underline(underline) => &underline.bounds,
+@@ -248,6 +377,7 @@ impl Primitive {
+     pub fn content_mask(&self) -> &ContentMask<ScaledPixels> {
+         match self {
+             Primitive::Shadow(shadow) => &shadow.content_mask,
++            Primitive::BackdropBlur(blur) => &blur.content_mask,
+             Primitive::Quad(quad) => &quad.content_mask,
+             Primitive::Path(path) => &path.content_mask,
+             Primitive::Underline(underline) => &underline.content_mask,
+@@ -269,6 +399,8 @@ impl Primitive {
+ struct BatchIterator<'a> {
+     shadows_start: usize,
+     shadows_iter: Peekable<slice::Iter<'a, Shadow>>,
++    backdrop_blurs_start: usize,
++    backdrop_blurs_iter: Peekable<slice::Iter<'a, BackdropBlur>>,
+     quads_start: usize,
+     quads_iter: Peekable<slice::Iter<'a, Quad>>,
+     paths_start: usize,
+@@ -294,6 +426,10 @@ impl<'a> Iterator for BatchIterator<'a> {
+                 self.shadows_iter.peek().map(|s| s.order),
+                 PrimitiveKind::Shadow,
+             ),
++            (
++                self.backdrop_blurs_iter.peek().map(|b| b.order),
++                PrimitiveKind::BackdropBlur,
++            ),
+             (self.quads_iter.peek().map(|q| q.order), PrimitiveKind::Quad),
+             (self.paths_iter.peek().map(|q| q.order), PrimitiveKind::Path),
+             (
+@@ -342,6 +478,20 @@ impl<'a> Iterator for BatchIterator<'a> {
+                 self.shadows_start = shadows_end;
+                 Some(PrimitiveBatch::Shadows(shadows_start..shadows_end))
+             }
++            PrimitiveKind::BackdropBlur => {
++                let blurs_start = self.backdrop_blurs_start;
++                let mut blurs_end = blurs_start + 1;
++                self.backdrop_blurs_iter.next();
++                while self
++                    .backdrop_blurs_iter
++                    .next_if(|blur| (blur.order, batch_kind) < max_order_and_kind)
++                    .is_some()
++                {
++                    blurs_end += 1;
++                }
++                self.backdrop_blurs_start = blurs_end;
++                Some(PrimitiveBatch::BackdropBlurs(blurs_start..blurs_end))
++            }
+             PrimitiveKind::Quad => {
+                 let quads_start = self.quads_start;
+                 let mut quads_end = quads_start + 1;
+@@ -476,6 +626,7 @@ impl<'a> Iterator for BatchIterator<'a> {
+ #[allow(missing_docs)]
+ pub enum PrimitiveBatch {
+     Shadows(Range<usize>),
++    BackdropBlurs(Range<usize>),
+     Quads(Range<usize>),
+     Paths(Range<usize>),
+     Underlines(Range<usize>),
+@@ -500,6 +651,7 @@ impl PrimitiveBatch {
+     pub fn label(&self) -> String {
+         match self {
+             Self::Shadows(range) => format!("shadows ({})", range.len()),
++            Self::BackdropBlurs(range) => format!("backdrop blurs ({})", range.len()),
+             Self::Quads(range) => format!("quads ({})", range.len()),
+             Self::Paths(range) => format!("paths ({})", range.len()),
+             Self::Underlines(range) => format!("underlines ({})", range.len()),
+@@ -591,6 +743,25 @@ impl From<Shadow> for Primitive {
+     }
+ }
+ 
++#[derive(Debug, Copy, Clone)]
++#[repr(C)]
++#[expect(missing_docs)]
++pub struct BackdropBlur {
++    pub order: DrawOrder,
++    pub blur_radius: ScaledPixels,
++    pub bounds: Bounds<ScaledPixels>,
++    pub corner_radii: Corners<ScaledPixels>,
++    pub content_mask: ContentMask<ScaledPixels>,
++    pub opacity: f32,
++    pub fade_top: ScaledPixels,
++}
++
++impl From<BackdropBlur> for Primitive {
++    fn from(blur: BackdropBlur) -> Self {
++        Primitive::BackdropBlur(blur)
++    }
++}
++
+ /// The style of a border.
+ #[derive(Default, Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema)]
+ #[repr(C)]
+@@ -817,6 +988,19 @@ impl Path<Pixels> {
          }
      }
  
@@ -667,6 +841,59 @@ index a4116aa..0b3bb0b 100644
      /// Scale this path by the given factor.
      pub fn scale(&self, factor: f32) -> Path<ScaledPixels> {
          Path {
+diff --git a/crates/gpui/src/style.rs b/crates/gpui/src/style.rs
+index 323c79e..874abf6 100644
+--- a/crates/gpui/src/style.rs
++++ b/crates/gpui/src/style.rs
+@@ -291,6 +291,9 @@ pub struct Style {
+     /// Box shadow of the element
+     pub box_shadow: Vec<BoxShadow>,
+ 
++    /// Gaussian blur radius applied to the backdrop behind this element (`backdrop-filter: blur(...)`).
++    pub backdrop_blur: Option<AbsoluteLength>,
++
+     /// The text style of this element
+     #[refineable]
+     pub text: TextStyleRefinement,
+@@ -710,6 +713,13 @@ impl Style {
+ 
+         window.paint_drop_shadows(bounds, corner_radii, &self.box_shadow);
+ 
++        if let Some(blur_radius) = self.backdrop_blur {
++            let blur_radius = blur_radius.to_pixels(rem_size);
++            if blur_radius > Pixels::ZERO {
++                window.paint_backdrop_blur(bounds, corner_radii, blur_radius);
++            }
++        }
++
+         let background_color = self.background.as_ref().and_then(Fill::color);
+         if background_color.is_some_and(|color| !color.is_transparent()) {
+             let mut border_color = match background_color {
+@@ -806,6 +816,7 @@ impl Default for Style {
+             border_style: BorderStyle::default(),
+             corner_radii: Corners::default(),
+             box_shadow: Default::default(),
++            backdrop_blur: None,
+             text: TextStyleRefinement::default(),
+             mouse_cursor: None,
+             opacity: None,
+diff --git a/crates/gpui/src/styled.rs b/crates/gpui/src/styled.rs
+index aa77a20..e19089e 100644
+--- a/crates/gpui/src/styled.rs
++++ b/crates/gpui/src/styled.rs
+@@ -888,6 +888,12 @@ pub trait Styled: Sized {
+         self
+     }
+ 
++    /// Applies a Gaussian backdrop blur (`backdrop-filter: blur(radius)`) behind this element.
++    fn backdrop_blur(mut self, radius: impl Into<AbsoluteLength>) -> Self {
++        self.style().backdrop_blur = Some(radius.into());
++        self
++    }
++
+     /// Draws a debug border around this element.
+     #[cfg(debug_assertions)]
+     fn debug(mut self) -> Self {
 diff --git a/crates/gpui/src/taffy.rs b/crates/gpui/src/taffy.rs
 index 7c12b5c..937cfe0 100644
 --- a/crates/gpui/src/taffy.rs
@@ -988,9 +1215,20 @@ index 3741851..b68f3d9 100644
                      element
                  });
 diff --git a/crates/gpui/src/window.rs b/crates/gpui/src/window.rs
-index 4e2e1a7..1c395c3 100644
+index 4e2e1a7..bb2bbd9 100644
 --- a/crates/gpui/src/window.rs
 +++ b/crates/gpui/src/window.rs
+@@ -8,8 +8,8 @@ use crate::subscription::SingleSubscriberSet;
+ use crate::taffy::TaffyLayoutEngine;
+ use crate::{
+     Action, AnyDrag, AnyElement, AnyImageCache, AnyTooltip, AnyView, App, AppContext, Arena, Asset,
+-    AsyncWindowContext, AtlasTile, AvailableSpace, Background, BorderStyle, Bounds, BoxShadow,
+-    Capslock, Context, Corners, CursorHideMode, CursorStyle, Decorations, DevicePixels,
++    AsyncWindowContext, AtlasTile, AvailableSpace, BackdropBlur, Background, BorderStyle, Bounds,
++    BoxShadow, Capslock, Context, Corners, CursorHideMode, CursorStyle, Decorations, DevicePixels,
+     DispatchActionListener, DispatchNodeId, DispatchTree, DisplayId, Edges, Effect, Entity,
+     EntityId, EventEmitter, FileDropEvent, FontId, Global, GlobalElementId, GlyphId, GpuSpecs,
+     Hsla, InputHandler, InputPreference, IsZero, KeyBinding, KeyContext, KeyDownEvent, KeyEvent,
 @@ -1036,6 +1036,7 @@ pub(crate) struct DeferredDraw {
      /// The entities the deferred element accessed while it was last drawn, in
      /// any phase, restored when its prepaint is reused.
@@ -1024,7 +1262,7 @@ index 4e2e1a7..1c395c3 100644
          self.tab_stops.clear();
          self.focus = None;
  
-@@ -1216,6 +1221,95 @@ enum InputModality {
+@@ -1216,6 +1221,96 @@ enum InputModality {
      Touch,
  }
  
@@ -1049,6 +1287,7 @@ index 4e2e1a7..1c395c3 100644
 +                    let kind = match p {
 +                        crate::scene::Primitive::Quad(_) => "quad",
 +                        crate::scene::Primitive::Shadow(_) => "shadow",
++                        crate::scene::Primitive::BackdropBlur(_) => "backdrop_blur",
 +                        crate::scene::Primitive::Underline(_) => "underline",
 +                        crate::scene::Primitive::MonochromeSprite(_) => "mono",
 +                        crate::scene::Primitive::SubpixelSprite(_) => "subpixel",
@@ -1120,7 +1359,7 @@ index 4e2e1a7..1c395c3 100644
  /// Holds the state for a specific window.
  pub struct Window {
      pub(crate) handle: AnyWindowHandle,
-@@ -1227,6 +1321,8 @@ pub struct Window {
+@@ -1227,6 +1322,8 @@ pub struct Window {
      is_resizable: bool,
      is_minimizable: bool,
      sprite_atlas: Arc<dyn PlatformAtlas>,
@@ -1129,7 +1368,7 @@ index 4e2e1a7..1c395c3 100644
      text_system: Rc<WindowTextSystem>,
      text_rendering_mode: Rc<Cell<TextRenderingMode>>,
      rem_size: Pixels,
-@@ -1242,6 +1338,7 @@ pub struct Window {
+@@ -1242,6 +1339,7 @@ pub struct Window {
      pub(crate) text_style_stack: Vec<TextStyleRefinement>,
      pub(crate) rendered_entity_stack: Vec<EntityId>,
      pub(crate) element_offset_stack: Vec<Point<Pixels>>,
@@ -1137,7 +1376,7 @@ index 4e2e1a7..1c395c3 100644
      pub(crate) element_opacity: f32,
      pub(crate) content_mask_stack: Vec<ContentMask<Pixels>>,
      pub(crate) requested_autoscroll: Option<Bounds<Pixels>>,
-@@ -1267,6 +1364,9 @@ pub struct Window {
+@@ -1267,6 +1365,9 @@ pub struct Window {
      modifiers: Modifiers,
      capslock: Capslock,
      scale_factor: f32,
@@ -1147,7 +1386,7 @@ index 4e2e1a7..1c395c3 100644
      pub(crate) bounds_observers: SingleSubscriberSet<AnyObserver>,
      appearance: WindowAppearance,
      pub(crate) appearance_observers: SingleSubscriberSet<AnyObserver>,
-@@ -1288,6 +1388,7 @@ pub struct Window {
+@@ -1288,6 +1389,7 @@ pub struct Window {
      long_press_timer: Option<Task<()>>,
      long_press_capture: Option<EntityId>,
      pub(crate) refreshing: bool,
@@ -1155,7 +1394,7 @@ index 4e2e1a7..1c395c3 100644
      pub(crate) activation_observers: SingleSubscriberSet<AnyObserver>,
      pub(crate) focus: Option<FocusId>,
      focus_enabled: bool,
-@@ -1926,6 +2027,7 @@ impl Window {
+@@ -1926,6 +2028,7 @@ impl Window {
                  // Take the deferred flag first: `||` short-circuits, and leaving
                  // the flag set when this request already forces a render would
                  // force a second, redundant render on the next frame.
@@ -1163,7 +1402,7 @@ index 4e2e1a7..1c395c3 100644
                  let force_render =
                      mem::take(&mut deferred_force_render) || request_frame_options.force_render;
  
-@@ -2007,6 +2109,7 @@ impl Window {
+@@ -2007,6 +2110,7 @@ impl Window {
  
                  let pending_next_frame_callbacks = next_frame_callbacks.take();
                  if !pending_next_frame_callbacks.is_empty() {
@@ -1171,7 +1410,7 @@ index 4e2e1a7..1c395c3 100644
                      handle
                          .update(&mut cx, |_, window, cx| {
                              for callback in pending_next_frame_callbacks {
-@@ -2039,9 +2142,12 @@ impl Window {
+@@ -2039,9 +2143,12 @@ impl Window {
                                      // atlas tile references after a GPU device recovery.
                                      window.refresh();
                                  }
@@ -1184,7 +1423,7 @@ index 4e2e1a7..1c395c3 100644
                              })
                              .with_context(|| {
                                  format!(
-@@ -2358,6 +2464,7 @@ impl Window {
+@@ -2358,6 +2465,7 @@ impl Window {
              is_resizable,
              is_minimizable,
              sprite_atlas,
@@ -1192,7 +1431,7 @@ index 4e2e1a7..1c395c3 100644
              text_system,
              text_rendering_mode: cx.text_rendering_mode.clone(),
              rem_size: px(16.),
-@@ -2369,6 +2476,7 @@ impl Window {
+@@ -2369,6 +2477,7 @@ impl Window {
              text_style_stack: Vec::new(),
              rendered_entity_stack: Vec::new(),
              element_offset_stack: Vec::new(),
@@ -1200,7 +1439,7 @@ index 4e2e1a7..1c395c3 100644
              content_mask_stack: Vec::new(),
              element_opacity: 1.0,
              requested_autoscroll: None,
-@@ -2390,6 +2498,7 @@ impl Window {
+@@ -2390,6 +2499,7 @@ impl Window {
              modifiers,
              capslock,
              scale_factor,
@@ -1208,7 +1447,7 @@ index 4e2e1a7..1c395c3 100644
              bounds_observers: SingleSubscriberSet::new(),
              appearance,
              appearance_observers: SingleSubscriberSet::new(),
-@@ -2412,6 +2521,7 @@ impl Window {
+@@ -2412,6 +2522,7 @@ impl Window {
              long_press_timer: None,
              long_press_capture: None,
              refreshing: false,
@@ -1216,7 +1455,7 @@ index 4e2e1a7..1c395c3 100644
              activation_observers: SingleSubscriberSet::new(),
              focus: None,
              focus_enabled: true,
-@@ -2475,6 +2585,110 @@ impl ContentMask<Pixels> {
+@@ -2475,6 +2586,110 @@ impl ContentMask<Pixels> {
      }
  }
  
@@ -1327,11 +1566,10 @@ index 4e2e1a7..1c395c3 100644
  impl Window {
      fn mark_view_dirty(&mut self, view_id: EntityId) {
          // Mark ancestor views as dirty. If already in the `dirty_views` set, then all its ancestors
-@@ -2595,8 +2809,132 @@ impl Window {
+@@ -2595,8 +2810,141 @@ impl Window {
          }
      }
  
-+
 +    /// The pointing-hand hitboxes of the last rendered frame that the pointer can reach at their centre: each is
 +    /// `(bounds, id)`. Used by the harness crawler.
 +    pub fn pointer_hitboxes(&self) -> Vec<(Bounds<Pixels>, u64)> {
@@ -1355,9 +1593,16 @@ index 4e2e1a7..1c395c3 100644
 +            let centre = bounds.center();
 +            let hit = frame.hit_test(centre);
 +            // Reachable: no other hitbox that sets a cursor sits above it at its centre.
-+            let top = hit.ids.iter().take(hit.hover_hitbox_count).find(|candidate| {
-+                frame.cursor_styles.iter().any(|request| request.hitbox_id == Some(**candidate))
-+            });
++            let top = hit
++                .ids
++                .iter()
++                .take(hit.hover_hitbox_count)
++                .find(|candidate| {
++                    frame
++                        .cursor_styles
++                        .iter()
++                        .any(|request| request.hitbox_id == Some(**candidate))
++                });
 +            if top == Some(&id) {
 +                found.push((bounds, id.0));
 +            }
@@ -1416,7 +1661,10 @@ index 4e2e1a7..1c395c3 100644
 +            }
 +            let covered = scene.quads.iter().any(|quad| {
 +                quad.order > order
-+                    && quad.background.as_solid().is_some_and(|fill| fill.a >= 0.95)
++                    && quad
++                        .background
++                        .as_solid()
++                        .is_some_and(|fill| fill.a >= 0.95)
 +                    && quad.bounds.contains(&centre)
 +                    && quad.content_mask.bounds.contains(&centre)
 +            });
@@ -1460,7 +1708,7 @@ index 4e2e1a7..1c395c3 100644
          self.removed = true;
      }
  
-@@ -3001,9 +3339,12 @@ impl Window {
+@@ -3001,9 +3349,12 @@ impl Window {
      /// the platform window, then notifies observers. Normally called automatically
      /// by the platform's resize callback, but exposed publicly for test infrastructure.
      pub fn bounds_changed(&mut self, cx: &mut App) {
@@ -1476,7 +1724,7 @@ index 4e2e1a7..1c395c3 100644
  
          self.refresh();
  
-@@ -3222,6 +3563,9 @@ impl Window {
+@@ -3222,6 +3573,9 @@ impl Window {
  
      /// Toggle zoom on the window.
      pub fn zoom_window(&self) {
@@ -1486,7 +1734,7 @@ index 4e2e1a7..1c395c3 100644
          self.platform_window.zoom();
      }
  
-@@ -3321,6 +3665,70 @@ impl Window {
+@@ -3321,6 +3675,70 @@ impl Window {
          self.platform_window.show_character_palette();
      }
  
@@ -1557,7 +1805,7 @@ index 4e2e1a7..1c395c3 100644
      /// The scale factor of the display associated with the window. For example, it could
      /// return 2.0 for a "retina" display, indicating that each logical pixel should actually
      /// be rendered as two pixels on screen.
-@@ -3507,6 +3915,12 @@ impl Window {
+@@ -3507,6 +3925,12 @@ impl Window {
      }
  
      fn underline(&self, origin: Point<Pixels>, width: Pixels, style: &UnderlineStyle) -> Underline {
@@ -1570,7 +1818,7 @@ index 4e2e1a7..1c395c3 100644
          Underline {
              order: 0,
              pad: 0,
-@@ -3934,8 +4348,10 @@ impl Window {
+@@ -3934,8 +4358,10 @@ impl Window {
          let scale_factor = self.scale_factor();
          #[cfg(feature = "profiler")]
          let request_layout_start = Instant::now();
@@ -1581,7 +1829,7 @@ index 4e2e1a7..1c395c3 100644
          #[cfg(feature = "profiler")]
          let prepaint_start = Instant::now();
          self.layout_engine
-@@ -3974,6 +4390,7 @@ impl Window {
+@@ -3974,6 +4400,7 @@ impl Window {
  
          self.mouse_hit_test = self.next_frame.hit_test(self.mouse_position);
  
@@ -1589,7 +1837,7 @@ index 4e2e1a7..1c395c3 100644
          // Now actually paint the elements.
          #[cfg(feature = "profiler")]
          let paint_start = Instant::now();
-@@ -3996,6 +4413,13 @@ impl Window {
+@@ -3996,6 +4423,13 @@ impl Window {
          #[cfg(any(feature = "inspector", debug_assertions))]
          self.paint_inspector_hitbox(cx);
  
@@ -1603,7 +1851,7 @@ index 4e2e1a7..1c395c3 100644
          #[cfg(feature = "profiler")]
          self.window_profiler
              .record_draw_phases(profiler::DrawPhases {
-@@ -4202,6 +4626,10 @@ impl Window {
+@@ -4202,6 +4636,10 @@ impl Window {
  
              let paint_start = self.paint_index();
              let content_mask = deferred_draw.content_mask;
@@ -1614,7 +1862,7 @@ index 4e2e1a7..1c395c3 100644
              if let Some(element) = deferred_draw.element.as_mut() {
                  let ((), accessed_entities) = cx.detect_accessed_entities(|cx| {
                      self.with_rendered_view(deferred_draw.current_view, |window| {
-@@ -4217,6 +4645,19 @@ impl Window {
+@@ -4217,6 +4655,19 @@ impl Window {
                  self.reuse_paint(deferred_draw.paint_range.clone());
              }
              let paint_end = self.paint_index();
@@ -1634,7 +1882,7 @@ index 4e2e1a7..1c395c3 100644
              deferred_draw.paint_range = paint_start..paint_end;
          }
          self.next_frame.deferred_draws = deferred_draws;
-@@ -4289,6 +4730,7 @@ impl Window {
+@@ -4289,6 +4740,7 @@ impl Window {
                      prepaint_range: deferred_draw.prepaint_range.clone(),
                      paint_range: deferred_draw.paint_range.clone(),
                      accessed_entities: deferred_draw.accessed_entities.clone(),
@@ -1642,7 +1890,7 @@ index 4e2e1a7..1c395c3 100644
                  }),
          );
      }
-@@ -4416,6 +4858,9 @@ impl Window {
+@@ -4416,6 +4868,9 @@ impl Window {
      ) -> R {
          self.invalidator.debug_assert_paint_or_prepaint();
          if let Some(mask) = mask {
@@ -1652,7 +1900,7 @@ index 4e2e1a7..1c395c3 100644
              let mask = mask.intersect(&self.content_mask());
              self.content_mask_stack.push(mask);
              let result = f(self);
-@@ -4458,7 +4903,9 @@ impl Window {
+@@ -4458,7 +4913,9 @@ impl Window {
          result
      }
  
@@ -1663,7 +1911,7 @@ index 4e2e1a7..1c395c3 100644
          &mut self,
          opacity: Option<f32>,
          f: impl FnOnce(&mut Self) -> R,
-@@ -4772,6 +5219,7 @@ impl Window {
+@@ -4772,6 +5229,7 @@ impl Window {
              prepaint_range: PrepaintStateIndex::default()..PrepaintStateIndex::default(),
              paint_range: PaintIndex::default()..PaintIndex::default(),
              accessed_entities: FxHashSet::default(),
@@ -1671,7 +1919,7 @@ index 4e2e1a7..1c395c3 100644
          });
      }
  
-@@ -4780,10 +5228,201 @@ impl Window {
+@@ -4780,10 +5238,201 @@ impl Window {
      /// for performance reasons.
      ///
      /// This method should only be called as part of the paint phase of element drawing.
@@ -1873,7 +2121,7 @@ index 4e2e1a7..1c395c3 100644
          let clipped_bounds = bounds.intersect(&content_mask.bounds);
          if !clipped_bounds.is_empty() {
              self.next_frame
-@@ -4816,9 +5455,12 @@ impl Window {
+@@ -4816,9 +5465,12 @@ impl Window {
          let scale_factor = self.scale_factor();
          let content_mask = self.snapped_content_mask();
          let opacity = self.element_opacity();
@@ -1886,7 +2134,63 @@ index 4e2e1a7..1c395c3 100644
              if shadow.inset {
                  continue;
              }
-@@ -4852,9 +5494,12 @@ impl Window {
+@@ -4838,6 +5490,55 @@ impl Window {
+         }
+     }
+ 
++    /// Blur the rendered backdrop behind `bounds` using a Gaussian blur of `blur_radius`,
++    /// clipped to `corner_radii` and the current content mask.
++    ///
++    /// Should be called before painting the element's own background and border so they
++    /// composite cleanly on top of the blurred backdrop.
++    pub fn paint_backdrop_blur(
++        &mut self,
++        bounds: Bounds<Pixels>,
++        corner_radii: Corners<Pixels>,
++        blur_radius: Pixels,
++    ) {
++        self.paint_backdrop_blur_with_fade(bounds, corner_radii, blur_radius, Pixels::ZERO);
++    }
++
++    /// Like [`Self::paint_backdrop_blur`], with an optional top fade ramp of `fade_top` pixels
++    /// over which the blurred backdrop alpha ramps smoothly from `0.0` at the top edge to `1.0`.
++    pub fn paint_backdrop_blur_with_fade(
++        &mut self,
++        bounds: Bounds<Pixels>,
++        corner_radii: Corners<Pixels>,
++        blur_radius: Pixels,
++        fade_top: Pixels,
++    ) {
++        self.invalidator.debug_assert_paint();
++        if blur_radius <= Pixels::ZERO {
++            return;
++        }
++        let opacity = self.element_opacity();
++        if opacity <= 0.0 {
++            return;
++        }
++        let scale_factor = self.scale_factor();
++        let paint_scale = self
++            .paint_scale_stack
++            .last()
++            .map_or(1.0, |transform| transform.scale);
++        let bounds = self.snap_bounds(self.paint_scale_bounds(bounds));
++        let corner_radii = self.paint_scale_corners(corner_radii).scale(scale_factor);
++        self.next_frame.scene.insert_primitive(BackdropBlur {
++            order: 0,
++            blur_radius: (blur_radius * paint_scale).scale(scale_factor),
++            bounds,
++            corner_radii,
++            content_mask: self.snapped_content_mask(),
++            opacity,
++            fade_top: (fade_top.max(Pixels::ZERO) * paint_scale).scale(scale_factor),
++        });
++    }
++
+     /// Paint the inset shadows from `shadows` into the scene at the current z-index. Should
+     /// be called after the element's background so the shadow layers on top of the fill.
+     /// Drop shadows are skipped; paint those with [`Self::paint_drop_shadows`] before the background.
+@@ -4852,9 +5553,12 @@ impl Window {
          let scale_factor = self.scale_factor();
          let content_mask = self.snapped_content_mask();
          let opacity = self.element_opacity();
@@ -1899,7 +2203,7 @@ index 4e2e1a7..1c395c3 100644
              if !shadow.inset {
                  continue;
              }
-@@ -4935,6 +5580,12 @@ impl Window {
+@@ -4935,6 +5639,12 @@ impl Window {
          self.invalidator.debug_assert_paint();
  
          let opacity = self.element_opacity();
@@ -1912,7 +2216,7 @@ index 4e2e1a7..1c395c3 100644
          let snapped_bounds = self.snap_bounds(quad.bounds);
          let snapped_border_widths = self.snap_border_widths(quad.border_widths);
          let quad = Quad {
-@@ -5009,6 +5660,11 @@ impl Window {
+@@ -5009,6 +5719,11 @@ impl Window {
          let content_mask = self.content_mask();
          let opacity = self.element_opacity();
          path.content_mask = content_mask;
@@ -1924,7 +2228,7 @@ index 4e2e1a7..1c395c3 100644
          let color: Background = color.into();
          path.color = color.opacity(opacity);
          self.next_frame
-@@ -5042,7 +5698,10 @@ impl Window {
+@@ -5042,7 +5757,10 @@ impl Window {
          self.invalidator.debug_assert_paint();
  
          let scale_factor = self.scale_factor();
@@ -1936,7 +2240,7 @@ index 4e2e1a7..1c395c3 100644
          let bounds = Bounds {
              origin: origin.map(|c| ScaledPixels(round_to_device_pixel(c.0, scale_factor))),
              size: size(self.snap_stroke(width), self.snap_stroke(height)),
-@@ -5054,7 +5713,7 @@ impl Window {
+@@ -5054,7 +5772,7 @@ impl Window {
              pad: 0,
              bounds,
              content_mask: self.snapped_content_mask(),
@@ -1945,7 +2249,7 @@ index 4e2e1a7..1c395c3 100644
              color: style.color.unwrap_or_default().opacity(opacity),
              wavy: false.into(),
          });
-@@ -5080,6 +5739,9 @@ impl Window {
+@@ -5080,6 +5798,9 @@ impl Window {
  
          let element_opacity = self.element_opacity();
          let scale_factor = self.scale_factor();
@@ -1955,7 +2259,7 @@ index 4e2e1a7..1c395c3 100644
          let glyph_origin = origin.scale(scale_factor);
  
          let quantized_origin = Point::new(
-@@ -5100,7 +5762,7 @@ impl Window {
+@@ -5100,7 +5821,7 @@ impl Window {
              glyph_id,
              font_size,
              subpixel_variant,
@@ -1964,7 +2268,7 @@ index 4e2e1a7..1c395c3 100644
              is_emoji: false,
              subpixel_rendering,
              dilation,
-@@ -5183,6 +5845,8 @@ impl Window {
+@@ -5183,6 +5904,8 @@ impl Window {
          self.invalidator.debug_assert_paint();
  
          let scale_factor = self.scale_factor();
@@ -1973,7 +2277,7 @@ index 4e2e1a7..1c395c3 100644
          let glyph_origin = origin.scale(scale_factor);
          let integer_origin = glyph_origin.map(|c| ScaledPixels(round_half_toward_zero(c.0)));
          let params = RenderGlyphParams {
-@@ -5190,7 +5854,7 @@ impl Window {
+@@ -5190,7 +5913,7 @@ impl Window {
              glyph_id,
              font_size,
              subpixel_variant: Default::default(),
@@ -1982,7 +2286,7 @@ index 4e2e1a7..1c395c3 100644
              is_emoji: true,
              subpixel_rendering: false,
              dilation: 0,
-@@ -5242,7 +5906,7 @@ impl Window {
+@@ -5242,7 +5965,7 @@ impl Window {
          self.invalidator.debug_assert_paint();
  
          let element_opacity = self.element_opacity();
@@ -1991,7 +2295,7 @@ index 4e2e1a7..1c395c3 100644
  
          let params = RenderSvgParams {
              path,
-@@ -5311,6 +5975,9 @@ impl Window {
+@@ -5311,6 +6034,9 @@ impl Window {
      ) -> Result<()> {
          self.invalidator.debug_assert_paint();
  
@@ -2001,7 +2305,7 @@ index 4e2e1a7..1c395c3 100644
          let visible_bounds = bounds.intersect(&image_bounds);
          if visible_bounds.size.width <= Pixels::ZERO || visible_bounds.size.height <= Pixels::ZERO {
              return Ok(());
-@@ -5319,23 +5986,48 @@ impl Window {
+@@ -5319,23 +6045,48 @@ impl Window {
              return Ok(());
          }
  
@@ -2057,7 +2361,7 @@ index 4e2e1a7..1c395c3 100644
  
          let visible_bounds_snapped = self.snap_bounds(visible_bounds);
  
-@@ -5411,7 +6103,7 @@ impl Window {
+@@ -5411,7 +6162,7 @@ impl Window {
  
          self.invalidator.debug_assert_paint();
  
@@ -2066,7 +2370,7 @@ index 4e2e1a7..1c395c3 100644
          let content_mask = self.snapped_content_mask();
          self.next_frame.scene.insert_primitive(PaintSurface {
              order: 0,
-@@ -5421,15 +6113,56 @@ impl Window {
+@@ -5421,15 +6172,56 @@ impl Window {
          });
      }
  
@@ -2123,7 +2427,7 @@ index 4e2e1a7..1c395c3 100644
          }
  
          Ok(())
-@@ -5444,6 +6177,7 @@ impl Window {
+@@ -5444,6 +6236,7 @@ impl Window {
                      &RenderImageParams {
                          image_id: data.id,
                          frame_index,
@@ -2131,7 +2435,7 @@ index 4e2e1a7..1c395c3 100644
                      }
                      .into(),
                  )
-@@ -5525,6 +6259,7 @@ impl Window {
+@@ -5525,6 +6318,7 @@ impl Window {
      pub fn layout_bounds(&mut self, layout_id: LayoutId) -> Bounds<Pixels> {
          self.invalidator.debug_assert_prepaint();
  
@@ -2139,7 +2443,7 @@ index 4e2e1a7..1c395c3 100644
          let scale_factor = self.scale_factor();
          let mut bounds = self
              .layout_engine
-@@ -5864,6 +6599,7 @@ impl Window {
+@@ -5864,6 +6658,7 @@ impl Window {
      /// Dispatch a mouse, keyboard, or touch event on the window.
      #[profiling::function]
      pub fn dispatch_event(&mut self, event: PlatformInput, cx: &mut App) -> DispatchEventResult {
@@ -2147,7 +2451,7 @@ index 4e2e1a7..1c395c3 100644
          #[cfg(feature = "profiler")]
          self.window_profiler.begin_input(event.kind_name());
          let update_count_before = self.invalidator.update_count();
-@@ -6925,11 +7661,17 @@ impl Window {
+@@ -6925,11 +7720,17 @@ impl Window {
  
      /// Minimize the current window at the platform level.
      pub fn minimize_window(&self) {
@@ -2165,7 +2469,7 @@ index 4e2e1a7..1c395c3 100644
          self.platform_window.toggle_fullscreen();
      }
  
-@@ -10677,4 +11419,121 @@ mod inspector_tests {
+@@ -10677,4 +11478,121 @@ mod inspector_tests {
          })
          .expect("closed inspector has no bookkeeping and no style overrides");
      }
@@ -2299,6 +2603,18 @@ index 8bb14d6..5e98288 100644
          })
      }
  
+diff --git a/crates/gpui_apple/src/metal_renderer.rs b/crates/gpui_apple/src/metal_renderer.rs
+index 9b98a23..98c1440 100644
+--- a/crates/gpui_apple/src/metal_renderer.rs
++++ b/crates/gpui_apple/src/metal_renderer.rs
+@@ -873,6 +873,7 @@ impl MetalRenderer {
+                 PrimitiveBatch::Shadows(range) => {
+                     self.draw_shadows(range, instance_bindings, viewport_size, &command_encoder)
+                 }
++                PrimitiveBatch::BackdropBlurs(_) => {}
+                 PrimitiveBatch::Quads(range) => {
+                     self.draw_quads(range, instance_bindings, viewport_size, &command_encoder)
+                 }
 diff --git a/crates/gpui_linux/src/linux/platform.rs b/crates/gpui_linux/src/linux/platform.rs
 index b24300b..a8ff6de 100644
 --- a/crates/gpui_linux/src/linux/platform.rs
@@ -2427,6 +2743,30 @@ index b2a7bfe..7c81842 100644
              })
          };
          let insert = |key: AtlasKey| {
+diff --git a/crates/gpui_wgpu/src/wgpu_renderer.rs b/crates/gpui_wgpu/src/wgpu_renderer.rs
+index 46f9ffd..ce3a553 100644
+--- a/crates/gpui_wgpu/src/wgpu_renderer.rs
++++ b/crates/gpui_wgpu/src/wgpu_renderer.rs
+@@ -1559,6 +1559,7 @@ impl WgpuRendererCore {
+                         instance_range(range),
+                         &mut pass,
+                     ),
++                    PrimitiveBatch::BackdropBlurs(_) => {}
+                     PrimitiveBatch::Paths(range) => {
+                         let paths = &scene.paths[range];
+                         if paths.is_empty() {
+diff --git a/crates/gpui_windows/build.rs b/crates/gpui_windows/build.rs
+index a544f6c..a9ebcee 100644
+--- a/crates/gpui_windows/build.rs
++++ b/crates/gpui_windows/build.rs
+@@ -34,6 +34,7 @@ mod shader_compilation {
+         let modules = [
+             "quad",
+             "shadow",
++            "backdrop_blur",
+             "path_rasterization",
+             "path_sprite",
+             "underline",
 diff --git a/crates/gpui_windows/src/directx_atlas.rs b/crates/gpui_windows/src/directx_atlas.rs
 index 622c1cb..8ae6180 100644
 --- a/crates/gpui_windows/src/directx_atlas.rs
@@ -2440,7 +2780,7 @@ index 622c1cb..8ae6180 100644
      }
  
 diff --git a/crates/gpui_windows/src/directx_renderer.rs b/crates/gpui_windows/src/directx_renderer.rs
-index 4cce3e0..f6ee7c1 100644
+index 4cce3e0..77fb805 100644
 --- a/crates/gpui_windows/src/directx_renderer.rs
 +++ b/crates/gpui_windows/src/directx_renderer.rs
 @@ -29,6 +29,14 @@ const RENDER_TARGET_FORMAT: DXGI_FORMAT = DXGI_FORMAT_B8G8R8A8_UNORM;
@@ -2458,7 +2798,286 @@ index 4cce3e0..f6ee7c1 100644
  pub(crate) struct FontInfo {
      pub gamma_ratios: [f32; 4],
      pub grayscale_enhanced_contrast: f32,
-@@ -857,8 +865,14 @@ impl DirectXRenderer {
+@@ -67,6 +75,14 @@ pub(crate) struct DirectXRendererDevices {
+     annotation: Option<ID3DUserDefinedAnnotation>,
+ }
+ 
++struct BlurResources {
++    _texture: ID3D11Texture2D,
++    rtv: Option<ID3D11RenderTargetView>,
++    srv: Option<ID3D11ShaderResourceView>,
++    width: u32,
++    height: u32,
++}
++
+ struct DirectXResources {
+     // Direct3D rendering objects
+     swap_chain: IDXGISwapChain1,
+@@ -79,12 +95,16 @@ struct DirectXResources {
+     path_intermediate_msaa_texture: ID3D11Texture2D,
+     path_intermediate_msaa_view: Option<ID3D11RenderTargetView>,
+ 
++    // Lazy scratch texture for 2-pass separable backdrop blur
++    blur: Option<BlurResources>,
++
+     // Cached viewport
+     viewport: D3D11_VIEWPORT,
+ }
+ 
+ struct DirectXRenderPipelines {
+     shadow_pipeline: PipelineState<Shadow>,
++    backdrop_blur_pipeline: PipelineState<BackdropBlurInstance>,
+     quad_pipeline: PipelineState<Quad>,
+     path_rasterization_pipeline: PipelineState<PathRasterizationSprite>,
+     path_sprite_pipeline: PipelineState<PathSprite>,
+@@ -98,6 +118,7 @@ struct DirectXGlobalElements {
+     global_params_buffer: Option<ID3D11Buffer>,
+     batch_params_buffer: Option<ID3D11Buffer>,
+     sampler: Option<ID3D11SamplerState>,
++    clamp_sampler: Option<ID3D11SamplerState>,
+ }
+ 
+ struct Annotation<'a>(&'a ID3DUserDefinedAnnotation);
+@@ -368,6 +389,9 @@ impl DirectXRenderer {
+                 .map(|annotation| Annotation::new(annotation, HSTRING::from(batch.label())));
+             match batch {
+                 PrimitiveBatch::Shadows(range) => self.draw_shadows(range.start, range.len()),
++                PrimitiveBatch::BackdropBlurs(range) => {
++                    self.draw_backdrop_blurs(&scene.backdrop_blurs[range])
++                }
+                 PrimitiveBatch::Quads(range) => self.draw_quads(range.start, range.len()),
+                 PrimitiveBatch::Paths(range) => {
+                     let paths = &scene.paths[range];
+@@ -389,9 +413,10 @@ impl DirectXRenderer {
+             .with_context(|| {
+                 format!(
+                     "scene too large:\
+-                    {} paths, {} shadows, {} quads, {} underlines, {} mono, {} subpixel, {} poly, {} surfaces",
++                    {} paths, {} shadows, {} backdrop blurs, {} quads, {} underlines, {} mono, {} subpixel, {} poly, {} surfaces",
+                     scene.paths.len(),
+                     scene.shadows.len(),
++                    scene.backdrop_blurs.len(),
+                     scene.quads.len(),
+                     scene.underlines.len(),
+                     scene.monochrome_sprites.len(),
+@@ -596,6 +621,216 @@ impl DirectXRenderer {
+         )
+     }
+ 
++    fn draw_backdrop_blurs(&mut self, blurs: &[BackdropBlur]) -> Result<()> {
++        if blurs.is_empty() {
++            return Ok(());
++        }
++
++        let (vp_w, vp_h) = {
++            let resources = self.resources.as_ref().context("resources missing")?;
++            (
++                resources.viewport.Width as i32,
++                resources.viewport.Height as i32,
++            )
++        };
++        if vp_w <= 0 || vp_h <= 0 {
++            return Ok(());
++        }
++
++        let mut copies = Vec::with_capacity(blurs.len());
++        let mut instances = Vec::with_capacity(blurs.len() * 2);
++
++        for blur in blurs {
++            let sigma = blur.blur_radius.0.clamp(0.0, 64.0);
++            if sigma <= 0.5 || blur.opacity <= 0.0 {
++                continue;
++            }
++
++            let clipped = blur.bounds.intersect(&blur.content_mask.bounds);
++            if clipped.is_empty() {
++                continue;
++            }
++
++            let mask = blur.content_mask.bounds;
++            let mask_x0 = (mask.origin.x.0.floor() as i32).clamp(0, vp_w);
++            let mask_y0 = (mask.origin.y.0.floor() as i32).clamp(0, vp_h);
++            let mask_x1 = (mask.bottom_right().x.0.ceil() as i32).clamp(0, vp_w);
++            let mask_y1 = (mask.bottom_right().y.0.ceil() as i32).clamp(0, vp_h);
++            if mask_x1 <= mask_x0 || mask_y1 <= mask_y0 {
++                continue;
++            }
++
++            let dst_x0 = (clipped.origin.x.0.floor() as i32).clamp(mask_x0, mask_x1);
++            let dst_y0 = (clipped.origin.y.0.floor() as i32).clamp(mask_y0, mask_y1);
++            let dst_x1 = (clipped.bottom_right().x.0.ceil() as i32).clamp(mask_x0, mask_x1);
++            let dst_y1 = (clipped.bottom_right().y.0.ceil() as i32).clamp(mask_y0, mask_y1);
++            if dst_x1 <= dst_x0 || dst_y1 <= dst_y0 {
++                continue;
++            }
++
++            let pad = (sigma * 3.0).ceil() as i32;
++            let src_x0 = (dst_x0 - pad).max(mask_x0);
++            let src_y0 = (dst_y0 - pad).max(mask_y0);
++            let src_x1 = (dst_x1 + pad).min(mask_x1);
++            let src_y1 = (dst_y1 + pad).min(mask_y1);
++
++            copies.push(D3D11_BOX {
++                left: src_x0 as u32,
++                top: src_y0 as u32,
++                front: 0,
++                right: src_x1 as u32,
++                bottom: src_y1 as u32,
++                back: 1,
++            });
++
++            let h_draw_bounds = Bounds {
++                origin: point(ScaledPixels(dst_x0 as f32), ScaledPixels(src_y0 as f32)),
++                size: size(
++                    ScaledPixels((dst_x1 - dst_x0) as f32),
++                    ScaledPixels((src_y1 - src_y0) as f32),
++                ),
++            };
++            let v_draw_bounds = Bounds {
++                origin: point(ScaledPixels(dst_x0 as f32), ScaledPixels(dst_y0 as f32)),
++                size: size(
++                    ScaledPixels((dst_x1 - dst_x0) as f32),
++                    ScaledPixels((dst_y1 - dst_y0) as f32),
++                ),
++            };
++
++            instances.push(BackdropBlurInstance {
++                draw_bounds: h_draw_bounds,
++                element_bounds: blur.bounds,
++                corner_radii: blur.corner_radii,
++                content_mask: h_draw_bounds,
++                uv_min: [src_x0 as f32 + 0.5, src_y0 as f32 + 0.5],
++                uv_max: [src_x1 as f32 - 0.5, src_y1 as f32 - 0.5],
++                sigma,
++                opacity: blur.opacity,
++                fade_top: blur.fade_top.0,
++                direction: 0,
++            });
++            instances.push(BackdropBlurInstance {
++                draw_bounds: v_draw_bounds,
++                element_bounds: blur.bounds,
++                corner_radii: blur.corner_radii,
++                content_mask: blur.content_mask.bounds,
++                uv_min: [dst_x0 as f32 + 0.5, src_y0 as f32 + 0.5],
++                uv_max: [dst_x1 as f32 - 0.5, src_y1 as f32 - 0.5],
++                sigma,
++                opacity: blur.opacity,
++                fade_top: blur.fade_top.0,
++                direction: 1,
++            });
++        }
++
++        if copies.is_empty() {
++            return Ok(());
++        }
++
++        let devices = self.devices.as_ref().context("devices missing")?;
++        let resources = self.resources.as_mut().context("resources missing")?;
++        let vp_w_u32 = vp_w as u32;
++        let vp_h_u32 = vp_h as u32;
++        let needs_alloc = resources
++            .blur
++            .as_ref()
++            .is_none_or(|b| b.width != vp_w_u32 || b.height != vp_h_u32);
++        if needs_alloc {
++            resources.blur = Some(create_blur_resources(&devices.device, vp_w_u32, vp_h_u32)?);
++        }
++
++        self.pipelines.backdrop_blur_pipeline.update_buffer(
++            &devices.device,
++            &devices.device_context,
++            &instances,
++        )?;
++
++        let batch_params_buffer = self
++            .globals
++            .batch_params_buffer
++            .as_ref()
++            .context("batch params buffer missing")?;
++        let render_target = resources
++            .render_target
++            .as_ref()
++            .context("missing render target")?;
++        let blur_res = resources.blur.as_ref().expect("blur resources initialized");
++        let null_srv: [Option<ID3D11ShaderResourceView>; 1] = [None];
++
++        unsafe {
++            devices
++                .device_context
++                .PSSetSamplers(0, Some(slice::from_ref(&self.globals.clamp_sampler)));
++        }
++
++        for (i, src_box) in copies.iter().enumerate() {
++            unsafe {
++                devices
++                    .device_context
++                    .OMSetRenderTargets(Some(slice::from_ref(&blur_res.rtv)), None);
++                devices.device_context.CopySubresourceRegion(
++                    &resources.path_intermediate_texture,
++                    0,
++                    src_box.left,
++                    src_box.top,
++                    0,
++                    render_target,
++                    0,
++                    Some(src_box),
++                );
++                devices.device_context.PSSetShaderResources(
++                    0,
++                    Some(slice::from_ref(&resources.path_intermediate_srv)),
++                );
++            }
++            self.pipelines.backdrop_blur_pipeline.draw_range(
++                &devices.device_context,
++                batch_params_buffer,
++                (i * 2) as u32,
++                1,
++            )?;
++
++            unsafe {
++                devices
++                    .device_context
++                    .PSSetShaderResources(0, Some(&null_srv));
++                devices
++                    .device_context
++                    .OMSetRenderTargets(Some(slice::from_ref(&resources.render_target_view)), None);
++                devices
++                    .device_context
++                    .PSSetShaderResources(0, Some(slice::from_ref(&blur_res.srv)));
++                devices.device_context.PSSetShaderResources(
++                    2,
++                    Some(slice::from_ref(&resources.path_intermediate_srv)),
++                );
++            }
++            self.pipelines.backdrop_blur_pipeline.draw_range(
++                &devices.device_context,
++                batch_params_buffer,
++                (i * 2 + 1) as u32,
++                1,
++            )?;
++
++            unsafe {
++                devices
++                    .device_context
++                    .PSSetShaderResources(0, Some(&null_srv));
++                devices
++                    .device_context
++                    .PSSetShaderResources(2, Some(&null_srv));
++            }
++        }
++
++        unsafe {
++            devices
++                .device_context
++                .PSSetSamplers(0, Some(slice::from_ref(&self.globals.sampler)));
++        }
++        Ok(())
++    }
++
+     fn draw_quads(&mut self, start: usize, len: usize) -> Result<()> {
+         if len == 0 {
+             return Ok(());
+@@ -857,8 +1092,14 @@ impl DirectXRenderer {
              let render_params: IDWriteRenderingParams1 =
                  factory.CreateRenderingParams().unwrap().cast().unwrap();
              FontInfo {
@@ -2475,6 +3094,417 @@ index 4cce3e0..f6ee7c1 100644
                  subpixel_enhanced_contrast: render_params.GetEnhancedContrast(),
                  is_bgr: render_params.GetPixelGeometry() == DWRITE_PIXEL_GEOMETRY_BGR,
              }
+@@ -908,6 +1149,7 @@ impl DirectXResources {
+             path_intermediate_msaa_texture,
+             path_intermediate_msaa_view,
+             path_intermediate_srv,
++            blur: None,
+             viewport,
+         })
+     }
+@@ -934,6 +1176,7 @@ impl DirectXResources {
+         self.path_intermediate_msaa_texture = path_intermediate_msaa_texture;
+         self.path_intermediate_msaa_view = path_intermediate_msaa_view;
+         self.path_intermediate_srv = path_intermediate_srv;
++        self.blur = None;
+         self.viewport = viewport;
+         Ok(())
+     }
+@@ -948,6 +1191,13 @@ impl DirectXRenderPipelines {
+             4,
+             create_blend_state(device)?,
+         )?;
++        let backdrop_blur_pipeline = PipelineState::new(
++            device,
++            "backdrop_blur_pipeline",
++            ShaderModule::BackdropBlur,
++            8,
++            create_opaque_blend_state(device)?,
++        )?;
+         let quad_pipeline = PipelineState::new(
+             device,
+             "quad_pipeline",
+@@ -1000,6 +1250,7 @@ impl DirectXRenderPipelines {
+ 
+         Ok(Self {
+             shadow_pipeline,
++            backdrop_blur_pipeline,
+             quad_pipeline,
+             path_rasterization_pipeline,
+             path_sprite_pipeline,
+@@ -1057,10 +1308,29 @@ impl DirectXGlobalElements {
+             output
+         };
+ 
++        let clamp_sampler = unsafe {
++            let desc = D3D11_SAMPLER_DESC {
++                Filter: D3D11_FILTER_MIN_MAG_MIP_LINEAR,
++                AddressU: D3D11_TEXTURE_ADDRESS_CLAMP,
++                AddressV: D3D11_TEXTURE_ADDRESS_CLAMP,
++                AddressW: D3D11_TEXTURE_ADDRESS_CLAMP,
++                MipLODBias: 0.0,
++                MaxAnisotropy: 1,
++                ComparisonFunc: D3D11_COMPARISON_ALWAYS,
++                BorderColor: [0.0; 4],
++                MinLOD: 0.0,
++                MaxLOD: D3D11_FLOAT32_MAX,
++            };
++            let mut output = None;
++            device.CreateSamplerState(&desc, Some(&mut output))?;
++            output
++        };
++
+         Ok(Self {
+             global_params_buffer,
+             batch_params_buffer,
+             sampler,
++            clamp_sampler,
+         })
+     }
+ }
+@@ -1281,6 +1551,23 @@ struct PathSprite {
+     bounds: Bounds<ScaledPixels>,
+ }
+ 
++#[derive(Clone, Copy)]
++#[repr(C)]
++struct BackdropBlurInstance {
++    draw_bounds: Bounds<ScaledPixels>,
++    element_bounds: Bounds<ScaledPixels>,
++    corner_radii: Corners<ScaledPixels>,
++    content_mask: Bounds<ScaledPixels>,
++    uv_min: [f32; 2],
++    uv_max: [f32; 2],
++    sigma: f32,
++    opacity: f32,
++    fade_top: f32,
++    direction: u32,
++}
++
++const _: () = assert!(std::mem::size_of::<BackdropBlurInstance>() == 96);
++
+ impl Drop for DirectXRenderer {
+     fn drop(&mut self) {
+         #[cfg(debug_assertions)]
+@@ -1436,6 +1723,20 @@ fn create_path_intermediate_texture(
+     Ok((texture, Some(shader_resource_view.unwrap())))
+ }
+ 
++#[inline]
++fn create_blur_resources(device: &ID3D11Device, width: u32, height: u32) -> Result<BlurResources> {
++    let (texture, srv) = create_path_intermediate_texture(device, width, height)?;
++    let mut rtv = None;
++    unsafe { device.CreateRenderTargetView(&texture, None, Some(&mut rtv))? };
++    Ok(BlurResources {
++        _texture: texture,
++        rtv,
++        srv,
++        width,
++        height,
++    })
++}
++
+ #[inline]
+ fn create_path_intermediate_msaa_texture_and_view(
+     device: &ID3D11Device,
+@@ -1490,6 +1791,18 @@ fn set_rasterizer_state(device: &ID3D11Device, device_context: &ID3D11DeviceCont
+     Ok(())
+ }
+ 
++#[inline]
++fn create_opaque_blend_state(device: &ID3D11Device) -> Result<ID3D11BlendState> {
++    let mut desc = D3D11_BLEND_DESC::default();
++    desc.RenderTarget[0].BlendEnable = false.into();
++    desc.RenderTarget[0].RenderTargetWriteMask = D3D11_COLOR_WRITE_ENABLE_ALL.0 as u8;
++    unsafe {
++        let mut state = None;
++        device.CreateBlendState(&desc, Some(&mut state))?;
++        Ok(state.unwrap())
++    }
++}
++
+ // https://learn.microsoft.com/en-us/windows/win32/api/d3d11/ns-d3d11-d3d11_blend_desc
+ #[inline]
+ fn create_blend_state(device: &ID3D11Device) -> Result<ID3D11BlendState> {
+@@ -1710,6 +2023,7 @@ pub(crate) mod shader_resources {
+     pub(crate) enum ShaderModule {
+         Quad,
+         Shadow,
++        BackdropBlur,
+         Underline,
+         PathRasterization,
+         PathSprite,
+@@ -1765,6 +2079,10 @@ pub(crate) mod shader_resources {
+                     ShaderTarget::Vertex => SHADOW_VERTEX_BYTES,
+                     ShaderTarget::Fragment => SHADOW_FRAGMENT_BYTES,
+                 },
++                ShaderModule::BackdropBlur => match target {
++                    ShaderTarget::Vertex => BACKDROP_BLUR_VERTEX_BYTES,
++                    ShaderTarget::Fragment => BACKDROP_BLUR_FRAGMENT_BYTES,
++                },
+                 ShaderModule::Underline => match target {
+                     ShaderTarget::Vertex => UNDERLINE_VERTEX_BYTES,
+                     ShaderTarget::Fragment => UNDERLINE_FRAGMENT_BYTES,
+@@ -1863,6 +2181,7 @@ pub(crate) mod shader_resources {
+             match self {
+                 ShaderModule::Quad => "quad",
+                 ShaderModule::Shadow => "shadow",
++                ShaderModule::BackdropBlur => "backdrop_blur",
+                 ShaderModule::Underline => "underline",
+                 ShaderModule::PathRasterization => "path_rasterization",
+                 ShaderModule::PathSprite => "path_sprite",
+@@ -2056,3 +2375,251 @@ mod dxgi {
+         ))
+     }
+ }
++
++#[cfg(all(test, feature = "test-support"))]
++mod tests {
++    use super::*;
++    use windows::{
++        Win32::UI::WindowsAndMessaging::{
++            CreateWindowExW, DestroyWindow, HWND_MESSAGE, WINDOW_EX_STYLE, WINDOW_STYLE,
++        },
++        core::w,
++    };
++
++    #[std::prelude::v1::test]
++    fn test_backdrop_blur_gaussian_and_edge_clamping() {
++        let Ok(devices) = DirectXDevices::new() else {
++            return;
++        };
++        let hwnd = unsafe {
++            CreateWindowExW(
++                WINDOW_EX_STYLE(0),
++                w!("STATIC"),
++                w!(""),
++                WINDOW_STYLE(0),
++                0,
++                0,
++                200,
++                100,
++                Some(HWND_MESSAGE),
++                None,
++                None,
++                None,
++            )
++        }
++        .expect("HWND_MESSAGE creation should succeed");
++
++        let mut renderer =
++            DirectXRenderer::new(hwnd, &devices, true).expect("DirectXRenderer should initialize");
++        renderer
++            .resize(size(DevicePixels(200), DevicePixels(100)))
++            .expect("resize should succeed");
++
++        let full_mask = ContentMask {
++            bounds: Bounds {
++                origin: point(ScaledPixels(0.0), ScaledPixels(0.0)),
++                size: size(ScaledPixels(200.0), ScaledPixels(100.0)),
++            },
++        };
++        let solid_quad = |x: f32, y: f32, w: f32, h: f32, color: Hsla| Quad {
++            order: 0,
++            border_style: BorderStyle::Solid,
++            bounds: Bounds {
++                origin: point(ScaledPixels(x), ScaledPixels(y)),
++                size: size(ScaledPixels(w), ScaledPixels(h)),
++            },
++            content_mask: full_mask,
++            background: color.into(),
++            border_color: transparent_black(),
++            corner_radii: Corners::default(),
++            border_widths: Edges::default(),
++        };
++
++        let mut scene = Scene::default();
++        // Left half black, right half white.
++        scene.insert_primitive(solid_quad(0.0, 0.0, 100.0, 100.0, rgb(0x000000).into()));
++        scene.insert_primitive(solid_quad(100.0, 0.0, 100.0, 100.0, rgb(0xffffff).into()));
++        // Bright red stripe on the far right edge to detect any UV wrap-around at x = 0.
++        scene.insert_primitive(solid_quad(196.0, 0.0, 4.0, 100.0, rgb(0xff0000).into()));
++
++        // Backdrop blur touching x = 0 and spanning across the x = 100 black/white split.
++        scene.insert_primitive(BackdropBlur {
++            order: 0,
++            blur_radius: ScaledPixels(10.0),
++            bounds: Bounds {
++                origin: point(ScaledPixels(0.0), ScaledPixels(10.0)),
++                size: size(ScaledPixels(150.0), ScaledPixels(80.0)),
++            },
++            corner_radii: Corners::default(),
++            content_mask: full_mask,
++            opacity: 1.0,
++            fade_top: ScaledPixels(0.0),
++        });
++
++        // Crisp 2px blue border painted AFTER the backdrop blur must remain unblurred.
++        scene.insert_primitive(solid_quad(0.0, 88.0, 150.0, 2.0, rgb(0x0000ff).into()));
++        scene.finish();
++
++        let img = renderer
++            .render_to_image(&scene, WindowBackgroundAppearance::Opaque)
++            .expect("offscreen render_to_image should succeed");
++
++        unsafe {
++            let _ = DestroyWindow(hwnd);
++        }
++
++        // 1. Left edge (x = 1, y = 50) must stay black with zero red wrap-around from x = 196..200.
++        let left_edge = img.get_pixel(1, 50).0;
++        assert_eq!(
++            left_edge[0], 0,
++            "left edge wrapped red from opposite viewport edge: {left_edge:?}"
++        );
++        assert_eq!(left_edge[1], 0);
++        assert_eq!(left_edge[2], 0);
++
++        // 2. Across the x = 100 black/white boundary (y = 50), intensity must blur smoothly and monotonically.
++        let l85 = img.get_pixel(85, 50).0[1];
++        let l95 = img.get_pixel(95, 50).0[1];
++        let l100 = img.get_pixel(100, 50).0[1];
++        let l105 = img.get_pixel(105, 50).0[1];
++        let l115 = img.get_pixel(115, 50).0[1];
++        assert!(
++            l85 > 0 && l85 < 40,
++            "expected tail of Gaussian at x=85, got {l85}"
++        );
++        assert!(
++            l85 < l95 && l95 < l100 && l100 < l105 && l105 < l115,
++            "expected monotonic Gaussian ramp: {l85}, {l95}, {l100}, {l105}, {l115}"
++        );
++        assert!(
++            (110..=146).contains(&l100),
++            "expected ~50% midpoint at x=100, got {l100}"
++        );
++        assert!(
++            l115 > 215 && l115 < 255,
++            "expected upper Gaussian shoulder at x=115, got {l115}"
++        );
++
++        // 3. Above the blur region (y = 2), the black/white split remains razor-sharp.
++        assert_eq!(img.get_pixel(99, 2).0[1], 0);
++        assert_eq!(img.get_pixel(100, 2).0[1], 255);
++
++        // 4. Foreground border quad drawn after BackdropBlur remains crisp pure blue.
++        let border_px = img.get_pixel(100, 89).0;
++        assert_eq!(border_px, [0, 0, 255, 255]);
++    }
++
++    #[std::prelude::v1::test]
++    fn test_backdrop_blur_mask_clamping_and_top_fade() {
++        let Ok(devices) = DirectXDevices::new() else {
++            return;
++        };
++        let hwnd = unsafe {
++            CreateWindowExW(
++                WINDOW_EX_STYLE(0),
++                w!("STATIC"),
++                w!(""),
++                WINDOW_STYLE(0),
++                0,
++                0,
++                200,
++                160,
++                Some(HWND_MESSAGE),
++                None,
++                None,
++                None,
++            )
++        }
++        .expect("HWND_MESSAGE creation should succeed");
++
++        let mut renderer =
++            DirectXRenderer::new(hwnd, &devices, true).expect("DirectXRenderer should initialize");
++        renderer
++            .resize(size(DevicePixels(200), DevicePixels(160)))
++            .expect("resize should succeed");
++
++        let full_mask = ContentMask {
++            bounds: Bounds {
++                origin: point(ScaledPixels(0.0), ScaledPixels(0.0)),
++                size: size(ScaledPixels(200.0), ScaledPixels(160.0)),
++            },
++        };
++        let solid_quad = |x: f32, y: f32, w: f32, h: f32, color: Hsla| Quad {
++            order: 0,
++            border_style: BorderStyle::Solid,
++            bounds: Bounds {
++                origin: point(ScaledPixels(x), ScaledPixels(y)),
++                size: size(ScaledPixels(w), ScaledPixels(h)),
++            },
++            content_mask: full_mask,
++            background: color.into(),
++            border_color: transparent_black(),
++            corner_radii: Corners::default(),
++            border_widths: Edges::default(),
++        };
++
++        let mut scene = Scene::default();
++        // Poison green sidebar at x = 0..40 and poison red titlebar at y = 0..30.
++        scene.insert_primitive(solid_quad(0.0, 0.0, 40.0, 160.0, rgb(0x00ff00).into()));
++        scene.insert_primitive(solid_quad(40.0, 0.0, 160.0, 30.0, rgb(0xff0000).into()));
++        // Page area [40..200, 30..160]: left half black (40..120), right half white (120..200).
++        scene.insert_primitive(solid_quad(40.0, 30.0, 80.0, 130.0, rgb(0x000000).into()));
++        scene.insert_primitive(solid_quad(120.0, 30.0, 80.0, 130.0, rgb(0xffffff).into()));
++
++        let page_mask = ContentMask {
++            bounds: Bounds {
++                origin: point(ScaledPixels(40.0), ScaledPixels(30.0)),
++                size: size(ScaledPixels(160.0), ScaledPixels(130.0)),
++            },
++        };
++        // Blur inside page_mask with 60px top fade ramp.
++        scene.insert_primitive(BackdropBlur {
++            order: 0,
++            blur_radius: ScaledPixels(12.0),
++            bounds: Bounds {
++                origin: point(ScaledPixels(40.0), ScaledPixels(30.0)),
++                size: size(ScaledPixels(160.0), ScaledPixels(100.0)),
++            },
++            corner_radii: Corners::default(),
++            content_mask: page_mask,
++            opacity: 1.0,
++            fade_top: ScaledPixels(60.0),
++        });
++        scene.finish();
++
++        let img = renderer
++            .render_to_image(&scene, WindowBackgroundAppearance::Opaque)
++            .expect("offscreen render_to_image should succeed");
++
++        unsafe {
++            let _ = DestroyWindow(hwnd);
++        }
++
++        // 1. Inside page_mask at (41, 100), neither red titlebar nor green sidebar may bleed in.
++        let top_left_page = img.get_pixel(41, 100).0;
++        assert_eq!(
++            top_left_page[0], 0,
++            "red bled across content_mask: {top_left_page:?}"
++        );
++        assert_eq!(
++            top_left_page[1], 0,
++            "green bled across content_mask: {top_left_page:?}"
++        );
++
++        // 2. Top fade ramp at x = 115 (5px left of black/white split):
++        //    near top (y = 31) alpha ~ 0 => nearly black;
++        //    mid fade (y = 60) => intermediate gray;
++        //    past 60px fade (y = 100) => full Gaussian blur weight.
++        let top_val = img.get_pixel(115, 31).0[2];
++        let mid_val = img.get_pixel(115, 60).0[2];
++        let full_val = img.get_pixel(115, 100).0[2];
++        assert!(
++            top_val < 15,
++            "expected near-zero blur at start of fade_top, got {top_val}"
++        );
++        assert!(
++            top_val < mid_val && mid_val < full_val && full_val > 60,
++            "expected smooth vertical fade_top progression: top={top_val}, mid={mid_val}, full={full_val}"
++        );
++    }
++}
 diff --git a/crates/gpui_windows/src/dispatcher.rs b/crates/gpui_windows/src/dispatcher.rs
 index 55f18b5..9fe3928 100644
 --- a/crates/gpui_windows/src/dispatcher.rs
@@ -2487,6 +3517,107 @@ index 55f18b5..9fe3928 100644
          runnable.run();
          gpui::profiler::save_task_timing();
      }
+diff --git a/crates/gpui_windows/src/shaders.hlsl b/crates/gpui_windows/src/shaders.hlsl
+index 2f9a00c..8da2613 100644
+--- a/crates/gpui_windows/src/shaders.hlsl
++++ b/crates/gpui_windows/src/shaders.hlsl
+@@ -1266,3 +1266,96 @@ float4 polychrome_sprite_fragment(PolychromeSpriteFragmentInput input): SV_Targe
+     color.a *= sprite.opacity * saturate(0.5 - distance);
+     return color;
+ }
++
++/*
++**
++**              Backdrop blur
++**
++*/
++
++struct BackdropBlurInstance {
++    Bounds draw_bounds;
++    Bounds element_bounds;
++    Corners corner_radii;
++    Bounds content_mask;
++    float2 uv_min;
++    float2 uv_max;
++    float sigma;
++    float opacity;
++    float fade_top;
++    uint direction;
++};
++
++struct BackdropBlurVertexOutput {
++    nointerpolation uint instance_id: TEXCOORD0;
++    float4 position: SV_Position;
++    float4 clip_distance: SV_ClipDistance;
++};
++
++struct BackdropBlurFragmentInput {
++    nointerpolation uint instance_id: TEXCOORD0;
++    float4 position: SV_Position;
++};
++
++StructuredBuffer<BackdropBlurInstance> backdrop_blurs: register(t1);
++Texture2D<float4> t_backdrop_orig: register(t2);
++
++BackdropBlurVertexOutput backdrop_blur_vertex(uint vertex_id: SV_VertexID, uint instance_id: SV_InstanceID) {
++    float2 unit_vertex = float2(float(vertex_id & 1u), 0.5 * float(vertex_id & 2u));
++    uint idx = batch_start_index + instance_id;
++    BackdropBlurInstance blur = backdrop_blurs[idx];
++
++    BackdropBlurVertexOutput output;
++    output.position = to_device_position(unit_vertex, blur.draw_bounds);
++    output.instance_id = idx;
++    output.clip_distance = distance_from_clip_rect(unit_vertex, blur.draw_bounds, blur.content_mask);
++    return output;
++}
++
++float4 backdrop_blur_fragment(BackdropBlurFragmentInput input): SV_Target {
++    BackdropBlurInstance blur = backdrop_blurs[input.instance_id];
++    float2 inv_viewport = 1.0 / global_viewport_size;
++    float2 axis = (blur.direction == 0u) ? float2(1.0, 0.0) : float2(0.0, 1.0);
++
++    float sigma = max(blur.sigma, 0.001);
++    float inv_two_sigma_sq = 0.5 / (sigma * sigma);
++    int radius = min(int(ceil(sigma * 3.0)), 192);
++
++    float2 center_px = clamp(input.position.xy, blur.uv_min, blur.uv_max);
++    float4 acc = t_sprite.SampleLevel(s_sprite, center_px * inv_viewport, 0.0);
++    float weight_sum = 1.0;
++
++    [loop]
++    for (int k = 1; k <= radius; k += 2) {
++        float k0 = float(k);
++        float w0 = exp(-(k0 * k0) * inv_two_sigma_sq);
++        float k1 = float(k + 1);
++        float w1 = (k + 1 <= radius) ? exp(-(k1 * k1) * inv_two_sigma_sq) : 0.0;
++        float w = w0 + w1;
++        float offset = k0 + (w1 / max(w, 1e-6));
++
++        float2 pos_px = clamp(input.position.xy + axis * offset, blur.uv_min, blur.uv_max);
++        float2 neg_px = clamp(input.position.xy - axis * offset, blur.uv_min, blur.uv_max);
++
++        acc += (
++            t_sprite.SampleLevel(s_sprite, pos_px * inv_viewport, 0.0) +
++            t_sprite.SampleLevel(s_sprite, neg_px * inv_viewport, 0.0)
++        ) * w;
++        weight_sum += 2.0 * w;
++    }
++
++    float4 color = acc / weight_sum;
++    if (blur.direction == 0u) {
++        return color;
++    }
++
++    float distance = quad_sdf(input.position.xy, blur.element_bounds, blur.corner_radii);
++    float alpha = blur.opacity * saturate(0.5 - distance);
++    if (blur.fade_top > 0.0) {
++        float t = saturate((input.position.y - blur.element_bounds.origin.y) / blur.fade_top);
++        float inv_t = 1.0 - t;
++        alpha *= 1.0 - pow(inv_t, 2.2);
++    }
++    float4 unblurred = t_backdrop_orig.Load(int3(int2(input.position.xy), 0));
++    return lerp(unblurred, color, alpha);
++}
 diff --git a/crates/gpui_windows/src/util.rs b/crates/gpui_windows/src/util.rs
 index b3badd8..f3f9621 100644
 --- a/crates/gpui_windows/src/util.rs
