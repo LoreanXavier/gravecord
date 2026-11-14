@@ -74,10 +74,9 @@ impl Config {
     }
 }
 
-/// Consecutive pictures the hardware encoder may swallow without output before it counts as stuck and the software
-/// encoder takes over (two seconds at 15 fps), so an encoder that accepts input and never answers cannot silence a
-/// stream. From Serein's `HARDWARE_STALL`.
-const HARDWARE_STALL: u32 = 30;
+/// Consecutive pictures the hardware encoder may take without emitting output before openh264 takes over (~1.5–3s
+/// at 30–60 fps), allowing temporary look-ahead or CBR frame-skip pauses on game transitions without abandoning hardware.
+const HARDWARE_STALL: u32 = 90;
 
 pub(crate) struct Output {
     pub data: Vec<u8>,
@@ -94,6 +93,8 @@ pub(crate) struct Encoder {
     fell_back: bool,
     /// The hardware encoder refused a live rate change once: from then on it is reopened only for large moves.
     live_refused: bool,
+    /// An oversized picture was dropped; the next accepted picture forces a keyframe.
+    oversized_keyframe: bool,
 }
 
 /// A live rate change smaller than this share of the current rate (one twentieth) waits for a larger one when the rate
@@ -124,6 +125,7 @@ impl Encoder {
                         empty_run: 0,
                         fell_back: false,
                         live_refused: false,
+                        oversized_keyframe: false,
                     });
                 }
                 Err(error) => tracing::debug!("hardware H.264 encoder unavailable: {error}"),
@@ -144,6 +146,7 @@ impl Encoder {
             empty_run: 0,
             fell_back: false,
             live_refused: false,
+            oversized_keyframe: false,
         })
     }
 
@@ -226,6 +229,7 @@ impl Encoder {
                 "encoder input does not match the configured size",
             ));
         }
+        let force_keyframe = force_keyframe || std::mem::take(&mut self.oversized_keyframe);
         #[cfg(windows)]
         if let Some(hardware) = self.hardware.as_mut() {
             let nv12 = match chroma {
@@ -237,14 +241,23 @@ impl Encoder {
                     self.empty_run = 0;
                     return Ok(Some(output));
                 }
+                Ok(Some(_)) => {
+                    tracing::warn!(
+                        "hardware H.264 picture exceeded max_bytes; dropping and requesting keyframe"
+                    );
+                    self.oversized_keyframe = true;
+                    return Ok(None);
+                }
                 Ok(None) => {
                     self.empty_run += 1;
                     if self.empty_run < HARDWARE_STALL {
+                        if force_keyframe {
+                            self.oversized_keyframe = true;
+                        }
                         return Ok(None);
                     }
                     tracing::warn!("hardware H.264 encoder stalled; using openh264");
                 }
-                Ok(Some(_)) => tracing::warn!("hardware H.264 picture too large; using openh264"),
                 Err(error) => {
                     tracing::warn!("hardware H.264 encoder failed ({error}); using openh264")
                 }
@@ -253,10 +266,34 @@ impl Encoder {
             self.hardware = None;
             self.fell_back = true;
             self.empty_run = 0;
+            self.oversized_keyframe = false;
             self.software = Some(software_encoder(self.config, self.bitrate)?);
             return self.encode_software(yuv, chroma, true);
         }
         self.encode_software(yuv, chroma, force_keyframe)
+    }
+
+    /// Drains any encoded pictures still queued in the hardware backend without feeding new input.
+    pub(crate) fn take_pending_output(&mut self) -> Result<Option<Output>> {
+        #[cfg(windows)]
+        if let Some(hardware) = self.hardware.as_mut() {
+            match hardware.take_pending_output() {
+                Ok(Some(output)) => {
+                    self.empty_run = 0;
+                    return Ok(Some(output));
+                }
+                Ok(None) => return Ok(None),
+                Err(error) => {
+                    tracing::warn!("hardware H.264 encoder failed ({error}); using openh264");
+                    self.hardware = None;
+                    self.fell_back = true;
+                    self.empty_run = 0;
+                    self.oversized_keyframe = true;
+                    self.software = Some(software_encoder(self.config, self.bitrate)?);
+                }
+            }
+        }
+        Ok(None)
     }
 
     fn encode_software(
@@ -300,10 +337,12 @@ impl Encoder {
             }
         }
         if length > self.config.max_bytes {
-            return Err(Error::failed(format!(
-                "encoded picture of {length} bytes exceeds the {} byte limit; choose a lower quality",
+            tracing::warn!(
+                "encoded picture of {length} bytes exceeds the {} byte limit; dropping and forcing keyframe",
                 self.config.max_bytes
-            )));
+            );
+            self.oversized_keyframe = true;
+            return Ok(None);
         }
         let mut data = Vec::with_capacity(length);
         encoded.write_vec(&mut data);
@@ -409,8 +448,9 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn oversized_pictures_are_an_error_not_a_truncation() {
-        // Noise does not compress; a tiny limit must be reported, not silently sent cut.
+    fn oversized_pictures_drop_and_force_recovery_keyframe_not_truncation() {
+        // Noise does not compress; an oversized encoded unit is dropped instead of truncated or killing the stream,
+        // and the next compressible picture forces a recovery keyframe.
         let mut encoder = Encoder::software(Config {
             max_bytes: 64,
             ..config(128, 128)
@@ -419,7 +459,23 @@ pub(crate) mod tests {
         let noise: Vec<u8> = (0..128 * 128 * 3 / 2)
             .map(|i| ((i * 2654435761usize) >> 7) as u8)
             .collect();
-        assert!(encoder.encode(&noise, Chroma::Planar, true).is_err());
+        assert!(encoder.encode(&noise, Chroma::Planar, true).unwrap().is_none());
+        assert!(encoder.oversized_keyframe);
+
+        let mut recovering = Encoder::software(Config {
+            max_bytes: 900,
+            ..config(128, 128)
+        })
+        .unwrap();
+        let solid = vec![128u8; 128 * 128 * 3 / 2];
+        assert!(recovering.encode(&solid, Chroma::Planar, true).unwrap().is_some());
+        assert!(recovering.encode(&noise, Chroma::Planar, false).unwrap().is_none());
+        let recovered = recovering
+            .encode(&solid, Chroma::Planar, false)
+            .unwrap()
+            .expect("compressible frame after oversized drop should emit recovery keyframe");
+        assert!(recovered.keyframe);
+        assert!(recovered.data.len() <= 900);
     }
 
     #[test]

@@ -5,13 +5,76 @@
 use super::{Config, Output, Profile};
 use crate::mfrt::Runtime;
 use crate::{Error, Result, h264};
+use std::collections::VecDeque;
+use std::time::{Duration, Instant};
 use windows::{
     Win32::{
+        Foundation::{CloseHandle, HANDLE},
         Media::MediaFoundation::*,
-        System::{Com::CoTaskMemFree, Variant::VARIANT},
+        System::{
+            Com::CoTaskMemFree,
+            Threading::{
+                CREATE_WAITABLE_TIMER_HIGH_RESOLUTION, CreateWaitableTimerExW, SetWaitableTimer,
+                TIMER_ALL_ACCESS, WaitForSingleObject,
+            },
+            Variant::VARIANT,
+        },
     },
-    core::{IUnknown, Interface},
+    core::{IUnknown, Interface, PCWSTR},
 };
+
+const INPUT_WAIT: Duration = Duration::from_millis(200);
+const OUTPUT_WAIT: Duration = Duration::from_millis(25);
+const WAIT_POLL: Duration = Duration::from_millis(1);
+
+struct HighResWaiter(Option<HANDLE>);
+
+impl HighResWaiter {
+    fn new() -> Self {
+        // SAFETY: passing null timer attributes and unnamed timer asks Windows for a private handle.
+        let handle = unsafe {
+            CreateWaitableTimerExW(
+                None,
+                PCWSTR::null(),
+                CREATE_WAITABLE_TIMER_HIGH_RESOLUTION,
+                TIMER_ALL_ACCESS.0,
+            )
+        }
+        .ok();
+        Self(handle)
+    }
+
+    fn sleep(&self, duration: Duration) {
+        let Some(handle) = self.0 else {
+            std::thread::sleep(duration);
+            return;
+        };
+        let ticks = (duration.as_nanos().min(i64::MAX as u128) as i64 / 100).max(1);
+        let due = -ticks;
+        // SAFETY: `handle` is an open waitable timer owned by `self`; `due` lives through `SetWaitableTimer`.
+        let armed = unsafe { SetWaitableTimer(handle, &due, 0, None, None, false) }.is_ok();
+        if armed {
+            let timeout_ms = duration.as_millis().min(u32::MAX as u128 - 50) as u32 + 50;
+            // SAFETY: `handle` stays open until `Drop`.
+            unsafe {
+                let _ = WaitForSingleObject(handle, timeout_ms);
+            }
+        } else {
+            std::thread::sleep(duration);
+        }
+    }
+}
+
+impl Drop for HighResWaiter {
+    fn drop(&mut self) {
+        if let Some(handle) = self.0.take() {
+            // SAFETY: closing the owned timer handle on drop.
+            unsafe {
+                let _ = CloseHandle(handle);
+            }
+        }
+    }
+}
 
 fn unavailable(what: &str, error: impl std::fmt::Display) -> Error {
     Error::unavailable(format!("hardware H.264 encoder: {what}: {error}"))
@@ -82,6 +145,9 @@ pub(super) struct Encoder {
     size: usize,
     input_pool: Vec<PooledSample>,
     output_pool: Vec<PooledSample>,
+    pending_outputs: VecDeque<Output>,
+    force_next_keyframe: bool,
+    waiter: HighResWaiter,
 }
 
 struct Activated(IMFActivate);
@@ -221,6 +287,9 @@ impl Encoder {
                 size: config.width as usize * config.height as usize * 3 / 2,
                 input_pool: Vec::with_capacity(SAMPLE_POOL_LIMIT),
                 output_pool: Vec::with_capacity(SAMPLE_POOL_LIMIT),
+                pending_outputs: VecDeque::new(),
+                force_next_keyframe: false,
+                waiter: HighResWaiter::new(),
             })
         }
     }
@@ -234,13 +303,21 @@ impl Encoder {
         }
     }
 
-    /// Encodes one tight NV12 picture.
+    /// Encodes one tight NV12 picture, polling events without stalling indefinitely when CBR skips or delays output.
     pub(super) fn encode(&mut self, nv12: &[u8], force_keyframe: bool) -> Result<Option<Output>> {
         if nv12.len() != self.size {
             return Err(Error::invalid("hardware encoder input has the wrong size"));
         }
-        self.wait_for_input()?;
-        if force_keyframe {
+        let want_keyframe = force_keyframe || self.force_next_keyframe;
+        if !self.wait_until(Instant::now() + INPUT_WAIT, |encoder| {
+            encoder.need_input != 0
+        })? {
+            self.force_next_keyframe = want_keyframe;
+            return Ok(self.pending_outputs.pop_front());
+        }
+        self.need_input -= 1;
+        self.force_next_keyframe = false;
+        if want_keyframe {
             // SAFETY: codec control is called on the owning thread before this input sample.
             unsafe {
                 self.codec
@@ -291,15 +368,28 @@ impl Encoder {
                 return Err(err);
             }
             self.frame += 1;
-            let processed = self
-                .transform
-                .ProcessInput(0, &slot.sample, 0)
-                .map_err(|e| failed("process input", e));
+            let processed = self.transform.ProcessInput(0, &slot.sample, 0);
             Self::recycle_sample(&mut self.input_pool, slot);
-            processed?;
+            match processed {
+                Ok(()) => {}
+                Err(error) if error.code() == MF_E_NOTACCEPTING => {
+                    self.force_next_keyframe = want_keyframe;
+                    self.drain_outputs()?;
+                    return Ok(self.pending_outputs.pop_front());
+                }
+                Err(error) => return Err(failed("process input", error)),
+            }
         }
-        self.wait_for_output()?;
-        self.take_output().map(Some)
+        let _ = self.wait_until(Instant::now() + OUTPUT_WAIT, |encoder| {
+            !encoder.pending_outputs.is_empty()
+        })?;
+        Ok(self.pending_outputs.pop_front())
+    }
+
+    pub(super) fn take_pending_output(&mut self) -> Result<Option<Output>> {
+        self.poll_events()?;
+        self.drain_outputs()?;
+        Ok(self.pending_outputs.pop_front())
     }
 
     unsafe fn acquire_sample(pool: &mut Vec<PooledSample>, min_capacity: u32) -> Result<PooledSample> {
@@ -307,7 +397,12 @@ impl Encoder {
             .iter()
             .position(|entry| unsafe { entry.is_reusable(min_capacity) })
         {
-            return Ok(pool.swap_remove(index));
+            let slot = pool.swap_remove(index);
+            // SAFETY: clear attributes left by previous MFT submissions while keeping the backing buffer intact.
+            unsafe {
+                let _ = slot.sample.DeleteAllItems();
+            }
+            return Ok(slot);
         }
         // Drop any undersized idle slot before creating a larger one so old small allocations don't linger.
         pool.retain(|entry| !(entry.capacity < min_capacity && unsafe { entry.is_reusable(0) }));
@@ -320,23 +415,10 @@ impl Encoder {
         }
     }
 
-    fn wait_for_input(&mut self) -> Result<()> {
-        self.wait_until(|encoder| encoder.need_input != 0)?;
-        self.need_input -= 1;
-        Ok(())
-    }
-
-    fn wait_for_output(&mut self) -> Result<()> {
-        self.wait_until(|encoder| encoder.have_output != 0)?;
-        self.have_output -= 1;
-        Ok(())
-    }
-
-    fn wait_until(&mut self, ready: impl Fn(&Self) -> bool) -> Result<()> {
-        while !ready(self) {
-            // SAFETY: blocking wait keeps this thread idle in the kernel until Media Foundation posts an event.
-            let event = unsafe { self.events.GetEvent(MF_EVENT_FLAG_NONE) };
-            match event {
+    fn poll_events(&mut self) -> Result<()> {
+        loop {
+            // SAFETY: `MF_EVENT_FLAG_NO_WAIT` drains already-queued async MFT events without blocking.
+            match unsafe { self.events.GetEvent(MF_EVENT_FLAG_NO_WAIT) } {
                 Ok(event) => unsafe {
                     if event
                         .GetStatus()
@@ -354,13 +436,94 @@ impl Encoder {
                         _ => {}
                     }
                 },
+                Err(error) if error.code() == MF_E_NO_EVENTS_AVAILABLE => return Ok(()),
                 Err(error) => return Err(failed("events", error)),
+            }
+        }
+    }
+
+    fn drain_outputs(&mut self) -> Result<()> {
+        let mut stream_changes = 0;
+        while self.have_output > 0 {
+            self.have_output -= 1;
+            match self.take_output_once()? {
+                OutputStep::Ready(output) => self.pending_outputs.push_back(output),
+                OutputStep::Oversized => {
+                    tracing::warn!(
+                        "hardware H.264 picture exceeded {} byte limit; dropping and requesting keyframe",
+                        self.max_bytes
+                    );
+                    self.force_next_keyframe = true;
+                }
+                OutputStep::StreamChange => {
+                    stream_changes += 1;
+                    if stream_changes > 4 {
+                        return Err(Error::failed(
+                            "hardware H.264 encoder looped on output stream changes",
+                        ));
+                    }
+                    self.renegotiate_output()?;
+                    self.have_output += 1;
+                }
+                OutputStep::NeedMoreInput => break,
             }
         }
         Ok(())
     }
 
-    fn take_output(&mut self) -> Result<Output> {
+    fn wait_until(&mut self, deadline: Instant, ready: impl Fn(&Self) -> bool) -> Result<bool> {
+        loop {
+            self.poll_events()?;
+            self.drain_outputs()?;
+            if ready(self) {
+                return Ok(true);
+            }
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            if remaining.is_zero() {
+                return Ok(false);
+            }
+            self.waiter.sleep(WAIT_POLL.min(remaining));
+        }
+    }
+
+    fn renegotiate_output(&mut self) -> Result<()> {
+        // SAFETY: transform stays on the encoder's owning thread while re-selecting H.264 output type.
+        unsafe {
+            let mut index = 0;
+            let mut last_error = None;
+            loop {
+                let candidate = match self.transform.GetOutputAvailableType(0, index) {
+                    Ok(media_type) => media_type,
+                    Err(error) => {
+                        return Err(last_error
+                            .unwrap_or_else(|| failed("renegotiate output type", error)));
+                    }
+                };
+                index += 1;
+                if candidate.GetGUID(&MF_MT_SUBTYPE) != Ok(MFVideoFormat_H264) {
+                    continue;
+                }
+                match self.transform.SetOutputType(0, &candidate, 0) {
+                    Ok(()) => break,
+                    Err(error) => last_error = Some(failed("set renegotiated output type", error)),
+                }
+            }
+            let info = self
+                .transform
+                .GetOutputStreamInfo(0)
+                .map_err(|e| failed("stream info", e))?;
+            self.provides_samples = info.dwFlags
+                & (MFT_OUTPUT_STREAM_PROVIDES_SAMPLES.0 as u32
+                    | MFT_OUTPUT_STREAM_CAN_PROVIDE_SAMPLES.0 as u32)
+                != 0;
+            if !self.provides_samples {
+                output_buffer_size(&info, self.max_buffer_bytes)?;
+            }
+            Ok(())
+        }
+    }
+
+    fn take_output_once(&mut self) -> Result<OutputStep> {
         // SAFETY: the output struct is fully initialized. When `!provides_samples`, pooled output samples are
         // cleared and reused once the MFT releases any extra COM references.
         unsafe {
@@ -391,23 +554,46 @@ impl Encoder {
                     .ProcessOutput(0, std::slice::from_mut(&mut output), &mut status);
             let sample = std::mem::ManuallyDrop::into_inner(output.pSample);
             drop(std::mem::ManuallyDrop::into_inner(output.pEvents));
-            let bytes = match result {
+            let step = match result {
                 Ok(()) => {
                     let sample = sample
                         .or_else(|| slot.as_ref().map(|entry| entry.sample.clone()))
                         .ok_or_else(|| Error::failed("hardware H.264 encoder gave no sample"))?;
-                    sample_bytes(&sample, self.max_bytes)
+                    match sample_bytes(&sample, self.max_bytes)? {
+                        SampleRead::Bytes(data) if data.is_empty() => Ok(OutputStep::NeedMoreInput),
+                        SampleRead::Bytes(data) => {
+                            let keyframe = h264::is_keyframe(&data);
+                            Ok(OutputStep::Ready(Output { data, keyframe }))
+                        }
+                        SampleRead::Oversized => Ok(OutputStep::Oversized),
+                    }
+                }
+                Err(error) if error.code() == MF_E_TRANSFORM_NEED_MORE_INPUT => {
+                    Ok(OutputStep::NeedMoreInput)
+                }
+                Err(error) if error.code() == MF_E_TRANSFORM_STREAM_CHANGE => {
+                    Ok(OutputStep::StreamChange)
                 }
                 Err(error) => Err(failed("process output", error)),
             };
             if let Some(slot) = slot.take() {
                 Self::recycle_sample(&mut self.output_pool, slot);
             }
-            let data = bytes?;
-            let keyframe = h264::is_keyframe(&data);
-            Ok(Output { data, keyframe })
+            step
         }
     }
+}
+
+enum OutputStep {
+    Ready(Output),
+    Oversized,
+    NeedMoreInput,
+    StreamChange,
+}
+
+enum SampleRead {
+    Bytes(Vec<u8>),
+    Oversized,
 }
 
 fn force_keyframe_value() -> VARIANT {
@@ -499,13 +685,11 @@ unsafe fn video_type(config: Config, subtype: windows::core::GUID) -> Result<IMF
     }
 }
 
-fn sample_bytes(sample: &IMFSample, max_bytes: usize) -> Result<Vec<u8>> {
-    // SAFETY: the length is bounded before allocation; Lock's pointer is borrowed until Unlock.
+fn sample_bytes(sample: &IMFSample, max_bytes: usize) -> Result<SampleRead> {
+    // SAFETY: the length is checked before allocation; Lock's pointer is borrowed until Unlock.
     unsafe {
         if sample.GetTotalLength().map_err(|e| failed("length", e))? as usize > max_bytes {
-            return Err(Error::failed(
-                "hardware H.264 picture exceeds the size limit",
-            ));
+            return Ok(SampleRead::Oversized);
         }
         let buffer = sample
             .ConvertToContiguousBuffer()
@@ -516,10 +700,14 @@ fn sample_bytes(sample: &IMFSample, max_bytes: usize) -> Result<Vec<u8>> {
         buffer
             .Lock(&mut data, Some(&mut capacity), Some(&mut length))
             .map_err(|e| failed("lock output", e))?;
-        let result = if data.is_null() || length > capacity || length as usize > max_bytes {
+        let result = if data.is_null() || length > capacity {
             Err(Error::failed("hardware H.264 output buffer is invalid"))
+        } else if length as usize > max_bytes {
+            Ok(SampleRead::Oversized)
         } else {
-            Ok(std::slice::from_raw_parts(data, length as usize).to_vec())
+            Ok(SampleRead::Bytes(
+                std::slice::from_raw_parts(data, length as usize).to_vec(),
+            ))
         };
         buffer.Unlock().map_err(|e| failed("unlock output", e))?;
         result
@@ -547,11 +735,17 @@ mod tests {
             buffer.SetCurrentLength(limit as u32).unwrap();
             let sample = MFCreateSample().unwrap();
             sample.AddBuffer(&buffer).unwrap();
-            let encoded = sample_bytes(&sample, limit).unwrap();
+            let encoded = match sample_bytes(&sample, limit).unwrap() {
+                SampleRead::Bytes(bytes) => bytes,
+                SampleRead::Oversized => panic!("expected bytes within limit"),
+            };
             assert_eq!(encoded.len(), limit);
             assert!(encoded.iter().all(|&byte| byte == 0x2a));
             buffer.SetCurrentLength(limit as u32 + 1).unwrap();
-            assert!(sample_bytes(&sample, limit).is_err());
+            assert!(matches!(
+                sample_bytes(&sample, limit).unwrap(),
+                SampleRead::Oversized
+            ));
         }
         let mut info = MFT_OUTPUT_STREAM_INFO {
             dwFlags: 0,
@@ -604,5 +798,32 @@ mod tests {
             let larger = Encoder::acquire_sample(&mut pool, 8192).unwrap();
             assert!(larger.capacity >= 8192);
         }
+    }
+
+    #[test]
+    fn recycled_samples_clear_attributes_and_waiter_sleeps_promptly() {
+        let _runtime = Runtime::open().unwrap();
+        let mut pool = Vec::new();
+        // SAFETY: synthetic MF memory sample owned only by this test.
+        unsafe {
+            let first = Encoder::acquire_sample(&mut pool, 4096).unwrap();
+            first
+                .sample
+                .SetUINT32(&MFSampleExtension_CleanPoint, 1)
+                .unwrap();
+            Encoder::recycle_sample(&mut pool, first);
+
+            let reused = Encoder::acquire_sample(&mut pool, 4096).unwrap();
+            assert!(
+                reused
+                    .sample
+                    .GetUINT32(&MFSampleExtension_CleanPoint)
+                    .is_err()
+            );
+        }
+        let waiter = HighResWaiter::new();
+        let started = Instant::now();
+        waiter.sleep(Duration::from_millis(1));
+        assert!(started.elapsed() < Duration::from_secs(1));
     }
 }

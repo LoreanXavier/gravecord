@@ -651,9 +651,12 @@ pub(crate) async fn run(
                 let Some(frame) = frame else { return Ok(DisconnectReason::Closed(0)) };
                 let secure = announced && dave.ready && dave.session.is_ready() && !dave.transitioning() && transport.is_some() && !discovering && !controls.borrow().paused;
                 if !secure {
+                    let was_awaiting = awaiting_keyframe;
                     awaiting_keyframe = true;
                     sent_keyframe = false;
-                    if let Some(capture) = &capture {
+                    if !was_awaiting
+                        && let Some(capture) = &capture
+                    {
                         capture.force_keyframe();
                     }
                     continue;

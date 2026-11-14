@@ -41,6 +41,35 @@ use windows::{
 };
 
 const FRAME_POOL_LIMIT: usize = 4;
+const POOL_BUFFERS: i32 = 3;
+
+struct ClosingFrame(Option<windows::Graphics::Capture::Direct3D11CaptureFrame>);
+
+impl ClosingFrame {
+    fn as_ref(&self) -> Option<&windows::Graphics::Capture::Direct3D11CaptureFrame> {
+        self.0.as_ref()
+    }
+
+    fn close_now(&mut self) {
+        if let Some(frame) = self.0.take() {
+            let _ = frame.Close();
+        }
+    }
+}
+
+impl Drop for ClosingFrame {
+    fn drop(&mut self) {
+        self.close_now();
+    }
+}
+
+fn drain_latest<T>(mut next: impl FnMut() -> Option<T>) -> Option<T> {
+    let mut latest = next()?;
+    while let Some(newer) = next() {
+        latest = newer;
+    }
+    Some(latest)
+}
 
 struct BufferPool(Mutex<Vec<Vec<u8>>>);
 
@@ -176,7 +205,7 @@ impl Capture {
         let pool = Direct3D11CaptureFramePool::CreateFreeThreaded(
             &d3d,
             DirectXPixelFormat::B8G8R8A8UIntNormalized,
-            2,
+            POOL_BUFFERS,
             size,
         )
         .map_err(|e| failed("frame pool", &e))?;
@@ -211,15 +240,18 @@ impl Capture {
                 let Some(pool) = pool.as_ref() else {
                     return Ok(());
                 };
-                let Ok(frame) = pool.TryGetNextFrame() else {
+                let Some(frame) =
+                    drain_latest(|| pool.TryGetNextFrame().ok().map(|f| ClosingFrame(Some(f))))
+                else {
                     return Ok(());
                 };
                 if !want() {
-                    let _ = frame.Close();
                     return Ok(());
                 }
                 let at = Instant::now();
-                let mut guard = reader.lock().unwrap_or_else(|e| e.into_inner());
+                let Ok(mut guard) = reader.try_lock() else {
+                    return Ok(());
+                };
                 let Locked((reader, deliver)) = &mut *guard;
                 if let Ok(captured) = read_frame(reader, pool, frame, at) {
                     deliver(captured);
@@ -320,31 +352,31 @@ fn create_device() -> Result<(ID3D11Device, ID3D11DeviceContext)> {
 fn read_frame(
     reader: &mut Reader,
     pool: &Direct3D11CaptureFramePool,
-    frame: windows::Graphics::Capture::Direct3D11CaptureFrame,
+    mut frame: ClosingFrame,
     at: Instant,
 ) -> windows::core::Result<Frame> {
-    let content = frame.ContentSize()?;
-    if content.Width != reader.last_size.Width || content.Height != reader.last_size.Height {
-        // The source was resized: later frames come at the new size.
-        reader.last_size = content;
-        pool.Recreate(
-            &reader.d3d,
-            DirectXPixelFormat::B8G8R8A8UIntNormalized,
-            2,
-            content,
-        )?;
+    let raw_frame = frame.as_ref().ok_or_else(|| {
+        windows::core::Error::from_hresult(windows::core::HRESULT(0x8000_4005_u32 as i32))
+    })?;
+    let content = raw_frame.ContentSize()?;
+    if content.Width <= 0 || content.Height <= 0 {
+        return Err(windows::core::Error::from_hresult(windows::core::HRESULT(
+            0x8000_4005_u32 as i32,
+        )));
     }
-    let surface = frame.Surface()?;
+    let resized =
+        content.Width != reader.last_size.Width || content.Height != reader.last_size.Height;
+    let surface = raw_frame.Surface()?;
     let access: IDirect3DDxgiInterfaceAccess = surface.cast()?;
     // SAFETY: the texture is the frame's own; the staging ring, CopyResource, Map and Unmap execute sequentially under
-    // the reader lock, and the WGC frame is closed only after CopyResource queues the GPU copy.
+    // the reader lock, and the WGC frame is closed immediately after CopyResource (and before any pool.Recreate).
     unsafe {
         let texture: ID3D11Texture2D = access.GetInterface()?;
         let mut desc = D3D11_TEXTURE2D_DESC::default();
         texture.GetDesc(&mut desc);
         let (width, height) = (
-            (content.Width.max(1) as u32).min(desc.Width),
-            (content.Height.max(1) as u32).min(desc.Height),
+            (content.Width as u32).min(desc.Width),
+            (content.Height as u32).min(desc.Height),
         );
         let slot_index = reader.next_staging & 1;
         reader.next_staging = reader.next_staging.wrapping_add(1);
@@ -379,12 +411,21 @@ fn read_frame(
             )));
         };
         reader.context.CopyResource(staging, &texture);
-        // Release the WGC frame pool slot before the blocking CPU Map so DWM/game swapchains are never held.
+        // Release the WGC frame pool slot before pool.Recreate and the blocking CPU Map so swapchains are never held.
         drop(texture);
         drop(access);
         drop(surface);
-        let _ = frame.Close();
-        drop(frame);
+        frame.close_now();
+        if resized {
+            // The source was resized: later frames come at the new size.
+            reader.last_size = content;
+            pool.Recreate(
+                &reader.d3d,
+                DirectXPixelFormat::B8G8R8A8UIntNormalized,
+                POOL_BUFFERS,
+                content,
+            )?;
+        }
 
         let mut mapped = D3D11_MAPPED_SUBRESOURCE::default();
         reader
@@ -513,5 +554,32 @@ mod tests {
             pool.put(vec![0u8; 4096]);
         }
         assert_eq!(pool.0.lock().unwrap().len(), FRAME_POOL_LIMIT);
+    }
+
+    #[test]
+    fn drain_latest_drops_superseded_frames_immediately_and_handles_empty() {
+        use std::cell::Cell;
+        use std::collections::VecDeque;
+        use std::rc::Rc;
+
+        struct Counted(usize, Rc<Cell<usize>>);
+        impl Drop for Counted {
+            fn drop(&mut self) {
+                self.1.set(self.1.get() + 1);
+            }
+        }
+
+        let empty: Option<Counted> = drain_latest(|| None);
+        assert!(empty.is_none());
+
+        let drops = Rc::new(Cell::new(0));
+        let mut queue: VecDeque<Counted> = (1..=4)
+            .map(|id| Counted(id, Rc::clone(&drops)))
+            .collect();
+        let kept = drain_latest(|| queue.pop_front()).unwrap();
+        assert_eq!(kept.0, 4);
+        assert_eq!(drops.get(), 3);
+        drop(kept);
+        assert_eq!(drops.get(), 4);
     }
 }

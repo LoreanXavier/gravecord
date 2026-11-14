@@ -499,10 +499,12 @@ thread_local! {
 
 /// What one card of the grid shows.
 struct Card {
+    id_prefix: &'static str,
     index: usize,
     thumb: Option<Arc<RenderImage>>,
     name: String,
     icon: Option<Arc<RenderImage>>,
+    fallback_icon: &'static str,
     cta: &'static str,
     hovered: bool,
     selected: bool,
@@ -1070,10 +1072,12 @@ impl Root {
                     let id = id.clone();
                     self.go_live_card(
                         Card {
+                            id_prefix: "device",
                             index,
                             thumb: None,
                             name: name.clone(),
                             icon: None,
+                            fallback_icon: "golive_tab_devices",
                             cta: dc_intl::tr("Select"),
                             hovered: state.hover == Some(index),
                             selected: chosen,
@@ -1093,6 +1097,11 @@ impl Root {
                 let listing = listing.borrow();
                 (listing.thumbs.clone(), listing.icons.clone())
             });
+            let (id_prefix, fallback_icon) = match state.tab {
+                Tab::Applications => ("apps", "golive_tab_apps"),
+                Tab::Screen => ("screen", "golive_tab_screen"),
+                Tab::Devices => ("device", "golive_tab_devices"),
+            };
             state
                 .listed()
                 .into_iter()
@@ -1100,10 +1109,12 @@ impl Root {
                 .map(|(index, (id, name))| {
                     self.go_live_card(
                         Card {
+                            id_prefix,
                             index,
                             thumb: thumbs.get(&id).cloned(),
                             name,
                             icon: icons.get(&id).cloned(),
+                            fallback_icon,
                             cta: dc_intl::tr("Share Screen"),
                             hovered: state.hover == Some(index),
                             selected: false,
@@ -1439,17 +1450,19 @@ impl Root {
         run: impl Fn(&mut Root, &mut Context<Root>) + 'static,
     ) -> AnyElement {
         let Card {
+            id_prefix,
             index,
             thumb,
             name,
             icon: icon_image,
+            fallback_icon,
             cta,
             hovered,
             selected,
         } = card;
         let hover_id = index;
         div()
-            .id(SharedString::from(format!("golive-card-{index}")))
+            .id(SharedString::from(format!("golive-card-{id_prefix}-{index}")))
             .w(px(439.))
             .flex()
             .flex_col()
@@ -1473,9 +1486,7 @@ impl Root {
                     .relative()
                     .w_full()
                     .h(px(246.94))
-                    .rounded(px(10.))
-                    .p(px(2.))
-                    .bg(rgba(0x97979f33))
+                    .rounded(px(12.))
                     .when(hovered || selected, |this| {
                         this.child(
                             div()
@@ -1489,7 +1500,7 @@ impl Root {
                                 .border_color(if selected {
                                     color("--brand-500")
                                 } else {
-                                    rgba(0x97979f80)
+                                    color("--background-mod-strong")
                                 }),
                         )
                     })
@@ -1510,7 +1521,7 @@ impl Root {
                                     div()
                                         .absolute()
                                         .inset_0()
-                                        .bg(rgba(0x00000066))
+                                        .bg(color("--opacity-black-40"))
                                         .flex()
                                         .items_center()
                                         .justify_center()
@@ -1539,7 +1550,15 @@ impl Root {
                     .line_height(px(18.))
                     .font_weight(FontWeight(500.))
                     .text_color(color("--text-strong"))
-                    .children(icon_image.map(|image| gpui::img(image).size(px(16.)).flex_none()))
+                    .child(match icon_image {
+                        Some(image) => gpui::img(image)
+                            .size(px(16.))
+                            .rounded(px(2.))
+                            .flex_none()
+                            .into_any_element(),
+                        None => icon(fallback_icon, 16., "--interactive-icon-default")
+                            .into_any_element(),
+                    })
                     .child(div().truncate().child(name)),
             )
             .into_any_element()

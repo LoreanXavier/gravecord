@@ -272,6 +272,24 @@ impl Cadence {
     }
 }
 
+fn drain_pending_outputs(
+    state: &State,
+    encoder: &mut Encoder,
+    video: &mut impl FnMut(EncodedFrame),
+    last_encoded: &mut Instant,
+) -> Result<()> {
+    while let Some(out) = encoder.take_pending_output()? {
+        state.encoded.fetch_add(1, Ordering::AcqRel);
+        video(EncodedFrame {
+            data: out.data,
+            keyframe: out.keyframe,
+            timestamp: rtp_ticks(Instant::now().saturating_duration_since(state.origin)),
+        });
+        *last_encoded = Instant::now();
+    }
+    Ok(())
+}
+
 fn run(
     state: &Arc<State>,
     settings: Settings,
@@ -349,16 +367,23 @@ fn run(
         let captured_at = fresh.as_ref().map_or_else(Instant::now, |frame| frame.at);
         let frame = match fresh {
             Some(frame) => {
+                // Allow the capture thread to read back the next cadence-admitted frame in parallel with YUV/encode.
+                state.pending.store(false, Ordering::Release);
                 keyframe_wait = None;
                 last_frame = Some(frame);
                 last_frame.as_mut()
             }
             None => {
+                if let Some(enc) = encoder.as_mut() {
+                    drain_pending_outputs(state, enc, &mut video, &mut last_encoded)?;
+                }
                 // A still desktop: repeat the last picture for a keyframe request or to keep the stream alive.
                 let wanted = state.keyframe.load(Ordering::Acquire);
                 let due = if wanted {
                     let since = *keyframe_wait.get_or_insert_with(Instant::now);
                     since.elapsed() >= KEYFRAME_WAIT
+                } else if state.held.load(Ordering::Acquire) {
+                    false
                 } else {
                     last_encoded.elapsed() >= IDLE_REPEAT
                 };
@@ -411,8 +436,6 @@ fn run(
             chroma,
             &mut yuv,
         )?;
-        // The picture is converted: the capture side may read back the next one while this one encodes.
-        state.pending.store(false, Ordering::Release);
         let force = state.keyframe.swap(false, Ordering::AcqRel);
         let output = encoder.encode(&yuv, chroma, force)?;
         state.backend.store(
@@ -445,6 +468,7 @@ fn run(
                 }
             }
         }
+        drain_pending_outputs(state, encoder, &mut video, &mut last_encoded)?;
 
         let local = state
             .local

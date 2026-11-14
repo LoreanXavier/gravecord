@@ -461,15 +461,21 @@ impl Root {
                         kind: Kind::Text,
                     }],
                 };
+                let block_key = (key.0, key.1 + index as u32);
+                let spoilers = Self::spoiler_run_starts(&spans);
                 let pieces = spans
                     .iter()
-                    .map(|span| self.piece(span, base, size, 400., line))
+                    .zip(&spoilers)
+                    .map(|(span, start)| {
+                        self.piece_with_spoiler(span, *start, block_key, base, (size, 400., line))
+                    })
                     .collect();
-                crate::inline::inline(pieces, px(line)).selectable(
-                    (key.0, key.1 + index as u32),
+                let element = crate::inline::inline(pieces, px(line)).selectable(
+                    block_key,
                     self.selection.clone(),
                     super::hsla_from(super::SELECTION),
-                )
+                );
+                self.wire_inline_spans(element, &spans, &spoilers, block_key, &[])
             }))
             .into_any_element()
     }
@@ -714,9 +720,16 @@ impl Root {
             .min_w(px(0.))
             .children(lines.into_iter().enumerate().map(|(row, raw_line)| {
                 let spans = embed_title(raw_line, allow_links && interactive);
+                let row_key = (key.0, key.1.saturating_add(row as u32));
+                let spoilers = if interactive {
+                    Self::spoiler_run_starts(&spans)
+                } else {
+                    vec![None; spans.len()]
+                };
                 let pieces = spans
                     .iter()
-                    .map(|span| {
+                    .zip(&spoilers)
+                    .map(|(span, start)| {
                         let rendered = if interactive {
                             span.clone()
                         } else {
@@ -727,14 +740,25 @@ impl Root {
                             }
                             inert
                         };
-                        self.piece(&rendered, base, size, 600., line)
+                        self.piece_with_spoiler(
+                            &rendered,
+                            *start,
+                            row_key,
+                            base,
+                            (size, 600., line),
+                        )
                     })
                     .collect();
-                crate::inline::inline(pieces, px(line)).selectable(
-                    (key.0, key.1.saturating_add(row as u32)),
+                let element = crate::inline::inline(pieces, px(line)).selectable(
+                    row_key,
                     self.selection.clone(),
                     super::hsla_from(super::SELECTION),
-                )
+                );
+                if interactive {
+                    self.wire_inline_spans(element, &spans, &spoilers, row_key, &[])
+                } else {
+                    element
+                }
             }))
             .into_any_element()
     }

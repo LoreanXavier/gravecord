@@ -351,6 +351,42 @@ struct Selectable {
     highlight: Hsla,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum PressTarget {
+    Selectable((u64, u32)),
+    Position(i32, i32),
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct PressState {
+    target: PressTarget,
+    piece: usize,
+}
+
+thread_local! {
+    static ACTIVE_PRESS: std::cell::Cell<Option<PressState>> = const { std::cell::Cell::new(None) };
+}
+
+fn press_target(selectable: Option<&Selectable>, bounds: Bounds<Pixels>) -> PressTarget {
+    match selectable {
+        Some(selectable) => PressTarget::Selectable(selectable.key),
+        None => PressTarget::Position(
+            f32::from(bounds.origin.x).round() as i32,
+            f32::from(bounds.origin.y).round() as i32,
+        ),
+    }
+}
+
+fn press_matches_release(
+    pressed: Option<PressState>,
+    current_target: PressTarget,
+    release_piece: usize,
+    has_selection: bool,
+) -> bool {
+    !has_selection
+        && pressed.is_some_and(|press| press.target == current_target && press.piece == release_piece)
+}
+
 pub fn inline(pieces: Vec<Piece>, line_height: Pixels) -> Inline {
     Inline {
         pieces: Rc::new(pieces),
@@ -530,27 +566,6 @@ impl Inline {
                 );
             });
         }
-        if let Some(handler) = self.on_piece_click_at.clone() {
-            let laid = self.laid.clone();
-            let line_height = self.line_height;
-            let hitbox = hitbox.clone();
-            window.on_mouse_event(move |event: &MouseUpEvent, phase, window, cx| {
-                if phase == DispatchPhase::Bubble
-                    && event.button == MouseButton::Left
-                    && hitbox.is_hovered(window)
-                    && let Some((piece, _, rect)) = laid
-                        .borrow()
-                        .fragment_at(event.position - bounds.origin, line_height)
-                {
-                    handler(
-                        piece,
-                        Bounds::new(bounds.origin + rect.origin, rect.size),
-                        window,
-                        cx,
-                    );
-                }
-            });
-        }
         if let Some(handler) = self.on_piece_context.clone() {
             let laid = self.laid.clone();
             let line_height = self.line_height;
@@ -567,29 +582,56 @@ impl Inline {
                 }
             });
         }
-        if let Some(handler) = self.on_piece_click.clone() {
+        if self.on_piece_click_at.is_some() || self.on_piece_click.is_some() {
+            let click_at = self.on_piece_click_at.clone();
+            let click = self.on_piece_click.clone();
             let laid = self.laid.clone();
             let line_height = self.line_height;
             let hitbox = hitbox.clone();
+            let down_laid = laid.clone();
             let down_hitbox = hitbox.clone();
-            let pressed = Rc::new(std::cell::Cell::new(false));
-            let pressed_down = pressed.clone();
+            let target = press_target(self.selectable.as_ref(), bounds);
+            let selection = self.selectable.as_ref().map(|s| s.selection.clone());
             window.on_mouse_event(move |event: &MouseDownEvent, phase, window, _| {
-                if event.button == MouseButton::Left {
-                    pressed_down
-                        .set(phase == DispatchPhase::Bubble && down_hitbox.is_hovered(window));
+                if phase == DispatchPhase::Bubble
+                    && event.button == MouseButton::Left
+                    && down_hitbox.is_hovered(window)
+                {
+                    let press = down_laid
+                        .borrow()
+                        .piece_at(event.position - bounds.origin, line_height)
+                        .map(|piece| PressState { target, piece });
+                    ACTIVE_PRESS.set(press);
                 }
             });
             window.on_mouse_event(move |event: &MouseUpEvent, phase, window, cx| {
-                if event.button == MouseButton::Left
-                    && phase == DispatchPhase::Bubble
-                    && pressed.replace(false)
-                    && hitbox.is_hovered(window)
+                if phase != DispatchPhase::Bubble || event.button != MouseButton::Left {
+                    return;
+                }
+                if !hitbox.is_hovered(window) {
+                    if ACTIVE_PRESS.get().is_some_and(|press| press.target == target) {
+                        ACTIVE_PRESS.set(None);
+                    }
+                    return;
+                }
+                let pressed = ACTIVE_PRESS.take();
+                let has_selection = selection
+                    .as_ref()
+                    .is_some_and(|sel| sel.borrow().range().is_some());
+                if let Some((piece, _, rect)) = laid
+                    .borrow()
+                    .fragment_at(event.position - bounds.origin, line_height)
+                    && press_matches_release(pressed, target, piece, has_selection)
                 {
-                    let hit = laid
-                        .borrow()
-                        .piece_at(event.position - bounds.origin, line_height);
-                    if let Some(piece) = hit {
+                    if let Some(handler) = &click_at {
+                        handler(
+                            piece,
+                            Bounds::new(bounds.origin + rect.origin, rect.size),
+                            window,
+                            cx,
+                        );
+                    }
+                    if let Some(handler) = &click {
                         handler(piece, window, cx);
                     }
                 }
@@ -1192,5 +1234,37 @@ mod tests {
     #[test]
     fn empty_text_has_no_words() {
         assert!(words("").is_empty());
+    }
+
+    #[test]
+    fn press_matches_release_survives_repaint_on_same_piece_and_rejects_selection_or_other_piece() {
+        use super::{ACTIVE_PRESS, PressState, PressTarget, press_matches_release};
+        let target = PressTarget::Selectable((42, 3));
+        ACTIVE_PRESS.set(Some(PressState { target, piece: 1 }));
+        assert!(press_matches_release(
+            ACTIVE_PRESS.get(),
+            PressTarget::Selectable((42, 3)),
+            1,
+            false
+        ));
+        assert!(!press_matches_release(
+            ACTIVE_PRESS.get(),
+            PressTarget::Selectable((42, 3)),
+            2,
+            false
+        ));
+        assert!(!press_matches_release(
+            ACTIVE_PRESS.get(),
+            PressTarget::Selectable((99, 0)),
+            1,
+            false
+        ));
+        assert!(!press_matches_release(
+            ACTIVE_PRESS.get(),
+            PressTarget::Selectable((42, 3)),
+            1,
+            true
+        ));
+        ACTIVE_PRESS.set(None);
     }
 }

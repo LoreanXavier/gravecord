@@ -5792,36 +5792,19 @@ impl Root {
         } else {
             (22. * font_size / 16.).round()
         };
-        let spoilers_shown = self.spoilers_shown();
-        // A spoiler is a run of spoiler spans; clicking any of them opens the run, keyed by its first span.
-        let mut run_start = vec![0; spans.len()];
-        for index in 0..spans.len() {
-            run_start[index] =
-                if index > 0 && spans[index].style.spoiler && spans[index - 1].style.spoiler {
-                    run_start[index - 1]
-                } else {
-                    index
-                };
-        }
+        let spoilers = Self::spoiler_run_starts(spans);
         let mut pieces: Vec<Piece> = spans
             .iter()
-            .enumerate()
-            .map(|(index, span)| {
-                let open = span.style.spoiler
-                    && (spoilers_shown
-                        || self.revealed.contains(&(key.0, key.1, run_start[index])));
-                let mut piece = self.piece(span, text_color, font_size, 400., emoji_size);
-                if open {
-                    piece.color = text_color;
-                    piece.boxed = Some(pill(0., 4., "--__spoiler-background-color--revealed"));
-                }
-                piece
+            .zip(&spoilers)
+            .map(|(span, start)| {
+                self.piece_with_spoiler(
+                    span,
+                    *start,
+                    key,
+                    text_color,
+                    (font_size, 400., emoji_size),
+                )
             })
-            .collect();
-        let spoilers: Vec<Option<usize>> = spans
-            .iter()
-            .enumerate()
-            .map(|(index, span)| span.style.spoiler.then_some(run_start[index]))
             .collect();
         if edited {
             let plain = Span {
@@ -5839,6 +5822,62 @@ impl Root {
         } else {
             px((font_size * 1.375).round())
         };
+        let extra_hovers = if edited {
+            vec![None, edited_at.and_then(message_tips::edited_tip)]
+        } else {
+            Vec::new()
+        };
+        let element =
+            inline(pieces, line).selectable(key, self.selection.clone(), hsla_from(SELECTION));
+        self.wire_inline_spans(element, spans, &spoilers, key, &extra_hovers)
+    }
+
+    fn spoiler_run_starts(spans: &[Span]) -> Vec<Option<usize>> {
+        // A spoiler is a run of spoiler spans; clicking any of them opens the run, keyed by its first span.
+        let mut run_start = vec![0; spans.len()];
+        for index in 0..spans.len() {
+            run_start[index] =
+                if index > 0 && spans[index].style.spoiler && spans[index - 1].style.spoiler {
+                    run_start[index - 1]
+                } else {
+                    index
+                };
+        }
+        spans
+            .iter()
+            .enumerate()
+            .map(|(index, span)| span.style.spoiler.then_some(run_start[index]))
+            .collect()
+    }
+
+    fn piece_with_spoiler(
+        &self,
+        span: &Span,
+        spoiler_start: Option<usize>,
+        key: (u64, u32),
+        base: Hsla,
+        (size, weight, emoji_size): (f32, f32, f32),
+    ) -> Piece {
+        let open = spoiler_start.is_some_and(|start| {
+            self.spoilers_shown() || self.revealed.contains(&(key.0, key.1, start))
+        });
+        let mut piece = self.piece(span, base, size, weight, emoji_size);
+        if open {
+            piece.color = base;
+            piece.boxed = Some(pill(0., 4., "--__spoiler-background-color--revealed"));
+        }
+        piece
+    }
+
+    /// Attaches hover tooltips, emoji/mention/role popouts, link context menu and click handlers to an inline block.
+    fn wire_inline_spans(
+        &self,
+        mut element: Inline,
+        spans: &[Span],
+        spoilers: &[Option<usize>],
+        key: (u64, u32),
+        extra_hovers: &[Option<Tip>],
+    ) -> Inline {
         // What the pointer finds on a piece: the "(edited)" mark and a stamp carry a tooltip, an emoji opens its popout.
         let mut hovers: Vec<Option<Tip>> = spans
             .iter()
@@ -5847,24 +5886,7 @@ impl Root {
                 _ => None,
             })
             .collect();
-        let mut emoji: Vec<Option<emoji_popout::Kind>> = spans
-            .iter()
-            .map(|span| match &span.kind {
-                Kind::Unicode => Some(emoji_popout::Kind::Standard(span.text.clone())),
-                Kind::Emoji { name, id, .. } => Some(emoji_popout::Kind::Custom {
-                    id: *id,
-                    name: name.clone(),
-                }),
-                _ => None,
-            })
-            .collect();
-        if edited {
-            // The plain space and the label that `pieces` got above; only the label has the tooltip.
-            hovers.extend([None, edited_at.and_then(message_tips::edited_tip)]);
-            emoji.extend([None, None]);
-        }
-        let mut element =
-            inline(pieces, line).selectable(key, self.selection.clone(), hsla_from(SELECTION));
+        hovers.extend(extra_hovers.iter().cloned());
         if hovers.iter().any(Option::is_some) {
             let root = self.weak.clone();
             let hovers = std::rc::Rc::new(hovers);
@@ -5881,6 +5903,17 @@ impl Root {
                 });
             });
         }
+        let emoji: Vec<Option<emoji_popout::Kind>> = spans
+            .iter()
+            .map(|span| match &span.kind {
+                Kind::Unicode => Some(emoji_popout::Kind::Standard(span.text.clone())),
+                Kind::Emoji { name, id, .. } => Some(emoji_popout::Kind::Custom {
+                    id: *id,
+                    name: name.clone(),
+                }),
+                _ => None,
+            })
+            .collect();
         // A user mention opens the user popout beside itself, as the author name does (module 288539 wraps
         // the mention in the popout of module 342296); a channel mention navigates.
         let user_mentions: Vec<Option<u64>> = spans
@@ -5929,19 +5962,18 @@ impl Root {
                 }
             });
         }
-        // A user mention opens that person's profile, a channel mention the channel.
-        let mentions: Vec<Option<(bool, u64)>> = spans
+        let channels: Vec<Option<u64>> = spans
             .iter()
             .map(|span| match span.kind {
-                Kind::User(id) => Some((true, id)),
-                Kind::Channel(id) => Some((false, id)),
+                Kind::Channel(id) => Some(id),
                 _ => None,
             })
             .collect();
         if spoilers.iter().any(Option::is_some)
             || links.iter().any(Option::is_some)
-            || mentions.iter().any(Option::is_some)
+            || channels.iter().any(Option::is_some)
         {
+            let spoilers = spoilers.to_vec();
             let root = self.weak.clone();
             element = element.on_piece_click(move |piece, _window, cx| {
                 let _ = root.update(cx, |this, cx| {
@@ -5955,7 +5987,7 @@ impl Root {
                     if let Some(Some((url, label))) = links.get(piece).cloned() {
                         this.follow_link(&url, &label, cx);
                     }
-                    if let Some(Some((false, channel))) = mentions.get(piece).copied() {
+                    if let Some(Some(channel)) = channels.get(piece).copied() {
                         this.open_channel_mention(channel, cx);
                     }
                 });
@@ -5990,15 +6022,25 @@ impl Root {
             .official_text
             .get()
             .map_or_else(|| hsla("--text-strong"), Hsla::from);
+        let spoilers = Self::spoiler_run_starts(spans);
         let pieces = spans
             .iter()
-            .map(|span| {
-                let mut piece = self.piece(span, strong, size, 700., size * 1.375);
+            .zip(&spoilers)
+            .map(|(span, start)| {
+                let mut piece = self.piece_with_spoiler(
+                    span,
+                    *start,
+                    key,
+                    strong,
+                    (size, 700., size * 1.375),
+                );
                 piece.font.weight = FontWeight(700.);
                 piece
             })
             .collect();
-        inline(pieces, px(line)).selectable(key, self.selection.clone(), hsla_from(SELECTION))
+        let element =
+            inline(pieces, px(line)).selectable(key, self.selection.clone(), hsla_from(SELECTION));
+        self.wire_inline_spans(element, spans, &spoilers, key, &[])
     }
 
     fn subtext(&self, spans: &[Span], key: (u64, u32)) -> Inline {
@@ -6007,11 +6049,17 @@ impl Root {
             .official_text
             .get()
             .map_or_else(|| hsla("--interactive-text-default"), Hsla::from);
+        let spoilers = Self::spoiler_run_starts(spans);
         let pieces = spans
             .iter()
-            .map(|span| self.piece(span, muted, 14., 400., 19.))
+            .zip(&spoilers)
+            .map(|(span, start)| {
+                self.piece_with_spoiler(span, *start, key, muted, (14., 400., 19.))
+            })
             .collect();
-        inline(pieces, px(19.25)).selectable(key, self.selection.clone(), hsla_from(SELECTION))
+        let element =
+            inline(pieces, px(19.25)).selectable(key, self.selection.clone(), hsla_from(SELECTION));
+        self.wire_inline_spans(element, spans, &spoilers, key, &[])
     }
 
     /// The official pills: 30px tall, a 20px emoji, the count 6px after it, 4px between pills.
