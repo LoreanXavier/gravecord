@@ -249,6 +249,35 @@ pub fn bar_height(value: f32, floor: bool) -> f32 {
     if floor { 22. * value + 2. } else { 24. * value }
 }
 
+/// `canvas_6oHqIH` in module 115921: left-edge alpha ramp from `0.0` at `0%` of canvas width to `1.0` at `12%`.
+pub fn live_bar_fade(x: f32, width: f32) -> f32 {
+    if width <= 0. {
+        return 1.;
+    }
+    let span = width * 0.12;
+    if span <= 0. {
+        1.
+    } else {
+        (x / span).clamp(0., 1.)
+    }
+}
+
+/// `e4` in module 989161: blink interval in milliseconds once the recording enters the warning window (`None` before
+/// `WARN_MS`, `500` during approaching, `250` during imminent, `1000` under reduced motion).
+pub fn timer_blink_interval_ms(elapsed_ms: u64, reduced_motion: bool) -> Option<u64> {
+    if elapsed_ms < WARN_MS {
+        return None;
+    }
+    if reduced_motion {
+        return Some(1000);
+    }
+    if elapsed_ms >= IMMINENT_MS {
+        Some(250)
+    } else {
+        Some(500)
+    }
+}
+
 /// `easeOutBack(t, b, c, d, s)` of module 722872: from `b` to `c` over `d`, overshooting by `s`.
 pub fn ease_out_back(t: f32, b: f32, c: f32, d: f32, s: f32) -> f32 {
     let t = t / d - 1.;
@@ -508,5 +537,25 @@ mod tests {
         // Warnings come at 30 s and 15 s before the end.
         assert_eq!(MAX_RECORDING_MS - WARN_MS, 30_000);
         assert_eq!(MAX_RECORDING_MS - IMMINENT_MS, 15_000);
+    }
+
+    #[test]
+    fn live_wave_fades_from_zero_to_twelve_percent_width() {
+        assert_eq!(live_bar_fade(0., 500.), 0.);
+        assert!((live_bar_fade(30., 500.) - 0.5).abs() < 1e-6);
+        assert_eq!(live_bar_fade(60., 500.), 1.);
+        assert_eq!(live_bar_fade(250., 500.), 1.);
+        assert_eq!(live_bar_fade(0., 0.), 1.);
+    }
+
+    #[test]
+    fn timer_blink_matches_approaching_imminent_and_reduced_motion() {
+        assert_eq!(timer_blink_interval_ms(0, false), None);
+        assert_eq!(timer_blink_interval_ms(WARN_MS - 1, false), None);
+        assert_eq!(timer_blink_interval_ms(WARN_MS, false), Some(500));
+        assert_eq!(timer_blink_interval_ms(IMMINENT_MS - 1, false), Some(500));
+        assert_eq!(timer_blink_interval_ms(IMMINENT_MS, false), Some(250));
+        assert_eq!(timer_blink_interval_ms(WARN_MS, true), Some(1000));
+        assert_eq!(timer_blink_interval_ms(IMMINENT_MS, true), Some(1000));
     }
 }

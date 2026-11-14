@@ -38,7 +38,7 @@ pub(super) enum Plus {
     Apps,
     /// "Schedule Message": opens its submenu of times.
     Schedule,
-    /// "Record Voice Message": voice messages are not built, the row only closes the menu.
+    /// "Record Voice Message": starts a voice message recording in the composer (module 316576).
     RecordVoice,
 }
 
@@ -97,6 +97,9 @@ impl Root {
         if entry == Plus::Schedule {
             self.schedule.submenu = true;
             cx.notify();
+            return;
+        }
+        if entry == Plus::RecordVoice && self.record_voice_disabled() {
             return;
         }
         self.plus_menu = false;
@@ -268,6 +271,7 @@ impl Root {
                    label: &'static str,
                    entry: Option<Plus>,
                    caret: bool,
+                   disabled: bool,
                    cx: &mut Context<Self>| {
             div()
                 .id(id)
@@ -277,8 +281,11 @@ impl Root {
                 .flex()
                 .items_center()
                 .gap(px(8.))
-                .cursor_pointer()
-                .hover(|this| this.bg(color("--background-mod-subtle")))
+                .when(disabled, |this| this.opacity(0.5).cursor_not_allowed())
+                .when(!disabled, |this| {
+                    this.cursor_pointer()
+                        .hover(|this| this.bg(color("--background-mod-subtle")))
+                })
                 .text_size(px(14.))
                 .line_height(px(18.))
                 .font_weight(FontWeight(500.))
@@ -290,20 +297,23 @@ impl Root {
                 })
                 // The submenu follows the pointer: the Schedule Message row opens it, any other row closes it.
                 .on_hover(cx.listener(move |this, hovered: &bool, _, cx| {
-                    let open = entry == Some(Plus::Schedule);
+                    let open = !disabled && entry == Some(Plus::Schedule);
                     if *hovered && this.schedule.submenu != open {
                         this.schedule.submenu = open;
                         cx.notify();
                     }
                 }))
-                .on_click(cx.listener(move |this, _, window, cx| {
-                    match entry {
-                        Some(entry) => this.run_plus(entry, window, cx),
-                        None => this.plus_menu = false,
-                    }
-                    cx.notify();
-                }))
+                .when(!disabled, |this| {
+                    this.on_click(cx.listener(move |this, _, window, cx| {
+                        match entry {
+                            Some(entry) => this.run_plus(entry, window, cx),
+                            None => this.plus_menu = false,
+                        }
+                        cx.notify();
+                    }))
+                })
         };
+        let record_finalizing = self.record_voice_disabled();
         let menu = div()
             .parity_with_border("plus-menu", 1.)
             .id("composer-plus-menu")
@@ -325,6 +335,7 @@ impl Root {
                 dc_intl::tr("Upload a File"),
                 Some(Plus::Upload),
                 false,
+                false,
                 cx,
             ))
             .child(row(
@@ -332,6 +343,7 @@ impl Root {
                 "cp_thread",
                 dc_intl::tr("Create Thread"),
                 Some(Plus::Thread),
+                false,
                 false,
                 cx,
             ))
@@ -341,6 +353,7 @@ impl Root {
                 dc_intl::tr("Create Poll"),
                 Some(Plus::Poll),
                 false,
+                false,
                 cx,
             ))
             .child(row(
@@ -348,6 +361,7 @@ impl Root {
                 "cp_apps",
                 dc_intl::tr("Use Apps"),
                 Some(Plus::Apps),
+                false,
                 false,
                 cx,
             ))
@@ -358,6 +372,7 @@ impl Root {
                     dc_intl::tr("Schedule Message"),
                     Some(Plus::Schedule),
                     true,
+                    false,
                     cx,
                 )
                 .child(self.anchor_probe("plus-schedule-row"))
@@ -369,6 +384,7 @@ impl Root {
                     dc_intl::tr("Record Voice Message"),
                     Some(Plus::RecordVoice),
                     false,
+                    record_finalizing,
                     cx,
                 )
             }));

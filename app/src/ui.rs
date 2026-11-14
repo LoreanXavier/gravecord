@@ -1987,6 +1987,7 @@ impl Root {
         self.nitro_open = false;
         self.guild_guide_open = false;
         self.channel_browser_open = false;
+        self.voice_record_stop_leaving(channel);
         self.guild = Some(guild);
         self.channel = channel;
         // A message menu and the delete question act on the channel that was open when they were asked.
@@ -6182,48 +6183,9 @@ impl Root {
                 let shown = width.min(self.content_width.max(1.));
                 let (width, height) = (px(shown), px(height * shown / width));
                 if attachment.is_video() {
-                    return self.attachment_video_player(message, attachment, (width, height), cx);
+                    return self.attachment_video_obscured(message, attachment, (width, height), cx);
                 }
-                let image = self
-                    .images
-                    .get(&format!("attachment:{}", attachment.id))
-                    .cloned();
-                let (clicked, key) = (message.clone(), format!("attachment:{}", attachment.id));
-                let hovered = key.clone();
-                let (url, media_key) = (attachment.url.clone(), key.clone());
-                div()
-                    .id(SharedString::from(format!("attachment-{}", attachment.id)))
-                    .relative()
-                    .w(width)
-                    .h(height)
-                    .rounded(px(8.))
-                    .cursor_pointer()
-                    .bg(color("--background-base-low"))
-                    .children(
-                        image.map(|image| {
-                            self.media_image(image, &key, (width, height), 8., false, cx)
-                        }),
-                    )
-                    .children(self.alt_text_overlay(attachment, cx))
-                    .on_hover(cx.listener(move |this, inside: &bool, _, cx| {
-                        this.media_hover(&hovered, *inside, cx)
-                    }))
-                    .on_click(cx.listener(move |this, _, _, cx| {
-                        this.open_lightbox(&clicked, &key, cx);
-                    }))
-                    .on_mouse_down(
-                        MouseButton::Right,
-                        cx.listener(move |this, event: &MouseDownEvent, _, _| {
-                            this.menu_hit = Some((
-                                event.position,
-                                menu::Hit::Media {
-                                    url: url.clone(),
-                                    key: media_key.clone(),
-                                },
-                            ));
-                        }),
-                    )
-                    .into_any_element()
+                self.attachment_tile_obscured(message, attachment, (width, height), false, cx)
             })
             .collect();
         (!images.is_empty()).then(|| {
@@ -6251,77 +6213,13 @@ impl Root {
             .collect();
         let width = self.content_width.max(1.);
         let cell = |index: usize, size: (f32, f32), cx: &mut Context<Self>| {
-            let attachment = pictures[index];
-            let key = format!("attachment:{}", attachment.id);
-            let hovered = key.clone();
-            let image = self.images.get(&key).cloned();
-            let clicked = message.clone();
-            let (url, media_key) = (attachment.url.clone(), key.clone());
-            let (w, h) = (px(size.0), px(size.1));
-            div()
-                .id(SharedString::from(format!("mosaic-{}", attachment.id)))
-                .relative()
-                .w(w)
-                .h(h)
-                .flex_none()
-                .rounded(px(8.))
-                .cursor_pointer()
-                .bg(color("--background-base-low"))
-                .child(
-                    div()
-                        .relative()
-                        .size_full()
-                        .rounded(px(8.))
-                        .overflow_hidden()
-                        .children(
-                            image.map(|image| self.media_image(image, &key, (w, h), 8., true, cx)),
-                        )
-                        .children(attachment.is_video().then(|| {
-                            div()
-                                .absolute()
-                                .inset_0()
-                                .flex()
-                                .items_center()
-                                .justify_center()
-                                .child(
-                                    div()
-                                        .size(px(48.))
-                                        .rounded_full()
-                                        .bg(gpui::hsla(0., 0., 0., 0.6))
-                                        .flex()
-                                        .items_center()
-                                        .justify_center()
-                                        .child(
-                                            gpui::svg()
-                                                .path("icons/clips_play.svg")
-                                                .size(px(24.))
-                                                .ml(px(1.))
-                                                .mr(px(-1.))
-                                                .text_color(gpui::white()),
-                                        ),
-                                )
-                        })),
-                )
-                .children(self.alt_text_overlay(attachment, cx))
-                .on_hover(cx.listener(move |this, inside: &bool, _, cx| {
-                    this.media_hover(&hovered, *inside, cx)
-                }))
-                .on_click(cx.listener(move |this, _, _, cx| {
-                    this.open_lightbox(&clicked, &key, cx);
-                }))
-                .on_mouse_down(
-                    MouseButton::Right,
-                    cx.listener(move |this, event: &MouseDownEvent, _, _| {
-                        this.menu_hit = Some((
-                            event.position,
-                            menu::Hit::Media {
-                                url: url.clone(),
-                                key: media_key.clone(),
-                            },
-                        ));
-                    }),
-                )
-                .into_any_element()
+            self.attachment_tile_obscured(
+                message,
+                pictures[index],
+                (px(size.0), px(size.1)),
+                true,
+                cx,
+            )
         };
         let mut next = 0;
         let mut blocks: Vec<AnyElement> = Vec::new();

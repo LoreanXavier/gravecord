@@ -305,6 +305,19 @@ struct View {
     slider_open: bool,
 }
 
+struct WaveSpec<'a> {
+    key: &'a str,
+    salt: usize,
+    duration: f64,
+    waveform: Option<Vec<f32>>,
+    width: f32,
+    played: bool,
+    playing: bool,
+    current: f64,
+    fluid: bool,
+    neutral: bool,
+}
+
 /// `Update::Fetched` key of a voice message send, followed by the channel.
 pub(super) const VOICE_SEND_KEY: &str = "voice-send:";
 
@@ -365,6 +378,36 @@ pub(super) fn position_of(y: Pixels, track: Bounds<Pixels>) -> f32 {
         return 0.;
     }
     (1. - (f32::from(y) - f32::from(track.origin.y)) / height).clamp(0., 1.)
+}
+
+/// Token triple `(background, active, inactive)` for `S` and `C` in module 408822. When `neutral`
+/// (`neutralPlaybackColors` on recorded composer drafts in `989161` `e6`) is true, background stays
+/// `--background-mod-muted`, played bars use `--interactive-text-active`, and unplayed bars use
+/// `--interactive-text-default` (never `--brand-430` or `--white`).
+pub(super) fn wave_color_tokens(
+    playing: bool,
+    played: bool,
+    neutral: bool,
+) -> (&'static str, &'static str, &'static str) {
+    let brand_playing = playing && !neutral;
+    let muted = if brand_playing {
+        "--brand-430"
+    } else {
+        "--background-mod-muted"
+    };
+    let active = if brand_playing {
+        "--white"
+    } else if played {
+        "--interactive-text-active"
+    } else {
+        "--interactive-text-default"
+    };
+    let inactive = if played && !neutral {
+        muted
+    } else {
+        "--interactive-text-default"
+    };
+    (muted, active, inactive)
 }
 
 /// `rippleContainer_seLrDE` and `ripple_seLrDE`: while playing a `--brand-530` circle centred 24 px from the left grows
@@ -437,7 +480,7 @@ impl Root {
                     .pr(px(2.))
                     .italic()
                     .whitespace_nowrap()
-                    .child("Click to see voice message"),
+                    .child(dc_intl::t!("XC3A52")),
             )
             .child(
                 div()
@@ -543,16 +586,18 @@ impl Root {
             ))
         };
 
-        let wave = self.voice_wave(
-            &key,
+        let wave = self.voice_wave(WaveSpec {
+            key: &key,
             salt,
-            span,
+            duration: span,
             waveform,
-            wave_width,
-            view.played,
+            width: wave_width,
+            played: view.played,
             playing,
-            view.current,
-        );
+            current: view.current,
+            fluid: false,
+            neutral: false,
+        });
 
         let duration_text = div()
             .flex_none()
@@ -633,21 +678,20 @@ impl Root {
             .into_any_element()
     }
 
-    #[allow(clippy::too_many_arguments)]
-    fn voice_wave(
-        &self,
-        key: &str,
-        salt: usize,
-        duration: f64,
-        waveform: Option<Vec<f32>>,
-        width: f32,
-        played: bool,
-        playing: bool,
-        current: f64,
-    ) -> AnyElement {
+    fn voice_wave(&self, spec: WaveSpec<'_>) -> AnyElement {
+        let WaveSpec {
+            key,
+            salt,
+            duration,
+            waveform,
+            width: fixed_width,
+            played,
+            playing,
+            current,
+            fluid,
+            neutral,
+        } = spec;
         let hub = self.voice_hub.clone();
-        let bars = voice_wave::bar_count(width);
-        let values = voice_wave::bars(waveform.as_deref().or(Some(&[0.; 5])), bars, false);
         let (paint_hub, paint_key) = (hub.clone(), key.to_owned());
         let (down_hub, down_key) = (hub, key.to_owned());
         let tween = |name: &str, target: Rgba| {
@@ -658,37 +702,17 @@ impl Root {
             )
         };
         // Colours of `S` and `C` in module 408822; `j` there is playing without neutral colours.
-        let muted = if playing {
-            "--brand-430"
-        } else {
-            "--background-mod-muted"
-        };
-        let background = tween("bg", color(muted));
-        let active = tween(
-            "active",
-            color(if playing {
-                "--white"
-            } else if played {
-                "--interactive-text-active"
-            } else {
-                "--interactive-text-default"
-            }),
-        );
-        let inactive = tween(
-            "inactive",
-            color(if played {
-                muted
-            } else {
-                "--interactive-text-default"
-            }),
-        );
-        let lit = voice_wave::lit_bars(played, current, duration, bars);
-        div()
+        let (bg_token, active_token, inactive_token) = wave_color_tokens(playing, played, neutral);
+        let background = tween("bg", color(bg_token));
+        let active = tween("active", color(active_token));
+        let inactive = tween("inactive", color(inactive_token));
+        let container = div()
             .id(("voice-wave", salt))
-            .flex_none()
-            .w(px(width))
             .h(px(24.))
             .cursor_pointer()
+            .when(fluid, |this| this.flex_1().min_w(px(0.)).ml(px(4.)))
+            .when(!fluid, |this| this.flex_none().w(px(fixed_width)));
+        container
             .on_mouse_down(
                 MouseButton::Left,
                 move |event: &MouseDownEvent, window, _| {
@@ -704,6 +728,15 @@ impl Root {
                 canvas(
                     |_, _, _| {},
                     move |bounds, _, window, _| {
+                        let width = if fluid {
+                            f32::from(bounds.size.width)
+                        } else {
+                            fixed_width
+                        };
+                        let bars = voice_wave::bar_count(width);
+                        let values =
+                            voice_wave::bars(waveform.as_deref().or(Some(&[0.; 5])), bars, fluid);
+                        let lit = voice_wave::lit_bars(played, current, duration, bars);
                         // The canvas is 32 px high with a 4 px margin above and below (`.waveform` in 408822).
                         let area = Bounds::new(
                             point(bounds.origin.x, bounds.origin.y - px(4.)),
@@ -1096,11 +1129,7 @@ impl Root {
             )
         } else {
             // `GjXjfk`
-            self.put_app_toast(
-                "Couldn't send your voice message. Please try again.".to_owned(),
-                false,
-                cx,
-            );
+            self.put_app_toast(dc_intl::t!("GjXjfk").to_owned(), false, cx);
             format!("failed, status {} {}", body["status"], body["body"])
         };
         info!("voice message {line}");
@@ -1257,11 +1286,6 @@ impl Root {
 
 use dc_voice::voice_recorder::{Recorder, Recording};
 
-/// Longest recording, 20 minutes less half a second (module 841817).
-const REC_MAX_MS: u64 = 1_199_500;
-/// The timer turns red here (module 841817 warning) and blinks from `REC_IMMINENT_MS`.
-const REC_WARN_MS: u64 = 1_169_500;
-const REC_IMMINENT_MS: u64 = 1_184_500;
 /// A new bar of the live waveform every 48 ms, each easing `u += (N - u) * 0.45` towards its level.
 const REC_BAR_STEP_MS: f64 = 48.;
 
@@ -1281,6 +1305,9 @@ pub(super) struct RecState {
     last_step: f64,
     /// A new recording was asked for in another channel while this one is unsent: the discard modal is open.
     pub(super) confirm: bool,
+    /// `isFinalizing` in module 841817 / 316576: encoding is completing, disabling Send and the "+" menu row.
+    pub(super) finalizing: bool,
+    pending_stop_toast: bool,
 }
 
 impl RecState {
@@ -1298,6 +1325,8 @@ impl RecState {
             shown: Vec::new(),
             last_step: 0.,
             confirm: false,
+            finalizing: false,
+            pending_stop_toast: false,
         }
     }
 
@@ -1334,12 +1363,27 @@ impl Root {
             != Some(0)
     }
 
+    pub(super) fn voice_recording_finalizing(&self) -> bool {
+        self.voice_rec.borrow().finalizing
+    }
+
     /// The modal of module 841817 (`G`): `size: "sm"`, title `YeUur2`, a subtitle naming where the unsent message is
     /// (`8o9Emp` group DM, `UlsYSN` DM, `hjBbhU` otherwise), a vertical action bar with `h7tN5I` (secondary, focused)
     /// and `IQrVoF` (critical). Layout is the app's standard small stacked dialog; no official frame exists (it needs
     /// a recording in progress), and the card naming the other server or conversation is not drawn.
     pub(super) fn voice_discard_modal(&self, cx: &mut gpui::Context<Self>) -> Option<AnyElement> {
         use super::modal::{Spec, Tone, button, render_small_stacked};
+        // Catch any channel navigation (`select_home`, favorites, etc.) that switched away from an active recording,
+        // or flush the toast queued by `select()`.
+        self.voice_record_stop_leaving(self.channel);
+        if self.voice_rec.borrow().pending_stop_toast {
+            let weak = self.weak.clone();
+            cx.defer(move |cx| {
+                let _ = weak.update(cx, |this, cx| {
+                    this.voice_record_stop_on_navigate(this.channel, cx);
+                });
+            });
+        }
         if !self.voice_rec.borrow().confirm {
             return None;
         }
@@ -1350,27 +1394,26 @@ impl Root {
             .iter()
             .find(|known| known.id == held);
         let subtitle = match dm {
-            Some(dm) if dm.recipients.len() > 1 => {
-                "Starting a new recording will discard your unsent voice message in your Group DM."
-                    .to_owned()
-            }
-            Some(dm) => format!(
-                "Starting a new recording will discard your unsent voice message in your conversation with {}.",
-                self.stores
+            Some(dm) if dm.recipients.len() > 1 => dc_intl::t!("8o9Emp").to_owned(),
+            Some(dm) => {
+                let username = self
+                    .stores
                     .dm_recipient(dm)
                     .map(|user| user.display_name().to_owned())
-                    .unwrap_or_default()
-            ),
-            None => format!(
-                "Starting a new recording will discard your unsent voice message in {}.",
-                self.stores
+                    .unwrap_or_default();
+                dc_intl::t!("UlsYSN", username = username)
+            }
+            None => {
+                let channel_name = self
+                    .stores
                     .guilds
                     .iter()
                     .flat_map(|guild| &guild.channels)
                     .find(|known| known.id == held)
                     .map(|known| known.name.clone())
-                    .unwrap_or_default()
-            ),
+                    .unwrap_or_default();
+                dc_intl::t!("hjBbhU", channelName = channel_name)
+            }
         };
         // The card naming where the draft is (children of module 841817 `G`, shown when the draft is in another
         // server or in a DM): `.destination__M7qrc` (48 px tall, 12 px gap, 8 px padding, `--radius-sm` 8 px,
@@ -1492,13 +1535,13 @@ impl Root {
         Some(render_small_stacked(
             Spec {
                 id: "voice-discard-modal",
-                title: "You have an unsent voice message".into(),
+                title: dc_intl::t!("YeUur2").into(),
                 subtitle: Some(div().child(subtitle).into_any_element()),
                 body: card,
                 buttons: vec![
                     button(
                         "voice-return",
-                        "Return to Unsent Voice Message",
+                        dc_intl::t!("h7tN5I"),
                         Tone::Secondary,
                         move |this, _, cx| {
                             this.voice_rec.borrow_mut().confirm = false;
@@ -1516,7 +1559,7 @@ impl Root {
                     ),
                     button(
                         "voice-discard",
-                        "Discard Unsent Voice Message",
+                        dc_intl::t!("IQrVoF"),
                         Tone::Critical,
                         |this, _, cx| {
                             this.voice_rec.borrow_mut().confirm = false;
@@ -1547,6 +1590,9 @@ impl Root {
         let Some(channel) = self.channel else {
             return "voice: no channel".to_owned();
         };
+        if self.voice_recording_finalizing() {
+            return "voice: finalizing".to_owned();
+        }
         if !self.record_voice_offered() {
             return "voice: recording is not offered here".to_owned();
         }
@@ -1577,9 +1623,63 @@ impl Root {
             }
             Err(_) => {
                 // `H03AqF`
-                self.put_app_toast("Failed to start recording".to_owned(), false, cx);
+                self.put_app_toast(dc_intl::t!("H03AqF").to_owned(), false, cx);
                 "voice: failed to start".to_owned()
             }
+        }
+    }
+
+    /// Stops an active recording when navigating away from its channel (`989161` `nA` + `841817` `eu`/`yx`), keeping
+    /// the recorded draft on that channel, playing `"voice_message_recording_stopped"`, and queueing the toast when no
+    /// `Context` is at hand.
+    pub(super) fn voice_record_stop_leaving(&self, next_channel: Option<dc_state::Id>) -> bool {
+        let should_stop = {
+            let state = self.voice_rec.borrow();
+            matches!(state.phase, RecPhase::Recording(_)) && state.channel != next_channel
+        };
+        if !should_stop {
+            return false;
+        }
+        let phase = std::mem::replace(&mut self.voice_rec.borrow_mut().phase, RecPhase::Idle);
+        let RecPhase::Recording(recorder) = phase else {
+            self.voice_rec.borrow_mut().phase = phase;
+            return false;
+        };
+        self.voice_rec.borrow_mut().finalizing = true;
+        let held_channel = self.voice_rec.borrow().channel;
+        match recorder.stop() {
+            Ok(recording) if !recording.too_short() => {
+                if let (Some(channel), Ok(clip)) = (held_channel, Clip::from_ogg(&recording.file)) {
+                    self.voice_hub
+                        .borrow_mut()
+                        .preload(&RecState::draft_key(channel), Arc::new(clip));
+                }
+                self.voice_rec.borrow_mut().phase = RecPhase::Recorded(recording);
+            }
+            _ => {
+                self.voice_rec.borrow_mut().channel = None;
+            }
+        }
+        self.voice_rec.borrow_mut().finalizing = false;
+        if !crate::storage::is_capture_run() && std::env::var_os("GRAVECORD_INERT").is_none() {
+            let _ = crate::sounds::play("voice_message_recording_stopped");
+        }
+        self.voice_rec.borrow_mut().pending_stop_toast = true;
+        true
+    }
+
+    /// `989161` `nA` + `841817` `eu`/`yx`: stops an active recording when leaving its channel, retains the recorded
+    /// draft for that channel, plays `"voice_message_recording_stopped"`, and shows toast `UM2R7g`.
+    pub(super) fn voice_record_stop_on_navigate(
+        &mut self,
+        next_channel: Option<dc_state::Id>,
+        cx: &mut gpui::Context<Self>,
+    ) {
+        let stopped = self.voice_record_stop_leaving(next_channel);
+        let queued = std::mem::take(&mut self.voice_rec.borrow_mut().pending_stop_toast);
+        if stopped || queued {
+            self.put_app_toast(dc_intl::t!("UM2R7g").to_owned(), false, cx);
+            cx.notify();
         }
     }
 
@@ -1590,6 +1690,7 @@ impl Root {
             self.voice_rec.borrow_mut().phase = phase;
             return "voice: not recording".to_owned();
         };
+        self.voice_rec.borrow_mut().finalizing = true;
         let channel = self.voice_rec.borrow().channel;
         let report = match recorder.stop() {
             Ok(recording) if !recording.too_short() => {
@@ -1605,10 +1706,11 @@ impl Root {
             Ok(_) => "voice: under half a second, discarded".to_owned(),
             Err(error) => {
                 // `UM2R7g`
-                self.put_app_toast("Voice message recording stopped.".to_owned(), false, cx);
+                self.put_app_toast(dc_intl::t!("UM2R7g").to_owned(), false, cx);
                 format!("voice: stop failed: {error}")
             }
         };
+        self.voice_rec.borrow_mut().finalizing = false;
         cx.notify();
         report
     }
@@ -1740,12 +1842,12 @@ impl Root {
     fn rec_button(
         &self,
         id: &'static str,
-        icon_name: &'static str,
-        tint: &'static str,
+        (tip_key, tip_label): (&'static str, &'static str),
+        (icon_name, tint): (&'static str, &'static str),
         cx: &mut gpui::Context<Self>,
         action: impl Fn(&mut Self, &mut gpui::Context<Self>) + 'static,
     ) -> AnyElement {
-        div()
+        let button = div()
             .id(id)
             .parity(id)
             .size(px(32.))
@@ -1758,9 +1860,59 @@ impl Root {
             .rounded(px(8.))
             .text_color(color(tint))
             .hover(|style| style.bg(color("--interactive-background-selected")))
-            .on_click(cx.listener(move |this, _, _, cx| action(this, cx)))
-            .child(icon(icon_name, 20., tint))
-            .into_any_element()
+            .on_click(cx.listener(move |this, _, _, cx| {
+                this.tip = None;
+                action(this, cx);
+            }))
+            .child(icon(icon_name, 20., tint));
+        self.with_tip(
+            tip_key,
+            super::Tip::text(tip_label, super::Side::Top),
+            button,
+            cx,
+        )
+        .into_any_element()
+    }
+
+    /// `.sendButton_bWT6VE` (`550929.css`): `32x32`, `padding: 4px`, transparent background, `20x20` send icon in
+    /// `--text-brand` (hover `--brand-430`, disabled `--icon-muted`).
+    fn rec_send_button(&self, disabled: bool, cx: &mut gpui::Context<Self>) -> AnyElement {
+        let button = div()
+            .id("voice-rec-send")
+            .parity("voice-rec-send")
+            .size(px(32.))
+            .p(px(4.))
+            .flex_none()
+            .flex()
+            .items_center()
+            .justify_center()
+            .rounded(px(8.))
+            .when(disabled, |style| {
+                style.cursor_not_allowed().text_color(color("--icon-muted"))
+            })
+            .when(!disabled, |style| {
+                style
+                    .cursor_pointer()
+                    .text_color(color("--text-brand"))
+                    .hover(|hover| hover.text_color(color("--brand-430")))
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        this.tip = None;
+                        this.voice_record_send(cx);
+                    }))
+            })
+            .child(
+                gpui::svg()
+                    .path("icons/send_message.svg")
+                    .size(px(20.))
+                    .flex_none(),
+            );
+        self.with_tip(
+            "voice-rec-send-tip",
+            super::Tip::text(dc_intl::t!("TXNS7S"), super::Side::Top),
+            button,
+            cx,
+        )
+        .into_any_element()
     }
 
     /// The composer's bar while a recording or its draft belongs to this channel; `None` shows the usual editor row.
@@ -1776,7 +1928,7 @@ impl Root {
                 state.elapsed_ms(),
             )
         };
-        if recording && elapsed >= REC_MAX_MS {
+        if recording && elapsed >= voice_wave::MAX_RECORDING_MS {
             // Reaching the limit stops the recording and keeps it as the draft.
             let phase = std::mem::replace(&mut self.voice_rec.borrow_mut().phase, RecPhase::Idle);
             if let RecPhase::Recording(recorder) = phase
@@ -1792,12 +1944,12 @@ impl Root {
             return self.voice_bar(cx);
         }
         let blink_off = recording
-            && elapsed >= REC_IMMINENT_MS
-            && ((motion::now() / 500.) as u64).is_multiple_of(2);
+            && voice_wave::timer_blink_interval_ms(elapsed, motion::reduced())
+                .is_some_and(|interval| ((motion::now().max(0.) as u64) / interval) % 2 == 1);
         if recording {
             motion::keep_animating();
         }
-        let timer_tone = if recording && elapsed >= REC_WARN_MS {
+        let timer_tone = if recording && elapsed >= voice_wave::WARN_MS {
             "--text-feedback-critical"
         } else {
             "--text-default"
@@ -1829,8 +1981,8 @@ impl Root {
         let lead = if recording {
             self.rec_button(
                 "voice-rec-stop",
-                "vm_stop",
-                "--text-feedback-critical",
+                ("voice-rec-stop-tip", dc_intl::t!("hHBkuG")),
+                ("vm_stop", "--text-feedback-critical"),
                 cx,
                 |this, cx| {
                     this.voice_record_stop(cx);
@@ -1843,8 +1995,18 @@ impl Root {
             let playing = status.key.as_deref() == Some(key.as_str()) && status.playing;
             self.rec_button(
                 "voice-rec-play",
-                if playing { "clips_pause" } else { "clips_play" },
-                "--interactive-text-active",
+                (
+                    "voice-rec-play-tip",
+                    if playing {
+                        dc_intl::t!("ZcgDJX")
+                    } else {
+                        dc_intl::t!("RscU7I")
+                    },
+                ),
+                (
+                    if playing { "clips_pause" } else { "clips_play" },
+                    "--interactive-text-active",
+                ),
                 cx,
                 move |this, cx| {
                     this.voice_hub.borrow_mut().toggle(&key, "", seconds);
@@ -1857,34 +2019,34 @@ impl Root {
         } else {
             let key = RecState::draft_key(channel);
             let seconds = elapsed as f64 / 1000.;
-            let width = voice_wave::pill_wave_width(seconds);
             let view = self.voice_hub.borrow_mut().view(&key, seconds);
             let levels = match &self.voice_rec.borrow().phase {
                 RecPhase::Recorded(recording) => voice_wave::decode_waveform(&recording.waveform),
                 _ => None,
             };
-            div()
-                .flex_1()
-                .min_w(px(0.))
-                .flex()
-                .items_center()
-                .child(self.voice_wave(
-                    &key,
-                    9_000_000,
-                    seconds,
-                    levels,
-                    width,
-                    view.played,
-                    view.playing,
-                    view.current,
-                ))
-                .into_any_element()
+            self.voice_wave(WaveSpec {
+                key: &key,
+                salt: 9_000_000,
+                duration: seconds,
+                waveform: levels,
+                width: 0.,
+                played: view.played,
+                playing: view.playing,
+                current: view.current,
+                fluid: true,
+                neutral: true,
+            })
         };
+        // `.divider_bWT6VE`: `1px x 22px` `--border-subtle`.
         let divider = div()
             .w(px(1.))
-            .h(px(24.))
+            .h(px(22.))
             .flex_none()
             .bg(color("--border-subtle"));
+        let send_disabled = self.voice_recording_finalizing()
+            || self.current_channel().is_some_and(|known| {
+                !self.can_in_channel(known, dc_state::permissions::SEND_VOICE_MESSAGES)
+            });
         Some(
             div()
                 .parity("voice-rec-bar")
@@ -1900,32 +2062,20 @@ impl Root {
                 .child(divider)
                 .child(self.rec_button(
                     "voice-rec-trash",
-                    "clips_trash",
-                    "--interactive-text-default",
+                    ("voice-rec-trash-tip", dc_intl::t!("oyYWHE")),
+                    ("clips_trash", "--interactive-text-default"),
                     cx,
                     |this, cx| {
                         this.voice_record_discard(cx);
                     },
                 ))
-                .child(self.rec_button(
-                    "voice-rec-send",
-                    "send_message",
-                    if recording {
-                        "--interactive-text-default"
-                    } else {
-                        "--text-brand"
-                    },
-                    cx,
-                    |this, cx| {
-                        this.voice_record_send(cx);
-                    },
-                ))
+                .child(self.rec_send_button(send_disabled, cx))
                 .into_any_element(),
         )
     }
 
-    /// The live waveform: one bar every 6 px, 2 px wide, radius 1, height `(24 - 2) * v + 2`, fading in over the
-    /// left fifth (the mask of the recorder canvas).
+    /// The live waveform (`canvas_6oHqIH` in module 115921): one bar every 6 px, 2 px wide, radius 1, height
+    /// `(24 - 2) * v + 2`, `--interactive-text-active`, fading smoothly from `0.0` at left `0%` to `1.0` at `12%`.
     fn rec_live_wave(&self) -> AnyElement {
         let state = self.voice_rec.clone();
         div()
@@ -1936,7 +2086,8 @@ impl Root {
                 canvas(
                     |_, _, _| {},
                     move |bounds, _, window, _| {
-                        let count = voice_wave::bar_count(f32::from(bounds.size.width));
+                        let width = f32::from(bounds.size.width);
+                        let count = voice_wave::bar_count(width);
                         let now = motion::now();
                         let mut state = state.borrow_mut();
                         let levels = match &state.phase {
@@ -1964,11 +2115,11 @@ impl Root {
                         let base = color("--interactive-text-active");
                         for (index, value) in state.shown.iter().enumerate() {
                             let height = voice_wave::bar_height(value.clamp(0., 1.), true);
-                            let fade =
-                                (index as f32 / (count as f32 * 0.2).max(1.)).clamp(0.12, 1.);
+                            let x = 6. * index as f32;
+                            let fade = voice_wave::live_bar_fade(x, width);
                             let rect = Bounds::new(
                                 point(
-                                    bounds.origin.x + px(6. * index as f32),
+                                    bounds.origin.x + px(x),
                                     bounds.origin.y + px(12. - height / 2.),
                                 ),
                                 size(px(2.), px(height)),
@@ -2066,5 +2217,71 @@ mod tests {
         assert_eq!(hub.speed, 1.5);
         hub.toggle_if("t:1", 6., false);
         assert!(!voice_player::engine().status().playing || hub.pill("t:1").played);
+    }
+
+    #[test]
+    fn neutral_draft_waveform_keeps_neutral_tokens_and_interpolates_fluidly() {
+        assert_eq!(
+            wave_color_tokens(false, false, true),
+            (
+                "--background-mod-muted",
+                "--interactive-text-default",
+                "--interactive-text-default"
+            )
+        );
+        assert_eq!(
+            wave_color_tokens(true, true, true),
+            (
+                "--background-mod-muted",
+                "--interactive-text-active",
+                "--interactive-text-default"
+            )
+        );
+        assert_eq!(
+            wave_color_tokens(false, true, true),
+            (
+                "--background-mod-muted",
+                "--interactive-text-active",
+                "--interactive-text-default"
+            )
+        );
+        assert_eq!(
+            wave_color_tokens(true, true, false),
+            ("--brand-430", "--white", "--brand-430")
+        );
+
+        let full_composer_bars = voice_wave::bar_count(596.);
+        assert_eq!(full_composer_bars, 100);
+        let stretched = voice_wave::bars(Some(&[0.2, 0.8]), full_composer_bars, true);
+        assert_eq!(stretched.len(), 100);
+        assert!((stretched[0] - 0.2).abs() < 1e-6);
+        assert!((stretched[99] - 0.8).abs() < 1e-6);
+        assert!(stretched[50] > 0.45 && stretched[50] < 0.55);
+    }
+
+    #[test]
+    fn recorder_state_tracks_channel_draft_and_synthetic_stop() {
+        let mut rec = RecState::new();
+        assert!(!rec.active_in(42));
+        assert!(!rec.finalizing);
+        assert_eq!(RecState::draft_key(42), "voice-draft:42");
+
+        let recorder = Recorder::start_synthetic().expect("synthetic recorder");
+        recorder.advance_synthetic(1_500);
+        rec.channel = Some(42);
+        rec.phase = RecPhase::Recording(recorder);
+        assert!(rec.active_in(42));
+        assert!(!rec.active_in(99));
+        assert_eq!(rec.elapsed_ms(), 1_500);
+
+        let RecPhase::Recording(recorder) = std::mem::replace(&mut rec.phase, RecPhase::Idle)
+        else {
+            panic!("expected recording");
+        };
+        let recording = recorder.stop().expect("stop synthetic");
+        assert!(!recording.too_short());
+        rec.phase = RecPhase::Recorded(recording);
+        assert!(rec.active_in(42));
+        assert!(rec.elapsed_ms() >= 1_400);
     }
 }

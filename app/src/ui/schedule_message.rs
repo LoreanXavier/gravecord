@@ -158,6 +158,12 @@ impl Root {
         }
     }
 
+    /// `disabled: isFinalizing` in module 316576: the "+" menu keeps the row visible while the previous clip finishes
+    /// encoding, but disables starting another recording until finalization completes.
+    pub(super) fn record_voice_disabled(&self) -> bool {
+        self.voice_recording_finalizing()
+    }
+
     /// The time the next message of this channel is scheduled for (the draft), as ISO text.
     pub(super) fn scheduled_timestamp(&self, channel: Id) -> Option<String> {
         self.stores
