@@ -137,7 +137,8 @@ impl User {
             global_name: text(&value["global_name"]),
             avatar: text(&value["avatar"]),
             discriminator: text(&value["discriminator"]).unwrap_or_else(|| "0".to_owned()),
-            tag: ServerTag::from_value(&value["primary_guild"]),
+            tag: ServerTag::from_value(&value["primary_guild"])
+                .or_else(|| ServerTag::from_value(&value["clan"])),
             bot: value["bot"].as_bool().unwrap_or(false),
             nameplate: collectibles::Nameplate::from_value(&value["collectibles"]["nameplate"]),
             avatar_decoration: collectibles::AvatarDecoration::from_value(
@@ -151,6 +152,99 @@ impl User {
             )
             .map(Box::new),
         })
+    }
+
+    /// Updates only fields whose keys are present on `value` (`287809` `mergeUser` / `es`), so partial `{ "id": ... }`
+    /// payloads never clobber existing username, display name, avatar or collectibles.
+    pub fn merge_value(&mut self, value: &Value) {
+        if let Some(username) = text(&value["username"]).filter(|name| !name.is_empty()) {
+            self.username = username;
+        }
+        if let Some(field) = value.get("global_name") {
+            self.global_name = text(field);
+        }
+        if let Some(field) = value.get("avatar") {
+            self.avatar = text(field);
+        }
+        if let Some(discriminator) = text(&value["discriminator"]).filter(|disc| !disc.is_empty()) {
+            self.discriminator = discriminator;
+        }
+        if value.get("primary_guild").is_some() || value.get("clan").is_some() {
+            self.tag = ServerTag::from_value(&value["primary_guild"])
+                .or_else(|| ServerTag::from_value(&value["clan"]));
+        }
+        if let Some(bot) = value["bot"].as_bool() {
+            self.bot = bot;
+        }
+        if let Some(collectibles) = value.get("collectibles") {
+            self.nameplate = collectibles::Nameplate::from_value(&collectibles["nameplate"]);
+        }
+        if let Some(decoration) = value.get("avatar_decoration_data") {
+            self.avatar_decoration =
+                collectibles::AvatarDecoration::from_value(decoration).map(Box::new);
+        }
+        if let Some(flags) = value["flags"].as_u64() {
+            self.flags = flags;
+        }
+        if let Some(public_flags) = value["public_flags"].as_u64() {
+            self.public_flags = public_flags;
+        }
+        if let Some(styles) = value.get("display_name_styles") {
+            self.display_name_styles =
+                display_name_styles::DisplayNameStyles::from_value(styles).map(Box::new);
+        }
+    }
+
+    /// Fills in fields missing on `self` from an embedded secondary payload without clearing existing values.
+    fn enrich_from_value(&mut self, value: &Value) {
+        if self.username.is_empty()
+            && let Some(username) = text(&value["username"]).filter(|name| !name.is_empty())
+        {
+            self.username = username;
+        }
+        if self.global_name.is_none() {
+            self.global_name = text(&value["global_name"]);
+        }
+        if self.avatar.is_none() {
+            self.avatar = text(&value["avatar"]);
+        }
+        if self.discriminator == "0"
+            && let Some(discriminator) =
+                text(&value["discriminator"]).filter(|disc| !disc.is_empty() && disc != "0")
+        {
+            self.discriminator = discriminator;
+        }
+        if self.tag.is_none() {
+            self.tag = ServerTag::from_value(&value["primary_guild"])
+                .or_else(|| ServerTag::from_value(&value["clan"]));
+        }
+        if !self.bot && value["bot"].as_bool() == Some(true) {
+            self.bot = true;
+        }
+        if self.nameplate.is_none() {
+            self.nameplate =
+                collectibles::Nameplate::from_value(&value["collectibles"]["nameplate"]);
+        }
+        if self.avatar_decoration.is_none() {
+            self.avatar_decoration =
+                collectibles::AvatarDecoration::from_value(&value["avatar_decoration_data"])
+                    .map(Box::new);
+        }
+        if self.flags == 0
+            && let Some(flags) = value["flags"].as_u64()
+        {
+            self.flags = flags;
+        }
+        if self.public_flags == 0
+            && let Some(public_flags) = value["public_flags"].as_u64()
+        {
+            self.public_flags = public_flags;
+        }
+        if self.display_name_styles.is_none() {
+            self.display_name_styles =
+                display_name_styles::DisplayNameStyles::from_value(&value["display_name_styles"])
+                    .map(Box::new);
+        }
     }
 
     /// 619019 `hasFlag`: `(flags | publicFlags) & flag === flag`.
@@ -2020,6 +2114,15 @@ impl Stores {
                         }
                     }
                 }
+                for channel in data["lazy_private_channels"]
+                    .as_array()
+                    .into_iter()
+                    .flatten()
+                {
+                    for recipient in channel["recipients"].as_array().into_iter().flatten() {
+                        self.merge_embedded_user(recipient);
+                    }
+                }
                 let friends = data["merged_presences"]["friends"].as_array();
                 for presence in friends.into_iter().flatten() {
                     self.set_presence(presence);
@@ -2313,8 +2416,8 @@ impl Stores {
                 }
             }
             "RELATIONSHIP_ADD" | "RELATIONSHIP_UPDATE" => {
-                if let Some(user) = User::from_value(&data["user"]) {
-                    self.users.insert(user.id, user);
+                if data["user"].is_object() {
+                    self.merge_user(&data["user"]);
                 }
                 if let (Some(user), Some(kind)) = (id(&data["id"]), data["type"].as_u64()) {
                     self.relationships.insert(user, kind);
@@ -2659,9 +2762,7 @@ impl Stores {
             *latest = (*latest).max(message);
         }
         for user in data["recipients"].as_array().into_iter().flatten() {
-            if let Some(user) = User::from_value(user) {
-                self.users.entry(user.id).or_insert(user);
-            }
+            self.merge_embedded_user(user);
         }
         if let Some(index) = existing {
             self.private_channels[index].update(data);
@@ -2906,6 +3007,16 @@ impl Stores {
         for user in data["users"].as_array().into_iter().flatten() {
             if let Some(user) = User::from_value(user) {
                 self.users.insert(user.id, user);
+            }
+        }
+        for entry in data["relationships"].as_array().into_iter().flatten() {
+            if entry["user"].is_object() {
+                self.merge_embedded_user(&entry["user"]);
+            }
+        }
+        for channel in data["private_channels"].as_array().into_iter().flatten() {
+            for recipient in channel["recipients"].as_array().into_iter().flatten() {
+                self.merge_embedded_user(recipient);
             }
         }
         self.relationships = data["relationships"]
@@ -3336,11 +3447,52 @@ impl Stores {
             .unwrap_or_default()
     }
 
+    /// Merges a user object into `UserStore` (`287809` `mergeUser` / `USER_PROFILE_FETCH_SUCCESS`), updating present
+    /// fields on an existing entry without clobbering omitted ones.
+    pub fn merge_user(&mut self, value: &Value) -> Option<&User> {
+        let user_id = id(&value["id"])?;
+        if let Some(existing) = self.users.get_mut(&user_id) {
+            existing.merge_value(value);
+            return self.users.get(&user_id);
+        }
+        let user = User::from_value(value)?;
+        self.users.insert(user_id, user);
+        self.users.get(&user_id)
+    }
+
+    fn merge_embedded_user(&mut self, value: &Value) {
+        let Some(user_id) = id(&value["id"]) else {
+            return;
+        };
+        if let Some(existing) = self.users.get_mut(&user_id) {
+            existing.enrich_from_value(value);
+        } else if let Some(user) = User::from_value(value) {
+            self.users.insert(user_id, user);
+        }
+    }
+
     fn set_presence(&mut self, data: &Value) {
+        if data["user"].is_object() {
+            self.merge_user(&data["user"]);
+        }
         let user = id(&data["user_id"]).or_else(|| id(&data["user"]["id"]));
         if let (Some(user), Some(status)) = (user, text(&data["status"])) {
             self.presences.insert(user, status);
         }
+    }
+
+    /// Known users across all relationship types (friends, pending incoming/outgoing, blocked), ignored users, and
+    /// private channel recipients (1:1 DMs, group DMs, message requests), deduplicated by id.
+    pub fn relationship_and_channel_users(&self) -> Vec<&User> {
+        let mut ids = std::collections::BTreeSet::new();
+        ids.extend(self.relationships.keys().copied());
+        ids.extend(self.ignored.iter().copied());
+        for channel in &self.private_channels {
+            ids.extend(channel.recipients.iter().copied());
+        }
+        ids.into_iter()
+            .filter_map(|id| self.users.get(&id))
+            .collect()
     }
 
     /// `offline` when nothing says otherwise, as the official presence store answers.
@@ -5154,5 +5306,155 @@ mod tests {
             }),
         );
         assert_eq!(stores.guilds[0].selectable_server_tag(), None);
+    }
+
+    #[test]
+    fn ready_hydrates_embedded_relationship_and_channel_users_without_stub_clobber() {
+        let mut stores = Stores::default();
+        stores.dispatch(
+            "READY",
+            &json!({
+                "user": {"id": "1", "username": "me"},
+                "users": [
+                    {
+                        "id": "10",
+                        "username": "yeya",
+                        "global_name": "Yeya",
+                        "avatar": "full_hash_10",
+                        "public_flags": 64
+                    }
+                ],
+                "relationships": [
+                    {"id": "10", "type": 3, "user": {"id": "10"}},
+                    {
+                        "id": "11",
+                        "type": 3,
+                        "user": {
+                            "id": "11",
+                            "username": "incoming_embed",
+                            "global_name": "Incoming",
+                            "avatar": "hash_11"
+                        }
+                    },
+                    {
+                        "id": "12",
+                        "type": 4,
+                        "user": {
+                            "id": "12",
+                            "username": "outgoing_embed",
+                            "avatar": "hash_12"
+                        }
+                    }
+                ],
+                "private_channels": [
+                    {
+                        "id": "500",
+                        "type": 3,
+                        "recipients": [
+                            {"id": "10"},
+                            {"id": "13", "username": "group_member", "avatar": "hash_13"}
+                        ]
+                    }
+                ]
+            }),
+        );
+        let yeya = stores.users.get(&10).expect("yeya preserved");
+        assert_eq!(yeya.username, "yeya");
+        assert_eq!(yeya.global_name.as_deref(), Some("Yeya"));
+        assert_eq!(yeya.avatar.as_deref(), Some("full_hash_10"));
+        assert_eq!(yeya.public_flags, 64);
+
+        let incoming = stores.users.get(&11).expect("embedded incoming hydrated");
+        assert_eq!(incoming.username, "incoming_embed");
+        assert_eq!(incoming.avatar.as_deref(), Some("hash_11"));
+
+        let outgoing = stores.users.get(&12).expect("embedded outgoing hydrated");
+        assert_eq!(outgoing.username, "outgoing_embed");
+        assert_eq!(outgoing.avatar.as_deref(), Some("hash_12"));
+
+        let group_member = stores.users.get(&13).expect("embedded recipient hydrated");
+        assert_eq!(group_member.username, "group_member");
+        assert_eq!(group_member.avatar.as_deref(), Some("hash_13"));
+
+        stores.dispatch(
+            "READY_SUPPLEMENTAL",
+            &json!({
+                "lazy_private_channels": [
+                    {
+                        "id": "501",
+                        "type": 1,
+                        "recipients": [
+                            {"id": "10"},
+                            {"id": "14", "username": "lazy_dm", "avatar": "hash_14"}
+                        ]
+                    }
+                ]
+            }),
+        );
+        assert_eq!(stores.users[&10].avatar.as_deref(), Some("full_hash_10"));
+        assert_eq!(stores.users[&14].avatar.as_deref(), Some("hash_14"));
+
+        let preload_ids: Vec<Id> = stores
+            .relationship_and_channel_users()
+            .into_iter()
+            .map(|u| u.id)
+            .collect();
+        assert_eq!(preload_ids, vec![10, 11, 12, 13]);
+    }
+
+    #[test]
+    fn presence_update_merges_partial_user_fields_without_clobbering_username() {
+        let mut stores = Stores::default();
+        stores.dispatch(
+            "READY",
+            &json!({
+                "user": {"id": "1", "username": "me"},
+                "users": [
+                    {
+                        "id": "20",
+                        "username": "yeya",
+                        "global_name": "Yeya",
+                        "avatar": "old_avatar"
+                    }
+                ],
+                "relationships": [{"id": "20", "type": 3}]
+            }),
+        );
+
+        // Status-only presence carries `{ "id": "20" }`: existing user fields remain untouched.
+        stores.dispatch(
+            "PRESENCE_UPDATE",
+            &json!({
+                "user": {"id": "20"},
+                "status": "online"
+            }),
+        );
+        assert_eq!(stores.users[&20].username, "yeya");
+        assert_eq!(stores.users[&20].global_name.as_deref(), Some("Yeya"));
+        assert_eq!(stores.users[&20].avatar.as_deref(), Some("old_avatar"));
+
+        // Partial presence user update updates avatar and server tag without clobbering username.
+        stores.dispatch(
+            "PRESENCE_UPDATE",
+            &json!({
+                "user": {
+                    "id": "20",
+                    "avatar": "new_avatar",
+                    "clan": {
+                        "identity_guild_id": "999",
+                        "identity_enabled": true,
+                        "tag": "CUTE",
+                        "badge": "clan_badge_hash"
+                    }
+                },
+                "status": "idle"
+            }),
+        );
+        let updated = &stores.users[&20];
+        assert_eq!(updated.username, "yeya");
+        assert_eq!(updated.global_name.as_deref(), Some("Yeya"));
+        assert_eq!(updated.avatar.as_deref(), Some("new_avatar"));
+        assert_eq!(updated.tag.as_ref().map(|t| t.tag.as_str()), Some("CUTE"));
+        assert_eq!(stores.status(20), "idle");
     }
 }
