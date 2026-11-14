@@ -175,6 +175,7 @@ impl Root {
 
     /// The part of `open_message_requests` that history replays also run.
     pub(super) fn set_message_requests_open(&mut self, cx: &mut Context<Self>) {
+        self.favorites_view = false;
         self.discover.open = false;
         self.shop.open = false;
         self.quests.open = false;
@@ -618,9 +619,15 @@ impl Root {
             .as_ref()
             .filter(|user| user.global_name.is_some() || self.nickname_for(user.id).is_some())
             .map(|user| user.username.clone());
-        let avatar = user
-            .as_ref()
-            .and_then(|user| self.images.get(&avatar_source(user).0).cloned());
+        let avatar = user.as_ref().and_then(|user| {
+            let (key, url) = avatar_source(user);
+            let image = self.images.get(&key).cloned();
+            if image.is_none() {
+                self.want_image(key, url, cx);
+            }
+            image
+        });
+        let loading_avatar = avatar.is_none();
         let preview = self.stores.message_request_preview(id);
         let then_ms = preview
             .message
@@ -781,9 +788,19 @@ impl Root {
                             .flex()
                             .flex_1()
                             .min_w(px(0.))
-                            .child(div().flex_none().mr(px(12.)).size(px(40.)).children(
-                                avatar.map(|avatar| img(avatar).size(px(40.)).rounded_full()),
-                            ))
+                            .child(
+                                div()
+                                    .flex_none()
+                                    .mr(px(12.))
+                                    .size(px(40.))
+                                    .when(loading_avatar, |this| {
+                                        this.rounded_full().bg(color("--background-mod-subtle"))
+                                    })
+                                    .children(
+                                        avatar
+                                            .map(|avatar| img(avatar).size(px(40.)).rounded_full()),
+                                    ),
+                            )
                             .child(
                                 div()
                                     .flex()
@@ -904,9 +921,15 @@ impl Root {
             || "Unknown User".to_owned(),
             |user| self.dm_display_name(user),
         );
-        let avatar = user
-            .as_ref()
-            .and_then(|user| self.images.get(&avatar_source(user).0).cloned());
+        let avatar = user.as_ref().and_then(|user| {
+            let (key, url) = avatar_source(user);
+            let image = self.images.get(&key).cloned();
+            if image.is_none() {
+                self.want_image(key, url, cx);
+            }
+            image
+        });
+        let loading_avatar = avatar.is_none();
         let busy = self.message_requests.busy.contains_key(&channel)
             || self.stores.is_accepted_optimistic(channel);
         let preview = self.stores.message_request_preview(channel);
@@ -1036,7 +1059,13 @@ impl Root {
                             .child(
                                 div()
                                     .size(px(80.))
-                                    .children(avatar.map(|avatar| img(avatar).size(px(80.)).rounded_full())),
+                                    .when(loading_avatar, |this| {
+                                        this.rounded_full().bg(color("--background-mod-subtle"))
+                                    })
+                                    .children(
+                                        avatar
+                                            .map(|avatar| img(avatar).size(px(80.)).rounded_full()),
+                                    ),
                             )
                             .child(
                                 div()

@@ -155,7 +155,12 @@ impl Root {
         ignored: bool,
         cx: &mut Context<Self>,
     ) -> AnyElement {
-        let avatar = self.images.get(&avatar_source(user).0).cloned();
+        let (avatar_key, avatar_url) = avatar_source(user);
+        let avatar = self.images.get(&avatar_key).cloned();
+        if avatar.is_none() {
+            self.want_image(avatar_key, avatar_url, cx);
+        }
+        let loading_avatar = avatar.is_none();
         let id = user.id;
         div()
             .size_full()
@@ -180,6 +185,9 @@ impl Root {
                                 div()
                                     .relative()
                                     .size(px(56.))
+                                    .when(loading_avatar, |this| {
+                                        this.rounded_full().bg(color("--background-mod-subtle"))
+                                    })
                                     .children(avatar.map(|image| img(image).size(px(56.)).rounded_full()))
                                     .child(
                                         div()

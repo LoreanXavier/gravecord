@@ -288,10 +288,12 @@ impl Root {
         }
         let from = self.route();
         let mut to = from;
+        to.favorites = false;
         to.channel = None;
         to.guild_guide = false;
         to.channel_browser = true;
         self.history.visit(from, to);
+        self.favorites_view = false;
         self.channel = None;
         self.guild_guide_open = false;
         self.channel_browser_open = true;

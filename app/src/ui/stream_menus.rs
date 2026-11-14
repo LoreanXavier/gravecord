@@ -244,7 +244,7 @@ impl Root {
                                 |this, event: &MouseDownEvent, _, cx| {
                                     if !this.inside_share_menus(event.position) {
                                         this.vv.quality_open = false;
-                                        this.close_call_popup(event.position, cx);
+                                        this.close_call_popup(event, cx);
                                     }
                                 },
                             ))
@@ -336,7 +336,7 @@ impl Root {
                         .id("voice-watched-menu")
                         .popout("voice-watched-menu", PopKind::Fade, PopSide::Top)
                         .on_mouse_down_out(cx.listener(|this, event: &MouseDownEvent, _, cx| {
-                            this.close_call_popup(event.position, cx);
+                            this.close_call_popup(event, cx);
                         }))
                         .children(rows),
                 ),
@@ -437,7 +437,7 @@ impl Root {
                         .on_mouse_down_out(cx.listener(|this, event: &MouseDownEvent, _, cx| {
                             if !this.inside_share_menus(event.position) {
                                 this.vv.quality_open = false;
-                                this.close_call_popup(event.position, cx);
+                                this.close_call_popup(event, cx);
                             }
                         }))
                         .children(rows.into_iter().map(|(row, _)| row)),
@@ -562,7 +562,7 @@ impl Root {
                     self.menu_panel(240., true)
                         .id("voice-camera-menu")
                         .on_mouse_down_out(cx.listener(|this, event: &MouseDownEvent, _, cx| {
-                            this.close_call_popup(event.position, cx);
+                            this.close_call_popup(event, cx);
                         }))
                         .children(rows),
                 ),

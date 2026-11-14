@@ -164,6 +164,24 @@ impl Root {
         .collect()
     }
 
+    /// Resolves the private call channel for module 313998 (`Ring` / `Stop Ringing`): in a popped-out call window or
+    /// full-screen overlay `shown_call.1` names the call's DM; otherwise the open private channel is used, falling back
+    /// to `shown_call.1` when nonzero and private.
+    pub(super) fn resolved_dm_call_channel(&self) -> Option<Id> {
+        let is_private =
+            |id: Id| id != 0 && self.stores.private_channels.iter().any(|dm| dm.id == id);
+        if !self.vv.popout_render
+            && self.guild.is_none()
+            && let Some(channel) = self.channel.filter(|id| is_private(*id))
+        {
+            return Some(channel);
+        }
+        if self.vv.shown_call.0 == 0 && is_private(self.vv.shown_call.1) {
+            return Some(self.vv.shown_call.1);
+        }
+        self.channel.filter(|id| is_private(*id))
+    }
+
     /// Module 313998 (and 325909 `o`): a person's menu in a DM or group DM offers "Ring" when they are not in the
     /// call and "Stop Ringing" while the call rings them. The person must be a friend, not this account, not a bot,
     /// and the call must have participants. `Some(false)` is Ring, `Some(true)` is Stop Ringing.
@@ -171,15 +189,7 @@ impl Root {
         if guild.is_some() {
             return None;
         }
-        let channel = self.channel?;
-        if !self
-            .stores
-            .private_channels
-            .iter()
-            .any(|dm| dm.id == channel)
-        {
-            return None;
-        }
+        let channel = self.resolved_dm_call_channel()?;
         let other = self.stores.users.get(&user)?;
         let me = self.stores.current_user.as_ref().map(|me| me.id);
         if other.bot || Some(user) == me || self.stores.relationships.get(&user) != Some(&1) {

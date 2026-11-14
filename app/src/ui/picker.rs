@@ -1848,16 +1848,20 @@ impl Root {
                     .on_mouse_down_out(cx.listener(|this, event: &MouseDownEvent, _, cx| {
                         // A press on the composer's own buttons is their toggle (the popout ignores its reference
                         // element), not a dismissal followed by a click that opens it again.
-                        let on_tools = matches!(
-                            this.picker.as_ref().map(|picker| &picker.target),
-                            Some(Target::Composer)
-                        ) && this
-                            .tip_anchors
-                            .borrow()
-                            .get("composer-box")
-                            .is_some_and(|bounds| on_composer_tools(*bounds, event.position));
-                        // The closing press goes no further, as for every layer (keyboard/layers.rs).
-                        if !on_tools && this.press_outside(super::keyboard::Layer::Picker, cx) {
+                        let on_tools =
+                            event.button == gpui::MouseButton::Left
+                                && matches!(
+                                    this.picker.as_ref().map(|picker| &picker.target),
+                                    Some(Target::Composer)
+                                )
+                                && this.tip_anchors.borrow().get("composer-box").is_some_and(
+                                    |bounds| on_composer_tools(*bounds, event.position),
+                                );
+                        // The closing press goes no further for non-right presses; right-clicks retarget in one click.
+                        if !on_tools
+                            && this.press_outside(super::keyboard::Layer::Picker, cx)
+                            && event.button != gpui::MouseButton::Right
+                        {
                             cx.stop_propagation();
                         }
                     }))

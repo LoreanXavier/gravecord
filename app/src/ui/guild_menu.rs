@@ -398,11 +398,15 @@ impl Root {
                             spread_radius: px(0.),
                             inset: false,
                         }])
-                        .on_mouse_down_out(cx.listener(|this, _, _, cx| {
-                            if this.press_outside(super::keyboard::Layer::GuildMenu, cx) {
-                                cx.stop_propagation();
-                            }
-                        }))
+                        .on_mouse_down_out(cx.listener(
+                            |this, event: &gpui::MouseDownEvent, _, cx| {
+                                if this.press_outside(super::keyboard::Layer::GuildMenu, cx)
+                                    && event.button != gpui::MouseButton::Right
+                                {
+                                    cx.stop_propagation();
+                                }
+                            },
+                        ))
                         .children(items),
                 ),
             )

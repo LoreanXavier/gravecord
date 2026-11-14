@@ -298,7 +298,8 @@ impl Root {
             self.vv.outside = false;
             grid
         } else {
-            self.dm_call_avatars(&people, width)
+            self.vv.shown_call = (0, channel);
+            self.dm_call_avatars(&people, width, cx)
         };
         let header = self.header_with(cx, true).into_any_element();
         let people_ring_me = self
@@ -332,6 +333,12 @@ impl Root {
                     }
                     this.voice_view_moved(cx);
                 }))
+                .on_mouse_up(
+                    gpui::MouseButton::Left,
+                    cx.listener(|this, _, _, _| {
+                        this.call_drags_end();
+                    }),
+                )
                 .child(body)
                 // The DM's header is the call's `topControls` (`renderExternalHeader`, module 540462): with video in the
                 // call it fades out and 8px up when idle (`idle: !forceShowControls && inCall && layout != MINIMUM`).
@@ -352,7 +359,9 @@ impl Root {
                 })
                 .when(in_call && !video, |this| {
                     this.child(self.call_bar(0, channel, shown, cx))
-                        .children(self.voice_menus(channel, width, height, cx))
+                })
+                .when(!video, |this| {
+                    this.children(self.voice_menus(channel, width, height, cx))
                 })
                 .when(!no_chat, |this| {
                     this.child(self.dm_call_resize_handle(height, cx))
@@ -508,28 +517,47 @@ impl Root {
             .into_any_element()
     }
 
-    /// `VoiceCallParticipants`: the avatars in a row, centred.
-    fn dm_call_avatars(&mut self, people: &[Person], width: f32) -> AnyElement {
+    /// `VoiceCallParticipants` (module 874739 -> 493387): the avatars in a row, centred; right-click opens the call
+    /// user context menu (left-click has no `onClick`).
+    fn dm_call_avatars(
+        &mut self,
+        people: &[Person],
+        width: f32,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
         let small = (80. + 16.) * people.len() as f32 > width;
         let size = if small { 40. } else { 80. };
         let avatars: Vec<AnyElement> = people
             .iter()
             .map(|person| {
+                let id = person.user;
                 let user = self
                     .stores
                     .users
-                    .get(&person.user)
+                    .get(&id)
                     .cloned()
-                    .or_else(|| {
-                        self.stores
-                            .current_user
-                            .clone()
-                            .filter(|me| me.id == person.user)
-                    })
+                    .or_else(|| self.stores.current_user.clone().filter(|me| me.id == id))
                     .unwrap_or_default();
                 let (key, url) = avatar_source(&user);
                 self.request_image(key, url);
-                self.call_avatar(&user, person, size)
+                let face = self.call_avatar(&user, person, size);
+                div()
+                    .id(gpui::SharedString::from(format!("dm-call-avatar-{id}")))
+                    .mx(px(8.))
+                    .on_mouse_down(
+                        gpui::MouseButton::Right,
+                        cx.listener(move |this, event: &gpui::MouseDownEvent, _, cx| {
+                            cx.stop_propagation();
+                            this.open_tile_menu(
+                                super::call_menus::Subject::User(id),
+                                false,
+                                event.position,
+                                cx,
+                            );
+                        }),
+                    )
+                    .child(face)
+                    .into_any_element()
             })
             .collect();
         div()
@@ -538,11 +566,7 @@ impl Root {
             .flex()
             .items_center()
             .justify_center()
-            .children(
-                avatars
-                    .into_iter()
-                    .map(|avatar| div().mx(px(8.)).child(avatar)),
-            )
+            .children(avatars)
             .into_any_element()
     }
 

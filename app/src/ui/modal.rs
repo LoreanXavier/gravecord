@@ -522,7 +522,7 @@ pub(super) fn system_bar_mode(dialogs: usize, layer: bool) -> SystemBar {
 impl Root {
     /// Dialogs and User Settings, without the menus and popouts that `modal_open` also counts: those do not cover
     /// the title bar, and a press on it still closes them.
-    fn covering_dialogs(&self) -> usize {
+    pub(super) fn covering_dialogs(&self) -> usize {
         let popouts = [
             self.menu.is_some(),
             self.context.open.is_some(),

@@ -44,6 +44,7 @@ pub(in crate::ui) enum Layer {
     RolePopout,
     HeaderPopout,
     Profile,
+    RolePicker,
     FileMenu,
     AudioMenu,
     FriendMenu,
@@ -82,6 +83,7 @@ pub(in crate::ui) const ALL: &[Layer] = &[
     Layer::RolePopout,
     Layer::HeaderPopout,
     Layer::Profile,
+    Layer::RolePicker,
     Layer::FileMenu,
     Layer::AudioMenu,
     Layer::FriendMenu,
@@ -120,6 +122,7 @@ impl Layer {
             | Layer::RolePopout
             | Layer::HeaderPopout
             | Layer::Profile
+            | Layer::RolePicker
             | Layer::FileMenu
             | Layer::AudioMenu
             | Layer::FriendMenu
@@ -140,6 +143,7 @@ const ESCAPE_HERE: &[Layer] = &[
     Layer::AddGame,
     Layer::SettingsSelect,
     Layer::HeaderPopout,
+    Layer::RolePicker,
     Layer::ComponentSelect,
     Layer::InteractionSelect,
     Layer::FolderMenu,
@@ -196,6 +200,7 @@ impl Root {
             Layer::RolePopout => self.role_popout.is_some(),
             Layer::HeaderPopout => self.header_popout.is_some(),
             Layer::Profile => self.profile.is_some(),
+            Layer::RolePicker => self.role_picker.is_some(),
             Layer::FileMenu => self.file_menu.is_some(),
             Layer::AudioMenu => self.audio_menu.is_some(),
             Layer::FriendMenu => self.friend_menu.is_some(),
@@ -246,6 +251,7 @@ impl Root {
             Layer::RolePopout => self.close_role_popout(cx),
             Layer::HeaderPopout => self.close_header_popout(cx),
             Layer::Profile => self.profile = None,
+            Layer::RolePicker => self.role_picker = None,
             Layer::FileMenu => self.file_menu = None,
             Layer::AudioMenu => self.audio_menu = None,
             Layer::FriendMenu => self.friend_menu = None,
@@ -315,12 +321,37 @@ impl Root {
             || self.close_welcome_layer()
     }
 
+    /// `ContextMenuStore` (module 712687): opening any context menu closes any other open context menu first.
+    pub(in crate::ui) fn close_all_context_menus(&mut self) {
+        self.menu = None;
+        self.submenu = None;
+        self.context.open = None;
+        if matches!(
+            self.vv.menu,
+            Some(
+                super::super::voice_view::Menu::Tile(..)
+                    | super::super::voice_view::Menu::Stream(..)
+            )
+        ) {
+            self.vv.menu = None;
+        }
+        self.vv.tile_menu = None;
+        self.stage_tile_menu = None;
+        self.clear_event_menu();
+        self.rail_folders.menu = None;
+        self.clips_close_menu();
+    }
+
     /// A press outside `layer`'s card: closes it when it is the top layer. True when it did.
     pub(in crate::ui) fn press_outside(&mut self, layer: Layer, cx: &mut Context<Self>) -> bool {
+        if self.keys.outside_closed_this_press {
+            return false;
+        }
         let open = self.open_layers();
         if layer.kind() != Kind::Popover || !is_top(&open, layer) {
             return false;
         }
+        self.keys.outside_closed_this_press = true;
         self.close_layer(layer, cx);
         true
     }
@@ -337,14 +368,15 @@ impl Root {
     }
 }
 
-/// The hook a layer's card carries: a press outside it closes the layer (when it is the top one) and is swallowed.
+/// The hook a layer's card carries: a press outside it closes the layer (when it is the top one); non-right presses
+/// are swallowed so clicks do not activate what is under the layer, while right-clicks continue to retarget in one click.
 pub(in crate::ui) fn outside<E: InteractiveElement>(
     element: E,
     layer: Layer,
     cx: &mut Context<Root>,
 ) -> E {
-    element.on_mouse_down_out(cx.listener(move |this, _: &MouseDownEvent, _, cx| {
-        if this.press_outside(layer, cx) {
+    element.on_mouse_down_out(cx.listener(move |this, event: &MouseDownEvent, _, cx| {
+        if this.press_outside(layer, cx) && event.button != gpui::MouseButton::Right {
             cx.stop_propagation();
         }
     }))
@@ -364,7 +396,7 @@ mod tests {
         }
         // `kind`'s match is exhaustive, so a variant left out of `ALL` is the only way to forget one: this is the
         // number of variants.
-        assert_eq!(ALL.len(), 32);
+        assert_eq!(ALL.len(), 33);
     }
 
     #[test]

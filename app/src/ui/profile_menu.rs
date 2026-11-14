@@ -412,13 +412,15 @@ impl Root {
                                 let keep =
                                     (this.profile_menu.as_ref().is_some_and(|menu| menu.invite)
                                         && inside("submenu"))
-                                        || this
-                                            .profile_menu
-                                            .as_ref()
-                                            .is_some_and(|menu| inside(menu.anchor));
+                                        || (event.button == gpui::MouseButton::Left
+                                            && this
+                                                .profile_menu
+                                                .as_ref()
+                                                .is_some_and(|menu| inside(menu.anchor)));
                                 drop(anchors);
                                 if !keep
                                     && this.press_outside(super::keyboard::Layer::ProfileMenu, cx)
+                                    && event.button != gpui::MouseButton::Right
                                 {
                                     cx.stop_propagation();
                                 }

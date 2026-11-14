@@ -122,7 +122,8 @@ fn patch_body(
 }
 
 impl Root {
-    /// Fetches the pictures the group rows and header draw: each group's icon, or its first two people.
+    /// Fetches the pictures the group rows, header and member list draw: each group's icon (or its first two people)
+    /// plus every recipient's avatar and server tag badge.
     pub(super) fn request_group_images(&mut self) {
         let mut images = Vec::new();
         for channel in self.stores.private_channels.iter().filter(|c| c.kind == 3) {
@@ -137,6 +138,14 @@ impl Root {
                 );
             } else {
                 images.push(group_icon(channel));
+            }
+            for recipient in &channel.recipients {
+                if let Some(user) = self.stores.users.get(recipient) {
+                    images.push(super::avatar_source(user));
+                    if let Some(url) = user.tag.as_ref().and_then(|tag| tag.badge_url()) {
+                        images.push((url.clone(), url));
+                    }
+                }
             }
         }
         for (key, url) in images {
@@ -214,11 +223,22 @@ impl Root {
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let id = channel.id;
-        let selected = self.channel == Some(id);
+        let selected = self.channel == Some(id)
+            && !self.nitro_open
+            && !self.shop_active()
+            && !self.quests_active()
+            && !self.message_requests_active();
         let hovered = self.hovered_dm == Some(id);
-        let look = super::home::row_look(
+        let context_menu_open = self
+            .context
+            .open
+            .as_ref()
+            .is_some_and(|open| open.target == context_menu::Target::Dm(id));
+        let row_selected = selected || context_menu_open;
+        let look = super::home::row_look_with_menu(
             selected,
             hovered,
+            context_menu_open,
             self.stores.read_states.mentions(id) > 0,
             self.stores
                 .guild_settings
@@ -278,10 +298,10 @@ impl Root {
                     .items_center()
                     .gap(px(12.))
                     .text_color(color(tint))
-                    .when(selected, |this| {
+                    .when(row_selected, |this| {
                         this.bg(color("--interactive-background-selected"))
                     })
-                    .when(!selected, |this| {
+                    .when(!row_selected, |this| {
                         this.hover(|style| style.bg(color("--interactive-background-hover")))
                             .active(|style| style.bg(color("--interactive-background-selected")))
                     })
@@ -702,17 +722,21 @@ impl Root {
         people.extend(channel.recipients.iter().copied());
         let owner = channel.owner_id;
         let count = people.len();
-        let rows: Vec<AnyElement> = people
-            .iter()
-            .filter_map(|id| {
-                self.stores
-                    .users
-                    .get(id)
-                    .or_else(|| self.stores.current_user.as_ref().filter(|me| me.id == *id))
-            })
-            .map(|user| {
-                let status = self.stores.status(user.id).to_owned();
-                let picture = self.images.get(&super::avatar_source(user).0).cloned();
+        let mut rows = Vec::with_capacity(people.len());
+        for user in people.iter().filter_map(|id| {
+            self.stores
+                .users
+                .get(id)
+                .or_else(|| self.stores.current_user.as_ref().filter(|me| me.id == *id))
+        }) {
+            let status = self.stores.status(user.id).to_owned();
+            let (avatar_key, avatar_url) = super::avatar_source(user);
+            let picture = self.images.get(&avatar_key).cloned();
+            if picture.is_none() {
+                self.want_image(avatar_key, avatar_url, cx);
+            }
+            let loading_avatar = picture.is_none();
+            rows.push(
                 div()
                     .flex_none()
                     .h(px(42.))
@@ -732,6 +756,9 @@ impl Root {
                                     .relative()
                                     .flex_none()
                                     .size(px(32.))
+                                    .when(loading_avatar, |this| {
+                                        this.rounded_full().bg(color("--background-mod-subtle"))
+                                    })
                                     .children(
                                         picture.map(|picture| {
                                             img(picture).size(px(32.)).rounded_full()
@@ -755,9 +782,9 @@ impl Root {
                                 )))
                             }),
                     )
-                    .into_any_element()
-            })
-            .collect();
+                    .into_any_element(),
+            );
+        }
         let room = count < super::group_dm::GROUP_LIMIT;
         let coachmark = room.then(|| self.group_coachmark(cx)).flatten();
         Some(

@@ -218,7 +218,11 @@ impl Root {
     }
 
     pub(super) fn clips_toggle_menu(&mut self, cx: &mut Context<Self>) {
-        self.clips.engine.ui.menu.open ^= true;
+        let open = !self.clips.engine.ui.menu.open;
+        if open {
+            self.close_all_context_menus();
+        }
+        self.clips.engine.ui.menu.open = open;
         cx.notify();
     }
 

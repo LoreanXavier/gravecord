@@ -1265,8 +1265,14 @@ impl Root {
                 .into_any_element()
         };
         if outside {
-            // `disableGradients: !inCall`, and the bottom centre is the join buttons of the caller.
-            return div().absolute().inset_0().child(grid).into_any_element();
+            // `disableGradients: !inCall`, and the bottom centre is the join buttons of the caller; tile context menus
+            // still mount inside the observing call view (module 175203).
+            return div()
+                .absolute()
+                .inset_0()
+                .child(grid)
+                .children(self.voice_menus(channel, width, height, cx))
+                .into_any_element();
         }
         div()
             .absolute()
@@ -1508,21 +1514,20 @@ impl Root {
             .rounded(px(8.))
             .overflow_hidden()
             .bg(background)
-            .when(!outside, |this| {
-                // Module 175203: a right click opens the tile's menu at the pointer, `minimal` on a stream.
-                this.on_mouse_down(
-                    gpui::MouseButton::Right,
-                    cx.listener(move |this, event: &gpui::MouseDownEvent, _, cx| {
-                        cx.stop_propagation();
-                        let subject = if stream_tile {
-                            super::call_menus::Subject::Stream(user_id)
-                        } else {
-                            super::call_menus::Subject::User(user_id)
-                        };
-                        this.open_tile_menu(subject, stream_tile, event.position, cx);
-                    }),
-                )
-            })
+            // Module 175203: a right click opens the tile's menu at the pointer, `minimal` on a stream, whether joined
+            // or observing (`outside`).
+            .on_mouse_down(
+                gpui::MouseButton::Right,
+                cx.listener(move |this, event: &gpui::MouseDownEvent, _, cx| {
+                    cx.stop_propagation();
+                    let subject = if stream_tile {
+                        super::call_menus::Subject::Stream(user_id)
+                    } else {
+                        super::call_menus::Subject::User(user_id)
+                    };
+                    this.open_tile_menu(subject, stream_tile, event.position, cx);
+                }),
+            )
             .when(outside && stream_tile, |this| {
                 // `handleSelectParticipant` on a stream from outside the call: join it and watch.
                 this.cursor_pointer()
@@ -1656,24 +1661,22 @@ impl Root {
                     .justify_between()
                     .child(pill)
                     // Module 175203 `eM`: a focused tile's action row has no Options; a focused stream's has its zoom
-                    // controls (`zoom-controls`, design/dom/popouts/stream-focused-darker-cozy.json).
-                    .when(!outside, |this| {
-                        if zoom_controls {
-                            let image = match &media {
-                                TileMedia::Video(key) => self.video.images.image(key).cloned(),
-                                _ => None,
-                            };
-                            // `marginBottom: controlsBottom` on the action row (module 175203).
-                            this.child(
-                                div()
-                                    .mb(px(self.vv.controls_bottom.get()))
-                                    .child(self.stream_zoom_controls(image, cx)),
-                            )
-                        } else if is_focus {
-                            this
-                        } else {
-                            this.child(options)
-                        }
+                    // controls when in the call (`zoom-controls`, design/dom/popouts/stream-focused-darker-cozy.json);
+                    // non-focused tiles show Options both in-call and while observing (`outside`).
+                    .when(!outside && zoom_controls, |this| {
+                        let image = match &media {
+                            TileMedia::Video(key) => self.video.images.image(key).cloned(),
+                            _ => None,
+                        };
+                        // `marginBottom: controlsBottom` on the action row (module 175203).
+                        this.child(
+                            div()
+                                .mb(px(self.vv.controls_bottom.get()))
+                                .child(self.stream_zoom_controls(image, cx)),
+                        )
+                    })
+                    .when(!is_focus && !(!outside && zoom_controls), |this| {
+                        this.child(options)
                     }),
             )
             .when(person.speaking && !stream_tile, |this| {
@@ -3140,7 +3143,7 @@ impl Root {
                                 .popout("voice-more-menu", PopKind::Fade, PopSide::Top)
                                 .on_mouse_down_out(cx.listener(
                                     |this, event: &gpui::MouseDownEvent, _, cx| {
-                                        this.close_call_popup(event.position, cx);
+                                        this.close_call_popup(event, cx);
                                     },
                                 ))
                                 .children(rows),

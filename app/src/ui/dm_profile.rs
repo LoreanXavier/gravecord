@@ -609,11 +609,14 @@ impl Root {
                                 cx,
                             ))
                     })
-                    .children(
-                        user.tag
-                            .as_ref()
-                            .map(|tag| self.profile_server_tag_pill(tag, palette)),
-                    )
+                    .children(user.tag.as_ref().map(|tag| {
+                        if let Some(url) = tag.badge_url()
+                            && !self.images.contains_key(&url)
+                        {
+                            self.want_image(url.clone(), url, cx);
+                        }
+                        self.profile_server_tag_pill(tag, palette)
+                    }))
                     .children(self.badge_pill(place, user_id, palette, cx)),
             )
     }
@@ -628,6 +631,18 @@ impl Root {
         cx: &mut Context<Self>,
     ) -> Option<AnyElement> {
         let body = self.fetched.get(&format!("profile:{user}"));
+        for mutual in body
+            .and_then(|body| body["mutual_friends"].as_array())
+            .into_iter()
+            .flatten()
+            .filter_map(mutual_user)
+            .take(3)
+        {
+            let (key, url) = avatar_source(&mutual);
+            if !self.images.contains_key(&key) {
+                self.want_image(key, url, cx);
+            }
+        }
         let friends = body
             .and_then(|body| {
                 body["mutual_friends"]
@@ -1059,6 +1074,10 @@ impl Root {
         top: f32,
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
+        let (avatar_key, avatar_url) = avatar_source(user);
+        if !self.images.contains_key(&avatar_key) {
+            self.want_image(avatar_key, avatar_url, cx);
+        }
         let user_id = user.id;
         let presence = self.stores.status(user_id).to_owned();
         let ring = div()

@@ -1078,10 +1078,21 @@ impl Root {
                                         .borrow()
                                         .get("submenu")
                                         .is_some_and(|bounds| bounds.contains(&event.position));
-                                if !in_submenu {
-                                    this.submenu = None;
-                                    if this.press_outside(super::keyboard::Layer::Menu, cx) {
-                                        cx.stop_propagation();
+                                if !in_submenu && !this.keys.outside_closed_this_press {
+                                    let top = this.open_layers().last().copied();
+                                    if matches!(
+                                        top,
+                                        Some(
+                                            super::keyboard::Layer::Menu
+                                                | super::keyboard::Layer::Submenu
+                                        )
+                                    ) {
+                                        this.submenu = None;
+                                        if this.press_outside(super::keyboard::Layer::Menu, cx)
+                                            && event.button != gpui::MouseButton::Right
+                                        {
+                                            cx.stop_propagation();
+                                        }
                                     }
                                 }
                             },
@@ -1417,6 +1428,7 @@ impl Root {
             },
         };
         // A menu always opens at its top, whatever the one before was scrolled to.
+        self.close_all_context_menus();
         self.menu_scroll.set_offset(gpui::point(px(0.), px(0.)));
         self.menu = Some(OpenMenu {
             anchor,

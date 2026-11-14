@@ -25,8 +25,8 @@ static CONFIRMING: AtomicBool = AtomicBool::new(false);
 pub(super) fn presentation(state: &State) -> Option<(&'static str, bool)> {
     match state {
         State::NotAvailable => None,
-        State::Downloading { .. } => Some(("Downloading Update", false)),
-        State::Ready { .. } => Some(("Update Ready!", true)),
+        State::Downloading { .. } => Some((dc_intl::tr("Downloading Update"), false)),
+        State::Ready { .. } => Some((dc_intl::tr("Update Ready!"), true)),
     }
 }
 
@@ -59,8 +59,13 @@ impl Root {
             )
             .into_any_element()
         };
-        let button = div()
-            .id("update")
+        let base = div().id("update");
+        let stop = if live {
+            self.title_stop(base, "update", 6., cx)
+        } else {
+            base
+        };
+        let button = stop
             .size(px(24.))
             .rounded(px(6.))
             .flex()
@@ -76,6 +81,7 @@ impl Root {
             .child(icon);
         Some(
             self.with_tip("update-button", Tip::text(tip, Side::Bottom), button, cx)
+                .occlude()
                 .mr(px(16.))
                 .into_any_element(),
         )

@@ -125,6 +125,11 @@ impl Root {
         self.friends_tab = tab;
         if tab == FriendsTab::Add {
             self.request_image("friends-wumpus".to_owned(), WUMPUS.to_owned());
+        } else {
+            for (user, _) in self.people_rows().1 {
+                let (key, url) = avatar_source(&user);
+                self.request_image(key, url);
+            }
         }
         if tab == FriendsTab::Add && self.add_friend.is_none() {
             let name = cx.new(|cx| {
@@ -422,17 +427,7 @@ impl Root {
                 (dc_intl::t!("rHRrhC", count = list.len().to_string()), list)
             }
             FriendsTab::Pending => {
-                let mut list: Vec<(User, u64)> = self
-                    .stores
-                    .relationships
-                    .iter()
-                    .filter(|(_, kind)| {
-                        matches!(**kind, RELATIONSHIP_INCOMING | RELATIONSHIP_OUTGOING)
-                    })
-                    .filter_map(|(user, kind)| Some((self.stores.users.get(user)?.clone(), *kind)))
-                    .filter(|(user, _)| matches(user))
-                    .collect();
-                list.sort_by_key(|(user, _)| user.display_name().to_lowercase());
+                let list = pending_people_rows(&self.stores, matches);
                 (dc_intl::t!("XIpar2", count = list.len().to_string()), list)
             }
         }
@@ -450,7 +445,11 @@ impl Root {
     }
 
     fn person_row(&self, user: &User, kind: u64, cx: &mut Context<Self>) -> AnyElement {
-        let avatar = self.images.get(&avatar_source(user).0).cloned();
+        let (avatar_key, _) = avatar_source(user);
+        let avatar = self.images.get(&avatar_key).cloned();
+        if let Some((key, url)) = missing_person_avatar(user, &self.images) {
+            self.want_image(key, url, cx);
+        }
         let status = self.stores.status(user.id).to_owned();
         let id = user.id;
         let group = SharedString::from(format!("friend-{}", user.id));
@@ -611,25 +610,26 @@ impl Root {
                             this.open_full_profile(id, window, cx)
                         }))
                     })
-                    .child(
+                    .child({
+                        let picture = self
+                            .live_avatar(user, 32., self.avatar_hovered(&group), cx)
+                            .or_else(|| {
+                                avatar.map(|image| {
+                                    img(image).size(px(32.)).rounded_full().into_any_element()
+                                })
+                            });
+                        let loading_avatar = picture.is_none();
                         div()
                             .relative()
                             .size(px(32.))
-                            .children(
-                                self.live_avatar(user, 32., self.avatar_hovered(&group), cx)
-                                    .or_else(|| {
-                                        avatar.map(|image| {
-                                            img(image)
-                                                .size(px(32.))
-                                                .rounded_full()
-                                                .into_any_element()
-                                        })
-                                    }),
-                            )
+                            .when(loading_avatar, |this| {
+                                this.rounded_full().bg(color("--background-mod-subtle"))
+                            })
+                            .children(picture)
                             .when(kind == RELATIONSHIP_FRIEND, |this| {
                                 this.child(status_dot(&status, "--background-base-lower"))
-                            }),
-                    )
+                            })
+                    })
                     .child(
                         div()
                             .ml(px(12.))
@@ -648,7 +648,7 @@ impl Root {
                                                 format!("friend-name-{}", user.id),
                                                 self.dm_display_name(user),
                                                 self.name_styles(user, None).as_ref(),
-                                                super::name_styles::Display::Static,
+                                                super::name_styles::Display::Font,
                                             )),
                                     )
                                     .child(
@@ -1246,11 +1246,15 @@ impl Root {
                                 spread_radius: px(0.),
                                 inset: false,
                             }])
-                            .on_mouse_down_out(cx.listener(|this, _, _, cx| {
-                                if this.press_outside(super::keyboard::Layer::FriendMenu, cx) {
-                                    cx.stop_propagation();
-                                }
-                            }))
+                            .on_mouse_down_out(cx.listener(
+                                |this, event: &gpui::MouseDownEvent, _, cx| {
+                                    if this.press_outside(super::keyboard::Layer::FriendMenu, cx)
+                                        && event.button != gpui::MouseButton::Right
+                                    {
+                                        cx.stop_propagation();
+                                    }
+                                },
+                            ))
                             .child(
                                 row("friend-video", dc_intl::tr("Start Video Call"), false)
                                     .on_click(cx.listener(move |this, _, _, cx| {
@@ -1365,6 +1369,30 @@ pub(super) enum RemoveFriend {
     Friends(Id),
 }
 
+fn pending_people_rows(
+    stores: &dc_state::Stores,
+    matches: impl Fn(&User) -> bool,
+) -> Vec<(User, u64)> {
+    let mut list: Vec<(User, u64)> = stores
+        .relationships
+        .iter()
+        .filter(|(_, kind)| matches!(**kind, RELATIONSHIP_INCOMING | RELATIONSHIP_OUTGOING))
+        .filter_map(|(user, kind)| Some((stores.users.get(user)?.clone(), *kind)))
+        .filter(|(user, _)| matches(user))
+        .collect();
+    list.sort_by_key(|(user, _)| user.display_name().to_lowercase());
+    list
+}
+
+/// Returns `(key, url)` for `want_image` when `user`'s avatar is not yet in `images`.
+fn missing_person_avatar(
+    user: &User,
+    images: &std::collections::HashMap<String, std::sync::Arc<gpui::Image>>,
+) -> Option<(String, String)> {
+    let (key, url) = avatar_source(user);
+    (!images.contains_key(&key)).then_some((key, url))
+}
+
 /// The text colour a friend row's action button takes while hovered (`.actionAccept:hover`, `.actionDeny:hover`,
 /// `.actionButton:hover` in 827776).
 fn action_hover_token(icon: &str) -> &'static str {
@@ -1377,7 +1405,13 @@ fn action_hover_token(icon: &str) -> &'static str {
 
 #[cfg(test)]
 mod action_tests {
-    use super::action_hover_token;
+    use super::{
+        RELATIONSHIP_INCOMING, RELATIONSHIP_OUTGOING, action_hover_token, avatar_source,
+        missing_person_avatar, pending_people_rows,
+    };
+    use serde_json::json;
+    use std::collections::HashMap;
+    use std::sync::Arc;
 
     #[test]
     fn accept_and_deny_buttons_tint_on_hover_and_the_rest_whiten() {
@@ -1393,5 +1427,46 @@ mod action_tests {
             action_hover_token("chat_bubble"),
             "--interactive-text-hover"
         );
+    }
+
+    #[test]
+    fn pending_incoming_and_outgoing_rows_demand_uncached_avatars() {
+        let mut stores = dc_state::Stores::default();
+        stores.dispatch(
+            "READY",
+            &json!({
+                "user": {"id": "1", "username": "me"},
+                "users": [
+                    {"id": "101", "username": "yeya", "global_name": "Yeya", "avatar": "av_in"},
+                    {"id": "102", "username": "out_pal", "global_name": "OutPal", "avatar": "av_out"},
+                    {"id": "103", "username": "friend_one", "avatar": "av_friend"}
+                ],
+                "relationships": [
+                    {"id": "101", "type": RELATIONSHIP_INCOMING},
+                    {"id": "102", "type": RELATIONSHIP_OUTGOING},
+                    {"id": "103", "type": 1}
+                ]
+            }),
+        );
+
+        let rows = pending_people_rows(&stores, |_| true);
+        assert_eq!(rows.len(), 2);
+        assert_eq!(
+            rows.iter()
+                .map(|(u, kind)| (u.id, *kind))
+                .collect::<Vec<_>>(),
+            vec![(102, RELATIONSHIP_OUTGOING), (101, RELATIONSHIP_INCOMING)]
+        );
+
+        let mut images = HashMap::new();
+        for (user, _) in &rows {
+            let expected = avatar_source(user);
+            assert_eq!(missing_person_avatar(user, &images), Some(expected.clone()));
+            images.insert(
+                expected.0,
+                Arc::new(gpui::Image::from_bytes(gpui::ImageFormat::Png, vec![0])),
+            );
+            assert_eq!(missing_person_avatar(user, &images), None);
+        }
     }
 }

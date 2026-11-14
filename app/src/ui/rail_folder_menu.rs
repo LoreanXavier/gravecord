@@ -109,6 +109,7 @@ impl Root {
         at: Point<Pixels>,
         cx: &mut Context<Self>,
     ) {
+        self.close_all_context_menus();
         self.rail_folders.menu = Some(FolderMenu {
             folder,
             at,
@@ -769,12 +770,17 @@ impl Root {
                     )
                     .child(div().flex_1().min_w(px(0.)).child(hex)),
             )
-            .on_mouse_down_out(cx.listener(|this, _: &MouseDownEvent, _, cx| {
-                if let Some(open) = this.rail_folders.settings.as_mut() {
-                    open.picker = None;
+            .on_mouse_down_out(cx.listener(|this, event: &MouseDownEvent, _, cx| {
+                if !this.keys.outside_closed_this_press {
+                    this.keys.outside_closed_this_press = true;
+                    if let Some(open) = this.rail_folders.settings.as_mut() {
+                        open.picker = None;
+                    }
+                    if event.button != gpui::MouseButton::Right {
+                        cx.stop_propagation();
+                    }
+                    cx.notify();
                 }
-                cx.stop_propagation();
-                cx.notify();
             }));
         Some(
             deferred(

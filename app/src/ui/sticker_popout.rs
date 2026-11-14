@@ -589,28 +589,20 @@ impl Root {
         );
         Some(
             deferred(
-                div()
-                    .id("sticker-popout-layer")
-                    .absolute()
-                    .top_0()
-                    .left_0()
-                    .size_full()
-                    .on_mouse_down(
-                        gpui::MouseButton::Left,
-                        cx.listener(|this, _, _, cx| this.close_sticker_popout(cx)),
-                    )
-                    .child(
-                        anchored()
-                            .anchor(gpui::Anchor::LeftCenter)
-                            .position(at)
-                            .snap_to_window_with_margin(px(8.))
-                            // `animation: TRANSLATE` on the sticker's popout (module 679636), opening on its right.
-                            .child(
-                                div()
-                                    .popout("sticker-popout", PopKind::Translate, PopSide::Right)
-                                    .child(content),
-                            ),
-                    ),
+                anchored()
+                    .anchor(gpui::Anchor::LeftCenter)
+                    .position(at)
+                    .snap_to_window_with_margin(px(8.))
+                    // `animation: TRANSLATE` on the sticker's popout (module 679636), opening on its right.
+                    .child(super::keyboard::outside(
+                        div()
+                            .id("sticker-popout-card")
+                            .occlude()
+                            .popout("sticker-popout", PopKind::Translate, PopSide::Right)
+                            .child(content),
+                        super::keyboard::Layer::StickerPopout,
+                        cx,
+                    )),
             )
             .with_priority(1)
             .into_any_element(),

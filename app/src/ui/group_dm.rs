@@ -174,6 +174,10 @@ impl Root {
             row: 0,
             channel: None,
         });
+        for user in self.group_dm_rows() {
+            let (key, url) = avatar_source(&user);
+            self.request_image(key, url);
+        }
         cx.notify();
     }
 
@@ -327,7 +331,11 @@ impl Root {
 
     fn group_dm_tag(&self, user: &User, cx: &mut Context<Self>) -> AnyElement {
         let id = user.id;
-        let avatar = self.images.get(&avatar_source(user).0).cloned();
+        let (avatar_key, avatar_url) = avatar_source(user);
+        let avatar = self.images.get(&avatar_key).cloned();
+        if avatar.is_none() {
+            self.want_image(avatar_key, avatar_url, cx);
+        }
         div()
             .flex_none()
             .h(px(30.))
@@ -372,7 +380,12 @@ impl Root {
         let checked = member || picker.selected.contains(&id);
         let full = member || (!checked && members.len() + picker.selected.len() + 1 >= GROUP_LIMIT);
         let highlighted = picker.row == index;
-        let avatar = self.images.get(&avatar_source(user).0).cloned();
+        let (avatar_key, avatar_url) = avatar_source(user);
+        let avatar = self.images.get(&avatar_key).cloned();
+        if avatar.is_none() {
+            self.want_image(avatar_key, avatar_url, cx);
+        }
+        let loading_avatar = avatar.is_none();
         let status = self.stores.status(user.id).to_owned();
         div()
             .id(SharedString::from(format!("group-dm-row-{id}")))
@@ -399,6 +412,9 @@ impl Root {
                     .relative()
                     .size(px(32.))
                     .flex_none()
+                    .when(loading_avatar, |this| {
+                        this.rounded_full().bg(color("--background-mod-subtle"))
+                    })
                     .children(avatar.map(|image| img(image).size(px(32.)).rounded_full()))
                     .child(status_dot(&status, "--background-surface-high")),
             )

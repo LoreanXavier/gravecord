@@ -571,9 +571,19 @@ impl Inline {
             let laid = self.laid.clone();
             let line_height = self.line_height;
             let hitbox = hitbox.clone();
+            let down_hitbox = hitbox.clone();
+            let pressed = Rc::new(std::cell::Cell::new(false));
+            let pressed_down = pressed.clone();
+            window.on_mouse_event(move |event: &MouseDownEvent, phase, window, _| {
+                if event.button == MouseButton::Left {
+                    pressed_down
+                        .set(phase == DispatchPhase::Bubble && down_hitbox.is_hovered(window));
+                }
+            });
             window.on_mouse_event(move |event: &MouseUpEvent, phase, window, cx| {
-                if phase == DispatchPhase::Bubble
-                    && event.button == MouseButton::Left
+                if event.button == MouseButton::Left
+                    && phase == DispatchPhase::Bubble
+                    && pressed.replace(false)
                     && hitbox.is_hovered(window)
                 {
                     let hit = laid

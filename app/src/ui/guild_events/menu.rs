@@ -292,6 +292,7 @@ fn panel() -> gpui::Div {
 
 impl Root {
     pub(super) fn open_event_menu(&mut self, event: Id, at: Point<Pixels>, cx: &mut Context<Self>) {
+        self.close_all_context_menus();
         if let Some(open) = self.guild_events.as_mut() {
             open.menu = Some(EventMenu {
                 event,
@@ -302,10 +303,14 @@ impl Root {
         cx.notify();
     }
 
-    fn close_event_menu(&mut self, cx: &mut Context<Self>) {
+    pub(in crate::ui) fn clear_event_menu(&mut self) {
         if let Some(open) = self.guild_events.as_mut() {
             open.menu = None;
         }
+    }
+
+    fn close_event_menu(&mut self, cx: &mut Context<Self>) {
+        self.clear_event_menu();
         cx.notify();
     }
 
@@ -397,26 +402,32 @@ impl Root {
         let right = f32::from(window.viewport_size().width) - 28.;
         let top = f32::from(menu.at.y).min(bottom - height).max(8.);
         let left = f32::from(menu.at.x).min(right - 160.).max(8.);
-        body = body.left(px(left)).top(px(top));
+        body = body
+            .left(px(left))
+            .top(px(top))
+            .on_mouse_down_out(cx.listener(|this, event: &gpui::MouseDownEvent, _, cx| {
+                let in_cal = this
+                    .guild_events
+                    .as_ref()
+                    .and_then(|open| open.menu.as_ref())
+                    .is_some_and(|menu| menu.calendar)
+                    && this
+                        .tip_anchors
+                        .borrow()
+                        .get("event-calendar-submenu")
+                        .is_some_and(|bounds| bounds.contains(&event.position));
+                if !in_cal && !this.keys.outside_closed_this_press {
+                    this.keys.outside_closed_this_press = true;
+                    this.close_event_menu(cx);
+                    if event.button != gpui::MouseButton::Right {
+                        cx.stop_propagation();
+                    }
+                }
+            }));
         let mut layers = vec![
-            deferred(
-                div()
-                    .id("event-menu-layer")
-                    .absolute()
-                    .inset_0()
-                    .occlude()
-                    .on_mouse_down(
-                        gpui::MouseButton::Left,
-                        cx.listener(|this, _, _, cx| this.close_event_menu(cx)),
-                    )
-                    .on_mouse_down(
-                        gpui::MouseButton::Right,
-                        cx.listener(|this, _, _, cx| this.close_event_menu(cx)),
-                    )
-                    .child(body),
-            )
-            .with_priority(2)
-            .into_any_element(),
+            deferred(div().id("event-menu-layer").child(body))
+                .with_priority(2)
+                .into_any_element(),
         ];
         if menu.calendar && first.contains(&Item::Calendar) {
             layers.push(self.event_calendar_submenu(left, top, target, cx));
@@ -448,12 +459,13 @@ impl Root {
             ("Add to Outlook", 3),
         ];
         deferred(
-            div().id("event-calendar-layer").absolute().inset_0().child(
+            div().id("event-calendar-layer").child(
                 panel()
                     .absolute()
                     .left(px(left))
                     .top(px(top))
                     .occlude()
+                    .child(self.anchor_probe("event-calendar-submenu"))
                     .children(items.map(|(label, which)| {
                         row(("event-calendar", which), label, false, false)
                             .on_click(cx.listener(move |this, _, _, cx| {

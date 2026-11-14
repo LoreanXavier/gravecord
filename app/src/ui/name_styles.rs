@@ -55,8 +55,10 @@ pub(in crate::ui) enum Display {
     Font,
     /// `STATIC`: font and the effect at rest.
     Static,
-    /// `ANIMATED` always (a profile's name).
+    /// `ANIMATED` always (a profile's name, or `loop: true`).
     Animated,
+    /// `ANIMATED` with `loop: false` (16371): one cycle, then the resting effect frame.
+    AnimatedOnce,
     /// `PLAIN`, `ANIMATED` while the pointer is on the name.
     FontOnHover,
     /// `STATIC` at rest, `ANIMATED` while the pointer is on the name (the account panel, 993382).
@@ -533,10 +535,33 @@ fn image_cache() -> &'static Mutex<HashMap<(u64, bool), Entry>> {
     IMAGES.get_or_init(Mutex::default)
 }
 
-/// When each hovered name was entered, so its animation starts from its first frame.
-fn hovers() -> &'static Mutex<HashMap<SharedString, Instant>> {
-    static HOVERS: OnceLock<Mutex<HashMap<SharedString, Instant>>> = OnceLock::new();
-    HOVERS.get_or_init(Mutex::default)
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct ActiveAnimation {
+    looping: bool,
+    started: Option<Instant>,
+}
+
+impl ActiveAnimation {
+    fn once_done(self, cycle: f32, now: Instant) -> bool {
+        !self.looping
+            && self
+                .started
+                .is_some_and(|start| now.saturating_duration_since(start).as_secs_f32() >= cycle)
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum FramePick {
+    Frame(usize),
+    Resting,
+}
+
+/// Active `ANIMATED` names keyed by `StyledName::key`, so entering `Animated` or `AnimatedOnce` (including from a
+/// parent row's hover state where the text's own hitbox is not hovered) starts from frame 0 and `loop: false` rests
+/// once one cycle finishes.
+fn active_animations() -> &'static Mutex<HashMap<SharedString, ActiveAnimation>> {
+    static ACTIVE: OnceLock<Mutex<HashMap<SharedString, ActiveAnimation>>> = OnceLock::new();
+    ACTIVE.get_or_init(Mutex::default)
 }
 
 /// Capture only: the animation clock held at this many seconds (the comparison sheet's `at`); NaN bits when running.
@@ -560,9 +585,56 @@ fn frozen_time() -> Option<f32> {
     }
 }
 
-fn clock() -> Instant {
-    static START: OnceLock<Instant> = OnceLock::new();
-    *START.get_or_init(Instant::now)
+fn next_animation_state(
+    prev: Option<ActiveAnimation>,
+    shown: Shown,
+    cycle: f32,
+    now: Instant,
+) -> Option<ActiveAnimation> {
+    match shown {
+        Shown::Plain | Shown::Resting => None,
+        Shown::Animated => {
+            let keep_start = prev.and_then(|state| {
+                if state.looping || !state.once_done(cycle, now) {
+                    state.started
+                } else {
+                    None
+                }
+            });
+            Some(ActiveAnimation {
+                looping: true,
+                started: keep_start,
+            })
+        }
+        Shown::AnimatedOnce => Some(ActiveAnimation {
+            looping: false,
+            started: prev.and_then(|state| state.started),
+        }),
+    }
+}
+
+fn advance_animation(
+    state: &mut ActiveAnimation,
+    cycle: f32,
+    frame_count: Option<usize>,
+    now: Instant,
+) -> Option<FramePick> {
+    if state.once_done(cycle, now) {
+        return Some(FramePick::Resting);
+    }
+    let count = frame_count.filter(|&count| count > 0)?;
+    let start = *state.started.get_or_insert(now);
+    let elapsed = now.saturating_duration_since(start).as_secs_f32();
+    if state.looping {
+        let t = elapsed % cycle;
+        let at = ((t * FRAMES_PER_SECOND) as usize).min(count - 1);
+        Some(FramePick::Frame(at))
+    } else if elapsed < cycle {
+        let at = ((elapsed * FRAMES_PER_SECOND) as usize).min(count - 1);
+        Some(FramePick::Frame(at))
+    } else {
+        Some(FramePick::Resting)
+    }
 }
 
 fn fingerprint(spec: &raster::Spec, text: &str, family: &str) -> u64 {
@@ -765,16 +837,20 @@ impl IntoElement for NameText {
 }
 
 /// How the name is drawn this frame.
-#[derive(PartialEq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Shown {
     Plain,
     Resting,
     Animated,
+    AnimatedOnce,
 }
 
 impl NameText {
     fn shown(&self, hovered: bool) -> Shown {
-        let reduced = REDUCED_MOTION.load(Ordering::Relaxed);
+        self.shown_with(hovered, REDUCED_MOTION.load(Ordering::Relaxed))
+    }
+
+    fn shown_with(&self, hovered: bool, reduced: bool) -> Shown {
         let animated = if reduced {
             Shown::Resting
         } else {
@@ -784,6 +860,13 @@ impl NameText {
             Display::Font => Shown::Plain,
             Display::Static => Shown::Resting,
             Display::Animated => animated,
+            Display::AnimatedOnce => {
+                if reduced {
+                    Shown::Resting
+                } else {
+                    Shown::AnimatedOnce
+                }
+            }
             Display::FontOnHover if hovered => animated,
             Display::FontOnHover => Shown::Plain,
             Display::StaticOnHover if hovered => animated,
@@ -917,15 +1000,23 @@ impl Element for NameText {
         let line_height = inherited.line_height_in_pixels(rem);
         let hovered = hitbox.is_hovered(window);
         let shown = self.shown(hovered);
-        if hovered && shown == Shown::Animated {
-            if let Ok(mut hovers) = hovers().lock() {
-                hovers.entry(self.key.clone()).or_insert_with(Instant::now);
-            }
-        } else if let Ok(mut hovers) = hovers().lock() {
-            hovers.remove(&self.key);
-        }
-
         let effect = self.styles.effect();
+        let cycle = raster::cycle(effect);
+        let now = Instant::now();
+        let active_state = active_animations().lock().ok().and_then(|mut active| {
+            let next = next_animation_state(active.get(&self.key).copied(), shown, cycle, now);
+            match next {
+                Some(state) => {
+                    active.insert(self.key.clone(), state);
+                    Some(state)
+                }
+                None => {
+                    active.remove(&self.key);
+                    None
+                }
+            }
+        });
+
         let colors = adjusted_colors(&self.styles, background(self.light), 1.);
         let main = colors.first().copied();
         let palette = main.map(Palette::of);
@@ -936,7 +1027,8 @@ impl Element for NameText {
                 .then(|| default_face(inherited.font_weight, cx))
                 .flatten()
         });
-        let effect_shown = shown != Shown::Plain && face.is_some();
+        let effect_shown =
+            shown != Shown::Plain && (face.is_some() || !raster::needs_image(effect));
 
         // The ellipsis the parent asked for (`text-overflow: ellipsis`), when the name does not fit.
         let overflow = matches!(inherited.text_overflow, Some(TextOverflow::Truncate(_)))
@@ -988,10 +1080,16 @@ impl Element for NameText {
             let snapped_y = (want_y * scale).round() / scale;
             spec.shift_x = want_x - snapped_x;
             let key = fingerprint(&spec, &self.text, &face.family);
-            let animating = shown == Shown::Animated && raster::animates(effect);
-            let held = frozen_time().filter(|_| animating);
+            let wants_animation =
+                matches!(shown, Shown::Animated | Shown::AnimatedOnce) && raster::animates(effect);
+            let held = frozen_time().filter(|&seconds| {
+                raster::animates(effect)
+                    && (shown == Shown::Animated
+                        || (shown == Shown::AnimatedOnce && seconds < cycle))
+            });
+            let once_done = active_state.is_some_and(|state| state.once_done(cycle, now));
             let resting = image(key, false, held, &spec, cx);
-            let frames = if animating && held.is_none() {
+            let frames = if wants_animation && !once_done && held.is_none() {
                 image(key, true, None, &spec, cx)
             } else {
                 None
@@ -1001,24 +1099,35 @@ impl Element for NameText {
                 point(px(snapped_x), px(snapped_y)),
                 size(px(pixels_w as f32 / scale), px(pixels_h as f32 / scale)),
             );
-            let picked = match (&frames, &resting) {
-                (Some(frames), _) => {
-                    let start = hovers()
-                        .lock()
-                        .ok()
-                        .and_then(|hovers| hovers.get(&self.key).copied())
-                        .unwrap_or_else(clock);
-                    let t = start.elapsed().as_secs_f32() % raster::cycle(effect);
-                    let at = ((t * FRAMES_PER_SECOND) as usize).min(frames.frame_count() - 1);
-                    Some((frames.clone(), at))
+            let frame_pick = if wants_animation && held.is_none() {
+                let mut local = active_state.unwrap_or(ActiveAnimation {
+                    looping: shown == Shown::Animated,
+                    started: None,
+                });
+                let pick = advance_animation(
+                    &mut local,
+                    cycle,
+                    frames.as_ref().map(|frames| frames.frame_count()),
+                    now,
+                );
+                if local.started != active_state.and_then(|state| state.started)
+                    && let Ok(mut active) = active_animations().lock()
+                {
+                    active.insert(self.key.clone(), local);
                 }
-                (None, Some(resting)) => Some((resting.clone(), 0)),
+                pick
+            } else {
+                Some(FramePick::Resting)
+            };
+            let picked = match (frame_pick, &frames, &resting) {
+                (Some(FramePick::Frame(at)), Some(frames), _) => Some((frames.clone(), at, true)),
+                (_, _, Some(resting)) => Some((resting.clone(), 0, false)),
                 _ => None,
             };
-            if let Some((picked, at)) = picked {
+            if let Some((picked, at, keep_ticking)) = picked {
                 let _ = window.paint_image(target, target, Corners::default(), picked, at, false);
                 drawn = true;
-                if animating && held.is_none() {
+                if keep_ticking {
                     window.request_animation_frame();
                 }
             }
@@ -1196,9 +1305,137 @@ mod tests {
             light: false,
             plan: Rc::default(),
         };
-        assert!(name(Display::Font).shown(true) == Shown::Plain);
-        assert!(name(Display::Static).shown(true) == Shown::Resting);
-        assert!(name(Display::FontOnHover).shown(false) == Shown::Plain);
-        assert!(name(Display::Animated).shown(false) == Shown::Animated);
+        assert_eq!(name(Display::Font).shown_with(true, false), Shown::Plain);
+        assert_eq!(
+            name(Display::Static).shown_with(true, false),
+            Shown::Resting
+        );
+        assert_eq!(
+            name(Display::FontOnHover).shown_with(false, false),
+            Shown::Plain
+        );
+        assert_eq!(
+            name(Display::FontOnHover).shown_with(true, false),
+            Shown::Animated
+        );
+        assert_eq!(
+            name(Display::Animated).shown_with(false, false),
+            Shown::Animated
+        );
+        assert_eq!(
+            name(Display::AnimatedOnce).shown_with(false, false),
+            Shown::AnimatedOnce
+        );
+        assert_eq!(
+            name(Display::AnimatedOnce).shown_with(false, true),
+            Shown::Resting
+        );
+    }
+
+    #[test]
+    fn animated_once_progresses_one_cycle_then_rests() {
+        let cycle = 2.0_f32;
+        let count = (cycle * FRAMES_PER_SECOND).round() as usize;
+        let t0 = Instant::now();
+
+        let mut state = next_animation_state(None, Shown::AnimatedOnce, cycle, t0)
+            .expect("AnimatedOnce tracks state");
+        // Cold cache (`None` frames) holds off starting the clock so frame 0 is never skipped.
+        assert_eq!(advance_animation(&mut state, cycle, None, t0), None);
+        assert!(state.started.is_none());
+
+        // `t = 0`: first ready paint starts at frame 0 and keeps ticking.
+        let t_start = t0 + Duration::from_millis(20);
+        assert_eq!(
+            advance_animation(&mut state, cycle, Some(count), t_start),
+            Some(FramePick::Frame(0))
+        );
+        assert!(!state.once_done(cycle, t_start));
+
+        // Mid-cycle (`0.5s < 2.0s`): advances proportionally and keeps ticking.
+        let t_mid = t_start + Duration::from_millis(500);
+        state = next_animation_state(Some(state), Shown::AnimatedOnce, cycle, t_mid)
+            .expect("stays active mid-cycle");
+        assert_eq!(
+            advance_animation(&mut state, cycle, Some(count), t_mid),
+            Some(FramePick::Frame((0.5 * FRAMES_PER_SECOND) as usize))
+        );
+        assert!(!state.once_done(cycle, t_mid));
+
+        // At and past `cycle`: switches to resting and stops requesting animation frames, even without `frames`.
+        let t_end = t_start + Duration::from_secs(2);
+        state = next_animation_state(Some(state), Shown::AnimatedOnce, cycle, t_end)
+            .expect("retains completion timestamp while selected");
+        assert!(state.once_done(cycle, t_end));
+        assert_eq!(
+            advance_animation(&mut state, cycle, None, t_end),
+            Some(FramePick::Resting)
+        );
+        let t_later = t_end + Duration::from_secs(5);
+        assert!(state.once_done(cycle, t_later));
+        assert_eq!(
+            advance_animation(&mut state, cycle, Some(count), t_later),
+            Some(FramePick::Resting)
+        );
+    }
+
+    #[test]
+    fn parent_hover_tracks_start_without_text_hitbox_hover() {
+        let cycle = 2.0_f32;
+        let count = (cycle * FRAMES_PER_SECOND).round() as usize;
+        let name = NameText {
+            key: SharedString::from("dm-name-42"),
+            text: SharedString::from("alice"),
+            styles: DisplayNameStyles::default(),
+            display: Display::Animated,
+            opacity: 1.,
+            light: false,
+            plan: Rc::default(),
+        };
+        let t0 = Instant::now();
+
+        // Pointer enters the DM row over the avatar (`hitbox_hovered == false`), yet `Display::Animated` starts at 0.
+        let shown = name.shown_with(false, false);
+        assert_eq!(shown, Shown::Animated);
+        let mut state = next_animation_state(None, shown, cycle, t0).expect("Animated tracks");
+        assert_eq!(
+            advance_animation(&mut state, cycle, Some(count), t0),
+            Some(FramePick::Frame(0))
+        );
+
+        // Pointer slides onto the text hitbox 500ms later (`hitbox_hovered == true`): animation continues smoothly.
+        let t1 = t0 + Duration::from_millis(500);
+        let shown_on_text = name.shown_with(true, false);
+        state = next_animation_state(Some(state), shown_on_text, cycle, t1).expect("continues");
+        assert_eq!(
+            advance_animation(&mut state, cycle, Some(count), t1),
+            Some(FramePick::Frame((0.5 * FRAMES_PER_SECOND) as usize))
+        );
+
+        // Loops past one full cycle (`2.25s % 2.0s = 0.25s`).
+        let t_loop = t0 + Duration::from_millis(2250);
+        state = next_animation_state(Some(state), Shown::Animated, cycle, t_loop).expect("loops");
+        assert_eq!(
+            advance_animation(&mut state, cycle, Some(count), t_loop),
+            Some(FramePick::Frame((0.25 * FRAMES_PER_SECOND) as usize))
+        );
+
+        // Leaving hover on a selected row after >= 1 cycle (`Animated -> AnimatedOnce`) rests immediately.
+        let once_after =
+            next_animation_state(Some(state), Shown::AnimatedOnce, cycle, t_loop).expect("once");
+        assert!(once_after.once_done(cycle, t_loop));
+
+        // Re-hovering that resting selected row (`AnimatedOnce (done) -> Animated`) restarts cleanly from frame 0.
+        let t_rehover = t_loop + Duration::from_secs(1);
+        let mut restarted =
+            next_animation_state(Some(once_after), Shown::Animated, cycle, t_rehover)
+                .expect("restarts");
+        assert_eq!(
+            advance_animation(&mut restarted, cycle, Some(count), t_rehover),
+            Some(FramePick::Frame(0))
+        );
+
+        // Returning to `Plain` clears state completely.
+        assert!(next_animation_state(Some(restarted), Shown::Plain, cycle, t_rehover).is_none());
     }
 }

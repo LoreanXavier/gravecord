@@ -160,6 +160,7 @@ impl VodPlayer {
     }
 
     /// Replaces any pending source bytes (e.g. offline demo fixtures) before or while starting.
+    #[cfg(any(test, feature = "capture"))]
     pub(crate) fn preload_bytes(&mut self, bytes: Arc<Vec<u8>>) {
         if let Ok(mut shared) = self.sync.shared.lock() {
             shared.preloaded = Some(bytes);

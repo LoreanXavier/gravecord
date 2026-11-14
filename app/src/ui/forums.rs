@@ -2525,20 +2525,7 @@ impl Root {
             (f32::from(anchor.right()) - 370.).max(0.)
         };
         let all = view.match_all;
-        let close = div()
-            .id("forum-menu-backdrop")
-            .absolute()
-            .top_0()
-            .left_0()
-            .size_full()
-            .occlude()
-            .on_click(cx.listener(move |this, _, _, cx| {
-                if let Some(v) = this.forums.get_mut(&id) {
-                    v.menu = None;
-                }
-                cx.notify();
-            }));
-        let mut layer = div().absolute().top_0().left_0().size_full().child(close);
+        let mut layer = div().absolute().top_0().left_0().size_full();
         if menu == "sort" {
             let entries = [
                 ("Sort by", None),
@@ -2553,8 +2540,9 @@ impl Root {
                 ("Reset to default", Some(("reset", 0))),
             ];
             layer =
-                layer.child(
+                layer.child(super::keyboard::outside(
                     div()
+                        .id("forum-sort-popout")
                         .parity_with_border("forum-sort-popout", 1.)
                         .absolute()
                         .left(px(left))
@@ -2638,11 +2626,14 @@ impl Root {
                                     }))
                             },
                         )),
-                );
+                    super::keyboard::Layer::ForumMenu,
+                    cx,
+                ));
         }
         if menu == "tags" {
-            layer = layer.child(
+            layer = layer.child(super::keyboard::outside(
                 div()
+                    .id("forum-tags-popout")
                     .parity_with_border("forum-tags-popout", 1.)
                     .absolute()
                     .left(px(left))
@@ -2766,7 +2757,9 @@ impl Root {
                                 cx.notify();
                             })),
                     ),
-            );
+                super::keyboard::Layer::ForumMenu,
+                cx,
+            ));
         }
         Some(gpui::deferred(layer).into_any_element())
     }

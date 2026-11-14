@@ -509,6 +509,7 @@ impl Root {
                         .border_1()
                         .border_color(tone(call, "--border-subtle"))
                         .bg(tone(call, "--background-surface-higher"))
+                        .child(self.anchor_probe("audio-submenu"))
                         .children(rows),
                 )
                 .into_any_element(),
@@ -797,21 +798,27 @@ impl Root {
                         .child("Voice Settings"),
                 ),
         );
+        let panel =
+            panel.on_mouse_down_out(cx.listener(|this, event: &gpui::MouseDownEvent, _, cx| {
+                let in_sub = this
+                    .audio_menu
+                    .as_ref()
+                    .is_some_and(|menu| menu.sub.is_some())
+                    && this
+                        .tip_anchors
+                        .borrow()
+                        .get("audio-submenu")
+                        .is_some_and(|bounds| bounds.contains(&event.position));
+                if !in_sub
+                    && this.press_outside(super::keyboard::Layer::AudioMenu, cx)
+                    && event.button != gpui::MouseButton::Right
+                {
+                    cx.stop_propagation();
+                }
+            }));
         Some(
-            // A click anywhere else lands on this backdrop and closes the menu (and its submenu).
             deferred(
                 div()
-                    .id("audio-backdrop")
-                    .absolute()
-                    .inset_0()
-                    .occlude()
-                    .on_mouse_down(
-                        MouseButton::Left,
-                        cx.listener(|this, _, _, cx| {
-                            this.audio_menu = None;
-                            cx.notify();
-                        }),
-                    )
                     .child(div().absolute().left(menu.at.x).top(px(top)).child(panel))
                     .children(self.audio_submenu(menu, cx)),
             )

@@ -254,23 +254,15 @@ impl Root {
         };
         Some(
             deferred(
-                div()
-                    .id("emoji-popout-layer")
-                    .absolute()
-                    .top_0()
-                    .left_0()
-                    .size_full()
-                    .on_mouse_down(
-                        gpui::MouseButton::Left,
-                        cx.listener(|this, _, _, cx| this.close_emoji_popout(cx)),
-                    )
-                    .child(
-                        anchored()
-                            .anchor(gpui::Anchor::LeftCenter)
-                            .position(popout_position(open.anchor))
-                            .snap_to_window_with_margin(px(8.))
-                            .child(content),
-                    ),
+                anchored()
+                    .anchor(gpui::Anchor::LeftCenter)
+                    .position(popout_position(open.anchor))
+                    .snap_to_window_with_margin(px(8.))
+                    .child(super::keyboard::outside(
+                        div().id("emoji-popout-card").occlude().child(content),
+                        super::keyboard::Layer::EmojiPopout,
+                        cx,
+                    )),
             )
             .with_priority(1)
             .into_any_element(),

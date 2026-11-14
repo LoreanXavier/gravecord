@@ -131,6 +131,7 @@ impl Root {
             super::history::Route {
                 guild: None,
                 channel: None,
+                favorites: false,
                 nitro: false,
                 guild_guide: false,
                 channel_browser: false,
@@ -145,6 +146,7 @@ impl Root {
 
     /// The part of `open_discover` that history replays also run.
     pub(super) fn set_discover_place(&mut self, place: Place, cx: &mut Context<Self>) {
+        self.favorites_view = false;
         self.guild = None;
         self.channel = None;
         self.nitro_open = false;

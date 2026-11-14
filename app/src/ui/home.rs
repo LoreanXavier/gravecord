@@ -62,6 +62,7 @@ impl Root {
             super::history::Route {
                 guild: None,
                 channel,
+                favorites: false,
                 nitro: false,
                 guild_guide: false,
                 channel_browser: false,
@@ -71,6 +72,7 @@ impl Root {
                 message_requests: false,
             },
         );
+        self.favorites_view = false;
         self.discover.open = false;
         self.shop.open = false;
         self.quests.open = false;
@@ -289,13 +291,25 @@ impl Root {
             .as_ref()
             .filter(|call| call.guild == 0 && call.channel == id)
             .and_then(|_| self.call_timer());
-        let selected = self.channel == Some(id);
+        let selected = self.guild.is_none()
+            && self.channel == Some(id)
+            && !self.nitro_open
+            && !self.shop_active()
+            && !self.quests_active()
+            && !self.message_requests_active();
         let hovered = self.hovered_dm == Some(id);
+        let context_menu_open = self
+            .context
+            .open
+            .as_ref()
+            .is_some_and(|open| open.target == super::context_menu::Target::Dm(id));
+        let row_selected = selected || context_menu_open;
         let avatar = self.images.get(&avatar_source(&recipient).0).cloned();
         let status = self.stores.status(recipient.id).to_owned();
-        let look = row_look(
+        let look = row_look_with_menu(
             selected,
             hovered,
+            context_menu_open,
             self.stores.read_states.mentions(id) > 0,
             marked
                 || self
@@ -357,12 +371,12 @@ impl Root {
                         .items_center()
                         .gap(px(12.))
                         .text_color(color(tint))
-                        // `.interactive_zln_tS:hover`, `:active` and `.interactiveSelected_zln_tS` (834050): a pressed
-                        // row looks like the selected one.
-                        .when(selected, |this| {
+                        // `.interactive_zln_tS:hover`, `:active` and `.interactiveSelected_zln_tS` (834050; `s || eo` in
+                        // 181254): a pressed or menu-open row looks like the selected one.
+                        .when(row_selected, |this| {
                             this.bg(color("--interactive-background-selected"))
                         })
-                        .when(!selected, |this| {
+                        .when(!row_selected, |this| {
                             this.hover(|style| style.bg(color("--interactive-background-hover")))
                                 .active(|style| {
                                     style.bg(color("--interactive-background-selected"))
@@ -374,22 +388,20 @@ impl Root {
                                 .size(px(32.))
                                 // `.muted_TBNqol .avatar_TBNqol`.
                                 .when(look.dimmed, |avatar| avatar.opacity(0.3))
-                                .children(
-                                    self.live_avatar(
-                                        &recipient,
-                                        32.,
-                                        self.hovered_dm == Some(id),
-                                        cx,
-                                    )
-                                    .or_else(|| {
+                                .children(self.live_avatar(&recipient, 32., hovered, cx).or_else(
+                                    || {
+                                        if avatar.is_none() {
+                                            let (k, u) = super::avatar_source(&recipient);
+                                            self.want_image(k, u, cx);
+                                        }
                                         avatar.map(|image| {
                                             img(image)
                                                 .size(px(32.))
                                                 .rounded_full()
                                                 .into_any_element()
                                         })
-                                    }),
-                                )
+                                    },
+                                ))
                                 .child(super::typing_avatar::status_corner(
                                     &status,
                                     typing,
@@ -418,22 +430,26 @@ impl Root {
                                                 .text_size(px(16.))
                                                 .line_height(px(20.))
                                                 .font_weight(look.weight())
-                                                .child(super::name_styles::name(
-                                                    format!("dm-name-{id}"),
-                                                    self.private_channel_name(channel),
-                                                    // 110574: a 1:1 DM's row shows the effect, animated under the pointer.
-                                                    if channel.kind == 1 {
-                                                        self.name_styles(&recipient, None)
-                                                    } else {
-                                                        None
-                                                    }
-                                                    .as_ref(),
-                                                    if self.hovered_dm == Some(id) {
-                                                        super::name_styles::Display::Animated
-                                                    } else {
-                                                        super::name_styles::Display::Static
-                                                    },
-                                                )),
+                                                .child(
+                                                    super::name_styles::name(
+                                                        format!("dm-name-{id}"),
+                                                        self.private_channel_name(channel),
+                                                        // 181254 `eY`: `PLAIN` at rest (`.9` for bold faces), `ANIMATED`
+                                                        // once when selected or its menu is open, looping on hover.
+                                                        if channel.kind == 1 {
+                                                            self.name_styles(&recipient, None)
+                                                        } else {
+                                                            None
+                                                        }
+                                                        .as_ref(),
+                                                        dm_name_display(
+                                                            selected,
+                                                            hovered,
+                                                            context_menu_open,
+                                                        ),
+                                                    )
+                                                    .bold_opacity(DM_BOLD_FONT_OPACITY),
+                                                ),
                                         )
                                         // `clanTag_zln_tS` 4px on; `clanTagMuted_zln_tS` at .3.
                                         .children(recipient.tag.as_ref().map(|tag| {
@@ -850,13 +866,44 @@ impl RowLook {
     }
 }
 
+/// 181254 `eY`: `boldFontOpacity: .9` on a DM row's `UserNameWithEffects`.
+const DM_BOLD_FONT_OPACITY: f32 = 0.9;
+
+/// 181254 `eY`: `effectDisplayType: b || s || eo ? ANIMATED : PLAIN, loop: b`.
+fn dm_name_display(
+    selected: bool,
+    hovered: bool,
+    context_menu_open: bool,
+) -> super::name_styles::Display {
+    if hovered {
+        super::name_styles::Display::Animated
+    } else if selected || context_menu_open {
+        super::name_styles::Display::AnimatedOnce
+    } else {
+        super::name_styles::Display::Font
+    }
+}
+
 /// Module 181254: `eZ = (muted || ignored || blocked) && !(selected || hovered)`, `e$ = mentionCount > 0`.
+#[cfg(test)]
 pub(super) fn row_look(selected: bool, hovered: bool, mentions: bool, quiet: bool) -> RowLook {
+    row_look_with_menu(selected, hovered, false, mentions, quiet)
+}
+
+/// Module 181254 `eY`: `ew.Q2` (`interactiveSelected_zln_tS`) applies for `s || eo` (`selected || context_menu_open`),
+/// while `eZ` (`dimmed`) stays `(muted || ignored || blocked) && !(selected || hovered)`.
+pub(super) fn row_look_with_menu(
+    selected: bool,
+    hovered: bool,
+    context_menu_open: bool,
+    mentions: bool,
+    quiet: bool,
+) -> RowLook {
     let dimmed = quiet && !(selected || hovered);
     let highlighted = mentions && !dimmed;
     let row = if hovered {
         "--interactive-text-hover"
-    } else if selected {
+    } else if selected || context_menu_open {
         "--text-default"
     } else {
         "--text-muted"
@@ -894,7 +941,38 @@ pub(super) fn unread_pill(dimmed: bool) -> AnyElement {
 
 #[cfg(test)]
 mod tests {
-    use super::{rail_icon_crop, row_look};
+    use super::super::name_styles::Display;
+    use super::{
+        DM_BOLD_FONT_OPACITY, dm_name_display, rail_icon_crop, row_look, row_look_with_menu,
+    };
+
+    #[test]
+    fn dm_row_name_display_matches_official_states() {
+        assert!((DM_BOLD_FONT_OPACITY - 0.9).abs() < f32::EPSILON);
+        // Idle and unread at rest: `PLAIN` (`Display::Font`), no colour/stroke/glow effect.
+        assert_eq!(dm_name_display(false, false, false), Display::Font);
+        // Selected or DM context menu open (not hovered): `ANIMATED` with `loop: false` (`Display::AnimatedOnce`).
+        assert_eq!(dm_name_display(true, false, false), Display::AnimatedOnce);
+        assert_eq!(dm_name_display(false, false, true), Display::AnimatedOnce);
+        assert_eq!(dm_name_display(true, false, true), Display::AnimatedOnce);
+        // Hovered (alone or while selected / menu open): `ANIMATED` with `loop: true` (`Display::Animated`).
+        assert_eq!(dm_name_display(false, true, false), Display::Animated);
+        assert_eq!(dm_name_display(true, true, false), Display::Animated);
+        assert_eq!(dm_name_display(false, true, true), Display::Animated);
+
+        // `ew.Q2` on context-menu-open DM row (`s || eo`), while `dimmed` (`eZ`) only clears on `s || b`.
+        let menu_look = row_look_with_menu(false, false, true, false, false);
+        assert_eq!(
+            (menu_look.row, menu_look.text),
+            ("--text-default", "--text-default")
+        );
+        let muted_menu_look = row_look_with_menu(false, false, true, false, true);
+        assert!(muted_menu_look.dimmed);
+        assert_eq!(
+            (muted_menu_look.row, muted_menu_look.text),
+            ("--text-default", "--text-muted")
+        );
+    }
 
     #[test]
     fn an_unread_dm_row_is_highlighted_unless_muted_and_at_rest() {

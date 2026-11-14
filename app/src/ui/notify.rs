@@ -321,9 +321,9 @@ impl Root {
                             .borrow()
                             .get("submenu")
                             .is_some_and(|bounds| bounds.contains(&event.position));
-                        if !in_submenu {
+                        if !in_submenu && this.press_outside(super::keyboard::Layer::Notify, cx) {
                             this.notify_submenu = None;
-                            if this.press_outside(super::keyboard::Layer::Notify, cx) {
+                            if event.button != gpui::MouseButton::Right {
                                 cx.stop_propagation();
                             }
                         }
@@ -496,9 +496,9 @@ impl Root {
                             .borrow()
                             .get("submenu")
                             .is_some_and(|bounds| bounds.contains(&event.position));
-                        if !in_submenu {
+                        if !in_submenu && this.press_outside(super::keyboard::Layer::Notify, cx) {
                             this.notify_submenu = None;
-                            if this.press_outside(super::keyboard::Layer::Notify, cx) {
+                            if event.button != gpui::MouseButton::Right {
                                 cx.stop_propagation();
                             }
                         }

@@ -263,10 +263,12 @@ impl Root {
             self.guild_guide_scroll.set_offset(Default::default());
         }
         let mut to = from;
+        to.favorites = false;
         to.channel = None;
         to.guild_guide = true;
         to.channel_browser = false;
         self.history.visit(from, to);
+        self.favorites_view = false;
         self.channel = None;
         self.member_view = None;
         self.guild_guide_open = true;

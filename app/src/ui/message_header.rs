@@ -501,23 +501,15 @@ impl Root {
         );
         Some(
             deferred(
-                div()
-                    .id("header-popout-layer")
-                    .absolute()
-                    .top_0()
-                    .left_0()
-                    .size_full()
-                    .on_mouse_down(
-                        gpui::MouseButton::Left,
-                        cx.listener(|this, _, _, cx| this.close_header_popout(cx)),
-                    )
-                    .child(
-                        anchored()
-                            .anchor(gpui::Anchor::LeftCenter)
-                            .position(at)
-                            .snap_to_window_with_margin(px(8.))
-                            .child(card),
-                    ),
+                anchored()
+                    .anchor(gpui::Anchor::LeftCenter)
+                    .position(at)
+                    .snap_to_window_with_margin(px(8.))
+                    .child(super::keyboard::outside(
+                        div().id("header-popout-card").occlude().child(card),
+                        super::keyboard::Layer::HeaderPopout,
+                        cx,
+                    )),
             )
             .with_priority(1)
             .into_any_element(),

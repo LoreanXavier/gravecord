@@ -7,13 +7,13 @@
 //! runs 400ms on `--custom-bezier: cubic-bezier(.36,.35,.1,1.23)` under `.full-motion`; the line clamp comes back
 //! only after the 400ms (`-webkit-line-clamp 0s .4s allow-discrete`). The Orbs card's art scales to .9.
 //!
-//! Not drawn: the 48px backdrop blur behind the text (`backdrop-filter`), the Rive glow of a deep-linked card, the
-//! featured layout (no card here is featured) and keyboard focus (`:focus-within`).
+//! Not drawn: the Rive glow of a deep-linked card, the featured layout (no card here is featured) and keyboard focus
+//! (`:focus-within`).
 
 use super::super::{Root, SANS, color, icon, kerning, motion};
 use gpui::{
-    AnyElement, Context, FontWeight, IntoElement, ObjectFit, SharedString, TextRun, Window, div,
-    font, img, linear_color_stop, linear_gradient, prelude::*, px,
+    AnyElement, Context, FontWeight, IntoElement, ObjectFit, SharedString, TextRun, Window, canvas,
+    div, font, img, linear_color_stop, linear_gradient, prelude::*, px,
 };
 use motion::Transitions as _;
 
@@ -243,6 +243,23 @@ impl Root {
                 .right(px(-PAD))
                 .top_0()
                 .bottom(px(-PAD))
+                .child(
+                    canvas(
+                        |_, _, _| {},
+                        move |bounds, _, window, _| {
+                            window.with_element_opacity(Some(backdrop), |window| {
+                                window.paint_backdrop_blur_with_fade(
+                                    bounds,
+                                    gpui::Corners::default(),
+                                    px(40.),
+                                    px(80.),
+                                );
+                            });
+                        },
+                    )
+                    .absolute()
+                    .inset_0(),
+                )
                 .child(band(0., 12., 0., 0.35))
                 .child(band(12., 24., 0.35, 0.7))
                 .child(band(36., 24., 0.7, 0.92))

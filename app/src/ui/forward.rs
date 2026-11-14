@@ -80,6 +80,8 @@ impl Root {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        let (key, url) = avatar_source(&user);
+        self.request_image(key, url);
         self.open_forward_with(None, Some(user), window, cx);
     }
 
@@ -399,9 +401,15 @@ impl Root {
                     .iter()
                     .find(|known| known.id == channel);
                 let user = dm.and_then(|dm| self.stores.dm_recipient(dm)).cloned();
-                let picture = user
-                    .as_ref()
-                    .and_then(|user| self.images.get(&avatar_source(user).0).cloned());
+                let picture = user.as_ref().and_then(|user| {
+                    let (key, url) = avatar_source(user);
+                    let image = self.images.get(&key).cloned();
+                    if image.is_none() {
+                        self.want_image(key, url, cx);
+                    }
+                    image
+                });
+                let loading_avatar = picture.is_none();
                 let presence = user
                     .as_ref()
                     .and_then(|user| self.stores.presences.get(&user.id).cloned())
@@ -409,6 +417,9 @@ impl Root {
                 let icon = div()
                     .relative()
                     .size(px(32.))
+                    .when(loading_avatar, |this| {
+                        this.rounded_full().bg(color("--background-mod-subtle"))
+                    })
                     .children(picture.map(|picture| img(picture).size(px(32.)).rounded_full()))
                     .child(status_dot(&presence, "--background-surface-high"))
                     .into_any_element();
@@ -607,7 +618,7 @@ impl Root {
             (Some(message), _) => self
                 .preview_text(&super::first_spans(&message.content), false)
                 .into_any_element(),
-            (None, Some(user)) => self.profile_preview(user),
+            (None, Some(user)) => self.profile_preview(user, cx),
             (None, None) => match forward.clip.as_ref() {
                 Some(clip) => self.clips_share_preview(clip),
                 None => div().into_any_element(),
@@ -980,8 +991,13 @@ impl Root {
     }
 
     /// `preview_0XXhWj`: the shared user, avatar 40 with status, display name and tag.
-    fn profile_preview(&self, user: &dc_state::User) -> AnyElement {
-        let picture = self.images.get(&avatar_source(user).0).cloned();
+    fn profile_preview(&self, user: &dc_state::User, cx: &mut Context<Self>) -> AnyElement {
+        let (avatar_key, avatar_url) = avatar_source(user);
+        let picture = self.images.get(&avatar_key).cloned();
+        if picture.is_none() {
+            self.want_image(avatar_key, avatar_url, cx);
+        }
+        let loading_avatar = picture.is_none();
         let presence = self
             .stores
             .presences
@@ -997,6 +1013,9 @@ impl Root {
                     .relative()
                     .size(px(40.))
                     .rounded_full()
+                    .when(loading_avatar, |this| {
+                        this.bg(color("--background-mod-subtle"))
+                    })
                     .children(picture.map(|picture| img(picture).size(px(40.)).rounded_full()))
                     .child(super::status_dot_40(&presence, "--background-surface-high")),
             )

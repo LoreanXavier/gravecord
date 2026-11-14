@@ -1276,6 +1276,22 @@ impl Root {
                 }
                 if name.starts_with("RELATIONSHIP_") {
                     self.rebuild_rows();
+                    self.request_images();
+                }
+                if matches!(
+                    name.as_str(),
+                    "CHANNEL_CREATE"
+                        | "CHANNEL_UPDATE"
+                        | "CHANNEL_UPDATES"
+                        | "CHANNEL_RECIPIENT_ADD"
+                ) {
+                    self.request_images();
+                    self.request_group_images();
+                }
+                if matches!(name.as_str(), "USER_UPDATE" | "READY_SUPPLEMENTAL")
+                    || (name == "PRESENCE_UPDATE" && data["user"].get("avatar").is_some())
+                {
+                    self.request_images();
                 }
                 if name == "READY" {
                     // The account's saved theme is read again by the theme rules at the next frame.
@@ -1817,7 +1833,19 @@ impl Root {
                         self.request_image(image, url);
                     }
                 }
+                if key == "affinities" {
+                    let users: Vec<User> = group_dm::affinities(&self.fetched[&key])
+                        .into_iter()
+                        .filter_map(|(id, _)| self.stores.users.get(&id).cloned())
+                        .collect();
+                    for user in users {
+                        let (image, url) = avatar_source(&user);
+                        self.request_image(image, url);
+                    }
+                }
                 if let Some(user) = profile {
+                    let payload = self.fetched[&key]["user"].clone();
+                    self.stores.merge_user(&payload);
                     self.request_profile_images(user);
                 }
                 if frecency {
@@ -1944,6 +1972,7 @@ impl Root {
             history::Route {
                 guild: Some(guild),
                 channel,
+                favorites: false,
                 nitro: false,
                 guild_guide: false,
                 channel_browser: false,
@@ -1953,6 +1982,7 @@ impl Root {
                 message_requests: false,
             },
         );
+        self.favorites_view = false;
         self.discover.open = false;
         self.nitro_open = false;
         self.guild_guide_open = false;
@@ -2043,15 +2073,13 @@ impl Root {
             );
         }
         let mut users: Vec<User> = self.stores.current_user.iter().cloned().collect();
-        users.extend(self.stores.friends().into_iter().cloned());
-        users.extend(self.stage_people());
         users.extend(
             self.stores
-                .private_channels
-                .iter()
-                .filter_map(|channel| self.stores.dm_recipient(channel))
+                .relationship_and_channel_users()
+                .into_iter()
                 .cloned(),
         );
+        users.extend(self.stage_people());
         let mut media = Vec::new();
         // The messages thread starters stand for are drawn in their place, so their people and media are needed too.
         let starters: Vec<Message> = self
@@ -3487,26 +3515,75 @@ impl Root {
             )
             .child(
                 div()
+                    .occlude()
                     .absolute()
                     .right(px(0.))
                     .top(px(0.))
                     .flex()
                     .items_center()
-                    .child(
-                        self.title_stop(bar_button("inbox", "inbox"), "inbox", 6., cx)
+                    .child({
+                        let inbox_open = self.inbox.is_some();
+                        let overdue = self.has_overdue_reminder();
+                        let inbox = self
+                            .title_stop(bar_button("inbox", "inbox", inbox_open), "inbox", 6., cx)
                             .relative()
-                            .mr(px(12.))
                             .on_click(cx.listener(|this, _, _, cx| this.toggle_inbox(cx)))
-                            .child(self.anchor_probe("bar-inbox")),
-                    )
-                    .child(
+                            .when(overdue, |button| {
+                                // `189252` + `573435` `HEADER_BAR_BADGE_BOTTOM` + `687828` `.badge_fErCLM`: a 6px
+                                // `--background-feedback-notification` dot in a 9px cutout at the icon's bottom right.
+                                button.child(
+                                    div()
+                                        .absolute()
+                                        .right(px(3.))
+                                        .bottom(px(3.))
+                                        .size(px(9.))
+                                        .rounded_full()
+                                        .bg(color("--background-base-lowest"))
+                                        .group_hover(SharedString::from("bar-inbox"), |style| {
+                                            style.bg(color("--background-mod-normal"))
+                                        })
+                                        .flex()
+                                        .items_center()
+                                        .justify_center()
+                                        .child(
+                                            div()
+                                                .size(px(6.))
+                                                .rounded_full()
+                                                .bg(color("--background-feedback-notification")),
+                                        ),
+                                )
+                            })
+                            .child(self.anchor_probe("bar-inbox"));
+                        if inbox_open {
+                            inbox.occlude().mr(px(12.)).into_any_element()
+                        } else {
+                            self.with_tip(
+                                "title-inbox",
+                                Tip::text(dc_intl::tr("Inbox"), Side::Bottom),
+                                inbox,
+                                cx,
+                            )
+                            .occlude()
+                            .mr(px(12.))
+                            .into_any_element()
+                        }
+                    })
+                    .child({
                         // `ar` in module 596339: an anchor to the Help Center (`tP.C`, https:// + support host).
-                        self.title_stop(bar_button("help", "help"), "help", 6., cx)
+                        let help = self
+                            .title_stop(bar_button("help", "help", false), "help", 6., cx)
                             .relative()
-                            // The bar's items sit 12 apart (`trailing_3zSH5d`); the update button, when up, follows.
-                            .mr(px(if update_button.is_some() { 12. } else { 16. }))
-                            .on_click(|_, _, cx| cx.open_url("https://support.discord.com")),
-                    )
+                            .on_click(|_, _, cx| cx.open_url("https://support.discord.com"));
+                        // The bar's items sit 12 apart (`trailing_3zSH5d`); the update button, when up, follows.
+                        self.with_tip(
+                            "title-help",
+                            Tip::text(dc_intl::tr("Help"), Side::Bottom),
+                            help,
+                            cx,
+                        )
+                        .occlude()
+                        .mr(px(if update_button.is_some() { 12. } else { 16. }))
+                    })
                     .children(update_button)
                     .child(
                         div()
@@ -5079,20 +5156,17 @@ impl Root {
                         .line_height(px(20.))
                         .font_weight(FontWeight(500.))
                         .text_color(color("--text-strong"))
-                        // 181254: a DM's title draws the other person's name style, the effect only under the pointer, and
-                        // the bold fonts at 0.9 opacity.
-                        .child(
-                            name_styles::name(
-                                "dm-title",
-                                name,
-                                dm_user
-                                    .as_ref()
-                                    .and_then(|user| self.name_styles(user, None))
-                                    .as_ref(),
-                                name_styles::Display::FontOnHover,
-                            )
-                            .bold_opacity(0.9),
-                        ),
+                        // 849205: a DM's header title applies only the other person's display-name font class (`73392`),
+                        // never the colour/animation effect.
+                        .child(name_styles::name(
+                            "dm-title",
+                            name,
+                            dm_user
+                                .as_ref()
+                                .and_then(|user| self.name_styles(user, None))
+                                .as_ref(),
+                            name_styles::Display::Font,
+                        )),
                 )
             })
             // `renderFollowButton` (module 353428 `zF`): right after the title of an announcement channel.
@@ -9496,9 +9570,10 @@ fn status_label(status: &str) -> &'static str {
 /// The reaction picker opens beside the add button, its right edge this far right of the button's.
 const PICKER_REACTION_OFFSET: f32 = picker::PICKER_WIDTH + 8.;
 
-/// `clickable_fErCLM`: a 24px top bar button, `--icon-muted`, on hover `--background-mod-normal` behind
-/// `--interactive-icon-hover`.
-fn bar_button(id: &'static str, name: &'static str) -> gpui::Stateful<gpui::Div> {
+/// `clickable_fErCLM` (`687828.*.css`): a 24px top bar button, `--icon-muted`, on hover `--background-mod-normal`
+/// behind `--interactive-icon-hover`, active or `selected` `--interactive-icon-active`. `.occlude()` keeps presses off
+/// the titlebar's drag area (`trailing_3zSH5d`: `-webkit-app-region: no-drag`).
+fn bar_button(id: &'static str, name: &'static str, selected: bool) -> gpui::Stateful<gpui::Div> {
     let group = SharedString::from(format!("bar-{id}"));
     div()
         .id(id)
@@ -9513,11 +9588,21 @@ fn bar_button(id: &'static str, name: &'static str) -> gpui::Stateful<gpui::Div>
         .child(
             svg()
                 .path(format!("icons/{name}.svg"))
+                .id(SharedString::from(format!("{id}-icon")))
                 .size(px(18.))
                 .flex_none()
-                .text_color(color("--icon-muted"))
-                .group_hover(group, |style| {
-                    style.text_color(color("--interactive-icon-hover"))
+                .text_color(color(if selected {
+                    "--interactive-icon-active"
+                } else {
+                    "--icon-muted"
+                }))
+                .when(!selected, |icon| {
+                    icon.group_hover(group.clone(), |style| {
+                        style.text_color(color("--interactive-icon-hover"))
+                    })
+                    .group_active(group, |style| {
+                        style.text_color(color("--interactive-icon-active"))
+                    })
                 }),
         )
 }

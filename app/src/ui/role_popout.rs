@@ -355,27 +355,19 @@ impl Root {
         };
         Some(
             deferred(
-                div()
-                    .id("role-popout-layer")
-                    .absolute()
-                    .top_0()
-                    .left_0()
-                    .size_full()
-                    .on_mouse_down(
-                        gpui::MouseButton::Left,
-                        cx.listener(|this, _, _, cx| this.close_role_popout(cx)),
-                    )
-                    .child(
-                        anchored()
-                            .anchor(corner)
-                            .position(at)
-                            .snap_to_window_with_margin(px(8.))
-                            .child(
-                                div()
-                                    .popout("role-popout", PopKind::Translate, side)
-                                    .child(popout),
-                            ),
-                    ),
+                anchored()
+                    .anchor(corner)
+                    .position(at)
+                    .snap_to_window_with_margin(px(8.))
+                    .child(super::keyboard::outside(
+                        div()
+                            .id("role-popout-card")
+                            .occlude()
+                            .popout("role-popout", PopKind::Translate, side)
+                            .child(popout),
+                        super::keyboard::Layer::RolePopout,
+                        cx,
+                    )),
             )
             .with_priority(1)
             .into_any_element(),

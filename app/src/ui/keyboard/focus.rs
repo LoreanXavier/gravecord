@@ -253,6 +253,8 @@ pub(in crate::ui) struct State {
     picker_search: Option<FocusHandle>,
     /// The last input was the keyboard: rings show on focused controls only then.
     pub(in crate::ui) keyboard_modality: bool,
+    /// One top popover layer already closed on the current mouse press (`capture_any_mouse_down` resets it).
+    pub(in crate::ui) outside_closed_this_press: bool,
     /// The server before the current one, for `TOGGLE_PREVIOUS_GUILD`.
     pub(super) previous_guild: Option<Id>,
     pub(super) current_guild: Option<Id>,
@@ -745,6 +747,7 @@ impl Root {
 impl State {
     pub(in crate::ui) fn pointer_used(&mut self) {
         self.set_modality(false);
+        self.outside_closed_this_press = false;
     }
 
     pub(in crate::ui) fn keyboard_mode_is_on(&self) -> bool {
@@ -1032,5 +1035,14 @@ mod tests {
         stack.observe(1, &"composer");
         stack.observe(2, &"menu");
         assert_eq!(stack.observe(0, &"x"), Some("composer"));
+    }
+
+    #[test]
+    fn pointer_used_resets_outside_closed_this_press_latch() {
+        let mut state = State::default();
+        assert!(!state.outside_closed_this_press);
+        state.outside_closed_this_press = true;
+        state.pointer_used();
+        assert!(!state.outside_closed_this_press);
     }
 }

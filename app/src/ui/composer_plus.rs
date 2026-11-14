@@ -381,8 +381,23 @@ impl Root {
             .on_mouse_down(
                 MouseButton::Left,
                 cx.listener(|this, _, _, cx| {
-                    this.plus_menu = false;
-                    cx.notify();
+                    if this.press_outside(super::keyboard::Layer::PlusMenu, cx) {
+                        cx.stop_propagation();
+                    }
+                }),
+            )
+            .on_mouse_down(
+                MouseButton::Middle,
+                cx.listener(|this, _, _, cx| {
+                    if this.press_outside(super::keyboard::Layer::PlusMenu, cx) {
+                        cx.stop_propagation();
+                    }
+                }),
+            )
+            .on_mouse_down(
+                MouseButton::Right,
+                cx.listener(|this, _, _, cx| {
+                    this.press_outside(super::keyboard::Layer::PlusMenu, cx);
                 }),
             )
             .child(menu)

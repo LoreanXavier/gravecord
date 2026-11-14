@@ -1243,15 +1243,17 @@ impl Root {
                     }])
                     .on_mouse_down_out(cx.listener(
                         move |this, event: &gpui::MouseDownEvent, _, cx| {
-                            let on_field = this
-                                .tip_anchors
-                                .borrow()
-                                .get(&probe_key(field))
-                                .is_some_and(|bounds| {
-                                    bounds.dilate(px(1.)).contains(&event.position)
-                                });
+                            let on_field = event.button == gpui::MouseButton::Left
+                                && this
+                                    .tip_anchors
+                                    .borrow()
+                                    .get(&probe_key(field))
+                                    .is_some_and(|bounds| {
+                                        bounds.dilate(px(1.)).contains(&event.position)
+                                    });
                             if !on_field
                                 && this.press_outside(super::keyboard::Layer::SearchFilters, cx)
+                                && event.button != gpui::MouseButton::Right
                             {
                                 cx.stop_propagation();
                             }

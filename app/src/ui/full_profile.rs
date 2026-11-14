@@ -204,9 +204,25 @@ impl Root {
         let Some(open) = self.full_profile.as_ref() else {
             return;
         };
-        let user = open.user;
+        let (user, open_guild) = (open.user, open.guild);
         if key == format!("profile:{user}") {
-            if let Some(guild) = open.guild
+            let parsed_user = {
+                if let Some(body) = self.fetched.get(key)
+                    && body["user"].is_object()
+                {
+                    self.stores.merge_user(&body["user"]).cloned()
+                } else {
+                    None
+                }
+            };
+            if let Some(parsed_user) = parsed_user {
+                let (image, url) = avatar_source(&parsed_user);
+                self.request_image(image, url);
+                if let Some(url) = parsed_user.tag.as_ref().and_then(|tag| tag.badge_url()) {
+                    self.request_image(url.clone(), url);
+                }
+            }
+            if let Some(guild) = open_guild
                 && let Some(body) = self.fetched.get(key)
                 && body["guild_member_profile"]["guild_id"].as_str()
                     == Some(guild.to_string().as_str())
@@ -979,7 +995,11 @@ impl Root {
         } else {
             "--black"
         };
-        let avatar = self.images.get(&avatar_source(&user).0).cloned();
+        let (avatar_key, avatar_url) = avatar_source(&user);
+        let avatar = self.images.get(&avatar_key).cloned();
+        if avatar.is_none() {
+            self.want_image(avatar_key, avatar_url, cx);
+        }
         let presence = self.stores.status(id).to_owned();
         let friends: Vec<dc_state::User> = body
             .and_then(|body| body["mutual_friends"].as_array())
@@ -1472,7 +1492,11 @@ impl Root {
                 .flex_col()
                 .gap(px(12.))
                 .children(friends.into_iter().map(|friend| {
-                    let picture = self.images.get(&avatar_source(&friend).0).cloned();
+                    let (avatar_key, avatar_url) = avatar_source(&friend);
+                    let picture = self.images.get(&avatar_key).cloned();
+                    if picture.is_none() {
+                        self.want_image(avatar_key, avatar_url, cx);
+                    }
                     let status = self
                         .stores
                         .presences

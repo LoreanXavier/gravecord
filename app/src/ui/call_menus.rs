@@ -45,7 +45,10 @@ fn keeps_open(run: &Run) -> bool {
             | Run::ShowOwnCamera
             | Run::DisableVideo(_)
             | Run::ShareAudio
-            | Run::Context(Act::VoiceMute | Act::VoiceDeafen | Act::SoundboardMute, _)
+            | Run::Context(
+                Act::VoiceMute | Act::VoiceDeafen | Act::SoundboardMute | Act::DisableVideo,
+                _
+            )
     )
 }
 
@@ -474,7 +477,21 @@ pub(super) fn user_tile_items(
     let copy_user = person_rows(person, target, &[Act::CopyId]);
     match kind {
         // Module 107632 with `showMediaItems`, `showChannelCallItems` and `showChatItems: false`.
-        CallKind::Guild { .. } => {
+        CallKind::Guild { stage } => {
+            let stage_group = if stage {
+                person_rows(
+                    person,
+                    target,
+                    &[
+                        Act::StageSpeak,
+                        Act::StageInvite,
+                        Act::StageLeave,
+                        Act::StageMoveToAudience,
+                    ],
+                )
+            } else {
+                Vec::new()
+            };
             let first: Vec<Act> = social
                 .iter()
                 .copied()
@@ -485,6 +502,7 @@ pub(super) fn user_tile_items(
             media.extend(video_background_row(facts));
             media.extend(person_rows(person, target, &people));
             groups(vec![
+                stage_group,
                 person_rows(person, target, &first),
                 volume,
                 media,
@@ -535,10 +553,18 @@ pub(super) fn user_tile_items(
                     Run::CopyText(id.to_string()),
                 )));
             }
+            let fav_removed = channel
+                .iter()
+                .any(|row| row.act == Act::Favorite && row.danger);
             let mut pins = person_rows(channel, channel_target, &[Act::PinDm]);
-            if !facts.me {
+            if !facts.me && !fav_removed {
                 pins.extend(person_rows(channel, channel_target, &[Act::Favorite]));
             }
+            let remove_fav = if !facts.me && fav_removed {
+                person_rows(channel, channel_target, &[Act::Favorite])
+            } else {
+                Vec::new()
+            };
             groups(vec![
                 person_rows(channel, channel_target, &[Act::MarkRead]),
                 pins,
@@ -547,6 +573,7 @@ pub(super) fn user_tile_items(
                 media,
                 person_rows(channel, channel_target, &[Act::Mute]),
                 channel_call_rows(facts),
+                remove_fav,
                 copy,
             ])
         }
@@ -967,12 +994,22 @@ impl Root {
         }
     }
 
-    /// A press outside a call popup closes it. The press goes no further (the layer rule of module 82038), unless it is
-    /// on the call bar, where it is the press of the control under it.
-    pub(super) fn close_call_popup(&mut self, position: Point<Pixels>, cx: &mut Context<Self>) {
+    /// A press outside a call popup closes it. Non-right presses go no further (the layer rule of module 82038), unless
+    /// on the call bar where it is the press of the control under it; right-clicks continue so they retarget in one click.
+    pub(super) fn close_call_popup(
+        &mut self,
+        event: &gpui::MouseDownEvent,
+        cx: &mut Context<Self>,
+    ) {
+        if self.keys.outside_closed_this_press {
+            return;
+        }
+        self.keys.outside_closed_this_press = true;
         self.vv.menu = None;
         self.vv.tile_menu = None;
-        if self.vv.bar_press.get() != Some(position) {
+        if event.button != gpui::MouseButton::Right
+            && self.vv.bar_press.get() != Some(event.position)
+        {
             cx.stop_propagation();
         }
         cx.notify();
@@ -1039,8 +1076,12 @@ impl Root {
                 user,
                 guild: (guild != 0).then_some(guild),
             };
-            // The person menu's own rows, with the media rows it shows in a voice row.
-            self.context_voice_row();
+            // The person menu's own rows, with the media rows it shows in a voice row (and Stage items on a Stage).
+            if kind == (CallKind::Guild { stage: true }) {
+                self.context_stage_tile();
+            } else {
+                self.context_voice_row();
+            }
             self.open_context_menu(target, at, cx);
             person = rows_of(self.context.open.take().map(|open| open.items));
             person_target = Some(target);
@@ -1051,6 +1092,7 @@ impl Root {
                 channel_target = Some(target);
             }
         }
+        self.close_all_context_menus();
         self.clear_tip();
         self.menu_scroll.set_offset(gpui::point(px(0.), px(0.)));
         self.vv.menu = Some(match subject {
@@ -1498,7 +1540,7 @@ impl Root {
                                         .as_ref()
                                         .is_some_and(|open| open.sub.is_some());
                                 if !in_sub {
-                                    this.close_call_popup(event.position, cx);
+                                    this.close_call_popup(event, cx);
                                 }
                             },
                         ))
@@ -1945,7 +1987,7 @@ pub(super) fn video_disabled(user: Id) -> bool {
         .is_some_and(|stored| stored[user.to_string()].as_bool() == Some(true))
 }
 
-fn set_video_disabled(user: Id, on: bool) {
+pub(super) fn set_video_disabled(user: Id, on: bool) {
     let mut stored = crate::storage::get(VIDEO_DISABLED).unwrap_or_else(|| serde_json::json!({}));
     if let Some(map) = stored.as_object_mut() {
         if on {
@@ -2143,6 +2185,49 @@ mod tests {
              Ignore; Block; | Mute @them; | ~Pop Out User; Show Non-Video Participants [x]; \
              | Copy User ID; Copy Channel ID"
         );
+
+        let mut fav_removed = row(Act::Favorite, "Remove from Favorites");
+        fav_removed.danger = true;
+        let channel_fav = vec![
+            row(Act::MarkRead, "Mark As Read"),
+            row(Act::PinDm, "Pin DM"),
+            fav_removed,
+            row(Act::CloseDm, "Close DM"),
+            row(Act::Mute, "Mute @them"),
+        ];
+        let items_fav = user_tile_items(
+            CallKind::Dm,
+            &facts,
+            &person(),
+            Some(Target::User {
+                user: 2,
+                guild: None,
+            }),
+            &channel_fav,
+            Some(Target::Dm(9)),
+        );
+        assert_eq!(
+            describe(&items_fav),
+            "Mark As Read; | Pin DM; | Profile; Start a Call; Add Note; Close DM; \
+             | User Volume <0.50>; | Apps; Mute [ ]; Mute Soundboard [ ]; Disable Video [ ]; Add Friend; \
+             Ignore; Block; | Mute @them; | ~Pop Out User; Show Non-Video Participants [x]; \
+             | Remove from Favorites; | Copy User ID; Copy Channel ID"
+        );
+    }
+
+    #[test]
+    fn a_stage_speaker_tile_starts_with_stage_actions_before_profile() {
+        let mut rows = vec![row(Act::StageMoveToAudience, "Move to Audience")];
+        rows.extend(person());
+        let items = user_tile_items(
+            CallKind::Guild { stage: true },
+            &other(),
+            &rows,
+            TARGET,
+            &[],
+            None,
+        );
+        assert!(describe(&items).starts_with("Move to Audience; | Profile; Message"));
     }
 
     #[test]

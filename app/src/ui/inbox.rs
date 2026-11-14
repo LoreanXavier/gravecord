@@ -295,7 +295,10 @@ impl Root {
                     .borrow()
                     .get("inbox-filter")
                     .is_some_and(|bounds| bounds.contains(&event.position));
-                if !on_button && this.press_outside(super::keyboard::Layer::MentionsFilter, cx) {
+                if !on_button
+                    && this.press_outside(super::keyboard::Layer::MentionsFilter, cx)
+                    && event.button != gpui::MouseButton::Right
+                {
                     cx.stop_propagation();
                 }
             }))
@@ -1472,8 +1475,10 @@ impl Root {
             }])
             .flex()
             .flex_col()
-            .on_mouse_down_out(cx.listener(|this, _, _, cx| {
-                if this.press_outside(super::keyboard::Layer::Inbox, cx) {
+            .on_mouse_down_out(cx.listener(|this, event: &gpui::MouseDownEvent, _, cx| {
+                if this.press_outside(super::keyboard::Layer::Inbox, cx)
+                    && event.button != gpui::MouseButton::Right
+                {
                     cx.stop_propagation();
                 }
             }))
@@ -1581,6 +1586,11 @@ impl Root {
 }
 
 impl Root {
+    /// `SavedMessagesStore.hasOverdueReminder` (module 85109 / 938483): whether any saved reminder is past due.
+    pub(super) fn has_overdue_reminder(&self) -> bool {
+        has_overdue_reminder_at(self.stores.saved.values(), chrono::Utc::now())
+    }
+
     /// The snooze menu under the card's button: its label, the times of the reminder menu and Custom...
     pub(super) fn snooze_layer(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
         let (channel, message, overdue, at) = self.snooze_menu?;
@@ -1644,13 +1654,6 @@ impl Root {
             .top_0()
             .left_0()
             .size_full()
-            .on_mouse_down(
-                gpui::MouseButton::Left,
-                cx.listener(|this, _, _, cx| {
-                    this.snooze_menu = None;
-                    cx.notify();
-                }),
-            )
             .child(
                 div()
                     .id("snooze-menu")
@@ -1666,10 +1669,27 @@ impl Root {
                     .bg(color("--background-surface-high"))
                     .flex()
                     .flex_col()
+                    .on_mouse_down_out(cx.listener(|this, event: &gpui::MouseDownEvent, _, cx| {
+                        this.snooze_menu = None;
+                        cx.notify();
+                        if event.button != gpui::MouseButton::Right {
+                            cx.stop_propagation();
+                        }
+                    }))
                     .children(rows),
             );
         Some(gpui::deferred(layer).with_priority(3).into_any_element())
     }
+}
+
+fn has_overdue_reminder_at<'a>(
+    saved: impl IntoIterator<Item = &'a Option<String>>,
+    now: chrono::DateTime<chrono::Utc>,
+) -> bool {
+    saved.into_iter().flatten().any(|due| {
+        chrono::DateTime::parse_from_rfc3339(due)
+            .is_ok_and(|parsed| parsed.with_timezone(&chrono::Utc) <= now)
+    })
 }
 
 /// Removes the listed message ids from a mentions answer; true when anything went.
@@ -1729,5 +1749,16 @@ mod tests {
         let entries = saved_entries(&body);
         assert_eq!(entries.len(), 1);
         assert_eq!(entries[0].1.as_deref(), Some("2026-11-08T03:00:00+00:00"));
+    }
+
+    #[test]
+    fn overdue_reminder_badge_tracks_past_due_reminders() {
+        let now = chrono::DateTime::parse_from_rfc3339("2026-11-14T02:00:00+00:00")
+            .unwrap()
+            .with_timezone(&chrono::Utc);
+        let bookmarks_and_future = [None, Some("2026-11-14T03:00:00+00:00".to_owned())];
+        assert!(!has_overdue_reminder_at(&bookmarks_and_future, now));
+        let past_due = [None, Some("2026-11-14T01:59:59+00:00".to_owned())];
+        assert!(has_overdue_reminder_at(&past_due, now));
     }
 }

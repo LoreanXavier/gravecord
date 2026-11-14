@@ -180,6 +180,7 @@ impl VideoHub {
     }
 
     /// Registers offline encoded MP4 bytes under `src` (used by capture demos and tests).
+    #[cfg(any(test, feature = "capture"))]
     pub(super) fn seed_bytes(&mut self, src: impl Into<String>, bytes: Arc<Vec<u8>>) {
         let src = src.into();
         for entry in self.entries.values_mut() {

@@ -9,7 +9,7 @@ use crate::editor::{Editor, EditorEvent};
 use crate::ui::motion::Posed as _;
 use dc_state::{Attachment, Id};
 use gpui::{
-    AnyElement, Context, Entity, FontWeight, IntoElement, MouseButton, Pixels, Point, SharedString,
+    AnyElement, Context, Entity, FontWeight, IntoElement, Pixels, Point, SharedString,
     Subscription, Window, deferred, div, prelude::*, px,
 };
 
@@ -344,48 +344,38 @@ impl Root {
         };
         Some(
             deferred(
-                div()
-                    .id("file-menu-backdrop")
-                    .absolute()
-                    .inset_0()
-                    .occlude()
-                    .on_mouse_down(
-                        MouseButton::Left,
-                        cx.listener(|this, _, _, cx| {
-                            this.file_menu = None;
-                            cx.notify();
-                        }),
-                    )
-                    .child(
-                        div()
-                            .id("file-menu")
-                            .popout(
-                                "file-menu",
-                                PopKind::Translate,
-                                if menu.kind == FileMenuKind::More {
-                                    PopSide::Top
-                                } else {
-                                    PopSide::Left
-                                },
-                            )
-                            .occlude()
-                            .absolute()
-                            .left(
-                                menu.at.x
-                                    - px(if menu.kind == FileMenuKind::More {
-                                        120.
-                                    } else {
-                                        0.
-                                    }),
-                            )
-                            // Too near the bottom, the menu opens upward from the button.
-                            .top(if f32::from(menu.at.y) + height > 712. {
-                                menu.at.y - px(height + 12.)
+                div().child(super::keyboard::outside(
+                    div()
+                        .id("file-menu")
+                        .popout(
+                            "file-menu",
+                            PopKind::Translate,
+                            if menu.kind == FileMenuKind::More {
+                                PopSide::Top
                             } else {
-                                menu.at.y + px(12.)
-                            })
-                            .child(panel),
-                    ),
+                                PopSide::Left
+                            },
+                        )
+                        .occlude()
+                        .absolute()
+                        .left(
+                            menu.at.x
+                                - px(if menu.kind == FileMenuKind::More {
+                                    120.
+                                } else {
+                                    0.
+                                }),
+                        )
+                        // Too near the bottom, the menu opens upward from the button.
+                        .top(if f32::from(menu.at.y) + height > 712. {
+                            menu.at.y - px(height + 12.)
+                        } else {
+                            menu.at.y + px(12.)
+                        })
+                        .child(panel),
+                    super::keyboard::Layer::FileMenu,
+                    cx,
+                )),
             )
             .with_priority(2)
             .into_any_element(),

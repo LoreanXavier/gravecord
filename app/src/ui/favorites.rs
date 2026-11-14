@@ -8,7 +8,7 @@
 use super::tooltip::{Body, Tip};
 use super::{Root, avatar_source, channel_icon, color, context_menu, icon, motion, status_dot};
 use crate::parity::Parity;
-use dc_state::{Channel, ChannelKind, Id};
+use dc_state::{Channel, ChannelKind, Id, PrivateChannel};
 use gpui::{
     AnyElement, Context, FontWeight, IntoElement, MouseButton, MouseDownEvent, SharedString, div,
     img, prelude::*, px, svg,
@@ -69,21 +69,31 @@ impl Root {
         match target {
             Some(channel) => self.open_favorite_channel(channel, cx),
             None => {
+                let from = self.route();
+                let replaying = self.history.replaying;
+                self.history.replaying = true;
                 self.select_home(None);
                 self.favorites_view = true;
+                self.history.replaying = replaying;
+                self.history.visit(from, self.route());
+                self.request_images();
+                cx.notify();
             }
         }
-        self.request_images();
-        cx.notify();
     }
 
     /// A favourite's row: its own server and channel, inside the Favorites view.
     pub(super) fn open_favorite_channel(&mut self, channel: Id, cx: &mut Context<Self>) {
+        let from = self.route();
+        let replaying = self.history.replaying;
+        self.history.replaying = true;
         match self.favorite_channel(channel).map(|(guild, _)| guild) {
             Some(guild) => self.select(guild, Some(channel)),
             None => self.select_home(Some(channel)),
         }
         self.favorites_view = true;
+        self.history.replaying = replaying;
+        self.history.visit(from, self.route());
         self.request_images();
         cx.notify();
     }
@@ -113,7 +123,14 @@ impl Root {
                 for id in ids.iter().filter_map(|id| id.parse::<u64>().ok()) {
                     let kind = self
                         .favorite_channel(id)
-                        .map(|(_, channel)| context_menu::channel_type_number(channel.kind));
+                        .map(|(_, channel)| context_menu::channel_type_number(channel.kind))
+                        .or_else(|| {
+                            self.stores
+                                .private_channels
+                                .iter()
+                                .find(|dm| dm.id == id)
+                                .map(|dm| dm.kind)
+                        });
                     favorites.add_channel(id, kind);
                 }
                 favorites.guild_visible = Some(true);
@@ -262,7 +279,11 @@ impl Root {
                 .iter()
                 .find(|known| known.id == *id)
             {
-                rows.extend(self.dm_row(dm, cx));
+                if dm.kind == 1 {
+                    rows.extend(self.favorite_dm_row(dm, nickname, cx));
+                } else {
+                    rows.extend(self.dm_row(dm, cx));
+                }
                 continue;
             }
             let Some((guild, channel)) = self.favorite_channel(*id) else {
@@ -481,7 +502,6 @@ impl Root {
                         .text_color(color("--control-secondary-text-default"))
                         .on_click(cx.listener(move |this, _, _, cx| {
                             if let Some((guild, _)) = this.favorite_channel(channel) {
-                                this.favorites_view = false;
                                 this.select(guild, Some(channel));
                                 this.request_images();
                                 cx.notify();
@@ -568,6 +588,10 @@ impl Root {
                 let user = self.stores.dm_recipient(dm).cloned();
                 let Some(user) = user else { continue };
                 let avatar = self.images.get(&avatar_source(&user).0).cloned();
+                if avatar.is_none() {
+                    let (k, u) = avatar_source(&user);
+                    self.want_image(k, u, cx);
+                }
                 let status = self.stores.status(user.id).to_owned();
                 (
                     div()
@@ -837,5 +861,174 @@ impl Root {
                     ),
             )
             .into_any_element()
+    }
+
+    /// A favourited 1:1 private channel (`ChannelItem` `B` + `J` of module 166444, stylesheet `f4b2f93f8f92b799.css`):
+    /// 34px row with a 20px avatar (`SIZE_20`) and `UserNameWithEffects` at `effectDisplayType: PLAIN` and
+    /// `boldFontOpacity: .9`.
+    fn favorite_dm_row(
+        &self,
+        dm: &PrivateChannel,
+        nickname: &str,
+        cx: &mut Context<Self>,
+    ) -> Option<AnyElement> {
+        let recipient = self.stores.dm_recipient(dm)?.clone();
+        let id = dm.id;
+        let selected = self.channel == Some(id);
+        let hovered = self.hovered_dm == Some(id);
+        let muted = self.is_blocked(recipient.id)
+            || self.stores.is_ignored(recipient.id)
+            || self
+                .stores
+                .guild_settings
+                .channel_muted(0, id, chrono::Utc::now());
+        let mentions = self.stores.read_states.mentions(id);
+        let unread_important = !muted && !selected && mentions > 0;
+        let muted_rest = muted && !selected && !hovered;
+        let name_tint = if selected || unread_important {
+            "--text-strong"
+        } else if hovered {
+            "--interactive-text-hover"
+        } else if muted {
+            "--text-muted"
+        } else {
+            "--channels-default"
+        };
+        let weight = if (selected || unread_important) && super::theme() == dc_tokens::Theme::Light
+        {
+            FontWeight(600.)
+        } else {
+            FontWeight(500.)
+        };
+        let avatar = self.images.get(&avatar_source(&recipient).0).cloned();
+        let status = self.stores.status(recipient.id).to_owned();
+        let typing = self
+            .stores
+            .typing_users(id, std::time::Instant::now())
+            .contains(&recipient.id);
+        let label = if nickname.is_empty() {
+            self.private_channel_name(dm)
+        } else {
+            nickname.to_owned()
+        };
+        let group = SharedString::from(format!("favorite-{id}"));
+        Some(
+            div()
+                .flex_none()
+                .relative()
+                .h(px(34.))
+                .pt(px(1.))
+                .pl(px(8.))
+                .children(unread_important.then(|| {
+                    div()
+                        .absolute()
+                        .left(px(1.))
+                        .top(px(13.))
+                        .w(px(4.))
+                        .h(px(8.))
+                        .rounded_r(px(4.))
+                        .bg(color("--interactive-text-active"))
+                }))
+                .child(
+                    div()
+                        .id(SharedString::from(format!("favorite-row-{id}")))
+                        .group(group)
+                        .cursor_pointer()
+                        .on_hover(cx.listener(move |this, inside: &bool, _, cx| {
+                            if *inside {
+                                this.hovered_dm = Some(id);
+                            } else if this.hovered_dm == Some(id) {
+                                this.hovered_dm = None;
+                            }
+                            cx.notify();
+                        }))
+                        .on_mouse_down(
+                            MouseButton::Right,
+                            cx.listener(move |this, event: &MouseDownEvent, _, cx| {
+                                this.open_context_menu(
+                                    context_menu::Target::Dm(id),
+                                    event.position,
+                                    cx,
+                                );
+                                cx.stop_propagation();
+                            }),
+                        )
+                        .on_click(cx.listener(move |this, _, _, cx| {
+                            this.open_favorite_channel(id, cx);
+                        }))
+                        .h(px(32.))
+                        .w(px(286.))
+                        .pl(px(8.))
+                        .pr(px(8.))
+                        .rounded(px(8.))
+                        .flex()
+                        .items_center()
+                        .gap(px(8.))
+                        .when(selected, |this| {
+                            this.bg(color("--interactive-background-selected"))
+                        })
+                        .when(!selected, |this| {
+                            this.hover(|style| style.bg(color("--interactive-background-hover")))
+                        })
+                        .child(
+                            div()
+                                .relative()
+                                .flex_none()
+                                .size(px(20.))
+                                .when(muted_rest, |icon_box| icon_box.opacity(0.5))
+                                .children(self.live_avatar(&recipient, 20., hovered, cx).or_else(
+                                    || {
+                                        if avatar.is_none() {
+                                            let (k, u) = avatar_source(&recipient);
+                                            self.want_image(k, u, cx);
+                                        }
+                                        avatar.map(|image| {
+                                            img(image)
+                                                .size(px(20.))
+                                                .rounded_full()
+                                                .into_any_element()
+                                        })
+                                    },
+                                ))
+                                .child(super::typing_avatar::status_corner(
+                                    &status,
+                                    typing,
+                                    "--background-base-lowest",
+                                    20.,
+                                    motion::key(&("fav-dm-avatar", id)),
+                                    super::typing_avatar::css_dots(&self.stores.experiments),
+                                )),
+                        )
+                        .child(
+                            div()
+                                .flex_1()
+                                .min_w(px(0.))
+                                .whitespace_nowrap()
+                                .text_ellipsis()
+                                .text_size(px(16.))
+                                .line_height(px(24.))
+                                .font_weight(weight)
+                                .text_color(color(name_tint))
+                                .when(muted_rest, |name| name.opacity(0.5))
+                                .child(
+                                    super::name_styles::name(
+                                        format!("favorite-dm-name-{id}"),
+                                        label,
+                                        self.name_styles(&recipient, None).as_ref(),
+                                        super::name_styles::Display::Font,
+                                    )
+                                    .bold_opacity(0.9),
+                                ),
+                        )
+                        .when(mentions > 0, |row| {
+                            row.child(super::unread_badges::number(
+                                mentions,
+                                "--badge-notification-background",
+                                None,
+                            ))
+                        }),
+                )
+                .into_any_element(),
+        )
     }
 }

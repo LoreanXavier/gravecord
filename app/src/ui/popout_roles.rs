@@ -7,8 +7,8 @@ use super::{Root, color, editor_style, icon, member_actions};
 use crate::editor::{Editor, EditorEvent};
 use dc_state::{Id, permissions};
 use gpui::{
-    Anchor, AnyElement, Context, Entity, Focusable, IntoElement, MouseButton, MouseDownEvent,
-    Subscription, Window, anchored, deferred, div, point, prelude::*, px, rgb,
+    Anchor, AnyElement, Context, Entity, Focusable, IntoElement, Subscription, Window, anchored,
+    deferred, div, point, prelude::*, px, rgb,
 };
 use serde_json::json;
 
@@ -449,28 +449,15 @@ impl Root {
             );
         Some(
             deferred(
-                div()
-                    .id("role-picker-layer")
-                    .absolute()
-                    .top_0()
-                    .left_0()
-                    .size_full()
-                    // A press outside closes the picker alone; the popout stays.
-                    .on_mouse_down(
-                        MouseButton::Left,
-                        cx.listener(|this, _: &MouseDownEvent, _, cx| {
-                            this.role_picker = None;
-                            cx.notify();
-                            cx.stop_propagation();
-                        }),
-                    )
-                    .child(
-                        anchored()
-                            .anchor(Anchor::BottomLeft)
-                            .position(point(bounds.left(), bounds.top() - px(8.)))
-                            .snap_to_window_with_margin(px(8.))
-                            .child(card),
-                    ),
+                anchored()
+                    .anchor(Anchor::BottomLeft)
+                    .position(point(bounds.left(), bounds.top() - px(8.)))
+                    .snap_to_window_with_margin(px(8.))
+                    .child(super::keyboard::outside(
+                        card,
+                        super::keyboard::Layer::RolePicker,
+                        cx,
+                    )),
             )
             .with_priority(2)
             .into_any_element(),

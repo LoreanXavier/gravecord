@@ -140,6 +140,7 @@ impl Root {
             left,
             message,
         });
+        self.request_profile_images(user);
         cx.notify();
     }
 
@@ -222,8 +223,18 @@ impl Root {
         out.join(" | ")
     }
 
-    /// Badge icons a fetched profile names.
+    /// Badge icons a fetched profile names, plus immediate user/guild avatars.
     pub(super) fn request_profile_images(&mut self, user: Id) {
+        let known = self.profile_user(user);
+        if known.id != 0 {
+            let (avatar_key, avatar_url) = avatar_source(&known);
+            self.request_image(avatar_key, avatar_url);
+            let (guild_key, guild_url) = self.guild_avatar_source(&known);
+            self.request_image(guild_key, guild_url);
+            if let Some(url) = known.tag.as_ref().and_then(|tag| tag.badge_url()) {
+                self.request_image(url.clone(), url);
+            }
+        }
         let Some(body) = self.fetched.get(&profile_key(user)) else {
             return;
         };
@@ -254,10 +265,6 @@ impl Root {
         for (key, url) in wanted.into_iter().chain(mutuals).chain(banner) {
             self.request_image(key, url);
         }
-        if let Some(user) = self.stores.users.get(&user).cloned() {
-            let (key, url) = self.guild_avatar_source(&user);
-            self.request_image(key, url);
-        }
         if has_badges {
             self.request_badge_catalog(user);
         }
@@ -279,7 +286,11 @@ impl Root {
         if !own {
             return self.other_popout(popout, window, cx);
         }
-        let avatar = self.images.get(&avatar_source(&user).0).cloned();
+        let (avatar_key, avatar_url) = avatar_source(&user);
+        let avatar = self.images.get(&avatar_key).cloned();
+        if avatar.is_none() && user.id != 0 {
+            self.want_image(avatar_key, avatar_url, cx);
+        }
         let banner = self.banner_color(&user);
         let badges = self.profile_badges("popout", user.id, cx);
         let header = div()
@@ -478,6 +489,13 @@ impl Root {
                     .size_full()
                     .on_mouse_down(
                         gpui::MouseButton::Left,
+                        cx.listener(|this, _, _, cx| {
+                            this.profile = None;
+                            cx.notify();
+                        }),
+                    )
+                    .on_mouse_down(
+                        gpui::MouseButton::Right,
                         cx.listener(|this, _, _, cx| {
                             this.profile = None;
                             cx.notify();

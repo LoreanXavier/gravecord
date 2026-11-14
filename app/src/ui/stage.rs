@@ -23,34 +23,9 @@ use std::sync::Arc;
 /// `ChannelKind::Other(13)`: `GUILD_STAGE_VOICE`.
 const STAGE: ChannelKind = ChannelKind::Other(13);
 
-/// Where a tile's menu was opened (window pixels) and for whom.
+/// Legacy field slot on `Root` (Stage tiles now open `tile_menu_layer` / `context_menu`).
 #[derive(Clone, Copy)]
-pub(super) struct TileMenu {
-    channel: Id,
-    user: Id,
-    x: f32,
-    y: f32,
-}
-
-/// The rows a tile's menu can hold (strings of module 818418: `VK3vQy`, `6C6PJx`, `VUCWcO`, `W6c/Vf`).
-#[derive(Clone, Copy)]
-enum TileAction {
-    MoveToAudience,
-    Leave,
-    Invite,
-    Speak,
-}
-
-impl TileAction {
-    fn label(self) -> &'static str {
-        match self {
-            Self::MoveToAudience => "Move to Audience",
-            Self::Leave => "Leave the Stage",
-            Self::Invite => "Invite to Speak",
-            Self::Speak => "Speak on Stage",
-        }
-    }
-}
+pub(super) struct TileMenu;
 /// Module 973324: the modal's graphic.
 const GRAPHIC: &str = "https://cdn.discordapp.com/assets/content/ef7fa86f8c519fe9764867c1ba473ee1939292fddb2c897885aab732e3bd31d2.svg";
 /// The age coachmark's graphic (`image_sYj23M` in stage-ann/stage-live-controls).
@@ -556,11 +531,18 @@ impl Root {
                 speakers.push(user);
             }
         }
-        let tile = |user: &dc_state::User| {
+        let tile = |user: &dc_state::User, is_speaker: bool| {
             let picture = self.images.get(&super::avatar_source(user).0).cloned();
             let person = user.id;
             let raised = hands.contains(&person);
+            let probe = format!("stage-audience-{person}");
+            let click_probe = probe.clone();
             div()
+                .id(gpui::SharedString::from(if is_speaker {
+                    format!("stage-speaker-{person}")
+                } else {
+                    probe.clone()
+                }))
                 .relative()
                 .flex_none()
                 .w(px(102.))
@@ -570,19 +552,48 @@ impl Root {
                 .flex()
                 .flex_col()
                 .items_center()
-                // Module 106401 and 237749 put the Stage rows in the person's context menu; a moderator or the
-                // person themselves has something to pick.
-                .when(moderator || Some(person) == me, |this| {
+                .when(!is_speaker, |this| {
+                    // Module 75139: left-click on an audience tile opens UserProfilePopout; right-click opens 107632
+                    // with `showMediaItems`, `showStageChannelItems` and `showChatItems: false`.
+                    this.cursor_pointer()
+                        .child(self.anchor_probe(probe))
+                        .on_click(cx.listener(move |this, _, _, cx| {
+                            let bounds =
+                                this.tip_anchors.borrow().get(click_probe.as_str()).copied();
+                            if let Some(bounds) = bounds {
+                                this.open_profile(person, bounds, true, cx);
+                            }
+                        }))
+                        .on_mouse_down(
+                            gpui::MouseButton::Right,
+                            cx.listener(move |this, event: &gpui::MouseDownEvent, _, cx| {
+                                cx.stop_propagation();
+                                this.context_stage_audience();
+                                this.open_context_menu(
+                                    super::context_menu::Target::User {
+                                        user: person,
+                                        guild: Some(guild),
+                                    },
+                                    event.position,
+                                    cx,
+                                );
+                            }),
+                        )
+                })
+                .when(is_speaker, |this| {
+                    // Module 540462 -> 107632: right-click on any speaker tile opens the full Guild call user menu
+                    // with `showStageChannelItems: true`.
                     this.on_mouse_down(
                         gpui::MouseButton::Right,
                         cx.listener(move |this, event: &gpui::MouseDownEvent, _, cx| {
-                            this.stage_tile_menu = Some(TileMenu {
-                                channel: target,
-                                user: person,
-                                x: f32::from(event.position.x),
-                                y: f32::from(event.position.y),
-                            });
-                            cx.notify();
+                            cx.stop_propagation();
+                            this.vv.shown_call = (guild, target);
+                            this.open_tile_menu(
+                                super::call_menus::Subject::User(person),
+                                false,
+                                event.position,
+                                cx,
+                            );
                         }),
                     )
                 })
@@ -623,7 +634,10 @@ impl Root {
                 )
                 .into_any_element()
         };
-        let section = |title: String, people: &[dc_state::User], icon_name: &'static str| {
+        let section = |title: String,
+                       people: &[dc_state::User],
+                       icon_name: &'static str,
+                       is_speaker: bool| {
             div()
                 .flex_none()
                 .child(
@@ -662,7 +676,7 @@ impl Root {
                         .flex()
                         .flex_wrap()
                         .gap(px(5.))
-                        .children(people.iter().map(&tile)),
+                        .children(people.iter().map(|user| tile(user, is_speaker))),
                 )
                 .into_any_element()
         };
@@ -688,6 +702,8 @@ impl Root {
         // with a red circle-x and red text.
         let leave_menu = menu_open.then(|| {
             div()
+                .id("stage-leave-menu")
+                .occlude()
                 .absolute()
                 .left(px(455.))
                 .top(px(552.))
@@ -709,6 +725,16 @@ impl Root {
                     spread_radius: px(0.),
                     inset: false,
                 }])
+                .on_mouse_down_out(cx.listener(|this, event: &gpui::MouseDownEvent, _, cx| {
+                    if !this.keys.outside_closed_this_press {
+                        this.keys.outside_closed_this_press = true;
+                        this.stage_leave_menu = false;
+                        if event.button != gpui::MouseButton::Right {
+                            cx.stop_propagation();
+                        }
+                        cx.notify();
+                    }
+                }))
                 .child(
                     div()
                         .id("stage-end-item")
@@ -928,56 +954,6 @@ impl Root {
                         .child("Confirm age"),
                 )
         });
-        // The menu opened with a right click on a tile, where the pointer was (the view starts at x 375, y 32).
-        let tile_menu = self
-            .stage_tile_menu
-            .filter(|menu| menu.channel == target)
-            .map(|menu| {
-                let rows = self.tile_actions(menu.channel, menu.user);
-                let (channel_id, person) = (menu.channel, menu.user);
-                div()
-                    .id("stage-tile-menu-layer")
-                    .absolute()
-                    .inset_0()
-                    .on_click(cx.listener(|this, _, _, cx| {
-                        this.stage_tile_menu = None;
-                        cx.notify();
-                    }))
-                    .child(
-                        div()
-                            .absolute()
-                            .left(px(menu.x - 375.))
-                            .top(px(menu.y - 32.))
-                            .min_w(px(202.))
-                            .p(px(8.))
-                            .rounded(px(8.))
-                            .border_1()
-                            .border_color(Rgba {
-                                a: 0.12,
-                                ..rgba(0x6c6d76ff)
-                            })
-                            .bg(rgba(0x2a2a30ff))
-                            .children(rows.into_iter().map(|action| {
-                                div()
-                                    .id(action.label())
-                                    .h(px(32.))
-                                    .px(px(8.))
-                                    .rounded(px(2.))
-                                    .flex()
-                                    .items_center()
-                                    .cursor_pointer()
-                                    .text_size(px(14.))
-                                    .text_color(color("--text-default"))
-                                    .hover(|style| style.bg(color("--background-mod-subtle")))
-                                    .on_click(cx.listener(move |this, _, _, cx| {
-                                        this.stage_tile_menu = None;
-                                        this.run_tile_action(action, channel_id, person);
-                                        cx.notify();
-                                    }))
-                                    .child(action.label())
-                            })),
-                    )
-            });
         div()
             .parity("stage-view")
             .group("stage-live")
@@ -1001,12 +977,14 @@ impl Root {
                             format!("Speakers \u{2013} {}", speakers.len()),
                             &speakers,
                             "members",
+                            true,
                         )
                     }))
                     .child(section(
                         format!("Audience \u{2013} {}", audience.len()),
                         &audience,
                         "members",
+                        false,
                     )),
             )
             .children(coach)
@@ -1026,7 +1004,7 @@ impl Root {
             }))
             .child(controls)
             .children(leave_menu)
-            .children(tile_menu)
+            .children(self.tile_menu_layer(cx))
             .into_any_element()
     }
 
@@ -1042,37 +1020,84 @@ impl Root {
             .collect()
     }
 
-    /// The Stage rows of a tile's menu (modules 237749 and 106401, unconfirmed against a capture): who is on the
-    /// stage may be moved to the audience by a moderator (or leave on their own), who is in the audience may be
-    /// invited by a moderator.
-    fn tile_actions(&self, channel: Id, user: Id) -> Vec<TileAction> {
+    /// Modules 106401 and 237749 (`107632` Group 1): the Stage actions offered for `user` in `guild`.
+    pub(super) fn stage_user_acts(
+        &self,
+        guild: Id,
+        user: Id,
+        stage_channel_items: bool,
+    ) -> Vec<super::context_menu::Act> {
+        use super::context_menu::Act;
         let me = self.stores.current_user.as_ref().map(|user| user.id);
-        let guild = self.guild.unwrap_or_default();
         let Some(state) = self
             .stores
-            .voice_members(guild, channel)
-            .into_iter()
-            .find(|state| state.user_id == user)
+            .voice_states
+            .get(&guild)
+            .and_then(|states| states.iter().find(|state| state.user_id == user))
         else {
             return Vec::new();
         };
-        let moderator = self
-            .current_guild()
-            .and_then(|guild| guild.channels.iter().find(|known| known.id == channel))
-            .is_some_and(|known| self.can_moderate_stage(known));
-        let own = Some(user) == me;
-        match (state.suppress, own) {
-            (false, true) => vec![TileAction::Leave],
-            (false, false) if moderator => vec![TileAction::MoveToAudience],
-            (true, true) if moderator => vec![TileAction::Speak],
-            (true, false) if moderator => vec![TileAction::Invite],
-            _ => Vec::new(),
+        let channel_id = state.channel_id;
+        if channel_id == 0 {
+            return Vec::new();
         }
+        let Some(channel) = self
+            .stores
+            .guild(guild)
+            .and_then(|known| known.channels.iter().find(|ch| ch.id == channel_id))
+            .filter(|ch| Self::is_stage_channel(ch))
+        else {
+            return Vec::new();
+        };
+        const MUTE_MEMBERS: u64 = 1 << 22;
+        const MOVE_MEMBERS: u64 = 1 << 24;
+        let moderator = [permissions::MANAGE_CHANNELS, MUTE_MEMBERS, MOVE_MEMBERS]
+            .into_iter()
+            .all(|perm| self.my_permission(guild, Some(channel), perm));
+        let can_mute = self.my_permission(guild, Some(channel), MUTE_MEMBERS);
+        let own = Some(user) == me;
+        let mut out = Vec::new();
+        // Module 106401 (`id: "invite-speaker"`): offered whenever the person is suppressed in the Stage channel.
+        if state.suppress {
+            if moderator {
+                out.push(if own {
+                    Act::StageSpeak
+                } else {
+                    Act::StageInvite
+                });
+            } else if own && state.request_to_speak_timestamp.is_some() {
+                out.push(Act::StageSpeak);
+            }
+        }
+        // Module 237749 (`id: "audience"`): offered when `showStageChannelItems` and the person is speaking.
+        if stage_channel_items && !state.suppress && (can_mute || own) {
+            out.push(if own {
+                Act::StageLeave
+            } else {
+                Act::StageMoveToAudience
+            });
+        }
+        out
     }
 
-    /// `Tf`, `gt`, `SA` and `e7` of module 849736: the voice-state patches behind the rows.
-    fn run_tile_action(&mut self, action: TileAction, channel: Id, user: Id) {
-        let Some(guild) = self.guild else { return };
+    /// `Tf`, `gt`, `SA` and `e7` of module 849736: the voice-state patches behind the Stage context rows.
+    pub(super) fn run_stage_user_act(
+        &mut self,
+        act: super::context_menu::Act,
+        guild: Id,
+        user: Id,
+    ) {
+        use super::context_menu::Act;
+        let Some(channel) = self
+            .stores
+            .voice_states
+            .get(&guild)
+            .and_then(|states| states.iter().find(|state| state.user_id == user))
+            .map(|state| state.channel_id)
+            .filter(|&id| id != 0)
+        else {
+            return;
+        };
         let patch = |this: &mut Self, route: String, body: serde_json::Value| {
             let _ = this.requests.send(Request::Rest {
                 key: None,
@@ -1084,26 +1109,26 @@ impl Root {
         let own = format!("/guilds/{guild}/voice-states/@me");
         let theirs = format!("/guilds/{guild}/voice-states/{user}");
         let now = chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
-        match action {
-            TileAction::Leave => patch(
+        match act {
+            Act::StageLeave => patch(
                 self,
                 own,
                 json!({"suppress": true, "channel_id": channel.to_string(),
                        "self_video": false, "self_stream": false}),
             ),
-            TileAction::Speak => patch(
+            Act::StageSpeak => patch(
                 self,
                 own,
                 json!({"suppress": false, "request_to_speak_timestamp": null,
                        "channel_id": channel.to_string()}),
             ),
-            TileAction::Invite => patch(
+            Act::StageInvite => patch(
                 self,
                 theirs,
                 json!({"suppress": false, "request_to_speak_timestamp": now,
                        "channel_id": channel.to_string()}),
             ),
-            TileAction::MoveToAudience => {
+            Act::StageMoveToAudience => {
                 // `gt` sends the plain patch (`O`) and then the one that also drops video and screen share.
                 patch(
                     self,
@@ -1117,6 +1142,7 @@ impl Root {
                            "self_video": false, "self_stream": false}),
                 );
             }
+            _ => {}
         }
     }
 

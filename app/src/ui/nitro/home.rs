@@ -1172,15 +1172,18 @@ impl Root {
     /// Nitro wheel and the wordmark on the left (`brand_GB6rv4`, 8px apart), the wishlist heart and Gift Nitro on
     /// the right (`navBarActions`, 8px apart).
     fn nitro_subscriber_bar(&self, cx: &mut Context<Self>) -> AnyElement {
+        let show_border = super::super::theme() != dc_tokens::Theme::Midnight;
         div()
             .absolute()
             .top_0()
             .left_0()
-            .right_0()
+            .right(px(16.))
             .h(px(49.))
             .px(px(16.))
-            .border_b_1()
-            .border_color(color("--border-strong"))
+            .backdrop_blur(px(11.5))
+            .when(show_border, |this| {
+                this.border_b_1().border_color(color("--border-strong"))
+            })
             .flex()
             .items_center()
             .justify_between()
@@ -1272,6 +1275,7 @@ impl Root {
                 .flex_1()
                 .min_w(px(0.))
                 .h_full()
+                .overflow_hidden()
                 .bg(page_color)
                 .child(probe)
                 .child(
@@ -1303,6 +1307,8 @@ impl Root {
         self.log_art_arrivals(&keys);
         self.decode_wumpus(cx);
         let scroll = self.nitro.scroll.clone();
+        let offset = -f32::from(scroll.offset().y);
+        let seen = self.nitro.seen.clone();
         let background = self.images.get(BACKGROUND_KEY).cloned();
         let bottom = self.images.get(BOTTOM_KEY).cloned();
         div()
@@ -1310,6 +1316,7 @@ impl Root {
             .flex_1()
             .min_w(px(0.))
             .h_full()
+            .overflow_hidden()
             .bg(page_color)
             .child(
                 div()
@@ -1385,6 +1392,15 @@ impl Root {
             )
             .child(self.nitro_subscriber_bar(cx))
             .child(crate::ui::settings::auto_scrollbar(scroll))
+            .child(canvas(
+                |_, _, _| {},
+                move |_, _, window, _| {
+                    if (seen.get() - offset).abs() > 0.01 {
+                        seen.set(offset);
+                        window.refresh();
+                    }
+                },
+            ))
             .into_any_element()
     }
 }

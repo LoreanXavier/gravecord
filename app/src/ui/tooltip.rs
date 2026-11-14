@@ -50,6 +50,9 @@ pub(super) enum Body {
         title: SharedString,
         body: Option<SharedString>,
     },
+    /// `tooltipWithShortcut_ZDdyhE` (module 866665, `909091.*.css`): `body-sm/medium` text centred 4px over a shortcut
+    /// combo (`475358`).
+    Shortcut(SharedString, &'static str),
     /// A sticker's name behind `StickerSmallIcon` (module 679636 `rH`): the icon is 16px with a 2px margin, 4px
     /// from the text (`stickerIcon_y33UtT`, `stickerName_y33UtT`).
     Sticker(SharedString),
@@ -89,6 +92,10 @@ impl Tip {
             spacing: SPACING,
             delay: 0,
         }
+    }
+
+    pub fn shortcut(text: impl Into<SharedString>, bind: &'static str, side: Side) -> Self {
+        Self::body(Body::Shortcut(text.into(), bind), side)
     }
 
     /// The same tip, opening after the pointer has rested for `milliseconds`.
@@ -654,6 +661,26 @@ impl Root {
                     )
                     .into_any_element()
             }
+            Body::Shortcut(text, bind) => frame()
+                .child(
+                    div()
+                        .flex()
+                        .flex_col()
+                        .items_center()
+                        .justify_center()
+                        .gap(px(4.))
+                        .text_center()
+                        .child(
+                            div()
+                                .max_w(px(MAX_WIDTH - 24.))
+                                .text_size(px(14.))
+                                .line_height(px(18.))
+                                .font_weight(FontWeight(500.))
+                                .child(text.clone()),
+                        )
+                        .child(super::keyboard::help::combo(bind)),
+                )
+                .into_any_element(),
             Body::Sticker(name) => frame()
                 .text_size(px(14.))
                 .line_height(px(18.))

@@ -138,13 +138,18 @@ pub(super) enum Act {
     FavoritesNickname,
     FavoritesSettings,
     HideFavorites,
+    DisableVideo,
+    StageSpeak,
+    StageInvite,
+    StageLeave,
+    StageMoveToAudience,
 }
 
 impl Act {
     /// Every row kind once (`Correction` with its first index). `ordinal` is an exhaustive match, so adding a variant
     /// without listing it here fails the build or the `act_list_is_complete` test.
     #[cfg(test)]
-    pub(super) const ALL: [Act; 79] = [
+    pub(super) const ALL: [Act; 84] = [
         Act::InventoryAbout,
         Act::InventoryHide,
         Act::ReportApp,
@@ -224,6 +229,11 @@ impl Act {
         Act::FavoritesSettings,
         Act::HideFavorites,
         Act::VoiceDeafen,
+        Act::DisableVideo,
+        Act::StageSpeak,
+        Act::StageInvite,
+        Act::StageLeave,
+        Act::StageMoveToAudience,
     ];
 
     #[cfg(test)]
@@ -308,6 +318,11 @@ impl Act {
             Act::VoiceDeafen => 75,
             Act::JoinThread => 77,
             Act::ClearStatus => 78,
+            Act::DisableVideo => 79,
+            Act::StageSpeak => 80,
+            Act::StageInvite => 81,
+            Act::StageLeave => 82,
+            Act::StageMoveToAudience => 83,
         }
     }
 }
@@ -386,6 +401,11 @@ pub(super) fn status(act: Act) -> Status {
         | Act::VoiceMute
         | Act::VoiceDeafen
         | Act::SoundboardMute
+        | Act::DisableVideo
+        | Act::StageSpeak
+        | Act::StageInvite
+        | Act::StageLeave
+        | Act::StageMoveToAudience
         | Act::Correction(_)
         | Act::AddToDictionary
         | Act::RemoveFromDictionary
@@ -962,8 +982,17 @@ pub(super) struct UserFacts {
     pub roles: bool,
     pub voice_muted: bool,
     pub soundboard_muted: bool,
+    pub video_disabled: bool,
     /// The volume as a percentage, 0 to 200.
     pub volume: u32,
+    /// Module 949674: hide `Start a Call` when already in a 1-on-1 DM voice call with this user, or in a popout window.
+    pub hide_call: bool,
+    /// Module 385913 / 438653: the DM channel is already in Favorites (`Remove from Favorites` moves to a danger group near the end).
+    pub dm_favorite: bool,
+    /// Module 75139 / 107632: `showChatItems: false` omits `Mention`.
+    pub omit_mention: bool,
+    /// Module 107632 Group 1 (`106401` / `237749`): Stage speaker/audience actions before `Profile`.
+    pub stage_acts: Vec<Act>,
 }
 
 /// `GuildMemberFlags.BYPASSES_VERIFICATION` (module 340837).
@@ -1045,23 +1074,44 @@ pub(super) fn user_items(facts: &UserFacts) -> Vec<Entry> {
         out.push(Entry::Row(
             Row::new(Act::MarkRead, dc_intl::tr("Mark As Read")).disabled(!unread),
         ));
-        group(
-            &mut out,
-            vec![
-                Row::new(Act::PinDm, dc_intl::t!("uKw3A+")).icon("menu_pin_message"),
-                Row::new(Act::Favorite, dc_intl::tr("Add to Favorites")).icon("clips_star"),
-            ],
-        );
+        let mut pins = vec![Row::new(Act::PinDm, dc_intl::t!("uKw3A+")).icon("menu_pin_message")];
+        if !facts.me && !facts.dm_favorite {
+            pins.push(Row::new(Act::Favorite, dc_intl::tr("Add to Favorites")).icon("clips_star"));
+        }
+        group(&mut out, pins);
+    }
+    if !facts.stage_acts.is_empty() {
+        let stage_rows: Vec<Row> = facts
+            .stage_acts
+            .iter()
+            .filter_map(|act| match act {
+                Act::StageSpeak => Some(Row::new(Act::StageSpeak, dc_intl::tr("Speak on Stage"))),
+                Act::StageInvite => {
+                    Some(Row::new(Act::StageInvite, dc_intl::tr("Invite to Speak")))
+                }
+                Act::StageLeave => Some(Row::new(Act::StageLeave, dc_intl::tr("Leave the Stage"))),
+                Act::StageMoveToAudience => Some(Row::new(
+                    Act::StageMoveToAudience,
+                    dc_intl::tr("Move to Audience"),
+                )),
+                _ => None,
+            })
+            .collect();
+        group(&mut out, stage_rows);
     }
     let mut first = vec![Row::new(Act::Profile, dc_intl::tr("Profile"))];
     if facts.dm.is_none() {
-        first.push(Row::new(Act::Mention, dc_intl::tr("Mention")));
+        if !facts.omit_mention {
+            first.push(Row::new(Act::Mention, dc_intl::tr("Mention")));
+        }
         if !facts.me {
             first.push(Row::new(Act::Message, dc_intl::t!("OAJQlP")));
         }
     }
     if !facts.me {
-        first.push(Row::new(Act::Call, dc_intl::tr("Start a Call")));
+        if !facts.bot && !facts.hide_call {
+            first.push(Row::new(Act::Call, dc_intl::tr("Start a Call")).disabled(facts.blocked));
+        }
         match facts.ring {
             Some(false) => first.push(Row::new(Act::RingUser, dc_intl::tr("Ring"))),
             Some(true) => first.push(Row::new(Act::StopRinging, dc_intl::tr("Stop Ringing"))),
@@ -1084,11 +1134,7 @@ pub(super) fn user_items(facts: &UserFacts) -> Vec<Entry> {
     if facts.dm.is_some() {
         first.push(Row::new(Act::CloseDm, dc_intl::tr("Close DM")));
     }
-    if facts.dm.is_some() {
-        group(&mut out, first);
-    } else if out.is_empty() {
-        out.extend(first.into_iter().map(Entry::Row));
-    }
+    group(&mut out, first);
     if let Some((muted, deafened)) = facts.self_voice {
         // Module 198229: our own row has the two self switches, their checks following the media engine.
         out.push(Entry::Separator);
@@ -1100,17 +1146,13 @@ pub(super) fn user_items(facts: &UserFacts) -> Vec<Entry> {
         ));
     }
     if facts.in_call && !facts.me {
+        // Module 198229: User Volume, Mute, Mute Soundboard (checkbox), Disable Video (checkbox).
         let mut rows = vec![
             Row::new(Act::Volume, dc_intl::tr("User Volume")).sub(format!("{}%", facts.volume)),
             Row::new(Act::VoiceMute, dc_intl::tr("Mute")).check(facts.voice_muted),
-            Row::new(
-                Act::SoundboardMute,
-                if facts.soundboard_muted {
-                    dc_intl::tr("Unmute Soundboard")
-                } else {
-                    dc_intl::tr("Mute Soundboard")
-                },
-            ),
+            Row::new(Act::SoundboardMute, dc_intl::tr("Mute Soundboard"))
+                .check(facts.soundboard_muted),
+            Row::new(Act::DisableVideo, dc_intl::tr("Disable Video")).check(facts.video_disabled),
         ];
         rows[0].caret = false;
         out.push(Entry::Separator);
@@ -1151,17 +1193,12 @@ pub(super) fn user_items(facts: &UserFacts) -> Vec<Entry> {
                 dc_intl::t!("ytCpKs")
             },
         ));
-        mid.push(
-            Row::new(
-                Act::Block,
-                if facts.blocked {
-                    dc_intl::tr("Unblock")
-                } else {
-                    dc_intl::tr("Block")
-                },
-            )
-            .danger(),
-        );
+        // Module 239211: "Block" is critical/danger; "Unblock" is default color.
+        mid.push(if facts.blocked {
+            Row::new(Act::Block, dc_intl::tr("Unblock"))
+        } else {
+            Row::new(Act::Block, dc_intl::tr("Block")).danger()
+        });
     }
     if facts.dm.is_some() {
         group(&mut out, mid);
@@ -1259,6 +1296,12 @@ pub(super) fn user_items(facts: &UserFacts) -> Vec<Entry> {
                 .caret(),
             ],
         );
+        if !facts.me && facts.dm_favorite {
+            group(
+                &mut out,
+                vec![Row::new(Act::Favorite, dc_intl::tr("Remove from Favorites")).danger()],
+            );
+        }
     }
     if facts.developer {
         group(
@@ -1291,6 +1334,10 @@ pub(super) struct State {
     /// The next menu opens from a person's row in a voice channel's list: it shows the media items (module 340851
     /// `showMediaItems: true`), whether or not we are in that call.
     pub voice_row: bool,
+    /// Module 107632 `showStageChannelItems: true` (Stage speaker or audience tile).
+    pub stage_channel_items: bool,
+    /// Module 107632 `showChatItems: false` (Stage audience tile).
+    pub omit_mention: bool,
 }
 
 const MUTE_FOR: [(i64, &str); 6] = [
@@ -1844,7 +1891,11 @@ impl Root {
                 }
                 Act::PinChannel if pinned => row.label = dc_intl::tr("Unpin Channel").to_owned(),
                 Act::Favorite if favorite => {
-                    row.label = dc_intl::tr("Remove from Favorites").to_owned()
+                    row.label = dc_intl::tr("Remove from Favorites").to_owned();
+                    if matches!(target, Target::Dm(_)) {
+                        row.icon = None;
+                        row.danger = true;
+                    }
                 }
                 Act::PinDm if dm_pinned => row.label = dc_intl::t!("vDYmad").to_owned(),
                 Act::HideNames => {
@@ -1865,6 +1916,20 @@ impl Root {
         self.context.voice_row = true;
     }
 
+    /// Marks the next `open_context_menu` as opened for a Stage speaker tile (`showStageChannelItems: true`).
+    pub(super) fn context_stage_tile(&mut self) {
+        self.context.voice_row = true;
+        self.context.stage_channel_items = true;
+    }
+
+    /// Marks the next `open_context_menu` as opened from a Stage audience tile (`75139.js`: `showMediaItems: true`,
+    /// `showStageChannelItems: true`, `showChatItems: false`).
+    pub(super) fn context_stage_audience(&mut self) {
+        self.context.voice_row = true;
+        self.context.stage_channel_items = true;
+        self.context.omit_mention = true;
+    }
+
     pub(super) fn open_context_menu(
         &mut self,
         target: Target,
@@ -1873,6 +1938,8 @@ impl Root {
     ) {
         let developer = self.developer_mode();
         let from_voice_row = std::mem::take(&mut self.context.voice_row);
+        let stage_channel_items = std::mem::take(&mut self.context.stage_channel_items);
+        let omit_mention = std::mem::take(&mut self.context.omit_mention);
         let items = match target {
             Target::InventoryAuthor { .. } => {
                 let mut items = vec![Entry::Row(Row::new(Act::Profile, dc_intl::tr("Profile")))];
@@ -2039,6 +2106,12 @@ impl Root {
                         ignored: self.stores.is_ignored(user.id),
                         developer,
                         dm: Some(self.stores.is_unread(channel)),
+                        dm_favorite: self.stores.favorites().is_favorite(channel),
+                        hide_call: user.bot
+                            || self.vv.popout_render
+                            || self.call.as_ref().is_some_and(|call| {
+                                call.connected && call.channel == channel && dm.kind == 1
+                            }),
                         invite_servers: !self.invite_servers(self.dm_user(channel)).is_empty(),
                         ..UserFacts::default()
                     };
@@ -2111,17 +2184,31 @@ impl Root {
                     }),
                     voice_muted: self.context.mix.get(&user).is_some_and(|mix| mix.1),
                     soundboard_muted: self.context.soundboard_muted.contains(&user),
+                    video_disabled: super::call_menus::video_disabled(user),
                     volume: self
                         .context
                         .mix
                         .get(&user)
                         .map_or(100, |mix| (mix.0 * 100.).round() as u32),
+                    hide_call: known.bot
+                        || self.vv.popout_render
+                        || self.call.as_ref().is_some_and(|call| {
+                            call.connected
+                                && self.stores.private_channels.iter().any(|dm| {
+                                    dm.id == call.channel && dm.kind == 1 && dm.recipients == [user]
+                                })
+                        }),
+                    dm_favorite: false,
+                    omit_mention,
+                    stage_acts: guild.map_or_else(Vec::new, |guild| {
+                        self.stage_user_acts(guild, user, stage_channel_items)
+                    }),
                 };
                 user_items(&facts)
             }
         };
         let items = self.adjust_menu_rows(target, items);
-        self.menu = None;
+        self.close_all_context_menus();
         self.menu_scroll.set_offset(gpui::point(px(0.), px(0.)));
         self.context.open = Some(Open {
             target,
@@ -2490,12 +2577,12 @@ impl Root {
             (Act::Call, Target::User { user, .. }) => self.start_dm_call_with(user, false, cx),
             // 313998: `ring(channel, [user], "user_context_menu")` and `stopRinging(channel, [user])`.
             (Act::RingUser, Target::User { user, .. }) => {
-                if let Some(channel) = self.channel {
+                if let Some(channel) = self.resolved_dm_call_channel() {
                     self.ring_call(channel, Some(vec![user]), Some("user_context_menu"));
                 }
             }
             (Act::StopRinging, Target::User { user, .. }) => {
-                if let Some(channel) = self.channel {
+                if let Some(channel) = self.resolved_dm_call_channel() {
                     self.stop_ringing(channel, Some(&[user]));
                 }
             }
@@ -2683,6 +2770,17 @@ impl Root {
                     self.context.soundboard_muted.insert(user);
                 }
             }
+            (Act::DisableVideo, Target::User { user, .. }) => {
+                let disabled = !super::call_menus::video_disabled(user);
+                super::call_menus::set_video_disabled(user, disabled);
+            }
+            (
+                Act::StageSpeak | Act::StageInvite | Act::StageLeave | Act::StageMoveToAudience,
+                Target::User {
+                    user,
+                    guild: Some(guild),
+                },
+            ) => self.run_stage_user_act(act, guild, user),
             (Act::Correction(index), Target::Composer) => {
                 let menu = self.context.composer.clone().unwrap_or_default();
                 if let (Some((range, word)), Some(correction)) =
@@ -2828,7 +2926,6 @@ impl Root {
             // "Go to Server" of a favourite: the channel in its own server, outside the Favorites view.
             (Act::GoToServer, Target::Channel(id)) => {
                 if let Some(guild) = self.guild_of_channel(id) {
-                    self.favorites_view = false;
                     self.select(guild, Some(id));
                     self.request_images();
                     cx.notify();
@@ -3432,6 +3529,7 @@ impl Root {
                                 });
                                 if !in_sub
                                     && this.press_outside(super::keyboard::Layer::ContextMenu, cx)
+                                    && event.button != gpui::MouseButton::Right
                                 {
                                     cx.stop_propagation();
                                 }
@@ -3840,6 +3938,7 @@ impl Root {
             color("--text-strong")
         };
         let has_sub = row.caret;
+        let is_check = row.check.is_some();
         let label = gpui::StyledText::new(row.label.clone()).with_highlights(
             (act == Act::Mute && matches!(target, Target::Dm(_)))
                 .then(|| row.label.find('@'))
@@ -3922,7 +4021,14 @@ impl Root {
                 cx.notify();
                 return;
             }
-            this.close_context_menu(cx);
+            if !is_check {
+                this.close_context_menu(cx);
+            } else if let Some(open) = this.context.open.as_mut()
+                && let Some(Entry::Row(entry)) = open.items.get_mut(index)
+                && let Some(checked) = entry.check.as_mut()
+            {
+                *checked = !*checked;
+            }
             this.run_context(act, target, window, cx);
             cx.notify();
         }))
@@ -4455,7 +4561,7 @@ mod tests {
         };
         let items = user_items(&in_call);
         let shown = labels(&items);
-        for want in ["User Volume", "Mute", "Mute Soundboard"] {
+        for want in ["User Volume", "Mute", "Mute Soundboard", "Disable Video"] {
             assert!(shown.contains(&want.to_owned()), "{want}");
         }
         assert!(
@@ -4466,10 +4572,16 @@ mod tests {
         let muted = UserFacts {
             soundboard_muted: true,
             voice_muted: true,
+            video_disabled: true,
             ..in_call.clone()
         };
         let items = user_items(&muted);
-        assert!(labels(&items).contains(&"Unmute Soundboard".to_owned()));
+        assert!(items.iter().any(|entry| {
+            matches!(entry, Entry::Row(row) if row.label == "Mute Soundboard" && row.check == Some(true))
+        }));
+        assert!(items.iter().any(|entry| {
+            matches!(entry, Entry::Row(row) if row.label == "Disable Video" && row.check == Some(true))
+        }));
         assert!(items.iter().any(|entry| matches!(entry, Entry::Row(row) if row.label == "Mute" && row.check == Some(true))));
         // Not in a call, or ourselves: none of them.
         let outside = UserFacts {
@@ -4482,6 +4594,89 @@ mod tests {
             ..in_call
         };
         assert!(!labels(&user_items(&own)).contains(&"User Volume".to_owned()));
+    }
+
+    #[test]
+    fn call_and_block_and_favorite_and_stage_items_follow_official_gating() {
+        // 949674: Start a Call is hidden for bots or when hide_call is set, and disabled when blocked.
+        let base = UserFacts {
+            name: "ann".to_owned(),
+            ..UserFacts::default()
+        };
+        assert!(user_items(&base).iter().any(
+            |entry| matches!(entry, Entry::Row(row) if row.act == Act::Call && !row.disabled)
+        ));
+        assert!(
+            !user_items(&UserFacts {
+                bot: true,
+                ..base.clone()
+            })
+            .iter()
+            .any(|entry| matches!(entry, Entry::Row(row) if row.act == Act::Call))
+        );
+        assert!(
+            !user_items(&UserFacts {
+                hide_call: true,
+                ..base.clone()
+            })
+            .iter()
+            .any(|entry| matches!(entry, Entry::Row(row) if row.act == Act::Call))
+        );
+        assert!(
+            user_items(&UserFacts {
+                blocked: true,
+                ..base.clone()
+            })
+            .iter()
+            .any(|entry| matches!(entry, Entry::Row(row) if row.act == Act::Call && row.disabled))
+        );
+
+        // 239211: Block is danger, Unblock is default color.
+        assert!(user_items(&base).iter().any(|entry| matches!(entry, Entry::Row(row) if row.act == Act::Block && row.label == "Block" && row.danger)));
+        assert!(user_items(&UserFacts { blocked: true, ..base.clone() }).iter().any(|entry| matches!(entry, Entry::Row(row) if row.act == Act::Block && row.label == "Unblock" && !row.danger)));
+
+        // 385913 / 438653: Add to Favorites sits with Pin in Group 2; Remove from Favorites moves after Mute as danger.
+        let dm_unfav = user_items(&UserFacts {
+            dm: Some(false),
+            developer: true,
+            ..base.clone()
+        });
+        let fav_pos = dm_unfav.iter().position(|entry| matches!(entry, Entry::Row(row) if row.act == Act::Favorite && !row.danger && row.icon == Some("clips_star"))).unwrap();
+        let profile_pos = dm_unfav
+            .iter()
+            .position(|entry| matches!(entry, Entry::Row(row) if row.act == Act::Profile))
+            .unwrap();
+        assert!(fav_pos < profile_pos);
+
+        let dm_fav = user_items(&UserFacts {
+            dm: Some(false),
+            dm_favorite: true,
+            developer: true,
+            ..base.clone()
+        });
+        let mute_pos = dm_fav
+            .iter()
+            .position(|entry| matches!(entry, Entry::Row(row) if row.act == Act::Mute))
+            .unwrap();
+        let rem_pos = dm_fav.iter().position(|entry| matches!(entry, Entry::Row(row) if row.act == Act::Favorite && row.danger && row.icon.is_none())).unwrap();
+        let copy_pos = dm_fav
+            .iter()
+            .position(|entry| matches!(entry, Entry::Row(row) if row.act == Act::CopyId))
+            .unwrap();
+        assert!(mute_pos < rem_pos && rem_pos < copy_pos);
+
+        // 75139 / 107632: Stage audience items put Stage actions before Profile and omit Mention.
+        let stage_items = user_items(&UserFacts {
+            in_guild: true,
+            omit_mention: true,
+            stage_acts: vec![Act::StageInvite],
+            ..base
+        });
+        let shown = labels(&stage_items);
+        assert_eq!(shown[0], "Invite to Speak");
+        assert_eq!(shown[1], "-");
+        assert_eq!(shown[2], "Profile");
+        assert!(!shown.contains(&"Mention".to_owned()));
     }
 
     #[test]

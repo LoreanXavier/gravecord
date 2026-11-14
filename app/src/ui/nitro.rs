@@ -3,7 +3,7 @@
 //! `design/dom/home/nitro-store-darker-cozy.json` (1280x720, darker, cozy); sections are laid out at their measured
 //! heights so the scroll offsets of the nav bar match.
 //!
-//! Not drawn: the hero and bento videos, the Rive buttons' glow and the blurred nav backdrop. Those are video and
+//! Not drawn: the hero and bento videos, and the Rive buttons' glow. Those are video and
 //! canvas content in the official page (`BLOCKED.md`).
 
 use super::{Root, color, icon};
@@ -539,6 +539,7 @@ impl Root {
             super::history::Route {
                 guild: None,
                 channel: None,
+                favorites: false,
                 nitro: true,
                 guild_guide: false,
                 channel_browser: false,
@@ -548,6 +549,7 @@ impl Root {
                 message_requests: false,
             },
         );
+        self.favorites_view = false;
         self.discover.open = false;
         self.guild = None;
         self.channel = None;
@@ -1400,7 +1402,7 @@ impl Root {
             .iter()
             .rposition(|(_, top)| offset >= top - 50.)
             .unwrap_or(0);
-        let solid = offset > 1.;
+        let show_nav_border = super::theme() != dc_tokens::Theme::Midnight;
         let seen = self.nitro.seen.clone();
         let hero_gradient = |top: Hsla, bottom: Hsla, height: f32| {
             div().w_full().h(px(height)).bg(linear_gradient(
@@ -1454,10 +1456,9 @@ impl Root {
             .flex()
             .items_center()
             .px(px(16.))
-            .when(solid, |this| {
-                this.bg(color("--background-base-lowest"))
-                    .border_b_1()
-                    .border_color(color("--border-subtle"))
+            .backdrop_blur(px(11.5))
+            .when(show_nav_border, |this| {
+                this.border_b_1().border_color(color("--border-strong"))
             })
             .child(icon("nitro_wheel", 24., "--text-strong"))
             .child(div().ml(px(24.)).flex().gap(px(20.)).children(nav_items))
@@ -1528,6 +1529,7 @@ impl Root {
             .flex_1()
             .min_w(px(0.))
             .h_full()
+            .overflow_hidden()
             .bg(color("--background-base-lowest"))
             .child(
                 div()

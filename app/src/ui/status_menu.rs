@@ -609,8 +609,23 @@ impl Root {
             .on_mouse_down(
                 MouseButton::Left,
                 cx.listener(|this, _, _, cx| {
-                    this.status_popout = None;
-                    cx.notify();
+                    if this.press_outside(super::keyboard::Layer::StatusPopout, cx) {
+                        cx.stop_propagation();
+                    }
+                }),
+            )
+            .on_mouse_down(
+                MouseButton::Middle,
+                cx.listener(|this, _, _, cx| {
+                    if this.press_outside(super::keyboard::Layer::StatusPopout, cx) {
+                        cx.stop_propagation();
+                    }
+                }),
+            )
+            .on_mouse_down(
+                MouseButton::Right,
+                cx.listener(|this, _, _, cx| {
+                    this.press_outside(super::keyboard::Layer::StatusPopout, cx);
                 }),
             )
             .child(div().absolute().left(px(8.)).bottom(px(72.)).child(card))

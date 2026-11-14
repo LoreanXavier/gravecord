@@ -1311,8 +1311,10 @@ impl Root {
                 spread_radius: px(0.),
                 inset: false,
             }])
-            .on_mouse_down_out(cx.listener(|this, _, _, cx| {
-                if this.press_outside(super::keyboard::Layer::ThreadBrowser, cx) {
+            .on_mouse_down_out(cx.listener(|this, event: &gpui::MouseDownEvent, _, cx| {
+                if this.press_outside(super::keyboard::Layer::ThreadBrowser, cx)
+                    && event.button != gpui::MouseButton::Right
+                {
                     cx.stop_propagation();
                 }
             }))
