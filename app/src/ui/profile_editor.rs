@@ -831,6 +831,7 @@ impl Root {
                 .right(px(48.))
                 .size(px(32.))
                 .rounded(px(8.))
+                .backdrop_blur(px(4.))
                 .bg(color("--control-secondary-background-default"))
                 .hover(|style| style.bg(color("--control-secondary-background-hover")))
                 .flex()

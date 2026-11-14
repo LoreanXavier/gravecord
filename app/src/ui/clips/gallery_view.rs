@@ -538,7 +538,8 @@ impl Root {
                     .size_full()
                     .object_fit(ObjectFit::Cover)
             }))
-            // The footer's scrim (`footerScrim`: a blur and a tint masked to fade upward, 94 px) as a gradient.
+            // `footerScrim_PupK8L` (`ab2505b2ddc0c71f.css`): 8px backdrop blur masked to fade upward over 60% of the
+            // 94px scrim, plus a subtle dark gradient tint.
             .child(
                 div()
                     .absolute()
@@ -548,9 +549,28 @@ impl Root {
                     .h(px(94.))
                     .bg(gpui::linear_gradient(
                         0.,
-                        gpui::linear_color_stop(gpui::rgba(0x000000b8), 0.4),
+                        gpui::linear_color_stop(gpui::rgba(0x00000080), 0.4),
                         gpui::linear_color_stop(gpui::rgba(0x00000000), 1.),
-                    )),
+                    ))
+                    .child(
+                        gpui::canvas(
+                            |_, _, _| {},
+                            |bounds, _, window, _| {
+                                let scrim_h = f32::from(bounds.size.height);
+                                window.paint_backdrop_blur_with_fade(
+                                    bounds,
+                                    gpui::Corners {
+                                        bottom_left: px(12.),
+                                        bottom_right: px(12.),
+                                        ..Default::default()
+                                    },
+                                    px(8.),
+                                    px(scrim_h * 0.6),
+                                );
+                            },
+                        )
+                        .size_full(),
+                    ),
             )
             // Header: the "new" badge and the star on the left and right, `More` while hovered.
             .child(
@@ -585,6 +605,7 @@ impl Root {
                             .gap(px(4.))
                             .child(
                                 overlay_button(format!("clips-card-more-{id}"))
+                                    .backdrop_blur(px(8.))
                                     .w(px(32.))
                                     .px(px(0.))
                                     .invisible()

@@ -4,14 +4,17 @@
 //! `design/dom/channel/text-darker-cozy.json` (a GitHub article embed).
 
 use super::embed_layout::{self, Media};
-use super::{Root, color, hsla, rgba};
+use super::tooltip::{Side, Tip};
+use super::{Root, color, hsla, icon, rgba};
 use crate::parity::Parity;
-use dc_markdown::{Block, Kind, Span, parse};
+use dc_markdown::{Block, Kind, Span, embed_title, parse};
 use dc_state::{Embed, EmbedMedia, Id, Message};
 use gpui::{
-    AnyElement, Context, FontWeight, IntoElement, ObjectFit, SharedString, div, img, prelude::*, px,
+    AnyElement, Context, FontWeight, IntoElement, MouseButton, ObjectFit, SharedString, div, img,
+    prelude::*, px,
 };
-use std::sync::Arc;
+use std::collections::HashMap;
+use std::sync::{Arc, Mutex, OnceLock};
 
 /// `gridContainer_XyW1ZT` max-width.
 const GRID_MAX: f32 = 516.;
@@ -22,6 +25,260 @@ const PADDING_X: f32 = 28.;
 /// `MessageFlags.SUPPRESS_EMBEDS` and `EPHEMERAL` (module 652215).
 pub(super) const SUPPRESS_EMBEDS: u64 = 4;
 const EPHEMERAL: u64 = 64;
+
+/// `EmbedFlags` (modules 652215 and 811602): explicit (`1 << 4`), gore (`1 << 6`), self-harm (`1 << 7`).
+const EMBED_FLAG_EXPLICIT: u64 = 16;
+const EMBED_FLAG_GORE: u64 = 64;
+const EMBED_FLAG_SELF_HARM: u64 = 128;
+
+/// Sensitive content harm mask (`LO` in module 811602).
+const HARM_EXPLICIT: u8 = 1;
+const HARM_GORE: u8 = 2;
+const HARM_SELF_HARM: u8 = 4;
+
+/// Content filter redaction levels (`SHOW = 1`, `BLUR = 2`, `BLOCK = 3`; modules 632119 and 444802).
+const REDACTION_SHOW: u64 = 1;
+const REDACTION_BLUR: u64 = 2;
+const REDACTION_BLOCK: u64 = 3;
+const EXPLICIT_FILTER_DEFAULT: u64 = 1;
+
+/// `ObscureReason` (`av` in module 294520, resolved by modules 282108 and 863439).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum ObscureReason {
+    Spoiler,
+    ExplicitContent,
+    GoreContent,
+    SelfHarmContent,
+    PotentialExplicitContent,
+}
+
+impl ObscureReason {
+    fn is_sensitive(self) -> bool {
+        !matches!(self, Self::Spoiler)
+    }
+}
+
+static EMBED_REVEALED: OnceLock<Mutex<HashMap<(Id, usize), bool>>> = OnceLock::new();
+
+fn revealed_map() -> &'static Mutex<HashMap<(Id, usize), bool>> {
+    EMBED_REVEALED.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+pub(super) fn is_embed_revealed(message_id: Id, index: usize) -> bool {
+    revealed_map()
+        .lock()
+        .ok()
+        .and_then(|map| map.get(&(message_id, index)).copied())
+        .unwrap_or(false)
+}
+
+fn set_embed_revealed(message_id: Id, index: usize, revealed: bool) {
+    if let Ok(mut map) = revealed_map().lock() {
+        if revealed {
+            map.insert((message_id, index), true);
+        } else {
+            map.remove(&(message_id, index));
+        }
+    }
+}
+
+fn toggle_embed_revealed(message_id: Id, index: usize) -> bool {
+    if let Ok(mut map) = revealed_map().lock() {
+        let next = !map.get(&(message_id, index)).copied().unwrap_or(false);
+        if next {
+            map.insert((message_id, index), true);
+        } else {
+            map.remove(&(message_id, index));
+        }
+        next
+    } else {
+        false
+    }
+}
+
+/// `d` in module 354777 (`hasSpoilerEmbeds`): true when the message's paragraph content wraps a link inside `||...||`.
+pub(super) fn message_has_spoiler_link(content: &str) -> bool {
+    let blocks = parse(content);
+    !blocks.is_empty()
+        && blocks
+            .iter()
+            .all(|block| matches!(block, Block::Paragraph(_)))
+        && blocks.iter().any(|block| {
+            matches!(
+                block,
+                Block::Paragraph(spans)
+                    if spans
+                        .iter()
+                        .any(|span| span.style.spoiler && matches!(span.kind, Kind::Link(_)))
+            )
+        })
+}
+
+fn embed_has_visual_media(embed: &Embed) -> bool {
+    embed.image.is_some()
+        || embed.thumbnail.is_some()
+        || embed.video.is_some()
+        || !embed.images.is_empty()
+}
+
+fn redaction_column(is_guild: bool, is_friend_dm: bool) -> usize {
+    dc_proto::settings::CONTENT_REDACTION[0]
+        .iter()
+        .position(|pref| {
+            if is_guild {
+                pref.key.contains("guild")
+            } else if is_friend_dm {
+                pref.key.contains("friend") && !pref.key.contains("non_friend")
+            } else {
+                pref.key.contains("non_friend")
+            }
+        })
+        .unwrap_or(if is_guild {
+            0
+        } else if is_friend_dm {
+            1
+        } else {
+            2
+        })
+}
+
+fn default_content_redaction(kind: usize, is_guild: bool, is_friend_dm: bool, filter: u64) -> u64 {
+    if is_guild {
+        if kind == 0 && filter == 2 {
+            REDACTION_BLUR
+        } else {
+            REDACTION_SHOW
+        }
+    } else if is_friend_dm {
+        if filter == 2 {
+            REDACTION_BLUR
+        } else {
+            REDACTION_SHOW
+        }
+    } else if filter >= 1 {
+        REDACTION_BLUR
+    } else {
+        REDACTION_SHOW
+    }
+}
+
+/// Modules 282108, 33358, 632119 and 444802: active sensitive-content harm mask for `message` in `stores`.
+pub(super) fn sensitive_harm_flags(stores: &dc_state::Stores, message: &Message) -> u8 {
+    let Some(me) = stores.current_user.as_ref() else {
+        return 0;
+    };
+    // Own messages never obscure for sensitive content (`module 282108`).
+    if me.id == message.author.id {
+        return 0;
+    }
+    let (is_guild, is_friend_dm, is_nsfw_guild) = if stores
+        .private_channels
+        .iter()
+        .any(|channel| channel.id == message.channel_id)
+    {
+        let is_friend =
+            stores.relationships.get(&message.author.id) == Some(&dc_state::RELATIONSHIP_FRIEND);
+        (false, is_friend, false)
+    } else if let Some(nsfw) = stores.guilds.iter().find_map(|guild| {
+        if let Some(channel) = guild
+            .channels
+            .iter()
+            .find(|channel| channel.id == message.channel_id)
+        {
+            return Some(channel.nsfw);
+        }
+        guild
+            .threads
+            .iter()
+            .find(|thread| thread.id == message.channel_id)
+            .map(|thread| {
+                guild
+                    .channels
+                    .iter()
+                    .find(|channel| channel.id == thread.parent_id)
+                    .is_some_and(|channel| channel.nsfw)
+            })
+    }) {
+        (true, false, nsfw)
+    } else {
+        return 0;
+    };
+
+    let col = redaction_column(is_guild, is_friend_dm);
+    let filter = stores
+        .prefs
+        .get(dc_proto::settings::EXPLICIT_CONTENT_FILTER.key)
+        .copied()
+        .unwrap_or(EXPLICIT_FILTER_DEFAULT);
+    let active_redaction = |kind: usize| {
+        let pref = &dc_proto::settings::CONTENT_REDACTION[kind][col];
+        let raw = stores.prefs.get(pref.key).copied().unwrap_or(0);
+        let value = if raw == 0 {
+            default_content_redaction(kind, is_guild, is_friend_dm, filter)
+        } else {
+            raw
+        };
+        value == REDACTION_BLUR || value == REDACTION_BLOCK
+    };
+    let self_harm_active = dc_proto::settings::PROTO_PREFS
+        .iter()
+        .filter(|pref| pref.key.contains("self_harm"))
+        .find(|pref| {
+            if is_guild {
+                pref.key.contains("guild")
+            } else if is_friend_dm {
+                pref.key.contains("friend") && !pref.key.contains("non_friend")
+            } else {
+                pref.key.contains("non_friend")
+            }
+        })
+        .and_then(|pref| stores.prefs.get(pref.key).copied())
+        .is_some_and(|val| val == REDACTION_BLUR || val == REDACTION_BLOCK);
+
+    let mut flags = 0u8;
+    // Guild NSFW channels skip explicit flag 16 (`module 282108`).
+    if !is_nsfw_guild && active_redaction(0) {
+        flags |= HARM_EXPLICIT;
+    }
+    if active_redaction(1) {
+        flags |= HARM_GORE;
+    }
+    if self_harm_active {
+        flags |= HARM_SELF_HARM;
+    }
+    flags
+}
+
+/// `sC` in module 294520 and `S`/`N` in module 282108: resolves the embed's obscure reason from harm flags and spoilers.
+pub(super) fn obscure_reason_for(
+    embed: &Embed,
+    author_is_bot: bool,
+    has_spoiler_embeds: bool,
+    harm_flags: u8,
+) -> Option<ObscureReason> {
+    if harm_flags & HARM_EXPLICIT != 0 && embed.flags & EMBED_FLAG_EXPLICIT != 0 {
+        return Some(ObscureReason::ExplicitContent);
+    }
+    if harm_flags & HARM_GORE != 0 && embed.flags & EMBED_FLAG_GORE != 0 {
+        return Some(ObscureReason::GoreContent);
+    }
+    if harm_flags & HARM_SELF_HARM != 0 && embed.flags & EMBED_FLAG_SELF_HARM != 0 {
+        return Some(ObscureReason::SelfHarmContent);
+    }
+    if !author_is_bot && harm_flags != 0 && embed_has_visual_media(embed) {
+        let version = embed.content_scan_version;
+        let pending = version != Some(-1)
+            && if harm_flags & (HARM_GORE | HARM_SELF_HARM) != 0 {
+                version.is_none_or(|v| v < 4)
+            } else {
+                version.is_none_or(|v| v < 1)
+            };
+        if pending {
+            return Some(ObscureReason::PotentialExplicitContent);
+        }
+    }
+    has_spoiler_embeds.then_some(ObscureReason::Spoiler)
+}
 
 pub(super) fn image_key(message: Id, index: usize, part: &str) -> String {
     format!("embed:{message}:{index}:{part}")
@@ -295,6 +552,193 @@ impl Root {
         !self.pref_on("chat_inline_media_links", true)
     }
 
+    /// `863439`: whether spoiler embeds start obscured under the user's `renderSpoilers` setting.
+    fn should_obscure_spoilers(&self) -> bool {
+        match self.pref_index("chat_spoilers_show_spoilers", 0) {
+            // `ALWAYS`
+            1 => false,
+            // `IF_MODERATOR`
+            2 => !self.current_channel().is_some_and(|channel| {
+                self.can_in_channel(channel, dc_state::permissions::MANAGE_MESSAGES)
+            }),
+            // `ON_CLICK` (default)
+            _ => true,
+        }
+    }
+
+    fn embed_obscure_reason(&self, message: &Message, embed: &Embed) -> Option<ObscureReason> {
+        let harm_flags = sensitive_harm_flags(&self.stores, message);
+        let spoiler_embeds =
+            message_has_spoiler_link(&message.content) && self.should_obscure_spoilers();
+        obscure_reason_for(embed, message.author.bot, spoiler_embeds, harm_flags)
+    }
+
+    fn spoiler_overlay(
+        &self,
+        group: &SharedString,
+        message_id: Id,
+        index: usize,
+        radius: f32,
+        card_embed: bool,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let label = dc_intl::t!("F+x38C").to_uppercase();
+        div()
+            .id(SharedString::from(format!("{group}-spoiler-overlay")))
+            .parity("embed-spoiler-overlay")
+            .absolute()
+            .inset_0()
+            .rounded(px(radius))
+            .backdrop_blur(px(44.))
+            .cursor_pointer()
+            .flex()
+            .items_center()
+            .justify_center()
+            .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+            .on_click(cx.listener(move |_, _, _, cx| {
+                set_embed_revealed(message_id, index, true);
+                cx.notify();
+            }))
+            .child(
+                div()
+                    .when(card_embed, |this| this.ml(px(4.)))
+                    .py(px(8.))
+                    .px(px(12.))
+                    .rounded(px(20.))
+                    .bg(rgba(0x00000099))
+                    .group_hover(group.clone(), |style| {
+                        style.bg(rgba(0x000000e0)).text_color(color("--white"))
+                    })
+                    .text_size(px(15.))
+                    .line_height(px(18.))
+                    .font_weight(FontWeight(600.))
+                    .text_color(color("--primary-200"))
+                    .flex()
+                    .items_center()
+                    .gap(px(0.5))
+                    .children(label.chars().map(|ch| ch.to_string())),
+            )
+            .into_any_element()
+    }
+
+    fn sensitive_cover(reason: ObscureReason, group: &SharedString, radius: f32) -> AnyElement {
+        let show_warning = reason != ObscureReason::PotentialExplicitContent;
+        div()
+            .id(SharedString::from(format!("{group}-sensitive-cover")))
+            .parity("embed-sensitive-cover")
+            .absolute()
+            .inset_0()
+            .rounded(px(radius))
+            .backdrop_blur(px(44.))
+            .bg(rgba(0x000000eb))
+            .flex()
+            .flex_col()
+            .items_center()
+            .justify_center()
+            .p(px(16.))
+            .text_center()
+            .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+            .when(show_warning, |this| {
+                this.child(
+                    gpui::svg()
+                        .path("icons/warning_triangle.svg")
+                        .size(px(24.))
+                        .flex_none()
+                        .text_color(color("--text-overlay-light")),
+                )
+                .child(
+                    div()
+                        .mt(px(4.))
+                        .text_size(px(14.))
+                        .line_height(px(18.))
+                        .text_color(color("--text-overlay-light"))
+                        .child(dc_intl::t!("SpxcUR")),
+                )
+            })
+            .into_any_element()
+    }
+
+    fn embed_sensitive_toggle_button(
+        &self,
+        group: &SharedString,
+        message_id: Id,
+        index: usize,
+        visible: bool,
+        over_video: bool,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let glyph = if visible { "clips_eye" } else { "eye_slash" };
+        let button = div()
+            .id(SharedString::from(format!("{group}-obscure-toggle")))
+            .parity("embed-sensitive-toggle")
+            .size(px(32.))
+            .rounded(px(8.))
+            .bg(color("--control-overlay-secondary-background-default"))
+            .hover(|style| style.bg(color("--control-overlay-secondary-background-hover")))
+            .flex()
+            .items_center()
+            .justify_center()
+            .cursor_pointer()
+            .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+            .on_click(cx.listener(move |_, _, _, cx| {
+                toggle_embed_revealed(message_id, index);
+                cx.notify();
+            }))
+            .child(icon(glyph, 18., "--control-overlay-secondary-text-default"));
+        div()
+            .absolute()
+            .bottom(px(if visible && over_video { 36. } else { 4. }))
+            .right(px(4.))
+            .child(self.with_tip(
+                format!("{group}-obscure-tip"),
+                Tip::text(dc_intl::t!("ex5G9m"), Side::Top),
+                button,
+                cx,
+            ))
+            .into_any_element()
+    }
+
+    fn embed_rich_inline(
+        &self,
+        text: &str,
+        allow_links: bool,
+        base: gpui::Hsla,
+        (size, line): (f32, f32),
+        key: (u64, u32),
+        interactive: bool,
+    ) -> AnyElement {
+        let lines: Vec<&str> = text.split('\n').collect();
+        div()
+            .flex()
+            .flex_col()
+            .min_w(px(0.))
+            .children(lines.into_iter().enumerate().map(|(row, raw_line)| {
+                let spans = embed_title(raw_line, allow_links && interactive);
+                let pieces = spans
+                    .iter()
+                    .map(|span| {
+                        let rendered = if interactive {
+                            span.clone()
+                        } else {
+                            let mut inert = span.clone();
+                            inert.style.spoiler = false;
+                            if matches!(inert.kind, Kind::Link(_) | Kind::Channel(_)) {
+                                inert.kind = Kind::Text;
+                            }
+                            inert
+                        };
+                        self.piece(&rendered, base, size, 600., line)
+                    })
+                    .collect();
+                crate::inline::inline(pieces, px(line)).selectable(
+                    (key.0, key.1.saturating_add(row as u32)),
+                    self.selection.clone(),
+                    super::hsla_from(super::SELECTION),
+                )
+            }))
+            .into_any_element()
+    }
+
     /// A picture of the embed at its drawn size, opening the media viewer on click; the box keeps the declared size
     /// while the picture loads so the message does not move.
     fn embed_picture(
@@ -303,6 +747,7 @@ impl Root {
         key: String,
         size: (f32, f32),
         cover: bool,
+        playable: bool,
         cx: &mut Context<Self>,
     ) -> gpui::Stateful<gpui::Div> {
         let picture = self.images.get(&key).cloned();
@@ -312,22 +757,36 @@ impl Root {
             .id(SharedString::from(format!("picture-{key}")))
             .flex_none()
             .relative()
-            .cursor_pointer()
             .w(width)
             .h(height)
             .rounded(px(4.))
             .overflow_hidden()
             .bg(color("--background-base-low"))
-            .on_hover(cx.listener(move |this, inside: &bool, _, cx| {
-                this.media_hover(&hovered, *inside, cx);
+            .when(playable, |this| {
+                this.cursor_pointer()
+                    .on_hover(cx.listener(move |this, inside: &bool, _, cx| {
+                        this.media_hover(&hovered, *inside, cx);
+                    }))
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        this.open_lightbox(&clicked, &open, cx);
+                    }))
+            })
+            .children(picture.map(|picture| {
+                if playable {
+                    self.media_image(picture, &key, (width, height), 4., cover, cx)
+                } else {
+                    img(picture)
+                        .w(width)
+                        .h(height)
+                        .object_fit(if cover {
+                            ObjectFit::Cover
+                        } else {
+                            ObjectFit::Contain
+                        })
+                        .rounded(px(4.))
+                        .into_any_element()
+                }
             }))
-            .on_click(cx.listener(move |this, _, _, cx| {
-                this.open_lightbox(&clicked, &open, cx);
-            }))
-            .children(
-                picture
-                    .map(|picture| self.media_image(picture, &key, (width, height), 4., cover, cx)),
-            )
     }
 
     /// `ed` and module 153440's player before it plays: the poster at the video's size with the round play button
@@ -339,13 +798,14 @@ impl Root {
         index: usize,
         embed: &Embed,
         available: f32,
+        playable: bool,
         cx: &mut Context<Self>,
     ) -> Option<AnyElement> {
         let size = shrink(embed_layout::video_size(embed)?, available);
         let video = embed.video.as_ref()?;
         let key = image_key(message.id, index, "thumbnail");
         let force_external = video.width > 6016 || video.height > 3384;
-        if let Some(proxy_url) = video.proxy_url.as_ref().filter(|_| !force_external) {
+        if playable && let Some(proxy_url) = video.proxy_url.as_ref().filter(|_| !force_external) {
             return Some(self.render_media_player(
                 super::video_player::PlayerSpec {
                     key: format!("embed:{}:{index}", message.id),
@@ -391,17 +851,21 @@ impl Root {
                 .flex()
                 .items_center()
                 .justify_center()
-                .cursor_pointer()
-                .on_click(cx.listener(move |this, _, _, cx| {
-                    this.follow_link(&target, &target, cx);
-                }))
+                .when(playable, |this| {
+                    this.cursor_pointer()
+                        .on_click(cx.listener(move |this, _, _, cx| {
+                            this.follow_link(&target, &target, cx);
+                        }))
+                })
                 .child(
                     div()
                         .p(px(12.))
                         .rounded(px(24.))
                         .bg(color("--black"))
                         .opacity(0.6)
-                        .group_hover(group.clone(), |style| style.opacity(0.8))
+                        .when(playable, |this| {
+                            this.group_hover(group.clone(), |style| style.opacity(0.8))
+                        })
                         .child(play_icon()),
                 )
                 .into_any_element()
@@ -425,26 +889,30 @@ impl Root {
                             div()
                                 .id(SharedString::from(format!("{group}-play")))
                                 .flex()
-                                .cursor_pointer()
                                 .opacity(0.6)
-                                .hover(|style| style.opacity(1.))
-                                .on_click(cx.listener(move |this, _, _, cx| {
-                                    this.follow_link(&play, &play, cx);
-                                }))
+                                .when(playable, |this| {
+                                    this.cursor_pointer()
+                                        .hover(|style| style.opacity(1.))
+                                        .on_click(cx.listener(move |this, _, _, cx| {
+                                            this.follow_link(&play, &play, cx);
+                                        }))
+                                })
                                 .child(play_icon()),
                         )
                         .children(open.map(|open| {
                             div()
                                 .id(SharedString::from(format!("{group}-open")))
                                 .flex()
-                                .cursor_pointer()
                                 .opacity(0.6)
-                                .hover(|style| style.opacity(1.))
                                 .ml(px(2.))
                                 .mr(px(4.))
-                                .on_click(cx.listener(move |this, _, _, cx| {
-                                    this.follow_link(&open, &open, cx);
-                                }))
+                                .when(playable, |this| {
+                                    this.cursor_pointer()
+                                        .hover(|style| style.opacity(1.))
+                                        .on_click(cx.listener(move |this, _, _, cx| {
+                                            this.follow_link(&open, &open, cx);
+                                        }))
+                                })
                                 .child(
                                     gpui::svg()
                                         .path("icons/embed_open_external.svg")
@@ -485,6 +953,7 @@ impl Root {
         index: usize,
         embed: &Embed,
         available: f32,
+        playable: bool,
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let height = embed.max_media().1 as f32;
@@ -518,8 +987,15 @@ impl Root {
                 .gap(px(4.))
                 .overflow_hidden()
                 .children(cells.into_iter().map(|cell| {
-                    self.embed_picture(message, keys[cell].clone(), (side, cell_height), true, cx)
-                        .rounded(px(0.))
+                    self.embed_picture(
+                        message,
+                        keys[cell].clone(),
+                        (side, cell_height),
+                        true,
+                        playable,
+                        cx,
+                    )
+                    .rounded(px(0.))
                 }))
         };
         let left = column(left, cx);
@@ -541,8 +1017,7 @@ impl Root {
         message: &Message,
         index: usize,
         embed: &Embed,
-        slot: Media,
-        available: f32,
+        (slot, available, playable): (Media, f32, bool),
         cx: &mut Context<Self>,
     ) -> Option<AnyElement> {
         match slot {
@@ -556,13 +1031,16 @@ impl Root {
                         image_key(message.id, index, "image"),
                         size,
                         false,
+                        playable,
                         cx,
                     )
                     .into_any_element(),
                 )
             }
-            Media::Gallery => Some(self.embed_gallery(message, index, embed, available, cx)),
-            Media::Video => self.embed_video(message, index, embed, available, cx),
+            Media::Gallery => {
+                Some(self.embed_gallery(message, index, embed, available, playable, cx))
+            }
+            Media::Video => self.embed_video(message, index, embed, available, playable, cx),
             Media::Gifv => {
                 let size = shrink(embed_layout::gifv_size(embed)?, available);
                 Some(
@@ -571,11 +1049,18 @@ impl Root {
                         image_key(message.id, index, "thumbnail"),
                         size,
                         false,
+                        playable,
                         cx,
                     )
-                    .children(self.inline_video(message.id, index, embed, cx))
+                    .when(playable, |this| {
+                        this.children(self.inline_video(message.id, index, embed, cx))
+                    })
                     .into_any_element(),
                 )
+            }
+            Media::Audio => {
+                let audio = embed.audio.as_ref()?;
+                Some(self.embed_audio_player(message.id, index, &audio.proxy_url, playable))
             }
         }
     }
@@ -586,6 +1071,7 @@ impl Root {
         message: &Message,
         index: usize,
         embed: &Embed,
+        reason: Option<ObscureReason>,
         cx: &mut Context<Self>,
     ) -> Option<AnyElement> {
         let slot = embed_layout::media(embed, false);
@@ -593,8 +1079,49 @@ impl Root {
             .inline_max_width()
             .map_or(520., |width| width.min(520.) as f32)
             .min(self.content_width.max(1.));
-        let media = self.embed_media(message, index, embed, slot, limit, cx)?;
-        Some(div().pt(px(2.)).flex().child(media).into_any_element())
+        let visible = reason.is_none_or(|_| is_embed_revealed(message.id, index));
+        let media = self.embed_media(message, index, embed, (slot, limit, visible), cx)?;
+        let Some(reason) = reason else {
+            return Some(div().pt(px(2.)).flex().child(media).into_any_element());
+        };
+        let group = SharedString::from(format!("embed-inline-{}-{index}", message.id));
+        let hidden_spoiler = reason == ObscureReason::Spoiler && !visible;
+        let hidden_sensitive = reason.is_sensitive() && !visible;
+        let allow_min_size = hidden_sensitive && limit >= 146.;
+        let mut wrapper = div()
+            .id(SharedString::from(format!("{group}-box")))
+            .group(group.clone())
+            .relative()
+            .flex()
+            .rounded(px(8.))
+            .overflow_hidden()
+            .when(hidden_spoiler, |this| {
+                this.bg(color("--spoiler-hidden-background"))
+                    .group_hover(group.clone(), |style| {
+                        style.bg(color("--spoiler-hidden-background-hover"))
+                    })
+            })
+            .when(hidden_sensitive, |this| {
+                this.bg(color("--spoiler-hidden-background"))
+            })
+            .when(allow_min_size, |this| this.min_w(px(146.)).min_h(px(212.)))
+            .child(media);
+        if hidden_spoiler {
+            wrapper = wrapper.child(self.spoiler_overlay(&group, message.id, index, 8., false, cx));
+        } else if reason.is_sensitive() {
+            if !visible {
+                wrapper = wrapper.child(Self::sensitive_cover(reason, &group, 8.));
+            }
+            wrapper = wrapper.child(self.embed_sensitive_toggle_button(
+                &group,
+                message.id,
+                index,
+                visible,
+                slot == Media::Video,
+                cx,
+            ));
+        }
+        Some(div().pt(px(2.)).flex().child(wrapper).into_any_element())
     }
 
     fn embed_link_text(
@@ -649,10 +1176,13 @@ impl Root {
     ) -> Option<AnyElement> {
         let message_id = message.id;
         let hide_media = self.embed_media_hidden();
+        let reason = self.embed_obscure_reason(message, embed);
         if embed_layout::is_inline(embed, hide_media) {
-            return self.inline_media(message, index, embed, cx);
+            return self.inline_media(message, index, embed, reason, cx);
         }
-        let animate_icons = self.pref_on("animate_gifs", true)
+        let visible = reason.is_none_or(|_| is_embed_revealed(message_id, index));
+        let animate_icons = visible
+            && self.pref_on("animate_gifs", true)
             && !super::motion::reduced()
             && !super::voice_video::client_unfocused(cx);
         let max_width = embed.max_width().map(|width| width as f32);
@@ -685,7 +1215,7 @@ impl Root {
                     .child(self.embed_link_text(
                         format!("embed-provider-{message_id}-{index}"),
                         provider.clone(),
-                        embed.provider_url.clone(),
+                        embed.provider_url.clone().filter(|_| visible),
                         if link {
                             "--interactive-text-default"
                         } else {
@@ -731,16 +1261,63 @@ impl Root {
                             .child(self.embed_link_text(
                                 format!("embed-author-{message_id}-{index}"),
                                 author.clone(),
-                                embed.author_url.clone(),
+                                embed.author_url.clone().filter(|_| visible),
                                 "--text-strong",
                                 cx,
                             )),
                     ),
             );
         }
-        // `embedTitle_XyW1ZT`: 16px semibold; a link in `--text-link` when the embed has an address.
+        // `embedTitle_XyW1ZT`: 16px semibold; rich embeds parse `EMBED_TITLE_RULES` (`module 679636` / `605275`).
         if let Some(title) = &embed.title {
             has_content = true;
+            let embed_url = embed.url.as_deref().filter(|url| !url.is_empty());
+            let title_el = if embed.kind == "rich" {
+                let allow_links = embed_url.is_none();
+                let base = if embed_url.is_some() {
+                    hsla("--text-link")
+                } else {
+                    hsla("--text-strong")
+                };
+                let inline_title = self.embed_rich_inline(
+                    title,
+                    allow_links,
+                    base,
+                    (16., 22.),
+                    (text_key.0, text_key.1 + 90),
+                    visible,
+                );
+                let wrapper = div()
+                    .id(SharedString::from(format!(
+                        "embed-title-{message_id}-{index}"
+                    )))
+                    .min_w(px(0.))
+                    .child(inline_title);
+                if let Some(url) = embed_url.filter(|_| visible) {
+                    let url = url.to_owned();
+                    wrapper
+                        .cursor_pointer()
+                        .hover(|style| style.underline())
+                        .on_click(
+                            cx.listener(move |this, _, _, cx| this.follow_link(&url, &url, cx)),
+                        )
+                        .into_any_element()
+                } else {
+                    wrapper.into_any_element()
+                }
+            } else {
+                self.embed_link_text(
+                    format!("embed-title-{message_id}-{index}"),
+                    title.clone(),
+                    embed_url.filter(|_| visible).map(str::to_owned),
+                    if embed_url.is_some() {
+                        "--text-link"
+                    } else {
+                        "--text-strong"
+                    },
+                    cx,
+                )
+            };
             column = column.child(
                 div()
                     .mt(px(8.))
@@ -748,17 +1325,7 @@ impl Root {
                     .text_size(px(16.))
                     .line_height(px(22.))
                     .font_weight(FontWeight(600.))
-                    .child(self.embed_link_text(
-                        format!("embed-title-{message_id}-{index}"),
-                        title.clone(),
-                        embed.url.clone(),
-                        if embed.url.is_some() {
-                            "--text-link"
-                        } else {
-                            "--text-strong"
-                        },
-                        cx,
-                    )),
+                    .child(title_el),
             );
         }
         if embed_layout::shows_description(embed)
@@ -783,6 +1350,18 @@ impl Root {
                         .gap(px(8.))
                         .children(row.into_iter().map(|placed| {
                             let field = &embed.fields[placed.index];
+                            let name_el = if embed.kind == "rich" {
+                                self.embed_rich_inline(
+                                    &field.name,
+                                    true,
+                                    hsla("--text-strong"),
+                                    (14., 18.),
+                                    (text_key.0, text_key.1 + 20 + placed.index as u32),
+                                    visible,
+                                )
+                            } else {
+                                div().child(field.name.clone()).into_any_element()
+                            };
                             let value = if embed.kind == "rich" {
                                 self.embed_text(
                                     &field.value,
@@ -804,7 +1383,7 @@ impl Root {
                                         .line_height(px(18.))
                                         .font_weight(FontWeight(600.))
                                         .text_color(color("--text-strong"))
-                                        .child(field.name.clone()),
+                                        .child(name_el),
                                 )
                                 .child(value)
                         }))
@@ -813,7 +1392,7 @@ impl Root {
         }
         let slot = embed_layout::media(embed, hide_media);
         let media = self
-            .embed_media(message, index, embed, slot, content_width, cx)
+            .embed_media(message, index, embed, (slot, content_width, visible), cx)
             .map(|media| div().mt(px(16.)).flex().child(media));
         let thumbnail = embed_layout::shows_thumbnail(embed, hide_media)
             .then(|| embed_layout::thumbnail_size(embed))
@@ -829,6 +1408,7 @@ impl Root {
                         image_key(message_id, index, "thumbnail"),
                         size,
                         false,
+                        visible,
                         cx,
                     ))
             });
@@ -874,7 +1454,55 @@ impl Root {
                         .text_color(color("--interactive-text-default")),
                 )
         });
-        // The coloured edge is the card's own background showing through 4px at the start.
+        let hidden_spoiler = reason == Some(ObscureReason::Spoiler) && !visible;
+        let hidden_sensitive = reason.is_some_and(ObscureReason::is_sensitive) && !visible;
+        let hide_accent = hidden_spoiler || hidden_sensitive;
+        let allow_min_size = hidden_sensitive && outer >= 146.;
+
+        let mut body = if hide_accent {
+            div()
+                .relative()
+                .rounded(px(4.))
+                .overflow_hidden()
+                .border_1()
+                .border_color(color("--spoiler-hidden-background"))
+                .bg(color("--spoiler-hidden-background"))
+                .when(hidden_spoiler, |this| {
+                    this.group_hover(group.clone(), |style| {
+                        style
+                            .bg(color("--spoiler-hidden-background-hover"))
+                            .border_color(color("--spoiler-hidden-background-hover"))
+                    })
+                })
+                .when(allow_min_size, |this| this.min_w(px(146.)).min_h(px(212.)))
+                .child(grid)
+        } else {
+            div()
+                .relative()
+                .rounded_r(px(4.))
+                .border_1()
+                .border_l_0()
+                .border_color(color("--border-subtle"))
+                .bg(color("--background-surface-high"))
+                .child(grid)
+        };
+        if hidden_spoiler {
+            body = body.child(self.spoiler_overlay(&group, message_id, index, 4., true, cx));
+        } else if let Some(reason) = reason.filter(|r| r.is_sensitive()) {
+            if !visible {
+                body = body.child(Self::sensitive_cover(reason, &group, 4.));
+            }
+            body = body.child(self.embed_sensitive_toggle_button(
+                &group,
+                message_id,
+                index,
+                visible,
+                slot == Media::Video,
+                cx,
+            ));
+        }
+
+        // The coloured edge is the card's own background showing through 4px at the start (suppressed while obscured).
         let card = div()
             .id(SharedString::from(format!("{group}-card")))
             .group(group.clone())
@@ -882,19 +1510,10 @@ impl Root {
             .relative()
             .flex_none()
             .rounded(px(4.))
-            .bg(edge)
-            .pl(px(4.))
+            .when(!hide_accent, |this| this.bg(edge).pl(px(4.)))
             .when_some(fixed, |this, width| this.w(px(width)))
             .max_w(px(outer))
-            .child(
-                div()
-                    .rounded_r(px(4.))
-                    .border_1()
-                    .border_l_0()
-                    .border_color(color("--border-subtle"))
-                    .bg(color("--background-surface-high"))
-                    .child(grid),
-            )
+            .child(body)
             .children(suppress_button);
         Some(div().flex().child(card).into_any_element())
     }
@@ -1044,5 +1663,159 @@ mod tests {
         let keys: Vec<&str> = pictures.iter().map(|(key, _)| key.as_str()).collect();
         assert_eq!(keys, ["embed:9:0:image", "embed:9:0:gallery:1"]);
         assert_eq!(shrink((400., 300.), 200.), (200., 150.));
+    }
+
+    #[test]
+    fn spoiler_link_detection_and_reveal_state_toggle() {
+        assert!(message_has_spoiler_link("check ||https://example.com/a||"));
+        assert!(message_has_spoiler_link(
+            "||[secret](https://example.com)||"
+        ));
+        assert!(!message_has_spoiler_link(
+            "||just text|| https://example.com"
+        ));
+        assert!(!message_has_spoiler_link("> ||https://example.com||"));
+
+        set_embed_revealed(987_654, 2, false);
+        assert!(!is_embed_revealed(987_654, 2));
+        assert!(toggle_embed_revealed(987_654, 2));
+        assert!(is_embed_revealed(987_654, 2));
+        assert!(!toggle_embed_revealed(987_654, 2));
+        assert!(!is_embed_revealed(987_654, 2));
+    }
+
+    #[test]
+    fn obscure_reason_resolves_explicit_gore_self_harm_pending_and_spoiler() {
+        let base = Embed {
+            kind: "image".into(),
+            image: Some(EmbedMedia {
+                url: "https://x/a.png".into(),
+                proxy_url: None,
+                width: 400,
+                height: 300,
+                description: None,
+                flags: 0,
+            }),
+            content_scan_version: Some(4),
+            ..Embed::default()
+        };
+
+        let explicit = Embed {
+            flags: EMBED_FLAG_EXPLICIT,
+            ..base.clone()
+        };
+        assert_eq!(
+            obscure_reason_for(&explicit, false, true, HARM_EXPLICIT),
+            Some(ObscureReason::ExplicitContent)
+        );
+
+        let gore = Embed {
+            flags: EMBED_FLAG_GORE,
+            ..base.clone()
+        };
+        assert_eq!(
+            obscure_reason_for(&gore, false, false, HARM_GORE),
+            Some(ObscureReason::GoreContent)
+        );
+
+        let self_harm = Embed {
+            flags: EMBED_FLAG_SELF_HARM,
+            ..base.clone()
+        };
+        assert_eq!(
+            obscure_reason_for(&self_harm, false, false, HARM_SELF_HARM),
+            Some(ObscureReason::SelfHarmContent)
+        );
+
+        let pending = Embed {
+            content_scan_version: None,
+            ..base.clone()
+        };
+        assert_eq!(
+            obscure_reason_for(&pending, false, false, HARM_EXPLICIT),
+            Some(ObscureReason::PotentialExplicitContent)
+        );
+        // Bots skip pending scan obscuring.
+        assert_eq!(
+            obscure_reason_for(&pending, true, false, HARM_EXPLICIT),
+            None
+        );
+        // Version -1 skips pending scan obscuring.
+        let exempt = Embed {
+            content_scan_version: Some(-1),
+            ..base.clone()
+        };
+        assert_eq!(
+            obscure_reason_for(&exempt, false, false, HARM_EXPLICIT),
+            None
+        );
+        assert_eq!(
+            obscure_reason_for(&base, false, true, 0),
+            Some(ObscureReason::Spoiler)
+        );
+    }
+
+    #[test]
+    fn sensitive_harm_flags_exempt_own_messages_and_skip_explicit_in_nsfw_guild_channels() {
+        let mut stores = dc_state::Stores::default();
+        stores.dispatch(
+            "READY",
+            &json!({
+                "user": {"id": "1", "username": "me", "nsfw_allowed": true},
+                "relationships": [{"id": "2", "type": 1}],
+                "private_channels": [
+                    {"id": "10", "type": 1, "recipient_ids": ["2"]},
+                    {"id": "11", "type": 1, "recipient_ids": ["3"]}
+                ],
+                "guilds": [{
+                    "id": "50",
+                    "name": "Server",
+                    "channels": [
+                        {"id": "51", "type": 0, "name": "general", "nsfw": false},
+                        {"id": "52", "type": 0, "name": "nsfw", "nsfw": true}
+                    ]
+                }]
+            }),
+        );
+        for row in &dc_proto::settings::CONTENT_REDACTION {
+            for pref in row {
+                stores.prefs.insert(pref.key, REDACTION_BLUR);
+            }
+        }
+
+        let make_msg = |channel_id: &str, author_id: &str| {
+            Message::from_value(&json!({
+                "id": "1438000000000000001",
+                "channel_id": channel_id,
+                "content": "",
+                "timestamp": "2026-11-11T08:28:00+00:00",
+                "type": 0,
+                "flags": 0,
+                "author": {"id": author_id, "username": "u"}
+            }))
+            .unwrap()
+        };
+
+        // Own message never obscures for sensitive content.
+        assert_eq!(sensitive_harm_flags(&stores, &make_msg("51", "1")), 0);
+        // Normal guild channel blurs both explicit and gore.
+        assert_eq!(
+            sensitive_harm_flags(&stores, &make_msg("51", "2")),
+            HARM_EXPLICIT | HARM_GORE
+        );
+        // NSFW guild channel skips explicit (16) while still blurring gore (64).
+        assert_eq!(
+            sensitive_harm_flags(&stores, &make_msg("52", "2")),
+            HARM_GORE
+        );
+        // Friend and non-friend DMs read their redaction prefs.
+        assert_eq!(
+            sensitive_harm_flags(&stores, &make_msg("10", "2")),
+            HARM_EXPLICIT | HARM_GORE
+        );
+        assert_eq!(
+            sensitive_harm_flags(&stores, &make_msg("11", "3")),
+            HARM_EXPLICIT | HARM_GORE
+        );
     }
 }

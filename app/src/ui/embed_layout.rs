@@ -16,6 +16,8 @@ pub(super) enum Media {
     Video,
     /// `renderVideo({gifv: true})`: a looping, silent clip.
     Gifv,
+    /// `renderAudio`: the audio player card (`wrapperAudio_FJ99sr`).
+    Audio,
 }
 
 /// `renderMedia` (and `renderVideo`'s own guards: a URL and a thumbnail, and for a GIFV a video).
@@ -36,8 +38,13 @@ pub(super) fn media(embed: &Embed, hide_media: bool) -> Media {
                 Media::None
             }
         }
-        // An audio embed without its audio falls back to the image (the audio player is not ported).
-        "audio" => image_or_none(embed),
+        "audio" => {
+            if embed.audio.is_some() {
+                Media::Audio
+            } else {
+                image_or_none(embed)
+            }
+        }
         _ if embed.video.is_some() => {
             if video_ready || proxied_video {
                 Media::Video
@@ -493,5 +500,30 @@ mod tests {
         assert_eq!(media(&bare, false), Media::Video);
         assert_eq!(media(&bare, true), Media::None);
         assert!(video_size(&bare).is_some_and(|(w, h)| w >= 150. && h >= 144.));
+    }
+
+    #[test]
+    fn audio_embed_picks_audio_when_present_and_falls_back_to_image() {
+        let with_audio = embed(json!({
+            "type": "audio",
+            "title": "Preview",
+            "thumbnail": {"url": "https://cdn.example/cover.jpg", "width": 300, "height": 300},
+            "image": {"url": "https://cdn.example/banner.jpg", "width": 600, "height": 300},
+            "audio": {
+                "url": "https://cdn.example/track.mp3",
+                "proxy_url": "https://media.example/track.mp3"
+            }
+        }));
+        assert_eq!(media(&with_audio, false), Media::Audio);
+        assert_eq!(media(&with_audio, true), Media::None);
+        assert!(shows_thumbnail(&with_audio, false));
+        assert!(!is_inline(&with_audio, false));
+
+        let without_audio = embed(json!({
+            "type": "audio",
+            "title": "Fallback",
+            "image": {"url": "https://cdn.example/banner.jpg", "width": 600, "height": 300}
+        }));
+        assert_eq!(media(&without_audio, false), Media::Image);
     }
 }

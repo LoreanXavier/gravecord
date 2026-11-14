@@ -129,23 +129,72 @@ impl Hub {
     }
 }
 
+/// Deterministic hub key and GPUI element salt for an audio embed (`(message_id, embed_index, proxy_url)`).
+pub(super) fn embed_audio_key(
+    message_id: dc_state::Id,
+    embed_index: usize,
+    proxy_url: &str,
+) -> (String, usize) {
+    let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
+    for byte in message_id
+        .to_le_bytes()
+        .into_iter()
+        .chain((embed_index as u64).to_le_bytes())
+        .chain(proxy_url.bytes())
+    {
+        hash ^= u64::from(byte);
+        hash = hash.wrapping_mul(0x0100_0000_01b3);
+    }
+    let key = format!("{KEY}embed:{message_id}:{embed_index}:{hash:016x}");
+    let salt = 0x4000_0000usize | ((hash as usize) & 0x3fff_ffff);
+    (key, salt)
+}
+
+struct AudioBar<'a> {
+    key: &'a str,
+    salt: usize,
+    span: f64,
+    fraction: f32,
+    loaded: bool,
+    buffered: bool,
+    over: bool,
+    preview: f32,
+    dragging: bool,
+    playable: bool,
+}
+
 impl Root {
-    /// The card of one audio attachment of `message`.
-    pub(super) fn audio_card(
+    /// `audioControls_FJ99sr`: the 32 px controls row shared by audio attachments and audio embeds (`eh` in module 153440).
+    fn audio_controls(
         &self,
-        message: &Message,
-        attachment: &Attachment,
-        cx: &mut Context<Self>,
-    ) -> AnyElement {
+        key: &str,
+        url: &str,
+        salt: usize,
+        playable: bool,
+    ) -> (AnyElement, bool) {
         let hub = self.voice_hub.clone();
-        let key = format!("{KEY}{}:{}", message.id, attachment.id);
-        let salt = (attachment.id % 1_000_000) as usize;
-        let url = attachment.url.clone();
-        let view = hub.borrow_mut().audio_view(&key);
+        if !playable {
+            let status = voice_player::engine().status();
+            let active = status.key.as_deref() == Some(key) && status.playing;
+            let mut guard = hub.borrow_mut();
+            let span = match guard.load(key) {
+                Some(Load::Ready(clip)) => clip.seconds(),
+                _ => 0.,
+            };
+            if active {
+                guard.toggle(key, url, span);
+            }
+            let pill = guard.pill(key);
+            pill.want_play = false;
+            pill.over = 0;
+            pill.bar_over = false;
+            pill.hide_at = None;
+        }
+        let view = hub.borrow_mut().audio_view(key);
         let (volume, muted, bar_over, preview, dragging) = {
             let mut hub = hub.borrow_mut();
             let (volume, muted) = (hub.volume, hub.muted);
-            let pill = hub.pill(&key);
+            let pill = hub.pill(key);
             (
                 volume,
                 muted,
@@ -162,6 +211,197 @@ impl Root {
         } else {
             0.
         };
+
+        // `controlIcon_FJ99sr`: 24 px in a 32 px box, `--interactive-text-active`, white when hovered.
+        let play_icon = if view.playing {
+            "clips_pause"
+        } else if view.ended {
+            "media_replay"
+        } else {
+            "clips_play"
+        };
+        let play = {
+            let (hub, key, url) = (hub.clone(), key.to_owned(), url.to_owned());
+            div()
+                .id(("audio-play", salt))
+                .flex_none()
+                .size(px(32.))
+                .flex()
+                .items_center()
+                .justify_center()
+                .text_color(control_tint())
+                .when(playable, |this| {
+                    this.cursor_pointer()
+                        .hover(|style| style.text_color(color("--white")))
+                        .on_click(move |_, window, _| {
+                            hub.borrow_mut().toggle(&key, &url, span);
+                            window.refresh();
+                        })
+                })
+                .child(control_icon(play_icon))
+        };
+
+        // `durationTimeWrapper_FJ99sr`: 12 px mono, 7.2 px a character, a 2 px margin round the slash.
+        let digits = |text: String| {
+            let width = text.chars().count() as f32 * 7.2;
+            div()
+                .flex_none()
+                .w(px(width))
+                .h(px(12.))
+                // The box is exactly the digits' width: at fractional zoom a hair more would wrap the last one.
+                .whitespace_nowrap()
+                .child(text)
+                .into_any_element()
+        };
+        let time = div()
+            .flex()
+            .flex_none()
+            .m(px(4.))
+            .h(px(12.))
+            .font_family(MONO)
+            .text_size(px(12.))
+            .line_height(px(12.))
+            .font_weight(FontWeight::MEDIUM)
+            .text_color(color("--white"))
+            .child(digits(elapsed))
+            .child(
+                div()
+                    .flex_none()
+                    .mx(px(2.))
+                    .w(px(7.2))
+                    .h(px(12.))
+                    .child("/"),
+            )
+            .child(digits(whole));
+
+        let bar = self.audio_bar(AudioBar {
+            key,
+            salt,
+            span,
+            fraction,
+            loaded,
+            buffered: view.buffered,
+            over: bar_over,
+            preview,
+            dragging,
+            playable,
+        });
+
+        let button = {
+            let click_hub = hub.clone();
+            let (hover_hub, hover_key) = (hub.clone(), key.to_owned());
+            let level = if muted || volume <= 0. {
+                "clips_voice_off"
+            } else if volume < 0.5 {
+                "vm_voice_low"
+            } else {
+                "clips_voice_on"
+            };
+            div()
+                .id(("audio-volume", salt))
+                .flex_none()
+                .size(px(32.))
+                .flex()
+                .items_center()
+                .justify_center()
+                .text_color(control_tint())
+                .when(playable, |this| {
+                    this.cursor_pointer()
+                        .hover(|style| style.text_color(color("--white")))
+                        .on_click(move |_, window, _| {
+                            click_hub.borrow_mut().toggle_mute();
+                            window.refresh();
+                        })
+                        .on_hover(move |hovered, window, _| {
+                            let mut hub = hover_hub.borrow_mut();
+                            let pill = hub.pill(&hover_key);
+                            if *hovered {
+                                pill.over = 1;
+                                pill.hide_at = None;
+                            } else {
+                                pill.over = 0;
+                                // The slider hides 150 ms after the pointer leaves (`_hoverTimeout`).
+                                pill.hide_at = Some(super::motion::now() + 150.);
+                            }
+                            window.refresh();
+                        })
+                })
+                .child(control_icon(level))
+        };
+        let mut volume_box = div().relative().flex_none().size(px(32.)).child(button);
+        if playable && view.slider_open {
+            let position = super::audio_menu::volume_to_slider(volume * 100.) / 100.;
+            let position = if muted { 0. } else { position };
+            // The slider box is 4 px above the controls row, 4 px in from the button's left edge plus its 4 px.
+            volume_box = volume_box.child(self.voice_slider(key, salt, position, 36., 8.));
+        }
+
+        let controls = div()
+            .flex()
+            .items_center()
+            .w_full()
+            .h(px(32.))
+            .mt(px(4.))
+            .rounded(px(8.))
+            .bg(color("--opacity-black-40"))
+            .child(div().flex_none().mr(px(8.)).child(play))
+            .child(time)
+            .child(bar)
+            .child(volume_box)
+            .into_any_element();
+        (controls, playable && view.slider_open)
+    }
+
+    /// `renderAudio` of module 265705 (`eh` in module 153440 with `fileName == null && fileSize == null`):
+    /// `wrapperAudio_FJ99sr` with only the 32 px controls bar and no metadata row or hover buttons.
+    pub(super) fn embed_audio_player(
+        &self,
+        message_id: dc_state::Id,
+        embed_index: usize,
+        proxy_url: &str,
+        playable: bool,
+    ) -> AnyElement {
+        let (key, salt) = embed_audio_key(message_id, embed_index, proxy_url);
+        let (controls, _) = self.audio_controls(&key, proxy_url, salt, playable);
+        let over_hub = self.voice_hub.clone();
+        let over_url = proxy_url.to_owned();
+        div()
+            .id(("embed-audio-card", salt))
+            .parity("embed-audio")
+            .relative()
+            .flex()
+            .flex_col()
+            .w(px(432.))
+            .max_w_full()
+            .p(px(16.))
+            .rounded(px(8.))
+            .border_1()
+            .border_color(color("--border-subtle"))
+            .bg(color("--background-base-lower"))
+            .when(playable, move |this| {
+                this.on_hover(move |hovered, window, _| {
+                    let mut hub = over_hub.borrow_mut();
+                    if *hovered {
+                        hub.request(&key, &over_url);
+                    }
+                    window.refresh();
+                })
+            })
+            .child(controls)
+            .into_any_element()
+    }
+
+    /// The card of one audio attachment of `message`.
+    pub(super) fn audio_card(
+        &self,
+        message: &Message,
+        attachment: &Attachment,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let hub = self.voice_hub.clone();
+        let key = format!("{KEY}{}:{}", message.id, attachment.id);
+        let salt = (attachment.id % 1_000_000) as usize;
+        let url = attachment.url.clone();
         let own = self
             .stores
             .current_user
@@ -228,137 +468,7 @@ impl Root {
                     ),
             );
 
-        // `controlIcon_FJ99sr`: 24 px in a 32 px box, `--interactive-text-active`, white when hovered.
-        let play_icon = if view.playing {
-            "clips_pause"
-        } else if view.ended {
-            "media_replay"
-        } else {
-            "clips_play"
-        };
-        let play = {
-            let (hub, key, url) = (hub.clone(), key.clone(), url.clone());
-            div()
-                .id(("audio-play", salt))
-                .flex_none()
-                .size(px(32.))
-                .flex()
-                .items_center()
-                .justify_center()
-                .cursor_pointer()
-                .text_color(control_tint())
-                .hover(|style| style.text_color(color("--white")))
-                .on_click(move |_, window, _| {
-                    hub.borrow_mut().toggle(&key, &url, span);
-                    window.refresh();
-                })
-                .child(control_icon(play_icon))
-        };
-
-        // `durationTimeWrapper_FJ99sr`: 12 px mono, 7.2 px a character, a 2 px margin round the slash.
-        let digits = |text: String| {
-            let width = text.chars().count() as f32 * 7.2;
-            div()
-                .flex_none()
-                .w(px(width))
-                .h(px(12.))
-                // The box is exactly the digits' width: at fractional zoom a hair more would wrap the last one.
-                .whitespace_nowrap()
-                .child(text)
-                .into_any_element()
-        };
-        let time = div()
-            .flex()
-            .flex_none()
-            .m(px(4.))
-            .h(px(12.))
-            .font_family(MONO)
-            .text_size(px(12.))
-            .line_height(px(12.))
-            .font_weight(FontWeight::MEDIUM)
-            .text_color(color("--white"))
-            .child(digits(elapsed))
-            .child(
-                div()
-                    .flex_none()
-                    .mx(px(2.))
-                    .w(px(7.2))
-                    .h(px(12.))
-                    .child("/"),
-            )
-            .child(digits(whole));
-
-        let bar = self.audio_bar(
-            &key,
-            salt,
-            span,
-            fraction,
-            loaded,
-            view.buffered,
-            bar_over,
-            preview,
-            dragging,
-        );
-
-        let button = {
-            let click_hub = hub.clone();
-            let (hover_hub, hover_key) = (hub.clone(), key.clone());
-            let level = if muted || volume <= 0. {
-                "clips_voice_off"
-            } else if volume < 0.5 {
-                "vm_voice_low"
-            } else {
-                "clips_voice_on"
-            };
-            div()
-                .id(("audio-volume", salt))
-                .flex_none()
-                .size(px(32.))
-                .flex()
-                .items_center()
-                .justify_center()
-                .cursor_pointer()
-                .text_color(control_tint())
-                .hover(|style| style.text_color(color("--white")))
-                .on_click(move |_, window, _| {
-                    click_hub.borrow_mut().toggle_mute();
-                    window.refresh();
-                })
-                .on_hover(move |hovered, window, _| {
-                    let mut hub = hover_hub.borrow_mut();
-                    let pill = hub.pill(&hover_key);
-                    if *hovered {
-                        pill.over = 1;
-                        pill.hide_at = None;
-                    } else {
-                        pill.over = 0;
-                        // The slider hides 150 ms after the pointer leaves (`_hoverTimeout`).
-                        pill.hide_at = Some(super::motion::now() + 150.);
-                    }
-                    window.refresh();
-                })
-                .child(control_icon(level))
-        };
-        let mut volume_box = div().relative().flex_none().size(px(32.)).child(button);
-        if view.slider_open {
-            let position = super::audio_menu::volume_to_slider(volume * 100.) / 100.;
-            let position = if muted { 0. } else { position };
-            // The slider box is 4 px above the controls row, 4 px in from the button's left edge plus its 4 px.
-            volume_box = volume_box.child(self.voice_slider(&key, salt, position, 36., 8.));
-        }
-
-        let controls = div()
-            .flex()
-            .items_center()
-            .w_full()
-            .h(px(32.))
-            .mt(px(4.))
-            .rounded(px(8.))
-            .bg(color("--opacity-black-40"))
-            .child(div().flex_none().mr(px(8.)).child(play))
-            .child(time)
-            .child(bar)
-            .child(volume_box);
+        let (controls, slider_open) = self.audio_controls(&key, &url, salt, true);
 
         // `hoverButtonGroup_n2rO26` with `nonMediaMosaicItem_n2rO26`: 8 px outside the card's top right corner.
         let hover_button = |id: &'static str, glyph: &'static str, tip: &'static str| {
@@ -387,7 +497,7 @@ impl Root {
             .bg(color("--background-base-low"))
             .opacity(0.);
         // While the volume slider is open the group stays hidden (the golden's group is at opacity 0 then).
-        if !view.slider_open {
+        if !slider_open {
             buttons = buttons
                 .group_hover(group.clone(), |style| style.opacity(1.))
                 .hover(|style| style.opacity(1.));
@@ -464,19 +574,19 @@ impl Root {
 
     /// `horizontal_s1cr3c` with `mediaBarInteraction_s1cr3c`: the rail (6 px, `--primary-300` at 30%, 3 px caps at both
     /// ends), the buffered part, the hover preview, the progress, the grabber and the time bubble.
-    #[allow(clippy::too_many_arguments)]
-    fn audio_bar(
-        &self,
-        key: &str,
-        salt: usize,
-        span: f64,
-        fraction: f32,
-        loaded: bool,
-        buffered: bool,
-        over: bool,
-        preview: f32,
-        dragging: bool,
-    ) -> AnyElement {
+    fn audio_bar(&self, spec: AudioBar<'_>) -> AnyElement {
+        let AudioBar {
+            key,
+            salt,
+            span,
+            fraction,
+            loaded,
+            buffered,
+            over,
+            preview,
+            dragging,
+            playable,
+        } = spec;
         let hub = self.voice_hub.clone();
         let mut rail = color("--primary-300");
         rail.a *= 0.3;
@@ -517,7 +627,7 @@ impl Root {
         } else {
             "-:--".to_owned()
         };
-        let show = over || dragging;
+        let show = playable && (over || dragging);
         let mut track = div()
             .relative()
             .flex_1()
@@ -616,32 +726,34 @@ impl Root {
             .mx(px(7.))
             .items_center()
             .relative()
-            .cursor_pointer()
-            .on_hover(move |hovered, window, _| {
-                hover_hub.borrow_mut().pill(&hover_key).bar_over = *hovered;
-                window.refresh();
+            .when(playable, move |this| {
+                this.cursor_pointer()
+                    .on_hover(move |hovered, window, _| {
+                        hover_hub.borrow_mut().pill(&hover_key).bar_over = *hovered;
+                        window.refresh();
+                    })
+                    .on_mouse_move(move |event: &MouseMoveEvent, window, _| {
+                        let mut hub = move_hub.borrow_mut();
+                        let bounds = hub.pill(&move_key).bar;
+                        hub.pill(&move_key).preview = fraction_of(event.position.x, bounds) as f32;
+                        window.refresh();
+                    })
+                    .on_mouse_down(
+                        MouseButton::Left,
+                        move |event: &MouseDownEvent, window, _| {
+                            // The length is not known before the metadata is in: the bar does nothing yet.
+                            if span <= 0. {
+                                return;
+                            }
+                            let mut hub = down_hub.borrow_mut();
+                            let bounds = hub.pill(&down_key).bar;
+                            hub.drag_start(&down_key);
+                            let at = fraction_of(event.position.x, bounds);
+                            hub.seek(&down_key, at, span);
+                            window.refresh();
+                        },
+                    )
             })
-            .on_mouse_move(move |event: &MouseMoveEvent, window, _| {
-                let mut hub = move_hub.borrow_mut();
-                let bounds = hub.pill(&move_key).bar;
-                hub.pill(&move_key).preview = fraction_of(event.position.x, bounds) as f32;
-                window.refresh();
-            })
-            .on_mouse_down(
-                MouseButton::Left,
-                move |event: &MouseDownEvent, window, _| {
-                    // The length is not known before the metadata is in: the bar does nothing yet.
-                    if span <= 0. {
-                        return;
-                    }
-                    let mut hub = down_hub.borrow_mut();
-                    let bounds = hub.pill(&down_key).bar;
-                    hub.drag_start(&down_key);
-                    let at = fraction_of(event.position.x, bounds);
-                    hub.seek(&down_key, at, span);
-                    window.refresh();
-                },
-            )
             .child(
                 div()
                     .relative()
@@ -781,7 +893,7 @@ impl Root {
 
 #[cfg(test)]
 mod tests {
-    use super::{clock, clock_pair};
+    use super::{KEY, clock, clock_pair, embed_audio_key};
 
     #[test]
     fn the_clock_is_minutes_and_two_digit_seconds_of_the_whole_seconds() {
@@ -819,5 +931,19 @@ mod tests {
         assert_eq!(size(1024), "1.00 KB");
         assert_eq!(size(64_617), "63.10 KB");
         assert_eq!(size(5 * 1024 * 1024), "5.00 MB");
+    }
+
+    #[test]
+    fn embed_audio_keys_are_deterministic_and_distinct_per_slot_and_url() {
+        let (k1, s1) = embed_audio_key(42, 0, "https://media.example/a.mp3");
+        let (k2, s2) = embed_audio_key(42, 0, "https://media.example/a.mp3");
+        let (k3, s3) = embed_audio_key(42, 1, "https://media.example/a.mp3");
+        let (k4, s4) = embed_audio_key(42, 0, "https://media.example/b.mp3");
+        assert!(k1.starts_with(KEY));
+        assert_eq!((k1.as_str(), s1), (k2.as_str(), s2));
+        assert_ne!(k1, k3);
+        assert_ne!(s1, s3);
+        assert_ne!(k1, k4);
+        assert_ne!(s1, s4);
     }
 }

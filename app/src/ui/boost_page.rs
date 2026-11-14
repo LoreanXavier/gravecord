@@ -5,8 +5,8 @@
 //!
 //! Art is requested at run time from the CDN addresses the DOM dump and the modules name (none of it is in the
 //! snapshot's assets). Not drawn: the header's animated backdrop (a looping `.webm`; its dark-theme still is shown),
-//! the Rive glow around the two header buttons (no `.riv` in the snapshot), the text shadow of the headline, the
-//! 16px backdrop blur of the channel list's progress bar (a flat fill stands in) and the progress bar's context menu.
+//! the Rive glow around the two header buttons (no `.riv` in the snapshot), the text shadow of the headline and the
+//! progress bar's context menu.
 //! The headline's letter spacing is applied per glyph. "Boost This Server" goes as far as the existing Server Boost
 //! settings page and never past payment.
 
@@ -807,14 +807,16 @@ impl Root {
                         ),
                     ]
                     .map(|(art, title, body)| {
-                        // `.card_RL7BaR`: the radial glow over `hsla(240,4%,61%,.08)`, 1px border, radius 16, then
-                        // the 250x140 illustration, the text and the cost badge, 24px apart.
+                        // `.card_RL7BaR` (module 658937, `196063.css`): the radial glow over `hsla(240,4%,61%,.08)` with a
+                        // 40px backdrop blur, 1px border, radius 16, then the 250x140 illustration, the text and the cost
+                        // badge, 24px apart.
                         div()
                             .relative()
                             .w(px(588.))
                             .h(px(318.))
                             .flex_none()
                             .rounded(px(16.))
+                            .backdrop_blur(px(40.))
                             .border_1()
                             .border_color(gpui::hsla(240. / 360., 0.04, 0.61, 0.12))
                             .bg(gpui::hsla(240. / 360., 0.04, 0.61, 0.08))
@@ -1060,12 +1062,12 @@ impl Root {
                         .h(px(66.))
                         .px(px(12.))
                         .rounded(px(16.))
+                        // `.innerWrapper_RcIw1d` (module 430815, `392028.css`): `hsla(0,0%,100%,.17)` and a 1px
+                        // `hsla(0,0%,100%,.16)` border over a 16px backdrop blur.
+                        .backdrop_blur(px(16.))
                         .border_1()
-                        // `.innerWrapper_RcIw1d`: `hsla(0,0%,100%,.17)` and a 1px `hsla(0,0%,100%,.16)` border over a
-                        // 16px backdrop blur. gpui has no backdrop blur, so the fill is the blurred result's colour
-                        // sampled from the capture (58,58,60 over the page, 70,70,73 over a card), flat.
                         .border_color(gpui::hsla(0., 0., 1., 0.16))
-                        .bg(rgba(0x3c3c3eff))
+                        .bg(gpui::hsla(0., 0., 1., 0.17))
                         .flex()
                         .items_center()
                         .gap(px(40.))

@@ -1188,6 +1188,7 @@ impl Root {
                 .h(px(48.))
                 .px(px(12.))
                 .rounded(px(12.))
+                .backdrop_blur(px(4.))
                 .bg(color("--background-surface-highest"))
                 .flex()
                 .items_center()

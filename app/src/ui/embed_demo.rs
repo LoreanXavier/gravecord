@@ -191,12 +191,120 @@ impl Root {
             return self.script_video_cx(rest, cx);
         }
         let ["demo", name] = words else {
-            return "embeds: usage `embeds demo <video|video-att|video-fxtwitter|video-mosaic|cards|inline|own|late|suppress>`".to_owned();
+            return "embeds: usage `embeds demo <video|video-att|video-fxtwitter|video-mosaic|spoiler-audio|cards|inline|own|late|suppress>`".to_owned();
         };
         let Some(channel) = self.channel else {
             return "embeds: no channel is open".to_owned();
         };
         let now = chrono::Utc::now();
+        if *name == "spoiler-audio" {
+            let base = ((now.timestamp_millis() - 1_420_070_400_000) as u64) << 22;
+            let spoiler_embed_id = (base + 301).to_string();
+            let audio_embed_id = (base + 302).to_string();
+            let spoiler_att_msg_id = (base + 303).to_string();
+            let spoiler_att_id = (base + 401).to_string();
+            let poster_spoiler = solid_png(400, 220, [185, 55, 95], [250, 225, 110]);
+            let poster_att = solid_png(360, 200, [40, 145, 175], [240, 250, 255]);
+            self.images.insert(
+                format!("embed:{spoiler_embed_id}:0:thumbnail"),
+                poster_spoiler,
+            );
+            self.images
+                .insert(format!("attachment:{spoiler_att_id}"), poster_att);
+            self.update(
+                Update::Dispatch {
+                    name: "MESSAGE_CREATE".to_owned(),
+                    data: json!({
+                        "id": spoiler_embed_id,
+                        "channel_id": channel.to_string(),
+                        "type": 0,
+                        "flags": 0,
+                        "content": "Check ||https://example.com/secret|| spoiler link",
+                        "author": {"id": "900", "username": "ada"},
+                        "timestamp": now.to_rfc3339_opts(chrono::SecondsFormat::Micros, false),
+                        "embeds": [{
+                            "type": "article",
+                            "url": "https://example.com/secret",
+                            "title": "Hidden Plot **Twist** & *Surprise*",
+                            "description": "This card embed is blurred under a 44px Gaussian spoiler veil until clicked.",
+                            "provider": {"name": "Example"},
+                            "color": 0x5865F2,
+                            "thumbnail": {
+                                "url": "https://media.example/secret.png",
+                                "proxy_url": "https://media.example/secret.png",
+                                "width": 400,
+                                "height": 220
+                            }
+                        }],
+                        "attachments": [],
+                        "mentions": [],
+                        "mention_roles": []
+                    }),
+                },
+                cx,
+            );
+            self.update(
+                Update::Dispatch {
+                    name: "MESSAGE_CREATE".to_owned(),
+                    data: json!({
+                        "id": audio_embed_id,
+                        "channel_id": channel.to_string(),
+                        "type": 0,
+                        "flags": 0,
+                        "content": "https://audio.example/track.mp3",
+                        "author": {"id": "900", "username": "ada"},
+                        "timestamp": now.to_rfc3339_opts(chrono::SecondsFormat::Micros, false),
+                        "embeds": [{
+                            "type": "audio",
+                            "url": "https://audio.example/track",
+                            "title": "Ambient **Synth** Preview",
+                            "provider": {"name": "Bandcamp"},
+                            "color": 0x1DA0C3,
+                            "audio": {
+                                "url": "https://audio.example/track.mp3",
+                                "proxy_url": "https://media.example/track.mp3",
+                                "content_type": "audio/mpeg"
+                            }
+                        }],
+                        "attachments": [],
+                        "mentions": [],
+                        "mention_roles": []
+                    }),
+                },
+                cx,
+            );
+            self.update(
+                Update::Dispatch {
+                    name: "MESSAGE_CREATE".to_owned(),
+                    data: json!({
+                        "id": spoiler_att_msg_id,
+                        "channel_id": channel.to_string(),
+                        "type": 0,
+                        "flags": 0,
+                        "content": "Sent spoiler image attachment",
+                        "author": {"id": "900", "username": "ada"},
+                        "timestamp": now.to_rfc3339_opts(chrono::SecondsFormat::Micros, false),
+                        "embeds": [],
+                        "attachments": [{
+                            "id": spoiler_att_id,
+                            "filename": "SPOILER_ending.png",
+                            "flags": 8,
+                            "size": 24_000,
+                            "url": "https://cdn.example/SPOILER_ending.png",
+                            "proxy_url": "https://media.example/SPOILER_ending.png",
+                            "content_type": "image/png",
+                            "width": 360,
+                            "height": 200
+                        }],
+                        "mentions": [],
+                        "mention_roles": []
+                    }),
+                },
+                cx,
+            );
+            cx.notify();
+            return format!("embeds: dispatched spoiler-audio demo to {channel}");
+        }
         if matches!(*name, "video-att" | "video-fxtwitter" | "video-mosaic") {
             let base = ((now.timestamp_millis() - 1_420_070_400_000) as u64) << 22;
             let author = match self.stores.current_user.as_ref() {

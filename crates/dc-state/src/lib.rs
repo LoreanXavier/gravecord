@@ -999,7 +999,13 @@ impl Reaction {
     }
 }
 
-#[derive(Clone, Debug, PartialEq)]
+fn attachment_scan_versions() -> &'static std::sync::Mutex<HashMap<Id, i64>> {
+    static MAP: std::sync::OnceLock<std::sync::Mutex<HashMap<Id, i64>>> =
+        std::sync::OnceLock::new();
+    MAP.get_or_init(|| std::sync::Mutex::new(HashMap::new()))
+}
+
+#[derive(Clone, Debug, Default, PartialEq)]
 pub struct Attachment {
     pub id: Id,
     pub filename: String,
@@ -1021,8 +1027,19 @@ pub struct Attachment {
 
 impl Attachment {
     fn from_value(value: &Value) -> Option<Self> {
+        let id = id(&value["id"])?;
+        if let Ok(mut map) = attachment_scan_versions().lock() {
+            match value.get("content_scan_version").and_then(Value::as_i64) {
+                Some(version) => {
+                    map.insert(id, version);
+                }
+                None => {
+                    map.remove(&id);
+                }
+            }
+        }
         Some(Self {
-            id: id(&value["id"])?,
+            id,
             filename: text(&value["filename"])?,
             url: text(&value["url"]).unwrap_or_default(),
             proxy_url: text(&value["proxy_url"]).or_else(|| text(&value["url"]))?,
@@ -1035,6 +1052,14 @@ impl Attachment {
             duration_secs: value["duration_secs"].as_f64(),
             waveform: text(&value["waveform"]),
         })
+    }
+
+    /// `content_scan_version` from the gateway/REST payload, for explicit-media pending scan checks (module 282108).
+    pub fn content_scan_version(&self) -> Option<i64> {
+        attachment_scan_versions()
+            .lock()
+            .ok()
+            .and_then(|map| map.get(&self.id).copied())
     }
 
     pub fn is_image(&self) -> bool {
@@ -1197,6 +1222,27 @@ pub struct EmbedField {
     pub inline: bool,
 }
 
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct EmbedAudio {
+    pub url: Option<String>,
+    pub proxy_url: String,
+    pub content_type: Option<String>,
+    pub description: Option<String>,
+}
+
+impl EmbedAudio {
+    /// `fK` in module 659674: audio is populated only when `proxy_url` is present and non-empty.
+    fn from_value(value: &Value) -> Option<Self> {
+        let proxy_url = text(&value["proxy_url"]).filter(|proxy| !proxy.is_empty())?;
+        Some(Self {
+            url: text(&value["url"]),
+            proxy_url,
+            content_type: text(&value["content_type"]),
+            description: text(&value["description"]),
+        })
+    }
+}
+
 /// A message embed after `fK` in module 659674.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Embed {
@@ -1214,6 +1260,7 @@ pub struct Embed {
     pub image: Option<EmbedMedia>,
     pub thumbnail: Option<EmbedMedia>,
     pub video: Option<EmbedMedia>,
+    pub audio: Option<EmbedAudio>,
     pub fields: Vec<EmbedField>,
     /// `provider.url`: the provider's name links there.
     pub provider_url: Option<String>,
@@ -1224,6 +1271,8 @@ pub struct Embed {
     pub images: Vec<EmbedMedia>,
     /// The embed's own `flags`.
     pub flags: u64,
+    /// `content_scan_version` (`contentScanVersion` in module 659674), for sensitive-media scan gating.
+    pub content_scan_version: Option<i64>,
 }
 
 impl Embed {
@@ -1249,11 +1298,13 @@ impl Embed {
                 .and_then(|_| text(&value["author"]["proxy_icon_url"])),
             footer: text(&value["footer"]["text"]),
             footer_icon: text(&value["footer"]["proxy_icon_url"]),
+            audio: EmbedAudio::from_value(&value["audio"]),
             timestamp: value["timestamp"]
                 .as_str()
                 .and_then(|time| DateTime::parse_from_rfc3339(time).ok())
                 .map(|time| time.with_timezone(&Utc)),
-            flags: value["flags"].as_u64().unwrap_or(0),
+            flags: value.get("flags").and_then(Value::as_u64).unwrap_or(0),
+            content_scan_version: value.get("content_scan_version").and_then(Value::as_i64),
             ..Self::default()
         };
         // Articles and images show their thumbnail as the image; every other type keeps it as the thumbnail
@@ -5456,5 +5507,62 @@ mod tests {
         assert_eq!(updated.avatar.as_deref(), Some("new_avatar"));
         assert_eq!(updated.tag.as_ref().map(|t| t.tag.as_str()), Some("CUTE"));
         assert_eq!(stores.status(20), "idle");
+    }
+
+    #[test]
+    fn embed_audio_requires_non_empty_proxy_url_and_scan_versions_parse() {
+        let with_audio = Embed::from_value(&json!({
+            "type": "audio",
+            "title": "Song",
+            "flags": 16,
+            "content_scan_version": 4,
+            "audio": {
+                "url": "https://cdn.example/song.mp3",
+                "proxy_url": "https://media.example/song.mp3",
+                "content_type": "audio/mpeg",
+                "description": "Track preview"
+            }
+        }));
+        assert_eq!(with_audio.flags, 16);
+        assert_eq!(with_audio.content_scan_version, Some(4));
+        assert_eq!(
+            with_audio.audio,
+            Some(EmbedAudio {
+                url: Some("https://cdn.example/song.mp3".into()),
+                proxy_url: "https://media.example/song.mp3".into(),
+                content_type: Some("audio/mpeg".into()),
+                description: Some("Track preview".into()),
+            })
+        );
+
+        let empty_proxy = Embed::from_value(&json!({
+            "type": "audio",
+            "content_scan_version": -1,
+            "audio": {
+                "url": "https://cdn.example/song.mp3",
+                "proxy_url": ""
+            }
+        }));
+        assert!(empty_proxy.audio.is_none());
+        assert_eq!(empty_proxy.content_scan_version, Some(-1));
+
+        let missing_proxy = Embed::from_value(&json!({
+            "type": "audio",
+            "audio": {
+                "url": "https://cdn.example/song.mp3"
+            }
+        }));
+        assert!(missing_proxy.audio.is_none());
+
+        let attachment = Attachment::from_value(&json!({
+            "id": "99",
+            "filename": "clip.png",
+            "url": "https://cdn.example/clip.png",
+            "proxy_url": "https://media.example/clip.png",
+            "size": 1200,
+            "content_scan_version": 2
+        }))
+        .expect("attachment");
+        assert_eq!(attachment.content_scan_version(), Some(2));
     }
 }

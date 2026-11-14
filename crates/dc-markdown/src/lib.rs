@@ -204,9 +204,39 @@ const MARKS: [(&str, Apply); 7] = [
     ("`", |style| style.code = true),
 ];
 
+#[derive(Clone, Copy)]
+struct Rules {
+    mentions: bool,
+    links: bool,
+}
+
 pub fn inline(source: &str) -> Vec<Span> {
     let mut spans = Vec::new();
-    walk(source, Style::default(), &mut spans);
+    walk(
+        source,
+        Style::default(),
+        Rules {
+            mentions: true,
+            links: true,
+        },
+        &mut spans,
+    );
+    spans
+}
+
+/// `parseEmbedTitle` / `parseEmbedTitleWithoutLinks` (`EMBED_TITLE_RULES`, modules 605275, 46054 and 679636):
+/// inline markdown without `@user`, `<@&role>` or `@everyone`/`@here`, and without links when `!allow_links`.
+pub fn embed_title(source: &str, allow_links: bool) -> Vec<Span> {
+    let mut spans = Vec::new();
+    walk(
+        source,
+        Style::default(),
+        Rules {
+            mentions: false,
+            links: allow_links,
+        },
+        &mut spans,
+    );
     spans
 }
 
@@ -229,7 +259,7 @@ fn digits(text: &str) -> &str {
 }
 
 /// `<@123>`, `<@!123>`, `<@&123>`, `<#123>`, `<:name:123>`, `<a:name:123>`, `<t:123>`, `<t:123:R>`.
-fn angle_token(rest: &str) -> Option<(usize, Kind, String)> {
+fn angle_token(rest: &str, mentions: bool) -> Option<(usize, Kind, String)> {
     let body = rest.strip_prefix('<')?;
     let end = body.find('>')?;
     let inner = &body[..end];
@@ -240,15 +270,17 @@ fn angle_token(rest: &str) -> Option<(usize, Kind, String)> {
             .then(|| text.parse().ok())
             .flatten()
     };
-    if let Some(id) = inner.strip_prefix("@&").and_then(whole_number) {
-        return Some((consumed, Kind::Role(id), raw));
-    }
-    if let Some(id) = inner
-        .strip_prefix("@!")
-        .or(inner.strip_prefix('@'))
-        .and_then(whole_number)
-    {
-        return Some((consumed, Kind::User(id), raw));
+    if mentions {
+        if let Some(id) = inner.strip_prefix("@&").and_then(whole_number) {
+            return Some((consumed, Kind::Role(id), raw));
+        }
+        if let Some(id) = inner
+            .strip_prefix("@!")
+            .or(inner.strip_prefix('@'))
+            .and_then(whole_number)
+        {
+            return Some((consumed, Kind::User(id), raw));
+        }
     }
     if let Some(id) = inner.strip_prefix('#').and_then(whole_number) {
         return Some((consumed, Kind::Channel(id), raw));
@@ -292,17 +324,106 @@ fn url(rest: &str) -> Option<usize> {
     (!trimmed.is_empty()).then_some(scheme.len() + trimmed.len())
 }
 
-/// `[label](url)` with an http or https target.
+/// `[label](url)` or `[label](url "title")` with an http or https target (modules 46054 and 605275).
 fn masked_link(rest: &str) -> Option<(usize, &str, &str)> {
     let body = rest.strip_prefix('[')?;
-    let close = body.find("](")?;
-    let label = &body[..close];
-    let target = &body[close + 2..];
-    let end = target.find(')')?;
-    let address = &target[..end];
-    let valid =
-        !label.is_empty() && (address.starts_with("https://") || address.starts_with("http://"));
-    valid.then_some((close + end + 4, label, address))
+    let mut depth = 1usize;
+    let mut index = 0;
+    while index < body.len() {
+        let ch = body[index..].chars().next()?;
+        if ch == '\\' {
+            let escaped = body[index + 1..].chars().next().map_or(0, char::len_utf8);
+            index += 1 + escaped;
+            continue;
+        }
+        if ch == '[' {
+            depth += 1;
+        } else if ch == ']' {
+            depth -= 1;
+            if depth == 0 {
+                break;
+            }
+        }
+        index += ch.len_utf8();
+    }
+    if depth != 0 {
+        return None;
+    }
+    let label = &body[..index];
+    if label.trim().is_empty() {
+        return None;
+    }
+    let after_label = body[index + 1..].strip_prefix('(')?;
+    let trimmed = after_label.trim_start();
+    let lead_ws = after_label.len() - trimmed.len();
+    let (address, url_consumed, tail) = if let Some(angled) = trimmed.strip_prefix('<') {
+        let gt = angled.find('>')?;
+        (&angled[..gt], 1 + gt + 1, &angled[gt + 1..])
+    } else {
+        let mut parens = 0usize;
+        let mut at = 0;
+        while at < trimmed.len() {
+            let ch = trimmed[at..].chars().next()?;
+            if ch.is_whitespace() || (ch == ')' && parens == 0) {
+                break;
+            }
+            if ch == '\\' {
+                let escaped = trimmed[at + 1..].chars().next().map_or(0, char::len_utf8);
+                at += 1 + escaped;
+                continue;
+            }
+            if ch == '(' {
+                parens += 1;
+            } else if ch == ')' {
+                parens -= 1;
+            }
+            at += ch.len_utf8();
+        }
+        (&trimmed[..at], at, &trimmed[at..])
+    };
+    let tail_trimmed = tail.trim_start();
+    let mid_ws = tail.len() - tail_trimmed.len();
+    let close_in_after = if tail_trimmed.starts_with(')') {
+        lead_ws + url_consumed + mid_ws + 1
+    } else if mid_ws > 0 && tail_trimmed.starts_with(['"', '\'']) {
+        let quote = tail_trimmed.chars().next()?;
+        let inner = &tail_trimmed[quote.len_utf8()..];
+        let mut pos = 0;
+        let mut found = None;
+        while pos < inner.len() {
+            let ch = inner[pos..].chars().next()?;
+            if ch == '\\' {
+                let escaped = inner[pos + 1..].chars().next().map_or(0, char::len_utf8);
+                pos += 1 + escaped;
+                continue;
+            }
+            if ch == quote {
+                let rest_after = &inner[pos + quote.len_utf8()..];
+                let rest_trimmed = rest_after.trim_start();
+                if rest_trimmed.starts_with(')') {
+                    let trail_ws = rest_after.len() - rest_trimmed.len();
+                    found = Some(
+                        lead_ws
+                            + url_consumed
+                            + mid_ws
+                            + quote.len_utf8()
+                            + pos
+                            + quote.len_utf8()
+                            + trail_ws
+                            + 1,
+                    );
+                    break;
+                }
+            }
+            pos += ch.len_utf8();
+        }
+        found?
+    } else {
+        return None;
+    };
+    let valid = (address.starts_with("https://") || address.starts_with("http://"))
+        && !address.chars().any(char::is_whitespace);
+    valid.then_some((1 + index + 2 + close_in_after, label, address))
 }
 
 /// The first closing mark with text before it. As in the original `\*\*(?!\*)`, a closer cannot be followed by more of
@@ -322,7 +443,7 @@ fn closing(body: &str, mark: &str) -> Option<usize> {
     None
 }
 
-fn walk(source: &str, style: Style, spans: &mut Vec<Span>) {
+fn walk(source: &str, style: Style, rules: Rules, spans: &mut Vec<Span>) {
     let mut at = 0;
     while at < source.len() {
         let rest = &source[at..];
@@ -333,12 +454,12 @@ fn walk(source: &str, style: Style, spans: &mut Vec<Span>) {
             at += 1 + escaped.len_utf8();
             continue;
         }
-        if let Some((consumed, kind, text)) = angle_token(rest) {
+        if let Some((consumed, kind, text)) = angle_token(rest, rules.mentions) {
             spans.push(Span { text, style, kind });
             at += consumed;
             continue;
         }
-        if rest.starts_with("@everyone") || rest.starts_with("@here") {
+        if rules.mentions && (rest.starts_with("@everyone") || rest.starts_with("@here")) {
             let length = if rest.starts_with("@everyone") { 9 } else { 5 };
             spans.push(Span {
                 text: rest[..length].to_owned(),
@@ -348,16 +469,39 @@ fn walk(source: &str, style: Style, spans: &mut Vec<Span>) {
             at += length;
             continue;
         }
-        if let Some((consumed, label, address)) = masked_link(rest) {
-            spans.push(Span {
-                text: label.to_owned(),
+        if rules.links
+            && let Some((consumed, label, address)) = masked_link(rest)
+        {
+            let mut inner_spans = Vec::new();
+            walk(
+                label,
                 style,
-                kind: Kind::Link(address.to_owned()),
-            });
+                Rules {
+                    mentions: rules.mentions,
+                    links: false,
+                },
+                &mut inner_spans,
+            );
+            if inner_spans.is_empty() {
+                spans.push(Span {
+                    text: label.to_owned(),
+                    style,
+                    kind: Kind::Link(address.to_owned()),
+                });
+            } else {
+                for mut span in inner_spans {
+                    if span.kind == Kind::Text {
+                        span.kind = Kind::Link(address.to_owned());
+                    }
+                    spans.push(span);
+                }
+            }
             at += consumed;
             continue;
         }
-        if let Some(length) = url(rest) {
+        if rules.links
+            && let Some(length) = url(rest)
+        {
             spans.push(Span {
                 text: rest[..length].to_owned(),
                 style,
@@ -387,7 +531,7 @@ fn walk(source: &str, style: Style, spans: &mut Vec<Span>) {
             if nested.code {
                 push(inner, nested, spans);
             } else {
-                walk(inner, nested, spans);
+                walk(inner, nested, rules, spans);
             }
             at += length * 2 + end;
             continue;
@@ -662,5 +806,85 @@ mod tests {
     fn nested_items_carry_their_depth() {
         let blocks = parse("- a\n  - b");
         assert!(matches!(&blocks[1], Block::ListItem { depth: 1, .. }));
+    }
+
+    #[test]
+    fn masked_links_accept_optional_titles_and_balanced_parens() {
+        let titled = inline("[docs](https://example.com/a \"Read more\")!");
+        assert_eq!(titled[0].text, "docs");
+        assert_eq!(titled[0].kind, Kind::Link("https://example.com/a".into()));
+        assert_eq!(titled[1].text, "!");
+
+        let single = inline("[wiki](https://example.com/Rust_(lang) 'Wiki')");
+        assert_eq!(single[0].text, "wiki");
+        assert_eq!(
+            single[0].kind,
+            Kind::Link("https://example.com/Rust_(lang)".into())
+        );
+
+        let styled_label = inline("[**bold** link](<https://example.com/x>)");
+        assert!(styled_label[0].style.bold);
+        assert_eq!(styled_label[0].text, "bold");
+        assert_eq!(
+            styled_label[0].kind,
+            Kind::Link("https://example.com/x".into())
+        );
+        assert_eq!(
+            styled_label[1].kind,
+            Kind::Link("https://example.com/x".into())
+        );
+    }
+
+    #[test]
+    fn embed_title_omits_user_role_and_everyone_mentions_and_gates_links() {
+        let with_links = embed_title(
+            "**Hi** <@12> <@&34> @everyone @here <#56> <:ok:9> <t:1794000000:R> ||sec|| [go](https://a.io \"t\") https://b.io",
+            true,
+        );
+        assert!(with_links[0].style.bold);
+        assert!(
+            !with_links
+                .iter()
+                .any(|span| matches!(span.kind, Kind::User(_) | Kind::Role(_) | Kind::Everyone))
+        );
+        assert!(with_links.iter().any(|span| span.kind == Kind::Channel(56)));
+        assert!(with_links.iter().any(|span| matches!(
+            &span.kind,
+            Kind::Emoji {
+                name,
+                id: 9,
+                animated: false
+            } if name == "ok"
+        )));
+        assert!(with_links.iter().any(|span| matches!(
+            span.kind,
+            Kind::Timestamp {
+                unix: 1794000000,
+                format: 'R'
+            }
+        )));
+        assert!(
+            with_links
+                .iter()
+                .any(|span| span.style.spoiler && span.text == "sec")
+        );
+        assert!(
+            with_links
+                .iter()
+                .any(|span| span.text == "go" && span.kind == Kind::Link("https://a.io".into()))
+        );
+        assert!(
+            with_links
+                .iter()
+                .any(|span| span.kind == Kind::Link("https://b.io".into()))
+        );
+
+        let without_links = embed_title("**Title** [go](https://a.io) https://b.io", false);
+        assert!(without_links[0].style.bold);
+        assert!(
+            !without_links
+                .iter()
+                .any(|span| matches!(span.kind, Kind::Link(_)))
+        );
     }
 }
