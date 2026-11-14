@@ -14,6 +14,7 @@ use std::{
 enum Size {
     Member,
     Profile,
+    Modal,
 }
 
 impl Size {
@@ -21,6 +22,7 @@ impl Size {
         let (base, status, stroke, offset) = match self {
             Self::Member => (32., 10., 3., 0.),
             Self::Profile => (80., 16., 6., 4.),
+            Self::Modal => (120., 24., 8., 8.),
         };
         Geometry {
             base,
@@ -222,6 +224,7 @@ fn status_cutout(x: f32, y: f32, spec: Spec, decoration: bool, feather: f32) -> 
     let radius = match spec.size {
         Size::Member => 4.2,
         Size::Profile => 7.2,
+        Size::Modal => 10.4,
     } * if decoration { 1.2 } else { 1. };
     rounded_rect(
         x,
@@ -367,14 +370,85 @@ impl Root {
         &'a self,
         user: &'a User,
     ) -> Option<&'a AvatarDecoration> {
-        let guild = self
-            .guild
-            .and_then(|guild| self.stores.members.get(guild, user.id));
+        self.equipped_decoration_in(user, self.guild)
+    }
+
+    pub(super) fn equipped_decoration_in<'a>(
+        &'a self,
+        user: &'a User,
+        guild: Option<Id>,
+    ) -> Option<&'a AvatarDecoration> {
+        let member = guild.and_then(|guild| self.stores.members.get(guild, user.id));
         AvatarDecoration::equipped(
             user.avatar_decoration.as_deref(),
-            guild.and_then(|member| member.avatar_decoration.as_ref()),
+            member.and_then(|member| member.avatar_decoration.as_ref()),
             chrono::Utc::now().timestamp_millis() as f64,
         )
+    }
+
+    pub(super) fn guild_avatar_source_in(
+        &self,
+        user: &User,
+        guild: Option<Id>,
+    ) -> (String, String) {
+        guild
+            .and_then(|guild| self.stores.members.get(guild, user.id)?.avatar_url(guild))
+            .map(|url| (url.clone(), url))
+            .unwrap_or_else(|| super::avatar_source(user))
+    }
+
+    fn live_image_in(
+        &self,
+        user: &User,
+        guild: Option<Id>,
+        drawn: f32,
+        hovered: bool,
+        cx: &mut Context<Self>,
+    ) -> Option<(String, Arc<Image>)> {
+        let side = super::avatar_play::file_side(drawn, self.ui_scale.get());
+        let guild_hash = guild.and_then(|guild| {
+            self.stores
+                .members
+                .get(guild, user.id)?
+                .avatar
+                .clone()
+                .map(|hash| (guild, hash))
+        });
+        let (base, hash) = match guild_hash {
+            Some((guild, hash)) => (
+                format!(
+                    "https://cdn.discordapp.com/guilds/{guild}/users/{}/avatars/{hash}",
+                    user.id
+                ),
+                hash,
+            ),
+            None => {
+                let hash = user.avatar.clone()?;
+                (
+                    format!("https://cdn.discordapp.com/avatars/{}/{hash}", user.id),
+                    hash,
+                )
+            }
+        };
+        if !super::avatar_play::is_animated(&hash) {
+            return None;
+        }
+        let key = format!("avatar-live:{base}:{side}");
+        let url = super::avatar_play::animated_url(&base, side);
+        if !super::avatar_play::should_animate(
+            super::motion::window_active(),
+            hovered,
+            super::motion::reduced(),
+            true,
+            self.pref_on("animate_gifs", true),
+        ) {
+            return None;
+        }
+        let Some(image) = self.images.get(&key).cloned() else {
+            self.want_image(key, url, cx);
+            return None;
+        };
+        Some((key, image))
     }
 
     pub(super) fn prepare_member_avatars(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -398,6 +472,15 @@ impl Root {
             users.insert((profile.user, Size::Profile));
             if let Some(user) = self.stores.users.get(&profile.user) {
                 members.push((user.id, self.equipped_decoration(user).cloned()));
+            }
+        }
+        if let Some(open) = &self.full_profile {
+            users.insert((open.user, Size::Modal));
+            if let Some(user) = self.stores.users.get(&open.user) {
+                members.push((
+                    user.id,
+                    self.equipped_decoration_in(user, open.guild).cloned(),
+                ));
             }
         }
         for image in self.member_avatars.borrow_mut().retain(&users) {
@@ -478,6 +561,18 @@ impl Root {
             .parity("profile-avatar")
     }
 
+    /// The full profile modal's 120px avatar (`SIZE_120`, 144px decoration art, 24px status with 8px stroke/offset).
+    pub(super) fn modal_avatar(
+        &self,
+        user: &User,
+        guild: Option<Id>,
+        status: &str,
+        cx: &mut Context<Self>,
+    ) -> gpui::Div {
+        self.decorated_avatar_in(user, guild, status, Size::Modal, (false, true), cx)
+            .parity("full-profile-avatar")
+    }
+
     fn decorated_avatar(
         &self,
         user: &User,
@@ -487,16 +582,38 @@ impl Root {
         hovered: bool,
         cx: &mut Context<Self>,
     ) -> gpui::Div {
-        let live = self.live_image(user, size.geometry().base, hovered, cx);
-        let avatar = self.images.get(&self.guild_avatar_source(user).0).cloned();
-        let equipped = self.equipped_decoration(user);
+        self.decorated_avatar_in(user, self.guild, status, size, (probe, hovered), cx)
+    }
+
+    fn decorated_avatar_in(
+        &self,
+        user: &User,
+        guild: Option<Id>,
+        status: &str,
+        size: Size,
+        (probe, hovered): (bool, bool),
+        cx: &mut Context<Self>,
+    ) -> gpui::Div {
+        let live = if guild == self.guild {
+            self.live_image(user, size.geometry().base, hovered, cx)
+        } else {
+            self.live_image_in(user, guild, size.geometry().base, hovered, cx)
+        };
+        let (avatar_key, avatar_url) = self.guild_avatar_source_in(user, guild);
+        let avatar = self.images.get(&avatar_key).cloned();
+        if avatar.is_none() {
+            self.want_image(avatar_key, avatar_url, cx);
+        }
+        let equipped = self.equipped_decoration_in(user, guild);
         let deco_sku = equipped.as_ref().map_or(0, |d| d.sku_id);
-        let decoration = equipped
-            .and_then(|decoration| {
-                self.images
-                    .get(&format!("avatar-decoration:{}", decoration.sku_id))
-            })
-            .cloned();
+        let decoration = equipped.and_then(|decoration| {
+            let key = format!("avatar-decoration:{}", decoration.sku_id);
+            let cached = self.images.get(&key).cloned();
+            if cached.is_none() {
+                self.want_image(key, decoration.static_url(), cx);
+            }
+            cached
+        });
         let cache = self.member_avatars.clone();
         let user = user.id;
         let status = Status::parse(status, self.stores.presence.is_mobile_online(user));
@@ -526,7 +643,8 @@ impl Root {
             });
             let side = (geometry.base * scale).round() as u32;
             let key = format!(
-                "{key}:{}:{}:{deco_sku}:{}",
+                "{key}:{}:{}:{}:{deco_sku}:{}",
+                geometry.base as u32,
                 status.token(),
                 decoration.is_some(),
                 u32::from_be_bytes(tint)
@@ -660,7 +778,7 @@ mod tests {
         let decoration = RgbaImage::from_pixel(32, 32, Rgba([0, 255, 0, 255]));
         assert!(Status::parse("online", true) == Status::Mobile);
         assert!(Status::parse("dnd", true) == Status::Dnd);
-        for size in [Size::Member, Size::Profile] {
+        for size in [Size::Member, Size::Profile, Size::Modal] {
             let g = size.geometry();
             let spec = Spec {
                 size,
@@ -793,5 +911,29 @@ mod tests {
         assert_eq!(image.get_pixel(760, 630)[3], 0); // 13px from center, inside the 14px cutout.
         assert_eq!(image.get_pixel(760, 760).0, [0, 255, 0, 255]);
         assert_eq!(image.get_pixel(760, 610).0, [255, 255, 255, 255]);
+    }
+
+    #[test]
+    fn modal_mask_uses_the_source_40px_hole_in_144px_artwork() {
+        let g = Size::Modal.geometry();
+        assert_eq!(
+            (g.base, g.art, g.inset, g.status, g.center, g.hole),
+            (120., 144., 12., 24., 100., 20.)
+        );
+        let source = RgbaImage::from_pixel(32, 32, Rgba([255, 255, 255, 255]));
+        let image = compose(
+            &source,
+            Some(&source),
+            Spec {
+                size: Size::Modal,
+                pixels: 1440,
+                status: Status::Online,
+                tint: [0, 255, 0, 255],
+            },
+        );
+        // Center in artwork coordinates is 12 + 100 = 112px -> 1120 at 10x; 19px above center (930) is inside the 20px hole.
+        assert_eq!(image.get_pixel(1120, 930)[3], 0);
+        assert_eq!(image.get_pixel(1120, 1120).0, [0, 255, 0, 255]);
+        assert_eq!(image.get_pixel(1120, 900).0, [255, 255, 255, 255]);
     }
 }

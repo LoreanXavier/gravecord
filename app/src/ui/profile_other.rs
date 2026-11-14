@@ -54,6 +54,14 @@ impl Root {
             return None;
         }
         let palette = self.profile_palette(user, Some(guild.id), false);
+        let border = palette.token(if palette.themed {
+            "--user-profile-border"
+        } else {
+            "--border-subtle"
+        });
+        let dot_halo = palette.token("--background-base-lowest");
+        let role_dot_style = self.pref_index("role_style", 0) == 1;
+        let guild_shows_icons = guild.features.iter().any(|feature| feature == "ROLE_ICONS");
         Some(
             div()
                 .parity("profile-roles")
@@ -68,29 +76,67 @@ impl Root {
                     } else {
                         rgb(role.color)
                     };
+                    let indicator = match (role_dot_style, guild.role_colors_of(id)) {
+                        // `roleDot` (`m.W` of 545442): 12px halo with a 10px inner dot.
+                        (true, Some(colors)) => div()
+                            .mx(px(4.))
+                            .size(px(12.))
+                            .flex_none()
+                            .rounded_full()
+                            .bg(dot_halo)
+                            .flex()
+                            .items_center()
+                            .justify_center()
+                            .child(
+                                gpui::img(super::role_gradient::circle(&colors, 10, 1.))
+                                    .size(px(10.)),
+                            ),
+                        (true, None) => div()
+                            .mx(px(4.))
+                            .size(px(12.))
+                            .flex_none()
+                            .rounded_full()
+                            .bg(dot_halo)
+                            .flex()
+                            .items_center()
+                            .justify_center()
+                            .child(div().size(px(10.)).rounded_full().bg(tint)),
+                        // `roleCircle` (`m.R` of 545442): the gradient or solid tint on the 12px circle.
+                        (false, Some(colors)) => div().mx(px(4.)).size(px(12.)).flex_none().child(
+                            gpui::img(super::role_gradient::circle(&colors, 12, 1.)).size(px(12.)),
+                        ),
+                        (false, None) => div()
+                            .mx(px(4.))
+                            .size(px(12.))
+                            .flex_none()
+                            .rounded_full()
+                            .bg(tint),
+                    };
+                    let role_icon = self.role_icon_art(guild, id, 12.).or_else(|| {
+                        let picture = guild.role_icons.get(&id)?;
+                        if !guild_shows_icons && !picture.subscription {
+                            return None;
+                        }
+                        let emoji = picture.unicode_emoji.as_deref()?;
+                        Some(
+                            div()
+                                .text_size(px(12.))
+                                .line_height(px(12.))
+                                .child(emoji.to_owned())
+                                .into_any_element(),
+                        )
+                    });
                     div()
-                        .h(px(24.))
+                        .min_h(px(24.))
                         .max_w_full()
                         .pl(px(2.))
                         .pr(px(8.))
                         .border_1()
-                        .border_color(palette.token("--border-subtle"))
+                        .border_color(border)
                         .rounded(px(8.))
                         .flex()
                         .items_center()
-                        .child(match guild.role_colors_of(id) {
-                            // `roleCircle`: the gradient on the circle's own box (module 545442 `R`).
-                            Some(colors) => div().mx(px(4.)).size(px(12.)).flex_none().child(
-                                gpui::img(super::role_gradient::circle(&colors, 12, 1.))
-                                    .size(px(12.)),
-                            ),
-                            None => div()
-                                .mx(px(4.))
-                                .size(px(12.))
-                                .flex_none()
-                                .rounded_full()
-                                .bg(tint),
-                        })
+                        .child(indicator)
                         .when(role.guild_connection, |this| {
                             this.child(icon("share_link", 12., "--text-default"))
                         })
@@ -100,14 +146,12 @@ impl Root {
                                 .text_ellipsis()
                                 .text_size(px(12.))
                                 .line_height(px(16.))
+                                .font_weight(FontWeight(400.))
                                 .text_color(strong)
                                 .child(guild.roles[&id].clone()),
                         )
                         // `.roleIcon_xL50-d`: 12px, 4px after the name.
-                        .children(
-                            self.role_icon_art(guild, id, 12.)
-                                .map(|art| div().flex_none().ml(px(4.)).child(art)),
-                        )
+                        .children(role_icon.map(|art| div().flex_none().ml(px(4.)).child(art)))
                 }))
                 .into_any_element(),
         )
@@ -196,12 +240,38 @@ impl Root {
         } else {
             self.banner_color(&user)
         };
+        let for_guild = self.guild.is_some_and(|guild| {
+            body.is_some_and(|body| {
+                body["guild_member_profile"].is_object()
+                    && body["guild_member_profile"]["guild_id"]
+                        .as_str()
+                        .is_none_or(|id| id == guild.to_string().as_str())
+            })
+        });
         let pronouns = body
-            .and_then(|body| body["user_profile"]["pronouns"].as_str())
+            .and_then(|body| {
+                for_guild
+                    .then(|| {
+                        body["guild_member_profile"]["pronouns"]
+                            .as_str()
+                            .filter(|pronouns| !pronouns.is_empty())
+                    })
+                    .flatten()
+                    .or_else(|| body["user_profile"]["pronouns"].as_str())
+            })
             .filter(|pronouns| !pronouns.is_empty())
             .map(str::to_owned);
         let bio = body
-            .and_then(|body| body["user_profile"]["bio"].as_str())
+            .and_then(|body| {
+                for_guild
+                    .then(|| {
+                        body["guild_member_profile"]["bio"]
+                            .as_str()
+                            .filter(|bio| !bio.is_empty())
+                    })
+                    .flatten()
+                    .or_else(|| body["user_profile"]["bio"].as_str())
+            })
             .filter(|bio| !bio.is_empty())
             .map(str::to_owned);
         let friends = body
@@ -591,11 +661,21 @@ impl Root {
             relationship,
             Some(super::friends::RELATIONSHIP_OUTGOING | super::blocked::RELATIONSHIP_BLOCKED)
         );
+        let sidebar = probe.starts_with("dm-profile");
+        let palette = self.profile_palette(user, if sidebar { None } else { self.guild }, sidebar);
+        let light = palette
+            .theme
+            .as_ref()
+            .is_some_and(super::profile_theme::ProfileTheme::light);
         div()
             .id(probe)
             .relative()
             .child(self.anchor_probe(probe))
-            .child(super::dm_profile::round_button(glyph))
+            .child(super::dm_profile::round_button_themed(
+                glyph,
+                palette.themed,
+                light,
+            ))
             .when(outgoing, |this| this.opacity(0.5))
             .when(!outgoing, |this| this.cursor_pointer())
             .on_click(cx.listener(move |this, _, _, cx| match relationship {
@@ -614,12 +694,22 @@ impl Root {
         probe: &'static str,
         cx: &mut Context<Self>,
     ) -> AnyElement {
+        let sidebar = probe.starts_with("dm-profile");
+        let palette = self.profile_palette(user, if sidebar { None } else { self.guild }, sidebar);
+        let light = palette
+            .theme
+            .as_ref()
+            .is_some_and(super::profile_theme::ProfileTheme::light);
         div()
             .id(probe)
             .relative()
             .cursor_pointer()
             .child(self.anchor_probe(probe))
-            .child(super::dm_profile::round_button("more_horizontal"))
+            .child(super::dm_profile::round_button_themed(
+                "more_horizontal",
+                palette.themed,
+                light,
+            ))
             .on_click(cx.listener(move |this, _, _, cx| {
                 this.open_profile_menu_at(user, Which::Overflow, probe, false, cx)
             }))

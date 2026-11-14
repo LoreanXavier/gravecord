@@ -306,7 +306,7 @@ impl Root {
             .into_any_element()
     }
 
-    /// The wishlist page behind the heart button: the products of the account's wishlist in a grid.
+    /// Fallback wishlist view when opened without a current user session.
     pub(super) fn shop_wishlist_page(
         &mut self,
         window: &mut Window,
@@ -318,10 +318,7 @@ impl Root {
                 .h(px(200.))
                 .flex()
                 .items_center()
-                .child(
-                    text(16., 20., 400., "--text-muted")
-                        .child("Open any item and tap the heart to add to Wishlist"),
-                )
+                .child(text(16., 20., 400., "--text-muted").child(dc_intl::t!("/X1ny6")))
                 .into_any_element()
         } else {
             self.shop_grid(&skus, false, window, cx)
@@ -334,7 +331,7 @@ impl Root {
             .px(px(32.))
             .pt(px(32.))
             .pb(px(32.))
-            .child(text(32., 40., 700., "--text-strong").child("Wishlist"))
+            .child(text(32., 40., 700., "--text-strong").child(dc_intl::t!("7lZ31J")))
             .child(body)
             .into_any_element()
     }

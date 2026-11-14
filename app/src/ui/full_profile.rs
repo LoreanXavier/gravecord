@@ -33,19 +33,21 @@ pub(super) enum Tab {
     Servers,
 }
 
-/// The tabs of module 927071 (`e3`), in order: Board when the profile has widgets, Activity, Wishlist when it has a
-/// wishlist, then the mutual friends and servers of someone else.
+/// The tabs of module 927071 (`e3`), in order: Board (always on own profile, else when the profile has valid widgets),
+/// Activity, Wishlist (always on own profile, else when it has a wishlist), then mutual friends and servers of someone else.
 pub(super) fn profile_tabs(body: Option<&Value>, other: bool) -> Vec<Tab> {
     let mut tabs = Vec::new();
-    if body.is_some_and(|body| {
-        parse_widgets(body)
-            .iter()
-            .any(|widget| widget.data.is_valid())
-    }) {
+    if !other
+        || body.is_some_and(|body| {
+            parse_widgets(body)
+                .iter()
+                .any(|widget| widget.data.is_valid())
+        })
+    {
         tabs.push(Tab::Board);
     }
     tabs.push(Tab::Activity);
-    if body.is_some_and(|body| !super::shop::data::wishlist_ids(body).is_empty()) {
+    if !other || body.is_some_and(|body| !super::shop::data::wishlist_ids(body).is_empty()) {
         tabs.push(Tab::Wishlist);
     }
     if other {
@@ -57,7 +59,7 @@ pub(super) fn profile_tabs(body: Option<&Value>, other: bool) -> Vec<Tab> {
 
 pub(super) struct FullProfile {
     pub user: Id,
-    guild: Option<Id>,
+    pub(super) guild: Option<Id>,
     pub tab: Tab,
     /// A tab was asked for (`initialSection`) or pressed; otherwise the first tab shows.
     pub explicit: bool,
@@ -117,6 +119,506 @@ fn profile_date(value: &str) -> Option<String> {
                 .format("%b %-d, %Y")
                 .to_string()
         })
+}
+
+/// Whether `body["guild_member"]` belongs to `open_guild` and should be merged into `MemberStore`.
+/// A member without a Nitro per-server profile has `guild_member_profile: null`, so `guild_id` is checked only when present.
+fn should_apply_guild_member(open_guild: Option<Id>, body: &Value) -> bool {
+    let Some(guild) = open_guild else {
+        return false;
+    };
+    if !body["guild_member"].is_object() {
+        return false;
+    }
+    body["guild_member_profile"]["guild_id"]
+        .as_str()
+        .is_none_or(|id| id == guild.to_string().as_str())
+}
+
+fn encode_uri_segment(input: &str) -> String {
+    let mut out = String::with_capacity(input.len());
+    for byte in input.bytes() {
+        match byte {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
+                out.push(byte as char);
+            }
+            _ => out.push_str(&format!("%{byte:02X}")),
+        }
+    }
+    out
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct ConnectedAccount {
+    kind: String,
+    id: String,
+    name: String,
+    verified: bool,
+    created_at: Option<String>,
+    platform_name: &'static str,
+    monogram: &'static str,
+    brand_rgb: u32,
+    light_asset: Option<&'static str>,
+    dark_asset: Option<&'static str>,
+    icon_svg: Option<&'static str>,
+    url: Option<String>,
+}
+
+type ConnectedPlatformSpec = (
+    &'static str,
+    &'static str,
+    &'static str,
+    u32,
+    Option<&'static str>,
+    Option<&'static str>,
+    Option<&'static str>,
+);
+
+/// Platform metadata from module 573648 (`connected_accounts` in 927071).
+const CONNECTED_PLATFORMS: &[ConnectedPlatformSpec] = &[
+    (
+        "twitch",
+        "Twitch",
+        "Tw",
+        0x9146ff,
+        Some("4fda00c96319c8ae.svg"),
+        Some("4fda00c96319c8ae.svg"),
+        None,
+    ),
+    (
+        "youtube",
+        "YouTube",
+        "YT",
+        0xff0033,
+        Some("0fa530ba9c04ac32.svg"),
+        Some("0fa530ba9c04ac32.svg"),
+        None,
+    ),
+    (
+        "battlenet",
+        "Battle.net",
+        "BN",
+        0x009ae4,
+        Some("163c8cb9220efc74.svg"),
+        Some("163c8cb9220efc74.svg"),
+        None,
+    ),
+    (
+        "bluesky",
+        "Bluesky",
+        "BS",
+        0x0285ff,
+        Some("2709f058378a099d.svg"),
+        Some("2709f058378a099d.svg"),
+        None,
+    ),
+    (
+        "bungie",
+        "Bungie.net",
+        "Bg",
+        0x1a1e24,
+        Some("5b0c8422db0e5507.svg"),
+        Some("099cd81cf3b4cc98.svg"),
+        None,
+    ),
+    (
+        "skype",
+        "Skype",
+        "Sk",
+        0x00aff0,
+        Some("883a13b030d276ec.svg"),
+        Some("883a13b030d276ec.svg"),
+        None,
+    ),
+    (
+        "leagueoflegends",
+        "League of Legends",
+        "LoL",
+        0x0bc6e3,
+        Some("302a27a2e5cc3fb6.svg"),
+        Some("302a27a2e5cc3fb6.svg"),
+        None,
+    ),
+    (
+        "steam",
+        "Steam",
+        "St",
+        0x171a21,
+        Some("dbfa31449965dbd5.svg"),
+        Some("1f7ec18f3695d4cf.svg"),
+        Some("icons/activity_steam.svg"),
+    ),
+    (
+        "reddit",
+        "Reddit",
+        "r/",
+        0xff4500,
+        Some("adfd927dcc2049a5.svg"),
+        Some("adfd927dcc2049a5.svg"),
+        None,
+    ),
+    (
+        "facebook",
+        "Facebook",
+        "fb",
+        0x1877f2,
+        Some("17be29f77bee4405.svg"),
+        Some("17be29f77bee4405.svg"),
+        None,
+    ),
+    (
+        "twitter_legacy",
+        "Twitter",
+        "Tw",
+        0x1da1f2,
+        Some("0815e2c86f2e0e37.svg"),
+        Some("0815e2c86f2e0e37.svg"),
+        None,
+    ),
+    (
+        "twitter",
+        "X",
+        "X",
+        0x111214,
+        Some("5cf814b9693aac47.svg"),
+        Some("a61999ae9bfb9658.svg"),
+        None,
+    ),
+    (
+        "x",
+        "X",
+        "X",
+        0x111214,
+        Some("5cf814b9693aac47.svg"),
+        Some("a61999ae9bfb9658.svg"),
+        None,
+    ),
+    (
+        "spotify",
+        "Spotify",
+        "Sp",
+        0x1db954,
+        Some("d5719388ffc613da.svg"),
+        Some("d5719388ffc613da.svg"),
+        Some("icons/inventory_spotify.svg"),
+    ),
+    (
+        "xbox",
+        "Xbox",
+        "XB",
+        0x107c10,
+        Some("0133fed7d4dc775c.svg"),
+        Some("c4f09fda61827e19.svg"),
+        None,
+    ),
+    (
+        "samsung",
+        "Samsung Galaxy",
+        "SG",
+        0x1428a0,
+        Some("4ed35737da17ede2.svg"),
+        Some("4ed35737da17ede2.svg"),
+        None,
+    ),
+    (
+        "github",
+        "GitHub",
+        "GH",
+        0x24292f,
+        Some("4db64e0649c64e7e.svg"),
+        Some("a35ff3e86ffa1eb2.svg"),
+        None,
+    ),
+    (
+        "playstation",
+        "PlayStation Network",
+        "PS",
+        0x003791,
+        Some("792da49081c21457.svg"),
+        Some("eed203a7ec517e23.svg"),
+        None,
+    ),
+    (
+        "epicgames",
+        "Epic Games",
+        "EG",
+        0x2a2a2a,
+        Some("4fb7893066c0ef83.svg"),
+        Some("199eceff4fca1a0c.svg"),
+        None,
+    ),
+    (
+        "riotgames",
+        "Riot Games",
+        "RG",
+        0xd32936,
+        Some("772307b7d902b47b.svg"),
+        Some("772307b7d902b47b.svg"),
+        None,
+    ),
+    (
+        "roblox",
+        "Roblox",
+        "Rb",
+        0x232527,
+        Some("e04a073ed006173a.svg"),
+        Some("a4d8e9b0404a2d00.svg"),
+        None,
+    ),
+    (
+        "paypal",
+        "PayPal",
+        "PP",
+        0x003087,
+        Some("dcb64a4ff8f61b2c.svg"),
+        Some("dcb64a4ff8f61b2c.svg"),
+        None,
+    ),
+    (
+        "ebay",
+        "eBay",
+        "eB",
+        0xe53238,
+        Some("b28a7a265581b6e3.svg"),
+        Some("b28a7a265581b6e3.svg"),
+        None,
+    ),
+    (
+        "tiktok",
+        "TikTok",
+        "TT",
+        0x111111,
+        Some("53641d0496c85aec.svg"),
+        Some("a303feb844769624.svg"),
+        None,
+    ),
+    (
+        "instagram",
+        "Instagram",
+        "IG",
+        0xe1306c,
+        Some("c05dded52023ed43.svg"),
+        Some("c05dded52023ed43.svg"),
+        None,
+    ),
+    (
+        "letterboxd",
+        "Letterboxd",
+        "Lb",
+        0x202830,
+        Some("4f8b8634a81979a6.svg"),
+        Some("6b6632ec799ccf64.svg"),
+        None,
+    ),
+    (
+        "mastodon",
+        "Mastodon",
+        "M",
+        0x6364ff,
+        Some("0e6385723fe5cd49.svg"),
+        Some("0e6385723fe5cd49.svg"),
+        None,
+    ),
+    (
+        "crunchyroll",
+        "Crunchyroll",
+        "CR",
+        0xf47521,
+        Some("94ef3e8b7fa85a2e.svg"),
+        Some("94ef3e8b7fa85a2e.svg"),
+        None,
+    ),
+    (
+        "domain",
+        "Domain",
+        "www",
+        0x2b2d31,
+        Some("10d4972595802406.svg"),
+        Some("b4376756bcbbf1ef.svg"),
+        Some("icons/oauth_entry_globe.svg"),
+    ),
+    (
+        "amazon-music",
+        "Amazon Music",
+        "AM",
+        0x25d1da,
+        Some("e3c4aacc1a54395d.svg"),
+        Some("e3c4aacc1a54395d.svg"),
+        None,
+    ),
+    (
+        "amazon_music",
+        "Amazon Music",
+        "AM",
+        0x25d1da,
+        Some("e3c4aacc1a54395d.svg"),
+        Some("e3c4aacc1a54395d.svg"),
+        None,
+    ),
+    (
+        "meta-quest",
+        "Meta Quest",
+        "MQ",
+        0x0081fb,
+        Some("d64a395149091d96.svg"),
+        Some("ac961aa8d4bb48a5.svg"),
+        None,
+    ),
+    (
+        "meta_quest",
+        "Meta Quest",
+        "MQ",
+        0x0081fb,
+        Some("d64a395149091d96.svg"),
+        Some("ac961aa8d4bb48a5.svg"),
+        None,
+    ),
+];
+
+const DEFAULT_CONNECTED_PLATFORM: (&str, &str, u32, Option<&str>, Option<&str>, Option<&str>) = (
+    "Connected Account",
+    "•",
+    0x4e5058,
+    None,
+    None,
+    Some("icons/oauth_entry_globe.svg"),
+);
+
+fn connection_platform_icon_key(kind: &str, dark: bool) -> String {
+    format!(
+        "connection-icon:{kind}:{}",
+        if dark { "dark" } else { "light" }
+    )
+}
+
+/// Platform metadata and profile URLs from module 573648 (`connected_accounts` in 927071).
+fn parse_connected_accounts(body: &Value) -> Vec<ConnectedAccount> {
+    body["connected_accounts"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|item| {
+            if item["revoked"] == true {
+                return None;
+            }
+            let kind = item["type"].as_str()?.to_ascii_lowercase();
+            let id = item["id"].as_str().unwrap_or_default().to_owned();
+            let name = item["name"].as_str().filter(|s| !s.is_empty())?.to_owned();
+            let verified = item["verified"] == true;
+            let created_at = item["metadata"]["created_at"]
+                .as_str()
+                .and_then(profile_date);
+            let enc_name = encode_uri_segment(&name);
+            let enc_id = encode_uri_segment(&id);
+            let (platform_name, monogram, brand_rgb, light_asset, dark_asset, icon_svg) =
+                CONNECTED_PLATFORMS
+                    .iter()
+                    .find(|(known, ..)| *known == kind)
+                    .map(|(_, title, mono, rgb, light, dark, svg)| {
+                        (*title, *mono, *rgb, *light, *dark, *svg)
+                    })
+                    .unwrap_or(DEFAULT_CONNECTED_PLATFORM);
+            let url = match kind.as_str() {
+                "twitch" => Some(format!("https://www.twitch.tv/{enc_name}")),
+                "youtube" => {
+                    (!id.is_empty()).then(|| format!("https://www.youtube.com/channel/{enc_id}"))
+                }
+                "bluesky" => (!id.is_empty())
+                    .then(|| format!("https://bsky.app/profile/{}", enc_id.replace("%3A", ":"))),
+                "steam" => (!id.is_empty())
+                    .then(|| format!("https://steamcommunity.com/profiles/{enc_id}")),
+                "reddit" => Some(format!("https://www.reddit.com/u/{enc_name}")),
+                "twitter_legacy" => Some(format!("https://twitter.com/{enc_name}")),
+                "twitter" | "x" => Some(format!("https://x.com/{enc_name}")),
+                "spotify" => {
+                    (!id.is_empty()).then(|| format!("https://open.spotify.com/user/{enc_id}"))
+                }
+                "github" => Some(format!("https://github.com/{enc_name}")),
+                "roblox" => (!id.is_empty())
+                    .then(|| format!("https://www.roblox.com/users/{enc_id}/profile")),
+                "ebay" => Some(format!("https://www.ebay.com/usr/{enc_name}")),
+                "tiktok" => Some(format!("https://www.tiktok.com/@{enc_name}")),
+                "instagram" => Some(format!("https://www.instagram.com/{enc_name}")),
+                "letterboxd" => Some(format!("https://letterboxd.com/{enc_name}/")),
+                "mastodon" => {
+                    (id.starts_with("https://") || id.starts_with("http://")).then_some(id.clone())
+                }
+                "domain" => (!id.is_empty()).then(|| format!("https://{id}/")),
+                _ => None,
+            };
+            Some(ConnectedAccount {
+                kind,
+                id,
+                name,
+                verified,
+                created_at,
+                platform_name,
+                monogram,
+                brand_rgb,
+                light_asset,
+                dark_asset,
+                icon_svg,
+                url,
+            })
+        })
+        .collect()
+}
+
+fn wishlist_is_private(profile_body: Option<&Value>, list: Option<&Value>) -> bool {
+    let check_val = |v: &Value| {
+        v["visibility"].as_i64() == Some(2)
+            || v["visibility"]
+                .as_str()
+                .is_some_and(|s| s.eq_ignore_ascii_case("private"))
+            || v["privacy"].as_i64() == Some(1)
+            || v["is_public"] == false
+            || v["private"] == true
+    };
+    if list.is_some_and(check_val) {
+        return true;
+    }
+    profile_body
+        .and_then(|b| b["wishlist_settings"].as_object())
+        .and_then(|map| map.values().next())
+        .is_some_and(check_val)
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct CustomStatus {
+    text: Option<String>,
+    emoji_name: Option<String>,
+    emoji_id: Option<String>,
+    emoji_animated: bool,
+}
+
+fn parse_custom_status(activities: &[Value]) -> Option<CustomStatus> {
+    let activity = activities
+        .iter()
+        .find(|entry| entry["type"].as_u64() == Some(4))?;
+    let text = activity["state"]
+        .as_str()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(str::to_owned);
+    let emoji = &activity["emoji"];
+    let emoji_id = emoji["id"]
+        .as_str()
+        .filter(|s| !s.is_empty())
+        .map(str::to_owned);
+    let emoji_name = emoji["name"]
+        .as_str()
+        .filter(|s| !s.is_empty())
+        .map(str::to_owned);
+    let emoji_animated = emoji["animated"] == true;
+    if text.is_none() && emoji_id.is_none() && emoji_name.is_none() {
+        return None;
+    }
+    Some(CustomStatus {
+        text,
+        emoji_name,
+        emoji_id,
+        emoji_animated,
+    })
 }
 
 impl Root {
@@ -191,15 +693,44 @@ impl Root {
             let _ = self.requests.send(Request::Fetch { key, route });
         }
         if let Some(known) = self.stores.users.get(&user).cloned() {
-            let (image, url) = avatar_source(&known);
+            let (image, url) = self.guild_avatar_source_in(&known, self.guild);
             self.request_image(image, url);
+            let (global_image, global_url) = avatar_source(&known);
+            self.request_image(global_image, global_url);
+        }
+        if self.stores.current_user.as_ref().map(|u| u.id) == Some(user) {
+            self.shop_request("shop:profile", super::shop::data::own_profile_route(user));
+        }
+        if let Some(body) = self.fetched.get(&format!("profile:{user}")).cloned() {
+            if let Some((key, url)) = super::profile_art::banner_source(user, self.guild, &body) {
+                self.request_image(key, url);
+            }
+            self.request_connected_account_icons(&body);
         }
         self.request_profile_images(user);
+        self.request_profile_cards(user);
         let _ = window;
         cx.notify();
     }
 
-    /// Answers this modal waits for: the outbox (then its games' icons) and the note.
+    fn request_connected_account_icons(&mut self, body: &Value) {
+        for account in parse_connected_accounts(body) {
+            if let Some(light) = account.light_asset {
+                self.request_image(
+                    connection_platform_icon_key(&account.kind, false),
+                    format!("https://discord.com/assets/{light}"),
+                );
+            }
+            if let Some(dark) = account.dark_asset {
+                self.request_image(
+                    connection_platform_icon_key(&account.kind, true),
+                    format!("https://discord.com/assets/{dark}"),
+                );
+            }
+        }
+    }
+
+    /// Answers this modal waits for: the profile, wishlist, outbox (then its games' icons) and the note.
     pub(super) fn full_profile_fetched(&mut self, key: &str, cx: &mut Context<Self>) {
         let Some(open) = self.full_profile.as_ref() else {
             return;
@@ -215,22 +746,30 @@ impl Root {
                     None
                 }
             };
-            if let Some(parsed_user) = parsed_user {
-                let (image, url) = avatar_source(&parsed_user);
-                self.request_image(image, url);
-                if let Some(url) = parsed_user.tag.as_ref().and_then(|tag| tag.badge_url()) {
-                    self.request_image(url.clone(), url);
-                }
-            }
             if let Some(guild) = open_guild
                 && let Some(body) = self.fetched.get(key)
-                && body["guild_member_profile"]["guild_id"].as_str()
-                    == Some(guild.to_string().as_str())
-                && body["guild_member"].is_object()
+                && should_apply_guild_member(open_guild, body)
             {
                 self.stores
                     .members
                     .apply_member(guild, &body["guild_member"], Some(&body["user"]));
+            }
+            if let Some(parsed_user) = parsed_user {
+                let (image, url) = self.guild_avatar_source_in(&parsed_user, open_guild);
+                self.request_image(image, url);
+                let (global_image, global_url) = avatar_source(&parsed_user);
+                self.request_image(global_image, global_url);
+                if let Some(url) = parsed_user.tag.as_ref().and_then(|tag| tag.badge_url()) {
+                    self.request_image(url.clone(), url);
+                }
+            }
+            if let Some(body) = self.fetched.get(key).cloned() {
+                if let Some((banner_key, banner_url)) =
+                    super::profile_art::banner_source(user, open_guild, &body)
+                {
+                    self.request_image(banner_key, banner_url);
+                }
+                self.request_connected_account_icons(&body);
             }
             let friends: Vec<dc_state::User> = self.fetched[key]["mutual_friends"]
                 .as_array()
@@ -246,7 +785,10 @@ impl Root {
                 }
             }
             self.request_profile_images(user);
-        } else if key == format!("profile-games:{user}") {
+            self.request_profile_cards(user);
+        } else if key == format!("profile-games:{user}")
+            || key == format!("profile-wishlist:{user}")
+        {
             self.request_profile_cards(user);
         } else if key == format!("outbox:{user}") {
             let entries: Vec<Value> = self.fetched[key]["entries"]
@@ -347,6 +889,7 @@ impl Root {
         strong: Hsla,
         default: Hsla,
         subtle: Hsla,
+        cx: &mut Context<Self>,
     ) -> AnyElement {
         let account_date = super::dm_profile::member_since(user);
         let text = |value: String| {
@@ -364,7 +907,52 @@ impl Root {
         let Some((guild, member)) = member else {
             return text(account_date).into_any_element();
         };
-        let guild_image = self.images.get(&format!("guild:{}", guild.id)).cloned();
+        let guild_id = guild.id;
+        let guild_name = guild.name.clone();
+        let guild_acronym = guild.acronym();
+        let guild_has_icon = guild.icon.is_some();
+        let joined_date = member.joined_at.as_deref().and_then(profile_date);
+        let guild_image = self.images.get(&format!("guild:{guild_id}")).cloned();
+        let clyde = self.with_tip(
+            format!("full-profile-clyde-tip-{user}"),
+            super::tooltip::Tip::text(dc_intl::t!("/7xJCF"), super::tooltip::Side::Top).after(300),
+            div()
+                .id(SharedString::from(format!("full-profile-clyde-{user}")))
+                .size(px(16.))
+                .flex()
+                .items_center()
+                .justify_center()
+                .child(
+                    svg()
+                        .path("icons/home.svg")
+                        .size(px(16.))
+                        .text_color(default),
+                ),
+            cx,
+        );
+        let guild_badge = self.with_tip(
+            format!("full-profile-guild-tip-{user}-{guild_id}"),
+            super::tooltip::Tip::body(
+                super::tooltip::Body::Text(guild_name.into()),
+                super::tooltip::Side::Top,
+            )
+            .after(300),
+            div()
+                .id(SharedString::from(format!(
+                    "full-profile-guild-icon-{user}-{guild_id}"
+                )))
+                .size(px(16.))
+                .rounded(px(4.))
+                .overflow_hidden()
+                .flex()
+                .items_center()
+                .justify_center()
+                .children(guild_image.map(|image| img(image).size_full()))
+                .when(!guild_has_icon, |d| {
+                    d.text_size(px(8.)).text_color(strong).child(guild_acronym)
+                }),
+            cx,
+        );
         div()
             .parity("full-profile-member-since")
             .flex()
@@ -375,12 +963,7 @@ impl Root {
                     .flex()
                     .items_center()
                     .gap(px(4.))
-                    .child(
-                        svg()
-                            .path("icons/home.svg")
-                            .size(px(16.))
-                            .text_color(default),
-                    )
+                    .child(clyde)
                     .child(text(account_date)),
             )
             .child(div().size(px(4.)).rounded_full().bg(subtle))
@@ -389,21 +972,398 @@ impl Root {
                     .flex()
                     .items_center()
                     .gap(px(4.))
-                    .child(
-                        div()
-                            .size(px(16.))
-                            .rounded(px(4.))
-                            .overflow_hidden()
-                            .children(guild_image.map(|image| img(image).size_full()))
-                            .when(guild.icon.is_none(), |d| {
-                                d.text_size(px(8.))
-                                    .text_color(strong)
-                                    .child(guild.acronym())
-                            }),
-                    )
-                    .children(member.joined_at.as_deref().and_then(profile_date).map(text)),
+                    .child(guild_badge)
+                    .children(joined_date.map(text)),
             )
             .into_any_element()
+    }
+
+    /// Custom status thought bubble (`680581.js`, `.container_rmCN9_`).
+    fn full_profile_status_bubble(
+        &self,
+        user: Id,
+        guild: Option<Id>,
+        me: bool,
+        palette: &super::dm_profile::Palette,
+        cx: &mut Context<Self>,
+    ) -> Option<AnyElement> {
+        let light_theme = palette.theme.is_some_and(|t| t.light());
+        let strong: Hsla = palette.token("--text-strong").into();
+        let default: Hsla = palette.token("--text-default").into();
+        let subtle: Hsla = palette.token("--text-subtle").into();
+        let status = self
+            .stores
+            .presence
+            .get(user, guild)
+            .or_else(|| self.stores.presence.get(user, None))
+            .and_then(|presence| parse_custom_status(&presence.activities));
+        if status.is_none() && !me {
+            return None;
+        }
+        let bubble_bg = palette.token("--background-surface-highest");
+        let bubble_border = palette.token(if palette.themed && !light_theme {
+            "--border-strong"
+        } else {
+            "--border-muted"
+        });
+        let small_dot = div()
+            .absolute()
+            .left(px(-3.))
+            .top(px(-15.))
+            .size(px(10.))
+            .rounded_full()
+            .bg(bubble_bg)
+            .border_1()
+            .border_color(bubble_border);
+        let large_dot = div()
+            .absolute()
+            .left(px(10.))
+            .top(px(-8.))
+            .size(px(20.))
+            .rounded_full()
+            .bg(bubble_bg)
+            .border_1()
+            .border_color(bubble_border);
+        let inner: AnyElement = match status {
+            None => div()
+                .id(SharedString::from(format!(
+                    "full-profile-add-status-{user}"
+                )))
+                .group("full-profile-add-status")
+                .relative()
+                .rounded(px(16.))
+                .bg(bubble_bg)
+                .border_1()
+                .border_color(bubble_border)
+                .px(px(10.))
+                .py(px(6.))
+                .cursor_pointer()
+                .flex()
+                .items_center()
+                .gap(px(4.))
+                .child(
+                    svg()
+                        .path("icons/status_add.svg")
+                        .size(px(16.))
+                        .text_color(subtle)
+                        .group_hover("full-profile-add-status", move |s| s.text_color(strong)),
+                )
+                .child(
+                    div()
+                        .text_size(px(14.))
+                        .line_height(px(18.))
+                        .text_color(subtle)
+                        .group_hover("full-profile-add-status", move |s| s.text_color(strong))
+                        .child(dc_intl::t!("evw0oz")),
+                )
+                .on_click(cx.listener(|this, _, window, cx| {
+                    this.open_custom_status(window, cx);
+                }))
+                .into_any_element(),
+            Some(status) => {
+                let emoji_only = status.text.is_none();
+                let emoji_px = if emoji_only { 32. } else { 16. };
+                let emoji_el: Option<AnyElement> = if let Some(eid) = &status.emoji_id {
+                    let key = format!("custom:{eid}");
+                    let url = if status.emoji_animated {
+                        format!(
+                            "https://cdn.discordapp.com/emojis/{eid}.webp?size=96&animated=true"
+                        )
+                    } else {
+                        format!("https://cdn.discordapp.com/emojis/{eid}.webp?size=96")
+                    };
+                    if let Some(pic) = self.images.get(&key).cloned() {
+                        Some(img(pic).size(px(emoji_px)).flex_none().into_any_element())
+                    } else {
+                        self.want_image(key, url, cx);
+                        Some(div().size(px(emoji_px)).flex_none().into_any_element())
+                    }
+                } else if let Some(ename) = &status.emoji_name {
+                    if let Some(file) = dc_tokens::emoji_file(ename) {
+                        let key = format!("emoji:{ename}");
+                        let url = format!("{}/assets/{file}", dc_proto::pin::WEBAPP_ORIGIN);
+                        if let Some(pic) = self.images.get(&key).cloned() {
+                            Some(img(pic).size(px(emoji_px)).flex_none().into_any_element())
+                        } else {
+                            self.want_image(key, url, cx);
+                            Some(
+                                div()
+                                    .flex_none()
+                                    .text_size(px(emoji_px * 0.85))
+                                    .line_height(px(emoji_px))
+                                    .child(ename.clone())
+                                    .into_any_element(),
+                            )
+                        }
+                    } else {
+                        Some(
+                            div()
+                                .flex_none()
+                                .text_size(px(emoji_px * 0.85))
+                                .line_height(px(emoji_px))
+                                .child(ename.clone())
+                                .into_any_element(),
+                        )
+                    }
+                } else {
+                    None
+                };
+                let body = div()
+                    .id(SharedString::from(format!(
+                        "full-profile-status-bubble-{user}"
+                    )))
+                    .relative()
+                    .rounded(px(16.))
+                    .bg(bubble_bg)
+                    .border_1()
+                    .border_color(bubble_border)
+                    .map(|d| {
+                        if emoji_only {
+                            d.p(px(8.))
+                                .flex()
+                                .items_center()
+                                .justify_center()
+                                .children(emoji_el)
+                        } else {
+                            let text = status.text.clone().unwrap_or_default();
+                            d.px(px(12.))
+                                .py(px(8.))
+                                .flex()
+                                .items_start()
+                                .when_some(emoji_el, |row, art| {
+                                    row.child(div().mr(px(4.)).mt(px(1.)).flex_none().child(art))
+                                })
+                                .child(
+                                    div()
+                                        .min_w(px(0.))
+                                        .line_clamp(2)
+                                        .text_ellipsis()
+                                        .text_size(px(14.))
+                                        .line_height(px(18.))
+                                        .text_color(default)
+                                        .child(text),
+                                )
+                        }
+                    })
+                    .when(me, |d| {
+                        d.cursor_pointer()
+                            .on_click(cx.listener(|this, _, window, cx| {
+                                this.open_custom_status(window, cx);
+                            }))
+                    });
+                body.into_any_element()
+            }
+        };
+        Some(
+            div()
+                .parity("full-profile-status-bubble")
+                .absolute()
+                .top(px(132.))
+                .left(px(172.))
+                .max_w(px(181.))
+                .min_w(px(42.))
+                .child(small_dot)
+                .child(large_dot)
+                .child(inner)
+                .into_any_element(),
+        )
+    }
+
+    /// Connected accounts list (`927071.js:760-945`, `.connectedAccounts_O2KI4e`).
+    fn full_profile_connections(
+        &self,
+        user: Id,
+        body: Option<&Value>,
+        palette: &super::dm_profile::Palette,
+        cx: &mut Context<Self>,
+    ) -> Option<AnyElement> {
+        let strong: Hsla = palette.token("--text-strong").into();
+        let default: Hsla = palette.token("--text-default").into();
+        let subtle: Hsla = palette.token("--text-subtle").into();
+        let accounts = parse_connected_accounts(body?);
+        if accounts.is_empty() {
+            return None;
+        }
+        let border = palette.token(if palette.themed {
+            "--user-profile-border"
+        } else {
+            "--border-subtle"
+        });
+        let dark = palette
+            .theme
+            .map_or(!matches!(super::theme(), dc_tokens::Theme::Light), |t| {
+                !t.light()
+            });
+        let rows: Vec<AnyElement> = accounts
+            .into_iter()
+            .enumerate()
+            .map(|(index, account)| {
+                let platform_picture = self
+                    .images
+                    .get(&connection_platform_icon_key(&account.kind, dark))
+                    .cloned();
+                let badge_el = if let Some(picture) = platform_picture {
+                    div()
+                        .id(SharedString::from(format!(
+                            "full-profile-conn-badge-{user}-{index}"
+                        )))
+                        .size(px(24.))
+                        .flex_none()
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .child(img(picture).size(px(24.)))
+                } else {
+                    div()
+                        .id(SharedString::from(format!(
+                            "full-profile-conn-badge-{user}-{index}"
+                        )))
+                        .size(px(24.))
+                        .flex_none()
+                        .rounded(px(6.))
+                        .border_1()
+                        .border_color(border)
+                        .bg(gpui::rgb(account.brand_rgb))
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .map(|d| match account.icon_svg {
+                            Some(path) => {
+                                d.child(svg().path(path).size(px(14.)).text_color(color("--white")))
+                            }
+                            None => d
+                                .text_size(px(10.))
+                                .line_height(px(12.))
+                                .font_weight(FontWeight(700.))
+                                .text_color(color("--white"))
+                                .child(account.monogram),
+                        })
+                };
+                let badge = self.with_tip(
+                    format!("full-profile-conn-platform-{user}-{index}"),
+                    super::tooltip::Tip::text(account.platform_name, super::tooltip::Side::Top)
+                        .after(300),
+                    badge_el,
+                    cx,
+                );
+                let verified = account.verified.then(|| {
+                    svg()
+                        .path("icons/mod_info_verified.svg")
+                        .size(px(16.))
+                        .flex_none()
+                        .text_color(subtle)
+                });
+                let name_text = account.name.clone();
+                let open_link = account.url.clone().map(|url| {
+                    let label = format!("{}: {}", account.platform_name, account.name);
+                    let btn = div()
+                        .id(SharedString::from(format!(
+                            "full-profile-conn-link-{user}-{index}"
+                        )))
+                        .size(px(24.))
+                        .flex_none()
+                        .rounded(px(4.))
+                        .cursor_pointer()
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .child(
+                            svg()
+                                .path("icons/open_external.svg")
+                                .size(px(16.))
+                                .text_color(subtle)
+                                .hover(move |s| s.text_color(strong)),
+                        )
+                        .on_click(cx.listener(move |this, _, _, cx| {
+                            this.follow_link(&url, &label, cx);
+                        }));
+                    self.with_tip(
+                        format!("full-profile-conn-open-tip-{user}-{index}"),
+                        super::tooltip::Tip::text(dc_intl::t!("q5jLJB"), super::tooltip::Side::Top)
+                            .after(300),
+                        btn,
+                        cx,
+                    )
+                });
+                let name_row: AnyElement = if let Some(url) = account.url.clone() {
+                    let label = format!("{}: {}", account.platform_name, account.name);
+                    div()
+                        .id(SharedString::from(format!(
+                            "full-profile-conn-name-{user}-{index}"
+                        )))
+                        .min_w(px(0.))
+                        .cursor_pointer()
+                        .flex()
+                        .items_center()
+                        .gap(px(4.))
+                        .child(
+                            div()
+                                .min_w(px(0.))
+                                .text_ellipsis()
+                                .text_size(px(14.))
+                                .line_height(px(18.))
+                                .text_color(default)
+                                .hover(move |s| s.text_color(strong))
+                                .child(name_text),
+                        )
+                        .children(verified)
+                        .on_click(cx.listener(move |this, _, _, cx| {
+                            this.follow_link(&url, &label, cx);
+                        }))
+                        .into_any_element()
+                } else {
+                    div()
+                        .min_w(px(0.))
+                        .flex()
+                        .items_center()
+                        .gap(px(4.))
+                        .child(
+                            div()
+                                .min_w(px(0.))
+                                .text_ellipsis()
+                                .text_size(px(14.))
+                                .line_height(px(18.))
+                                .text_color(default)
+                                .child(name_text),
+                        )
+                        .children(verified)
+                        .into_any_element()
+                };
+                div()
+                    .flex()
+                    .items_center()
+                    .gap(px(8.))
+                    .child(badge)
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w(px(0.))
+                            .flex()
+                            .flex_col()
+                            .child(name_row)
+                            .when_some(account.created_at, |d, date| {
+                                d.child(
+                                    div()
+                                        .text_size(px(12.))
+                                        .line_height(px(16.))
+                                        .text_color(subtle)
+                                        .child(dc_intl::t!("9rfonh", date = date)),
+                                )
+                            }),
+                    )
+                    .children(open_link)
+                    .into_any_element()
+            })
+            .collect();
+        Some(
+            div()
+                .parity("full-profile-connections")
+                .flex()
+                .flex_col()
+                .gap(px(8.))
+                .children(rows)
+                .into_any_element(),
+        )
     }
 
     /// One `card_Bu4Al8`: art, title, subtitle and the badges row.
@@ -540,15 +1500,18 @@ impl Root {
         )
     }
 
-    /// The Board (`a5` of module 927071): themed widget cards populated from the user's saved `widgets`.
+    /// The Board (`a5` of module 927071): themed widget cards populated from the user's saved `widgets`, or the
+    /// official empty state (`oqalC+`) on own profile.
     fn full_profile_board(
         &self,
         user: Id,
+        me: bool,
         palette: &super::dm_profile::Palette,
-        strong: Hsla,
-        default: Hsla,
-        subtle: Hsla,
+        cx: &mut Context<Self>,
     ) -> AnyElement {
+        let strong: Hsla = palette.token("--text-strong").into();
+        let default: Hsla = palette.token("--text-default").into();
+        let subtle: Hsla = palette.token("--text-subtle").into();
         let body = self.fetched.get(&format!("profile:{user}"));
         let answer = self.fetched.get(&format!("profile-games:{user}"));
         let game = |id: &str| {
@@ -857,6 +1820,81 @@ impl Root {
                     .into_any_element()
             })
             .collect();
+        if widgets.is_empty() {
+            let secondary_bg = palette.token("--control-secondary-background-default");
+            let secondary_hover = palette.token("--control-secondary-background-hover");
+            let secondary_border = palette.token("--control-secondary-border-default");
+            let secondary_fg = palette.token("--control-secondary-text-default");
+            return div()
+                .parity("full-profile-board-empty")
+                .pt(px(64.))
+                .pb(px(32.))
+                .w_full()
+                .flex()
+                .flex_col()
+                .items_center()
+                .gap(px(16.))
+                .child(
+                    div()
+                        .max_w(px(328.))
+                        .flex()
+                        .flex_col()
+                        .items_center()
+                        .text_center()
+                        .gap(px(8.))
+                        .child(
+                            div()
+                                .text_size(px(16.))
+                                .line_height(px(20.))
+                                .font_weight(FontWeight(500.))
+                                .text_color(strong)
+                                .child(dc_intl::t!("oqalC+")),
+                        )
+                        .child(
+                            div()
+                                .text_size(px(14.))
+                                .line_height(px(18.))
+                                .text_color(default)
+                                .child(dc_intl::t!("O9SQ1c")),
+                        ),
+                )
+                .when(me, |d| {
+                    d.child(
+                        div()
+                            .id("full-profile-board-browse-widgets")
+                            .h(px(32.))
+                            .px(px(12.))
+                            .rounded(px(8.))
+                            .border_1()
+                            .border_color(secondary_border)
+                            .bg(secondary_bg)
+                            .hover(move |s| s.bg(secondary_hover))
+                            .cursor_pointer()
+                            .flex()
+                            .items_center()
+                            .gap(px(6.))
+                            .child(
+                                svg()
+                                    .path("icons/plus_small.svg")
+                                    .size(px(16.))
+                                    .text_color(secondary_fg),
+                            )
+                            .child(
+                                div()
+                                    .text_size(px(14.))
+                                    .line_height(px(18.))
+                                    .font_weight(FontWeight(500.))
+                                    .text_color(secondary_fg)
+                                    .child(dc_intl::t!("/NKLK5")),
+                            )
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                this.close_full_profile(cx);
+                                this.open_profile_editor(cx);
+                            })),
+                    )
+                })
+                .into_any_element();
+        }
         div()
             .pt(px(20.))
             .flex()
@@ -866,48 +1904,391 @@ impl Root {
             .into_any_element()
     }
 
-    /// The Wishlist tab (`o9` of module 927071): the items of the first wishlist; pressing one opens its product.
+    /// Official `Wishlist` tab (`o9` of module 927071, `699976.js`, `181554`): header row, 3-column `133x133` card grid
+    /// (including owned items at `0.5` rest opacity with `"Owned"` checkmark, hover heart toggle & bottom CTA), and
+    /// `o6` empty state (`"No hearts yet 💔"`).
     fn full_profile_wishlist(
         &mut self,
         user: Id,
+        me: bool,
         palette: &super::dm_profile::Palette,
         window: &mut Window,
         cx: &mut Context<Self>,
-    ) -> Option<AnyElement> {
-        let list = self.fetched.get(&format!("profile-wishlist:{user}"))?;
-        let skus = super::dm_profile::unowned_wishlist(list);
-        self.editor_wishlist_need(&skus);
-        let mut cards = Vec::new();
-        let card_bg = palette.token("--user-profile-overlay-background");
+    ) -> AnyElement {
+        let profile_body = self.fetched.get(&format!("profile:{user}")).cloned();
+        let list = self
+            .fetched
+            .get(&format!("profile-wishlist:{user}"))
+            .cloned()
+            .or_else(|| {
+                me.then(|| self.fetched.get("shop:wishlistread").cloned())
+                    .flatten()
+            });
+        let entries: Vec<(String, bool)> = match &list {
+            Some(list) => super::dm_profile::wishlist_entries(list),
+            None if me => self
+                .shop
+                .wishlist_order
+                .iter()
+                .map(|sku| (sku.clone(), false))
+                .collect(),
+            None => Vec::new(),
+        };
+        let all_skus: Vec<String> = entries.iter().map(|(sku, _)| sku.clone()).collect();
+        if !all_skus.is_empty() {
+            self.shop_need_products(&all_skus);
+            self.editor_wishlist_need(&all_skus);
+        }
+        let strong: Hsla = palette.token("--text-strong").into();
+        let default: Hsla = palette.token("--text-default").into();
+        let subtle: Hsla = palette.token("--text-subtle").into();
+        let primary_bg = palette.token("--control-primary-background-default");
+        let primary_hover = palette.token("--control-primary-background-hover");
+        let primary_active = palette.token("--control-primary-background-active");
+        let primary_fg = palette.token("--control-primary-text-default");
+        let secondary_bg = palette.token("--control-secondary-background-default");
+        let secondary_hover = palette.token("--control-secondary-background-hover");
+        let secondary_border = palette.token("--control-secondary-border-default");
+        let secondary_fg = palette.token("--control-secondary-text-default");
         let border = palette.token("--border-muted");
-        for sku in skus {
-            let preview = self.editor_wishlist_preview(&sku, 160., window, cx);
+
+        if entries.is_empty() {
+            return div()
+                .parity("full-profile-wishlist-empty")
+                .pt(px(64.))
+                .pb(px(32.))
+                .w_full()
+                .flex()
+                .flex_col()
+                .items_center()
+                .gap(px(16.))
+                .child(
+                    div()
+                        .w(px(328.))
+                        .flex()
+                        .flex_col()
+                        .items_center()
+                        .text_center()
+                        .gap(px(8.))
+                        .child(
+                            div()
+                                .text_size(px(16.))
+                                .line_height(px(20.))
+                                .font_weight(FontWeight(500.))
+                                .text_color(strong)
+                                .child(dc_intl::t!("HGnLLT")),
+                        )
+                        .child(
+                            div()
+                                .text_size(px(14.))
+                                .line_height(px(18.))
+                                .text_color(default)
+                                .child(dc_intl::t!("/X1ny6")),
+                        ),
+                )
+                .child(
+                    div()
+                        .id("full-profile-wishlist-explore-shop")
+                        .h(px(32.))
+                        .px(px(12.))
+                        .rounded(px(8.))
+                        .border_1()
+                        .border_color(border)
+                        .bg(primary_bg)
+                        .hover(move |s| s.bg(primary_hover))
+                        .active(move |s| s.bg(primary_active))
+                        .cursor_pointer()
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .text_size(px(14.))
+                        .line_height(px(18.))
+                        .font_weight(FontWeight(500.))
+                        .text_color(primary_fg)
+                        .child(dc_intl::t!("ZbS4QB"))
+                        .on_click(cx.listener(|this, _, _, cx| {
+                            this.close_full_profile(cx);
+                            this.open_shop(cx);
+                        })),
+                )
+                .into_any_element();
+        }
+
+        let is_private = me && wishlist_is_private(profile_body.as_ref(), list.as_ref());
+        let card_bg = palette.token("--user-profile-overlay-background");
+        let heart_bg = palette.token("--background-surface-highest");
+        let shop_loaded = self.shop.wishlist_id.is_some() || !self.shop.wishlist.is_empty();
+        let mut cards = Vec::with_capacity(entries.len());
+        for (sku, is_owned) in &entries {
+            let sku = sku.clone();
+            let is_owned = *is_owned;
+            let preview = self.editor_wishlist_preview(&sku, 133., window, cx);
+            let wishlisted = if shop_loaded {
+                self.shop_is_wishlisted(&sku)
+            } else {
+                me
+            };
+            let group_name = SharedString::from(format!("full-profile-wl-grp-{sku}"));
+            let heart_tip = if wishlisted {
+                dc_intl::t!("19b82d")
+            } else {
+                dc_intl::t!("Hcgz2S")
+            };
+            let sku_heart = sku.clone();
+            let heart_btn = self.with_tip(
+                format!("full-profile-wl-heart-tip-{sku}"),
+                super::tooltip::Tip::text(heart_tip, super::tooltip::Side::Top).after(300),
+                div()
+                    .id(SharedString::from(format!("full-profile-wl-heart-{sku}")))
+                    .size(px(32.))
+                    .rounded(px(8.))
+                    .border_1()
+                    .border_color(border)
+                    .bg(heart_bg)
+                    .hover(move |s| s.bg(secondary_hover))
+                    .cursor_pointer()
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .child(
+                        svg()
+                            .path(if wishlisted {
+                                "icons/shop_heart_card.svg"
+                            } else {
+                                "icons/shop_heart.svg"
+                            })
+                            .size(px(16.))
+                            .text_color(if wishlisted {
+                                color("--status-danger")
+                            } else {
+                                secondary_fg
+                            }),
+                    )
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        cx.stop_propagation();
+                        this.shop_wishlist_toggle(&sku_heart, cx);
+                    })),
+                cx,
+            );
+            let gift_cta = !me && !is_owned;
+            let sku_cta = sku.clone();
+            let cta_btn = div()
+                .id(SharedString::from(format!("full-profile-wl-cta-{sku}")))
+                .absolute()
+                .left(px(8.))
+                .right(px(8.))
+                .bottom(px(8.))
+                .h(px(32.))
+                .rounded(px(8.))
+                .bg(primary_bg)
+                .hover(move |s| s.bg(primary_hover))
+                .active(move |s| s.bg(primary_active))
+                .cursor_pointer()
+                .opacity(0.)
+                .group_hover(group_name.clone(), |s| s.opacity(1.))
+                .flex()
+                .items_center()
+                .justify_center()
+                .gap(px(4.))
+                .when(gift_cta, |d| {
+                    d.child(
+                        svg()
+                            .path("icons/shop_gift.svg")
+                            .size(px(14.))
+                            .flex_none()
+                            .text_color(primary_fg),
+                    )
+                })
+                .child(
+                    div()
+                        .min_w(px(0.))
+                        .text_ellipsis()
+                        .text_size(px(12.))
+                        .line_height(px(16.))
+                        .font_weight(FontWeight(500.))
+                        .text_color(primary_fg)
+                        .child(if gift_cta {
+                            dc_intl::t!("ilhtIa")
+                        } else {
+                            dc_intl::t!("FdGl5A")
+                        }),
+                )
+                .on_click(cx.listener(move |this, _, _, cx| {
+                    cx.stop_propagation();
+                    if gift_cta {
+                        this.shop_open_gift(&sku_cta, cx);
+                    } else {
+                        this.shop_open_product(&sku_cta, cx);
+                    }
+                }));
+            let sku_card = sku.clone();
             cards.push(
                 div()
                     .id(SharedString::from(format!("full-profile-wishlist-{sku}")))
-                    .size(px(160.))
-                    .rounded(px(8.))
+                    .group(group_name.clone())
+                    .relative()
+                    .size(px(133.))
+                    .rounded(px(12.))
                     .border_1()
                     .border_color(border)
                     .overflow_hidden()
                     .bg(card_bg)
                     .cursor_pointer()
-                    .children(preview)
+                    .child(
+                        div()
+                            .size_full()
+                            .when(is_owned, |d| {
+                                d.opacity(0.5)
+                                    .group_hover(group_name.clone(), |s| s.opacity(1.))
+                            })
+                            .children(preview),
+                    )
+                    .when(is_owned, |d| {
+                        d.child(
+                            div()
+                                .absolute()
+                                .inset_0()
+                                .group_hover(group_name.clone(), |s| s.opacity(0.))
+                                .flex()
+                                .flex_col()
+                                .items_center()
+                                .justify_center()
+                                .gap(px(4.))
+                                .child(
+                                    div()
+                                        .size(px(38.))
+                                        .rounded_full()
+                                        .bg(hsla(0., 0., 0., 0.56))
+                                        .flex()
+                                        .items_center()
+                                        .justify_center()
+                                        .child(
+                                            svg()
+                                                .path("icons/checkmark_large.svg")
+                                                .size(px(20.))
+                                                .text_color(color("--white")),
+                                        ),
+                                )
+                                .child(
+                                    div()
+                                        .text_size(px(12.))
+                                        .line_height(px(16.))
+                                        .font_weight(FontWeight(600.))
+                                        .text_color(strong)
+                                        .child(dc_intl::t!("L5Pt9L")),
+                                ),
+                        )
+                    })
+                    .child(
+                        div()
+                            .absolute()
+                            .top(px(8.))
+                            .right(px(8.))
+                            .opacity(0.)
+                            .group_hover(group_name, |s| s.opacity(1.))
+                            .child(heart_btn),
+                    )
+                    .child(cta_btn)
                     .on_click(cx.listener(move |this, _, _, cx| {
-                        this.shop_open_product(&sku, cx);
+                        this.shop_open_product(&sku_card, cx);
                     }))
                     .into_any_element(),
             );
         }
-        Some(
-            div()
-                .pt(px(20.))
-                .flex()
-                .flex_wrap()
-                .gap(px(16.))
-                .children(cards)
-                .into_any_element(),
-        )
+
+        let header_row = div()
+            .parity("full-profile-wishlist-header")
+            .flex()
+            .items_center()
+            .justify_between()
+            .gap(px(8.))
+            .child(
+                div()
+                    .text_size(px(12.))
+                    .line_height(px(16.))
+                    .font_weight(FontWeight(600.))
+                    .text_color(subtle)
+                    .child(dc_intl::t!("r6Y1Lg", count = entries.len())),
+            )
+            .child(
+                div()
+                    .id("full-profile-wishlist-open-shop")
+                    .h(px(32.))
+                    .px(px(12.))
+                    .rounded(px(8.))
+                    .border_1()
+                    .border_color(secondary_border)
+                    .bg(secondary_bg)
+                    .hover(move |s| s.bg(secondary_hover))
+                    .cursor_pointer()
+                    .flex()
+                    .items_center()
+                    .gap(px(6.))
+                    .child(
+                        svg()
+                            .path(if me {
+                                "icons/plus_small.svg"
+                            } else {
+                                "icons/shop.svg"
+                            })
+                            .size(px(16.))
+                            .text_color(secondary_fg),
+                    )
+                    .child(
+                        div()
+                            .text_size(px(14.))
+                            .line_height(px(18.))
+                            .font_weight(FontWeight(500.))
+                            .text_color(secondary_fg)
+                            .child(if me {
+                                dc_intl::t!("SDUwM0")
+                            } else {
+                                dc_intl::t!("i/yzHs")
+                            }),
+                    )
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        this.close_full_profile(cx);
+                        this.open_shop(cx);
+                    })),
+            );
+
+        div()
+            .parity("full-profile-wishlist")
+            .pt(px(16.))
+            .flex()
+            .flex_col()
+            .gap(px(16.))
+            .when(is_private, |d| {
+                d.child(
+                    div()
+                        .flex()
+                        .items_center()
+                        .gap(px(6.))
+                        .child(
+                            svg()
+                                .path("icons/eye_slash.svg")
+                                .size(px(16.))
+                                .text_color(subtle),
+                        )
+                        .child(
+                            div()
+                                .text_size(px(12.))
+                                .line_height(px(16.))
+                                .text_color(subtle)
+                                .child(dc_intl::t!("RX7D9h")),
+                        ),
+                )
+            })
+            .child(header_row)
+            .child(
+                div()
+                    .w(px(133. * 3. + 16. * 2.))
+                    .grid()
+                    .grid_cols(3)
+                    .gap(px(16.))
+                    .children(cards),
+            )
+            .into_any_element()
     }
 
     fn mutual_row(
@@ -971,35 +2352,21 @@ impl Root {
             });
         });
         let me_id = self.stores.current_user.as_ref().map(|known| known.id);
-        let tab_list = profile_tabs(
-            self.fetched.get(&format!("profile:{open_user}")),
-            me_id != Some(open_user),
-        );
+        let me = me_id == Some(open_user);
+        let tab_list = profile_tabs(self.fetched.get(&format!("profile:{open_user}")), !me);
         let tab = if explicit && tab_list.contains(&open_tab) {
             open_tab
         } else {
             tab_list.first().copied().unwrap_or(Tab::Activity)
         };
         let wishlist_panel = (tab == Tab::Wishlist)
-            .then(|| self.full_profile_wishlist(open_user, &palette, window, cx));
+            .then(|| self.full_profile_wishlist(open_user, me, &palette, window, cx));
         let open = self.full_profile.as_ref()?;
         let user = self.stores.users.get(&open.user)?.clone();
         let id = user.id;
         let body = self.fetched.get(&format!("profile:{id}"));
-        let ring_color = palette.theme.map_or_else(
-            || color("--background-surface-high"),
-            |t| super::profile_theme::blend_over(t.primary, t.overlay),
-        );
-        let ring_token = if palette.theme.is_some_and(|t| t.light()) {
-            "--white"
-        } else {
-            "--black"
-        };
-        let (avatar_key, avatar_url) = avatar_source(&user);
-        let avatar = self.images.get(&avatar_key).cloned();
-        if avatar.is_none() {
-            self.want_image(avatar_key, avatar_url, cx);
-        }
+        let light_theme = palette.theme.is_some_and(|t| t.light());
+        let blur_px = if light_theme { 24. } else { 36. };
         let presence = self.stores.status(id).to_owned();
         let friends: Vec<dc_state::User> = body
             .and_then(|body| body["mutual_friends"].as_array())
@@ -1018,12 +2385,43 @@ impl Root {
                 ))
             })
             .collect();
+        let display_name = open_guild
+            .and_then(|guild| self.stores.members.get(guild, id))
+            .and_then(|member| member.nick.as_deref())
+            .filter(|nick| !nick.is_empty())
+            .map_or_else(|| user.display_name().to_owned(), str::to_owned);
+        let for_guild = open_guild.is_some_and(|guild| {
+            body.is_some_and(|body| {
+                body["guild_member_profile"].is_object()
+                    && body["guild_member_profile"]["guild_id"]
+                        .as_str()
+                        .is_none_or(|gid| gid == guild.to_string().as_str())
+            })
+        });
         let pronouns = body
-            .and_then(|body| body["user_profile"]["pronouns"].as_str())
+            .and_then(|body| {
+                for_guild
+                    .then(|| {
+                        body["guild_member_profile"]["pronouns"]
+                            .as_str()
+                            .filter(|pronouns| !pronouns.is_empty())
+                    })
+                    .flatten()
+                    .or_else(|| body["user_profile"]["pronouns"].as_str())
+            })
             .filter(|pronouns| !pronouns.is_empty())
             .map(str::to_owned);
         let bio = body
-            .and_then(|body| body["user_profile"]["bio"].as_str())
+            .and_then(|body| {
+                for_guild
+                    .then(|| {
+                        body["guild_member_profile"]["bio"]
+                            .as_str()
+                            .filter(|bio| !bio.is_empty())
+                    })
+                    .flatten()
+                    .or_else(|| body["user_profile"]["bio"].as_str())
+            })
             .filter(|bio| !bio.is_empty())
             .map(str::to_owned);
         let relationship = self.stores.relationships.get(&id).copied();
@@ -1035,9 +2433,12 @@ impl Root {
                     .and_then(|since| profile_date(since))
             })
             .flatten();
-        let me = self.stores.current_user.as_ref().map(|known| known.id) == Some(id);
+        let banner_img = self.profile_banner_image_in(id, open_guild);
+        let status_bubble = self.full_profile_status_bubble(id, open_guild, me, &palette, cx);
+        let connections = self.full_profile_connections(id, body, &palette, cx);
 
-        // `profileHeader_s3DB6Y`: the 140px banner and the avatar over its edge.
+        // `profileHeader_s3DB6Y`: 220px tall (140px banner + 60px avatar overhang + 20px spacer), 8px cutout ring at (24, 72),
+        // 120px decorated avatar at (32, 80), and custom status thought bubble at (172, 132).
         let header = div()
             .relative()
             .h(px(220.))
@@ -1048,13 +2449,24 @@ impl Root {
                     .overflow_hidden()
                     .relative()
                     .when(!palette.themed, |this| {
-                        this.bg(self.profile_banner_fill(&user, open.guild))
+                        this.bg(self.profile_banner_fill(&user, open_guild))
                     })
                     .children(
-                        self.profile_banner_image(id)
+                        banner_img
+                            .clone()
                             .map(|image| img(image).size_full().object_fit(gpui::ObjectFit::Cover)),
                     )
-                    .children(self.live_banner(id, 400., 140., cx)),
+                    .children(self.live_banner_in(id, open_guild, 400., 140., cx)),
+            )
+            .child(
+                div()
+                    .absolute()
+                    .left(px(24.))
+                    .top(px(72.))
+                    .size(px(136.))
+                    .rounded_full()
+                    .bg(palette.top)
+                    .child(div().size_full().rounded_full().bg(palette.overlay)),
             )
             .child(
                 div()
@@ -1062,17 +2474,9 @@ impl Root {
                     .left(px(32.))
                     .top(px(80.))
                     .size(px(120.))
-                    .rounded_full()
-                    .children(self.live_avatar(&user, 120., true, cx).or_else(|| {
-                        avatar.map(|picture| {
-                            img(picture)
-                                .size(px(120.))
-                                .rounded_full()
-                                .into_any_element()
-                        })
-                    }))
-                    .child(status_dot_120(&presence, ring_color, ring_token)),
-            );
+                    .child(self.modal_avatar(&user, open_guild, &presence, cx)),
+            )
+            .children(status_bubble);
         let names = div()
             .flex()
             .flex_col()
@@ -1085,8 +2489,8 @@ impl Root {
                     .text_color(strong)
                     .child(super::name_styles::name(
                         format!("full-profile-name-{}", user.id),
-                        user.display_name().to_owned(),
-                        self.name_styles(&user, self.guild).as_ref(),
+                        display_name,
+                        self.name_styles(&user, open_guild).as_ref(),
                         super::name_styles::Display::Animated,
                     )),
             )
@@ -1122,6 +2526,7 @@ impl Root {
         let primary_active = palette.token("--control-primary-background-active");
         let primary_fg = palette.token("--control-primary-text-default");
         let border_muted = palette.token("--border-muted");
+        let themed = palette.themed;
         let secondary_button = |key: &'static str, glyph: &'static str| {
             div()
                 .id(key)
@@ -1131,6 +2536,7 @@ impl Root {
                 .border_1()
                 .border_color(secondary_border)
                 .bg(secondary_bg)
+                .when(themed, |d| d.backdrop_blur(px(blur_px)))
                 .hover(move |style| style.bg(secondary_hover))
                 .active(move |style| style.bg(secondary_active))
                 .cursor_pointer()
@@ -1357,11 +2763,18 @@ impl Root {
                             .when_some(bio, |this, bio| {
                                 this.child(section(None).child(self.bio(&bio, default, cx)))
                             })
-                            .child(section(Some(dc_intl::t!("a6XYD9"))).child(
-                                self.full_profile_member_since(
-                                    id, open.guild, strong, default, subtle,
+                            .child(
+                                section(Some(if user.bot {
+                                    dc_intl::t!("A//N4k")
+                                } else {
+                                    dc_intl::t!("a6XYD9")
+                                }))
+                                .child(
+                                    self.full_profile_member_since(
+                                        id, open_guild, strong, default, subtle, cx,
+                                    ),
                                 ),
-                            ))
+                            )
                             .when_some(friend_since, |d, date| {
                                 d.child(
                                     section(Some(dc_intl::t!("wlTO8v"))).child(
@@ -1374,7 +2787,7 @@ impl Root {
                                 )
                             })
                             .when_some(
-                                open.guild.and_then(|guild| {
+                                open_guild.and_then(|guild| {
                                     self.profile_role_chips_for(guild, id, default)
                                 }),
                                 |d, roles| {
@@ -1386,6 +2799,9 @@ impl Root {
                                     )
                                 },
                             )
+                            .when_some(connections, |d, conns| {
+                                d.child(section(Some(dc_intl::t!("3fe7U5"))).child(conns))
+                            })
                             .when(!me, |this| {
                                 this.child(section(Some(dc_intl::t!("mQKv+v"))).child(note_field))
                             }),
@@ -1457,10 +2873,8 @@ impl Root {
         });
         let tile_bg = palette.tile_background(false);
         let panel: AnyElement = match tab {
-            Tab::Board => self.full_profile_board(id, &palette, strong, default, subtle),
-            Tab::Wishlist => wishlist_panel
-                .flatten()
-                .unwrap_or_else(|| div().into_any_element()),
+            Tab::Board => self.full_profile_board(id, me, &palette, cx),
+            Tab::Wishlist => wishlist_panel.unwrap_or_else(|| div().into_any_element()),
             Tab::Activity => {
                 let current = self.live_activity_cards(id, true, strong, subtle, cx);
                 let cards: Vec<AnyElement> = self
@@ -1601,6 +3015,44 @@ impl Root {
                 ),
         );
         let height = f32::from(window.viewport_size().height);
+        let modal_bg = palette.theme.map_or_else(
+            || color("--background-surface-high"),
+            |t| t.modal_background,
+        );
+        let modal_fade_end = palette.theme.map_or(modal_bg, |t| {
+            super::profile_theme::blend_over(t.modal_background, t.modal_inner_stops().1)
+        });
+        let top_banner_backdrop =
+            banner_img.map(|image| {
+                // `.backgroundImage_s3DB6Y` (927071.js:7177-7184): top 280px blurred banner backdrop with vertical fade.
+                div()
+                    .parity("full-profile-banner-backdrop")
+                    .absolute()
+                    .top_0()
+                    .left_0()
+                    .right_0()
+                    .h(px(280.))
+                    .overflow_hidden()
+                    .child(
+                        img(image)
+                            .size_full()
+                            .object_fit(gpui::ObjectFit::Cover)
+                            .opacity(if light_theme { 0.4 } else { 0.3 }),
+                    )
+                    .child(div().absolute().inset_0().backdrop_blur(px(15.)).bg(
+                        gpui::linear_gradient(
+                            180.,
+                            gpui::linear_color_stop(
+                                Rgba {
+                                    a: 0.,
+                                    ..modal_fade_end
+                                },
+                                0.,
+                            ),
+                            gpui::linear_color_stop(modal_fade_end, 1.),
+                        ),
+                    ))
+            });
         let modal = div()
             .parity("full-profile")
             .id("full-profile")
@@ -1612,11 +3064,9 @@ impl Root {
             .overflow_hidden()
             .border_1()
             .border_color(border_muted)
-            .bg(palette.theme.map_or_else(
-                || color("--background-surface-high"),
-                |t| t.modal_background,
-            ))
+            .bg(modal_bg)
             .children(palette.modal_backdrop())
+            .children(top_banner_backdrop)
             .on_click(|_, _, cx| cx.stop_propagation())
             .child(
                 div()
@@ -1638,6 +3088,7 @@ impl Root {
                     .border_1()
                     .border_color(secondary_border)
                     .bg(secondary_bg)
+                    .when(themed, |d| d.backdrop_blur(px(blur_px)))
                     .hover(move |style| style.bg(secondary_hover))
                     .active(move |style| style.bg(secondary_active))
                     .cursor_pointer()
@@ -1674,42 +3125,134 @@ impl Root {
     }
 }
 
-/// `svg-mask-avatar-status-round-120`: a 24px dot at (88, 88) in a 40px hole.
-fn status_dot_120(status: &str, ring: Rgba, ring_token: &str) -> impl IntoElement {
-    div()
-        .absolute()
-        .left(px(80.))
-        .top(px(80.))
-        .size(px(40.))
-        .rounded_full()
-        .bg(ring)
-        .flex()
-        .items_center()
-        .justify_center()
-        .child(super::status_dot_inner(status, ring_token, 24.))
-}
-
 #[cfg(test)]
 mod tests {
-    use super::{Tab, profile_date, profile_route, profile_tabs, time_ago};
+    use super::{
+        Tab, parse_connected_accounts, parse_custom_status, profile_date, profile_route,
+        profile_tabs, should_apply_guild_member, time_ago, wishlist_is_private,
+    };
     use serde_json::json;
 
     #[test]
-    fn board_tab_appears_for_valid_game_or_application_widgets() {
+    fn board_and_wishlist_tabs_always_show_on_own_profile_and_respect_content_on_others() {
         let app_widget = json!({
             "widgets": [{"id": "1", "data": {"type": "application", "application_id": "1346069614634864772"}}]
         });
-        assert!(profile_tabs(Some(&app_widget), false).contains(&Tab::Board));
+        assert_eq!(
+            profile_tabs(Some(&app_widget), false),
+            vec![Tab::Board, Tab::Activity, Tab::Wishlist]
+        );
 
         let empty_fav = json!({
             "widgets": [{"id": "1", "data": {"type": "favorite_games", "games": []}}]
         });
-        assert!(!profile_tabs(Some(&empty_fav), false).contains(&Tab::Board));
+        assert_eq!(
+            profile_tabs(Some(&empty_fav), false),
+            vec![Tab::Board, Tab::Activity, Tab::Wishlist]
+        );
+        assert!(!profile_tabs(Some(&empty_fav), true).contains(&Tab::Board));
+        assert!(!profile_tabs(Some(&empty_fav), true).contains(&Tab::Wishlist));
 
-        let valid_fav = json!({
-            "widgets": [{"id": "1", "data": {"type": "favorite_games", "games": [{"game_id": "1001"}]}}]
+        let valid_fav_and_wishlist = json!({
+            "widgets": [{"id": "1", "data": {"type": "favorite_games", "games": [{"game_id": "1001"}]}}],
+            "wishlist_settings": {"wl-1": {"visibility": 1}}
         });
-        assert!(profile_tabs(Some(&valid_fav), true).contains(&Tab::Board));
+        assert_eq!(
+            profile_tabs(Some(&valid_fav_and_wishlist), true),
+            vec![
+                Tab::Board,
+                Tab::Activity,
+                Tab::Wishlist,
+                Tab::Friends,
+                Tab::Servers
+            ]
+        );
+    }
+
+    #[test]
+    fn guild_member_merges_when_per_server_profile_is_null_or_matches_open_guild() {
+        let without_server_profile = json!({
+            "guild_member_profile": null,
+            "guild_member": {"roles": ["10", "20"], "joined_at": "2022-01-01T00:00:00Z"}
+        });
+        assert!(should_apply_guild_member(Some(99), &without_server_profile));
+        assert!(!should_apply_guild_member(None, &without_server_profile));
+
+        let matching_server_profile = json!({
+            "guild_member_profile": {"guild_id": "99", "bio": "server bio"},
+            "guild_member": {"roles": ["10"]}
+        });
+        assert!(should_apply_guild_member(
+            Some(99),
+            &matching_server_profile
+        ));
+        assert!(!should_apply_guild_member(
+            Some(100),
+            &matching_server_profile
+        ));
+    }
+
+    #[test]
+    fn connected_accounts_parse_verified_badges_dates_and_external_urls() {
+        let body = json!({
+            "connected_accounts": [
+                {
+                    "type": "github",
+                    "id": "42",
+                    "name": "octocat",
+                    "verified": true,
+                    "metadata": {"created_at": "2020-05-15T12:00:00+00:00"}
+                },
+                {
+                    "type": "steam",
+                    "id": "76561198000000000",
+                    "name": "Gordon",
+                    "verified": true
+                },
+                {
+                    "type": "playstation",
+                    "id": "psn-1",
+                    "name": "Hunter",
+                    "verified": false
+                }
+            ]
+        });
+        let parsed = parse_connected_accounts(&body);
+        assert_eq!(parsed.len(), 3);
+        assert_eq!(parsed[0].platform_name, "GitHub");
+        assert_eq!(parsed[0].url.as_deref(), Some("https://github.com/octocat"));
+        assert!(parsed[0].verified);
+        assert_eq!(parsed[0].created_at.as_deref(), Some("May 15, 2020"));
+        assert_eq!(
+            parsed[1].url.as_deref(),
+            Some("https://steamcommunity.com/profiles/76561198000000000")
+        );
+        assert_eq!(parsed[2].url, None);
+    }
+
+    #[test]
+    fn custom_status_extracts_emoji_only_and_text_states() {
+        let activities = vec![
+            json!({"type": 0, "name": "Hades"}),
+            json!({"type": 4, "state": "shipping features", "emoji": {"name": "🚀"}}),
+        ];
+        let status = parse_custom_status(&activities).unwrap();
+        assert_eq!(status.text.as_deref(), Some("shipping features"));
+        assert_eq!(status.emoji_name.as_deref(), Some("🚀"));
+        assert_eq!(
+            parse_custom_status(&[json!({"type": 4, "state": "   "})]),
+            None
+        );
+    }
+
+    #[test]
+    fn wishlist_privacy_detects_private_settings_and_lists() {
+        let private_profile = json!({"wishlist_settings": {"wl": {"visibility": 2}}});
+        assert!(wishlist_is_private(Some(&private_profile), None));
+        let public_profile = json!({"wishlist_settings": {"wl": {"visibility": 1}}});
+        assert!(!wishlist_is_private(Some(&public_profile), None));
+        let private_list = json!({"visibility": "PRIVATE", "wishlist_items": []});
+        assert!(wishlist_is_private(None, Some(&private_list)));
     }
 
     #[test]

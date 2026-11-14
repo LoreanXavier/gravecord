@@ -68,11 +68,22 @@ impl Root {
         height: f32,
         cx: &mut gpui::Context<Self>,
     ) -> Option<gpui::AnyElement> {
+        self.live_banner_in(user, self.guild, width, height, cx)
+    }
+
+    pub(super) fn live_banner_in(
+        &self,
+        user: Id,
+        guild: Option<Id>,
+        width: f32,
+        height: f32,
+        cx: &mut gpui::Context<Self>,
+    ) -> Option<gpui::AnyElement> {
         use gpui::{IntoElement, ParentElement, Styled, div};
         let body = self.fetched.get(&format!("profile:{user}"))?;
         let scale = self.ui_scale.get();
         let side = super::avatar_play::file_side(width, scale);
-        let (key, url) = live_banner_source(user, self.guild, body, side)?;
+        let (key, url) = live_banner_source(user, guild, body, side)?;
         if !super::avatar_play::should_animate(
             super::motion::window_active(),
             true,
@@ -100,8 +111,16 @@ impl Root {
     }
 
     pub(super) fn profile_banner_image(&self, user: Id) -> Option<Arc<gpui::Image>> {
+        self.profile_banner_image_in(user, self.guild)
+    }
+
+    pub(super) fn profile_banner_image_in(
+        &self,
+        user: Id,
+        guild: Option<Id>,
+    ) -> Option<Arc<gpui::Image>> {
         let body = self.fetched.get(&format!("profile:{user}"))?;
-        let (key, _) = banner_source(user, self.guild, body)?;
+        let (key, _) = banner_source(user, guild, body)?;
         self.images.get(&key).cloned()
     }
 }

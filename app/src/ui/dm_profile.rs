@@ -219,6 +219,22 @@ pub(super) fn unowned_wishlist(body: &Value) -> Vec<String> {
         .collect()
 }
 
+/// Every item of a wishlist answer (including owned items), as `(sku_id, is_owned)`.
+pub(super) fn wishlist_entries(body: &Value) -> Vec<(String, bool)> {
+    body["wishlist_items"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|item| {
+            let sku = item["sku_id"]
+                .as_str()
+                .or_else(|| item["sku"]["id"].as_str())?
+                .to_owned();
+            Some((sku, item["is_owned"] == true))
+        })
+        .collect()
+}
+
 /// What a managed badge list shows: how many badges, and the overflow count (`D ? [S.slice(0,6)]`, `M`).
 pub(super) fn managed_badges(count: usize, managed: bool) -> (usize, usize) {
     if managed {
@@ -826,11 +842,12 @@ impl Root {
             }
         }
         if let Some(list) = self.fetched.get(&format!("profile-wishlist:{user}")) {
-            let skus: Vec<String> = unowned_wishlist(list)
+            let all_skus: Vec<String> = wishlist_entries(list)
                 .into_iter()
-                .take(BREADCRUMB_ITEMS)
+                .map(|(sku, _)| sku)
                 .collect();
-            self.editor_wishlist_need(&skus);
+            self.shop_need_products(&all_skus);
+            self.editor_wishlist_need(&all_skus);
         }
     }
 
@@ -1648,14 +1665,21 @@ struct SidebarParts {
     wishlist: Option<AnyElement>,
 }
 
-/// `bannerButton_C4gRrZ`: 32px round on the banner, a 16px white icon.
+/// `bannerButton_C4gRrZ`: 32px round on the banner, a 16px white icon, with custom-theme backdrop blur (675327/82171).
 pub(super) fn round_button(name: &'static str) -> gpui::Div {
+    round_button_themed(name, false, false)
+}
+
+pub(super) fn round_button_themed(name: &'static str, themed: bool, light: bool) -> gpui::Div {
     div()
         .size(px(32.))
         .rounded_full()
         .border_1()
         .border_color(hsla(0., 0., 1., 0.08))
         .bg(hsla(0., 0., 0., 0.56))
+        .when(themed, |this| {
+            this.backdrop_blur(px(if light { 24. } else { 36. }))
+        })
         .flex()
         .items_center()
         .justify_center()
@@ -1871,6 +1895,14 @@ mod tests {
             {"sku": {"id": "3"}}
         ]});
         assert_eq!(unowned_wishlist(&list), ["1", "3"]);
+        assert_eq!(
+            wishlist_entries(&list),
+            vec![
+                ("1".to_owned(), false),
+                ("2".to_owned(), true),
+                ("3".to_owned(), false)
+            ]
+        );
     }
 
     #[test]

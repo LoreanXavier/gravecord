@@ -497,12 +497,34 @@ impl Root {
         if let Some(items) = list["wishlist_items"].as_array() {
             let skus: Vec<String> = items
                 .iter()
-                .filter_map(|item| item["sku"]["id"].as_str().map(str::to_owned))
+                .filter_map(|item| {
+                    item["sku"]["id"]
+                        .as_str()
+                        .or_else(|| item["sku_id"].as_str())
+                        .map(str::to_owned)
+                })
                 .collect();
             self.shop.wishlist = skus.iter().cloned().collect();
             self.shop.wishlist_order = skus.clone();
             self.shop_need_products(&skus);
+            self.editor_wishlist_need(&skus);
+            if let Some(me) = self.stores.current_user.as_ref().map(|user| user.id) {
+                self.fetched
+                    .insert(format!("profile-wishlist:{me}"), list.clone());
+            }
         }
+    }
+
+    pub(super) fn shop_is_wishlisted(&self, sku: &str) -> bool {
+        self.shop.wishlist.contains(sku)
+    }
+
+    pub(super) fn shop_wishlist_toggle(&mut self, sku: &str, cx: &mut Context<Self>) {
+        self.shop_toggle_wishlist(sku, cx);
+    }
+
+    pub(super) fn shop_open_gift(&mut self, sku: &str, cx: &mut Context<Self>) {
+        self.shop_buy(sku, true, cx);
     }
 
     /// Asks for a read again after an error.
@@ -919,7 +941,7 @@ impl Root {
             .into_any_element()
     }
 
-    /// The 32px wishlist button: it opens the profile's Wishlist tab.
+    /// The 32px wishlist button: it opens the current user's `FullProfileModal` on `Tab::Wishlist`.
     fn shop_wishlist_button(&mut self, cx: &mut Context<Self>) -> AnyElement {
         let button = div()
             .id("shop-wishlist")
@@ -933,11 +955,11 @@ impl Root {
             .justify_center()
             .cursor_pointer()
             .hover(|button| button.bg(color("--background-mod-strong")))
-            .on_click(cx.listener(|this, _, _, cx| this.shop_open_wishlist(cx)))
+            .on_click(cx.listener(|this, _, window, cx| this.shop_open_wishlist(window, cx)))
             .child(icon("shop_heart", 16., "--text-default"));
         self.with_tip(
             "shop-wishlist",
-            super::tooltip::Tip::text("Wishlist", super::tooltip::Side::Bottom),
+            super::tooltip::Tip::text(dc_intl::t!("7lZ31J"), super::tooltip::Side::Bottom),
             button,
             cx,
         )
@@ -1272,16 +1294,22 @@ impl Root {
         .into_any_element()
     }
 
-    /// The heart button opens the account's wishlist (the profile's Wishlist tab does not exist yet, so the Shop shows
-    /// the same products in a page of its own).
-    fn shop_open_wishlist(&mut self, cx: &mut Context<Self>) {
-        self.shop.wishlist_open = true;
+    /// The heart button opens `FullProfileModal` for the current user directly on `Tab::Wishlist` (module 685491).
+    fn shop_open_wishlist(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.shop.wishlist_open = false;
         self.shop.menu_open = None;
+        self.shop.pointer_in = None;
         self.shop.modal = None;
-        self.shop.scroll.set_offset(point(px(0.), px(0.)));
         let order = self.shop.wishlist_order.clone();
         self.shop_need_products(&order);
-        cx.notify();
+        self.editor_wishlist_need(&order);
+        if let Some(me_id) = self.stores.current_user.as_ref().map(|user| user.id) {
+            self.open_full_profile_tab(me_id, super::full_profile::Tab::Wishlist, window, cx);
+        } else {
+            self.shop.wishlist_open = true;
+            self.shop.scroll.set_offset(point(px(0.), px(0.)));
+            cx.notify();
+        }
     }
 
     // ---- shared drawing helpers ----
