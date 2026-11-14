@@ -1,13 +1,19 @@
-//! Private DM rail entries and diagonal group avatars (396655/478063/486020).
+//! Private DM rail entries, live RTC upper badges, and diagonal group avatars (396655/478063/486020/598104/771640/862328/941971).
 use super::{
     Root, color, context_menu,
     tooltip::{Body, Tip},
     unread_badges,
 };
 use crate::parity::Parity;
-use dc_state::{PrivateChannel, User};
-use gpui::{AnyElement, Context, IntoElement, SharedString, div, img, prelude::*, px};
+use base64::Engine as _;
+use dc_state::{Id, PrivateChannel, Stores, User};
+use gpui::{
+    AnyElement, Context, Image, ImageFormat, IntoElement, RenderImage, SharedString, div, img,
+    prelude::*, px,
+};
 use md5::{Digest, Md5};
+use std::collections::HashMap;
+use std::sync::Arc;
 
 #[cfg(feature = "capture")]
 const FIXTURE_DM: u64 = 1568693333864480939;
@@ -41,13 +47,18 @@ pub(super) fn avatar(user: &User, size: u32) -> (String, String) {
 
 pub(super) fn group_icon(channel: &PrivateChannel) -> (String, String) {
     let url = if let Some(hash) = channel.icon.as_ref() {
-        match channel.application_id {
-            Some(_) if hash.starts_with("data:") => hash.clone(),
-            Some(app) => format!("https://cdn.discordapp.com/app-icons/{app}/{hash}.png?size=32"),
-            None => format!(
-                "https://cdn.discordapp.com/channel-icons/{}/{hash}.png?size=32",
-                channel.id
-            ),
+        if hash.starts_with("data:") {
+            hash.clone()
+        } else {
+            match channel.application_id {
+                Some(app) => {
+                    format!("https://cdn.discordapp.com/app-icons/{app}/{hash}.png?size=32")
+                }
+                None => format!(
+                    "https://cdn.discordapp.com/channel-icons/{}/{hash}.png?size=32",
+                    channel.id
+                ),
+            }
         }
     } else {
         let file = if channel.application_id.is_some() {
@@ -61,10 +72,163 @@ pub(super) fn group_icon(channel: &PrivateChannel) -> (String, String) {
     source(url)
 }
 
+fn uses_diagonal_facepile(channel: &PrivateChannel) -> bool {
+    channel.kind == 3 && channel.icon.is_none() && channel.recipients.len() >= 2
+}
+
+fn show_left_pill(animating: bool, selected: bool, hovered: bool, mentions: u64) -> bool {
+    !animating && (selected || hovered || mentions > 0)
+}
+
+fn decode_data_url_bytes(data_url: &str) -> Option<(&str, Vec<u8>)> {
+    let rest = data_url.strip_prefix("data:")?;
+    let (meta, payload) = rest.split_once(',')?;
+    let mime = meta.split(';').next().unwrap_or("");
+    if !meta
+        .split(';')
+        .any(|part| part.eq_ignore_ascii_case("base64"))
+    {
+        return None;
+    }
+    let clean: String = payload
+        .chars()
+        .filter(|ch| !ch.is_ascii_whitespace())
+        .collect();
+    let bytes = base64::engine::general_purpose::STANDARD
+        .decode(&clean)
+        .or_else(|_| base64::engine::general_purpose::STANDARD_NO_PAD.decode(&clean))
+        .ok()?;
+    Some((mime, bytes))
+}
+
+/// Decodes a `data:image/...;base64,...` URI into a BGRA `gpui::RenderImage`.
+fn decode_data_render_image(data_url: &str) -> Option<Arc<RenderImage>> {
+    let (_, bytes) = decode_data_url_bytes(data_url)?;
+    let decoded = image::load_from_memory(&bytes).ok()?;
+    let mut rgba = decoded.into_rgba8();
+    for pixel in rgba.as_chunks_mut::<4>().0 {
+        pixel.swap(0, 2);
+    }
+    Some(Arc::new(RenderImage::new(vec![image::Frame::new(rgba)])))
+}
+
+/// Decodes a `data:image/...;base64,...` URI into an `Arc<gpui::Image>` for `Root::images`.
+fn decode_data_image(data_url: &str) -> Option<Arc<Image>> {
+    let (mime, bytes) = decode_data_url_bytes(data_url)?;
+    if mime.eq_ignore_ascii_case("image/svg+xml") {
+        return Some(Arc::new(Image::from_bytes(ImageFormat::Svg, bytes)));
+    }
+    let decoded = image::load_from_memory(&bytes).ok()?;
+    let mut png = Vec::new();
+    decoded
+        .write_to(&mut std::io::Cursor::new(&mut png), image::ImageFormat::Png)
+        .ok()?;
+    Some(Arc::new(Image::from_bytes(ImageFormat::Png, png)))
+}
+
+fn compute_rail_dm_entries(
+    stores: &Stores,
+    active_dm_call: Option<Id>,
+) -> Vec<(PrivateChannel, u64)> {
+    let mut entries: Vec<(PrivateChannel, u64)> =
+        dc_state::private_channels::unread_channels(stores)
+            .into_iter()
+            .map(|channel| (channel.clone(), stores.read_states.mentions(channel.id)))
+            .collect();
+    // Module 396655: active connected DM call (`call.guild == 0`) is unconditionally pinned to index 0,
+    // deduplicating any unread/mention entry for the same channel further down the rail.
+    if let Some(call_channel) = active_dm_call
+        && let Some(channel) = stores
+            .private_channels
+            .iter()
+            .find(|channel| channel.id == call_channel)
+    {
+        entries.retain(|(existing, _)| existing.id != call_channel);
+        entries.insert(
+            0,
+            (channel.clone(), stores.read_states.mentions(call_channel)),
+        );
+    }
+    entries
+}
+
+/// Computes the upper call/video/stream badge `(icon_name, bg_token)` for a private channel rail item
+/// (`396655:tO`, `771640:oi`, `628983`).
+fn compute_upper_badge(
+    stores: &Stores,
+    channel_id: Id,
+    is_connected: bool,
+    own_camera: bool,
+    own_stream: bool,
+) -> Option<(&'static str, &'static str)> {
+    let voice_states = stores.voice_members(0, channel_id);
+    let has_voice_users = !voice_states.is_empty() || stores.calls.is_call_active(channel_id, None);
+    if !is_connected && !has_voice_users {
+        return None;
+    }
+    let screenshare =
+        voice_states.iter().any(|state| state.self_stream) || (is_connected && own_stream);
+    let video = screenshare
+        || voice_states.iter().any(|state| state.self_video)
+        || (is_connected && own_camera);
+    let glyph = if screenshare {
+        "rail_stream_badge"
+    } else if video {
+        "rail_camera_badge"
+    } else {
+        "voice_channel"
+    };
+    let bg = if is_connected {
+        "--status-positive"
+    } else {
+        "--icon-overlay-dark"
+    };
+    Some((glyph, bg))
+}
+
+/// Computes the rail tooltip subtext (`396655:tg`): `"Incoming Call"` / `"Ongoing Call"` + `(Muted)`.
+fn compute_tooltip_subtext(
+    stores: &Stores,
+    channel_id: Id,
+    is_connected: bool,
+    now: chrono::DateTime<chrono::Utc>,
+) -> Option<String> {
+    let incoming = stores.calls.is_incoming_call(channel_id);
+    let ongoing = !incoming
+        && (is_connected
+            || stores.calls.is_ongoing_call(channel_id)
+            || !stores.voice_members(0, channel_id).is_empty());
+    let muted = stores.guild_settings.channel_muted(0, channel_id, now);
+    let mut parts: Vec<String> = Vec::new();
+    if incoming {
+        parts.push(dc_intl::t!("fk1/bX").to_owned());
+    } else if ongoing {
+        parts.push(dc_intl::t!("NGg/fm").to_owned());
+    }
+    if muted {
+        parts.push(format!("({})", dc_intl::t!("fpKdS1")));
+    }
+    (!parts.is_empty()).then(|| parts.join(" "))
+}
+
 thread_local! {
     /// The rail's items as last drawn, so that one that goes away can be drawn while it leaves.
-    static RAIL_CACHE: std::cell::RefCell<std::collections::HashMap<u64, (PrivateChannel, u64)>> =
-        std::cell::RefCell::new(std::collections::HashMap::new());
+    static RAIL_CACHE: std::cell::RefCell<HashMap<u64, (PrivateChannel, u64)>> =
+        std::cell::RefCell::new(HashMap::new());
+    /// Decoded BGRA `RenderImage` cache for optimistic `data:image/...;base64,...` group icons.
+    static DATA_RENDER_CACHE: std::cell::RefCell<HashMap<String, Option<Arc<RenderImage>>>> =
+        std::cell::RefCell::new(HashMap::new());
+}
+
+fn cached_data_render_image(key: &str, data_url: &str) -> Option<Arc<RenderImage>> {
+    DATA_RENDER_CACHE.with(|cache| {
+        if let Some(found) = cache.borrow().get(key) {
+            return found.clone();
+        }
+        let decoded = decode_data_render_image(data_url);
+        cache.borrow_mut().insert(key.to_owned(), decoded.clone());
+        decoded
+    })
 }
 
 impl Root {
@@ -95,36 +259,12 @@ impl Root {
             }
             return vec![(channel, count)];
         }
-        let mut entries: Vec<(PrivateChannel, u64)> =
-            dc_state::private_channels::unread_channels(&self.stores)
-                .into_iter()
-                .map(|channel| {
-                    (
-                        channel.clone(),
-                        self.stores.read_states.mentions(channel.id),
-                    )
-                })
-                .collect();
-        // The DM this account is in a call of takes a tile too (`isCurrentUserConnected`, module 396655).
-        if let Some(call) = self.call.as_ref().filter(|call| call.guild == 0)
-            && !entries
-                .iter()
-                .any(|(channel, _)| channel.id == call.channel)
-            && let Some(channel) = self
-                .stores
-                .private_channels
-                .iter()
-                .find(|channel| channel.id == call.channel)
-        {
-            entries.insert(
-                0,
-                (
-                    channel.clone(),
-                    self.stores.read_states.mentions(channel.id),
-                ),
-            );
-        }
-        entries
+        let active_dm_call = self
+            .call
+            .as_ref()
+            .filter(|call| call.guild == 0)
+            .map(|call| call.channel);
+        compute_rail_dm_entries(&self.stores, active_dm_call)
     }
 
     pub(super) fn request_rail_dm_images(&mut self) {
@@ -134,7 +274,7 @@ impl Root {
                 if let Some(user) = self.stores.dm_recipient(&channel) {
                     images.push(avatar(user, 48));
                 }
-            } else if channel.icon.is_none() && channel.recipients.len() >= 2 {
+            } else if uses_diagonal_facepile(&channel) {
                 images.extend(
                     channel
                         .recipients
@@ -148,24 +288,32 @@ impl Root {
             }
         }
         for (key, url) in images {
-            self.request_image(key, url);
+            if url.starts_with("data:") {
+                if let std::collections::hash_map::Entry::Vacant(entry) = self.images.entry(key) {
+                    let _ = cached_data_render_image(entry.key(), &url);
+                    if let Some(decoded) = decode_data_image(&url) {
+                        entry.insert(decoded);
+                    }
+                }
+            } else {
+                self.request_image(key, url);
+            }
         }
     }
 
     fn rail_dm_art(&self, channel: &PrivateChannel, highlighted: bool) -> AnyElement {
-        let group_child = channel.kind == 3 && channel.icon.is_none();
-        let scale = if group_child && highlighted { 1.1 } else { 1. };
-        let facepile = group_child && channel.recipients.len() >= 2;
-        let background = if highlighted {
-            "--background-brand"
-        } else {
-            "--background-base-lowest"
-        };
-        let art = if facepile {
+        let facepile = uses_diagonal_facepile(channel);
+        if facepile {
+            let scale = if highlighted { 1.1 } else { 1. };
             let size = 32. * scale;
             let part = size / 1.5;
             let offset = part / 2.;
             let gap = 3. * scale;
+            let background = if highlighted {
+                "--background-brand"
+            } else {
+                "--background-base-lowest"
+            };
             let images: Vec<_> = channel
                 .recipients
                 .iter()
@@ -178,18 +326,25 @@ impl Root {
                         .cloned()
                 })
                 .collect();
-            div()
+            let art = div()
                 .relative()
                 .flex_none()
                 .size(px(size))
-                .children(images[0].clone().map(|image| {
-                    img(image)
+                .child(
+                    div()
                         .absolute()
                         .left_0()
                         .top_0()
                         .size(px(part))
                         .rounded_full()
-                }))
+                        .bg(color("--background-mod-subtle"))
+                        .children(
+                            images
+                                .first()
+                                .and_then(Clone::clone)
+                                .map(|image| img(image).size(px(part)).rounded_full()),
+                        ),
+                )
                 .child(
                     div()
                         .absolute()
@@ -199,37 +354,61 @@ impl Root {
                         .rounded_full()
                         .bg(color(background)),
                 )
-                .children(images[1].clone().map(|image| {
-                    img(image)
+                .child(
+                    div()
                         .absolute()
                         .left(px(offset))
                         .top(px(offset))
                         .size(px(part))
                         .rounded_full()
-                }))
-                .into_any_element()
-        } else {
-            let source = if channel.kind == 1 {
-                self.stores
-                    .dm_recipient(channel)
-                    .map(|user| avatar(user, 48))
-            } else {
-                Some(group_icon(channel))
-            };
-            let image = source.and_then(|(key, _)| self.images.get(&key)).cloned();
-            div()
+                        .bg(color("--background-mod-subtle"))
+                        .children(
+                            images
+                                .get(1)
+                                .and_then(Clone::clone)
+                                .map(|image| img(image).size(px(part)).rounded_full()),
+                        ),
+                );
+            return div()
                 .flex_none()
-                .size(px(40. * scale))
-                .children(image.map(|image| img(image).size(px(40. * scale)).rounded_full()))
-                .into_any_element()
+                .size(px(40.))
+                .flex()
+                .items_center()
+                .justify_center()
+                .child(art)
+                .into_any_element();
+        }
+
+        let source = if channel.kind == 1 {
+            self.stores
+                .dm_recipient(channel)
+                .map(|user| avatar(user, 48))
+        } else {
+            Some(group_icon(channel))
         };
+        let child_img: Option<AnyElement> = source.and_then(|(key, url)| {
+            if url.starts_with("data:")
+                && let Some(render_img) = cached_data_render_image(&key, &url)
+            {
+                return Some(
+                    img(render_img)
+                        .size(px(40.))
+                        .rounded_full()
+                        .into_any_element(),
+                );
+            }
+            self.images
+                .get(&key)
+                .cloned()
+                .map(|image| img(image).size(px(40.)).rounded_full().into_any_element())
+        });
         div()
             .flex_none()
-            .size(px(40. * scale))
+            .size(px(40.))
             .flex()
             .items_center()
             .justify_center()
-            .child(art)
+            .children(child_img)
             .into_any_element()
     }
 
@@ -242,6 +421,7 @@ impl Root {
                 cache.insert(channel.id, (channel.clone(), *count));
             }
         });
+        let now = chrono::Utc::now();
         let mut first_seen = false;
         super::motion::dm_rail::step(&ids)
             .into_iter()
@@ -254,6 +434,9 @@ impl Root {
                 let probe = !leaving && !std::mem::replace(&mut first_seen, true);
                 let selected = self.guild.is_none() && self.channel == Some(id);
                 let hovered = self.hovered_rail_dm == Some(id);
+                let highlighted = selected || hovered;
+                let animating = leaving || pose.height < 0.999 || pose.opacity < 0.999;
+                let pill_visible = show_left_pill(animating, selected, hovered, count);
                 let height = if selected {
                     40.
                 } else if hovered {
@@ -261,15 +444,43 @@ impl Root {
                 } else {
                     8.
                 };
+                let facepile = uses_diagonal_facepile(&channel);
+                let tile_bg = if facepile {
+                    highlighted.then_some("--background-brand")
+                } else if highlighted && channel.kind == 3 && channel.icon.is_none() {
+                    Some("--background-brand")
+                } else {
+                    Some("--background-mod-subtle")
+                };
+
+                let is_connected = self
+                    .call
+                    .as_ref()
+                    .is_some_and(|call| call.guild == 0 && call.channel == id);
+                let own_camera = self
+                    .call
+                    .as_ref()
+                    .is_some_and(|call| call.guild == 0 && call.channel == id && call.camera);
+                let own_stream = is_connected
+                    && (self.in_a_stream()
+                        || self
+                            .streamers_in_call()
+                            .is_some_and(|streamers| !streamers.is_empty()));
+                let upper_badge =
+                    compute_upper_badge(&self.stores, id, is_connected, own_camera, own_stream);
+
+                let channel_name = self.private_channel_name(&channel);
+                let tip_body = match compute_tooltip_subtext(&self.stores, id, is_connected, now) {
+                    Some(subtext) => Body::Rich(channel_name.into(), subtext.into()),
+                    None => Body::Heading(channel_name.into()),
+                };
+
                 let tile = div()
                     .when(probe, |tile| tile.parity("dm-rail-tile"))
                     .id(SharedString::from(format!("rail-dm-{id}")))
                     .size(px(40.))
                     .rounded_full()
-                    .when(
-                        channel.kind == 3 && channel.icon.is_none() && (selected || hovered),
-                        |tile| tile.bg(color("--background-brand")),
-                    )
+                    .when_some(tile_bg, |tile, bg| tile.bg(color(bg)))
                     .overflow_hidden()
                     .flex()
                     .items_center()
@@ -298,7 +509,8 @@ impl Root {
                         this.select_home(Some(id));
                         cx.notify();
                     }))
-                    .child(self.rail_dm_art(&channel, selected || hovered));
+                    .child(self.rail_dm_art(&channel, highlighted));
+
                 div()
                     .relative()
                     .flex_none()
@@ -308,7 +520,7 @@ impl Root {
                     .paint_scale(pose.scale, gpui::point(0.5, 0.5))
                     .flex()
                     .justify_center()
-                    .child(
+                    .children(pill_visible.then(|| {
                         div()
                             .when(probe, |pill| pill.parity("dm-rail-pill"))
                             .absolute()
@@ -317,57 +529,36 @@ impl Root {
                             .w(px(8.))
                             .h(px(height))
                             .rounded_r(px(4.))
-                            .bg(color("--text-strong")),
-                    )
-                    .child(self.with_tip(
-                        format!("rail-dm-{id}"),
-                        Tip::rail(Body::Heading(self.private_channel_name(&channel).into())),
-                        tile,
-                        cx,
-                    ))
+                            .bg(color("--text-strong"))
+                    }))
+                    .child(self.with_tip(format!("rail-dm-{id}"), Tip::rail(tip_body), tile, cx))
                     .children((count > 0).then(|| {
                         unread_badges::rail_number(count, false, probe.then_some("dm-rail-badge"))
                     }))
-                    // The upper badge of module 771640 (`oi`), the same one a server's tile carries: the screen while
-                    // anyone in the call streams (`getAllApplicationStreamsForChannel`), the camera in a video call,
-                    // the speaker otherwise; green while this account is in the call.
-                    .when(
-                        self.call
-                            .as_ref()
-                            .is_some_and(|call| call.guild == 0 && call.channel == id),
-                        |tile| {
-                            let streams = self
-                                .streamers_in_call()
-                                .is_some_and(|streamers| !streamers.is_empty());
-                            let glyph = if streams {
-                                "rail_stream_badge"
-                            } else if self.dmc.video {
-                                "rail_camera_badge"
-                            } else {
-                                "voice_channel"
-                            };
-                            tile.child(
+                    // Module 396655 (`tO`), 771640 (`oi`), 862328 (`BlobMask`): 20×20 outer cutout at
+                    // (left: 38px, top: -2px) with 16×16 inner circle at (left: 40px, top: 0px) and 12×12 white icon.
+                    .children(upper_badge.map(|(glyph, bg)| {
+                        div()
+                            .absolute()
+                            .left(px(38.))
+                            .top(px(-2.))
+                            .size(px(20.))
+                            .rounded_full()
+                            .bg(color("--background-base-lowest"))
+                            .flex()
+                            .items_center()
+                            .justify_center()
+                            .child(
                                 div()
-                                    .absolute()
-                                    .left(px(41.))
-                                    .top(px(1.))
-                                    .size(px(14.))
+                                    .size(px(16.))
                                     .rounded_full()
-                                    .bg(color("--status-positive"))
-                                    .shadow(vec![gpui::BoxShadow {
-                                        color: color("--background-base-lowest").into(),
-                                        offset: gpui::point(px(0.), px(0.)),
-                                        blur_radius: px(0.),
-                                        spread_radius: px(2.),
-                                        inset: false,
-                                    }])
+                                    .bg(color(bg))
                                     .flex()
                                     .items_center()
                                     .justify_center()
-                                    .child(super::icon(glyph, 10., "--white")),
+                                    .child(super::icon(glyph, 12., "--white")),
                             )
-                        },
-                    )
+                    }))
                     .into_any_element()
             })
             .collect()
@@ -406,5 +597,217 @@ impl Root {
             "fixture DM rail preview: {:?}; view only",
             self.capture_dm_rail
         )
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{
+        compute_rail_dm_entries, compute_tooltip_subtext, compute_upper_badge, decode_data_image,
+        decode_data_render_image, group_icon, show_left_pill, uses_diagonal_facepile,
+    };
+    use dc_state::{Stores, VoiceState};
+    use serde_json::json;
+
+    #[test]
+    fn active_dm_call_pins_to_index_zero_and_deduplicates_mentions() {
+        let mut stores = Stores::default();
+        stores.dispatch(
+            "READY",
+            &json!({
+                "user": { "id": "999", "username": "me" },
+                "private_channels": [
+                    { "id": "100", "type": 1, "recipient_ids": ["1"], "last_message_id": "1000" },
+                    { "id": "200", "type": 1, "recipient_ids": ["2"], "last_message_id": "2000" },
+                    { "id": "300", "type": 1, "recipient_ids": ["3"], "last_message_id": "3000" }
+                ],
+                "read_state": {
+                    "entries": [
+                        { "id": "100", "mention_count": 5, "last_message_id": "900" },
+                        { "id": "200", "mention_count": 2, "last_message_id": "1900" }
+                    ]
+                }
+            }),
+        );
+
+        // Zero-mention active DM call pins to index 0 ahead of unread mention DMs.
+        let zero_mention_call = compute_rail_dm_entries(&stores, Some(300));
+        let ids: Vec<(u64, u64)> = zero_mention_call
+            .iter()
+            .map(|(ch, mentions)| (ch.id, *mentions))
+            .collect();
+        assert_eq!(ids[0], (300, 0));
+        assert!(ids.iter().any(|&(id, m)| id == 100 && m == 5));
+        assert!(ids.iter().any(|&(id, m)| id == 200 && m == 2));
+
+        // Active DM call that also has mentions > 0 at k > 0 moves to index 0 without duplicating.
+        let deduped = compute_rail_dm_entries(&stores, Some(200));
+        assert_eq!(deduped[0].0.id, 200);
+        assert_eq!(deduped[0].1, 2);
+        assert_eq!(deduped.iter().filter(|(ch, _)| ch.id == 200).count(), 1);
+    }
+
+    #[test]
+    fn left_pill_visibility_hides_zero_mention_call_at_rest_and_while_animating() {
+        assert!(!show_left_pill(false, false, false, 0));
+        assert!(show_left_pill(false, false, true, 0));
+        assert!(show_left_pill(false, true, false, 0));
+        assert!(show_left_pill(false, false, false, 3));
+        assert!(!show_left_pill(true, true, true, 5));
+    }
+
+    #[test]
+    fn upper_badge_precedence_and_connected_coloring() {
+        let mut stores = Stores::default();
+        let ch = 555;
+
+        assert_eq!(compute_upper_badge(&stores, ch, false, false, false), None);
+        assert_eq!(
+            compute_upper_badge(&stores, ch, true, false, false),
+            Some(("voice_channel", "--status-positive"))
+        );
+        assert_eq!(
+            compute_upper_badge(&stores, ch, true, true, false),
+            Some(("rail_camera_badge", "--status-positive"))
+        );
+
+        // Disconnected remote voice state with self_video -> dark camera badge.
+        stores.voice_states.insert(
+            0,
+            vec![VoiceState {
+                user_id: 42,
+                channel_id: ch,
+                self_video: true,
+                self_stream: false,
+                ..Default::default()
+            }],
+        );
+        assert_eq!(
+            compute_upper_badge(&stores, ch, false, false, false),
+            Some(("rail_camera_badge", "--icon-overlay-dark"))
+        );
+
+        // Stream takes precedence over camera.
+        stores.voice_states.insert(
+            0,
+            vec![VoiceState {
+                user_id: 42,
+                channel_id: ch,
+                self_video: true,
+                self_stream: true,
+                ..Default::default()
+            }],
+        );
+        assert_eq!(
+            compute_upper_badge(&stores, ch, true, true, false),
+            Some(("rail_stream_badge", "--status-positive"))
+        );
+    }
+
+    #[test]
+    fn tooltip_subtext_includes_incoming_ongoing_and_muted() {
+        let mut stores = Stores::default();
+        let ch = 777;
+        let now = chrono::Utc::now();
+        stores.dispatch(
+            "READY",
+            &json!({
+                "user": { "id": "999", "username": "me" },
+                "private_channels": [
+                    { "id": "777", "type": 1, "recipient_ids": ["1"] }
+                ]
+            }),
+        );
+
+        assert_eq!(compute_tooltip_subtext(&stores, ch, false, now), None);
+
+        // Incoming call ringing current user ("999").
+        stores.dispatch(
+            "CALL_CREATE",
+            &json!({
+                "channel_id": "777",
+                "message_id": "9",
+                "region": "us-east",
+                "ongoing_rings": { "999": "1" }
+            }),
+        );
+        assert_eq!(
+            compute_tooltip_subtext(&stores, ch, false, now),
+            Some("Incoming Call".to_owned())
+        );
+
+        // Ongoing call when not ringing current user + muted channel override.
+        stores.dispatch(
+            "CALL_UPDATE",
+            &json!({
+                "channel_id": "777",
+                "message_id": "9",
+                "region": "us-east",
+                "ongoing_rings": {}
+            }),
+        );
+        stores.dispatch(
+            "USER_GUILD_SETTINGS_UPDATE",
+            &json!({
+                "guild_id": null,
+                "channel_overrides": [
+                    { "channel_id": "777", "muted": true }
+                ]
+            }),
+        );
+        assert_eq!(
+            compute_tooltip_subtext(&stores, ch, false, now),
+            Some("Ongoing Call (Muted)".to_owned())
+        );
+    }
+
+    #[test]
+    fn data_uri_group_icons_decode_to_bgra_and_facepile_handles_managed_groups() {
+        let mut red_rgba = image::RgbaImage::new(1, 1);
+        red_rgba.put_pixel(0, 0, image::Rgba([255, 0, 0, 255]));
+        let mut png_bytes = Vec::new();
+        image::DynamicImage::ImageRgba8(red_rgba)
+            .write_to(
+                &mut std::io::Cursor::new(&mut png_bytes),
+                image::ImageFormat::Png,
+            )
+            .unwrap();
+        let b64 = base64::Engine::encode(&base64::engine::general_purpose::STANDARD, &png_bytes);
+        let uri = format!("data:image/png;base64,{b64}");
+
+        let mut stores = Stores::default();
+        stores.dispatch(
+            "CHANNEL_CREATE",
+            &json!({
+                "id": "888",
+                "type": 3,
+                "recipient_ids": ["10"],
+                "icon": uri
+            }),
+        );
+        let ch = &stores.private_channels[0];
+        let (_, resolved_url) = group_icon(ch);
+        assert_eq!(resolved_url, uri);
+        assert!(decode_data_render_image(&uri).is_some());
+        assert!(decode_data_image(&uri).is_some());
+        // Solo group DM (recipients.len() < 2) or custom icon does not use diagonal facepile.
+        assert!(!uses_diagonal_facepile(ch));
+
+        // Managed group DM with application_id.is_some() && icon.is_none() && recipients.len() >= 2 uses facepile.
+        stores.dispatch(
+            "CHANNEL_CREATE",
+            &json!({
+                "id": "889",
+                "type": 3,
+                "application_id": "9999",
+                "recipient_ids": ["10", "20"]
+            }),
+        );
+        let managed = stores
+            .private_channels
+            .iter()
+            .find(|c| c.id == 889)
+            .unwrap();
+        assert!(uses_diagonal_facepile(managed));
     }
 }

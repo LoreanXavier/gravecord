@@ -91,9 +91,7 @@ impl Root {
                 cx.notify();
             }
             Action::QuickSwitcherShow | Action::OpenChannelTab => {
-                if self.quick_switcher.is_none() {
-                    self.open_quick_switcher(window, cx);
-                }
+                self.open_quick_switcher(window, cx);
             }
             Action::CreateDmGroup => {
                 if self.guild.is_some() {
