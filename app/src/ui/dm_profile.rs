@@ -73,6 +73,68 @@ impl Palette {
             None => color(name),
         }
     }
+
+    /// Badge / server-tag pill fill (`--opacity-white-24`/`40` on light custom themes).
+    pub(super) fn pill_background(&self, hover: bool) -> Rgba {
+        match &self.theme {
+            Some(theme) => theme.pill_background(hover),
+            None => color(if hover {
+                "--background-mod-strong"
+            } else {
+                "--background-mod-subtle"
+            }),
+        }
+    }
+
+    /// Widget add tile fill (`addButtonContainer_ECBSq8`).
+    pub(super) fn tile_background(&self, hover: bool) -> Rgba {
+        match &self.theme {
+            Some(theme) => theme.tile_background(hover),
+            None => color(if hover {
+                "--background-mod-normal"
+            } else {
+                "--background-mod-subtle"
+            }),
+        }
+    }
+
+    /// `.profile_s3DB6Y` vertical backdrop (`top` solid for `banner_height`, then `top -> bottom`).
+    pub(super) fn card_backdrop(&self, banner_height: f32) -> Option<gpui::Div> {
+        let theme = self.theme.as_ref()?;
+        let (start, end) = theme.card_gradient_stops();
+        Some(
+            div()
+                .absolute()
+                .inset_0()
+                .flex()
+                .flex_col()
+                .child(div().w_full().h(px(banner_height)).flex_none().bg(start))
+                .child(div().w_full().flex_1().bg(linear_gradient(
+                    180.,
+                    linear_color_stop(start, 0.),
+                    linear_color_stop(end, 1.),
+                ))),
+        )
+    }
+
+    /// `.inner_P1YEjQ` 300px vertical overlay fade over `modal_background` (`253781.63b02f3f5d17fef5.css`).
+    pub(super) fn modal_backdrop(&self) -> Option<gpui::Div> {
+        let theme = self.theme.as_ref()?;
+        let (top, bottom) = theme.modal_inner_stops();
+        Some(
+            div()
+                .absolute()
+                .inset_0()
+                .flex()
+                .flex_col()
+                .child(div().w_full().h(px(300.)).flex_none().bg(linear_gradient(
+                    180.,
+                    linear_color_stop(top, 0.),
+                    linear_color_stop(bottom, 1.),
+                )))
+                .child(div().w_full().flex_1().bg(bottom)),
+        )
+    }
 }
 
 /// An entry of `mutual_friends`: a user object, or one wrapped as `{user}`.
@@ -333,7 +395,7 @@ impl Root {
             .users
             .get(&user)
             .map(|known| known.display_name().to_owned());
-        let hover = palette.token("--background-mod-strong");
+        let hover = palette.pill_background(true);
         let overflow_button = (overflow > 0).then(|| {
             // `overflowSlot_IqWmhA overflowButton_IqWmhA`: "+N" in `body-sm/normal` `text-default`; it opens the badge
             // directory (`openBadgeDirectoryModal`) for this user.
@@ -369,19 +431,21 @@ impl Root {
         Some(
             div()
                 .id(SharedString::from(format!("{place}-badges-{user}")))
-                .parity(if place == "popout" {
-                    "popout-badges"
-                } else {
-                    "dm-profile-badges"
+                .parity(match place {
+                    "popout" => "popout-badges",
+                    "full-profile" => "full-profile-badges",
+                    "profile-editor" => "profile-editor-badges",
+                    _ => "dm-profile-badges",
                 })
-                // The `::before` box sits 1px outside the container and draws the 1px border.
+                // `.container_IqWmhA`: 20px icons + 1px padding + 1px border = 24px outer height.
+                .min_h(px(24.))
                 .mx(px(-1.))
                 .px(px(3.))
                 .py(px(1.))
                 .border_1()
                 .border_color(palette.token("--border-muted"))
                 .rounded(px(8.))
-                .bg(palette.token("--background-mod-subtle"))
+                .bg(palette.pill_background(false))
                 .hover(move |this| this.bg(hover))
                 .flex()
                 .flex_wrap()
@@ -391,6 +455,36 @@ impl Root {
                 .children(overflow_button)
                 .into_any_element(),
         )
+    }
+
+    /// Server tag chiplet matching the 24px profile badge pill border and surface.
+    pub(super) fn profile_server_tag_pill(
+        &self,
+        tag: &dc_state::ServerTag,
+        palette: &Palette,
+    ) -> gpui::Div {
+        let badge = tag
+            .badge_url()
+            .and_then(|url| self.images.get(&url).cloned());
+        div()
+            .h(px(24.))
+            .px(px(6.))
+            .border_1()
+            .border_color(palette.token("--border-muted"))
+            .rounded(px(8.))
+            .bg(palette.pill_background(false))
+            .flex()
+            .items_center()
+            .gap(px(4.))
+            .children(badge.map(|image| img(image).size(px(14.)).rounded(px(3.))))
+            .child(
+                div()
+                    .text_size(px(12.))
+                    .line_height(px(16.))
+                    .font_weight(FontWeight(600.))
+                    .text_color(palette.token("--text-default"))
+                    .child(tag.tag.clone()),
+            )
     }
 
     /// `displayNameRow` and `usernameAndPronounsRow` of module 465829, with the note button (module 243166) after the
@@ -515,6 +609,11 @@ impl Root {
                                 cx,
                             ))
                     })
+                    .children(
+                        user.tag
+                            .as_ref()
+                            .map(|tag| self.profile_server_tag_pill(tag, palette)),
+                    )
                     .children(self.badge_pill(place, user_id, palette, cx)),
             )
     }
@@ -667,6 +766,39 @@ impl Root {
             .collect();
         for (key, url) in icons {
             self.request_image(key, url);
+        }
+        if let Some(url) = self
+            .stores
+            .users
+            .get(&user)
+            .and_then(|known| known.tag.as_ref())
+            .and_then(|tag| tag.badge_url())
+        {
+            self.request_image(url.clone(), url);
+        }
+        let widget_urls: Vec<String> = super::profile_editor::save::parse_widgets(&body)
+            .into_iter()
+            .flat_map(|widget| match widget.data {
+                super::profile_editor::save::WidgetData::FavoriteGames { games }
+                | super::profile_editor::save::WidgetData::CurrentGames { games }
+                | super::profile_editor::save::WidgetData::WantToPlayGames { games }
+                | super::profile_editor::save::WidgetData::PlayedGames { games } => games
+                    .into_iter()
+                    .flat_map(|g| {
+                        let resolved = self.profile_editor_resolve_game(&g.game_id);
+                        resolved.cover.into_iter().chain(resolved.icon)
+                    })
+                    .collect::<Vec<_>>(),
+                super::profile_editor::save::WidgetData::Application { application_id } => {
+                    super::profile_editor::widgets::featured_app(&application_id)
+                        .map(|(_, url)| vec![url])
+                        .unwrap_or_default()
+                }
+                _ => Vec::new(),
+            })
+            .collect();
+        for url in widget_urls {
+            self.request_image(url.clone(), url);
         }
         // `getFirstWishlistId`: the first key of `wishlist_settings`.
         if let Some(wishlist) = super::shop::data::wishlist_ids(&body).into_iter().next() {

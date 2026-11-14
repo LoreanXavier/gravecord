@@ -266,6 +266,7 @@ mod unread;
 mod upload_error;
 mod upload_progress;
 mod uploads;
+mod video_player;
 mod video_tiles;
 mod voice;
 mod voice_panel;
@@ -420,6 +421,7 @@ pub struct Root {
     member_window: member_window::State,
     inline_videos: Rc<RefCell<inline_video::Cache>>,
     gif_tiles: Rc<RefCell<gif_tiles::Cache>>,
+    video_hub: Rc<RefCell<video_player::VideoHub>>,
     /// When each failed `Request::Fetch` key failed (`fetch_failures`).
     fetch_failures: HashMap<String, std::time::Instant>,
     /// Counts the changes the per-render preparation reads: store data (every `update`), the selected place and
@@ -786,6 +788,7 @@ impl Root {
             this.release_nameplates(cx);
             this.release_member_avatars(cx);
             this.release_inline_videos(cx);
+            this.release_videos(cx);
             this.release_gif_tiles(cx);
             this.release_call_background(cx);
         })
@@ -846,6 +849,7 @@ impl Root {
             member_window: member_window::State::default(),
             inline_videos: Default::default(),
             gif_tiles: Default::default(),
+            video_hub: Rc::new(RefCell::new(video_player::VideoHub::new())),
             fetch_failures: HashMap::new(),
             data_revision: 0,
             prepared: Prepared::default(),
@@ -2107,6 +2111,19 @@ impl Root {
                         attachment.height.unwrap_or(1),
                     );
                     let url = media_image::attachment_url(attachment, width, height);
+                    media.push((format!("attachment:{}", attachment.id), url));
+                } else if attachment.is_video() {
+                    let (width, height) = fit_media(
+                        attachment.width.unwrap_or(1),
+                        attachment.height.unwrap_or(1),
+                    );
+                    let url = if reqwest::Url::parse(&attachment.proxy_url).is_ok() {
+                        media_image::image_url(&attachment.proxy_url, false, width, height)
+                    } else {
+                        attachment
+                            .video_poster_url()
+                            .unwrap_or_else(|| attachment.proxy_url.clone())
+                    };
                     media.push((format!("attachment:{}", attachment.id), url));
                 }
             }
@@ -6072,67 +6089,69 @@ impl Root {
     fn attachments(&self, message: &Message, cx: &mut Context<Self>) -> Option<AnyElement> {
         // "When uploaded directly to Discord" off: pictures come as file cards instead (see `files`).
         let inline = self.pref_on("chat_inline_media_uploads", true);
-        let images: Vec<AnyElement> =
-            message
-                .attachments
-                .iter()
-                .filter(|attachment| inline && attachment.is_image())
-                .map(|attachment| {
-                    let (width, height) = fit_media(
-                        attachment.width.unwrap_or(1),
-                        attachment.height.unwrap_or(1),
-                    );
-                    let (width, height) = (width as f32, height as f32);
-                    let shown = width.min(self.content_width.max(1.));
-                    let (width, height) = (px(shown), px(height * shown / width));
-                    let image = self
-                        .images
-                        .get(&format!("attachment:{}", attachment.id))
-                        .cloned();
-                    let (clicked, key) = (message.clone(), format!("attachment:{}", attachment.id));
-                    let hovered = key.clone();
-                    let (url, media_key) = (attachment.url.clone(), key.clone());
-                    div()
-                        .id(SharedString::from(format!("attachment-{}", attachment.id)))
-                        .relative()
-                        .w(width)
-                        .h(height)
-                        .rounded(px(8.))
-                        .cursor_pointer()
-                        .bg(color("--background-base-low"))
-                        .children(image.map(|image| {
-                            self.media_image(image, &key, (width, height), 8., false, cx)
-                        }))
-                        .children(self.alt_text_overlay(attachment, cx))
-                        .on_hover(cx.listener(move |this, inside: &bool, _, cx| {
-                            this.media_hover(&hovered, *inside, cx)
-                        }))
-                        .on_click(cx.listener(move |this, _, _, cx| {
-                            this.open_lightbox(&clicked, &key, cx);
-                        }))
-                        .on_mouse_down(
-                            MouseButton::Right,
-                            cx.listener(move |this, event: &MouseDownEvent, _, _| {
-                                this.menu_hit = Some((
-                                    event.position,
-                                    menu::Hit::Media {
-                                        url: url.clone(),
-                                        key: media_key.clone(),
-                                    },
-                                ));
-                            }),
-                        )
-                        .into_any_element()
-                })
-                .collect();
         let pictures: Vec<&dc_state::Attachment> = message
             .attachments
             .iter()
-            .filter(|attachment| inline && attachment.is_image())
+            .filter(|attachment| inline && (attachment.is_image() || attachment.is_video()))
             .collect();
         if pictures.len() > 1 {
             return Some(self.mosaic(message, &pictures, cx));
         }
+        let images: Vec<AnyElement> = pictures
+            .into_iter()
+            .map(|attachment| {
+                let (width, height) = fit_media(
+                    attachment.width.unwrap_or(1),
+                    attachment.height.unwrap_or(1),
+                );
+                let (width, height) = (width as f32, height as f32);
+                let shown = width.min(self.content_width.max(1.));
+                let (width, height) = (px(shown), px(height * shown / width));
+                if attachment.is_video() {
+                    return self.attachment_video_player(message, attachment, (width, height), cx);
+                }
+                let image = self
+                    .images
+                    .get(&format!("attachment:{}", attachment.id))
+                    .cloned();
+                let (clicked, key) = (message.clone(), format!("attachment:{}", attachment.id));
+                let hovered = key.clone();
+                let (url, media_key) = (attachment.url.clone(), key.clone());
+                div()
+                    .id(SharedString::from(format!("attachment-{}", attachment.id)))
+                    .relative()
+                    .w(width)
+                    .h(height)
+                    .rounded(px(8.))
+                    .cursor_pointer()
+                    .bg(color("--background-base-low"))
+                    .children(
+                        image.map(|image| {
+                            self.media_image(image, &key, (width, height), 8., false, cx)
+                        }),
+                    )
+                    .children(self.alt_text_overlay(attachment, cx))
+                    .on_hover(cx.listener(move |this, inside: &bool, _, cx| {
+                        this.media_hover(&hovered, *inside, cx)
+                    }))
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        this.open_lightbox(&clicked, &key, cx);
+                    }))
+                    .on_mouse_down(
+                        MouseButton::Right,
+                        cx.listener(move |this, event: &MouseDownEvent, _, _| {
+                            this.menu_hit = Some((
+                                event.position,
+                                menu::Hit::Media {
+                                    url: url.clone(),
+                                    key: media_key.clone(),
+                                },
+                            ));
+                        }),
+                    )
+                    .into_any_element()
+            })
+            .collect();
         (!images.is_empty()).then(|| {
             // 3px under each image is the inline-block baseline gap of the official mosaic.
             div()
@@ -6182,7 +6201,32 @@ impl Root {
                         .overflow_hidden()
                         .children(
                             image.map(|image| self.media_image(image, &key, (w, h), 8., true, cx)),
-                        ),
+                        )
+                        .children(attachment.is_video().then(|| {
+                            div()
+                                .absolute()
+                                .inset_0()
+                                .flex()
+                                .items_center()
+                                .justify_center()
+                                .child(
+                                    div()
+                                        .size(px(48.))
+                                        .rounded_full()
+                                        .bg(gpui::hsla(0., 0., 0., 0.6))
+                                        .flex()
+                                        .items_center()
+                                        .justify_center()
+                                        .child(
+                                            gpui::svg()
+                                                .path("icons/clips_play.svg")
+                                                .size(px(24.))
+                                                .ml(px(1.))
+                                                .mr(px(-1.))
+                                                .text_color(gpui::white()),
+                                        ),
+                                )
+                        })),
                 )
                 .children(self.alt_text_overlay(attachment, cx))
                 .on_hover(cx.listener(move |this, inside: &bool, _, cx| {
@@ -8245,6 +8289,7 @@ impl Render for Root {
             self.prepare_member_avatars(window, cx);
         }
         self.prepare_inline_videos(window, cx);
+        self.prepare_videos(window, cx);
         self.prepare_gif_tiles(window, cx);
         self.prepare_live_avatars();
         self.prepare_guild_guide();
@@ -8385,9 +8430,11 @@ impl Render for Root {
                 this.voice_mouse(event.button, false, cx);
                 this.end_browser_resize();
                 this.clips_mouse_up(cx);
+                this.video_mouse_up(cx);
             }))
             .on_mouse_move(cx.listener(|this, event: &gpui::MouseMoveEvent, _, cx| {
                 this.move_browser_resize(event, cx);
+                this.video_mouse_move(event, cx);
                 if hover_bar::set_shift(event.modifiers.shift) && this.hovered.is_some() {
                     cx.notify();
                 }
@@ -8437,6 +8484,10 @@ impl Render for Root {
                     return;
                 }
                 if this.badge_modal_key(&keys.key, cx) {
+                    cx.stop_propagation();
+                    return;
+                }
+                if this.video_key(&event.keystroke, window, cx) {
                     cx.stop_propagation();
                     return;
                 }
@@ -8566,6 +8617,10 @@ impl Render for Root {
                     return;
                 }
                 // Dialogs of the server menu and the Stage and announcement flows: a modal's own Escape.
+                if keys.key == "escape" && this.exit_video_fullscreen(window, cx) {
+                    cx.stop_propagation();
+                    return;
+                }
                 if keys.key == "escape" && this.vv.fullscreen {
                     this.toggle_call_fullscreen(window, cx);
                     cx.stop_propagation();
@@ -9373,6 +9428,7 @@ impl Render for Root {
             .children(self.schedule_modal_layer(window, cx))
             .children(self.badge_modal_layer(cx))
             .children(self.lightbox_layer(cx))
+            .children(self.video_fullscreen_layer(window, cx))
             .children(self.clips_modal(window, cx))
             .children(self.clips_delete_modal(cx))
             .children(self.clips_menu_layer(window, cx))

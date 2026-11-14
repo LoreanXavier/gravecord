@@ -86,12 +86,18 @@ impl Root {
             open.pending = back;
         }
         open.guild = guild;
+        let kept_widgets = std::mem::take(&mut open.saved.widgets);
         open.saved = super::Saved::default();
+        open.saved.widgets = kept_widgets;
         open.avatar_image = None;
         open.banner_image = None;
         open.picker = None;
         open.banner_color = None;
         open.styles = None;
+        open.tag_select_open = false;
+        open.game_picker = None;
+        open.widget_modal = None;
+        open.widget_confirm_remove = None;
         open.error = None;
         let shown = match (&open.pending.global_name, &open.pending.nickname, guild) {
             (_, Some(Some(pending)), Some(_)) => pending.clone(),

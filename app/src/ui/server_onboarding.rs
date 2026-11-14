@@ -9010,6 +9010,8 @@ mod tests {
             premium_progress_bar_enabled: false,
             emojis: Vec::new(),
             threads: Vec::new(),
+            tag: None,
+            tag_badge: None,
         }
     }
 

@@ -10,6 +10,7 @@ use gpui::{AnyElement, Context, FontWeight, IntoElement, SharedString, div, prel
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum Kind {
     Image,
+    Video,
     Audio,
     Plaintext,
     Other,
@@ -20,6 +21,9 @@ pub(super) enum Kind {
 pub(super) fn kind(attachment: &Attachment) -> Kind {
     if attachment.is_image() {
         return Kind::Image;
+    }
+    if attachment.is_video() {
+        return Kind::Video;
     }
     let name = &attachment.filename;
     let lower = name.to_lowercase();
@@ -263,8 +267,10 @@ impl Root {
                 Kind::Audio if message.is_voice_message() => {
                     Some(self.voice_pill(message, attachment))
                 }
-                Kind::Image if self.pref_on("chat_inline_media_uploads", true) => None,
-                Kind::Image => Some(self.file_card(attachment, cx)),
+                Kind::Image | Kind::Video if self.pref_on("chat_inline_media_uploads", true) => {
+                    None
+                }
+                Kind::Image | Kind::Video => Some(self.file_card(attachment, cx)),
                 Kind::Plaintext => Some(self.plaintext_card(attachment, cx)),
                 Kind::Audio => Some(self.audio_card(message, attachment, cx)),
                 Kind::Other => Some(self.file_card(attachment, cx)),
@@ -311,6 +317,13 @@ mod tests {
         assert_eq!(kind(&named("main.rs")), Kind::Plaintext);
         assert_eq!(kind(&named("song.MP3")), Kind::Audio);
         assert_eq!(kind(&named("pack.zip")), Kind::Other);
+
+        let mut clip = named("clip.mp4");
+        assert_eq!(kind(&clip), Kind::Other);
+        clip.proxy_url = "https://cdn.example/clip.mp4".to_owned();
+        clip.width = Some(1280);
+        clip.height = Some(720);
+        assert_eq!(kind(&clip), Kind::Video);
     }
 
     #[test]

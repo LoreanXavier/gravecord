@@ -16,7 +16,7 @@ pub(super) mod save;
 mod servers;
 mod styles;
 mod upload;
-mod widgets;
+pub(super) mod widgets;
 mod wishlist;
 
 use super::motion::Posed as _;
@@ -30,7 +30,7 @@ use gpui::{
     AnyElement, Context, Entity, FontWeight, IntoElement, SharedString, Subscription, Window,
     deferred, div, hsla, prelude::*, px,
 };
-use save::{Equipped, Pending, Write};
+use save::{Equipped, Pending, UserWidget, Write};
 use serde_json::Value;
 
 pub(super) const FETCH_PREFIX: &str = "pedit:";
@@ -84,6 +84,7 @@ pub(super) struct Saved {
     pub accent_color: Option<u32>,
     pub theme_colors: Option<[u32; 2]>,
     pub equipped: Equipped,
+    pub widgets: Vec<UserWidget>,
 }
 
 pub(super) struct Open {
@@ -102,6 +103,13 @@ pub(super) struct Open {
     pronouns: Entity<Editor>,
     bio: Entity<Editor>,
     select_open: bool,
+    tag_select_open: bool,
+    tag_search: Entity<Editor>,
+    board_widgets: Vec<UserWidget>,
+    widget_modal: Option<widgets::ModalState>,
+    game_picker: Option<widgets::GamePickerState>,
+    widget_comment_editors: std::collections::HashMap<String, Entity<Editor>>,
+    widget_confirm_remove: Option<usize>,
     panel_collapsed: bool,
     upsell_closed: bool,
     /// The status bubble's prompt, drawn once per open from the prompt list (module 645507).
@@ -120,7 +128,7 @@ pub(super) struct Open {
     /// The other profiles' pending changes while one is open (`getPendingChanges(guildId)`).
     stashed: std::collections::HashMap<Option<Id>, Pending>,
     banner_image: Option<std::sync::Arc<gpui::Image>>,
-    _events: Vec<Subscription>,
+    pub(super) _events: Vec<Subscription>,
 }
 
 impl Open {
@@ -148,6 +156,27 @@ pub(super) const PURCHASES_ROUTE: &str =
 pub(super) const CATEGORIES_ROUTE: &str =
     "/collectibles-categories/v2?variants_return_style=2&include_bundles=true";
 
+pub(super) fn profile_field_style(
+    size: f32,
+    lh: f32,
+    weight: f32,
+    text: gpui::Hsla,
+    placeholder: gpui::Hsla,
+) -> crate::editor::EditorStyle {
+    let mut font = super::editor_style().font;
+    font.weight = FontWeight(weight);
+    crate::editor::EditorStyle {
+        font,
+        size,
+        line_height: lh,
+        text,
+        placeholder,
+        placeholder_italic: true,
+        caret: text,
+        ..super::editor_style()
+    }
+}
+
 impl Root {
     pub(super) fn open_profile_editor(&mut self, cx: &mut Context<Self>) {
         let Some(me) = self.stores.current_user.clone() else {
@@ -156,18 +185,13 @@ impl Root {
         let user_id = me.id;
         let field = |size: f32, lh: f32, weight: f32, placeholder: &str, cx: &mut Context<Self>| {
             cx.new(|cx| {
-                let mut font = super::editor_style().font;
-                font.weight = FontWeight(weight);
-                let style = crate::editor::EditorStyle {
-                    font,
+                let style = profile_field_style(
                     size,
-                    line_height: lh,
-                    text: hsla(0., 0., 1., 0.96),
-                    placeholder: color("--text-muted").into(),
-                    placeholder_italic: true,
-                    caret: hsla(0., 0., 1., 0.96),
-                    ..super::editor_style()
-                };
+                    lh,
+                    weight,
+                    hsla(0., 0., 1., 0.96),
+                    color("--text-muted").into(),
+                );
                 let mut editor = Editor::new(style, cx);
                 editor.set_single_line(true);
                 editor.set_placeholder(placeholder.to_owned());
@@ -183,6 +207,19 @@ impl Root {
             dc_intl::tr("Share a fun fact about yourself"),
             cx,
         );
+        let tag_search = cx.new(|cx| {
+            let style = profile_field_style(
+                14.,
+                18.,
+                400.,
+                color("--text-default").into(),
+                color("--input-placeholder-text-default").into(),
+            );
+            let mut editor = Editor::new(style, cx);
+            editor.set_single_line(true);
+            editor.set_placeholder(dc_intl::t!("5h0QOP").to_owned());
+            editor
+        });
         name.update(cx, |editor, _| editor.set_text(me.display_name()));
         let events = vec![
             cx.subscribe(&name, |this, editor, event: &EditorEvent, cx| {
@@ -210,6 +247,11 @@ impl Root {
                 }
                 cx.notify();
             }),
+            cx.subscribe(&tag_search, |_, _, event: &EditorEvent, cx| {
+                if matches!(event, EditorEvent::Edited) {
+                    cx.notify();
+                }
+            }),
         ];
         let guild = None;
         self.profile_editor = Some(Open {
@@ -226,6 +268,13 @@ impl Root {
             pronouns,
             bio,
             select_open: false,
+            tag_select_open: false,
+            tag_search,
+            board_widgets: Vec::new(),
+            widget_modal: None,
+            game_picker: None,
+            widget_comment_editors: std::collections::HashMap::new(),
+            widget_confirm_remove: None,
             panel_collapsed: false,
             upsell_closed: false,
             prompt: preview::random_prompt(),
@@ -241,6 +290,9 @@ impl Root {
             banner_image: None,
             _events: events,
         });
+        if let Some(cached) = self.fetched.get(&format!("profile:{user_id}")).cloned() {
+            self.profile_editor_apply_profile(&cached, true, cx);
+        }
         for (key, route) in [
             (
                 format!("{FETCH_PREFIX}profile"),
@@ -282,12 +334,20 @@ impl Root {
         let Some(open) = self.profile_editor.as_mut() else {
             return false;
         };
-        if open.picker.is_some() {
+        if open.widget_confirm_remove.is_some() {
+            open.widget_confirm_remove = None;
+        } else if open.game_picker.is_some() {
+            open.game_picker = None;
+        } else if open.widget_modal.is_some() {
+            open.widget_modal = None;
+        } else if open.picker.is_some() {
             open.picker = None;
         } else if open.banner_color.is_some() {
             open.banner_color = None;
         } else if open.styles.is_some() {
             open.styles = None;
+        } else if open.tag_select_open {
+            open.tag_select_open = false;
         } else if open.select_open {
             open.select_open = false;
         } else if open.mode == Mode::Nitro {
@@ -332,75 +392,11 @@ impl Root {
         };
         match what {
             "profile" => {
-                // `USER_PROFILE_FETCH_SUCCESS` fills the one `UserProfileStore` every surface reads: the badges, the
-                // effect and the theme of the main profile are the account's own profile there too.
-                if open.guild.is_none()
-                    && let Some(me) = self.stores.current_user.as_ref().map(|user| user.id)
-                {
-                    self.fetched.insert(format!("profile:{me}"), body.clone());
-                    self.request_profile_images(me);
-                }
-                let Some(open) = self.profile_editor.as_mut() else {
+                if body["refused"] == true {
                     return;
-                };
-                let color = |value: &Value| value.as_u64().map(|number| number as u32);
-                let guild = open.guild;
-                let for_guild = guild.is_some_and(|g| {
-                    body["guild_member_profile"]["guild_id"].as_str()
-                        == Some(g.to_string().as_str())
-                });
-                let profile = if for_guild {
-                    &body["guild_member_profile"]
-                } else {
-                    &body["user_profile"]
-                };
-                open.saved.bio = profile["bio"].as_str().unwrap_or_default().to_owned();
-                open.saved.pronouns = profile["pronouns"].as_str().unwrap_or_default().to_owned();
-                open.saved.banner = profile["banner"].as_str().map(str::to_owned);
-                open.saved.accent_color = color(&profile["accent_color"]).or_else(|| {
-                    guild
-                        .is_none()
-                        .then(|| color(&body["user"]["accent_color"]))
-                        .flatten()
-                });
-                open.saved.theme_colors = profile["theme_colors"]
-                    .as_array()
-                    .and_then(|list| Some([color(list.first()?)?, color(list.get(1)?)?]));
-                for entry in profile["collectibles"]
-                    .as_array()
-                    .into_iter()
-                    .flatten()
-                    .chain(
-                        guild
-                            .is_none()
-                            .then(|| body["collectibles"].as_array())
-                            .flatten()
-                            .into_iter()
-                            .flatten(),
-                    )
-                {
-                    let sku = entry["sku_id"].as_str().and_then(|sku| sku.parse().ok());
-                    match entry["type"].as_i64() {
-                        Some(1) => open.saved.equipped.profile_effect = sku,
-                        Some(3) => open.saved.equipped.profile_frame = sku,
-                        _ => {}
-                    }
                 }
-                let bio = open
-                    .pending
-                    .bio
-                    .as_deref()
-                    .unwrap_or(&open.saved.bio)
-                    .to_owned();
-                let pronouns = open
-                    .pending
-                    .pronouns
-                    .as_deref()
-                    .unwrap_or(&open.saved.pronouns)
-                    .to_owned();
-                let (bio_field, pronoun_field) = (open.bio.clone(), open.pronouns.clone());
-                bio_field.update(cx, |editor, _| editor.set_text(&bio));
-                pronoun_field.update(cx, |editor, _| editor.set_text(&pronouns));
+                self.profile_editor_apply_profile(&body, false, cx);
+                return;
             }
             "purchases" => {
                 open.owned = body
@@ -417,9 +413,10 @@ impl Root {
                     .collect();
             }
             "save" => {
+                let ok = body["ok"] == true || body["refused"] == true;
                 open.saving = false;
-                if body["ok"] == true {
-                    self.profile_editor = None;
+                if ok {
+                    self.profile_editor_commit_save(&body["body"], cx);
                 } else {
                     open.error = Some(dc_intl::tr("Something went wrong. Try again.").to_owned());
                 }
@@ -427,6 +424,259 @@ impl Root {
             _ => {}
         }
         cx.notify();
+    }
+
+    pub(super) fn profile_editor_apply_profile(
+        &mut self,
+        body: &Value,
+        initial: bool,
+        cx: &mut Context<Self>,
+    ) {
+        if body["refused"] == true || body["ok"] == false {
+            return;
+        }
+        let Some(guild) = self.profile_editor.as_ref().map(|open| open.guild) else {
+            return;
+        };
+        // `USER_PROFILE_FETCH_SUCCESS` fills the one `UserProfileStore` every surface reads: the badges, the
+        // effect and the theme of the main profile are the account's own profile there too.
+        if !initial
+            && guild.is_none()
+            && let Some(me) = self.stores.current_user.as_ref().map(|user| user.id)
+        {
+            self.fetched.insert(format!("profile:{me}"), body.clone());
+            self.request_profile_images(me);
+        }
+        let main_widgets = guild
+            .and_then(|_| self.stores.current_user.as_ref().map(|u| u.id))
+            .and_then(|me| self.fetched.get(&format!("profile:{me}")))
+            .filter(|main| main["widgets"].is_array())
+            .map(save::parse_widgets);
+        let parsed_widgets = if body["widgets"].is_array() {
+            Some(save::parse_widgets(body))
+        } else {
+            main_widgets
+        };
+        let Some(open) = self.profile_editor.as_mut() else {
+            return;
+        };
+        let color = |value: &Value| value.as_u64().map(|number| number as u32);
+        let for_guild = guild.is_some_and(|g| {
+            body["guild_member_profile"]["guild_id"].as_str() == Some(g.to_string().as_str())
+        });
+        let profile = if for_guild {
+            &body["guild_member_profile"]
+        } else {
+            &body["user_profile"]
+        };
+        open.saved.bio = profile["bio"].as_str().unwrap_or_default().to_owned();
+        open.saved.pronouns = profile["pronouns"].as_str().unwrap_or_default().to_owned();
+        open.saved.banner = profile["banner"].as_str().map(str::to_owned);
+        open.saved.accent_color = color(&profile["accent_color"]).or_else(|| {
+            guild
+                .is_none()
+                .then(|| color(&body["user"]["accent_color"]))
+                .flatten()
+        });
+        open.saved.theme_colors = profile["theme_colors"]
+            .as_array()
+            .and_then(|list| Some([color(list.first()?)?, color(list.get(1)?)?]));
+        for entry in profile["collectibles"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .chain(
+                guild
+                    .is_none()
+                    .then(|| body["collectibles"].as_array())
+                    .flatten()
+                    .into_iter()
+                    .flatten(),
+            )
+        {
+            let sku = entry["sku_id"].as_str().and_then(|sku| sku.parse().ok());
+            match entry["type"].as_i64() {
+                Some(1) => open.saved.equipped.profile_effect = sku,
+                Some(3) => open.saved.equipped.profile_frame = sku,
+                _ => {}
+            }
+        }
+        if let Some(widgets) = parsed_widgets {
+            if open.pending.widgets.is_none() {
+                open.board_widgets = widgets.clone();
+            }
+            open.saved.widgets = widgets;
+        }
+        let bio = open
+            .pending
+            .bio
+            .as_deref()
+            .unwrap_or(&open.saved.bio)
+            .to_owned();
+        let pronouns = open
+            .pending
+            .pronouns
+            .as_deref()
+            .unwrap_or(&open.saved.pronouns)
+            .to_owned();
+        let game_ids = widgets::widget_game_ids(&open.board_widgets);
+        let (bio_field, pronoun_field) = (open.bio.clone(), open.pronouns.clone());
+        bio_field.update(cx, |editor, _| editor.set_text(&bio));
+        pronoun_field.update(cx, |editor, _| editor.set_text(&pronouns));
+        if !game_ids.is_empty() {
+            self.request_games(&game_ids);
+        }
+        cx.notify();
+    }
+
+    fn profile_editor_commit_save(&mut self, response_body: &Value, _cx: &mut Context<Self>) {
+        let Some(open) = self.profile_editor.as_mut() else {
+            return;
+        };
+        let guild = open.guild;
+        let pending = std::mem::replace(&mut open.pending, Pending::new(guild));
+        if let Some(bio) = &pending.bio {
+            open.saved.bio = bio.clone();
+        }
+        if let Some(pronouns) = &pending.pronouns {
+            open.saved.pronouns = pronouns.clone();
+        }
+        if let Some(banner) = &pending.banner
+            && banner.is_none()
+        {
+            open.saved.banner = None;
+        }
+        if let Some(accent) = pending.accent_color {
+            open.saved.accent_color = accent;
+        }
+        if let Some(theme) = pending.theme_colors {
+            open.saved.theme_colors = theme;
+        }
+        if let Some(effect) = pending.profile_effect {
+            open.saved.equipped.profile_effect = effect;
+        }
+        if let Some(frame) = pending.profile_frame {
+            open.saved.equipped.profile_frame = frame;
+        }
+        if pending.widgets.is_some() {
+            let server_widgets = response_body["widgets"]
+                .is_array()
+                .then(|| save::parse_widgets(response_body))
+                .filter(|list| !list.is_empty());
+            let committed =
+                server_widgets.unwrap_or_else(|| save::saveable_widgets(&open.board_widgets));
+            open.saved.widgets = committed.clone();
+            open.board_widgets = committed;
+        }
+        open.saving = false;
+        open.error = None;
+        open.widget_confirm_remove = None;
+        open.game_picker = None;
+        let saved_snapshot = open.saved.clone();
+        let saved_widgets = open.saved.widgets.clone();
+
+        let new_tag = pending.primary_guild_id.map(|choice| {
+            choice.and_then(|guild_id| {
+                let guild = self.stores.guilds.iter().find(|g| g.id == guild_id)?;
+                let (tag, badge) = guild.selectable_server_tag()?;
+                Some(dc_state::ServerTag {
+                    guild_id,
+                    badge: badge.map(str::to_owned),
+                    tag: tag.to_owned(),
+                })
+            })
+        });
+
+        let Some(me_id) = self.stores.current_user.as_ref().map(|user| user.id) else {
+            return;
+        };
+        if let Some(user) = self.stores.current_user.as_mut() {
+            if guild.is_none()
+                && let Some(name) = &pending.global_name
+            {
+                user.global_name = name.clone();
+            }
+            if guild.is_none()
+                && let Some(decoration) = pending.avatar_decoration
+            {
+                user.avatar_decoration = decoration.map(|sku_id| {
+                    Box::new(dc_state::collectibles::AvatarDecoration {
+                        sku_id,
+                        asset: None,
+                        expires_at: None,
+                    })
+                });
+            }
+            if guild.is_none()
+                && let Some(plate) = pending.nameplate
+            {
+                user.nameplate = plate.map(|sku_id| dc_state::collectibles::Nameplate {
+                    sku_id,
+                    label: String::new(),
+                    palette: String::new(),
+                });
+            }
+            if guild.is_none()
+                && let Some(styles) = &pending.display_name_styles
+            {
+                user.display_name_styles = styles.clone().map(Box::new);
+            }
+            if let Some(tag) = &new_tag {
+                user.tag = tag.clone();
+            }
+            self.stores.users.insert(me_id, user.clone());
+        }
+        if let (Some(guild_id), Some(nick)) = (guild, &pending.nickname)
+            && let Some(mut member) = self.stores.members.get(guild_id, me_id).cloned()
+        {
+            member.nick = nick.clone();
+            self.stores.members.upsert(guild_id, member);
+        }
+
+        for key in [format!("profile:{me_id}"), format!("{FETCH_PREFIX}profile")] {
+            let entry = self
+                .fetched
+                .entry(key)
+                .or_insert_with(|| serde_json::json!({}));
+            apply_saved_to_profile_json(entry, guild, &pending, &saved_snapshot, &new_tag);
+        }
+
+        if pending.widgets.is_some() {
+            let game_ids = widgets::widget_game_ids(&saved_widgets);
+            if !game_ids.is_empty() {
+                let games_key = format!("profile-games:{me_id}");
+                let entries: Vec<Value> = game_ids
+                    .iter()
+                    .filter_map(|id| self.profile_editor_known_game_value(id))
+                    .collect();
+                if !entries.is_empty() {
+                    let slot = self
+                        .fetched
+                        .entry(games_key.clone())
+                        .or_insert_with(|| Value::Array(Vec::new()));
+                    if !slot.is_array() {
+                        *slot = Value::Array(Vec::new());
+                    }
+                    if let Some(arr) = slot.as_array_mut() {
+                        for record in entries {
+                            let rid = record["id"].as_str().unwrap_or_default();
+                            if !arr
+                                .iter()
+                                .any(|existing| existing["id"].as_str() == Some(rid))
+                            {
+                                arr.push(record);
+                            }
+                        }
+                    }
+                }
+                self.requested.remove(&games_key);
+                self.request_games(&game_ids);
+            }
+            self.request_profile_cards(me_id);
+        }
+        if pending.primary_guild_id.is_some() {
+            self.request_profile_images(me_id);
+        }
     }
 
     /// `true` when the editor opened a premium-gated choice without Nitro (the official shows its upsell).
@@ -498,6 +748,17 @@ impl Root {
             user.display_name_styles = Some(Box::new(styles.clone()));
         } else if let Some(styles) = &open.pending.display_name_styles {
             user.display_name_styles = styles.clone().map(Box::new);
+        }
+        if let Some(choice) = open.pending.primary_guild_id {
+            user.tag = choice.and_then(|guild_id| {
+                let guild = self.stores.guilds.iter().find(|g| g.id == guild_id)?;
+                let (tag, badge) = guild.selectable_server_tag()?;
+                Some(dc_state::ServerTag {
+                    guild_id,
+                    badge: badge.map(str::to_owned),
+                    tag: tag.to_owned(),
+                })
+            });
         }
         user
     }
@@ -614,7 +875,11 @@ impl Root {
             .children(expand)
             .child(close)
             .children(self.profile_editor_banner_popout(cx))
-            .children(self.profile_editor_server_list(cx));
+            .children(self.profile_editor_server_list(cx))
+            .children(self.profile_editor_tag_select_popout(cx))
+            .children(self.profile_editor_game_picker_popout(cx))
+            .children(self.profile_editor_widget_modal(cx))
+            .children(self.profile_editor_remove_widget_modal(cx));
         let layer = deferred(
             div()
                 .id("profile-editor-layer")
@@ -723,6 +988,82 @@ impl Root {
                 decoration.static_url(),
             );
         }
+    }
+}
+
+/// Mutate a cached `profile:{me}` / `pedit:profile` payload in-place so reopening Profile Editor or Full Profile reflects saved edits immediately.
+fn apply_saved_to_profile_json(
+    root: &mut Value,
+    guild: Option<Id>,
+    pending: &Pending,
+    saved: &Saved,
+    tag: &Option<Option<dc_state::ServerTag>>,
+) {
+    if !root.is_object() {
+        *root = serde_json::json!({});
+    }
+    let section_key = if guild.is_some() {
+        "guild_member_profile"
+    } else {
+        "user_profile"
+    };
+    if !root[section_key].is_object() {
+        root[section_key] = serde_json::json!({});
+    }
+    if let Some(guild_id) = guild {
+        root[section_key]["guild_id"] = serde_json::json!(guild_id.to_string());
+    }
+    if pending.bio.is_some() {
+        root[section_key]["bio"] = serde_json::json!(saved.bio);
+    }
+    if pending.pronouns.is_some() {
+        root[section_key]["pronouns"] = serde_json::json!(saved.pronouns);
+    }
+    if pending.accent_color.is_some() {
+        root[section_key]["accent_color"] = serde_json::json!(saved.accent_color);
+        if guild.is_none() {
+            if !root["user"].is_object() {
+                root["user"] = serde_json::json!({});
+            }
+            root["user"]["accent_color"] = serde_json::json!(saved.accent_color);
+        }
+    }
+    if pending.theme_colors.is_some() {
+        root[section_key]["theme_colors"] = match saved.theme_colors {
+            Some([a, b]) => serde_json::json!([a, b]),
+            None => Value::Null,
+        };
+    }
+    if matches!(pending.banner, Some(None)) {
+        root[section_key]["banner"] = Value::Null;
+    }
+    if guild.is_none()
+        && let Some(name) = &pending.global_name
+    {
+        if !root["user"].is_object() {
+            root["user"] = serde_json::json!({});
+        }
+        root["user"]["global_name"] = serde_json::json!(name);
+    }
+    if let Some(choice) = tag {
+        if !root["user"].is_object() {
+            root["user"] = serde_json::json!({});
+        }
+        root["user"]["primary_guild"] = match choice {
+            Some(t) => serde_json::json!({
+                "identity_guild_id": t.guild_id.to_string(),
+                "identity_enabled": true,
+                "tag": t.tag,
+                "badge": t.badge,
+            }),
+            None => serde_json::json!({
+                "identity_guild_id": null,
+                "identity_enabled": false,
+            }),
+        };
+    }
+    if pending.widgets.is_some() {
+        root["widgets"] = Value::Array(save::widgets_to_json(&saved.widgets));
     }
 }
 
@@ -871,6 +1212,78 @@ impl Root {
                     .collect();
                 self.profile_editor_script_style(|state| state.colors = colors);
             }
+            ["tag-open"] => {
+                if let Some(open) = self.profile_editor.as_mut()
+                    && open.guild.is_none()
+                {
+                    open.tag_select_open = true;
+                }
+                self.profile_editor_request_tag_art();
+            }
+            ["tag-pick", which @ ..] => {
+                let choice = match which {
+                    ["none"] | ["clear"] => None,
+                    ["first"] | [] => self
+                        .profile_editor_eligible_tags()
+                        .first()
+                        .map(|entry| entry.0),
+                    [id] => id.parse().ok(),
+                    _ => None,
+                };
+                self.profile_editor_pick_tag(choice, cx);
+            }
+            ["browse-widgets"] | ["widget-modal"] => {
+                self.profile_editor_open_widget_modal(cx);
+            }
+            ["widget-modal-tab", which] => {
+                if let Some(modal) = self
+                    .profile_editor
+                    .as_mut()
+                    .and_then(|open| open.widget_modal.as_mut())
+                {
+                    modal.tab = if *which == "stats" {
+                        widgets::ModalTab::GameStats
+                    } else {
+                        widgets::ModalTab::Interests
+                    };
+                }
+            }
+            ["widget-modal-search", query @ ..] => {
+                if let Some(search) = self
+                    .profile_editor
+                    .as_ref()
+                    .and_then(|open| open.widget_modal.as_ref())
+                    .map(|modal| modal.search.clone())
+                {
+                    let text = query.join(" ");
+                    search.update(cx, |editor, _| editor.set_text(&text));
+                }
+            }
+            ["add-widget", kind] => {
+                if let Some(data) = widgets::widget_data_from_script(kind) {
+                    self.profile_editor_prepend_widget(data, cx);
+                } else {
+                    return format!("profile-editor: unknown widget kind {kind}");
+                }
+            }
+            ["game-picker", index] => {
+                if let Ok(idx) = index.parse::<usize>() {
+                    self.profile_editor_open_game_picker(idx, cx);
+                }
+            }
+            ["add-game", index, game_id] => {
+                if let Ok(idx) = index.parse::<usize>() {
+                    self.profile_editor_add_game_to_widget(idx, (*game_id).to_owned(), cx);
+                }
+            }
+            ["remove-widget", index] => {
+                if let Ok(idx) = index.parse::<usize>() {
+                    self.profile_editor_remove_widget_now(idx, cx);
+                }
+            }
+            ["save"] => self.profile_editor_save(cx),
+            ["reset"] => self.profile_editor_reset(cx),
+            ["dismiss-upsell"] => self.profile_editor_dismiss_upsell(),
             _ => return format!("profile-editor: unknown command {rest:?}"),
         }
         cx.notify();

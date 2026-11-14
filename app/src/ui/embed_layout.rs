@@ -24,6 +24,10 @@ pub(super) fn media(embed: &Embed, hide_media: bool) -> Media {
         return Media::None;
     }
     let video_ready = embed.url.is_some() && embed.thumbnail.is_some();
+    let proxied_video = embed
+        .video
+        .as_ref()
+        .is_some_and(|video| video.proxy_url.is_some() && video.width > 0 && video.height > 0);
     match embed.kind.as_str() {
         "gifv" => {
             if video_ready && embed.video.is_some() {
@@ -35,7 +39,7 @@ pub(super) fn media(embed: &Embed, hide_media: bool) -> Media {
         // An audio embed without its audio falls back to the image (the audio player is not ported).
         "audio" => image_or_none(embed),
         _ if embed.video.is_some() => {
-            if video_ready {
+            if video_ready || proxied_video {
                 Media::Video
             } else {
                 Media::None
@@ -131,10 +135,12 @@ pub(super) fn field_rows(fields: &[EmbedField]) -> Vec<Vec<Placed>> {
 /// `ed` in module 265705: the thumbnail's size, or the video's when there is one, fitted into the embed's media box
 /// (`Uj`), then at least 150 by 144.
 pub(super) fn video_size(embed: &Embed) -> Option<(f64, f64)> {
-    let poster = embed.thumbnail.as_ref()?;
-    let (width, height) = match &embed.video {
-        Some(video) => (f64::from(video.width), f64::from(video.height)),
-        None => (f64::from(poster.width), f64::from(poster.height)),
+    let (width, height) = match (&embed.video, &embed.thumbnail) {
+        (Some(video), _) if video.width > 0 && video.height > 0 => {
+            (f64::from(video.width), f64::from(video.height))
+        }
+        (_, Some(poster)) => (f64::from(poster.width), f64::from(poster.height)),
+        _ => return None,
     };
     let (max_width, max_height) = embed.max_media();
     let (width, height) = fit_rounded(width, height, max_width, max_height, 0., 0.);
@@ -475,5 +481,17 @@ mod tests {
             "url": "https://www.conjure.town/12345678901234567/game"}))));
         assert!(!left_out(&embed(json!({"type": "rich",
             "url": "https://conjure.town/12345678901234567/game"}))));
+    }
+
+    #[test]
+    fn proxied_video_without_thumbnail_still_resolves_size() {
+        let bare = embed(json!({
+            "type": "video",
+            "url": "https://cdn.example/clip.mp4",
+            "video": {"url": "https://cdn.example/clip.mp4", "proxy_url": "https://media.example/clip.mp4", "width": 640, "height": 360}
+        }));
+        assert_eq!(media(&bare, false), Media::Video);
+        assert_eq!(media(&bare, true), Media::None);
+        assert!(video_size(&bare).is_some_and(|(w, h)| w >= 150. && h >= 144.));
     }
 }

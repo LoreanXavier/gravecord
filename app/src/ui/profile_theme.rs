@@ -75,6 +75,8 @@ pub(super) struct ProfileTheme {
     /// `--custom-theme-base-color` and `--custom-theme-text-color` for `tokens`.
     base: Rgba,
     text: Rgba,
+    /// `--profile-gradient-button-color` (`wg` of module 543699).
+    pub button: Rgba,
     /// `--profile-gradient-modal-background-color`.
     pub modal_background: Rgba,
 }
@@ -127,6 +129,7 @@ impl ProfileTheme {
             overlay,
             base,
             text,
+            button: opaque(button_color(primary)),
             modal_background: opaque(modal_background(
                 primary,
                 secondary,
@@ -139,6 +142,70 @@ impl ProfileTheme {
         self.tokens == Theme::Light
     }
 
+    /// `inner_P1YEjQ` top/bottom stops: `color-mix(in oklab, overlay 80%, modal_background)` -> `20%`.
+    pub(super) fn modal_inner_stops(&self) -> (Rgba, Rgba) {
+        (
+            mix_oklab_fraction(self.overlay, self.modal_background, 0.8),
+            mix_oklab_fraction(self.overlay, self.modal_background, 0.2),
+        )
+    }
+
+    /// Badge / tag pill background (`--opacity-white-24`/`40` on `.custom-user-profile-theme.theme-light`).
+    pub(super) fn pill_background(&self, hover: bool) -> Rgba {
+        if self.light() {
+            let token = if hover {
+                "--opacity-white-40"
+            } else {
+                "--opacity-white-24"
+            };
+            rgba(self.tokens.color(token))
+        } else {
+            self.token(if hover {
+                "--background-mod-strong"
+            } else {
+                "--background-mod-subtle"
+            })
+        }
+    }
+
+    /// Suggested widget tile background (`addButtonContainer_ECBSq8`, module 8e8eccd890e9820b.css).
+    pub(super) fn tile_background(&self, hover: bool) -> Rgba {
+        if self.light() {
+            rgba(self.tokens.color(if hover {
+                "--opacity-white-40"
+            } else {
+                "--opacity-white-24"
+            }))
+        } else {
+            self.token(if hover {
+                "--background-mod-normal"
+            } else {
+                "--background-mod-subtle"
+            })
+        }
+    }
+
+    /// `.profile_s3DB6Y` composited top/bottom gradient stops (`blend(primary/secondary, overlay)`).
+    pub(super) fn card_gradient_stops(&self) -> (Rgba, Rgba) {
+        (
+            blend_over(self.primary, self.overlay),
+            blend_over(self.secondary, self.overlay),
+        )
+    }
+}
+
+/// Composite translucent `overlay` over opaque `base` without stacking separate layers.
+pub(super) fn blend_over(base: Rgba, overlay: Rgba) -> Rgba {
+    let a = overlay.a;
+    Rgba {
+        r: overlay.r * a + base.r * (1. - a),
+        g: overlay.g * a + base.g * (1. - a),
+        b: overlay.b * a + base.b * (1. - a),
+        a: 1.,
+    }
+}
+
+impl ProfileTheme {
     /// A token as the themed card resolves it: the profile overrides of the stylesheet first, then the theme's own
     /// value mixed with the custom theme colour (base tokens at 50%, text tokens at 25%) when the theme mixes it.
     pub(super) fn token(&self, name: &str) -> Rgba {
@@ -194,6 +261,20 @@ impl ProfileTheme {
             ("--user-profile-background-hover", true) => tinted("--opacity-black-8", 0.078_431_4),
             ("--user-profile-note-background-focus", false) => tinted("--black", 0.3),
             ("--user-profile-note-background-focus", true) => tinted("--white", 0.3),
+            ("--control-primary-background-default", _) => self.button,
+            ("--control-primary-background-hover", false) => {
+                mix_srgb(self.button, opaque(0x000000), 0.9)
+            }
+            ("--control-primary-background-hover", true) => {
+                mix_srgb(self.button, opaque(0xffffff), 0.9)
+            }
+            ("--control-primary-background-active", false) => {
+                mix_srgb(self.button, opaque(0x000000), 0.8)
+            }
+            ("--control-primary-background-active", true) => {
+                mix_srgb(self.button, opaque(0xffffff), 0.8)
+            }
+            ("--control-primary-text-default", _) => rgba(0xffffffff),
             ("--control-secondary-background-default", false) => {
                 rgba(self.tokens.color("--opacity-white-8"))
             }
@@ -212,6 +293,16 @@ impl ProfileTheme {
             ("--control-secondary-background-active", true) => {
                 rgba(self.tokens.color("--opacity-white-84"))
             }
+            ("--control-secondary-border-default", _) => {
+                rgba(self.tokens.color("--control-secondary-border-default"))
+            }
+            ("--control-secondary-text-default", _) => {
+                rgba(self.tokens.color("--control-secondary-text-default"))
+            }
+            ("--input-placeholder-text-default", false) => {
+                tinted("--opacity-white-76", 0.760_784_3)
+            }
+            ("--input-placeholder-text-default", true) => tinted("--opacity-black-76", 0.760_784_3),
             _ => return None,
         })
     }
@@ -397,6 +488,20 @@ pub(super) fn mix_oklab(own: Rgba, with: Rgba, amount_percent: f32) -> Rgba {
     )
 }
 
+/// CSS Color 4 `color-mix(in oklab, first {first_fraction * 100}%, second)` with premultiplied alpha.
+pub(super) fn mix_oklab_fraction(first: Rgba, second: Rgba, first_fraction: f32) -> Rgba {
+    let p1 = first_fraction.clamp(0., 1.);
+    let p2 = 1. - p1;
+    let w1 = p1 * first.a;
+    let w2 = p2 * second.a;
+    let alpha = (w1 + w2).clamp(0., 1.);
+    if alpha <= 0. {
+        return rgba(0);
+    }
+    let (a, b) = (to_oklab(first), to_oklab(second));
+    from_oklab([0, 1, 2].map(|i| (a[i] * w1 + b[i] * w2) / alpha), alpha)
+}
+
 /// chroma.js Lab (D65, the classic constants).
 fn to_lab(colour: Rgba) -> [f64; 3] {
     let linear = |c: f32| {
@@ -447,6 +552,52 @@ fn from_lab(lab: [f64; 3]) -> Rgba {
 fn rgb_u32(colour: Rgba) -> u32 {
     let byte = |c: f32| (c * 255.).round().clamp(0., 255.) as u32;
     (byte(colour.r) << 16) | (byte(colour.g) << 8) | byte(colour.b)
+}
+
+fn mix_srgb(own: Rgba, with: Rgba, own_weight: f32) -> Rgba {
+    let other_weight = 1. - own_weight;
+    Rgba {
+        r: own.r * own_weight + with.r * other_weight,
+        g: own.g * own_weight + with.g * other_weight,
+        b: own.b * own_weight + with.b * other_weight,
+        a: own.a * own_weight + with.a * other_weight,
+    }
+}
+
+/// WCAG contrast ratio (`chroma.contrast` of module 310784).
+fn contrast_ratio(a: Rgba, b: Rgba) -> f32 {
+    let l1 = luminance(a);
+    let l2 = luminance(b);
+    let (hi, lo) = if l1 > l2 { (l1, l2) } else { (l2, l1) };
+    (hi + 0.05) / (lo + 0.05)
+}
+
+/// `wg` of module 543699 (`OB` of module 498596): adjusts the primary colour in Lab steps of `L += +-18` until
+/// its WCAG contrast against `#ffffff` lands within `7..=10` (`HighContrastText` with tolerance `3`).
+pub(super) fn button_color(primary: u32) -> u32 {
+    const WHITE_LUM: f32 = 1.0;
+    const MIN_RATIO: f32 = 7.0;
+    const MAX_RATIO: f32 = 10.0;
+    const LAB_STEP: f64 = 18.0;
+    let base = opaque(0xffffff);
+    let mut colour = opaque(primary);
+    for _ in 0..100 {
+        let ratio = contrast_ratio(base, colour);
+        let too_low = ratio < MIN_RATIO;
+        let too_high = ratio > MAX_RATIO;
+        if !too_low && !too_high {
+            break;
+        }
+        let brighter_than_base = luminance(colour) > WHITE_LUM;
+        let mut lab = to_lab(colour);
+        if (too_high && brighter_than_base) || (too_low && !brighter_than_base) {
+            lab[0] -= LAB_STEP;
+        } else {
+            lab[0] += LAB_STEP;
+        }
+        colour = from_lab(lab);
+    }
+    rgb_u32(colour)
 }
 
 /// `v2` of module 543699: the two colours mixed half and half in Lab, the HSL lightness (rounded to hundredths)
@@ -596,5 +747,33 @@ mod tests {
         // --text-default is overridden to white at .96.
         let default = theme.token("--text-default");
         assert_eq!((default.r, default.a), (1., 0.960_784_3));
+    }
+
+    #[test]
+    fn black_theme_button_and_control_tokens() {
+        assert_eq!(button_color(0x000000), 0x555555);
+        let dark = ProfileTheme::new((0x000000, 0x000000), None, Theme::Darker, false);
+        assert_eq!(
+            hex(dark.token("--control-primary-background-default")),
+            0x555555
+        );
+        assert_eq!(hex(dark.token("--control-primary-text-default")), 0xffffff);
+        let dark_hover = dark.token("--control-primary-background-hover");
+        assert!(dark_hover.r < dark.button.r);
+        let placeholder = dark.token("--input-placeholder-text-default");
+        assert_eq!(placeholder, dark.token("--text-muted"));
+        let secondary_bg = dark.token("--control-secondary-background-default");
+        assert!((secondary_bg.a - 0.08).abs() < 0.01);
+
+        let light = ProfileTheme::new((0xffffff, 0xffffff), None, Theme::Darker, false);
+        assert!(light.light());
+        let light_hover = light.token("--control-primary-background-hover");
+        assert!(light_hover.r > light.button.r);
+        let light_sec = light.token("--control-secondary-background-default");
+        assert!((light_sec.a - 0.72).abs() < 0.01);
+        assert_eq!(
+            light.token("--input-placeholder-text-default"),
+            light.token("--text-muted")
+        );
     }
 }

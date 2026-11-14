@@ -26,6 +26,348 @@ pub struct Picked {
     pub description: Option<String>,
 }
 
+/// A game inside a profile game widget (`289173.js`).
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct WidgetGame {
+    pub game_id: String,
+    pub comment: Option<String>,
+    pub tags: Vec<String>,
+}
+
+/// One section of a Personal widget (`210598.js`).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum PersonalSection {
+    Cover { title: String, subtitle: String },
+    Fields { fields: Vec<PersonalField> },
+}
+
+/// One row/card inside a Personal widget's `FIELDS` section.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct PersonalField {
+    pub title: String,
+    pub description: String,
+}
+
+/// The payload inside `widget.data` for `PUT /users/@me/widgets`.
+#[derive(Clone, Debug, PartialEq)]
+pub enum WidgetData {
+    FavoriteGames {
+        games: Vec<WidgetGame>,
+    },
+    CurrentGames {
+        games: Vec<WidgetGame>,
+    },
+    WantToPlayGames {
+        games: Vec<WidgetGame>,
+    },
+    PlayedGames {
+        games: Vec<WidgetGame>,
+    },
+    Application {
+        application_id: String,
+    },
+    Personal {
+        header: String,
+        sections: Vec<PersonalSection>,
+    },
+    ClipsGallery {
+        clips: Vec<Value>,
+    },
+}
+
+/// An editable widget entry on the user's Board (`widgets` array on profile + `PUT /users/@me/widgets`).
+#[derive(Clone, Debug, PartialEq)]
+pub struct UserWidget {
+    pub id: Option<String>,
+    pub data: WidgetData,
+}
+
+impl WidgetData {
+    pub fn kind(&self) -> &'static str {
+        match self {
+            Self::FavoriteGames { .. } => "favorite_games",
+            Self::CurrentGames { .. } => "current_games",
+            Self::WantToPlayGames { .. } => "want_to_play_games",
+            Self::PlayedGames { .. } => "played_games",
+            Self::Application { .. } => "application",
+            Self::Personal { .. } => "personal",
+            Self::ClipsGallery { .. } => "clips_gallery",
+        }
+    }
+
+    /// Unique key within a user's Board (`getUniqueKey`, `289173.js` / `633075.js`).
+    pub fn unique_key(&self) -> String {
+        match self {
+            Self::Application { application_id } => format!("application-{application_id}"),
+            _ => self.kind().to_owned(),
+        }
+    }
+
+    pub fn max_games(&self) -> usize {
+        match self {
+            Self::FavoriteGames { .. } => 1,
+            Self::CurrentGames { .. } => 5,
+            Self::WantToPlayGames { .. } | Self::PlayedGames { .. } => 20,
+            _ => 0,
+        }
+    }
+
+    pub fn supports_comment(&self) -> bool {
+        matches!(self, Self::FavoriteGames { .. })
+    }
+
+    pub fn supports_tags(&self) -> bool {
+        matches!(self, Self::FavoriteGames { .. } | Self::CurrentGames { .. })
+    }
+
+    pub fn games(&self) -> Option<&[WidgetGame]> {
+        match self {
+            Self::FavoriteGames { games }
+            | Self::CurrentGames { games }
+            | Self::WantToPlayGames { games }
+            | Self::PlayedGames { games } => Some(games),
+            _ => None,
+        }
+    }
+
+    pub fn games_mut(&mut self) -> Option<&mut Vec<WidgetGame>> {
+        match self {
+            Self::FavoriteGames { games }
+            | Self::CurrentGames { games }
+            | Self::WantToPlayGames { games }
+            | Self::PlayedGames { games } => Some(games),
+            _ => None,
+        }
+    }
+
+    pub fn is_discardable(&self) -> bool {
+        match self {
+            Self::FavoriteGames { games }
+            | Self::CurrentGames { games }
+            | Self::WantToPlayGames { games }
+            | Self::PlayedGames { games } => games.is_empty(),
+            Self::Application { .. } => false,
+            Self::Personal { sections, .. } => sections.iter().all(|section| match section {
+                PersonalSection::Cover { title, subtitle } => {
+                    title.trim().is_empty() && subtitle.trim().is_empty()
+                }
+                PersonalSection::Fields { fields } => fields
+                    .iter()
+                    .all(|f| f.title.trim().is_empty() && f.description.trim().is_empty()),
+            }),
+            Self::ClipsGallery { clips } => clips.is_empty(),
+        }
+    }
+
+    pub fn is_valid(&self) -> bool {
+        match self {
+            Self::FavoriteGames { games }
+            | Self::CurrentGames { games }
+            | Self::WantToPlayGames { games }
+            | Self::PlayedGames { games } => !games.is_empty() && games.len() <= self.max_games(),
+            Self::Application { application_id } => !application_id.is_empty(),
+            Self::Personal { header, .. } => !header.trim().is_empty() && !self.is_discardable(),
+            Self::ClipsGallery { clips } => !clips.is_empty(),
+        }
+    }
+
+    pub fn to_json(&self) -> Value {
+        let games_json = |games: &[WidgetGame]| -> Vec<Value> {
+            games
+                .iter()
+                .map(|game| {
+                    let mut entry = serde_json::Map::new();
+                    entry.insert("game_id".into(), json!(game.game_id));
+                    if self.supports_comment()
+                        && let Some(comment) = game.comment.as_deref()
+                        && !comment.is_empty()
+                    {
+                        entry.insert("comment".into(), json!(comment));
+                    }
+                    if self.supports_tags() && !game.tags.is_empty() {
+                        entry.insert("tags".into(), json!(game.tags));
+                    }
+                    Value::Object(entry)
+                })
+                .collect()
+        };
+        match self {
+            Self::FavoriteGames { games }
+            | Self::CurrentGames { games }
+            | Self::WantToPlayGames { games }
+            | Self::PlayedGames { games } => json!({
+                "type": self.kind(),
+                "games": games_json(games),
+            }),
+            Self::Application { application_id } => json!({
+                "type": "application",
+                "application_id": application_id,
+            }),
+            Self::Personal { header, sections } => {
+                let encoded_sections: Vec<Value> = sections
+                    .iter()
+                    .filter_map(|section| match section {
+                        PersonalSection::Cover { title, subtitle }
+                            if !title.trim().is_empty() || !subtitle.trim().is_empty() =>
+                        {
+                            Some(json!({
+                                "type": "cover",
+                                "title": title,
+                                "subtitle": subtitle,
+                            }))
+                        }
+                        PersonalSection::Fields { fields } => {
+                            let non_empty: Vec<Value> = fields
+                                .iter()
+                                .filter(|f| {
+                                    !f.title.trim().is_empty() || !f.description.trim().is_empty()
+                                })
+                                .map(|f| {
+                                    json!({
+                                        "title": f.title,
+                                        "description": f.description,
+                                    })
+                                })
+                                .collect();
+                            (!non_empty.is_empty()).then(|| {
+                                json!({
+                                    "type": "fields",
+                                    "fields": non_empty,
+                                })
+                            })
+                        }
+                        _ => None,
+                    })
+                    .collect();
+                json!({
+                    "type": "personal",
+                    "header": header,
+                    "sections": encoded_sections,
+                })
+            }
+            Self::ClipsGallery { clips } => json!({
+                "type": "clips_gallery",
+                "clips": clips,
+            }),
+        }
+    }
+}
+
+impl UserWidget {
+    pub fn from_value(value: &Value) -> Option<Self> {
+        let id = value["id"].as_str().map(str::to_owned);
+        let data = &value["data"];
+        let parse_games = || -> Vec<WidgetGame> {
+            data["games"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .filter_map(|g| {
+                    let game_id = g["game_id"].as_str()?.to_owned();
+                    let comment = g["comment"]
+                        .as_str()
+                        .filter(|s| !s.is_empty())
+                        .map(str::to_owned);
+                    let tags = g["tags"]
+                        .as_array()
+                        .into_iter()
+                        .flatten()
+                        .filter_map(|t| t.as_str().map(str::to_owned))
+                        .collect();
+                    Some(WidgetGame {
+                        game_id,
+                        comment,
+                        tags,
+                    })
+                })
+                .collect()
+        };
+        let parsed = match data["type"].as_str()? {
+            "favorite_games" => WidgetData::FavoriteGames {
+                games: parse_games(),
+            },
+            "current_games" => WidgetData::CurrentGames {
+                games: parse_games(),
+            },
+            "want_to_play_games" => WidgetData::WantToPlayGames {
+                games: parse_games(),
+            },
+            "played_games" => WidgetData::PlayedGames {
+                games: parse_games(),
+            },
+            "application" => WidgetData::Application {
+                application_id: data["application_id"].as_str()?.to_owned(),
+            },
+            "personal" => {
+                let header = data["header"].as_str().unwrap_or_default().to_owned();
+                let sections = data["sections"]
+                    .as_array()
+                    .into_iter()
+                    .flatten()
+                    .filter_map(|s| match s["type"].as_str()? {
+                        "cover" => Some(PersonalSection::Cover {
+                            title: s["title"].as_str().unwrap_or_default().to_owned(),
+                            subtitle: s["subtitle"].as_str().unwrap_or_default().to_owned(),
+                        }),
+                        "fields" => Some(PersonalSection::Fields {
+                            fields: s["fields"]
+                                .as_array()
+                                .into_iter()
+                                .flatten()
+                                .map(|f| PersonalField {
+                                    title: f["title"].as_str().unwrap_or_default().to_owned(),
+                                    description: f["description"]
+                                        .as_str()
+                                        .unwrap_or_default()
+                                        .to_owned(),
+                                })
+                                .collect(),
+                        }),
+                        _ => None,
+                    })
+                    .collect();
+                WidgetData::Personal { header, sections }
+            }
+            "clips_gallery" => WidgetData::ClipsGallery {
+                clips: data["clips"].as_array().cloned().unwrap_or_default(),
+            },
+            _ => return None,
+        };
+        Some(Self { id, data: parsed })
+    }
+
+    pub fn to_json(&self) -> Value {
+        let mut obj = serde_json::Map::new();
+        if let Some(id) = &self.id {
+            obj.insert("id".into(), json!(id));
+        }
+        obj.insert("data".into(), self.data.to_json());
+        Value::Object(obj)
+    }
+}
+
+pub fn parse_widgets(profile: &Value) -> Vec<UserWidget> {
+    profile["widgets"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(UserWidget::from_value)
+        .collect()
+}
+
+/// Filter out discardable empty widgets matching module 61881 (`getSaveablePendingWidgets`).
+pub fn saveable_widgets(widgets: &[UserWidget]) -> Vec<UserWidget> {
+    widgets
+        .iter()
+        .filter(|w| !w.data.is_discardable())
+        .cloned()
+        .collect()
+}
+
+pub fn widgets_to_json(widgets: &[UserWidget]) -> Vec<Value> {
+    widgets.iter().map(UserWidget::to_json).collect()
+}
+
 /// One profile's pending changes. `guild` is `None` for the main profile.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Pending {
@@ -43,6 +385,10 @@ pub struct Pending {
     pub profile_effect: Option<Option<Id>>,
     pub profile_frame: Option<Option<Id>>,
     pub display_name_styles: Option<Option<DisplayNameStyles>>,
+    /// Server Tag selection (`PUT /users/@me/clan`): `None` untouched, `Some(None)` cleared, `Some(Some(id))` set.
+    pub primary_guild_id: Option<Option<Id>>,
+    /// Saveable Board widgets (`PUT /users/@me/widgets`): `None` untouched, `Some(list)` changed.
+    pub widgets: Option<Vec<UserWidget>>,
 }
 
 /// The collectible sku ids the profile already carries, so a change of one kind keeps the other
@@ -65,10 +411,14 @@ impl Pending {
         *self == Self::new(self.guild)
     }
 
-    /// Whether the change needs Nitro: a name style or a profile theme.
+    /// Whether the change needs Nitro: a name style, a profile theme, or a personal widget.
     pub fn needs_premium(&self) -> bool {
         matches!(self.display_name_styles, Some(Some(_)))
             || matches!(self.theme_colors, Some(Some(_)))
+            || self.widgets.as_ref().is_some_and(|list| {
+                list.iter()
+                    .any(|w| matches!(w.data, WidgetData::Personal { .. }))
+            })
     }
 
     /// The `PATCH /users/@me` body (module 631670 `_L` over module 435911 `o`), or `None` when nothing in it
@@ -168,13 +518,53 @@ impl Pending {
         })
     }
 
-    /// Every request a Save sends, in the order the bundle sends them: the account or member write, then the
-    /// profile write.
+    /// The Server Tag update (`PUT /users/@me/clan`, module 933725).
+    pub fn clan_write(&self) -> Option<Write> {
+        if self.guild.is_some() {
+            return None;
+        }
+        let choice = self.primary_guild_id.as_ref()?;
+        let body = match choice {
+            Some(guild_id) => json!({
+                "identity_guild_id": guild_id.to_string(),
+                "identity_enabled": true,
+            }),
+            None => json!({
+                "identity_guild_id": Value::Null,
+                "identity_enabled": false,
+            }),
+        };
+        Some(Write {
+            method: Method::PUT,
+            route: "/users/@me/clan".into(),
+            body,
+        })
+    }
+
+    /// The widgets update (`PUT /users/@me/widgets`, module 958805).
+    pub fn widgets_write(&self) -> Option<Write> {
+        if self.guild.is_some() {
+            return None;
+        }
+        let widgets = self.widgets.as_ref()?;
+        if !widgets.iter().all(|w| w.data.is_valid()) {
+            return None;
+        }
+        Some(Write {
+            method: Method::PUT,
+            route: "/users/@me/widgets".into(),
+            body: json!({ "widgets": widgets_to_json(widgets) }),
+        })
+    }
+
+    /// Every request a Save sends, in the order the bundle sends them: account or member, profile, clan, widgets.
     pub fn writes(&self, equipped: &Equipped) -> Vec<Write> {
         [
             self.account_write(),
             self.member_write(),
             self.profile_write(equipped),
+            self.clan_write(),
+            self.widgets_write(),
         ]
         .into_iter()
         .flatten()
@@ -381,5 +771,61 @@ mod tests {
         assert_eq!(writes.len(), 2);
         assert_eq!(writes[0].route, "/users/@me");
         assert_eq!(writes[1].route, "/users/@me/profile");
+    }
+
+    #[test]
+    fn clan_write_sets_and_clears_server_tag() {
+        let mut p = Pending::new(None);
+        p.primary_guild_id = Some(Some(555));
+        let w = p.clan_write().unwrap();
+        assert_eq!(w.method, Method::PUT);
+        assert_eq!(w.route, "/users/@me/clan");
+        assert_eq!(
+            w.body,
+            json!({"identity_guild_id": "555", "identity_enabled": true})
+        );
+        p.primary_guild_id = Some(None);
+        let clear = p.clan_write().unwrap();
+        assert_eq!(
+            clear.body,
+            json!({"identity_guild_id": null, "identity_enabled": false})
+        );
+        p.guild = Some(1);
+        assert!(p.clan_write().is_none());
+    }
+
+    #[test]
+    fn widgets_write_serializes_game_and_application_widgets() {
+        let mut p = Pending::new(None);
+        p.widgets = Some(vec![
+            UserWidget {
+                id: None,
+                data: WidgetData::Application {
+                    application_id: "1346069614634864772".into(),
+                },
+            },
+            UserWidget {
+                id: Some("w-1".into()),
+                data: WidgetData::FavoriteGames {
+                    games: vec![WidgetGame {
+                        game_id: "1402418696126992445".into(),
+                        comment: Some("main".into()),
+                        tags: vec!["love_it".into()],
+                    }],
+                },
+            },
+        ]);
+        let w = p.widgets_write().unwrap();
+        assert_eq!(w.method, Method::PUT);
+        assert_eq!(w.route, "/users/@me/widgets");
+        assert_eq!(
+            w.body,
+            json!({
+                "widgets": [
+                    { "data": { "type": "application", "application_id": "1346069614634864772" } },
+                    { "id": "w-1", "data": { "type": "favorite_games", "games": [ { "game_id": "1402418696126992445", "comment": "main", "tags": ["love_it"] } ] } }
+                ]
+            })
+        );
     }
 }

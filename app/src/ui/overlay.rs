@@ -2559,4 +2559,46 @@ mod tests {
         assert_eq!(voice_icons(&server_deaf), ["overlay_server_deafened"]);
         assert!(voice_icons(&row(4)).is_empty());
     }
+
+    #[test]
+    fn quick_actions_and_text_chat_default_boxes_clear_at_720p_and_1080p() {
+        let mut layout = layout::Layout::default();
+        layout.ensure(&mut new_widget_id);
+        let quick = layout.widget(layout::QUICK_ACTIONS).unwrap();
+        let chat = layout.widget(layout::TEXT_CHAT).unwrap();
+        let qa_h = crate::ui::overlay_chat::QUICK_ACTIONS_WRAPPER_HEIGHT;
+        assert_eq!(qa_h, 84.);
+        let extras_h = 10. + 24.;
+
+        let q720 = layout::anchor_pixels(quick.anchor, 1280., 720.);
+        let c720 = layout::anchor_pixels(chat.anchor, 1280., 720.);
+        let (_, ch720) =
+            dc_overlay::drag::requested_size(chat.size.pixels(1280., 720.), chat.min_size);
+        let qe720 = dc_overlay::drag::resolve(q720, 1280., 720., 356., qa_h);
+        let ce720 = dc_overlay::drag::resolve(c720, 1280., 720., 500., ch720.unwrap());
+        assert_eq!((qe720.top, qe720.top + qa_h), (14., 98.));
+        assert_eq!((ce720.top, ce720.top + ch720.unwrap()), (100., 472.));
+        assert!(qe720.top + qa_h < ce720.top);
+
+        let q1080 = layout::anchor_pixels(quick.anchor, 1920., 1080.);
+        let c1080 = layout::anchor_pixels(chat.anchor, 1920., 1080.);
+        let (_, ch1080) =
+            dc_overlay::drag::requested_size(chat.size.pixels(1920., 1080.), chat.min_size);
+        let qe1080 = dc_overlay::drag::resolve(q1080, 1920., 1080., 356., qa_h);
+        let ce1080 = dc_overlay::drag::resolve(c1080, 1920., 1080., 500., ch1080.unwrap());
+        assert_eq!((qe1080.top, qe1080.top + qa_h), (21., 105.));
+        assert_eq!((ce1080.top, ce1080.top + ch1080.unwrap()), (151., 523.));
+        assert!(qe1080.top + qa_h + extras_h < ce1080.top);
+    }
+
+    #[test]
+    fn locked_overlay_hides_quick_actions_and_text_chat() {
+        let mut layout = layout::Layout::default();
+        layout.ensure(&mut new_widget_id);
+        let chat = layout.widget(layout::TEXT_CHAT).unwrap();
+        let quick = layout.widget(layout::QUICK_ACTIONS).unwrap();
+        assert!(!chat.pinned);
+        assert!(!quick.pinned);
+        assert!(!dc_overlay::widgets::chat_container_shown(true, true, true));
+    }
 }

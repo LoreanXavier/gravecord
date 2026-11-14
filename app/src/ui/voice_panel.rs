@@ -6,6 +6,7 @@
 //! DeepFilterNet, the owner's decision in DECISIONS.md.
 
 mod ping_graph;
+pub(crate) mod rtc_debug;
 
 use super::motion::{PopKind, PopSide, Popout as _};
 use super::{Root, color, icon, tooltip};
@@ -21,6 +22,8 @@ const TROUBLESHOOTING: &str = "https://support.discord.com/hc/en-us/articles/360
 const NOISE_ARTICLE: &str = "https://support.discord.com/hc/en-us/articles/360040843952";
 const ENCRYPTION_ARTICLE: &str = "https://support.discord.com/hc/en-us/articles/25968222946071";
 const DEEP_FILTER_NET: &str = "https://github.com/Rikorose/DeepFilterNet";
+const DEEP_FILTER_NET_NAME: &str = "DeepFilterNet";
+const PRIVACY_CODE_FONT: &str = "Consolas";
 
 /// `_pings` keeps fewer than this many.
 const PINGS_KEPT: usize = 200;
@@ -76,6 +79,16 @@ impl CallStats {
 
     pub fn set_privacy_code(&mut self, code: String) {
         self.privacy_code = Some(code);
+    }
+
+    #[cfg(test)]
+    pub fn set_hostname(&mut self, hostname: String) {
+        self.hostname = Some(hostname);
+    }
+
+    #[cfg(test)]
+    pub(super) fn privacy_code(&self) -> Option<&str> {
+        self.privacy_code.as_deref()
     }
 
     /// `getAveragePing`: of the first twenty kept, as the official slice reads.
@@ -162,20 +175,76 @@ fn panel_height(code_known: bool, graph: bool) -> f32 {
 
 const GRAPH_BLOCK: f32 = ping_graph::CONTAINER_HEIGHT + 16. + 18. + 8.;
 
+/// Splits an intl message around its `$link` run so any locale preserves link placement.
+fn split_link_message(key: &str, values: &dc_intl::Args<'_>) -> (String, String, String) {
+    let mut before = String::new();
+    let mut link = String::new();
+    let mut after = String::new();
+    let mut seen_link = false;
+    for (part, tag) in dc_intl::format_runs(key, values) {
+        if !seen_link && tag.as_deref() == Some("$link") {
+            link.push_str(&part);
+            seen_link = true;
+        } else if seen_link {
+            after.push_str(&part);
+        } else {
+            before.push_str(&part);
+        }
+    }
+    (before, link, after)
+}
+
 /// The troubleshooting line under the numbers (`3pFz1P`, or `vggaMt` while no loss is known), split around its link.
-fn advice(loss_known: bool) -> (String, &'static str, &'static str) {
-    let before = if loss_known {
-        format!(
-            "You may notice delayed audio at {BAD_PING} ms or higher. You may sound robotic if your packet loss rate \
-             is over {BAD_LOSS}%. If the problem persists, disconnect and try again. See our "
+fn advice(loss_known: bool) -> (String, String, String) {
+    if loss_known {
+        split_link_message(
+            "3pFz1P",
+            &[
+                ("badPing", dc_intl::Arg::Num(f64::from(BAD_PING))),
+                ("badLossRate", dc_intl::Arg::Num(f64::from(BAD_LOSS))),
+                ("url", TROUBLESHOOTING.into()),
+            ],
         )
     } else {
-        format!(
-            "You may notice delayed audio at {BAD_PING} ms or higher. If the problem persists, disconnect and try \
-             again. See our "
+        split_link_message(
+            "vggaMt",
+            &[
+                ("badPing", dc_intl::Arg::Num(f64::from(BAD_PING))),
+                ("url", TROUBLESHOOTING.into()),
+            ],
         )
-    };
-    (before, "troubleshooting guide", " for more assistance.")
+    }
+}
+
+/// Port of modules `926641` (`h.k`), `259374` (`s`), and `83942` (`!c.c()`):
+/// `(show_tab_bar, show_privacy_tab)`.
+pub(crate) fn connection_tab_flags(
+    connected: bool,
+    is_stage: bool,
+    dave_version: u16,
+    has_others: bool,
+) -> (bool, bool) {
+    let encrypted = connected && !is_stage && dave_version != 0;
+    (encrypted, encrypted && has_others)
+}
+
+/// Shared 32px secondary button styling for `[Debug]`, `[Upload Logs]`, `[Copy]`, and mic `[Test]`.
+fn secondary_button(id: &'static str) -> gpui::Stateful<gpui::Div> {
+    div()
+        .id(id)
+        .h(px(32.))
+        .rounded(px(8.))
+        .border_1()
+        .border_color(color("--control-secondary-border-default"))
+        .bg(color("--control-secondary-background-default"))
+        .flex()
+        .items_center()
+        .justify_center()
+        .gap(px(4.))
+        .text_size(px(14.))
+        .line_height(px(18.))
+        .font_weight(FontWeight(500.))
+        .text_color(color("--control-secondary-text-default"))
 }
 
 /// The code in chunks of five (`chunkSize: 5, desiredLength: 30`).
@@ -297,6 +366,9 @@ impl Root {
         let others = call.is_some_and(|call| {
             call.has_others(self.stores.current_user.as_ref().map(|user| user.id))
         });
+        let is_stage =
+            call.is_some_and(|call| self.is_stage_voice_channel(call.guild, call.channel));
+        let dave_version = call.map_or(0, |call| call.dave_version);
         // `RTCConnection.hostname`, from the voice server the call was handed.
         let hostname = call
             .and_then(|call| {
@@ -308,10 +380,9 @@ impl Root {
             .map(|server| short_hostname(&server.endpoint).to_owned())
             .or_else(|| stats.hostname.clone())
             .unwrap_or_default();
-        // `k`: the negotiated DAVE version is not 0. This client only completes a connection on DAVE.
-        let encrypted = connected;
-        let tabs = others && encrypted;
-        let tab = if tabs {
+        let (encrypted, show_privacy_tab) =
+            connection_tab_flags(connected, is_stage, dave_version, others);
+        let tab = if show_privacy_tab {
             tab
         } else {
             if tab != Tab::Connection {
@@ -326,7 +397,7 @@ impl Root {
             self.tick_ping_graph(window.scale_factor(), cx);
         }
         let code_known = stats.privacy_code.is_some();
-        let panel = if tabs {
+        let panel = if encrypted {
             panel_height(code_known, developer)
         } else {
             0.
@@ -365,8 +436,12 @@ impl Root {
                     )
                 })
         };
-        let connection_tab = tab_item("voice-tab-connection", "Connection", Tab::Connection);
-        let privacy_tab = tab_item("voice-tab-privacy", "Privacy", Tab::Privacy);
+        let connection_tab = tab_item(
+            "voice-tab-connection",
+            dc_intl::t!("MBY1Pm"),
+            Tab::Connection,
+        );
+        let privacy_tab = tab_item("voice-tab-privacy", dc_intl::t!("zC6o3s"), Tab::Privacy);
         let separator = || div().h(px(1.)).bg(color("--border-subtle"));
         // `securedBanner_ymaupl card_qCN-Ri cardSuccess`: 24 tall, padding 4px 8px, radius 8, pushed to the bottom
         // (`container > :last-child {margin-top: auto}`).
@@ -396,14 +471,16 @@ impl Root {
         };
         let content: AnyElement = match tab {
             Tab::Connection => {
-                let stat = |label: &str, value: String| {
+                let stat = |key: &'static str, var: &'static str, value: String| {
                     div()
                         .text_size(px(12.))
                         .line_height(px(16.))
                         .text_color(color("--text-default"))
-                        .flex()
-                        .child(label.to_owned())
-                        .child(div().font_weight(FontWeight(600.)).child(value))
+                        .child(super::bold_message(
+                            key,
+                            &[(var, value.into())],
+                            FontWeight(600.),
+                        ))
                 };
                 let (before, link, after) = advice(stats.loss.is_some());
                 let uploading = self.panel.uploading;
@@ -446,14 +523,18 @@ impl Root {
                         div()
                             .flex()
                             .flex_col()
-                            .child(stat("Average ping: ", format!("{:.0} ms", stats.average())))
+                            .child(stat(
+                                "X58/lN",
+                                "averagePing",
+                                format!("{:.0}", stats.average()),
+                            ))
                             .children(
                                 stats
                                     .last()
-                                    .map(|last| stat("Last ping: ", format!("{last:.0} ms"))),
+                                    .map(|last| stat("6iv2TF", "lastPing", format!("{last:.0}"))),
                             )
                             .children(stats.loss.map(|loss| {
-                                stat("Outbound packet loss rate: ", format!("{loss:.1}%"))
+                                stat("VIBJM+", "outboundLossRate", format!("{loss:.1}"))
                             })),
                     )
                     .child(
@@ -464,8 +545,8 @@ impl Root {
                             .child(self.text_with_link(
                                 "voice-panel-guide",
                                 &before,
-                                link,
-                                after,
+                                &link,
+                                &after,
                                 cx,
                                 |_, cx| cx.open_url(TROUBLESHOOTING),
                             )),
@@ -473,55 +554,68 @@ impl Root {
                     .child(separator())
                     .child(
                         div()
-                            .id("voice-panel-upload")
-                            .h(px(32.))
-                            .rounded(px(8.))
-                            .border_1()
-                            .border_color(color("--control-secondary-border-default"))
-                            .bg(color("--control-secondary-background-default"))
                             .flex()
-                            .items_center()
-                            .justify_center()
-                            .gap(px(4.))
-                            .text_size(px(14.))
-                            .line_height(px(18.))
-                            .font_weight(FontWeight(500.))
-                            .text_color(color("--control-secondary-text-default"))
-                            .when(!uploading && !done, |this| {
-                                this.cursor_pointer()
-                                    .hover(|style| {
-                                        style.bg(color("--control-secondary-background-hover"))
+                            .gap(px(8.))
+                            .when(developer, |this| {
+                                this.child(
+                                    secondary_button("voice-panel-debug")
+                                        .flex_1()
+                                        .cursor_pointer()
+                                        .hover(|style| {
+                                            style.bg(color("--control-secondary-background-hover"))
+                                        })
+                                        .on_click(cx.listener(|this, _, _, cx| {
+                                            this.close_panel_popout(cx);
+                                            this.open_rtc_debug(None, cx);
+                                        }))
+                                        .child(icon(
+                                            "voice_panel_debug",
+                                            16.,
+                                            "--control-secondary-text-default",
+                                        ))
+                                        .child(dc_intl::t!("KBoWg9")),
+                                )
+                            })
+                            .child(
+                                secondary_button("voice-panel-upload")
+                                    .flex_1()
+                                    .when(uploading, |this| this.opacity(0.6))
+                                    .when(!uploading && !done, |this| {
+                                        this.cursor_pointer()
+                                            .hover(|style| {
+                                                style.bg(color(
+                                                    "--control-secondary-background-hover",
+                                                ))
+                                            })
+                                            .on_click(cx.listener(|this, _, _, cx| {
+                                                this.panel.uploading = true;
+                                                this.voice_upload_logs(cx);
+                                                cx.notify();
+                                            }))
                                     })
-                                    .on_click(cx.listener(|this, _, _, cx| {
-                                        this.panel.uploading = true;
-                                        this.voice_upload_logs(cx);
-                                        cx.notify();
-                                    }))
-                            })
-                            // `success` swaps the upload icon for `CircleCheckIcon`.
-                            .when(!uploading, |this| {
-                                this.child(icon(
-                                    if done {
-                                        "circle_check"
+                                    // `success` swaps the upload icon for `CircleCheckIcon`.
+                                    .when(!uploading, |this| {
+                                        this.child(icon(
+                                            if done {
+                                                "circle_check"
+                                            } else {
+                                                "voice_panel_upload_logs"
+                                            },
+                                            16.,
+                                            "--control-secondary-text-default",
+                                        ))
+                                    })
+                                    .child(if done {
+                                        dc_intl::t!("i4jeWR")
                                     } else {
-                                        "voice_panel_upload_logs"
-                                    },
-                                    16.,
-                                    "--control-secondary-text-default",
-                                ))
-                            })
-                            .child(if done {
-                                "Done"
-                            } else if uploading {
-                                "Uploading"
-                            } else {
-                                "Upload Logs"
-                            }),
+                                        dc_intl::t!("EbwFfR")
+                                    }),
+                            ),
                     )
                     .child(banner(if encrypted {
-                        "End-to-end encrypted"
+                        dc_intl::t!("3BogKe")
                     } else {
-                        "Secure Connection"
+                        dc_intl::t!("ETIVvg")
                     }))
                     .into_any_element()
             }
@@ -529,6 +623,24 @@ impl Root {
                 let code = stats.privacy_code.clone().unwrap_or_default();
                 let chunks = code_chunks(&code);
                 let copied = self.panel.copied_at.is_some();
+                let (e2ee_before, e2ee_link, e2ee_after) =
+                    split_link_message("wKxADe", &[("helpArticle", ENCRYPTION_ARTICLE.into())]);
+                let code_row = |slice: &[String]| {
+                    div()
+                        .flex()
+                        .gap(px(8.))
+                        .children(slice.iter().cloned().map(|chunk| {
+                            div()
+                                .flex_1()
+                                .text_center()
+                                .text_size(px(14.))
+                                .line_height(px(22.))
+                                .font_weight(FontWeight(500.))
+                                .font_family(PRIVACY_CODE_FONT)
+                                .text_color(color("--text-default"))
+                                .child(chunk)
+                        }))
+                };
                 div()
                     .min_h(px(panel))
                     .flex()
@@ -540,7 +652,7 @@ impl Root {
                             .line_height(px(18.))
                             .font_weight(FontWeight(600.))
                             .text_color(color("--text-strong"))
-                            .child("Voice Privacy Code"),
+                            .child(dc_intl::t!("cTQI5t")),
                     )
                     .child(
                         div()
@@ -549,39 +661,36 @@ impl Root {
                             .text_color(color("--text-muted"))
                             .child(self.text_with_link(
                                 "voice-panel-e2ee",
-                                "A new code is generated when people join or leave this call. ",
-                                "Learn more about end-to-end encryption.",
-                                "",
+                                &e2ee_before,
+                                &e2ee_link,
+                                &e2ee_after,
                                 cx,
                                 |_, cx| cx.open_url(ENCRYPTION_ARTICLE),
                             )),
                     )
                     .child(
                         div()
-                            .h(px(104.))
+                            .min_h(px(104.))
                             .rounded(px(8.))
                             .bg(color("--background-base-lower"))
                             .when(code_known, |this| {
-                                this.p(px(8.))
+                                let first = &chunks[..chunks.len().min(3)];
+                                let rest = chunks.get(3..).unwrap_or_default();
+                                this.p(px(12.))
                                     .flex()
-                                    .flex_wrap()
-                                    .items_center()
+                                    .flex_col()
                                     .justify_center()
-                                    .children(chunks.into_iter().map(|chunk| {
-                                        div()
-                                            .w(px(84.))
-                                            .text_center()
-                                            .text_size(px(14.))
-                                            .line_height(px(22.))
-                                            .font_family("Consolas")
-                                            .text_color(color("--text-default"))
-                                            .child(chunk)
-                                    }))
+                                    .gap(px(16.))
+                                    .child(code_row(first))
+                                    .when(!rest.is_empty(), |col| {
+                                        col.child(separator()).child(code_row(rest))
+                                    })
                             })
                             // While the epoch has no authenticator the grid holds the 32px wandering cubes at its
                             // start (`loading_PpKUqH` in the dump).
                             .when(!code_known, |this| {
-                                this.flex()
+                                this.p(px(12.))
+                                    .flex()
                                     .items_center()
                                     .child(super::login::wandering_cubes())
                             }),
@@ -589,26 +698,19 @@ impl Root {
                     // The Copy button exists only once there is a code (`null != s`).
                     .when(code_known, |this| {
                         this.child(
-                            div()
-                                .id("voice-panel-copy")
-                                .h(px(32.))
-                                .rounded(px(8.))
-                                .border_1()
-                                .border_color(color("--control-secondary-border-default"))
-                                .bg(color("--control-secondary-background-default"))
+                            secondary_button("voice-panel-copy")
                                 .cursor_pointer()
-                                .flex()
-                                .items_center()
-                                .justify_center()
-                                .text_size(px(14.))
-                                .font_weight(FontWeight(500.))
-                                .text_color(color("--control-secondary-text-default"))
+                                .hover(|style| {
+                                    style.bg(color("--control-secondary-background-hover"))
+                                })
                                 .on_click(cx.listener(move |this, _, _, cx| {
                                     let spaced = code_chunks(&code).join(" ");
                                     cx.write_to_clipboard(ClipboardItem::new_string(spaced));
                                     this.panel.copied_at = Some(Instant::now());
                                     cx.spawn(async move |this, cx| {
-                                        cx.background_executor().timer(Duration::from_secs(2)).await;
+                                        cx.background_executor()
+                                            .timer(Duration::from_secs(2))
+                                            .await;
                                         let _ = this.update(cx, |this, cx| {
                                             this.panel.copied_at = None;
                                             cx.notify();
@@ -617,7 +719,20 @@ impl Root {
                                     .detach();
                                     cx.notify();
                                 }))
-                                .child(if copied { "Copied" } else { "Copy" }),
+                                .child(icon(
+                                    if copied {
+                                        "circle_check"
+                                    } else {
+                                        "menu_copy_text"
+                                    },
+                                    16.,
+                                    "--control-secondary-text-default",
+                                ))
+                                .child(if copied {
+                                    dc_intl::t!("t5VZ88")
+                                } else {
+                                    dc_intl::t!("OpuAlK")
+                                }),
                         )
                     })
                     .child(separator())
@@ -626,12 +741,9 @@ impl Root {
                             .text_size(px(12.))
                             .line_height(px(16.))
                             .text_color(color("--text-subtle"))
-                            .child(
-                                "Only you and your friends on this call can hear you. Nobody else \u{2014} not \
-                                 even Wumpus \u{2014} can listen in!",
-                            ),
+                            .child(dc_intl::t!("B9JNsl")),
                     )
-                    .child(banner("End-to-end encrypted"))
+                    .child(banner(dc_intl::t!("3BogKe")))
                     .into_any_element()
             }
         };
@@ -653,15 +765,17 @@ impl Root {
             .flex()
             .flex_col()
             .gap(px(16.))
-            .child(
-                div()
-                    .flex()
-                    .gap(px(24.))
-                    .border_b_1()
-                    .border_color(color("--border-subtle"))
-                    .child(connection_tab)
-                    .when(tabs, |this| this.child(privacy_tab)),
-            )
+            .when(encrypted, |this| {
+                this.child(
+                    div()
+                        .flex()
+                        .gap(px(24.))
+                        .border_b_1()
+                        .border_color(color("--border-subtle"))
+                        .child(connection_tab)
+                        .when(show_privacy_tab, |bar| bar.child(privacy_tab)),
+                )
+            })
             .child(content)
             .into_any_element()
     }
@@ -700,42 +814,88 @@ impl Root {
         .detach();
     }
 
-    /// Harness only: the connection popout with a ping history (`pinggraph open | clear | points N | screenshot |
-    /// long | host <endpoint> | state`). Nothing is sent.
+    /// Harness only: the connection popout with a ping history (`pinggraph open | privacy | peer | solo | code |
+    /// rtcdebug | clear | points N | screenshot | long | host <endpoint> | state`). Nothing is sent.
     #[cfg(feature = "capture")]
     pub(crate) fn script_ping_history(&mut self, args: &[&str], cx: &mut Context<Self>) -> String {
-        if ["open"] == args {
-            self.panel.popout = Some(Popout::Connection(Tab::Connection));
-            cx.notify();
-            return "the connection popout is open".to_owned();
+        match args {
+            ["open"] => {
+                self.panel.popout = Some(Popout::Connection(Tab::Connection));
+                cx.notify();
+                return "the connection popout is open".to_owned();
+            }
+            ["open", "privacy"] | ["privacy"] => {
+                self.panel.popout = Some(Popout::Connection(Tab::Privacy));
+                cx.notify();
+                return "the privacy tab is open".to_owned();
+            }
+            ["rtcdebug", "open"] => {
+                self.close_panel_popout(cx);
+                self.open_rtc_debug(None, cx);
+                return "rtc debug window opened".to_owned();
+            }
+            ["rtcdebug", "close"] => {
+                self.close_rtc_debug(cx);
+                return "rtc debug window closed".to_owned();
+            }
+            ["rtcdebug", "section", section] => {
+                self.close_panel_popout(cx);
+                self.open_rtc_debug(Some((*section).to_owned()), cx);
+                return format!("rtc debug opened at {section}");
+            }
+            ["rtcdebug", "localip"] => {
+                let mut data = rtc_debug::build_live_data(self, cx);
+                if let Some(transport) = data
+                    .default_stats
+                    .first_mut()
+                    .and_then(|conn| conn.transport.as_mut())
+                {
+                    transport.local_address = Some("192.168.1.44:50000".to_owned());
+                }
+                rtc_debug::set_debug_stats_override(Some(data), cx);
+                return "rtc debug local_address override installed".to_owned();
+            }
+            ["rtcdebug", "streamer", state] => {
+                let on = matches!(*state, "on" | "1" | "true");
+                let user = self.stores.current_user.as_ref().map(|user| user.id);
+                crate::notifications::set_switch("streaming_enable_streamer_mode", on, user);
+                crate::notifications::set_switch(
+                    "streamer_mode_hide_personal_information",
+                    on,
+                    user,
+                );
+                cx.notify();
+                return format!("rtc debug streamer mode: {on}");
+            }
+            _ => {}
         }
+        let me = self.stores.current_user.as_ref().map(|user| user.id);
         let Some(call) = self.call.as_mut() else {
             return "no call: run dmcall fake-join first".to_owned();
         };
         let now = now_ms();
-        let stats = &mut call.stats;
         let line = match args {
             ["clear"] => {
-                stats.pings.clear();
+                call.stats.pings.clear();
                 "no pings".to_owned()
             }
             ["points", count] => {
                 let Ok(count) = count.parse::<usize>() else {
                     return format!("cannot read {count}");
                 };
-                stats.pings.clear();
+                call.stats.pings.clear();
                 for n in 0..count {
-                    stats.ping_at(
+                    call.stats.ping_at(
                         now - 5_000. * (count - n) as f64,
                         98. + (n % 3) as f64 * 3.,
                     );
                 }
-                format!("{} pings", stats.pings.len())
+                format!("{} pings", call.stats.pings.len())
             }
             // Shaped like the owner's screenshot: about 100 ms every five seconds for four and a half minutes, with
             // spikes to 500-700 ms.
             ["screenshot"] => {
-                stats.pings.clear();
+                call.stats.pings.clear();
                 const SPIKES: [(usize, f64); 7] = [
                     (14, 230.),
                     (17, 520.),
@@ -751,40 +911,78 @@ impl Root {
                         .iter()
                         .find(|(at, _)| *at == n)
                         .map_or(base, |(_, value)| *value);
-                    stats.ping_at(now - 5_000. * (54 - n) as f64, value);
+                    call.stats.ping_at(now - 5_000. * (54 - n) as f64, value);
                 }
-                stats.set_loss(0.);
-                format!("{} pings", stats.pings.len())
+                call.stats.set_loss(0.);
+                format!("{} pings", call.stats.pings.len())
             }
             // More than the 199 kept, one a second.
             ["long"] => {
-                stats.pings.clear();
+                call.stats.pings.clear();
                 for n in 0..400usize {
                     let value = if n % 37 == 0 {
                         420.
                     } else {
                         60. + (n % 9) as f64 * 4.
                     };
-                    stats.ping_at(now - 1_000. * (400 - n) as f64, value);
+                    call.stats.ping_at(now - 1_000. * (400 - n) as f64, value);
                 }
-                format!("{} pings kept", stats.pings.len())
+                format!("{} pings kept", call.stats.pings.len())
             }
             ["host", endpoint] => {
-                stats.hostname = Some(short_hostname(endpoint).to_owned());
+                call.stats.hostname = Some(short_hostname(endpoint).to_owned());
                 format!("host {}", short_hostname(endpoint))
             }
+            ["peer"] | ["peer", _] => {
+                let peer = args
+                    .get(1)
+                    .and_then(|value| value.parse::<u64>().ok())
+                    .unwrap_or(1_570_000_000_000_000_100);
+                let mut users = call.rtc_users().to_vec();
+                if let Some(me) = me
+                    && !users.contains(&me)
+                {
+                    users.push(me);
+                }
+                if !users.contains(&peer) {
+                    users.push(peer);
+                }
+                call.set_rtc_users(users);
+                call.dave_version = call.dave_version.max(1);
+                format!("peer {peer} present ({} users)", call.rtc_users().len())
+            }
+            ["solo"] => {
+                call.set_rtc_users(me.into_iter().collect());
+                "solo voice channel".to_owned()
+            }
+            ["dave", version] => {
+                let Ok(version) = version.parse::<u16>() else {
+                    return format!("cannot read {version}");
+                };
+                call.dave_version = version;
+                format!("dave_version {version}")
+            }
+            ["code", code] => {
+                let value = if *code == "sample" {
+                    "123456789012345678901234567890"
+                } else {
+                    *code
+                };
+                call.stats.set_privacy_code(value.to_owned());
+                format!("privacy code set ({} chars)", value.len())
+            }
             ["state"] => {
-                let frame = ping_graph::Frame::at(&stats.pings, now, 1.);
+                let frame = ping_graph::Frame::at(&call.stats.pings, now, 1.);
                 format!(
                     "{} pings, average {:.0}, last {:?}, labels {:?}, ticks {}",
-                    stats.pings.len(),
-                    stats.average(),
-                    stats.last(),
+                    call.stats.pings.len(),
+                    call.stats.average(),
+                    call.stats.last(),
                     frame.axis.labels,
                     frame.ticks.len()
                 )
             }
-            _ => "usage: pinggraph open | clear | points N | screenshot | long | host <endpoint> | state"
+            _ => "usage: pinggraph open | privacy | peer | solo | dave N | code <30|sample> | rtcdebug open|close|section|localip | clear | points N | screenshot | long | host <endpoint> | state"
                 .to_owned(),
         };
         cx.notify();
@@ -793,9 +991,7 @@ impl Root {
 
     /// `noiseCancellationPopout_9U6LUN`: 276 wide, centred over the button.
     fn noise_popout(&mut self, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
-        const DESCRIPTION: &str = "Enable DeepFilterNet noise suppression! Make some noise\u{2014}like clapping your \
-                                   hands\u{2014}while speaking. Your friends will hear nothing but your beautiful \
-                                   voice.";
+        let description = dc_intl::t!("uKdWn6").replace("Krisp", DEEP_FILTER_NET_NAME);
         let on = self.noise_cancellation();
         let locked = self.noise_cancellation_locked();
         let label = |text: &'static str| {
@@ -821,23 +1017,27 @@ impl Root {
                     }))
             });
         let switch: AnyElement = match self.voice_profile_label().filter(|_| locked) {
-            Some(profile) => self
-                .with_tip(
+            Some(profile) => {
+                let input_profile_id = if profile == "Studio" {
+                    "STUDIO"
+                } else {
+                    "VOICE_ISOLATION"
+                };
+                let tip_text = dc_intl::format(
+                    "/tqmfM",
+                    &[
+                        ("enabled", if on { "true" } else { "false" }.into()),
+                        ("inputProfile", input_profile_id.into()),
+                    ],
+                );
+                self.with_tip(
                     "voice-noise-switch-tip",
-                    tooltip::Tip::body(
-                        tooltip::Body::Text(
-                            format!(
-                                "Noise cancellation is {} by the {profile} input profile.",
-                                if on { "enabled" } else { "disabled" }
-                            )
-                            .into(),
-                        ),
-                        tooltip::Side::Top,
-                    ),
+                    tooltip::Tip::body(tooltip::Body::Text(tip_text.into()), tooltip::Side::Top),
                     switch,
                     cx,
                 )
-                .into_any_element(),
+                .into_any_element()
+            }
             None => switch.into_any_element(),
         };
         let test_button = self.small_mic_test(window, cx);
@@ -865,7 +1065,7 @@ impl Root {
                     .flex()
                     .items_center()
                     .justify_between()
-                    .child(label("Noise Suppression"))
+                    .child(label(dc_intl::t!("WGWHv/")))
                     .child(switch),
             )
             .child(
@@ -873,14 +1073,14 @@ impl Root {
                     .text_size(px(14.))
                     .line_height(px(18.))
                     .text_color(color("--text-default"))
-                    .child(DESCRIPTION),
+                    .child(description),
             )
             .child(
                 div()
                     .flex()
                     .flex_col()
                     .gap(px(8.))
-                    .child(label("Mic Test"))
+                    .child(label(dc_intl::t!("JdUas1")))
                     .child(test_button),
             )
             .child(
@@ -888,7 +1088,7 @@ impl Root {
                     .flex()
                     .flex_col()
                     .gap(px(8.))
-                    .child(label("Powered by"))
+                    .child(label(dc_intl::t!("k6h1F4")))
                     .child(
                         div()
                             .h(px(20.))
@@ -903,7 +1103,7 @@ impl Root {
                                     .font_weight(FontWeight(700.))
                                     .text_color(color("--text-strong"))
                                     .on_click(|_, _, cx| cx.open_url(DEEP_FILTER_NET))
-                                    .child("DeepFilterNet"),
+                                    .child(DEEP_FILTER_NET_NAME),
                             )
                             .child(
                                 div()
@@ -914,7 +1114,7 @@ impl Root {
                                     .text_color(color("--text-link"))
                                     .hover(|style| style.underline())
                                     .on_click(|_, _, cx| cx.open_url(NOISE_ARTICLE))
-                                    .child("Learn More"),
+                                    .child(dc_intl::t!("hvVgAZ")),
                             ),
                     ),
             )
@@ -928,32 +1128,23 @@ impl Root {
         let progress = self.voice_mic_progress();
         let shift = (progress / 100.) * METER;
         let notches = self.small_notches(METER as u32, 20);
-        let button = div()
-            .id("voice-noise-test")
+        let button = secondary_button("voice-noise-test")
             .w(px(60.))
-            .h(px(32.))
             .flex_none()
-            .rounded(px(8.))
-            .border_1()
-            .border_color(color("--control-secondary-border-default"))
-            .bg(color("--control-secondary-background-default"))
             .cursor_pointer()
             .hover(|style| style.bg(color("--control-secondary-background-hover")))
-            .flex()
-            .items_center()
-            .justify_center()
-            .text_size(px(14.))
-            .line_height(px(18.))
-            .font_weight(FontWeight(500.))
-            .text_color(color("--control-secondary-text-default"))
             .on_click(cx.listener(|this, _, _, cx| this.toggle_mic_test(cx)))
-            .child(if testing { "Stop" } else { "Test" });
+            .child(if testing {
+                dc_intl::t!("Yp3SbJ")
+            } else {
+                dc_intl::t!("sG+MGg")
+            });
         let button: AnyElement =
             if self.call.as_ref().is_some_and(|call| call.connected) && !testing {
                 self.with_tip(
                     "voice-noise-test-tip",
-                    tooltip::Tip::text(
-                        "You'll be muted and deafened in your voice session during Mic Testing.",
+                    tooltip::Tip::body(
+                        tooltip::Body::Text(dc_intl::t!("9viE2A").into()),
                         tooltip::Side::Top,
                     ),
                     button,
@@ -1141,5 +1332,45 @@ mod tests {
             Popout::Connection(Tab::Privacy)
         ));
         assert!(!same_kind(Popout::Noise, Popout::Connection(Tab::Privacy)));
+    }
+
+    #[test]
+    fn encrypted_and_alone_gate_connection_tabs_and_privacy_tab() {
+        // Connected non-stage DAVE call with peers shows both tabs.
+        assert_eq!(connection_tab_flags(true, false, 1, true), (true, true));
+        // Encrypted solo call shows the Connection tab bar without the Privacy tab.
+        assert_eq!(connection_tab_flags(true, false, 1, false), (true, false));
+        // Stage channels, DAVE version 0, and disconnected calls hide the entire tab bar.
+        assert_eq!(connection_tab_flags(true, true, 1, true), (false, false));
+        assert_eq!(connection_tab_flags(true, false, 0, true), (false, false));
+        assert_eq!(connection_tab_flags(false, false, 1, true), (false, false));
+    }
+
+    #[test]
+    fn intl_link_splits_preserve_link_label_for_advice_and_e2ee() {
+        let (before, link, after) =
+            split_link_message("wKxADe", &[("helpArticle", ENCRYPTION_ARTICLE.into())]);
+        assert!(before.contains("people join or leave"));
+        assert_eq!(link, "Learn more about end-to-end encryption.");
+        assert!(after.is_empty());
+
+        let (adv_before, adv_link, adv_after) = advice(true);
+        assert!(adv_before.contains("250 ms"));
+        assert_eq!(adv_link, "troubleshooting guide");
+        assert_eq!(adv_after, " for more assistance.");
+    }
+
+    #[test]
+    fn call_stats_store_hostname_and_privacy_code() {
+        let mut stats = CallStats::default();
+        assert_eq!(stats.privacy_code(), None);
+        stats.set_hostname("c-fra14-db667712".to_owned());
+        stats.set_privacy_code("123456789012345678901234567890".to_owned());
+        assert_eq!(stats.hostname.as_deref(), Some("c-fra14-db667712"));
+        assert_eq!(stats.privacy_code(), Some("123456789012345678901234567890"));
+        assert_eq!(
+            code_chunks(stats.privacy_code().unwrap_or_default()).len(),
+            6
+        );
     }
 }

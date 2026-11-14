@@ -3,6 +3,8 @@
 //! over a 48px category rail and a 448px list of 32px section headings and rows of nine 48px cells, with the hovered
 //! emoji named in a 48px inspector. Unicode emoji are cells of the sprite sheet (module 617057, `spriteIndex`).
 
+mod nitro_packs;
+
 use super::actions::FRECENCY_KEY;
 use super::motion::{PopKind, PopSide, Popout as _};
 use super::{Root, color, editor_style};
@@ -144,6 +146,10 @@ pub(super) fn stored_tone() -> u8 {
 enum SectionIcon {
     Category(&'static str),
     Guild(Id),
+    Pack {
+        id: String,
+        representative_emoji_id: Option<Id>,
+    },
 }
 
 #[derive(Clone, Debug)]
@@ -189,6 +195,9 @@ pub(crate) struct Picker {
     hovered: Option<Item>,
     /// Super Reactions on: reactions go out as bursts (`type=1`).
     burst: bool,
+    /// `2026-09-default-emojis`: showing the `"Nitro Emoji Packs"` catalog inside the picker (`eo`).
+    pub(super) show_emoji_packs: bool,
+    pub(super) expanded_pack_ids: HashSet<String>,
 }
 
 impl Picker {
@@ -297,19 +306,28 @@ fn rows_of(sections: &[Section], collapsed: &HashSet<String>, headings: bool) ->
 
 impl Root {
     fn emoji_lookup(&self, key: &str) -> Option<Item> {
-        if let Ok(id) = key.parse::<u64>()
-            && let Some(emoji) = self
+        if let Ok(id) = key.parse::<u64>() {
+            if let Some(emoji) = self
                 .stores
                 .guilds
                 .iter()
                 .flat_map(|guild| &guild.emojis)
                 .find(|emoji| emoji.id == id && emoji.available)
-        {
-            return Some(Item::Custom {
-                id,
-                name: emoji.name.clone(),
-                animated: emoji.animated,
-            });
+            {
+                return Some(Item::Custom {
+                    id,
+                    name: emoji.name.clone(),
+                    animated: emoji.animated,
+                });
+            }
+            if nitro_packs::experiment_enabled(self)
+                && let Some(emoji) = self
+                    .resolved_emoji_packs()
+                    .emoji(key)
+                    .filter(|emoji| emoji.available)
+            {
+                return nitro_packs::pack_item(emoji);
+            }
         }
         let index = dc_tokens::emoji_data::NAMES
             .binary_search_by(|(name, _)| (*name).cmp(key))
@@ -366,20 +384,44 @@ impl Root {
     }
 
     fn picker_sections(&self, query: &str) -> Vec<Section> {
+        let target = self
+            .picker
+            .as_ref()
+            .map_or(Target::Composer, |picker| picker.target);
+        self.picker_sections_for(target, query)
+    }
+
+    fn picker_sections_for(&self, target: Target, query: &str) -> Vec<Section> {
+        let packs_enabled =
+            nitro_packs::experiment_enabled(self) && nitro_packs::intention_allows_packs(target);
+        let pack_store = packs_enabled.then(|| self.resolved_emoji_packs());
         if !query.trim().is_empty() {
             let lowered = query.trim().to_lowercase();
+            let mut seen_custom = HashSet::new();
             let mut items: Vec<Item> = self
                 .stores
                 .guilds
                 .iter()
                 .flat_map(|guild| &guild.emojis)
                 .filter(|emoji| emoji.available && emoji.name.to_lowercase().contains(&lowered))
+                .filter(|emoji| seen_custom.insert(emoji.id))
                 .map(|emoji| Item::Custom {
                     id: emoji.id,
                     name: emoji.name.clone(),
                     animated: emoji.animated,
                 })
                 .collect();
+            if let Some(store) = pack_store.as_ref() {
+                for emoji in store.indexable_pack_emojis(true) {
+                    if emoji.name.to_lowercase().contains(&lowered)
+                        && let Some(Item::Custom { id, name, animated }) =
+                            nitro_packs::pack_item(emoji)
+                        && seen_custom.insert(id)
+                    {
+                        items.push(Item::Custom { id, name, animated });
+                    }
+                }
+            }
             items.extend(search_unicode(query.trim()).into_iter().map(Item::Unicode));
             return vec![Section {
                 key: "search".to_owned(),
@@ -394,6 +436,9 @@ impl Root {
             icon: SectionIcon::Category("recent"),
             items: self.frequent_emoji(),
         }];
+        if let Some(store) = pack_store.as_ref() {
+            sections.extend(nitro_packs::pinned_pack_sections(store));
+        }
         for guild in &self.stores.guilds {
             let items: Vec<Item> = guild
                 .emojis
@@ -492,7 +537,12 @@ impl Root {
             }
             cx.notify();
         });
-        let sections = self.picker_sections("");
+        if nitro_packs::experiment_enabled(self) && nitro_packs::intention_allows_packs(target) {
+            self.ensure_emoji_packs();
+        } else {
+            self.sync_emoji_packs();
+        }
+        let sections = self.picker_sections_for(target, "");
         let collapsed = HashSet::new();
         let rows = rows_of(&sections, &collapsed, true);
         let list = ListState::new(rows.len(), ListAlignment::Top, px(400.));
@@ -514,6 +564,8 @@ impl Root {
             collapsed,
             hovered,
             burst: false,
+            show_emoji_packs: false,
+            expanded_pack_ids: HashSet::new(),
         });
         window.focus(&search.read(cx).focus_handle(cx), cx);
         cx.notify();
@@ -670,7 +722,7 @@ impl Root {
             target,
             Target::Composer | Target::ForwardNote | Target::Field | Target::InventoryReply(_)
         ) && let Item::Custom { id, animated, .. } = &item
-            && self.custom_emoji_locked(*id, *animated)
+            && self.picker_item_locked(*id, *animated)
         {
             self.picker = None;
             self.open_nitro(cx);
@@ -797,6 +849,41 @@ impl Root {
         let entry = &picker.sections[section];
         let collapsed = picker.collapsed.contains(&entry.key);
         let key = entry.key.clone();
+        let sticky_tag = if sticky { "sticky" } else { "row" };
+        let pack_remove = match &entry.icon {
+            SectionIcon::Pack { id, .. } => {
+                let pack_id = id.clone();
+                Some(
+                    div()
+                        .id(SharedString::from(format!(
+                            "picker-pack-remove-{section}-{sticky_tag}"
+                        )))
+                        .px(px(8.))
+                        .h(px(22.))
+                        .rounded(px(6.))
+                        .bg(color("--control-secondary-background-default"))
+                        .border_1()
+                        .border_color(color("--control-secondary-border-default"))
+                        .hover(|style| style.bg(color("--control-secondary-background-hover")))
+                        .flex()
+                        .items_center()
+                        .text_size(px(12.))
+                        .line_height(px(16.))
+                        .font_weight(FontWeight(500.))
+                        .text_color(color("--control-secondary-text-default"))
+                        .cursor_pointer()
+                        .on_mouse_down(gpui::MouseButton::Left, |_, _, cx| {
+                            cx.stop_propagation();
+                        })
+                        .on_click(cx.listener(move |this, _, window, cx| {
+                            cx.stop_propagation();
+                            this.toggle_pin_emoji_pack(&pack_id, false, window, cx);
+                        }))
+                        .child(dc_intl::t("2zxYCx")),
+                )
+            }
+            _ => None,
+        };
         let icon_element = match &entry.icon {
             SectionIcon::Category(category) => svg()
                 .path(format!("icons/{}.svg", category_icon(category)))
@@ -815,11 +902,16 @@ impl Root {
                         .map(|picture| img(picture).size(px(16.))),
                 )
                 .into_any_element(),
+            SectionIcon::Pack { .. } => svg()
+                .path("icons/nitro_wheel.svg")
+                .size(px(16.))
+                .flex_none()
+                .text_color(color("--text-default"))
+                .into_any_element(),
         };
         div()
             .id(SharedString::from(format!(
-                "picker-heading-{section}-{}",
-                if sticky { "sticky" } else { "row" }
+                "picker-heading-{section}-{sticky_tag}"
             )))
             .h(px(HEADING))
             .w_full()
@@ -828,6 +920,7 @@ impl Root {
             .bg(color("--background-surface-high"))
             .flex()
             .items_center()
+            .justify_between()
             .cursor_pointer()
             .on_click(cx.listener(move |this, _, _, cx| {
                 this.toggle_section(&key);
@@ -862,6 +955,7 @@ impl Root {
                             }),
                     ),
             )
+            .children(pack_remove)
             .into_any_element()
     }
 
@@ -976,6 +1070,8 @@ impl Root {
         let Some(picker) = self.picker.as_ref() else {
             return div().into_any_element();
         };
+        let packs_active = self.nitro_packs_active();
+        let light = super::theme() == dc_tokens::Theme::Light;
         let top_row = picker.list.logical_scroll_top().item_ix;
         let searching = picker.sections.len() != picker.all.len();
         let current = picker
@@ -986,6 +1082,157 @@ impl Root {
                 Row::Heading(section) | Row::Cells { section, .. } => *section,
             })
             .unwrap_or(0);
+        let mut children: Vec<AnyElement> = Vec::new();
+        if packs_active {
+            children.push(self.nitro_packs_rail_button(cx));
+        }
+        for (index, section) in picker.all.iter().enumerate() {
+            let selected = index == current;
+            let is_pack = matches!(section.icon, SectionIcon::Pack { .. });
+            let prev_is_pack =
+                index > 0 && matches!(picker.all[index - 1].icon, SectionIcon::Pack { .. });
+            let next_is_pack = picker
+                .all
+                .get(index + 1)
+                .is_some_and(|next| matches!(next.icon, SectionIcon::Pack { .. }));
+            if is_pack && !prev_is_pack && index > 0 {
+                children.push(
+                    div()
+                        .w_full()
+                        .h(px(1.))
+                        .my(px(8.))
+                        .flex_none()
+                        .bg(color("--border-subtle"))
+                        .into_any_element(),
+                );
+            }
+            let group = SharedString::from(format!("picker-rail-{index}"));
+            let inner = match &section.icon {
+                SectionIcon::Category(category) => svg()
+                    .path(format!("icons/{}.svg", category_icon(category)))
+                    .size(px(24.))
+                    .flex_none()
+                    .text_color(if selected {
+                        color("--interactive-text-active")
+                    } else {
+                        color("--interactive-text-default")
+                    })
+                    .group_hover(group.clone(), |style| {
+                        style.text_color(color("--interactive-text-hover"))
+                    })
+                    .into_any_element(),
+                SectionIcon::Guild(guild) => div()
+                    .size(px(24.))
+                    .rounded_full()
+                    .overflow_hidden()
+                    .children(
+                        self.images
+                            .get(&format!("guild:{guild}"))
+                            .cloned()
+                            .map(|picture| img(picture).size(px(24.))),
+                    )
+                    .into_any_element(),
+                SectionIcon::Pack {
+                    representative_emoji_id,
+                    ..
+                } => {
+                    let picture = representative_emoji_id
+                        .and_then(|id| self.images.get(&format!("custom:{id}")).cloned());
+                    div()
+                        .size(px(24.))
+                        .rounded(px(4.))
+                        .overflow_hidden()
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .children(picture.map(|picture| img(picture).size(px(24.))))
+                        .when(representative_emoji_id.is_none(), |this| {
+                            this.child(
+                                svg()
+                                    .path("icons/nitro_wheel.svg")
+                                    .size(px(18.))
+                                    .text_color(color("--icon-default")),
+                            )
+                        })
+                        .into_any_element()
+                }
+            };
+            let mb = if index == 0 && !next_is_pack { 8. } else { 2. };
+            let item = div()
+                .id(SharedString::from(format!("picker-rail-item-{index}")))
+                .group(group)
+                .relative()
+                .flex_none()
+                .size(px(32.))
+                .p(px(4.))
+                .mb(px(mb))
+                .rounded(px(if is_pack { 8. } else { 4. }))
+                .cursor_pointer()
+                .when(selected && !is_pack, |this| {
+                    this.bg(color("--background-base-low"))
+                })
+                .when(selected && is_pack, |this| {
+                    this.child(
+                        img(nitro_packs::button_gradient_image(light))
+                            .id(SharedString::from(format!("picker-rail-pack-bg-{index}")))
+                            .absolute()
+                            .inset_0()
+                            .rounded(px(8.))
+                            .size(px(32.)),
+                    )
+                })
+                .when(!selected, |this| {
+                    this.hover(|style| style.bg(color("--interactive-background-hover")))
+                })
+                .when(matches!(section.icon, SectionIcon::Category(_)), |this| {
+                    this.rule(crate::ui::motion::Rule::PickerCategory)
+                })
+                .on_click(cx.listener(move |this, _, _, cx| {
+                    this.jump_to_section(index, cx);
+                    cx.notify();
+                }))
+                .when(selected, |this| {
+                    // `item__o8_Xq selected`: an 8 by 24 white pill, its left half outside the rail.
+                    this.child(
+                        div()
+                            .absolute()
+                            .left(px(-8.))
+                            .top(px(4.))
+                            .w(px(4.))
+                            .h(px(24.))
+                            .rounded_r(px(4.))
+                            .bg(color("--interactive-text-active")),
+                    )
+                })
+                .child(inner);
+            if is_pack {
+                children.push(
+                    self.with_tip(
+                        SharedString::from(format!("picker-rail-pack-{index}")),
+                        super::tooltip::Tip::body(
+                            super::tooltip::Body::Text(section.label.clone().into()),
+                            super::tooltip::Side::Right,
+                        ),
+                        item,
+                        cx,
+                    )
+                    .into_any_element(),
+                );
+            } else {
+                children.push(item.into_any_element());
+            }
+            if is_pack && !next_is_pack && index + 1 < picker.all.len() {
+                children.push(
+                    div()
+                        .w_full()
+                        .h(px(1.))
+                        .my(px(8.))
+                        .flex_none()
+                        .bg(color("--border-subtle"))
+                        .into_any_element(),
+                );
+            }
+        }
         div()
             .id("picker-rail")
             .w(px(48.))
@@ -996,71 +1243,7 @@ impl Root {
             .px(px(8.))
             .flex()
             .flex_col()
-            .children(picker.all.iter().enumerate().map(|(index, section)| {
-                let selected = index == current;
-                let group = SharedString::from(format!("picker-rail-{index}"));
-                let inner = match &section.icon {
-                    SectionIcon::Category(category) => svg()
-                        .path(format!("icons/{}.svg", category_icon(category)))
-                        .size(px(24.))
-                        .flex_none()
-                        .text_color(if selected {
-                            color("--interactive-text-active")
-                        } else {
-                            color("--interactive-text-default")
-                        })
-                        .group_hover(group.clone(), |style| {
-                            style.text_color(color("--interactive-text-hover"))
-                        })
-                        .into_any_element(),
-                    SectionIcon::Guild(guild) => div()
-                        .size(px(24.))
-                        .rounded_full()
-                        .overflow_hidden()
-                        .children(
-                            self.images
-                                .get(&format!("guild:{guild}"))
-                                .cloned()
-                                .map(|picture| img(picture).size(px(24.))),
-                        )
-                        .into_any_element(),
-                };
-                div()
-                    .id(SharedString::from(format!("picker-rail-item-{index}")))
-                    .group(group)
-                    .relative()
-                    .flex_none()
-                    .size(px(32.))
-                    .p(px(4.))
-                    .mb(px(if index == 0 { 8. } else { 2. }))
-                    .rounded(px(4.))
-                    .cursor_pointer()
-                    .when(selected, |this| this.bg(color("--background-base-low")))
-                    .when(!selected, |this| {
-                        this.hover(|style| style.bg(color("--interactive-background-hover")))
-                    })
-                    .when(matches!(section.icon, SectionIcon::Category(_)), |this| {
-                        this.rule(crate::ui::motion::Rule::PickerCategory)
-                    })
-                    .on_click(cx.listener(move |this, _, _, cx| {
-                        this.jump_to_section(index, cx);
-                        cx.notify();
-                    }))
-                    .when(selected, |this| {
-                        // `item__o8_Xq selected`: an 8 by 24 white pill, its left half outside the rail.
-                        this.child(
-                            div()
-                                .absolute()
-                                .left(px(-8.))
-                                .top(px(4.))
-                                .w(px(4.))
-                                .h(px(24.))
-                                .rounded_r(px(4.))
-                                .bg(color("--interactive-text-active")),
-                        )
-                    })
-                    .child(inner)
-            }))
+            .children(children)
             .into_any_element()
     }
 
@@ -1069,6 +1252,9 @@ impl Root {
             .picker
             .as_ref()
             .and_then(|picker| picker.hovered.clone());
+        let pack_store = self
+            .nitro_packs_active()
+            .then(|| self.resolved_emoji_packs());
         div()
             .h(px(48.))
             .flex_none()
@@ -1091,18 +1277,60 @@ impl Root {
                         self.images.get(&item.image_key(self.skin_tone)).cloned()
                     }
                 };
+                let pack = match (&item, pack_store.as_ref()) {
+                    (Item::Custom { id, .. }, Some(store)) => {
+                        store.pack_for_emoji(&id.to_string()).cloned()
+                    }
+                    _ => None,
+                };
                 this.child(div().size(px(28.)).children(
                     picture.map(|picture| img(picture).id("picker-inspector-art").size(px(28.))),
                 ))
-                .child(
+                .child(if let Some(pack) = pack {
+                    let (prefix, suffix) = nitro_packs::inspector_pack_parts(&pack.name);
+                    div()
+                        .ml(px(8.))
+                        .min_w(px(0.))
+                        .flex()
+                        .flex_col()
+                        .child(
+                            div()
+                                .text_size(px(15.))
+                                .line_height(px(18.))
+                                .font_weight(FontWeight(600.))
+                                .text_color(color("--text-default"))
+                                .truncate()
+                                .child(format!(":{}:", item.name())),
+                        )
+                        .child(
+                            div()
+                                .flex()
+                                .items_center()
+                                .text_size(px(12.))
+                                .line_height(px(16.))
+                                .font_weight(FontWeight(400.))
+                                .text_color(color("--text-subtle"))
+                                .when(!prefix.is_empty(), |this| this.child(prefix))
+                                .child(
+                                    svg()
+                                        .path("icons/nitro_wheel.svg")
+                                        .size(px(10.))
+                                        .flex_none()
+                                        .text_color(color("--text-subtle")),
+                                )
+                                .child(suffix),
+                        )
+                        .into_any_element()
+                } else {
                     div()
                         .ml(px(8.))
                         .text_size(px(16.))
                         .line_height(px(20.))
                         .font_weight(FontWeight(600.))
                         .text_color(color("--text-default"))
-                        .child(format!(":{}:", item.name())),
-                )
+                        .child(format!(":{}:", item.name()))
+                        .into_any_element()
+                })
             })
             .into_any_element()
     }
@@ -1113,6 +1341,26 @@ impl Root {
         cx: &mut Context<Self>,
     ) -> Option<AnyElement> {
         let picker = self.picker.as_ref()?;
+        if self.nitro_packs_active() && self.nitro_packs_needs_sync() {
+            cx.spawn(async move |this, cx| {
+                let _ = this.update(cx, |this, cx| {
+                    this.sync_emoji_packs();
+                    let query = this
+                        .picker
+                        .as_ref()
+                        .map(|picker| picker.search.read(cx).text().to_owned())
+                        .unwrap_or_default();
+                    let all = this.picker_sections("");
+                    if let Some(picker) = this.picker.as_mut() {
+                        picker.all = all;
+                    }
+                    this.refresh_picker(&query);
+                    cx.notify();
+                });
+            })
+            .detach();
+        }
+        let viewing_packs = picker.show_emoji_packs && self.nitro_packs_active();
         let viewport = window.viewport_size();
         let inventory_reply = matches!(picker.target, Target::InventoryReply(_));
         // Composer: the right edge 32px in from the window's, the bottom 8px above the composer.
@@ -1537,27 +1785,32 @@ impl Root {
                     .w(px(440.))
                     .child(self.picker_heading(section, true, cx))
             }));
-        let panel = div()
-            .flex()
-            .flex_col()
-            .flex_1()
-            .min_h(px(0.))
-            .child(header)
-            .child(
-                div()
-                    .flex()
-                    .flex_1()
-                    .min_h(px(0.))
-                    .child(self.picker_rail(cx))
-                    .child(
-                        div()
-                            .w(px(if inventory_reply { 450. } else { 448. }))
-                            .flex()
-                            .flex_col()
-                            .child(body)
-                            .child(self.picker_inspector()),
-                    ),
-            );
+        let panel = if viewing_packs {
+            self.nitro_packs_panel(tabless, cx)
+        } else {
+            div()
+                .flex()
+                .flex_col()
+                .flex_1()
+                .min_h(px(0.))
+                .child(header)
+                .child(
+                    div()
+                        .flex()
+                        .flex_1()
+                        .min_h(px(0.))
+                        .child(self.picker_rail(cx))
+                        .child(
+                            div()
+                                .w(px(if inventory_reply { 450. } else { 448. }))
+                                .flex()
+                                .flex_col()
+                                .child(body)
+                                .child(self.picker_inspector()),
+                        ),
+                )
+                .into_any_element()
+        };
         Some(
             deferred(
                 div()
@@ -1614,7 +1867,7 @@ impl Root {
                     .child(match current {
                         Tab::Gifs => self.gif_panel(window, cx),
                         Tab::Stickers => self.sticker_panel(window, cx),
-                        Tab::Emoji => panel.into_any_element(),
+                        Tab::Emoji => panel,
                     }),
             )
             .with_priority(1)

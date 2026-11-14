@@ -96,6 +96,20 @@ pub(super) fn wanted(message: &Message, animate: bool) -> Vec<(String, String)> 
                 image_key(message.id, index, "thumbnail"),
                 media_url(thumbnail, width, height),
             ));
+        } else if embed_layout::media(embed, false) == Media::Video
+            && let Some(video) = &embed.video
+            && let Some(proxy) = &video.proxy_url
+            && let Some((width, height)) = thumbnail_request(embed)
+        {
+            out.push((
+                image_key(message.id, index, "thumbnail"),
+                super::media_image::image_url(
+                    proxy,
+                    false,
+                    width.round().max(1.) as u32,
+                    height.round().max(1.) as u32,
+                ),
+            ));
         }
         if let Some(author) = &embed.author_icon {
             out.push((
@@ -330,11 +344,28 @@ impl Root {
         let size = shrink(embed_layout::video_size(embed)?, available);
         let video = embed.video.as_ref()?;
         let key = image_key(message.id, index, "thumbnail");
+        let force_external = video.width > 6016 || video.height > 3384;
+        if let Some(proxy_url) = video.proxy_url.as_ref().filter(|_| !force_external) {
+            return Some(self.render_media_player(
+                super::video_player::PlayerSpec {
+                    key: format!("embed:{}:{index}", message.id),
+                    src: proxy_url.clone(),
+                    width: size.0.max(150.0),
+                    height: size.1.max(144.0),
+                    aspect_size: (video.width.max(1), video.height.max(1)),
+                    radius: 4.0,
+                    poster_key: Some(key),
+                    auto_play: false,
+                    allow_fullscreen: true,
+                    is_fullscreen_view: false,
+                    actions: None,
+                },
+                cx,
+            ));
+        }
         let poster = self.images.get(&key).cloned();
         let (width, height) = (px(size.0), px(size.1));
         let proxied = video.proxy_url.is_some();
-        // The player is not ported: Play opens the file (a proxied video) or the page (a provider's player) in the
-        // browser (`BLOCKED.md`, "Embed video playback").
         let target = if proxied {
             video.url.clone()
         } else {

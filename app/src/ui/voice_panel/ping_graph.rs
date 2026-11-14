@@ -36,12 +36,25 @@ fn js_round(value: f64) -> f64 {
 
 /// `getValues` of module 229659's series: the value held at each column, starting from the first point when the
 /// second follows within one and a half spacings of the window's start, else from 0.
+#[cfg(test)]
 pub(super) fn values(points: &[Sample], start: f64, step: f64, count: usize) -> Vec<f64> {
+    values_with(points, start, step, count, None)
+}
+
+/// [`values`] after optionally mapping each raw sample value (for example `ea.audioLevel` in `950040`).
+pub(super) fn values_with(
+    points: &[Sample],
+    start: f64,
+    step: f64,
+    count: usize,
+    converter: Option<fn(f64) -> f64>,
+) -> Vec<f64> {
+    let convert = |value: f64| converter.map_or(value, |map| map(value));
     let mut held = 0.;
     if let [first, second, ..] = points {
         let spacing = second.time - first.time;
         if spacing > 0. && first.time - start < 1.5 * spacing {
-            held = first.value;
+            held = convert(first.value);
         }
     }
     let mut out = Vec::with_capacity(count);
@@ -52,7 +65,7 @@ pub(super) fn values(points: &[Sample], start: f64, step: f64, count: usize) -> 
             if point.time >= time {
                 break;
             }
-            held = point.value;
+            held = convert(point.value);
             index += 1;
         }
         out.push(held);
@@ -160,6 +173,8 @@ pub(super) fn minute_ticks(start: f64, scale: f64, width: f64) -> Vec<(f64, f64)
 #[derive(Clone, Debug, PartialEq)]
 pub(super) struct Frame {
     pub dpr: f64,
+    pub css_width: f32,
+    pub css_height: f32,
     /// `canvas.width` and `canvas.height`.
     pub width: f64,
     pub height: f64,
@@ -175,20 +190,32 @@ pub(super) struct Frame {
 }
 
 impl Frame {
-    /// `updateEndDate()` then `repaint()` at `now` (ms since the epoch). The view's start time stays 0 and its
-    /// scrollbar at the right edge, so the window ends at the last whole device pixel of `now`.
+    /// `updateEndDate()` then `repaint()` at `now` (ms since the epoch) for the connection popout's `258x80` canvas.
     pub fn at(points: &[Sample], now: f64, dpr: f64) -> Frame {
+        Self::at_size(points, now, dpr, WIDTH, HEIGHT, None)
+    }
+
+    /// `updateEndDate()` then `repaint()` at `now` (ms since the epoch) for an arbitrary canvas size and optional
+    /// sample converter.
+    pub fn at_size(
+        points: &[Sample],
+        now: f64,
+        dpr: f64,
+        css_width: f32,
+        css_height: f32,
+        converter: Option<fn(f64) -> f64>,
+    ) -> Frame {
         let dpr = if dpr > 0. { dpr } else { 1. };
         // `canvas.width = parseInt(width) * devicePixelRatio`, truncated by the canvas.
-        let width = (f64::from(WIDTH) * dpr).floor();
-        let height = (f64::from(HEIGHT) * dpr).floor();
+        let width = (f64::from(css_width.floor()) * dpr).floor();
+        let height = (f64::from(css_height.floor()) * dpr).floor();
         let scale = 1000. / dpr;
         let length = (now / scale).floor();
         let range = (length - width).max(0.);
         let position = if range == 0. { length - width } else { range };
         let start = position * scale;
         let plot = height - (FONT_SIZE * dpr).ceil() - 4.;
-        let values = values(points, start, scale, width as usize);
+        let values = values_with(points, start, scale, width as usize, converter);
         let (mut low, mut high) = (0f64, 0f64);
         for &value in &values {
             if value > high {
@@ -199,6 +226,8 @@ impl Frame {
         }
         Frame {
             dpr,
+            css_width,
+            css_height,
             width,
             height,
             plot,
@@ -273,9 +302,11 @@ fn short_time(ms: f64) -> String {
     }
 }
 
-/// The canvas with its labels, 258 by 80.
+/// The canvas with its labels, sized to `frame.css_width` by `frame.css_height`.
 pub(super) fn graph(frame: Frame) -> AnyElement {
     let dpr = frame.dpr as f32;
+    let css_width = frame.css_width;
+    let css_height = frame.css_height;
     let font = FONT_SIZE as f32;
     let css = move |device: f64| px(device as f32 / dpr);
     let text = |label: String| {
@@ -299,7 +330,7 @@ pub(super) fn graph(frame: Frame) -> AnyElement {
                 text(short_time(time))
                     .left(css(x) - px(40.))
                     .w(px(80.))
-                    .top(px(HEIGHT - font))
+                    .top(px(css_height - font))
                     .flex()
                     .justify_center()
                     .into_any_element()
@@ -309,7 +340,7 @@ pub(super) fn graph(frame: Frame) -> AnyElement {
         Vec::new()
     };
     let value_labels: Vec<AnyElement> = if drawable {
-        let right = px(WIDTH) - css(frame.width - 3.);
+        let right = px(css_width) - css(frame.width - 3.);
         frame
             .label_rows()
             .into_iter()
@@ -324,9 +355,10 @@ pub(super) fn graph(frame: Frame) -> AnyElement {
     let paint_frame = frame;
     div()
         .relative()
-        .w(px(WIDTH))
-        .h(px(HEIGHT))
+        .w(px(css_width))
+        .h(px(css_height))
         .flex_none()
+        .overflow_hidden()
         .bg(color("--background-base-low"))
         .child(
             canvas(
@@ -493,5 +525,28 @@ mod tests {
         // 100 ms sits round(100 * 64 / 1000) = 6 above the bottom row, 700 ms 45 above it.
         assert_eq!(line[0].1, 58.);
         assert!(line.iter().any(|&(_, y)| y == 19.));
+    }
+
+    #[test]
+    fn custom_size_and_converter_support_rtc_debug_graphs() {
+        let now = 1_700_000_000_000.;
+        let points = [
+            sample(now - 20_000., 0.),
+            sample(now - 10_000., 1.),
+            sample(now - 1_000., 1.),
+        ];
+        let converter = |v: f64| {
+            if v <= 0. {
+                0.
+            } else {
+                (20. * v.ln()).max(-100.) + 100.
+            }
+        };
+        let frame = Frame::at_size(&points, now, 1., 300., 100., Some(converter));
+        assert_eq!((frame.css_width, frame.css_height), (300., 100.));
+        assert_eq!((frame.width, frame.height, frame.plot), (300., 100., 85.));
+        assert_eq!(frame.values.len(), 300);
+        assert_eq!(frame.values[280], 0.);
+        assert_eq!(frame.values[299], 100.);
     }
 }

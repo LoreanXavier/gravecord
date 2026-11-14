@@ -404,6 +404,10 @@ mod guard {
         "ui/overlay_widgets.rs",
         "ui/overlay_panel.rs",
         "ui/overlay_chat.rs",
+        "ui/voice_panel.rs",
+        "ui/voice_panel/rtc_debug.rs",
+        "ui/video_player.rs",
+        "ui/picker/nitro_packs.rs",
     ];
 
     /// Literals that read like a message but are not shown as written, with why: (file, text, reason).

@@ -270,6 +270,16 @@ fn annex_b(sample: &[u8], length_size: usize, out: &mut Vec<u8>) -> Option<()> {
     Some(())
 }
 
+/// Per-sample timing and sync point info for VOD MP4 playback (timestamps in `100 ns` units, display-zeroed).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct VodSample {
+    pub index: usize,
+    pub dts_100ns: i64,
+    pub pts_100ns: i64,
+    pub duration_100ns: i64,
+    pub is_sync: bool,
+}
+
 /// The existing MP4 reader, shared by the spinner and silent inline H.264 clips.
 pub(crate) struct H264Track<'a> {
     file: &'a [u8],
@@ -277,6 +287,7 @@ pub(crate) struct H264Track<'a> {
     stbl: &'a [u8],
     config: Avc,
     located: Vec<(usize, usize)>,
+    sync: Vec<bool>,
 }
 
 impl<'a> H264Track<'a> {
@@ -298,12 +309,14 @@ impl<'a> H264Track<'a> {
             })
             .ok_or("no H.264 track")?;
         let located = samples(stbl, file.len()).ok_or("unreadable sample table")?;
+        let sync = parse_stss(child(stbl, b"stss"), located.len());
         Ok(Self {
             file,
             mdhd,
             stbl,
             config,
             located,
+            sync,
         })
     }
 
@@ -311,12 +324,35 @@ impl<'a> H264Track<'a> {
         self.located.len()
     }
 
+    pub fn is_sync(&self, index: usize) -> bool {
+        self.sync.get(index).copied().unwrap_or(false)
+    }
+
+    /// Picture dimensions from the first SPS in `avcC`, when present and valid.
+    pub fn dimensions(&self) -> Option<(u32, u32)> {
+        self.config
+            .sps
+            .first()
+            .and_then(|sps| dc_clips::sps::parse(sps))
+            .map(|info| (info.width, info.height))
+    }
+
     pub fn sample(&self, index: usize) -> Result<Vec<u8>, String> {
+        self.sample_with_headers(index, index == 0)
+    }
+
+    /// VOD sample access unit: prepends `avcC` SPS/PPS Annex B parameter sets on every sync sample so seeking
+    /// directly to any IDR frame is self-contained.
+    pub fn vod_sample(&self, index: usize) -> Result<Vec<u8>, String> {
+        self.sample_with_headers(index, index == 0 || self.is_sync(index))
+    }
+
+    fn sample_with_headers(&self, index: usize, prepend_headers: bool) -> Result<Vec<u8>, String> {
         let (offset, length) = self.located.get(index).ok_or("sample not found")?;
         let end = offset.checked_add(*length).ok_or("sample overflow")?;
         let data = self.file.get(*offset..end).ok_or("sample outside file")?;
         let mut unit = Vec::new();
-        if index == 0 {
+        if prepend_headers {
             for set in self.config.sps.iter().chain(&self.config.pps) {
                 unit.extend_from_slice(&[0, 0, 0, 1]);
                 unit.extend_from_slice(set);
@@ -328,12 +364,7 @@ impl<'a> H264Track<'a> {
 
     /// Durations in presentation order, including composition offsets for reordered H.264 pictures.
     pub fn durations(&self) -> Option<Vec<std::time::Duration>> {
-        let offset = match self.mdhd.first()? {
-            0 => 12,
-            1 => 20,
-            _ => return None,
-        };
-        let scale = be32(self.mdhd.get(offset..)?)?;
+        let scale = self.timescale()?;
         timing(
             child(self.stbl, b"stts")?,
             child(self.stbl, b"ctts"),
@@ -341,15 +372,114 @@ impl<'a> H264Track<'a> {
             self.len(),
         )
     }
+
+    fn timescale(&self) -> Option<u32> {
+        let offset = match self.mdhd.first()? {
+            0 => 12,
+            1 => 20,
+            _ => return None,
+        };
+        be32(self.mdhd.get(offset..)?)
+    }
+
+    /// Per-sample decode/presentation timestamps (`100 ns` units, display-zeroed), total track duration, and computed
+    /// B-frame reorder depth (`0` for monotonic I/P streams, `..=16` for reordered streams).
+    pub fn vod_timing(&self) -> Result<(Vec<VodSample>, i64, usize), String> {
+        let count = self.len();
+        if count == 0 {
+            return Err("empty video track".to_owned());
+        }
+        let scale = self
+            .timescale()
+            .filter(|&s| s > 0)
+            .ok_or("invalid timescale")?;
+        let stts = child(self.stbl, b"stts").ok_or("missing stts")?;
+        let ctts = child(self.stbl, b"ctts");
+        let points = sample_points(stts, ctts, count, true)
+            .ok_or_else(|| "unreadable stts/ctts".to_owned())?;
+        let min_pts = points.iter().map(|p| p.pts).min().unwrap_or(0);
+        let to_100ns = |ticks: i128| -> i64 {
+            ((ticks * 10_000_000) / i128::from(scale))
+                .clamp(i128::from(i64::MIN), i128::from(i64::MAX)) as i64
+        };
+        let mut samples_out = Vec::with_capacity(count);
+        let mut max_end_100ns = 0i64;
+        for (index, point) in points.iter().enumerate() {
+            let pts_100ns = to_100ns(i128::from(point.pts) - i128::from(min_pts));
+            let dts_100ns = to_100ns(i128::from(point.dts));
+            let duration_100ns = to_100ns(i128::from(point.delta)).max(1);
+            max_end_100ns = max_end_100ns.max(pts_100ns.saturating_add(duration_100ns));
+            samples_out.push(VodSample {
+                index,
+                dts_100ns,
+                pts_100ns,
+                duration_100ns,
+                is_sync: self.is_sync(index),
+            });
+        }
+        let mut display_order: Vec<usize> = (0..count).collect();
+        display_order.sort_by_key(|&idx| (samples_out[idx].pts_100ns, idx));
+        let mut reorder_depth = 0usize;
+        for (display_idx, &decode_idx) in display_order.iter().enumerate() {
+            if display_idx != decode_idx {
+                reorder_depth = reorder_depth.max(display_idx.abs_diff(decode_idx));
+            }
+        }
+        Ok((samples_out, max_end_100ns.max(1), reorder_depth.min(16)))
+    }
+
+    /// Returns the decode index of the nearest `stss` sync sample whose PTS is `<= target_100ns` (or the earliest sync
+    /// sample / `0` before the first keyframe).
+    pub fn keyframe_before(&self, samples: &[VodSample], target_100ns: i64) -> usize {
+        let mut candidate = None;
+        for sample in samples {
+            if !sample.is_sync {
+                continue;
+            }
+            if sample.pts_100ns <= target_100ns || candidate.is_none() {
+                candidate = Some(sample.index);
+            }
+        }
+        candidate.unwrap_or(0)
+    }
 }
 
-fn timing(
+fn parse_stss(stss: Option<&[u8]>, count: usize) -> Vec<bool> {
+    let Some(stss) = stss else {
+        return vec![true; count];
+    };
+    let Some(entries) = stss.get(4..8).and_then(be32).map(|n| n as usize) else {
+        return vec![true; count];
+    };
+    let mut sync = vec![false; count];
+    let available = stss.len().saturating_sub(8) / 4;
+    for index in 0..entries.min(available) {
+        if let Some(num) = be32(stss.get(8 + index * 4..).unwrap_or(&[]))
+            && let Some(slot) = (num as usize).checked_sub(1).and_then(|i| sync.get_mut(i))
+        {
+            *slot = true;
+        }
+    }
+    if !sync.iter().any(|&flag| flag) && !sync.is_empty() {
+        sync[0] = true;
+    }
+    sync
+}
+
+#[derive(Clone, Copy)]
+struct SamplePoint {
+    dts: i64,
+    pts: i64,
+    delta: u32,
+}
+
+fn sample_points(
     stts: &[u8],
     ctts: Option<&[u8]>,
-    scale: u32,
     count: usize,
-) -> Option<Vec<std::time::Duration>> {
-    if scale == 0 || count == 0 {
+    tolerant: bool,
+) -> Option<Vec<SamplePoint>> {
+    if count == 0 {
         return None;
     }
     let mut points = Vec::with_capacity(count);
@@ -358,12 +488,17 @@ fn timing(
         let row = stts.get(8 + index * 8..)?;
         let samples = be32(row)? as usize;
         let delta = be32(row.get(4..)?)?;
-        if delta == 0 || samples > count - points.len() {
+        if (!tolerant && delta == 0) || samples > count - points.len() {
             return None;
         }
+        let step = if tolerant { delta.max(1) } else { delta };
         for _ in 0..samples {
-            points.push((timestamp, delta));
-            timestamp = timestamp.checked_add(i64::from(delta))?;
+            points.push(SamplePoint {
+                dts: timestamp,
+                pts: timestamp,
+                delta: step,
+            });
+            timestamp = timestamp.checked_add(i64::from(step))?;
         }
     }
     if points.len() != count {
@@ -384,24 +519,44 @@ fn timing(
             } else {
                 i64::from(value)
             };
-            let end = at.checked_add(samples)?;
+            let end = if tolerant {
+                at.checked_add(samples)?.min(count)
+            } else {
+                at.checked_add(samples)?
+            };
             for point in points.get_mut(at..end)? {
-                point.0 = point.0.checked_add(offset)?;
+                point.pts = point.pts.checked_add(offset)?;
             }
             at = end;
+            if tolerant && at >= count {
+                break;
+            }
         }
-        if at != count {
+        if !tolerant && at != count {
             return None;
         }
     }
-    points.sort_by_key(|(timestamp, _)| *timestamp);
+    Some(points)
+}
+
+fn timing(
+    stts: &[u8],
+    ctts: Option<&[u8]>,
+    scale: u32,
+    count: usize,
+) -> Option<Vec<std::time::Duration>> {
+    if scale == 0 || count == 0 {
+        return None;
+    }
+    let mut points = sample_points(stts, ctts, count, false)?;
+    points.sort_by_key(|point| point.pts);
     points
         .iter()
         .enumerate()
-        .map(|(index, (timestamp, tail))| {
+        .map(|(index, point)| {
             let delta = points
                 .get(index + 1)
-                .map_or(i64::from(*tail), |next| next.0 - timestamp);
+                .map_or(i64::from(point.delta), |next| next.pts - point.pts);
             if delta <= 0 {
                 return None;
             }
@@ -612,6 +767,38 @@ mod tests {
         assert_eq!(config.length_size, 4);
         assert_eq!(config.sps, vec![vec![0x67, 0x64]]);
         assert_eq!(config.pps, vec![vec![0x68, 0xEE, 0x3C]]);
+    }
+
+    #[test]
+    fn vod_metadata_parses_stss_ctts_and_keyframe_lookup() {
+        let stss = [
+            0, 0, 0, 0, // version + flags
+            0, 0, 0, 2, // 2 entries
+            0, 0, 0, 1, // sample 0 (1-based)
+            0, 0, 0, 5, // sample 4 (1-based)
+        ];
+        assert_eq!(
+            parse_stss(Some(&stss), 6),
+            vec![true, false, false, false, true, false]
+        );
+        assert_eq!(parse_stss(None, 3), vec![true, true, true]);
+
+        // Test B-frame ctts timing computation directly via sample_points.
+        let mut stts = vec![0, 0, 0, 0, 0, 0, 0, 1];
+        stts.extend_from_slice(&4u32.to_be_bytes());
+        stts.extend_from_slice(&3000u32.to_be_bytes()); // 33.3ms at 90kHz
+        let mut ctts = vec![1, 0, 0, 0, 0, 0, 0, 4]; // version 1 signed
+        for off in [0i32, 6000, -3000, -3000] {
+            ctts.extend_from_slice(&1u32.to_be_bytes());
+            ctts.extend_from_slice(&(off as u32).to_be_bytes());
+        }
+        let pts: Vec<i64> = sample_points(&stts, Some(&ctts), 4, true)
+            .unwrap()
+            .into_iter()
+            .map(|p| p.pts)
+            .collect();
+        // DTS = 0, 3000, 6000, 9000 -> PTS = 0, 9000, 3000, 6000.
+        assert_eq!(pts, vec![0, 9000, 3000, 6000]);
     }
 }
 

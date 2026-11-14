@@ -29,12 +29,12 @@ pub(super) const KEY: &str = "audio:";
 
 /// The controls sit in a `theme-dark theme-midnight` wrapper: `--interactive-text-active` reads the midnight value
 /// (`oklab(0.895351 ...)`, 220 220 223); the other tokens of the card are the same in both themes.
-fn control_tint() -> gpui::Rgba {
+pub(super) fn control_tint() -> gpui::Rgba {
     gpui::rgba(Theme::Midnight.color("--interactive-text-active"))
 }
 
 /// `controlIcon_FJ99sr`: a 24 px glyph in the control tint.
-fn control_icon(name: &str) -> gpui::Svg {
+pub(super) fn control_icon(name: &str) -> gpui::Svg {
     gpui::svg()
         .path(format!("icons/{name}.svg"))
         .size(px(24.))
@@ -43,7 +43,7 @@ fn control_icon(name: &str) -> gpui::Svg {
 }
 
 /// `ei` in module 153440: `m:ss` of the whole seconds (`0|seconds`).
-fn clock(seconds: f64) -> String {
+pub(super) fn clock(seconds: f64) -> String {
     let whole = if seconds.is_finite() && seconds > 0. {
         seconds as u64
     } else {
@@ -53,7 +53,7 @@ fn clock(seconds: f64) -> String {
 }
 
 /// `en`: the elapsed and the whole length, "-:--" while unknown, the elapsed padded with zeros to the length's width.
-fn clock_pair(current: Option<f64>, duration: Option<f64>) -> (String, String) {
+pub(super) fn clock_pair(current: Option<f64>, duration: Option<f64>) -> (String, String) {
     let elapsed = current.map_or_else(|| "-:--".to_owned(), clock);
     let whole = duration.map_or_else(|| "-:--".to_owned(), clock);
     let padded = format!("{:0>width$}", elapsed, width = whole.chars().count());
@@ -65,8 +65,8 @@ fn clock_pair(current: Option<f64>, duration: Option<f64>) -> (String, String) {
 /// fetched and decoded here when the pointer enters the card, so the range is the whole clip from the moment the load
 /// completes (the one `progress` the element would fire for a small file), shown 400 ms later. A file the element
 /// would only have buffered in part cannot be told apart without range requests.
-const BUFFER_DELAY_MS: f64 = 400.;
-const BUFFER_MIN_SECONDS: f64 = 1.;
+pub(super) const BUFFER_DELAY_MS: f64 = 400.;
+pub(super) const BUFFER_MIN_SECONDS: f64 = 1.;
 
 /// What one frame shows of a card.
 struct View {

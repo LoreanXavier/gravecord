@@ -60,7 +60,7 @@ pub(super) struct Pill {
 
 /// `MediaPlayerVolume` (module 587481): `{volume, muted}` in the client storage; a number is clamped to 0..1 and
 /// anything else reads as 1, a non-boolean `muted` as false.
-fn volume_of(value: Option<&serde_json::Value>) -> (f32, bool) {
+pub(super) fn volume_of(value: Option<&serde_json::Value>) -> (f32, bool) {
     let volume = value
         .and_then(|stored| stored["volume"].as_f64())
         .map_or(1., |volume| volume.clamp(0., 1.)) as f32;
@@ -70,11 +70,11 @@ fn volume_of(value: Option<&serde_json::Value>) -> (f32, bool) {
     (volume, muted)
 }
 
-fn stored_volume() -> (f32, bool) {
+pub(super) fn stored_volume() -> (f32, bool) {
     volume_of(crate::storage::get("MediaPlayerVolume").as_ref())
 }
 
-fn store_volume(volume: f32, muted: bool) {
+pub(super) fn store_volume(volume: f32, muted: bool) {
     crate::storage::set(
         "MediaPlayerVolume",
         serde_json::json!({"volume": volume, "muted": muted}),

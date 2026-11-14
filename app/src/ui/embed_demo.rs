@@ -12,6 +12,7 @@ use super::Root;
 use crate::net::Update;
 use gpui::Context;
 use serde_json::{Value, json};
+use std::sync::Arc;
 
 /// Public pictures the harness can fetch: the GIFV poster and clip recorded in TRAFFIC, and a default avatar.
 const POSTER: &str = "https://images-ext-1.discordapp.net/external/HiSr_bDAjc2y8gxnBAyPJxT-oJGMWPDklJWsxoQN-no/https/static.klipy.com/ii/e293a233a303a98e471f78d04e13a1b0/13/d1/Sz4nTvkY.webp";
@@ -145,15 +146,242 @@ pub(super) fn set(name: &str, two_days_ago: &str) -> Option<Vec<(String, Value)>
     })
 }
 
+fn solid_png(width: u32, height: u32, bg: [u8; 3], accent: [u8; 3]) -> Arc<gpui::Image> {
+    let mut img = image::RgbImage::from_pixel(width, height, image::Rgb(bg));
+    let bar_w = (width / 5).max(8);
+    let y0 = height / 4;
+    let y1 = (height * 3) / 4;
+    for y in y0..y1 {
+        for x in 0..bar_w.min(width) {
+            img.put_pixel(x, y, image::Rgb(accent));
+        }
+    }
+    let mut bytes = Vec::new();
+    let _ = img.write_to(
+        &mut std::io::Cursor::new(&mut bytes),
+        image::ImageFormat::Png,
+    );
+    Arc::new(gpui::Image::from_bytes(gpui::ImageFormat::Png, bytes))
+}
+
+fn demo_mp4_fixture() -> Arc<Vec<u8>> {
+    let palette = [
+        [40, 110, 220],
+        [40, 110, 220],
+        [40, 110, 220],
+        [40, 195, 115],
+        [40, 195, 115],
+        [40, 195, 115],
+        [235, 165, 45],
+        [235, 165, 45],
+        [235, 165, 45],
+        [220, 60, 75],
+        [220, 60, 75],
+        [220, 60, 75],
+    ];
+    Arc::new(
+        crate::video_vod::synthetic_mp4(320, 180, 3, &palette, 3)
+            .expect("offline capture synthetic MP4"),
+    )
+}
+
 impl Root {
     pub(crate) fn script_embeds(&mut self, words: &[&str], cx: &mut Context<Self>) -> String {
+        if let ["video", rest @ ..] = words {
+            return self.script_video_cx(rest, cx);
+        }
         let ["demo", name] = words else {
-            return "embeds: usage `embeds demo <video|cards|inline|own|late|suppress>`".to_owned();
+            return "embeds: usage `embeds demo <video|video-att|video-fxtwitter|video-mosaic|cards|inline|own|late|suppress>`".to_owned();
         };
         let Some(channel) = self.channel else {
             return "embeds: no channel is open".to_owned();
         };
         let now = chrono::Utc::now();
+        if matches!(*name, "video-att" | "video-fxtwitter" | "video-mosaic") {
+            let base = ((now.timestamp_millis() - 1_420_070_400_000) as u64) << 22;
+            let author = match self.stores.current_user.as_ref() {
+                Some(me) => json!({"id": me.id.to_string(), "username": me.username}),
+                None => json!({"id": "900", "username": "ada"}),
+            };
+            let mp4 = demo_mp4_fixture();
+            let poster_att = solid_png(320, 180, [32, 72, 160], [235, 240, 255]);
+            let poster_yt = solid_png(320, 180, [130, 38, 46], [250, 215, 215]);
+            match *name {
+                "video-att" => {
+                    let msg_id = (base + 101).to_string();
+                    let att_id = (base + 201).to_string();
+                    let proxy = "https://media.example/demo_clip.mp4";
+                    self.seed_video_bytes(proxy, mp4);
+                    self.images
+                        .insert(format!("attachment:{att_id}"), poster_att);
+                    self.update(
+                        Update::Dispatch {
+                            name: "MESSAGE_CREATE".to_owned(),
+                            data: json!({
+                                "id": msg_id,
+                                "channel_id": channel.to_string(),
+                                "type": 0,
+                                "flags": 0,
+                                "content": "Offline H.264 attachment clip",
+                                "author": author,
+                                "timestamp": now.to_rfc3339_opts(chrono::SecondsFormat::Micros, false),
+                                "embeds": [],
+                                "attachments": [{
+                                    "id": att_id,
+                                    "filename": "demo_clip.mp4",
+                                    "size": 48_000,
+                                    "url": "https://cdn.example/demo_clip.mp4",
+                                    "proxy_url": proxy,
+                                    "content_type": "video/mp4",
+                                    "width": 320,
+                                    "height": 180
+                                }],
+                                "mentions": [],
+                                "mention_roles": []
+                            }),
+                        },
+                        cx,
+                    );
+                }
+                "video-fxtwitter" => {
+                    let fx_id = (base + 102).to_string();
+                    let yt_id = (base + 103).to_string();
+                    let fx_proxy = "https://media.example/fx_clip.mp4";
+                    self.seed_video_bytes(fx_proxy, mp4);
+                    self.images
+                        .insert(format!("embed:{fx_id}:0:thumbnail"), poster_att);
+                    self.images
+                        .insert(format!("embed:{yt_id}:0:thumbnail"), poster_yt);
+                    self.update(
+                        Update::Dispatch {
+                            name: "MESSAGE_CREATE".to_owned(),
+                            data: json!({
+                                "id": fx_id,
+                                "channel_id": channel.to_string(),
+                                "type": 0,
+                                "flags": 0,
+                                "content": "https://fxtwitter.com/example/status/1",
+                                "author": {"id": "900", "username": "ada"},
+                                "timestamp": now.to_rfc3339_opts(chrono::SecondsFormat::Micros, false),
+                                "embeds": [{
+                                    "type": "video",
+                                    "url": "https://fxtwitter.com/example/status/1",
+                                    "title": "FxTwitter Inline Video",
+                                    "description": "Proxied MP4 stream plays inline.",
+                                    "provider": {"name": "FxEmbed"},
+                                    "color": 0x1DA1F2,
+                                    "thumbnail": {
+                                        "url": "https://media.example/fx_thumb.webp",
+                                        "proxy_url": "https://media.example/fx_thumb.webp",
+                                        "width": 320,
+                                        "height": 180
+                                    },
+                                    "video": {
+                                        "url": "https://video.example/fx_clip.mp4",
+                                        "proxy_url": fx_proxy,
+                                        "width": 320,
+                                        "height": 180
+                                    }
+                                }],
+                                "attachments": [],
+                                "mentions": [],
+                                "mention_roles": []
+                            }),
+                        },
+                        cx,
+                    );
+                    self.update(
+                        Update::Dispatch {
+                            name: "MESSAGE_CREATE".to_owned(),
+                            data: json!({
+                                "id": yt_id,
+                                "channel_id": channel.to_string(),
+                                "type": 0,
+                                "flags": 0,
+                                "content": "https://www.youtube.com/watch?v=example",
+                                "author": {"id": "900", "username": "ada"},
+                                "timestamp": now.to_rfc3339_opts(chrono::SecondsFormat::Micros, false),
+                                "embeds": [{
+                                    "type": "video",
+                                    "url": "https://www.youtube.com/watch?v=example",
+                                    "title": "External YouTube Embed",
+                                    "provider": {"name": "YouTube"},
+                                    "color": 0xFF0000,
+                                    "thumbnail": {
+                                        "url": "https://i.ytimg.com/vi/example/hqdefault.jpg",
+                                        "proxy_url": "https://media.example/yt_thumb.jpg",
+                                        "width": 320,
+                                        "height": 180
+                                    },
+                                    "video": {
+                                        "url": "https://www.youtube.com/embed/example",
+                                        "width": 320,
+                                        "height": 180
+                                    }
+                                }],
+                                "attachments": [],
+                                "mentions": [],
+                                "mention_roles": []
+                            }),
+                        },
+                        cx,
+                    );
+                }
+                _ => {
+                    let msg_id = (base + 104).to_string();
+                    let vid_id = (base + 204).to_string();
+                    let img_id = (base + 205).to_string();
+                    let proxy = "https://media.example/mosaic_clip.mp4";
+                    self.seed_video_bytes(proxy, mp4);
+                    self.images
+                        .insert(format!("attachment:{vid_id}"), poster_att);
+                    self.images
+                        .insert(format!("attachment:{img_id}"), poster_yt);
+                    self.update(
+                        Update::Dispatch {
+                            name: "MESSAGE_CREATE".to_owned(),
+                            data: json!({
+                                "id": msg_id,
+                                "channel_id": channel.to_string(),
+                                "type": 0,
+                                "flags": 0,
+                                "content": "Mosaic with video and image",
+                                "author": author,
+                                "timestamp": now.to_rfc3339_opts(chrono::SecondsFormat::Micros, false),
+                                "embeds": [],
+                                "attachments": [
+                                    {
+                                        "id": vid_id,
+                                        "filename": "mosaic_clip.mp4",
+                                        "size": 48_000,
+                                        "url": "https://cdn.example/mosaic_clip.mp4",
+                                        "proxy_url": proxy,
+                                        "content_type": "video/mp4",
+                                        "width": 320,
+                                        "height": 180
+                                    },
+                                    {
+                                        "id": img_id,
+                                        "filename": "still.png",
+                                        "size": 12_000,
+                                        "url": "https://cdn.example/still.png",
+                                        "proxy_url": "https://media.example/still.png",
+                                        "content_type": "image/png",
+                                        "width": 320,
+                                        "height": 180
+                                    }
+                                ],
+                                "mentions": [],
+                                "mention_roles": []
+                            }),
+                        },
+                        cx,
+                    );
+                }
+            }
+            cx.notify();
+            return format!("embeds: dispatched offline video demo {name} to {channel}");
+        }
         if *name == "suppress" {
             let last = self
                 .stores

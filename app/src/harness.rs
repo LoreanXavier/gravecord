@@ -729,6 +729,36 @@ pub async fn run(
                 };
                 let _ = writeln!(output, "{line}");
             }
+            ["rtcdebug", "shot", path] => {
+                let path = PathBuf::from(path);
+                let handle = root.read_with(cx, |root, cx| root.rtc_debug_window(cx));
+                let line = match handle {
+                    Some(handle) => {
+                        cx.update(|cx| crate::write_capture(cx, handle, &path));
+                        format!("rtcdebug shot: {}", path.display())
+                    }
+                    None => "rtcdebug shot: no rtc debug window".to_owned(),
+                };
+                let _ = writeln!(output, "{line}");
+            }
+            ["rtcdebug", "click", x, y] => {
+                let handle = root.read_with(cx, |root, cx| root.rtc_debug_window(cx));
+                let line = match (handle, at(x, y)) {
+                    (Some(win), Some(point)) => {
+                        cx.update(|cx| {
+                            dispatch(cx, win, moved(point, None));
+                            dispatch(cx, win, down(point));
+                        });
+                        cx.background_executor()
+                            .timer(Duration::from_millis(30))
+                            .await;
+                        cx.update(|cx| dispatch(cx, win, up(point)));
+                        format!("rtcdebug click: {x},{y}")
+                    }
+                    _ => "rtcdebug click: no rtc debug window".to_owned(),
+                };
+                let _ = writeln!(output, "{line}");
+            }
             // `overlay drag <x1> <y1> <x2> <y2>`: a press, moves in 8 steps with a frame between, and a release, sent
             // to the overlay window (a widget's move while unlocked).
             ["overlay", "drag", x1, y1, x2, y2] => {

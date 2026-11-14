@@ -4,61 +4,81 @@
 
 use super::{Mode, Tab, text};
 use crate::parity::Parity;
-use crate::ui::{Root, color, dm_profile, icon, name_styles};
-use dc_state::User;
+use crate::ui::{Root, color, dm_profile, icon, name_styles, profile_theme};
+use dc_state::{Id, User};
 use gpui::{
-    AnyElement, Context, Div, FontWeight, IntoElement, Window, div, img, linear_color_stop,
-    linear_gradient, prelude::*, px, rgba,
+    AnyElement, Context, Div, FontWeight, IntoElement, Rgba, SharedString, Window, div, img,
+    prelude::*, px, rgba, svg,
 };
 
-fn section(title: &'static str) -> Div {
-    div()
-        .flex()
-        .flex_col()
-        .gap(px(8.))
-        .child(text(title, 12., 16., 500., "--text-subtle"))
+fn tinted_icon(name: &'static str, size: f32, tint: Rgba) -> gpui::Svg {
+    svg()
+        .path(format!("icons/{name}.svg"))
+        .size(px(size))
+        .text_color(tint)
 }
 
-fn round_button(id: &'static str, glyph: &'static str) -> gpui::Stateful<Div> {
+fn tinted_text(
+    value: impl Into<SharedString>,
+    size: f32,
+    line_height: f32,
+    weight: f32,
+    tint: Rgba,
+) -> Div {
+    div()
+        .text_size(px(size))
+        .line_height(px(line_height))
+        .font_weight(FontWeight(weight))
+        .text_color(tint)
+        .child(value.into())
+}
+
+fn section(title: &'static str, palette: &dm_profile::Palette) -> Div {
+    div().flex().flex_col().gap(px(8.)).child(tinted_text(
+        title,
+        12.,
+        16.,
+        500.,
+        palette.token("--text-subtle"),
+    ))
+}
+
+fn round_button(
+    id: &'static str,
+    glyph: &'static str,
+    palette: &dm_profile::Palette,
+) -> gpui::Stateful<Div> {
     div()
         .id(id)
         .size(px(32.))
         .rounded(px(8.))
-        .bg(color("--control-secondary-background-default"))
+        .bg(palette.token("--control-secondary-background-default"))
+        .border_1()
+        .border_color(palette.token("--control-secondary-border-default"))
         .flex()
         .items_center()
         .justify_center()
-        .child(icon(glyph, 16., "--control-secondary-text-default"))
+        .child(tinted_icon(
+            glyph,
+            16.,
+            palette.token("--control-secondary-text-default"),
+        ))
 }
 
 /// A dot of the thought bubble leading from the avatar to the status bubble.
-fn thought_dot(left: f32, top: f32, size: f32) -> Div {
+fn thought_dot(left: f32, top: f32, size: f32, palette: &dm_profile::Palette) -> Div {
     div()
         .absolute()
         .left(px(left))
         .top(px(top))
         .size(px(size))
         .rounded_full()
-        .bg(color("--background-surface-highest"))
+        .bg(palette.token("--background-surface-highest"))
 }
 
 /// Composite `overlay` over `base` when the gradient is painted without stacking translucent layers.
-fn blend(base: gpui::Rgba, overlay: gpui::Rgba) -> gpui::Rgba {
-    let a = overlay.a;
-    gpui::Rgba {
-        r: overlay.r * a + base.r * (1. - a),
-        g: overlay.g * a + base.g * (1. - a),
-        b: overlay.b * a + base.b * (1. - a),
-        a: 1.,
-    }
-}
-
-fn themed_fill(theme: &super::super::profile_theme::ProfileTheme) -> gpui::Background {
-    linear_gradient(
-        180.,
-        linear_color_stop(blend(theme.primary, theme.overlay), 0.),
-        linear_color_stop(blend(theme.secondary, theme.overlay), 1.),
-    )
+fn blend(base: Rgba, overlay: Rgba) -> Rgba {
+    profile_theme::blend_over(base, overlay)
 }
 
 impl Root {
@@ -100,42 +120,88 @@ impl Root {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
+        let palette = self.profile_editor_palette();
+        self.profile_editor_sync_field_styles(&palette, cx);
         let geometry = self
             .profile_editor
             .as_ref()
             .expect("editor is open")
             .geometry;
-        let palette = self.profile_editor_palette();
         let card = self.profile_editor_card(user, window, cx);
         // `profileContentColumns_s3DB6Y`: the card and the widgets column side by side, down to the editor's bottom.
         let columns = div()
+            .relative()
             .flex()
             .w(px(geometry.columns_width()))
             .h(px(geometry.card_height()))
             .child(card)
-            .child(self.profile_editor_widgets(window, cx));
+            .child(self.profile_editor_widgets(&palette, window, cx));
         // `inner_P1YEjQ profileContentInner_s3DB6Y`: the column's padding, the title bar's height at its top. A themed
-        // profile (`custom-user-profile-theme`) paints the whole column in its colours.
+        // profile (`custom-user-profile-theme`) paints `modal_background` with the 300px overlay fade (`253781`).
         let mut stage = div()
             .parity("profile-editor-stage")
             .relative()
             .flex_1()
             .min_w(px(0.))
             .h_full()
-            .bg(color("--background-base-lower"))
+            .overflow_hidden()
+            .bg(palette
+                .theme
+                .as_ref()
+                .map_or_else(|| color("--background-base-lower"), |t| t.modal_background))
             .pl(px(geometry.padding))
             .pt(px(geometry.content_top()))
             .when(geometry.content_border > 0., |this| {
                 this.border_r_1().border_color(color("--border-normal"))
             })
+            .children(palette.modal_backdrop())
             .child(columns);
-        if let Some(theme) = palette.theme.as_ref() {
-            stage = stage.bg(themed_fill(theme));
-        }
         if let Some(bar) = self.profile_editor_bar(cx) {
             stage = stage.child(bar);
         }
         stage.into_any_element()
+    }
+
+    /// Keep the inline name, pronouns, and bio editors readable against light and dark custom themes.
+    fn profile_editor_sync_field_styles(
+        &self,
+        palette: &dm_profile::Palette,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(open) = self.profile_editor.as_ref() else {
+            return;
+        };
+        let strong = palette.token("--text-strong");
+        let default = palette.token("--text-default");
+        let placeholder = palette.token("--input-placeholder-text-default");
+        let (name, pronouns, bio) = (open.name.clone(), open.pronouns.clone(), open.bio.clone());
+        name.update(cx, |editor, _| {
+            editor.set_style(super::profile_field_style(
+                24.,
+                32.,
+                600.,
+                strong.into(),
+                placeholder.into(),
+            ));
+        });
+        pronouns.update(cx, |editor, _| {
+            editor.set_style(super::profile_field_style(
+                14.,
+                18.,
+                400.,
+                default.into(),
+                placeholder.into(),
+            ));
+        });
+        bio.update(cx, |editor, _| {
+            editor.set_style(super::profile_field_style(
+                14.,
+                18.,
+                400.,
+                default.into(),
+                placeholder.into(),
+            ));
+        });
     }
 
     /// The theme colours the preview paints (`useProfileThemeValues`, module 927071 `u3`): the try-it-out choice in
@@ -179,15 +245,15 @@ impl Root {
             });
         let palette = self.profile_editor_palette();
         let upsell = self.profile_editor_upsell_shown();
-        let badges = if nitro {
-            Vec::new()
+        let badge_pill = if nitro {
+            None
         } else {
-            self.profile_badges("profile-editor", user.id, cx)
+            self.badge_pill("profile-editor", user.id, &palette, cx)
         };
         let server_tag = if nitro {
             None
         } else {
-            self.profile_editor_tag_pill(user)
+            self.profile_editor_tag_pill(user, &palette, cx)
         };
         let open = self.profile_editor.as_ref().expect("editor is open");
         let geometry = open.geometry;
@@ -228,15 +294,19 @@ impl Root {
             None => this.bg(color("--background-surface-high")),
         };
 
+        let banner_bg = match palette.theme.as_ref() {
+            Some(theme) => blend(theme.primary, theme.overlay),
+            None => rgba((banner << 8) | 0xff),
+        };
         let banner_fill = div()
-            .w(px(width))
+            .w_full()
             .h(px(140.))
             .rounded_t(px(16.))
             .overflow_hidden()
-            .bg(rgba((banner << 8) | 0xff))
+            .bg(banner_bg)
             .children(banner_image.map(|image| {
                 img(image)
-                    .w(px(width))
+                    .w_full()
                     .h(px(140.))
                     .object_fit(gpui::ObjectFit::Cover)
             }));
@@ -340,7 +410,7 @@ impl Root {
                 .text_size(px(24.))
                 .line_height(px(32.))
                 .font_weight(FontWeight(600.))
-                .text_color(color("--text-strong"))
+                .text_color(palette.token("--text-strong"))
                 .child(name_styles::name(
                     "profile-editor-name",
                     user.display_name().to_owned(),
@@ -364,32 +434,23 @@ impl Root {
                     .flex()
                     .items_center()
                     .gap(px(6.))
-                    .child(text(username, 14., 18., 400., "--text-strong"))
+                    .child(tinted_text(
+                        username,
+                        14.,
+                        18.,
+                        400.,
+                        palette.token("--text-strong"),
+                    ))
                     .child(
                         div()
                             .size(px(4.))
                             .rounded_full()
-                            .bg(color("--text-default")),
+                            .bg(palette.token("--text-default")),
                     )
                     .child(div().min_w(px(80.)).child(pronouns)),
             )
             .children(server_tag)
-            .when(!badges.is_empty(), |this| {
-                this.child(
-                    div()
-                        .h(px(22.))
-                        .px(px(3.))
-                        .py(px(1.))
-                        .rounded(px(8.))
-                        .border_1()
-                        .border_color(color("--border-muted"))
-                        .bg(color("--background-mod-subtle"))
-                        .flex()
-                        .items_center()
-                        .gap(px(2.))
-                        .children(badges),
-                )
-            });
+            .children(badge_pill);
         let buttons = div()
             .flex()
             .gap(px(8.))
@@ -398,25 +459,34 @@ impl Root {
                     .h(px(32.))
                     .px(px(12.))
                     .rounded(px(8.))
-                    .bg(color("--control-primary-background-default"))
+                    .bg(palette.token("--control-primary-background-default"))
                     .opacity(0.5)
                     .flex()
                     .items_center()
                     .gap(px(4.))
-                    .child(icon("chat_bubble", 16., "--control-primary-text-default"))
-                    .child(text(
-                        "Message",
+                    .child(tinted_icon(
+                        "chat_bubble",
+                        16.,
+                        palette.token("--control-primary-text-default"),
+                    ))
+                    .child(tinted_text(
+                        dc_intl::tr("Message"),
                         14.,
                         18.,
                         500.,
-                        "--control-primary-text-default",
+                        palette.token("--control-primary-text-default"),
                     )),
             )
-            .child(round_button("profile-editor-shop-button", "shop"))
+            .child(round_button("profile-editor-shop-button", "shop", &palette))
             .child(round_button(
                 "profile-editor-more-button",
                 "more_horizontal",
+                &palette,
             ));
+        let sec_bg = palette.token("--control-secondary-background-default");
+        let sec_hover = palette.token("--control-secondary-background-hover");
+        let sec_border = palette.token("--control-secondary-border-default");
+        let sec_fg = palette.token("--control-secondary-text-default");
         let upsell_card = upsell.then(|| {
             div()
                 .w(px(width - 2. * pad))
@@ -424,7 +494,7 @@ impl Root {
                 .rounded(px(8.))
                 .border_2()
                 .border_color(rgba(0x8a6ff0ff))
-                .bg(color("--background-surface-highest"))
+                .bg(palette.token("--background-surface-highest"))
                 .p(px(10.))
                 .flex()
                 .flex_col()
@@ -432,18 +502,22 @@ impl Root {
                 .child(
                     div()
                         .flex()
-                        .child(div().flex_1().child(text(
+                        .child(div().flex_1().child(tinted_text(
                             "Amp up your profile",
                             14.,
                             18.,
                             400.,
-                            "--text-strong",
+                            palette.token("--text-strong"),
                         )))
                         .child(
                             div()
                                 .id("profile-editor-upsell-close")
                                 .cursor_pointer()
-                                .child(icon("upsell_close", 16., "--icon-subtle"))
+                                .child(tinted_icon(
+                                    "upsell_close",
+                                    16.,
+                                    palette.token("--icon-subtle"),
+                                ))
                                 .on_click(cx.listener(|this, _, _, cx| {
                                     this.profile_editor_dismiss_upsell();
                                     cx.notify();
@@ -460,26 +534,29 @@ impl Root {
                                 .h(px(32.))
                                 .px(px(12.))
                                 .rounded(px(8.))
-                                .bg(color("--control-secondary-background-default"))
+                                .bg(sec_bg)
+                                .hover(move |style| style.bg(sec_hover))
+                                .border_1()
+                                .border_color(sec_border)
                                 .flex()
                                 .items_center()
                                 .gap(px(4.))
                                 .cursor_pointer()
-                                .child(icon(
+                                .child(tinted_icon(
                                     if premium {
                                         "nitro_wheel"
                                     } else {
                                         "settings_nitro"
                                     },
                                     16.,
-                                    "--control-secondary-text-default",
+                                    sec_fg,
                                 ))
-                                .child(text(
+                                .child(tinted_text(
                                     if premium { "View Perks" } else { "Get Nitro" },
                                     14.,
                                     18.,
                                     500.,
-                                    "--control-secondary-text-default",
+                                    sec_fg,
                                 ))
                                 .on_click(cx.listener(move |this, _, _, cx| {
                                     if premium {
@@ -498,19 +575,16 @@ impl Root {
                                 .h(px(32.))
                                 .px(px(12.))
                                 .rounded(px(8.))
-                                .bg(color("--control-secondary-background-default"))
+                                .bg(sec_bg)
+                                .hover(move |style| style.bg(sec_hover))
+                                .border_1()
+                                .border_color(sec_border)
                                 .flex()
                                 .items_center()
                                 .gap(px(4.))
                                 .cursor_pointer()
-                                .child(icon("shop", 16., "--control-secondary-text-default"))
-                                .child(text(
-                                    "Shop",
-                                    14.,
-                                    18.,
-                                    500.,
-                                    "--control-secondary-text-default",
-                                ))
+                                .child(tinted_icon("shop", 16., sec_fg))
+                                .child(tinted_text("Shop", 14., 18., 500., sec_fg))
                                 .on_click(cx.listener(|this, _, _, cx| {
                                     this.profile_editor = None;
                                     this.close_settings(cx);
@@ -519,21 +593,23 @@ impl Root {
                         ),
                 )
         });
-        let bio_section =
-            (!nitro).then(|| section("Bio").child(div().ml(px(-7.)).px(px(7.)).child(bio)));
+        let bio_section = (!nitro)
+            .then(|| section("Bio", &palette).child(div().ml(px(-7.)).px(px(7.)).child(bio)));
         let connections = (!nitro).then(|| {
-            section("Connections").child(
+            let muted = palette.token("--text-muted");
+            section("Connections", &palette).child(
                 div()
                     .flex()
                     .items_center()
                     .gap(px(2.))
-                    .child(icon("plus_small", 18., "--text-muted"))
-                    .child(text("Add Connection", 12., 16., 500., "--text-muted")),
+                    .child(tinted_icon("plus_small", 18., muted))
+                    .child(tinted_text("Add Connection", 12., 16., 500., muted)),
             )
         });
         // `profileBody_s3DB6Y`: the card's padding, scrolling under the header when it does not fit.
         let body = div()
             .id("profile-editor-card-body")
+            .relative()
             .flex_1()
             .min_h(px(0.))
             .overflow_y_scroll()
@@ -556,15 +632,26 @@ impl Root {
             .child(div().mt(px(if nitro { 2. } else { 4. })).child(buttons))
             .children(upsell_card)
             .children(bio_section)
-            .child(section("Member Since").child(text(since, 14., 18., 400., "--text-default")))
-            .children(connections)
-            .child(section("Note (only visible to you)").child(text(
-                "Click to add a note",
+            .child(section("Member Since", &palette).child(tinted_text(
+                since,
                 14.,
                 18.,
                 400.,
-                "--text-muted",
-            )));
+                palette.token("--text-default"),
+            )))
+            .children(connections)
+            .child(
+                section("Note (only visible to you)", &palette).child(
+                    tinted_text(
+                        "Click to add a note",
+                        14.,
+                        18.,
+                        400.,
+                        palette.token("--text-muted"),
+                    )
+                    .italic(),
+                ),
+            );
 
         // `profile_s3DB6Y`: rounded at the top only, from the column's padding to the editor's bottom edge.
         let mut card = div()
@@ -576,9 +663,18 @@ impl Root {
             .flex_none()
             .rounded_t(px(16.))
             .overflow_hidden()
-            .bg(color("--background-surface-high"))
+            .bg(palette.theme.as_ref().map_or_else(
+                || color("--background-surface-high"),
+                |t| t.card_gradient_stops().0,
+            ))
+            .when(palette.theme.is_some(), |this| {
+                // `outline: 1px solid var(--border-muted)` keeps the themed card apart from the themed column.
+                this.border_1()
+                    .border_color(palette.token("--border-muted"))
+            })
             .flex()
             .flex_col()
+            .children(palette.card_backdrop(140.))
             .child(
                 div()
                     .relative()
@@ -586,18 +682,11 @@ impl Root {
                     .flex_none()
                     .child(banner_fill)
                     .child(avatar)
-                    .child(thought_dot(bubble_left, 121., 8.))
-                    .child(thought_dot(bubble_left + 16., 131., 14.))
+                    .child(thought_dot(bubble_left, 121., 8., &palette))
+                    .child(thought_dot(bubble_left + 16., 131., 14., &palette))
                     .child(bubble),
             )
             .child(body);
-        if let Some(theme) = palette.theme.as_ref() {
-            // `outline: 1px solid var(--border-muted)` keeps the themed card apart from the themed column.
-            card = card
-                .bg(themed_fill(theme))
-                .border_1()
-                .border_color(palette.token("--border-muted"));
-        }
         let frame_layer =
             self.profile_editor_art(frame, super::Kind::Frame, width, geometry.card_height());
         let effect_layer = effect.and_then(|sku| {
@@ -609,25 +698,99 @@ impl Root {
                 cx,
             )
         });
-        card.children(frame_layer)
-            .children(effect_layer)
-            .into_any_element()
+        card = card.children(frame_layer).children(effect_layer);
+        card.into_any_element()
+    }
+
+    pub(super) fn profile_editor_eligible_tags(&self) -> Vec<(Id, String, String, Option<String>)> {
+        self.stores
+            .guilds
+            .iter()
+            .filter_map(|guild| {
+                let (tag, badge) = guild.selectable_server_tag()?;
+                Some((
+                    guild.id,
+                    guild.name.clone(),
+                    tag.to_owned(),
+                    badge.map(str::to_owned),
+                ))
+            })
+            .collect()
+    }
+
+    pub(super) fn profile_editor_request_tag_art(&mut self) {
+        let requests: Vec<(String, String)> = self
+            .profile_editor_eligible_tags()
+            .into_iter()
+            .flat_map(|(gid, _, _, badge)| {
+                let guild_icon = self
+                    .stores
+                    .guilds
+                    .iter()
+                    .find(|g| g.id == gid)
+                    .and_then(|g| g.icon.as_deref())
+                    .map(|hash| {
+                        (
+                            format!("guild:{gid}"),
+                            format!("https://cdn.discordapp.com/icons/{gid}/{hash}.png?size=64"),
+                        )
+                    });
+                let clan_badge = badge.map(|hash| {
+                    let url =
+                        format!("https://cdn.discordapp.com/clan-badges/{gid}/{hash}.png?size=16");
+                    (url.clone(), url)
+                });
+                guild_icon.into_iter().chain(clan_badge)
+            })
+            .collect();
+        for (key, url) in requests {
+            self.request_image(key, url);
+        }
+    }
+
+    pub(super) fn profile_editor_pick_tag(&mut self, guild_id: Option<Id>, cx: &mut Context<Self>) {
+        let saved = self
+            .stores
+            .current_user
+            .as_ref()
+            .and_then(|u| u.tag.as_ref())
+            .map(|t| t.guild_id);
+        if let Some(open) = self.profile_editor.as_mut() {
+            if saved == guild_id {
+                open.pending.primary_guild_id = None;
+            } else {
+                open.pending.primary_guild_id = Some(guild_id);
+            }
+            open.tag_select_open = false;
+        }
+        cx.notify();
     }
 
     /// `uP` of module 927071: the server tag select beside the pronouns, with the account's tag or the Server Tag
-    /// placeholder. Drawn while the account has a tag or is in a server with `GUILD_TAGS` (the official also lists the
-    /// servers' own tags, which the guild objects here do not carry).
-    fn profile_editor_tag_pill(&self, user: &User) -> Option<AnyElement> {
+    /// placeholder (`dc_intl::t!("Pdd1nd")`).
+    fn profile_editor_tag_pill(
+        &self,
+        user: &User,
+        palette: &dm_profile::Palette,
+        cx: &mut Context<Self>,
+    ) -> Option<AnyElement> {
         let tag = user.tag.clone();
-        let any_tag_server = self
-            .stores
-            .guilds
-            .iter()
-            .any(|guild| guild.features.iter().any(|feature| feature == "GUILD_TAGS"));
+        let open = self.profile_editor.as_ref()?;
+        let eligible = self.profile_editor_eligible_tags();
+        let any_tag_server = !eligible.is_empty()
+            || self
+                .stores
+                .guilds
+                .iter()
+                .any(|guild| guild.features.iter().any(|feature| feature == "GUILD_TAGS"));
         if tag.is_none() && !any_tag_server {
             return None;
         }
         let placeholder = tag.is_none();
+        let editable = open.guild.is_none();
+        let expanded = open.tag_select_open && editable;
+        let text_default = palette.token("--text-default");
+        let text_placeholder = palette.token("--input-placeholder-text-default");
         let content = match tag {
             Some(tag) => {
                 let badge = tag
@@ -638,38 +801,277 @@ impl Root {
                     .items_center()
                     .gap(px(2.))
                     .children(badge.map(|image| img(image).size(px(14.))))
-                    .child(text(tag.tag, 12., 16., 400., "--text-default"))
+                    .child(tinted_text(tag.tag, 12., 16., 500., text_default))
             }
-            None => div().italic().child(text(
-                dc_intl::tr("Server Tag"),
+            None => div().italic().child(tinted_text(
+                dc_intl::t!("Pdd1nd"),
                 12.,
                 16.,
                 400.,
-                "--input-placeholder-text-default",
+                text_placeholder,
             )),
         };
+        let pill_hover = palette.pill_background(true);
         // `selectButtonPill_C3qxaU`: 24 high, 8px radius, 8px in (6px for the placeholder) and 6px at the end.
-        Some(
+        let mut pill = div()
+            .id("profile-editor-server-tag")
+            .relative()
+            .h(px(24.))
+            .pl(px(if placeholder { 6. } else { 8. }))
+            .pr(px(6.))
+            .rounded(px(8.))
+            .border_1()
+            .border_color(palette.token("--border-muted"))
+            .bg(palette.pill_background(expanded))
+            .when(editable, |this| {
+                this.hover(move |style| style.bg(pill_hover))
+                    .cursor_pointer()
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        let search = this
+                            .profile_editor
+                            .as_ref()
+                            .map(|open| open.tag_search.clone());
+                        if let Some(search) = search {
+                            search.update(cx, |editor, _| editor.set_text(""));
+                        }
+                        if let Some(open) = this.profile_editor.as_mut() {
+                            open.tag_select_open = !open.tag_select_open;
+                        }
+                        this.profile_editor_request_tag_art();
+                        cx.notify();
+                    }))
+            })
+            .flex()
+            .items_center()
+            .child(self.anchor_probe("profile-editor-server-tag"))
+            .child(content)
+            .when(editable, |this| {
+                this.child(div().ml(px(2.)).child(tinted_icon(
+                    if expanded {
+                        "discover_select_chevron_up"
+                    } else {
+                        "chevron_down"
+                    },
+                    12.,
+                    text_default,
+                )))
+            });
+        if !editable {
+            pill = pill.opacity(0.8);
+        }
+        Some(pill.into_any_element())
+    }
+
+    /// `.listbox_C3qxaU` (`927071` `uk` / `685073` `gC`): `280px` searchable Server Tag menu (`240px` empty state).
+    pub(super) fn profile_editor_tag_select_popout(
+        &mut self,
+        cx: &mut Context<Self>,
+    ) -> Option<AnyElement> {
+        let open = self.profile_editor.as_ref()?;
+        if !open.tag_select_open || open.guild.is_some() {
+            return None;
+        }
+        let search_editor = open.tag_search.clone();
+        let query = search_editor.read(cx).text().trim().to_lowercase();
+        let geometry = open.geometry;
+        let anchor = self
+            .tip_anchors
+            .borrow()
+            .get("profile-editor-server-tag")
+            .copied();
+        let eligible = self.profile_editor_eligible_tags();
+        let selected_guild = self.profile_editor_user().tag.map(|t| t.guild_id);
+        let accent = color("--control-primary-background-default");
+
+        let panel = if eligible.is_empty() {
             div()
-                .id("profile-editor-server-tag")
-                .h(px(24.))
-                .pl(px(if placeholder { 6. } else { 8. }))
-                .pr(px(6.))
+                .id("profile-editor-server-tag-popout")
+                .occlude()
+                .w(px(240.))
+                .p(px(12.))
                 .rounded(px(8.))
                 .border_1()
-                .border_color(color("--border-muted"))
-                .bg(color("--background-mod-subtle"))
-                .hover(|style| style.bg(color("--background-mod-strong")))
-                .cursor_pointer()
-                .flex()
-                .items_center()
-                .child(content)
+                .border_color(color("--border-subtle"))
+                .bg(color("--background-surface-higher"))
                 .child(
                     div()
-                        .ml(px(2.))
-                        .child(icon("chevron_down", 12., "--text-default")),
+                        .text_size(px(14.))
+                        .line_height(px(18.))
+                        .text_color(color("--text-muted"))
+                        .child(dc_intl::t!("NV+MBV")),
                 )
-                .into_any_element(),
+        } else {
+            let filtered: Vec<_> = eligible
+                .into_iter()
+                .filter(|(_, name, tag, _)| {
+                    query.is_empty()
+                        || name.to_lowercase().contains(&query)
+                        || tag.to_lowercase().contains(&query)
+                })
+                .collect();
+            let clear_selected = selected_guild.is_none();
+            let clear_row = div()
+                .id("profile-editor-tag-option-none")
+                .h(px(36.))
+                .px(px(8.))
+                .rounded(px(4.))
+                .cursor_pointer()
+                .hover(|s| s.bg(color("--interactive-background-hover")))
+                .flex()
+                .items_center()
+                .gap(px(8.))
+                .child(
+                    div()
+                        .flex_1()
+                        .italic()
+                        .text_size(px(14.))
+                        .line_height(px(18.))
+                        .text_color(color("--text-default"))
+                        .child(dc_intl::t!("VxdWWH")),
+                )
+                .when(clear_selected, |this| {
+                    this.child(tinted_icon("select_check", 16., accent))
+                })
+                .on_click(cx.listener(|this, _, _, cx| {
+                    this.profile_editor_pick_tag(None, cx);
+                }));
+            let guild_rows = filtered
+                .into_iter()
+                .map(|(gid, name, tag_text, badge_hash)| {
+                    let selected = selected_guild == Some(gid);
+                    let guild_icon = self.images.get(&format!("guild:{gid}")).cloned();
+                    let acronym = self
+                        .stores
+                        .guilds
+                        .iter()
+                        .find(|g| g.id == gid)
+                        .map(dc_state::Guild::acronym)
+                        .unwrap_or_default();
+                    let badge_url = badge_hash.map(|hash| {
+                        format!("https://cdn.discordapp.com/clan-badges/{gid}/{hash}.png?size=16")
+                    });
+                    let badge_img = badge_url
+                        .as_ref()
+                        .and_then(|url| self.images.get(url).cloned());
+                    let leading = div()
+                        .size(px(20.))
+                        .flex_none()
+                        .rounded(px(6.))
+                        .overflow_hidden()
+                        .bg(color("--background-surface-high"))
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .text_size(px(9.))
+                        .text_color(color("--text-default"))
+                        .child(match guild_icon {
+                            Some(image) => img(image).size(px(20.)).into_any_element(),
+                            None => div().child(acronym).into_any_element(),
+                        });
+                    let chip = div()
+                        .h(px(20.))
+                        .px(px(6.))
+                        .rounded(px(4.))
+                        .bg(color("--background-mod-subtle"))
+                        .flex()
+                        .items_center()
+                        .gap(px(4.))
+                        .children(badge_img.map(|image| img(image).size(px(14.))))
+                        .child(text(tag_text, 12., 16., 600., "--text-default"));
+                    div()
+                        .id(SharedString::from(format!(
+                            "profile-editor-tag-option-{gid}"
+                        )))
+                        .h(px(36.))
+                        .px(px(8.))
+                        .rounded(px(4.))
+                        .cursor_pointer()
+                        .hover(|s| s.bg(color("--interactive-background-hover")))
+                        .flex()
+                        .items_center()
+                        .gap(px(8.))
+                        .child(leading)
+                        .child(
+                            div()
+                                .flex_1()
+                                .min_w(px(0.))
+                                .overflow_hidden()
+                                .whitespace_nowrap()
+                                .text_size(px(14.))
+                                .line_height(px(18.))
+                                .text_color(color("--text-strong"))
+                                .child(name),
+                        )
+                        .child(chip)
+                        .when(selected, |this| {
+                            this.child(tinted_icon("select_check", 16., accent))
+                        })
+                        .on_click(cx.listener(move |this, _, _, cx| {
+                            this.profile_editor_pick_tag(Some(gid), cx);
+                        }))
+                });
+            div()
+                .id("profile-editor-server-tag-popout")
+                .occlude()
+                .w(px(280.))
+                .p(px(8.))
+                .rounded(px(8.))
+                .border_1()
+                .border_color(color("--border-subtle"))
+                .bg(color("--background-surface-higher"))
+                .flex()
+                .flex_col()
+                .gap(px(8.))
+                .child(
+                    div()
+                        .h(px(34.))
+                        .px(px(10.))
+                        .rounded(px(8.))
+                        .border_1()
+                        .border_color(color("--input-border-default"))
+                        .bg(color("--input-background-default"))
+                        .flex()
+                        .items_center()
+                        .gap(px(8.))
+                        .child(tinted_icon("search", 16., color("--icon-subtle")))
+                        .child(div().flex_1().min_w(px(0.)).child(search_editor)),
+                )
+                .child(
+                    div()
+                        .id("profile-editor-server-tag-list")
+                        .max_h(px(240.))
+                        .overflow_y_scroll()
+                        .flex()
+                        .flex_col()
+                        .gap(px(2.))
+                        .child(clear_row)
+                        .children(guild_rows),
+                )
+        };
+        let pos = anchor.map_or_else(
+            || {
+                gpui::point(
+                    px(geometry.left + geometry.panel_width + geometry.padding + 16.),
+                    px(geometry.top + geometry.content_top() + 300.),
+                )
+            },
+            |bounds| gpui::point(bounds.left(), bounds.bottom() + px(4.)),
+        );
+        Some(
+            gpui::deferred(
+                gpui::anchored()
+                    .anchor(gpui::Anchor::TopLeft)
+                    .position(pos)
+                    .snap_to_window_with_margin(px(8.))
+                    .child(panel.on_mouse_down_out(cx.listener(|this, _, _, cx| {
+                        if let Some(open) = this.profile_editor.as_mut() {
+                            open.tag_select_open = false;
+                        }
+                        cx.notify();
+                    }))),
+            )
+            .with_priority(3)
+            .into_any_element(),
         )
     }
 
@@ -799,7 +1201,7 @@ impl Root {
         )
     }
 
-    fn profile_editor_reset(&mut self, cx: &mut Context<Self>) {
+    pub(super) fn profile_editor_reset(&mut self, cx: &mut Context<Self>) {
         let me = self.stores.current_user.clone().unwrap_or_default();
         let guild = self.profile_editor.as_ref().and_then(|open| open.guild);
         let nick = guild
@@ -815,6 +1217,11 @@ impl Root {
             open.banner_image = None;
             open.picker = None;
             open.banner_color = None;
+            open.tag_select_open = false;
+            open.game_picker = None;
+            open.widget_modal = None;
+            open.widget_confirm_remove = None;
+            open.board_widgets = open.saved.widgets.clone();
             open.error = None;
             let (name, pronouns, bio) =
                 (open.name.clone(), open.pronouns.clone(), open.bio.clone());

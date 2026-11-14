@@ -34,6 +34,8 @@ pub(crate) struct Call {
     pub stats: super::voice_panel::CallStats,
     /// Our camera is on (`Event::VideoState`), reported as `self_video` in op 4.
     pub camera: bool,
+    /// Negotiated DAVE protocol version (`0` when unencrypted / Stage transport-only; `1` once DAVE is active).
+    pub dave_version: u16,
     /// The flags each participant's client announced (`RTC_CONNECTION_FLAGS`).
     pub flags: std::collections::HashMap<u64, u64>,
 }
@@ -42,6 +44,17 @@ impl Call {
     /// `getUserIds()` is more than this client (module 83942 `c`).
     pub fn has_others(&self, me: Option<Id>) -> bool {
         self.rtc_users.iter().any(|user| Some(*user) != me)
+    }
+
+    /// Connected media participants currently reported on the call.
+    pub(super) fn rtc_users(&self) -> &[u64] {
+        &self.rtc_users
+    }
+
+    /// Replaces the media connection's peer list for capture fixtures.
+    #[cfg(feature = "capture")]
+    pub(super) fn set_rtc_users(&mut self, users: Vec<u64>) {
+        self.rtc_users = users;
     }
 }
 
@@ -143,6 +156,7 @@ impl Root {
         self.vv.notices.clear();
         info!("joining voice");
         self.open_call(guild, channel);
+        super::voice_panel::rtc_debug::on_voice_channel_select(Some(channel), cx);
         if let Some(sound) = super::voice_sounds::connect_start_sound(
             self.rtc_join_sounds(),
             self.room(guild, channel),
@@ -173,6 +187,7 @@ impl Root {
             connected_at: None,
             rtc_users: Vec::new(),
             flags: std::collections::HashMap::new(),
+            dave_version: 0,
             tracker: Default::default(),
             generation: 0,
         });
@@ -241,10 +256,27 @@ impl Root {
         }
     }
 
+    #[cfg(feature = "capture")]
+    fn fake_call_rtc_users(&self, guild: Id, channel: Id) -> Vec<u64> {
+        let mut rtc_users = Vec::new();
+        for state in self.stores.voice_members(guild, channel) {
+            if !rtc_users.contains(&state.user_id) {
+                rtc_users.push(state.user_id);
+            }
+        }
+        if let Some(me) = self.stores.current_user.as_ref().map(|user| user.id)
+            && !rtc_users.contains(&me)
+        {
+            rtc_users.push(me);
+        }
+        rtc_users
+    }
+
     /// Harness only: this account "in" the call of a DM without any voice state sent anywhere or any media opened,
     /// for frames of the in-call screens. Nothing leaves the process.
     #[cfg(feature = "capture")]
     pub(super) fn fake_dm_call(&mut self, channel: Id, cx: &mut Context<Self>) {
+        let rtc_users = self.fake_call_rtc_users(0, channel);
         self.call = Some(Call {
             stats: Default::default(),
             camera: false,
@@ -254,8 +286,9 @@ impl Root {
             started: true,
             connected: true,
             connected_at: Some(std::time::Instant::now()),
-            rtc_users: Vec::new(),
+            rtc_users,
             flags: std::collections::HashMap::new(),
+            dave_version: 1,
             tracker: Default::default(),
             generation: 0,
         });
@@ -266,6 +299,8 @@ impl Root {
     /// process (`ch call <channel>`).
     #[cfg(feature = "capture")]
     pub(super) fn fake_guild_call(&mut self, guild: Id, channel: Id) {
+        let rtc_users = self.fake_call_rtc_users(guild, channel);
+        let dave_version = u16::from(!self.is_stage_voice_channel(guild, channel));
         self.call = Some(Call {
             stats: Default::default(),
             camera: false,
@@ -275,8 +310,9 @@ impl Root {
             started: true,
             connected: true,
             connected_at: Some(std::time::Instant::now()),
-            rtc_users: Vec::new(),
+            rtc_users,
             flags: std::collections::HashMap::new(),
+            dave_version,
             tracker: Default::default(),
             generation: 0,
         });
@@ -366,6 +402,8 @@ impl Root {
         self.vv.focus.tile = None;
         // The popped-out window and what was dragged belong to the call, whether or not the main window draws.
         self.call_popout_frame(cx);
+        self.close_rtc_debug(cx);
+        super::voice_panel::rtc_debug::clear_live_rtc_stats(cx);
         self.sync_ptt_hook();
         cx.notify();
     }
@@ -474,9 +512,14 @@ impl Root {
         match event {
             dc_voice::Event::Connected => {
                 info!("voice connected");
+                let is_stage = self
+                    .call
+                    .as_ref()
+                    .is_some_and(|call| self.is_stage_voice_channel(call.guild, call.channel));
                 if let Some(call) = self.call.as_mut() {
                     call.connected = true;
                     call.connected_at = Some(std::time::Instant::now());
+                    call.dave_version = u16::from(!is_stage);
                 }
                 if let Some(call) = &self.call
                     && let Some(sound) = super::voice_sounds::connected_sound(
@@ -488,6 +531,7 @@ impl Root {
                 }
                 self.voice_connection_started(cx);
                 self.rtc_step();
+                super::voice_panel::rtc_debug::ingest_call_rtc_stats(self, cx);
                 self.sync_ptt_hook();
             }
             dc_voice::Event::SpeakingChanged { user_id, speaking } => {
@@ -505,6 +549,7 @@ impl Root {
                 if let Some(call) = self.call.as_mut() {
                     call.stats.ping(ms);
                 }
+                super::voice_panel::rtc_debug::ingest_call_rtc_stats(self, cx);
             }
             dc_voice::Event::OutboundLoss { percent } => {
                 if let Some(call) = self.call.as_mut() {
@@ -555,6 +600,7 @@ impl Root {
                     crate::sounds::play_event(sound);
                 }
                 self.voice_call_ended();
+                super::voice_panel::rtc_debug::clear_live_rtc_stats(cx);
                 self.rtc_step();
                 self.sync_ptt_hook();
                 // Close code 4014: the service removed this session from the channel, and nothing rejoins it.
@@ -641,6 +687,11 @@ impl Root {
             kind,
             is_afk: self.stores.afk_channels.get(&guild) == Some(&channel),
         }
+    }
+
+    /// Stage channels (`GUILD_STAGE_VOICE`, channel type 13) suppress E2EE / DAVE privacy chrome (`259374`).
+    pub(super) fn is_stage_voice_channel(&self, guild: Id, channel: Id) -> bool {
+        guild != 0 && self.room(guild, channel).kind == 13
     }
 
     /// Who else the voice states place in the channel of the call; none outside a call.

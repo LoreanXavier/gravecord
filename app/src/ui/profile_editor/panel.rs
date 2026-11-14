@@ -881,6 +881,13 @@ pub(super) fn banner_color(open: &Open, user: &User) -> u32 {
         .accent_color
         .flatten()
         .or(open.saved.accent_color)
+        .or_else(|| {
+            open.pending
+                .theme_colors
+                .flatten()
+                .or(open.saved.theme_colors)
+                .map(|pair| pair[0])
+        })
         .unwrap_or_else(|| default_banner_color(user))
 }
 

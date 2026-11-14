@@ -35,6 +35,17 @@ fn now_ms() -> f64 {
         .map_or(0., |since| since.as_millis() as f64)
 }
 
+/// Quick Actions tray button size (`609142.js` / `491899.db7bf5e846a02ae2.css`: 20px icon + 8px padding).
+pub(super) const QUICK_ACTIONS_BUTTON_SIZE: f32 = 36.;
+
+/// Outer `wrapper_yjvjn7` height of the Quick Actions widget: 36px button + 10px section box + 18px panel box +
+/// 20px drag padding/border = 84px.
+#[cfg(test)]
+pub(super) const QUICK_ACTIONS_WRAPPER_HEIGHT: f32 = QUICK_ACTIONS_BUTTON_SIZE
+    + 10.
+    + 18.
+    + 2. * (dc_overlay::drag::PADDING + dc_overlay::drag::BORDER);
+
 impl Root {
     /// What `Overlay-v3-Text-Chat-Store` reads about a channel.
     pub(super) fn overlay_channel_info(&self, channel: Id) -> ChannelInfo {
@@ -329,8 +340,8 @@ impl Root {
             .flatten()
             .map(|channel| self.overlay_chat_pane(widget, channel, Some(channel) == voice, cx));
         div()
-            .when_some(width, |this, width| this.w(px(width)))
-            .when_some(height, |this, height| this.h(px(height)))
+            .when_some(width, |this, width| this.w(px(width + 10.)))
+            .when_some(height, |this, height| this.h(px(height - 6.)))
             .flex()
             .flex_row()
             .items_stretch()
@@ -671,7 +682,7 @@ impl Root {
                     let id = tray.id;
                     div()
                         .id(id)
-                        .size(px(40.))
+                        .size(px(QUICK_ACTIONS_BUTTON_SIZE))
                         .flex()
                         .items_center()
                         .justify_center()

@@ -40,6 +40,7 @@ mod ui;
 mod updater;
 mod upload_flow;
 mod video_clip;
+mod video_vod;
 mod webauthn;
 #[cfg(feature = "capture")]
 mod webhook_demo;

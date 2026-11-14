@@ -34,6 +34,8 @@ pub(super) struct Item {
     pub height: u32,
     pub filename: String,
     pub animated: bool,
+    pub is_video: bool,
+    pub video_src: Option<String>,
 }
 
 /// The state of the open viewer.
@@ -56,7 +58,7 @@ pub(super) fn items_of(message: &Message) -> Vec<Item> {
     let mut items: Vec<Item> = message
         .attachments
         .iter()
-        .filter(|attachment| attachment.is_image())
+        .filter(|attachment| attachment.is_image() || attachment.is_video())
         .map(attachment_item)
         .collect();
     for (index, embed) in message.embeds.iter().enumerate() {
@@ -72,6 +74,31 @@ pub(super) fn items_of(message: &Message) -> Vec<Item> {
                 animated: filename_of(&image.url)
                     .to_ascii_lowercase()
                     .ends_with(".gif"),
+                is_video: false,
+                video_src: None,
+            });
+        }
+        if embed.kind != "gifv"
+            && let Some(video) = &embed.video
+            && let Some(proxy) = &video.proxy_url
+            && video.width <= 6016
+            && video.height <= 3384
+        {
+            let name = filename_of(&video.url);
+            items.push(Item {
+                key: super::embed::image_key(message.id, index, "thumbnail"),
+                url: video.url.clone(),
+                proxy: proxy.clone(),
+                width: video.width.max(1),
+                height: video.height.max(1),
+                filename: if name.is_empty() {
+                    "video.mp4".to_owned()
+                } else {
+                    name
+                },
+                animated: false,
+                is_video: true,
+                video_src: Some(proxy.clone()),
             });
         }
     }
@@ -79,6 +106,14 @@ pub(super) fn items_of(message: &Message) -> Vec<Item> {
 }
 
 fn attachment_item(attachment: &Attachment) -> Item {
+    let is_video = attachment.is_video();
+    let video_src = is_video.then(|| {
+        if attachment.proxy_url.is_empty() {
+            attachment.url.clone()
+        } else {
+            attachment.proxy_url.clone()
+        }
+    });
     Item {
         key: format!("attachment:{}", attachment.id),
         url: attachment.url.clone(),
@@ -87,6 +122,8 @@ fn attachment_item(attachment: &Attachment) -> Item {
         height: attachment.height.unwrap_or(1),
         filename: attachment.filename.clone(),
         animated: attachment.is_animated(),
+        is_video,
+        video_src,
     }
 }
 
@@ -158,6 +195,9 @@ impl Root {
         let Some(index) = items.iter().position(|item| item.key == key) else {
             return;
         };
+        if items[index].is_video {
+            self.video_hub.borrow_mut().pause_all();
+        }
         self.lightbox = Some(Lightbox {
             message: message.clone(),
             items,
@@ -169,6 +209,12 @@ impl Root {
             more: false,
         });
         self.lightbox_images();
+        cx.notify();
+    }
+
+    pub(super) fn close_lightbox(&mut self, cx: &mut Context<Self>) {
+        self.lightbox = None;
+        self.release_lightbox_videos(None, cx);
         cx.notify();
     }
 
@@ -199,6 +245,7 @@ impl Root {
     }
 
     pub(super) fn lightbox_step(&mut self, delta: i32, cx: &mut Context<Self>) {
+        self.video_hub.borrow_mut().pause_all();
         if let Some(open) = self.lightbox.as_mut() {
             open.index = step(open.index, open.items.len(), delta);
             open.zoomed = false;
@@ -251,10 +298,7 @@ impl Root {
             return false;
         }
         match event.keystroke.key.as_str() {
-            "escape" => {
-                self.lightbox = None;
-                cx.notify();
-            }
+            "escape" => self.close_lightbox(cx),
             "left" => self.lightbox_step(-1, cx),
             "right" => self.lightbox_step(1, cx),
             _ => return false,
@@ -361,12 +405,14 @@ impl Root {
             .border_1()
             .border_color(midnight("--border-subtle"))
             .bg(panel)
-            .child(self.lightbox_button(
-                "lightbox-zoom",
-                if zoomed { "lb_zoom_out" } else { "lb_zoom_in" },
-                move |this, _, cx| this.lightbox_zoom(!zoomed, cx),
-                cx,
-            ))
+            .children((!item.is_video).then(|| {
+                self.lightbox_button(
+                    "lightbox-zoom",
+                    if zoomed { "lb_zoom_out" } else { "lb_zoom_in" },
+                    move |this, _, cx| this.lightbox_zoom(!zoomed, cx),
+                    cx,
+                )
+            }))
             .child(self.lightbox_button(
                 "lightbox-forward",
                 "lb_forward",
@@ -375,10 +421,22 @@ impl Root {
                 },
                 cx,
             ))
-            .child(self.lightbox_button(
-                "lightbox-save",
-                "lb_download",
-                |this, _, cx| this.lightbox_save(cx),
+            .child(self.with_tip(
+                "lightbox-save-tip",
+                super::tooltip::Tip::text(
+                    dc_intl::tr(if item.is_video {
+                        "Save Video"
+                    } else {
+                        "Save Image"
+                    }),
+                    super::tooltip::Side::Top,
+                ),
+                self.lightbox_button(
+                    "lightbox-save",
+                    "lb_download",
+                    |this, _, cx| this.lightbox_save(cx),
+                    cx,
+                ),
                 cx,
             ))
             .child(self.lightbox_button(
@@ -413,96 +471,129 @@ impl Root {
             .cursor_pointer()
             .child(icon("lb_close", 20., "--icon-default"))
             .on_click(cx.listener(|this, _, _, cx| {
-                this.lightbox = None;
-                cx.notify();
+                this.close_lightbox(cx);
                 cx.stop_propagation();
             }));
 
-        let stage = div()
-            .absolute()
-            .inset_0()
-            .flex()
-            .items_center()
-            .justify_center()
-            .overflow_hidden()
-            .child(
-                div()
-                    .id("lightbox-picture")
-                    .w(px(width as f32 * scale))
-                    .h(px(height as f32 * scale))
-                    .flex_none()
-                    .relative()
-                    .left(offset_x)
-                    .top(offset_y)
-                    .cursor_pointer()
-                    // An animation plays in its own decoded tile (`gif_tiles`): the media viewer always plays it.
-                    .children(picture.map(|picture| {
-                        if super::gif_tiles::animated(picture.bytes()) {
-                            let ratio = self.ui_scale.get().max(1.);
-                            self.media_tile(
-                                &format!("lightbox-{}", item.key),
-                                picture,
-                                super::gif_tiles::TileLook {
-                                    // At its unzoomed size: a zoom that moves would decode it again
-                                    // every frame.
-                                    pixels: (
-                                        (width as f32 * ratio).round().max(1.) as u32,
-                                        (height as f32 * ratio).round().max(1.) as u32,
-                                    ),
-                                    radius: 0.,
-                                    cover: false,
-                                    post: None,
-                                    wanted: true,
-                                },
-                                cx,
-                            )
-                        } else {
-                            img(picture)
-                                .id(SharedString::from(format!("lightbox-image-{}", item.key)))
-                                .w(px(width as f32 * scale))
-                                .h(px(height as f32 * scale))
-                                .into_any_element()
-                        }
-                    }))
-                    .on_mouse_down(
-                        MouseButton::Left,
-                        cx.listener(|this, event: &gpui::MouseDownEvent, _, cx| {
-                            if let Some(open) = this.lightbox.as_mut() {
-                                open.drag = Some((event.position, open.offset));
-                            }
-                            cx.stop_propagation();
-                        }),
-                    )
-                    .on_mouse_move(cx.listener(|this, event: &gpui::MouseMoveEvent, _, cx| {
-                        if let Some(open) = this.lightbox.as_mut()
-                            && open.zoomed
-                            && let Some((from, start)) = open.drag
-                        {
-                            open.offset = start + (event.position - from);
-                            cx.notify();
-                        }
-                    }))
-                    .on_mouse_up(
-                        MouseButton::Left,
-                        cx.listener(|this, event: &gpui::MouseUpEvent, _, cx| {
-                            // A press that moved is a drag; one that did not toggles the zoom.
-                            let moved = this.lightbox.as_ref().is_some_and(|open| {
-                                open.drag.is_some_and(|(from, _)| {
-                                    let delta = event.position - from;
-                                    f32::from(delta.x).abs() > 3. || f32::from(delta.y).abs() > 3.
-                                })
-                            });
-                            if let Some(open) = this.lightbox.as_mut() {
-                                open.drag = None;
-                            }
-                            if !moved {
-                                let on = this.lightbox.as_ref().is_some_and(|open| !open.zoomed);
-                                this.lightbox_zoom(on, cx);
-                            }
-                            cx.stop_propagation();
-                        }),
-                    ),
+        let stage = if item.is_video {
+            let player = self.render_media_player(
+                super::video_player::PlayerSpec {
+                    key: format!("lb:{}", item.key),
+                    src: item.video_src.clone().unwrap_or_else(|| item.proxy.clone()),
+                    width: (width as f32).max(150.0),
+                    height: (height as f32).max(110.0),
+                    aspect_size: (item.width.max(1), item.height.max(1)),
+                    radius: 0.0,
+                    poster_key: Some(item.key.clone()),
+                    auto_play: true,
+                    allow_fullscreen: true,
+                    is_fullscreen_view: false,
+                    actions: None,
+                },
+                cx,
             );
+            div()
+                .absolute()
+                .inset_0()
+                .flex()
+                .items_center()
+                .justify_center()
+                .overflow_hidden()
+                .child(
+                    div()
+                        .id("lightbox-video-stage")
+                        .on_click(|_, _, cx| cx.stop_propagation())
+                        .child(player),
+                )
+        } else {
+            div()
+                .absolute()
+                .inset_0()
+                .flex()
+                .items_center()
+                .justify_center()
+                .overflow_hidden()
+                .child(
+                    div()
+                        .id("lightbox-picture")
+                        .w(px(width as f32 * scale))
+                        .h(px(height as f32 * scale))
+                        .flex_none()
+                        .relative()
+                        .left(offset_x)
+                        .top(offset_y)
+                        .cursor_pointer()
+                        // An animation plays in its own decoded tile (`gif_tiles`): the media viewer always plays it.
+                        .children(picture.map(|picture| {
+                            if super::gif_tiles::animated(picture.bytes()) {
+                                let ratio = self.ui_scale.get().max(1.);
+                                self.media_tile(
+                                    &format!("lightbox-{}", item.key),
+                                    picture,
+                                    super::gif_tiles::TileLook {
+                                        // At its unzoomed size: a zoom that moves would decode it again
+                                        // every frame.
+                                        pixels: (
+                                            (width as f32 * ratio).round().max(1.) as u32,
+                                            (height as f32 * ratio).round().max(1.) as u32,
+                                        ),
+                                        radius: 0.,
+                                        cover: false,
+                                        post: None,
+                                        wanted: true,
+                                    },
+                                    cx,
+                                )
+                            } else {
+                                img(picture)
+                                    .id(SharedString::from(format!("lightbox-image-{}", item.key)))
+                                    .w(px(width as f32 * scale))
+                                    .h(px(height as f32 * scale))
+                                    .into_any_element()
+                            }
+                        }))
+                        .on_mouse_down(
+                            MouseButton::Left,
+                            cx.listener(|this, event: &gpui::MouseDownEvent, _, cx| {
+                                if let Some(open) = this.lightbox.as_mut() {
+                                    open.drag = Some((event.position, open.offset));
+                                }
+                                cx.stop_propagation();
+                            }),
+                        )
+                        .on_mouse_move(cx.listener(|this, event: &gpui::MouseMoveEvent, _, cx| {
+                            if let Some(open) = this.lightbox.as_mut()
+                                && open.zoomed
+                                && let Some((from, start)) = open.drag
+                            {
+                                open.offset = start + (event.position - from);
+                                cx.notify();
+                            }
+                        }))
+                        .on_mouse_up(
+                            MouseButton::Left,
+                            cx.listener(|this, event: &gpui::MouseUpEvent, _, cx| {
+                                // A press that moved is a drag; one that did not toggles the zoom.
+                                let moved = this.lightbox.as_ref().is_some_and(|open| {
+                                    open.drag.is_some_and(|(from, _)| {
+                                        let delta = event.position - from;
+                                        f32::from(delta.x).abs() > 3.
+                                            || f32::from(delta.y).abs() > 3.
+                                    })
+                                });
+                                if let Some(open) = this.lightbox.as_mut() {
+                                    open.drag = None;
+                                }
+                                if !moved {
+                                    let on =
+                                        this.lightbox.as_ref().is_some_and(|open| !open.zoomed);
+                                    this.lightbox_zoom(on, cx);
+                                }
+                                cx.stop_propagation();
+                            }),
+                        ),
+                )
+        };
 
         let arrows = (many && !zoomed).then(|| {
             div()
@@ -523,8 +614,7 @@ impl Root {
             .bg(pose.dim(gpui::rgba(0x000000eb)))
             .occlude()
             .on_click(cx.listener(|this, _, _, cx| {
-                this.lightbox = None;
-                cx.notify();
+                this.close_lightbox(cx);
             }))
             .child(
                 div()
@@ -545,6 +635,10 @@ impl Root {
 
     /// The menu under More: Copy Image and Copy Media Link, as module 2323's `image-menu` lists them.
     fn lightbox_more_menu(&self, cx: &mut Context<Self>) -> AnyElement {
+        let is_video = self
+            .lightbox
+            .as_ref()
+            .is_some_and(|open| open.items[open.index].is_video);
         let row = |id: &'static str, label: &'static str, cx: &mut Context<Self>| {
             div()
                 .id(id)
@@ -578,7 +672,7 @@ impl Root {
             .bg(midnight("--background-surface-highest"))
             .flex()
             .flex_col()
-            .child(row("lightbox-copy-image", "Copy Image", cx))
+            .children((!is_video).then(|| row("lightbox-copy-image", "Copy Image", cx)))
             .child(row("lightbox-copy-link", "Copy Media Link", cx))
             .into_any_element()
     }
