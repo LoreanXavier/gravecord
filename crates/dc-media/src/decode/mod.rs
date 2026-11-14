@@ -9,7 +9,13 @@
 //! `crates/platform/src/video/live_windows.rs` (MIT OR Apache-2.0).
 
 use crate::{Error, Layout, Picture, Result, h264, picture::pack_plane};
-use openh264::formats::YUVSource;
+use openh264::{
+    OpenH264API,
+    decoder::{DecodeOptions, DecoderConfig, Flush},
+    formats::YUVSource,
+};
+use std::cmp::{Ordering, Reverse};
+use std::collections::BinaryHeap;
 use std::marker::PhantomData;
 
 #[cfg(windows)]
@@ -17,6 +23,8 @@ mod mf;
 
 /// Pictures larger than this many pixels are refused: a corrupt stream must not make the decoder allocate gigabytes.
 pub const MAX_PICTURE_PIXELS: usize = 7680 * 4320;
+/// Maximum DPB / B-frame reorder depth handled in VOD mode.
+pub const VOD_MAX_REORDER: usize = 16;
 
 pub use crate::encode::Backend;
 
@@ -40,9 +48,87 @@ enum Inner {
     Software(openh264::decoder::Decoder),
 }
 
+#[derive(Debug)]
+struct OrderedPicture {
+    pts_100ns: i64,
+    seq: u64,
+    picture: Picture,
+}
+
+impl Eq for OrderedPicture {}
+
+impl PartialEq for OrderedPicture {
+    fn eq(&self, other: &Self) -> bool {
+        self.pts_100ns == other.pts_100ns && self.seq == other.seq
+    }
+}
+
+impl Ord for OrderedPicture {
+    fn cmp(&self, other: &Self) -> Ordering {
+        self.pts_100ns
+            .cmp(&other.pts_100ns)
+            .then_with(|| self.seq.cmp(&other.seq))
+    }
+}
+
+impl PartialOrd for OrderedPicture {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+#[derive(Default)]
+struct VodReorder {
+    max_reorder: usize,
+    pending_pts: BinaryHeap<Reverse<i64>>,
+    ready: BinaryHeap<Reverse<OrderedPicture>>,
+    seq: u64,
+}
+
+impl VodReorder {
+    fn new(max_reorder: usize) -> Self {
+        Self {
+            max_reorder: max_reorder.min(VOD_MAX_REORDER),
+            ..Self::default()
+        }
+    }
+
+    fn clear(&mut self) {
+        self.pending_pts.clear();
+        self.ready.clear();
+    }
+
+    fn push_ready(&mut self, pts_100ns: i64, picture: Picture) {
+        let seq = self.seq;
+        self.seq = self.seq.wrapping_add(1);
+        self.ready.push(Reverse(OrderedPicture {
+            pts_100ns,
+            seq,
+            picture,
+        }));
+    }
+
+    fn drain_excess(&mut self, out: &mut Vec<(i64, Picture)>) {
+        while self.ready.len() > self.max_reorder {
+            if let Some(Reverse(entry)) = self.ready.pop() {
+                out.push((entry.pts_100ns, entry.picture));
+            }
+        }
+    }
+
+    fn drain_all(&mut self, out: &mut Vec<(i64, Picture)>) {
+        while let Some(Reverse(entry)) = self.ready.pop() {
+            out.push((entry.pts_100ns, entry.picture));
+        }
+        self.pending_pts.clear();
+    }
+}
+
 pub struct Decoder {
     inner: Option<Inner>,
     backend: Backend,
+    vod: bool,
+    reorder: VodReorder,
     needs_keyframe: bool,
     /// The backend raised an error and is rebuilt at the next keyframe.
     dirty: bool,
@@ -59,9 +145,22 @@ impl Decoder {
         })
     }
 
+    /// VOD decoder configured without low-latency flushing so Main/High MP4 B-frames reorder cleanly.
+    pub fn new_vod() -> Result<Self> {
+        Self::hardware_vod().or_else(|error| {
+            tracing::debug!("hardware H.264 VOD decoder unavailable: {error}");
+            Self::software_vod()
+        })
+    }
+
     /// openh264 only, whatever the machine offers.
     pub fn software() -> Result<Self> {
-        Ok(Self::with(Inner::software()?, Backend::Software))
+        Ok(Self::with(Inner::software()?, Backend::Software, false))
+    }
+
+    /// openh264 only in VOD mode (`Flush::NoFlush` + PTS reorder buffer).
+    pub fn software_vod() -> Result<Self> {
+        Ok(Self::with(Inner::software_vod()?, Backend::Software, true))
     }
 
     /// The Media Foundation decoder only; an error where it cannot start.
@@ -71,20 +170,43 @@ impl Decoder {
             Ok(Self::with(
                 Inner::Hardware(mf::Decoder::new()?),
                 Backend::Hardware,
+                false,
             ))
         }
         #[cfg(not(windows))]
         Err(Error::Unsupported("the hardware H.264 decoder"))
     }
 
-    fn with(inner: Inner, backend: Backend) -> Self {
+    /// The Media Foundation decoder in VOD mode (full DPB B-frame reordering).
+    pub fn hardware_vod() -> Result<Self> {
+        #[cfg(windows)]
+        {
+            Ok(Self::with(
+                Inner::Hardware(mf::Decoder::new_vod()?),
+                Backend::Hardware,
+                true,
+            ))
+        }
+        #[cfg(not(windows))]
+        Err(Error::Unsupported("the hardware H.264 VOD decoder"))
+    }
+
+    fn with(inner: Inner, backend: Backend, vod: bool) -> Self {
         Self {
             inner: Some(inner),
             backend,
+            vod,
+            reorder: VodReorder::new(if vod { VOD_MAX_REORDER } else { 0 }),
             needs_keyframe: true,
             dirty: false,
             _thread: PhantomData,
         }
+    }
+
+    /// Sets the VOD PTS reorder window (`0..=VOD_MAX_REORDER`); callers with container `ctts` info can set `0` for
+    /// monotonic I/P tracks to eliminate startup/seek lag while preserving up to 16 frames for B-frame tracks.
+    pub fn set_vod_reorder(&mut self, max_reorder: usize) {
+        self.reorder.max_reorder = max_reorder.min(VOD_MAX_REORDER);
     }
 
     pub fn backend(&self) -> Backend {
@@ -136,10 +258,163 @@ impl Decoder {
         Ok(picture)
     }
 
+    /// Feeds one VOD access unit with its container presentation timestamp (`100 ns` units) and returns reordered
+    /// display frames ready at this point.
+    pub fn decode_vod(
+        &mut self,
+        access_unit: &[u8],
+        pts_100ns: i64,
+    ) -> std::result::Result<Vec<(i64, Picture)>, DecodeError> {
+        if !self.vod || access_unit.is_empty() || access_unit.len() > h264::MAX_VOD_ACCESS_UNIT {
+            return Err(DecodeError::Invalid);
+        }
+        let keyframe = h264::is_keyframe(access_unit);
+        if self.needs_keyframe && !keyframe {
+            return Err(DecodeError::NeedKeyframe);
+        }
+        if self.dirty {
+            match self.rebuild() {
+                Ok(()) => self.dirty = false,
+                Err(_) => return Err(DecodeError::Failed),
+            }
+        }
+        let inner = self.inner.as_mut().ok_or(DecodeError::Failed)?;
+        match inner {
+            #[cfg(windows)]
+            Inner::Hardware(decoder) => match decoder.decode_vod(access_unit, pts_100ns) {
+                Ok(frames) => {
+                    for (pts, pic) in frames {
+                        self.reorder.push_ready(pts, pic);
+                    }
+                }
+                Err(error) => {
+                    tracing::debug!("MF VOD decode failed: {error}");
+                    self.needs_keyframe = true;
+                    self.dirty = true;
+                    self.reorder.clear();
+                    return Err(DecodeError::Failed);
+                }
+            },
+            Inner::Software(decoder) => {
+                let has_slice = h264::nals(access_unit).any(|nal| matches!(nal[0] & 31, 1..=5));
+                let options = DecodeOptions::new().flush_after_decode(Flush::NoFlush);
+                match decoder.decode_with_options(access_unit, options) {
+                    Ok(opt) => {
+                        if has_slice {
+                            self.reorder.pending_pts.push(Reverse(pts_100ns));
+                            // Cap runaway pending timestamps on malformed streams without matching output.
+                            while self.reorder.pending_pts.len() > 64 {
+                                self.reorder.pending_pts.pop();
+                            }
+                        }
+                        if let Some(yuv) = opt {
+                            let pic = yuv_to_picture(yuv).map_err(|_| DecodeError::Failed)?;
+                            let assigned = self
+                                .reorder
+                                .pending_pts
+                                .pop()
+                                .map_or(pts_100ns, |Reverse(p)| p);
+                            self.reorder.push_ready(assigned, pic);
+                        }
+                    }
+                    Err(error) => {
+                        tracing::debug!("openh264 VOD decode failed: {error}");
+                        self.needs_keyframe = true;
+                        self.dirty = true;
+                        self.reorder.clear();
+                        return Err(DecodeError::Failed);
+                    }
+                }
+            }
+        }
+        if keyframe {
+            self.needs_keyframe = false;
+        }
+        let mut out = Vec::new();
+        self.reorder.drain_excess(&mut out);
+        Ok(out)
+    }
+
+    /// Drains all remaining delayed/reordered VOD frames at EOS in ascending presentation timestamp order.
+    pub fn finish_vod(&mut self) -> std::result::Result<Vec<(i64, Picture)>, DecodeError> {
+        if !self.vod {
+            return Err(DecodeError::Invalid);
+        }
+        if let Some(inner) = self.inner.as_mut() {
+            match inner {
+                #[cfg(windows)]
+                Inner::Hardware(decoder) => match decoder.drain_eos() {
+                    Ok(frames) => {
+                        for (pts, pic) in frames {
+                            self.reorder.push_ready(pts, pic);
+                        }
+                    }
+                    Err(error) => {
+                        tracing::debug!("MF VOD EOS drain failed: {error}");
+                        self.dirty = true;
+                        self.needs_keyframe = true;
+                        self.reorder.clear();
+                        return Err(DecodeError::Failed);
+                    }
+                },
+                Inner::Software(decoder) => match decoder.flush_remaining() {
+                    Ok(frames) => {
+                        for yuv in frames {
+                            let pic = yuv_to_picture(yuv).map_err(|_| DecodeError::Failed)?;
+                            let assigned = self.reorder.pending_pts.pop().map_or(0, |Reverse(p)| p);
+                            self.reorder.push_ready(assigned, pic);
+                        }
+                    }
+                    Err(error) => {
+                        tracing::debug!("openh264 VOD flush failed: {error}");
+                        self.dirty = true;
+                        self.needs_keyframe = true;
+                        self.reorder.clear();
+                        return Err(DecodeError::Failed);
+                    }
+                },
+            }
+        }
+        let mut out = Vec::new();
+        self.reorder.drain_all(&mut out);
+        Ok(out)
+    }
+
+    /// Flushes DPB state on seek so decoding can resume cleanly from the next keyframe.
+    pub fn flush_vod(&mut self) -> Result<()> {
+        if !self.vod {
+            return Err(Error::invalid("flush_vod called on live decoder"));
+        }
+        self.reorder.clear();
+        self.needs_keyframe = true;
+        if self.dirty {
+            return self.rebuild();
+        }
+        if let Some(inner) = self.inner.as_mut() {
+            match inner {
+                #[cfg(windows)]
+                Inner::Hardware(decoder) => {
+                    if let Err(error) = decoder.flush() {
+                        tracing::debug!("MF VOD flush failed, rebuilding decoder: {error}");
+                        return self.rebuild();
+                    }
+                }
+                Inner::Software(decoder) => {
+                    let _ = decoder.flush_remaining();
+                }
+            }
+        }
+        Ok(())
+    }
+
     fn rebuild(&mut self) -> Result<()> {
         self.inner = None;
+        self.reorder.clear();
         self.inner = Some(match self.backend {
+            Backend::Software if self.vod => Inner::software_vod()?,
             Backend::Software => Inner::software()?,
+            #[cfg(windows)]
+            Backend::Hardware if self.vod => Inner::Hardware(mf::Decoder::new_vod()?),
             #[cfg(windows)]
             Backend::Hardware => Inner::Hardware(mf::Decoder::new()?),
             #[cfg(not(windows))]
@@ -156,6 +431,13 @@ impl Inner {
             .map_err(|e| Error::unavailable(format!("openh264 decoder could not start: {e}")))
     }
 
+    fn software_vod() -> Result<Self> {
+        let config = DecoderConfig::new().flush_after_decode(Flush::NoFlush);
+        openh264::decoder::Decoder::with_api_config(OpenH264API::from_source(), config)
+            .map(Self::Software)
+            .map_err(|e| Error::unavailable(format!("openh264 VOD decoder could not start: {e}")))
+    }
+
     fn decode(&mut self, access_unit: &[u8]) -> Result<Option<Picture>> {
         match self {
             #[cfg(windows)]
@@ -166,49 +448,51 @@ impl Inner {
                     Ok(None) => return Ok(None),
                     Err(e) => return Err(Error::failed(format!("openh264: {e}"))),
                 };
-                let (width, height) = decoded.dimensions();
-                if width == 0 || height == 0 || width.saturating_mul(height) > MAX_PICTURE_PIXELS {
-                    return Err(Error::failed("decoded picture has an unsupported size"));
-                }
-                let (chroma_width, chroma_height) = (width.div_ceil(2), height.div_ceil(2));
-                let (luma_stride, cb_stride, cr_stride) = decoded.strides();
-                let (width32, height32) = (width as u32, height as u32);
-                let mut data = Vec::with_capacity(
-                    Layout::I420
-                        .len(width32, height32)
-                        .ok_or_else(|| Error::failed("picture size overflows"))?,
-                );
-                pack_plane(&mut data, decoded.y(), luma_stride, width, height)
-                    .and_then(|()| {
-                        pack_plane(
-                            &mut data,
-                            decoded.u(),
-                            cb_stride,
-                            chroma_width,
-                            chroma_height,
-                        )
-                    })
-                    .and_then(|()| {
-                        pack_plane(
-                            &mut data,
-                            decoded.v(),
-                            cr_stride,
-                            chroma_width,
-                            chroma_height,
-                        )
-                    })
-                    .ok_or_else(|| {
-                        Error::failed("decoded planes are shorter than their strides say")
-                    })?;
-                Ok(Some(Picture {
-                    width: width32,
-                    height: height32,
-                    layout: Layout::I420,
-                    data,
-                }))
+                Ok(Some(yuv_to_picture(decoded)?))
             }
         }
     }
+}
+
+fn yuv_to_picture(decoded: openh264::decoder::DecodedYUV<'_>) -> Result<Picture> {
+    let (width, height) = decoded.dimensions();
+    if width == 0 || height == 0 || width.saturating_mul(height) > MAX_PICTURE_PIXELS {
+        return Err(Error::failed("decoded picture has an unsupported size"));
+    }
+    let (chroma_width, chroma_height) = (width.div_ceil(2), height.div_ceil(2));
+    let (luma_stride, cb_stride, cr_stride) = decoded.strides();
+    let (width32, height32) = (width as u32, height as u32);
+    let mut data = Vec::with_capacity(
+        Layout::I420
+            .len(width32, height32)
+            .ok_or_else(|| Error::failed("picture size overflows"))?,
+    );
+    pack_plane(&mut data, decoded.y(), luma_stride, width, height)
+        .and_then(|()| {
+            pack_plane(
+                &mut data,
+                decoded.u(),
+                cb_stride,
+                chroma_width,
+                chroma_height,
+            )
+        })
+        .and_then(|()| {
+            pack_plane(
+                &mut data,
+                decoded.v(),
+                cr_stride,
+                chroma_width,
+                chroma_height,
+            )
+        })
+        .ok_or_else(|| Error::failed("decoded planes are shorter than their strides say"))?;
+    Ok(Picture {
+        width: width32,
+        height: height32,
+        layout: Layout::I420,
+        data,
+    })
 }
 
 #[cfg(test)]
@@ -357,6 +641,92 @@ mod tests {
             .unwrap();
         decoder.decode(&key.data).unwrap();
         assert!(!decoder.needs_keyframe());
+    }
+
+    #[test]
+    fn vod_reorder_buffer_emits_monotonic_pts_across_b_frame_patterns() {
+        let mut reorder = VodReorder::new(VOD_MAX_REORDER);
+        let blank = Picture {
+            width: 2,
+            height: 2,
+            layout: Layout::Rgba,
+            data: vec![0; 16],
+        };
+        let dts_to_pts = [
+            0, 1_000_000, 333_333, 666_666, 2_000_000, 1_333_333, 1_666_666,
+        ];
+        let mut out = Vec::new();
+        for &pts in &dts_to_pts {
+            reorder.push_ready(pts, blank.clone());
+            reorder.drain_excess(&mut out);
+        }
+        assert!(out.is_empty());
+        reorder.drain_all(&mut out);
+        let got: Vec<i64> = out.into_iter().map(|(pts, _)| pts).collect();
+        assert_eq!(
+            got,
+            vec![
+                0, 333_333, 666_666, 1_000_000, 1_333_333, 1_666_666, 2_000_000
+            ]
+        );
+    }
+
+    #[test]
+    fn vod_software_decodes_flushes_and_seeks_cleanly() {
+        let (width, height) = (128usize, 96usize);
+        let planes = yuv(&test_card(width, height), width, height);
+        let mut encoder = encoder(width as u32, height as u32);
+        let mut encoded = Vec::new();
+        for i in 0..8 {
+            if let Some(frame) = encoder.encode(&planes, Chroma::Planar, i % 4 == 0).unwrap() {
+                encoded.push((i as i64 * 333_333, frame));
+            }
+        }
+        assert!(encoded.len() >= 4);
+
+        let mut decoder = Decoder::software_vod().unwrap();
+        let mut frames = Vec::new();
+        for (pts, au) in &encoded {
+            frames.extend(decoder.decode_vod(&au.data, *pts).unwrap());
+        }
+        frames.extend(decoder.finish_vod().unwrap());
+        assert_eq!(frames.len(), encoded.len());
+        for pair in frames.windows(2) {
+            assert!(pair[0].0 < pair[1].0);
+        }
+
+        // Flush simulates a seek: delta frames wait for the seek keyframe, then decode resumes.
+        decoder.flush_vod().unwrap();
+        assert!(decoder.needs_keyframe());
+        assert_eq!(
+            decoder.decode_vod(&encoded[1].1.data, 0).unwrap_err(),
+            DecodeError::NeedKeyframe
+        );
+        let mut after_seek = decoder.decode_vod(&encoded[0].1.data, 10_000_000).unwrap();
+        after_seek.extend(decoder.finish_vod().unwrap());
+        assert_eq!(after_seek.len(), 1);
+        assert_eq!(after_seek[0].0, 10_000_000);
+    }
+
+    #[test]
+    fn vod_allows_access_units_larger_than_live_two_mib_cap() {
+        let mut live = Decoder::software().unwrap();
+        let mut vod = Decoder::software_vod().unwrap();
+        let (width, height) = (64usize, 64usize);
+        let planes = yuv(&test_card(width, height), width, height);
+        let mut encoder = encoder(width as u32, height as u32);
+        let key = encoder
+            .encode(&planes, Chroma::Planar, true)
+            .unwrap()
+            .unwrap();
+        let mut padded = key.data.clone();
+        // SEI filler NAL so total AU size exceeds 2 MiB MAX_ACCESS_UNIT.
+        padded.extend_from_slice(&[0, 0, 0, 1, 0x0C]);
+        padded.resize(h264::MAX_ACCESS_UNIT + 256, 0xFF);
+        assert_eq!(live.decode(&padded).unwrap_err(), DecodeError::Invalid);
+        let mut frames = vod.decode_vod(&padded, 0).unwrap();
+        frames.extend(vod.finish_vod().unwrap());
+        assert_eq!(frames.len(), 1);
     }
 
     #[test]

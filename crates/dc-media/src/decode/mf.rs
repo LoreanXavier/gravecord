@@ -53,6 +53,15 @@ struct OutputFormat {
 
 impl Decoder {
     pub(super) fn new() -> Result<Self> {
+        Self::with_mode(true)
+    }
+
+    /// Decoder configured for VOD playback: omits `CODECAPI_AVLowLatencyMode` so B-frame DPB reordering works.
+    pub(super) fn new_vod() -> Result<Self> {
+        Self::with_mode(false)
+    }
+
+    fn with_mode(low_latency: bool) -> Result<Self> {
         let runtime = Runtime::open()?;
         // SAFETY: plain COM and Media Foundation calls on the thread that started the runtime; every out-pointer refers
         // to an initialized local.
@@ -60,7 +69,7 @@ impl Decoder {
             let transform: IMFTransform =
                 CoCreateInstance(&CLSID_MSH264DecoderMFT, None, CLSCTX_INPROC_SERVER)
                     .map_err(|e| unavailable("create", e))?;
-            if let Ok(attributes) = transform.GetAttributes() {
+            if low_latency && let Ok(attributes) = transform.GetAttributes() {
                 let _ = attributes.SetUINT32(&CODECAPI_AVLowLatencyMode, 1);
             }
             let input = MFCreateMediaType().map_err(|e| unavailable("media type", e))?;
@@ -94,8 +103,7 @@ impl Decoder {
         }
     }
 
-    /// Queues one Annex B access unit and returns the newest picture the decoder released, if any.
-    pub(super) fn decode(&mut self, access_unit: &[u8]) -> Result<Option<Picture>> {
+    fn make_sample(access_unit: &[u8], pts_100ns: i64, duration_100ns: i64) -> Result<IMFSample> {
         // SAFETY: the buffer length is validated before the copy; Lock is balanced by Unlock.
         unsafe {
             let length = u32::try_from(access_unit.len()).map_err(|e| failed("size", e))?;
@@ -121,12 +129,25 @@ impl Decoder {
                 .AddBuffer(&buffer)
                 .map_err(|e| failed("add buffer", e))?;
             sample
-                .SetSampleTime(self.pictures * TICKS_PER_PICTURE)
+                .SetSampleTime(pts_100ns)
                 .map_err(|e| failed("sample time", e))?;
             sample
-                .SetSampleDuration(TICKS_PER_PICTURE)
+                .SetSampleDuration(duration_100ns)
                 .map_err(|e| failed("sample duration", e))?;
-            self.pictures += 1;
+            Ok(sample)
+        }
+    }
+
+    /// Queues one Annex B access unit and returns the newest picture the decoder released, if any.
+    pub(super) fn decode(&mut self, access_unit: &[u8]) -> Result<Option<Picture>> {
+        let sample = Self::make_sample(
+            access_unit,
+            self.pictures * TICKS_PER_PICTURE,
+            TICKS_PER_PICTURE,
+        )?;
+        self.pictures += 1;
+        // SAFETY: valid IMFSample owned for the duration of ProcessInput.
+        unsafe {
             let mut newest = None;
             match self.transform.ProcessInput(0, &sample, 0) {
                 Ok(()) => {}
@@ -154,6 +175,63 @@ impl Decoder {
             }
             Ok(picture)
         }
+    }
+
+    /// Queues one VOD Annex B access unit stamped with its true presentation time (`100 ns` units) and returns all
+    /// output pictures emitted so far along with their decoder-reordered timestamps.
+    pub(super) fn decode_vod(
+        &mut self,
+        access_unit: &[u8],
+        pts_100ns: i64,
+    ) -> Result<Vec<(i64, Picture)>> {
+        let sample = Self::make_sample(access_unit, pts_100ns, TICKS_PER_PICTURE)?;
+        self.pictures += 1;
+        let mut out = Vec::new();
+        // SAFETY: valid IMFSample owned for the duration of ProcessInput.
+        unsafe {
+            match self.transform.ProcessInput(0, &sample, 0) {
+                Ok(()) => {}
+                Err(error) if error.code() == MF_E_NOTACCEPTING => {
+                    out.extend(self.drain_all()?);
+                    self.transform
+                        .ProcessInput(0, &sample, 0)
+                        .map_err(|e| failed("process input", e))?;
+                }
+                Err(error) => return Err(failed("process input", error)),
+            }
+        }
+        out.extend(self.drain_all()?);
+        Ok(out)
+    }
+
+    /// Signals end-of-stream and drains all buffered B/P-frame pictures remaining inside the transform.
+    pub(super) fn drain_eos(&mut self) -> Result<Vec<(i64, Picture)>> {
+        // SAFETY: valid COM transform state transitions on this thread.
+        unsafe {
+            self.transform
+                .ProcessMessage(MFT_MESSAGE_NOTIFY_END_OF_STREAM, 0)
+                .map_err(|e| failed("end of stream", e))?;
+            self.transform
+                .ProcessMessage(MFT_MESSAGE_COMMAND_DRAIN, 0)
+                .map_err(|e| failed("drain", e))?;
+        }
+        self.drain_all()
+    }
+
+    /// Drops buffered pictures in the transform on seek and restarts streaming from the next keyframe.
+    pub(super) fn flush(&mut self) -> Result<()> {
+        // SAFETY: valid COM transform messages on this thread.
+        unsafe {
+            self.transform
+                .ProcessMessage(MFT_MESSAGE_COMMAND_FLUSH, 0)
+                .map_err(|e| failed("flush", e))?;
+            self.transform
+                .ProcessMessage(MFT_MESSAGE_NOTIFY_START_OF_STREAM, 0)
+                .map_err(|e| failed("start of stream", e))?;
+        }
+        self.pictures = 0;
+        self.released = 0;
+        Ok(())
     }
 
     fn negotiate_output(&mut self) -> Result<()> {
@@ -245,6 +323,18 @@ impl Decoder {
     /// Pulls every available picture and returns the newest; a format change renegotiates NV12 and continues.
     fn drain(&mut self) -> Result<Option<Picture>> {
         let mut newest = None;
+        self.drain_samples(|_, picture| newest = Some(picture))?;
+        Ok(newest)
+    }
+
+    /// Pulls every available picture together with its sample timestamp (`100 ns` units).
+    fn drain_all(&mut self) -> Result<Vec<(i64, Picture)>> {
+        let mut out = Vec::new();
+        self.drain_samples(|pts_100ns, picture| out.push((pts_100ns, picture)))?;
+        Ok(out)
+    }
+
+    fn drain_samples(&mut self, mut on_sample: impl FnMut(i64, Picture)) -> Result<()> {
         loop {
             // SAFETY: the output buffer struct is fully initialized; samples we allocate are released with the struct,
             // samples the transform provides are taken over below.
@@ -284,7 +374,7 @@ impl Decoder {
                 match result {
                     Ok(()) => provided.or(own),
                     Err(error) if error.code() == MF_E_TRANSFORM_NEED_MORE_INPUT => {
-                        return Ok(newest);
+                        return Ok(());
                     }
                     Err(error) if error.code() == MF_E_TRANSFORM_STREAM_CHANGE => {
                         self.negotiate_output()?;
@@ -294,12 +384,14 @@ impl Decoder {
                 }
             };
             let Some(sample) = sample else {
-                return Ok(newest);
+                return Ok(());
             };
             let format = self.output.ok_or_else(|| {
                 Error::failed("Media Foundation H.264 decoder: picture before its format")
             })?;
-            newest = Some(read_picture(&sample, format)?);
+            // SAFETY: valid IMFSample owned locally; failure defaults cleanly to monotonic fallback.
+            let pts_100ns = unsafe { sample.GetSampleTime() }.unwrap_or(self.released);
+            on_sample(pts_100ns, read_picture(&sample, format)?);
         }
     }
 }
@@ -487,5 +579,36 @@ mod tests {
         .unwrap();
         assert_eq!(&picture.data[..8], &aligned[4..12]);
         assert_eq!(&picture.data[8..], &aligned[16..24]);
+    }
+
+    #[test]
+    fn vod_hardware_decodes_drains_eos_and_flushes_on_seek() {
+        let mut generator = crate::synthetic::Generator::new(128, 96, 30, 900_000).unwrap();
+        let mut encoded = Vec::new();
+        for i in 0..8 {
+            if let Some(frame) = generator.next(i % 4 == 0).unwrap() {
+                encoded.push((i as i64 * TICKS_PER_PICTURE, frame));
+            }
+        }
+        assert!(encoded.len() >= 4);
+
+        let mut decoder = Decoder::new_vod().unwrap();
+        let mut out = Vec::new();
+        for (pts, frame) in &encoded {
+            out.extend(decoder.decode_vod(&frame.data, *pts).unwrap());
+        }
+        out.extend(decoder.drain_eos().unwrap());
+        assert_eq!(out.len(), encoded.len());
+        for (idx, (pts, picture)) in out.iter().enumerate() {
+            assert_eq!(*pts, encoded[idx].0);
+            assert_eq!((picture.width, picture.height), (128, 96));
+        }
+
+        // Seek flush restarts cleanly from a keyframe without reopening the transform.
+        decoder.flush().unwrap();
+        let mut seek_out = decoder.decode_vod(&encoded[0].1.data, 999_999).unwrap();
+        seek_out.extend(decoder.drain_eos().unwrap());
+        assert_eq!(seek_out.len(), 1);
+        assert_eq!(seek_out[0].0, 999_999);
     }
 }

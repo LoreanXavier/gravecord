@@ -3,8 +3,11 @@
 //! The NAL walk and the IDR / parameter-set checks are adapted from Serein's `video_codec.rs` and `video.rs`
 //! (`crates/discord-voice/src`, MIT OR Apache-2.0), reduced to H.264.
 
-/// Largest access unit any entry point here accepts, in bytes.
+/// Largest access unit any live entry point here accepts, in bytes.
 pub const MAX_ACCESS_UNIT: usize = 2 * 1024 * 1024;
+
+/// Largest access unit accepted when decoding a local/VOD MP4 sample (1080p/4K IDR frames can exceed 2 MiB).
+pub const MAX_VOD_ACCESS_UNIT: usize = 32 * 1024 * 1024;
 
 /// NAL unit types the callers care about.
 pub const NAL_IDR: u8 = 5;
