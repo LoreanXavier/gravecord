@@ -1215,7 +1215,7 @@ index 3741851..b68f3d9 100644
                      element
                  });
 diff --git a/crates/gpui/src/window.rs b/crates/gpui/src/window.rs
-index 4e2e1a7..bb2bbd9 100644
+index 4e2e1a7..2b50cb4 100644
 --- a/crates/gpui/src/window.rs
 +++ b/crates/gpui/src/window.rs
 @@ -8,8 +8,8 @@ use crate::subscription::SingleSubscriberSet;
@@ -1262,7 +1262,7 @@ index 4e2e1a7..bb2bbd9 100644
          self.tab_stops.clear();
          self.focus = None;
  
-@@ -1216,6 +1221,96 @@ enum InputModality {
+@@ -1216,17 +1221,111 @@ enum InputModality {
      Touch,
  }
  
@@ -1359,7 +1359,13 @@ index 4e2e1a7..bb2bbd9 100644
  /// Holds the state for a specific window.
  pub struct Window {
      pub(crate) handle: AnyWindowHandle,
-@@ -1227,6 +1322,8 @@ pub struct Window {
+     pub(crate) invalidator: WindowInvalidator,
+     pub(crate) removed: bool,
+     pub(crate) platform_window: Box<dyn PlatformWindow>,
++    #[cfg(any(test, feature = "test-support"))]
++    inert_fullscreen_test: bool,
+     pub(crate) display_id: Option<DisplayId>,
+     pub(crate) display_observers: SingleSubscriberSet<AnyObserver>,
      is_resizable: bool,
      is_minimizable: bool,
      sprite_atlas: Arc<dyn PlatformAtlas>,
@@ -1368,7 +1374,7 @@ index 4e2e1a7..bb2bbd9 100644
      text_system: Rc<WindowTextSystem>,
      text_rendering_mode: Rc<Cell<TextRenderingMode>>,
      rem_size: Pixels,
-@@ -1242,6 +1339,7 @@ pub struct Window {
+@@ -1242,6 +1341,7 @@ pub struct Window {
      pub(crate) text_style_stack: Vec<TextStyleRefinement>,
      pub(crate) rendered_entity_stack: Vec<EntityId>,
      pub(crate) element_offset_stack: Vec<Point<Pixels>>,
@@ -1376,7 +1382,7 @@ index 4e2e1a7..bb2bbd9 100644
      pub(crate) element_opacity: f32,
      pub(crate) content_mask_stack: Vec<ContentMask<Pixels>>,
      pub(crate) requested_autoscroll: Option<Bounds<Pixels>>,
-@@ -1267,6 +1365,9 @@ pub struct Window {
+@@ -1267,6 +1367,9 @@ pub struct Window {
      modifiers: Modifiers,
      capslock: Capslock,
      scale_factor: f32,
@@ -1386,7 +1392,7 @@ index 4e2e1a7..bb2bbd9 100644
      pub(crate) bounds_observers: SingleSubscriberSet<AnyObserver>,
      appearance: WindowAppearance,
      pub(crate) appearance_observers: SingleSubscriberSet<AnyObserver>,
-@@ -1288,6 +1389,7 @@ pub struct Window {
+@@ -1288,6 +1391,7 @@ pub struct Window {
      long_press_timer: Option<Task<()>>,
      long_press_capture: Option<EntityId>,
      pub(crate) refreshing: bool,
@@ -1394,7 +1400,7 @@ index 4e2e1a7..bb2bbd9 100644
      pub(crate) activation_observers: SingleSubscriberSet<AnyObserver>,
      pub(crate) focus: Option<FocusId>,
      focus_enabled: bool,
-@@ -1926,6 +2028,7 @@ impl Window {
+@@ -1926,6 +2030,7 @@ impl Window {
                  // Take the deferred flag first: `||` short-circuits, and leaving
                  // the flag set when this request already forces a render would
                  // force a second, redundant render on the next frame.
@@ -1402,7 +1408,7 @@ index 4e2e1a7..bb2bbd9 100644
                  let force_render =
                      mem::take(&mut deferred_force_render) || request_frame_options.force_render;
  
-@@ -2007,6 +2110,7 @@ impl Window {
+@@ -2007,6 +2112,7 @@ impl Window {
  
                  let pending_next_frame_callbacks = next_frame_callbacks.take();
                  if !pending_next_frame_callbacks.is_empty() {
@@ -1410,7 +1416,7 @@ index 4e2e1a7..bb2bbd9 100644
                      handle
                          .update(&mut cx, |_, window, cx| {
                              for callback in pending_next_frame_callbacks {
-@@ -2039,9 +2143,12 @@ impl Window {
+@@ -2039,9 +2145,12 @@ impl Window {
                                      // atlas tile references after a GPU device recovery.
                                      window.refresh();
                                  }
@@ -1423,7 +1429,14 @@ index 4e2e1a7..bb2bbd9 100644
                              })
                              .with_context(|| {
                                  format!(
-@@ -2358,6 +2465,7 @@ impl Window {
+@@ -2353,11 +2462,14 @@ impl Window {
+             invalidator,
+             removed: false,
+             platform_window,
++            #[cfg(any(test, feature = "test-support"))]
++            inert_fullscreen_test: false,
+             display_id,
+             display_observers: SingleSubscriberSet::new(),
              is_resizable,
              is_minimizable,
              sprite_atlas,
@@ -1431,7 +1444,7 @@ index 4e2e1a7..bb2bbd9 100644
              text_system,
              text_rendering_mode: cx.text_rendering_mode.clone(),
              rem_size: px(16.),
-@@ -2369,6 +2477,7 @@ impl Window {
+@@ -2369,6 +2481,7 @@ impl Window {
              text_style_stack: Vec::new(),
              rendered_entity_stack: Vec::new(),
              element_offset_stack: Vec::new(),
@@ -1439,7 +1452,7 @@ index 4e2e1a7..bb2bbd9 100644
              content_mask_stack: Vec::new(),
              element_opacity: 1.0,
              requested_autoscroll: None,
-@@ -2390,6 +2499,7 @@ impl Window {
+@@ -2390,6 +2503,7 @@ impl Window {
              modifiers,
              capslock,
              scale_factor,
@@ -1447,7 +1460,7 @@ index 4e2e1a7..bb2bbd9 100644
              bounds_observers: SingleSubscriberSet::new(),
              appearance,
              appearance_observers: SingleSubscriberSet::new(),
-@@ -2412,6 +2522,7 @@ impl Window {
+@@ -2412,6 +2526,7 @@ impl Window {
              long_press_timer: None,
              long_press_capture: None,
              refreshing: false,
@@ -1455,7 +1468,7 @@ index 4e2e1a7..bb2bbd9 100644
              activation_observers: SingleSubscriberSet::new(),
              focus: None,
              focus_enabled: true,
-@@ -2475,6 +2586,110 @@ impl ContentMask<Pixels> {
+@@ -2475,6 +2590,110 @@ impl ContentMask<Pixels> {
      }
  }
  
@@ -1566,7 +1579,7 @@ index 4e2e1a7..bb2bbd9 100644
  impl Window {
      fn mark_view_dirty(&mut self, view_id: EntityId) {
          // Mark ancestor views as dirty. If already in the `dirty_views` set, then all its ancestors
-@@ -2595,8 +2810,141 @@ impl Window {
+@@ -2595,8 +2814,141 @@ impl Window {
          }
      }
  
@@ -1708,7 +1721,7 @@ index 4e2e1a7..bb2bbd9 100644
          self.removed = true;
      }
  
-@@ -3001,9 +3349,12 @@ impl Window {
+@@ -3001,9 +3353,12 @@ impl Window {
      /// the platform window, then notifies observers. Normally called automatically
      /// by the platform's resize callback, but exposed publicly for test infrastructure.
      pub fn bounds_changed(&mut self, cx: &mut App) {
@@ -1724,7 +1737,7 @@ index 4e2e1a7..bb2bbd9 100644
  
          self.refresh();
  
-@@ -3222,6 +3573,9 @@ impl Window {
+@@ -3222,6 +3577,9 @@ impl Window {
  
      /// Toggle zoom on the window.
      pub fn zoom_window(&self) {
@@ -1734,7 +1747,7 @@ index 4e2e1a7..bb2bbd9 100644
          self.platform_window.zoom();
      }
  
-@@ -3321,6 +3675,70 @@ impl Window {
+@@ -3321,6 +3679,70 @@ impl Window {
          self.platform_window.show_character_palette();
      }
  
@@ -1805,7 +1818,7 @@ index 4e2e1a7..bb2bbd9 100644
      /// The scale factor of the display associated with the window. For example, it could
      /// return 2.0 for a "retina" display, indicating that each logical pixel should actually
      /// be rendered as two pixels on screen.
-@@ -3507,6 +3925,12 @@ impl Window {
+@@ -3507,6 +3929,12 @@ impl Window {
      }
  
      fn underline(&self, origin: Point<Pixels>, width: Pixels, style: &UnderlineStyle) -> Underline {
@@ -1818,7 +1831,7 @@ index 4e2e1a7..bb2bbd9 100644
          Underline {
              order: 0,
              pad: 0,
-@@ -3934,8 +4358,10 @@ impl Window {
+@@ -3934,8 +4362,10 @@ impl Window {
          let scale_factor = self.scale_factor();
          #[cfg(feature = "profiler")]
          let request_layout_start = Instant::now();
@@ -1829,7 +1842,7 @@ index 4e2e1a7..bb2bbd9 100644
          #[cfg(feature = "profiler")]
          let prepaint_start = Instant::now();
          self.layout_engine
-@@ -3974,6 +4400,7 @@ impl Window {
+@@ -3974,6 +4404,7 @@ impl Window {
  
          self.mouse_hit_test = self.next_frame.hit_test(self.mouse_position);
  
@@ -1837,7 +1850,7 @@ index 4e2e1a7..bb2bbd9 100644
          // Now actually paint the elements.
          #[cfg(feature = "profiler")]
          let paint_start = Instant::now();
-@@ -3996,6 +4423,13 @@ impl Window {
+@@ -3996,6 +4427,13 @@ impl Window {
          #[cfg(any(feature = "inspector", debug_assertions))]
          self.paint_inspector_hitbox(cx);
  
@@ -1851,7 +1864,7 @@ index 4e2e1a7..bb2bbd9 100644
          #[cfg(feature = "profiler")]
          self.window_profiler
              .record_draw_phases(profiler::DrawPhases {
-@@ -4202,6 +4636,10 @@ impl Window {
+@@ -4202,6 +4640,10 @@ impl Window {
  
              let paint_start = self.paint_index();
              let content_mask = deferred_draw.content_mask;
@@ -1862,7 +1875,7 @@ index 4e2e1a7..bb2bbd9 100644
              if let Some(element) = deferred_draw.element.as_mut() {
                  let ((), accessed_entities) = cx.detect_accessed_entities(|cx| {
                      self.with_rendered_view(deferred_draw.current_view, |window| {
-@@ -4217,6 +4655,19 @@ impl Window {
+@@ -4217,6 +4659,19 @@ impl Window {
                  self.reuse_paint(deferred_draw.paint_range.clone());
              }
              let paint_end = self.paint_index();
@@ -1882,7 +1895,7 @@ index 4e2e1a7..bb2bbd9 100644
              deferred_draw.paint_range = paint_start..paint_end;
          }
          self.next_frame.deferred_draws = deferred_draws;
-@@ -4289,6 +4740,7 @@ impl Window {
+@@ -4289,6 +4744,7 @@ impl Window {
                      prepaint_range: deferred_draw.prepaint_range.clone(),
                      paint_range: deferred_draw.paint_range.clone(),
                      accessed_entities: deferred_draw.accessed_entities.clone(),
@@ -1890,7 +1903,7 @@ index 4e2e1a7..bb2bbd9 100644
                  }),
          );
      }
-@@ -4416,6 +4868,9 @@ impl Window {
+@@ -4416,6 +4872,9 @@ impl Window {
      ) -> R {
          self.invalidator.debug_assert_paint_or_prepaint();
          if let Some(mask) = mask {
@@ -1900,7 +1913,7 @@ index 4e2e1a7..bb2bbd9 100644
              let mask = mask.intersect(&self.content_mask());
              self.content_mask_stack.push(mask);
              let result = f(self);
-@@ -4458,7 +4913,9 @@ impl Window {
+@@ -4458,7 +4917,9 @@ impl Window {
          result
      }
  
@@ -1911,7 +1924,7 @@ index 4e2e1a7..bb2bbd9 100644
          &mut self,
          opacity: Option<f32>,
          f: impl FnOnce(&mut Self) -> R,
-@@ -4772,6 +5229,7 @@ impl Window {
+@@ -4772,6 +5233,7 @@ impl Window {
              prepaint_range: PrepaintStateIndex::default()..PrepaintStateIndex::default(),
              paint_range: PaintIndex::default()..PaintIndex::default(),
              accessed_entities: FxHashSet::default(),
@@ -1919,7 +1932,7 @@ index 4e2e1a7..bb2bbd9 100644
          });
      }
  
-@@ -4780,10 +5238,201 @@ impl Window {
+@@ -4780,10 +5242,201 @@ impl Window {
      /// for performance reasons.
      ///
      /// This method should only be called as part of the paint phase of element drawing.
@@ -2121,7 +2134,7 @@ index 4e2e1a7..bb2bbd9 100644
          let clipped_bounds = bounds.intersect(&content_mask.bounds);
          if !clipped_bounds.is_empty() {
              self.next_frame
-@@ -4816,9 +5465,12 @@ impl Window {
+@@ -4816,9 +5469,12 @@ impl Window {
          let scale_factor = self.scale_factor();
          let content_mask = self.snapped_content_mask();
          let opacity = self.element_opacity();
@@ -2134,7 +2147,7 @@ index 4e2e1a7..bb2bbd9 100644
              if shadow.inset {
                  continue;
              }
-@@ -4838,6 +5490,55 @@ impl Window {
+@@ -4838,6 +5494,55 @@ impl Window {
          }
      }
  
@@ -2190,7 +2203,7 @@ index 4e2e1a7..bb2bbd9 100644
      /// Paint the inset shadows from `shadows` into the scene at the current z-index. Should
      /// be called after the element's background so the shadow layers on top of the fill.
      /// Drop shadows are skipped; paint those with [`Self::paint_drop_shadows`] before the background.
-@@ -4852,9 +5553,12 @@ impl Window {
+@@ -4852,9 +5557,12 @@ impl Window {
          let scale_factor = self.scale_factor();
          let content_mask = self.snapped_content_mask();
          let opacity = self.element_opacity();
@@ -2203,7 +2216,7 @@ index 4e2e1a7..bb2bbd9 100644
              if !shadow.inset {
                  continue;
              }
-@@ -4935,6 +5639,12 @@ impl Window {
+@@ -4935,6 +5643,12 @@ impl Window {
          self.invalidator.debug_assert_paint();
  
          let opacity = self.element_opacity();
@@ -2216,7 +2229,7 @@ index 4e2e1a7..bb2bbd9 100644
          let snapped_bounds = self.snap_bounds(quad.bounds);
          let snapped_border_widths = self.snap_border_widths(quad.border_widths);
          let quad = Quad {
-@@ -5009,6 +5719,11 @@ impl Window {
+@@ -5009,6 +5723,11 @@ impl Window {
          let content_mask = self.content_mask();
          let opacity = self.element_opacity();
          path.content_mask = content_mask;
@@ -2228,7 +2241,7 @@ index 4e2e1a7..bb2bbd9 100644
          let color: Background = color.into();
          path.color = color.opacity(opacity);
          self.next_frame
-@@ -5042,7 +5757,10 @@ impl Window {
+@@ -5042,7 +5761,10 @@ impl Window {
          self.invalidator.debug_assert_paint();
  
          let scale_factor = self.scale_factor();
@@ -2240,7 +2253,7 @@ index 4e2e1a7..bb2bbd9 100644
          let bounds = Bounds {
              origin: origin.map(|c| ScaledPixels(round_to_device_pixel(c.0, scale_factor))),
              size: size(self.snap_stroke(width), self.snap_stroke(height)),
-@@ -5054,7 +5772,7 @@ impl Window {
+@@ -5054,7 +5776,7 @@ impl Window {
              pad: 0,
              bounds,
              content_mask: self.snapped_content_mask(),
@@ -2249,7 +2262,7 @@ index 4e2e1a7..bb2bbd9 100644
              color: style.color.unwrap_or_default().opacity(opacity),
              wavy: false.into(),
          });
-@@ -5080,6 +5798,9 @@ impl Window {
+@@ -5080,6 +5802,9 @@ impl Window {
  
          let element_opacity = self.element_opacity();
          let scale_factor = self.scale_factor();
@@ -2259,7 +2272,7 @@ index 4e2e1a7..bb2bbd9 100644
          let glyph_origin = origin.scale(scale_factor);
  
          let quantized_origin = Point::new(
-@@ -5100,7 +5821,7 @@ impl Window {
+@@ -5100,7 +5825,7 @@ impl Window {
              glyph_id,
              font_size,
              subpixel_variant,
@@ -2268,7 +2281,7 @@ index 4e2e1a7..bb2bbd9 100644
              is_emoji: false,
              subpixel_rendering,
              dilation,
-@@ -5183,6 +5904,8 @@ impl Window {
+@@ -5183,6 +5908,8 @@ impl Window {
          self.invalidator.debug_assert_paint();
  
          let scale_factor = self.scale_factor();
@@ -2277,7 +2290,7 @@ index 4e2e1a7..bb2bbd9 100644
          let glyph_origin = origin.scale(scale_factor);
          let integer_origin = glyph_origin.map(|c| ScaledPixels(round_half_toward_zero(c.0)));
          let params = RenderGlyphParams {
-@@ -5190,7 +5913,7 @@ impl Window {
+@@ -5190,7 +5917,7 @@ impl Window {
              glyph_id,
              font_size,
              subpixel_variant: Default::default(),
@@ -2286,7 +2299,7 @@ index 4e2e1a7..bb2bbd9 100644
              is_emoji: true,
              subpixel_rendering: false,
              dilation: 0,
-@@ -5242,7 +5965,7 @@ impl Window {
+@@ -5242,7 +5969,7 @@ impl Window {
          self.invalidator.debug_assert_paint();
  
          let element_opacity = self.element_opacity();
@@ -2295,7 +2308,7 @@ index 4e2e1a7..bb2bbd9 100644
  
          let params = RenderSvgParams {
              path,
-@@ -5311,6 +6034,9 @@ impl Window {
+@@ -5311,6 +6038,9 @@ impl Window {
      ) -> Result<()> {
          self.invalidator.debug_assert_paint();
  
@@ -2305,7 +2318,7 @@ index 4e2e1a7..bb2bbd9 100644
          let visible_bounds = bounds.intersect(&image_bounds);
          if visible_bounds.size.width <= Pixels::ZERO || visible_bounds.size.height <= Pixels::ZERO {
              return Ok(());
-@@ -5319,23 +6045,48 @@ impl Window {
+@@ -5319,23 +6049,48 @@ impl Window {
              return Ok(());
          }
  
@@ -2361,7 +2374,7 @@ index 4e2e1a7..bb2bbd9 100644
  
          let visible_bounds_snapped = self.snap_bounds(visible_bounds);
  
-@@ -5411,7 +6162,7 @@ impl Window {
+@@ -5411,7 +6166,7 @@ impl Window {
  
          self.invalidator.debug_assert_paint();
  
@@ -2370,7 +2383,7 @@ index 4e2e1a7..bb2bbd9 100644
          let content_mask = self.snapped_content_mask();
          self.next_frame.scene.insert_primitive(PaintSurface {
              order: 0,
-@@ -5421,15 +6172,56 @@ impl Window {
+@@ -5421,15 +6176,56 @@ impl Window {
          });
      }
  
@@ -2427,7 +2440,7 @@ index 4e2e1a7..bb2bbd9 100644
          }
  
          Ok(())
-@@ -5444,6 +6236,7 @@ impl Window {
+@@ -5444,6 +6240,7 @@ impl Window {
                      &RenderImageParams {
                          image_id: data.id,
                          frame_index,
@@ -2435,7 +2448,7 @@ index 4e2e1a7..bb2bbd9 100644
                      }
                      .into(),
                  )
-@@ -5525,6 +6318,7 @@ impl Window {
+@@ -5525,6 +6322,7 @@ impl Window {
      pub fn layout_bounds(&mut self, layout_id: LayoutId) -> Bounds<Pixels> {
          self.invalidator.debug_assert_prepaint();
  
@@ -2443,7 +2456,7 @@ index 4e2e1a7..bb2bbd9 100644
          let scale_factor = self.scale_factor();
          let mut bounds = self
              .layout_engine
-@@ -5864,6 +6658,7 @@ impl Window {
+@@ -5864,6 +6662,7 @@ impl Window {
      /// Dispatch a mouse, keyboard, or touch event on the window.
      #[profiling::function]
      pub fn dispatch_event(&mut self, event: PlatformInput, cx: &mut App) -> DispatchEventResult {
@@ -2451,7 +2464,7 @@ index 4e2e1a7..bb2bbd9 100644
          #[cfg(feature = "profiler")]
          self.window_profiler.begin_input(event.kind_name());
          let update_count_before = self.invalidator.update_count();
-@@ -6925,11 +7720,17 @@ impl Window {
+@@ -6925,14 +7724,31 @@ impl Window {
  
      /// Minimize the current window at the platform level.
      pub fn minimize_window(&self) {
@@ -2463,13 +2476,27 @@ index 4e2e1a7..bb2bbd9 100644
  
      /// Toggle full screen status on the current window at the platform level.
      pub fn toggle_fullscreen(&self) {
++        #[cfg(any(test, feature = "test-support"))]
++        if self.inert_fullscreen_test {
++            self.platform_window.toggle_fullscreen();
++            return;
++        }
 +        if crate::inert_skip("fullscreen") {
 +            return;
 +        }
          self.platform_window.toggle_fullscreen();
      }
  
-@@ -10677,4 +11478,121 @@ mod inspector_tests {
++    /// Permit native fullscreen transitions on this test window while inert mode stays enabled.
++    #[cfg(any(test, feature = "test-support"))]
++    pub fn allow_native_fullscreen_in_inert_tests(&mut self) {
++        self.inert_fullscreen_test = true;
++    }
++
+     /// Toggle simple (borderless) fullscreen, where the window covers the entire
+     /// screen including the menu bar and, on notched displays, the area around the
+     /// notch. Unlike [`Window::toggle_fullscreen`], this does not move the window
+@@ -10677,4 +11493,121 @@ mod inspector_tests {
          })
          .expect("closed inspector has no bookkeeping and no style overrides");
      }

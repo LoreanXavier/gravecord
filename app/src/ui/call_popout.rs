@@ -214,7 +214,38 @@ impl Root {
     ) -> String {
         match action {
             "fullscreen" => self.toggle_call_fullscreen(window, cx),
+            "fullscreen-native" => {
+                if let Err(error) = crate::harness::native::allow_fullscreen(window) {
+                    return format!("call-window refused: {error}");
+                }
+                self.toggle_call_fullscreen(window, cx);
+            }
             "popout" => self.toggle_call_popout(window, cx),
+            "popout-fullscreen-native" => {
+                if let Some(handle) = self.vv.popout {
+                    cx.defer(move |cx| {
+                        let _ = handle.update(cx, |_, window, _| {
+                            match crate::harness::native::allow_fullscreen(window) {
+                                Ok(()) => window.toggle_fullscreen(),
+                                Err(error) => tracing::warn!(%error, "native fullscreen test refused"),
+                            }
+                        });
+                    });
+                }
+            }
+            "popout-state" => {
+                return self.vv.popout.map_or_else(|| "no popout".into(), |handle| {
+                    handle.update(cx, |_, window, _| format!(
+                        "native_fullscreen={} native=[{}]", window.is_fullscreen(),
+                        crate::harness::native::window_state(window),
+                    )).unwrap_or_else(|error| error.to_string())
+                });
+            }
+            "minimize-native" | "restore-native" => {
+                if let Err(error) = crate::harness::native::minimize_or_restore(window, action == "minimize-native") {
+                    return format!("call-window refused: {error}");
+                }
+            }
             "close-native" =>
             {
                 #[cfg(windows)]
@@ -239,13 +270,14 @@ impl Root {
                 }
             }
             "state" => {}
-            _ => return "call-window: expected fullscreen, popout, close-native or state".into(),
+            _ => return "call-window: expected fullscreen, fullscreen-native, popout, popout-fullscreen-native, popout-state, close-native, minimize-native, restore-native or state".into(),
         }
         format!(
-            "native_fullscreen={} call_fullscreen={} popped_out={}",
+            "native_fullscreen={} call_fullscreen={} popped_out={} native=[{}]",
             window.is_fullscreen(),
             self.vv.fullscreen,
-            self.vv.popout.is_some()
+            self.vv.popout.is_some(),
+            crate::harness::native::window_state(window)
         )
     }
 }

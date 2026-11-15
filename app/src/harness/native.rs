@@ -2,6 +2,134 @@
 use gpui::{AnyWindowHandle, AsyncApp, Pixels, Point};
 
 #[cfg(windows)]
+fn owned_hidden_window(window: &gpui::Window) -> Result<windows::Win32::Foundation::HWND, String> {
+    use raw_window_handle::{HasWindowHandle, RawWindowHandle};
+    use windows::Win32::{
+        Foundation::{HANDLE, HWND},
+        System::{
+            StationsAndDesktops::{GetThreadDesktop, GetUserObjectInformationW, UOI_NAME},
+            Threading::GetCurrentThreadId,
+        },
+        UI::WindowsAndMessaging::GetWindowThreadProcessId,
+    };
+    let handle = HasWindowHandle::window_handle(window).map_err(|error| error.to_string())?;
+    let RawWindowHandle::Win32(handle) = handle.as_raw() else {
+        return Err("not a Win32 window".into());
+    };
+    let hwnd = HWND(handle.hwnd.get() as *mut _);
+    let mut process = 0;
+    let thread = unsafe { GetWindowThreadProcessId(hwnd, Some(&mut process)) };
+    if process != std::process::id() || thread != unsafe { GetCurrentThreadId() } {
+        return Err("window is not owned by this UI thread".into());
+    }
+    let desktop = unsafe { GetThreadDesktop(thread) }.map_err(|error| error.to_string())?;
+    let mut needed = 0;
+    let _ = unsafe {
+        GetUserObjectInformationW(HANDLE(desktop.0), UOI_NAME, None, 0, Some(&mut needed))
+    };
+    if needed == 0 || !(needed as usize).is_multiple_of(std::mem::size_of::<u16>()) {
+        return Err("desktop name unavailable".into());
+    }
+    let mut name = vec![0u16; needed as usize / std::mem::size_of::<u16>()];
+    unsafe {
+        GetUserObjectInformationW(
+            HANDLE(desktop.0),
+            UOI_NAME,
+            Some(name.as_mut_ptr().cast()),
+            needed,
+            None,
+        )
+    }
+    .map_err(|error| error.to_string())?;
+    let end = name
+        .iter()
+        .position(|unit| *unit == 0)
+        .unwrap_or(name.len());
+    // The desktop created by xtask::headless; refuse a manually launched capture on the user's desktop.
+    if String::from_utf16_lossy(&name[..end]) != "gravecord-headless" {
+        return Err("window is not on the hidden test desktop".into());
+    }
+    Ok(hwnd)
+}
+
+pub(crate) fn allow_fullscreen(window: &mut gpui::Window) -> Result<(), String> {
+    #[cfg(windows)]
+    {
+        owned_hidden_window(window)?;
+        window.allow_native_fullscreen_in_inert_tests();
+        Ok(())
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = window;
+        Err("native fullscreen test requires Windows".into())
+    }
+}
+
+pub(crate) fn window_state(window: &gpui::Window) -> String {
+    #[cfg(windows)]
+    {
+        use windows::Win32::{
+            Foundation::RECT,
+            UI::WindowsAndMessaging::{
+                GWL_STYLE, GetWindowLongPtrW, GetWindowRect, IsIconic, IsZoomed,
+            },
+        };
+        let hwnd = match owned_hidden_window(window) {
+            Ok(hwnd) => hwnd,
+            Err(error) => return error,
+        };
+        let mut rect = RECT::default();
+        if let Err(error) = unsafe { GetWindowRect(hwnd, &mut rect) } {
+            return error.to_string();
+        }
+        format!(
+            "style={:#x} rect=[{},{},{},{}] minimized={} maximized={} inert={} gpui_inert={}",
+            unsafe { GetWindowLongPtrW(hwnd, GWL_STYLE) },
+            rect.left,
+            rect.top,
+            rect.right,
+            rect.bottom,
+            unsafe { IsIconic(hwnd) }.as_bool(),
+            unsafe { IsZoomed(hwnd) }.as_bool(),
+            crate::inert::on(),
+            gpui::INERT.load(std::sync::atomic::Ordering::Relaxed),
+        )
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = window;
+        "native state requires Windows".into()
+    }
+}
+
+pub(crate) fn minimize_or_restore(window: &gpui::Window, minimize: bool) -> Result<(), String> {
+    #[cfg(windows)]
+    {
+        use windows::Win32::{
+            Foundation::{LPARAM, WPARAM},
+            UI::WindowsAndMessaging::{PostMessageW, SC_MINIMIZE, SC_RESTORE, WM_SYSCOMMAND},
+        };
+        let hwnd = owned_hidden_window(window)?;
+        let command = if minimize { SC_MINIMIZE } else { SC_RESTORE };
+        unsafe {
+            PostMessageW(
+                Some(hwnd),
+                WM_SYSCOMMAND,
+                WPARAM(command as usize),
+                LPARAM(0),
+            )
+        }
+        .map_err(|error| error.to_string())
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = (window, minimize);
+        Err("native window test requires Windows".into())
+    }
+}
+
+#[cfg(windows)]
 mod trace {
     use std::sync::Mutex;
     use windows::Win32::{

@@ -24,7 +24,7 @@ use std::time::Duration;
 mod crawl;
 mod grab;
 mod hitch;
-mod native;
+pub(crate) mod native;
 mod ticks;
 
 const STEP_GAP: Duration = Duration::from_millis(60);
