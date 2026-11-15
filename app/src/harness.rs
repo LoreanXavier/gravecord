@@ -158,6 +158,15 @@ pub async fn run(
                     cx.update(|cx| dispatch(cx, window, moved(position, None)));
                 }
             }
+            ["mouse-exit"] => {
+                cx.update(|cx| {
+                    dispatch(
+                        cx,
+                        window,
+                        PlatformInput::MouseExited(gpui::MouseExitEvent::default()),
+                    )
+                });
+            }
             // `window size <w> <h>`: sets the content size of the window (the harness cannot drag an edge), as a
             // resize by hand does. `window size` alone prints the current one.
             ["window", "size", rest @ ..] => {

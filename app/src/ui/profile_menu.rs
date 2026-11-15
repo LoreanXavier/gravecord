@@ -177,6 +177,7 @@ impl Root {
         label: SharedString,
         danger: bool,
         caret: bool,
+        cx: &mut Context<Self>,
     ) -> gpui::Stateful<gpui::Div> {
         div()
             .id(id)
@@ -187,6 +188,15 @@ impl Root {
             .px(px(8.))
             .rounded(px(2.))
             .cursor_pointer()
+            .on_hover(cx.listener(move |this, inside: &bool, _, cx| {
+                if *inside
+                    && let Some(menu) = this.profile_menu.as_mut()
+                    && menu.invite != caret
+                {
+                    menu.invite = caret;
+                    cx.notify();
+                }
+            }))
             .flex()
             .items_center()
             .text_size(px(14.))
@@ -238,7 +248,7 @@ impl Root {
                 // `x` in module 508882: Remove Friend for a friend, Accept Friend Request for an incoming one.
                 let row = match relationship {
                     Some(RELATIONSHIP_FRIEND) => Some(
-                        self.profile_row("remove-friend", "Remove Friend".into(), false, false)
+                        self.profile_row("remove-friend", "Remove Friend".into(), false, false, cx)
                             .on_click(cx.listener(move |this, _, _, cx| {
                                 this.profile_menu = None;
                                 this.confirm_remove_friend =
@@ -253,6 +263,7 @@ impl Root {
                             "Accept Friend Request".into(),
                             false,
                             false,
+                            cx,
                         )
                         .on_click(cx.listener(move |this, _, _, cx| {
                             this.profile_menu = None;
@@ -267,7 +278,7 @@ impl Root {
             }
             Which::Overflow => {
                 let mut first: Vec<AnyElement> = vec![
-                    self.profile_row("share-profile", "Share Profile".into(), false, false)
+                    self.profile_row("share-profile", "Share Profile".into(), false, false, cx)
                         .on_click(cx.listener(move |this, _, window, cx| {
                             this.profile_menu = None;
                             if let Some(known) = this.stores.users.get(&user).cloned() {
@@ -285,13 +296,8 @@ impl Root {
                             "Invite to Server".into(),
                             false,
                             true,
+                            cx,
                         )
-                        .on_hover(cx.listener(|this, inside: &bool, _, cx| {
-                            if *inside && let Some(menu) = this.profile_menu.as_mut() {
-                                menu.invite = true;
-                                cx.notify();
-                            }
-                        }))
                         .into_any_element(),
                     );
                 }
@@ -303,6 +309,7 @@ impl Root {
                             super::remediation::ignore_label(ignored),
                             false,
                             false,
+                            cx,
                         )
                         .on_click(cx.listener(move |this, _, _, cx| {
                             this.profile_menu = None;
@@ -323,6 +330,7 @@ impl Root {
                             if blocked { "Unblock" } else { "Block" }.into(),
                             !blocked,
                             false,
+                            cx,
                         )
                         .on_click(cx.listener(move |this, _, _, cx| {
                             this.profile_menu = None;
@@ -342,6 +350,7 @@ impl Root {
                                 "Report User Profile".into(),
                                 true,
                                 false,
+                                cx,
                             )
                             .on_click(cx.listener(move |this, _, window, cx| {
                                 this.profile_menu = None;
@@ -387,6 +396,8 @@ impl Root {
                     div()
                         .parity_with_border("profile-menu", 1.)
                         .id("profile-menu")
+                        .relative()
+                        .child(self.anchor_probe("profile-menu"))
                         .occlude()
                         .p(px(8.))
                         .rounded(px(8.))

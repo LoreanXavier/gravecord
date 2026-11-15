@@ -17,6 +17,14 @@ const MORE_GAP: f32 = 8.;
 const MORE_EDGE: f32 = 12.;
 const MENU_WIDTH: f32 = 222.;
 
+/// The official submenu's transparent horizontal padding is part of its hover area (165862 / M3qk4j).
+fn in_submenu(bounds: &gpui::Bounds<Pixels>, point: Point<Pixels>) -> bool {
+    point.x >= bounds.left() - px(8.)
+        && point.x <= bounds.right() + px(8.)
+        && point.y >= bounds.top()
+        && point.y <= bounds.bottom()
+}
+
 /// Reaction emoji the quick row never offers (`eP` in module 761304), when drawn from the sprite sheet.
 const NOT_QUICK: [&str; 5] = [
     "slight_smile",
@@ -534,6 +542,56 @@ pub(super) struct ReactionOp {
 }
 
 impl Root {
+    /// Port the menu container's mouse-leave behavior across separately painted submenu layers.
+    pub(super) fn menu_pointer_moved(&mut self, point: Point<Pixels>, cx: &mut Context<Self>) {
+        let profile_sub = self.profile_menu.as_ref().is_some_and(|menu| menu.invite);
+        let context_sub = self
+            .context
+            .open
+            .as_ref()
+            .is_some_and(|menu| menu.sub.is_some());
+        if !profile_sub && !context_sub && self.submenu.is_none() {
+            return;
+        }
+        let anchors = self.tip_anchors.borrow();
+        let inside = |parent: &str, nested: bool| {
+            anchors
+                .get(parent)
+                .is_none_or(|bounds| bounds.contains(&point))
+                || anchors
+                    .get("submenu")
+                    .is_some_and(|bounds| in_submenu(bounds, point))
+                || (nested
+                    && anchors
+                        .get("submenu2")
+                        .is_some_and(|bounds| in_submenu(bounds, point)))
+        };
+        let close_profile = profile_sub && !inside("profile-menu", false);
+        let close_message = self.submenu.is_some() && !inside("context-menu", false);
+        let close_context = context_sub
+            && !inside(
+                "context-menu-generic",
+                self.context
+                    .open
+                    .as_ref()
+                    .is_some_and(|menu| menu.nested.is_some()),
+            );
+        drop(anchors);
+        if close_profile && let Some(menu) = self.profile_menu.as_mut() {
+            menu.invite = false;
+        }
+        if close_message {
+            self.submenu = None;
+        }
+        if close_context && let Some(menu) = self.context.open.as_mut() {
+            menu.sub = None;
+            menu.nested = None;
+        }
+        if close_profile || close_message || close_context {
+            cx.notify();
+        }
+    }
+
     pub(super) fn saved_flags(&self, message: Id) -> SavedState {
         let state = self
             .channel
@@ -1208,6 +1266,7 @@ impl Root {
                         .parity_with_border("message-menu", 1.)
                         .id("context-menu")
                         .relative()
+                        .child(self.anchor_probe("context-menu"))
                         .occlude()
                         .w(px(MENU_WIDTH))
                         .max_h(px(max_height))
@@ -1640,6 +1699,24 @@ impl Root {
 #[cfg(test)]
 mod tests {
     use super::{Action, Item, message_items};
+
+    #[test]
+    fn submenu_hover_keeps_the_horizontal_crossing_area_only() {
+        use gpui::{Bounds, point, px, size};
+        let bounds = Bounds::new(point(px(200.), px(100.)), size(px(188.), px(80.)));
+        for (x, y) in [
+            (192., 120.),
+            (196., 120.),
+            (200., 120.),
+            (390., 120.),
+            (396., 120.),
+        ] {
+            assert!(super::in_submenu(&bounds, point(px(x), px(y))));
+        }
+        for (x, y) in [(191., 120.), (397., 120.), (220., 99.), (220., 181.)] {
+            assert!(!super::in_submenu(&bounds, point(px(x), px(y))));
+        }
+    }
 
     fn labels(own: bool) -> Vec<&'static str> {
         message_items(own)

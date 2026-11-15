@@ -9888,8 +9888,9 @@ impl Render for Root {
                                 return;
                             }
                             let _ = root.update(cx, |this, _| {
-                                if this.keys.keyboard_mode_is_on() {
-                                    this.keys.pointer_used();
+                                let was_keyboard = this.keys.keyboard_mode_is_on();
+                                this.keys.pointer_used();
+                                if was_keyboard {
                                     window.refresh();
                                 }
                             });
@@ -9900,6 +9901,7 @@ impl Render for Root {
                                     return;
                                 }
                                 let _ = root_move.update(cx, |this, cx| {
+                                    this.menu_pointer_moved(event.position, cx);
                                     if this.active_menu_slider_drag.is_some() {
                                         this.menu_slider_mouse_move(event, window, cx);
                                     }

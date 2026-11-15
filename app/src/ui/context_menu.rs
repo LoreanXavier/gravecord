@@ -3558,6 +3558,7 @@ impl Root {
                         .parity_with_border("context-menu", 1.)
                         .id("context-menu-generic")
                         .relative()
+                        .child(self.anchor_probe("context-menu-generic"))
                         .when(matches!(target, Target::InventoryAuthor { .. }), |d| {
                             d.min_w(px(144.))
                         })
