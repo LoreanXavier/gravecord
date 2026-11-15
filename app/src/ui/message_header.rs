@@ -855,6 +855,7 @@ mod tests {
         Message {
             id: 1,
             channel_id: 1,
+            state: dc_state::MessageState::Sent,
             author: dc_state::User {
                 id: 7,
                 username: "a".into(),

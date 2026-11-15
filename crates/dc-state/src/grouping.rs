@@ -68,6 +68,7 @@ mod tests {
         Message {
             id: 1,
             channel_id: 1,
+            state: crate::MessageState::Sent,
             author: User {
                 id: 7,
                 username: "a".into(),

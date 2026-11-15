@@ -265,6 +265,7 @@ fn local_message_value(
         "timestamp": now.to_rfc3339_opts(chrono::SecondsFormat::Micros, false),
         "tts": false,
         "nonce": nonce,
+        "state": "SENDING",
     });
     if let Some((guild, message, _)) = reply {
         let mut reference =
@@ -623,7 +624,12 @@ impl Root {
             return;
         };
         send.state = SendState::Failed;
+        if let Some(message) = send.message.as_mut() {
+            message.state = dc_state::MessageState::SendFailed;
+        }
         let message = send.message.clone();
+        self.stores
+            .set_message_state(channel, id, dc_state::MessageState::SendFailed);
         // A message that had no row while it was sending gets one now, so it can be retried or deleted.
         let shown = self
             .stores
@@ -841,7 +847,7 @@ impl Root {
             })
     }
 
-    /// Capture only: `send hold|release|fail [<status> [<code> [<retry after>]]]|state`.
+    /// Capture only: `send hold|release|ack|order|fail [<status> [<code> [<retry after>]]]|state`.
     #[cfg(feature = "capture")]
     pub(crate) fn script_send(&mut self, words: &[&str], cx: &mut Context<Self>) -> String {
         match words {
@@ -853,6 +859,55 @@ impl Root {
                 self.send_ui.hold = false;
                 self.send_pump();
                 "send: released".to_owned()
+            }
+            ["ack"] => {
+                if !self.send_ui.hold {
+                    return "send: simulated acknowledgement requires hold".into();
+                }
+                let Some(id) = self.send_ui.first_sending() else {
+                    return "send: nothing is sending".into();
+                };
+                let send = &self.send_ui.sends[&id];
+                if !send.files.is_empty() || !send.sticker_ids.is_empty() || send.forward.is_some()
+                {
+                    return "send: simulated acknowledgement supports text only".into();
+                }
+                let (channel, nonce) = (send.channel, send.nonce.clone());
+                let latest = self
+                    .stores
+                    .messages
+                    .get(&channel)
+                    .into_iter()
+                    .flatten()
+                    .map(|message| message.id)
+                    .max()
+                    .unwrap_or(0);
+                let Some(real_id) = latest.max(self.send_ui.last_local_id).checked_add(1) else {
+                    return "send: no later acknowledgement id available".into();
+                };
+                let mut body = local_message_value(
+                    real_id,
+                    &nonce,
+                    channel,
+                    &send.content,
+                    self.me_json(),
+                    send.reply,
+                    chrono::Utc::now(),
+                );
+                body.as_object_mut().unwrap().remove("state");
+                self.send_finished(channel, &nonce, Outcome::Sent(body), cx);
+                format!("send: simulated acknowledgement {id} -> {real_id}; nothing posted")
+            }
+            ["order"] => {
+                let order = self
+                    .channel
+                    .and_then(|channel| self.stores.messages.get(&channel))
+                    .into_iter()
+                    .flatten()
+                    .map(|message| format!("{} {:?}", message.id, message.state))
+                    .collect::<Vec<_>>()
+                    .join("; ");
+                format!("send order: {order}")
             }
             // The bar of the placeholder row: `send progress <sent> <total>` for the first file of the oldest sending.
             ["progress", sent, total] => {
@@ -924,7 +979,10 @@ impl Root {
                     self.send_ui.queue.len()
                 )
             }
-            _ => "send: hold | release | fail [status [code [retry]]] | clyde | state".to_owned(),
+            _ => {
+                "send: hold | release | ack | order | fail [status [code [retry]]] | clyde | state"
+                    .to_owned()
+            }
         }
     }
 }

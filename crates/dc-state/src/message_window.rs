@@ -28,11 +28,27 @@ pub fn extract_timestamp(id: Id) -> u64 {
 /// What the window needs of a message.
 pub trait Windowed: Clone {
     fn message_id(&self) -> Id;
+
+    fn message_state(&self) -> crate::MessageState {
+        crate::MessageState::Sent
+    }
+
+    fn is_tail_message(&self) -> bool {
+        self.message_state() != crate::MessageState::Sent
+    }
 }
 
 impl Windowed for crate::Message {
     fn message_id(&self) -> Id {
         self.id
+    }
+
+    fn message_state(&self) -> crate::MessageState {
+        self.state
+    }
+
+    fn is_tail_message(&self) -> bool {
+        self.state != crate::MessageState::Sent || self.author.id == 1
     }
 }
 
@@ -309,6 +325,24 @@ fn position<T: Windowed>(array: &[T], id: Id) -> Option<usize> {
     array.iter().position(|known| known.message_id() == id)
 }
 
+/// `_insertInOrder`: pending/failed rows and Clyde notices stay after received messages.
+pub(crate) fn insert_in_order<T: Windowed>(array: &mut Vec<T>, message: T) {
+    if let Some(at) = position(array, message.message_id()) {
+        array[at] = message;
+    } else if message.is_tail_message() {
+        array.push(message);
+    } else {
+        let mut at = array.len();
+        while at > 0
+            && (array[at - 1].is_tail_message()
+                || array[at - 1].message_id() > message.message_id())
+        {
+            at -= 1;
+        }
+        array.insert(at, message);
+    }
+}
+
 impl<T: Windowed> ChannelWindow<T> {
     pub fn before_cache(&self) -> &Cache<T> {
         &self.before
@@ -498,23 +532,37 @@ impl<T: Windowed> ChannelWindow<T> {
         if (loaded.is_before || loaded.is_after) && jump.is_none() && self.ready {
             self.merge(array, new, loaded.is_before, true);
         } else {
-            // The messages that arrived during the fetch stay, unless the page is around a message.
+            // `loadComplete` keeps arrivals, failed sends, then pending sends when returning to the present.
             let newest = new.last().map(|message| message.message_id());
-            let kept: Vec<T> = match (newest, loaded.request_start_ms) {
-                (Some(newest), Some(started))
-                    if jump.is_none_or(|jump| jump.message_id.is_none()) =>
-                {
-                    array
-                        .iter()
-                        .filter(|known| {
-                            known.message_id() > newest
-                                && extract_timestamp(known.message_id()) >= started
-                        })
-                        .cloned()
-                        .collect()
+            let mut kept = Vec::new();
+            if !loaded.is_before
+                && !loaded.is_after
+                && jump.is_none_or(|jump| jump.message_id.is_none() && jump.offset.is_none())
+            {
+                if let (Some(newest), Some(started)) = (newest, loaded.request_start_ms) {
+                    kept.extend(
+                        array
+                            .iter()
+                            .filter(|known| {
+                                known.message_state() == crate::MessageState::Sent
+                                    && known.message_id() > newest
+                                    && extract_timestamp(known.message_id()) >= started
+                            })
+                            .cloned(),
+                    );
                 }
-                _ => Vec::new(),
-            };
+                for state in [
+                    crate::MessageState::SendFailed,
+                    crate::MessageState::Sending,
+                ] {
+                    kept.extend(
+                        array
+                            .iter()
+                            .filter(|known| known.message_state() == state)
+                            .cloned(),
+                    );
+                }
+            }
             *array = new;
             self.before.clear();
             self.after.clear();
@@ -557,13 +605,7 @@ impl<T: Windowed> ChannelWindow<T> {
             self.after.was_at_edge = false;
             return false;
         }
-        match position(array, message.message_id()) {
-            Some(at) => array[at] = message,
-            None => {
-                let at = array.partition_point(|known| known.message_id() < message.message_id());
-                array.insert(at, message);
-            }
-        }
+        insert_in_order(array, message);
         if self.at_bottom {
             self.truncate_top(array, TRUNCATE_KEEP);
         } else if array.len() > TRUNCATE_LIMIT {
@@ -579,6 +621,19 @@ impl<T: Windowed> ChannelWindow<T> {
             .messages
             .retain(|known| known.message_id() != id);
         self.after.messages.retain(|known| known.message_id() != id);
+    }
+
+    /// `update`: apply the same change to a row in the visible array or either side cache.
+    pub fn update(&mut self, array: &mut [T], id: Id, mut update: impl FnMut(&mut T)) {
+        for message in array
+            .iter_mut()
+            .chain(self.before.messages.iter_mut())
+            .chain(self.after.messages.iter_mut())
+        {
+            if message.message_id() == id {
+                update(message);
+            }
+        }
     }
 
     /// Where a jump to `message` has to go (`_tryFetchMessagesCached` for `jump.messageId`).
@@ -635,6 +690,16 @@ mod tests {
 
     fn range(from: u64, to: u64) -> Vec<M> {
         (from..=to).map(M).collect()
+    }
+
+    fn stateful_message(id: Id, state: &str) -> crate::Message {
+        crate::Message::from_value(&serde_json::json!({
+            "id": id.to_string(), "channel_id": "10",
+            "author": {"id": "2", "username": "fixture"},
+            "content": id.to_string(), "timestamp": "2026-11-15T00:00:00Z",
+            "state": state,
+        }))
+        .unwrap()
     }
 
     fn spec(before: Option<Id>, after: Option<Id>, limit: u32, around: Option<Id>) -> FetchSpec {
@@ -862,6 +927,96 @@ mod tests {
         assert_eq!(array.len(), 60);
         assert!(window.has_more_after);
         assert_eq!(array.last(), Some(&M(60)));
+    }
+
+    #[test]
+    fn acknowledged_messages_stay_before_the_rest_of_a_local_batch() {
+        let message = stateful_message;
+        let mut window = ChannelWindow::<crate::Message>::default();
+        let mut array = vec![message(100, "SENT")];
+        for id in 101..=103 {
+            window.receive_message(&mut array, message(id, "SENDING"));
+        }
+        // The server answers after the entire local batch has already been queued.
+        window.receive_message(&mut array, message(200, "SENT"));
+        window.remove(&mut array, 101);
+        assert_eq!(
+            array.iter().map(|message| message.id).collect::<Vec<_>>(),
+            [100, 200, 102, 103]
+        );
+        window.receive_message(&mut array, message(201, "SENT"));
+        window.remove(&mut array, 102);
+        window.receive_message(&mut array, message(150, "SENT"));
+        assert_eq!(
+            array.iter().map(|message| message.id).collect::<Vec<_>>(),
+            [100, 150, 200, 201, 103]
+        );
+        window.receive_message(&mut array, message(202, "SENT"));
+        window.remove(&mut array, 103);
+        assert_eq!(
+            array.iter().map(|message| message.id).collect::<Vec<_>>(),
+            [100, 150, 200, 201, 202]
+        );
+    }
+
+    #[test]
+    fn present_reload_keeps_failed_then_pending_rows_but_targeted_jump_does_not() {
+        let mut window = ChannelWindow::<crate::Message>::default();
+        let mut array = vec![
+            stateful_message(101, "SENDING"),
+            stateful_message(102, "SEND_FAILED"),
+        ];
+        window.load_complete(
+            &mut array,
+            vec![stateful_message(200, "SENT")],
+            &Loaded::default(),
+        );
+        assert_eq!(
+            array.iter().map(|message| message.id).collect::<Vec<_>>(),
+            [200, 102, 101]
+        );
+        window.load_complete(
+            &mut array,
+            vec![stateful_message(50, "SENT")],
+            &Loaded {
+                jump: Some(Jump::to_message(50, true, None)),
+                ..Loaded::default()
+            },
+        );
+        assert_eq!(
+            array.iter().map(|message| message.id).collect::<Vec<_>>(),
+            [50]
+        );
+    }
+
+    #[test]
+    fn clyde_and_cached_failed_sends_remain_after_received_messages() {
+        let mut window = ChannelWindow::<crate::Message>::default();
+        let mut array = vec![stateful_message(100, "SENT")];
+        let mut clyde = stateful_message(90, "SENT");
+        clyde.author.id = 1;
+        window.receive_message(&mut array, clyde);
+        window.receive_message(&mut array, stateful_message(101, "SENDING"));
+        window.receive_message(&mut array, stateful_message(200, "SENT"));
+        assert_eq!(
+            array.iter().map(|message| message.id).collect::<Vec<_>>(),
+            [100, 200, 90, 101]
+        );
+        window.truncate_bottom(&mut array, 2);
+        window.update(&mut array, 101, |message| {
+            message.state = crate::MessageState::SendFailed
+        });
+        assert_eq!(
+            window.after_cache().messages[1].state,
+            crate::MessageState::SendFailed
+        );
+        window.load_from_cache(&mut array, false, 2);
+        window.receive_message(&mut array, stateful_message(300, "SENT"));
+        assert_eq!(
+            array.iter().map(|message| message.id).collect::<Vec<_>>(),
+            [100, 200, 300, 90, 101]
+        );
+        assert_eq!(array.last().unwrap().state, crate::MessageState::SendFailed);
     }
 
     #[test]

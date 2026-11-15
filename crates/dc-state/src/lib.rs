@@ -1626,10 +1626,30 @@ fn edited_at(value: &Value) -> Option<DateTime<Utc>> {
         .map(|time| time.with_timezone(&Utc))
 }
 
+/// `MessageStates` (module 652215). Local rows retain their state until the server replaces them.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum MessageState {
+    #[default]
+    Sent,
+    Sending,
+    SendFailed,
+}
+
+impl MessageState {
+    fn from_value(value: &Value) -> Self {
+        match value.as_str() {
+            Some("SENDING") => Self::Sending,
+            Some("SEND_FAILED") => Self::SendFailed,
+            _ => Self::Sent,
+        }
+    }
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub struct Message {
     pub id: Id,
     pub channel_id: Id,
+    pub state: MessageState,
     pub author: User,
     pub content: String,
     pub edited: bool,
@@ -1774,6 +1794,7 @@ impl Message {
         Some(Self {
             id: id(&value["id"])?,
             channel_id: id(&value["channel_id"])?,
+            state: MessageState::from_value(&value["state"]),
             author: User::from_value(&value["author"])?,
             content: text(&value["content"]).unwrap_or_default(),
             edited: value["edited_timestamp"].is_string(),
@@ -3901,10 +3922,17 @@ impl Stores {
 
     pub fn insert_message(&mut self, message: Message) {
         let list = self.messages.entry(message.channel_id).or_default();
-        match list.binary_search_by_key(&message.id, |known| known.id) {
-            Ok(index) => list[index] = message,
-            Err(index) => list.insert(index, message),
-        }
+        message_window::insert_in_order(list, message);
+    }
+
+    pub fn set_message_state(&mut self, channel: Id, id: Id, state: MessageState) {
+        let list = self.messages.entry(channel).or_default();
+        self.windows
+            .entry(channel)
+            .or_default()
+            .update(list, id, |message| {
+                message.state = state;
+            });
     }
 
     /// `MESSAGE_CREATE` (module 596344): a message goes through `receiveMessage`, so a window that is detached from
