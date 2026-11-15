@@ -1296,6 +1296,12 @@ impl Root {
                 let ready_prev_place = (name == "READY"
                     && (self.hydrated_from_cache || self.stores.current_user.is_some()))
                 .then_some((self.guild, self.channel));
+                let rebuild_messages = matches!(
+                    name.as_str(),
+                    "MESSAGE_CREATE" | "MESSAGE_DELETE" | "MESSAGE_UPDATE" | "MESSAGE_ACK"
+                );
+                // Capture before dispatch changes the message indices that the current rows refer to.
+                let message_anchor = rebuild_messages.then(|| self.scroll_anchor()).flatten();
                 if name == "MESSAGE_CREATE" {
                     self.send_echo(&data);
                 }
@@ -1478,11 +1484,9 @@ impl Root {
                     // A message in the open channel is read as it arrives.
                     self.read_current_channel_live();
                 }
-                if matches!(
-                    name.as_str(),
-                    "MESSAGE_CREATE" | "MESSAGE_DELETE" | "MESSAGE_UPDATE" | "MESSAGE_ACK"
-                ) {
+                if rebuild_messages {
                     self.rebuild_rows();
+                    self.restore_scroll_anchor(message_anchor);
                 }
                 if matches!(name.as_str(), "VOICE_STATE_UPDATE" | "VOICE_SERVER_UPDATE") {
                     self.voice_after_dispatch(&name, cx);

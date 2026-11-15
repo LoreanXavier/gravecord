@@ -438,6 +438,25 @@ fn svg_in(name: &str, size: f32, tint: gpui::Rgba) -> AnyElement {
 impl Root {
     pub(crate) fn script_messages(&mut self, words: &[&str], cx: &mut Context<Self>) -> String {
         use serde_json::json;
+        if words == ["update-history"] {
+            let Some((channel, message)) = self.channel.and_then(|channel| {
+                self.stores
+                    .messages
+                    .get(&channel)?
+                    .iter()
+                    .find(|message| message.content.starts_with("History fixture 20\n"))
+                    .map(|message| (channel, message.id))
+            }) else {
+                return "messages: no history fixture".into();
+            };
+            self.update(crate::net::Update::Dispatch {
+                name: "MESSAGE_UPDATE".into(),
+                data: json!({"id": message.to_string(), "channel_id": channel.to_string(),
+                    "embeds": [{"type": "rich", "title": "Delayed preview",
+                        "image": {"url": "https://cdn.discordapp.com/embed/avatars/1.png", "width": 320, "height": 320}}]}),
+            }, cx);
+            return "messages: history preview updated locally".into();
+        }
         let ["demo", set] = words else {
             return "messages: usage `messages demo <system|starter|command|content>`".to_owned();
         };
@@ -509,6 +528,17 @@ impl Root {
             made.push(value);
         };
         match *set {
+            "history" => {
+                for index in 0..80 {
+                    push(
+                        0,
+                        &format!(
+                            "History fixture {index}\nReading position marker\nAnother line of fixture content"
+                        ),
+                        json!({}),
+                    );
+                }
+            }
             "system" => {
                 push(4, "general-two", json!({}));
                 push(8, "", json!({}));

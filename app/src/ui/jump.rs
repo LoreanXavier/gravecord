@@ -499,10 +499,11 @@ impl Root {
     #[cfg(feature = "capture")]
     fn jump_target_report(&self, state: &message_window::ChannelWindow) -> String {
         let scroll = format!(
-            " into={:.0} max={:.0} at_end={:?}",
+            " into={:.0} max={:.0} at_end={:?} anchor={:?}",
             -f32::from(self.list.scroll_px_offset_for_scrollbar().y),
             f32::from(self.list.max_offset_for_scrollbar().y),
-            self.list.is_scrolled_to_end()
+            self.list.is_scrolled_to_end(),
+            self.scroll_anchor()
         );
         let Some(target) = state.jump_target_id else {
             return scroll;
