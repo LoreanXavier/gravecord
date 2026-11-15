@@ -45,9 +45,9 @@ struct PacerShared {
     changed: std::sync::Condvar,
 }
 
-/// Wakes a media loop at its pacer's deadlines. The thread waits on a condition variable until either
-/// no deadline is set (`wait`), a deadline arrives (`wait_timeout`), or [`PacerClock::set`] moves the
-/// deadline earlier.
+/// Wakes a media loop at its pacer's deadlines. Idle threads block on a condition variable. Active deadlines use
+/// the high-resolution sleep, in at most 1 ms pieces so an earlier deadline or shutdown is noticed promptly.
+/// A timed condition-variable wait can overshoot by a Windows timer tick, expiring the 10 ms probe allowance.
 pub(crate) struct PacerClock {
     shared: std::sync::Arc<PacerShared>,
 }
@@ -78,11 +78,10 @@ impl PacerClock {
                     };
                     let now = Instant::now();
                     if deadline > now {
-                        let (next_state, _) = thread
-                            .changed
-                            .wait_timeout(state, deadline - now)
-                            .unwrap_or_else(|e| e.into_inner());
-                        state = next_state;
+                        let delay = (deadline - now).min(Duration::from_millis(1));
+                        drop(state);
+                        std::thread::sleep(delay);
+                        state = thread.state.lock().unwrap_or_else(|e| e.into_inner());
                         continue;
                     }
                     state.0 = None;
@@ -193,6 +192,76 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn pacer_rearms_cancels_and_stops_without_spurious_idle_wakes() {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        runtime.block_on(async {
+            let (clock, mut wakes) = PacerClock::start().unwrap();
+            clock.set(Some(Instant::now() + Duration::from_secs(30)));
+            clock.set(Some(Instant::now() + Duration::from_millis(2)));
+            assert_eq!(
+                tokio::time::timeout(Duration::from_secs(2), wakes.recv())
+                    .await
+                    .unwrap(),
+                Some(())
+            );
+            assert!(
+                tokio::time::timeout(Duration::from_millis(50), wakes.recv())
+                    .await
+                    .is_err()
+            );
+            clock.set(Some(Instant::now() + Duration::from_millis(100)));
+            clock.set(None);
+            assert!(
+                tokio::time::timeout(Duration::from_millis(150), wakes.recv())
+                    .await
+                    .is_err()
+            );
+            clock.set(Some(Instant::now() + Duration::from_secs(30)));
+            drop(clock);
+            assert_eq!(
+                tokio::time::timeout(Duration::from_secs(2), wakes.recv())
+                    .await
+                    .unwrap(),
+                None
+            );
+        });
+    }
+
+    #[test]
+    #[ignore = "measures native pacer deadline latency without audio or capture devices"]
+    fn measure_pacer_deadline_latency() {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let (clock, mut wakes) = PacerClock::start().unwrap();
+        let mut late = runtime.block_on(async {
+            let mut late = Vec::new();
+            for index in 0..100 {
+                let due = Instant::now() + Duration::from_millis(1 + index % 5);
+                clock.set(Some(due));
+                tokio::time::timeout(Duration::from_secs(2), wakes.recv())
+                    .await
+                    .expect("pacer wake")
+                    .expect("pacer alive");
+                late.push(Instant::now().saturating_duration_since(due).as_secs_f64() * 1000.);
+            }
+            late
+        });
+        late.sort_by(f64::total_cmp);
+        println!(
+            "pacer deadline lateness: median {:.3} ms, p95 {:.3} ms, max {:.3} ms; {} / 100 exceed the 10 ms probe deadline",
+            late[50],
+            late[95],
+            late[99],
+            late.iter().filter(|&&ms| ms > 10.).count()
+        );
+    }
 
     /// The send side's cadence: one tick per 20 ms on the high-resolution thread while other threads keep cores busy,
     /// never two at once (a late wake skips, it does not burst), so one audio packet leaves per tick.

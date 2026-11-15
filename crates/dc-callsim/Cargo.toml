@@ -25,5 +25,8 @@ tokio = { workspace = true, features = ["rt-multi-thread", "net", "sync", "time"
 tokio-tungstenite.workspace = true
 tracing.workspace = true
 
+[dev-dependencies]
+tracing-subscriber.workspace = true
+
 [lints.rust]
 unsafe_code = "forbid"
