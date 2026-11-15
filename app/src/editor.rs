@@ -162,10 +162,34 @@ struct Laid {
     masked_text: Option<String>,
 }
 
+#[derive(Clone, Copy)]
+struct VerticalMove {
+    x: Pixels,
+    caret: usize,
+    position: Point<Pixels>,
+    width: Pixels,
+}
+
 /// The bullet a masked field shows for each character.
 const MASK: char = '\u{2022}';
 
 impl Laid {
+    fn caret_position(
+        &self,
+        caret: usize,
+        vertical: Option<VerticalMove>,
+    ) -> Option<Point<Pixels>> {
+        vertical
+            .filter(|motion| {
+                motion.caret == caret
+                    && self
+                        .bounds
+                        .is_some_and(|bounds| bounds.size.width == motion.width)
+            })
+            .map(|motion| motion.position)
+            .or_else(|| self.position(caret))
+    }
+
     /// An offset in the real text as an offset in the shown text.
     fn shown_offset(&self, offset: usize) -> usize {
         match &self.masked_text {
@@ -228,6 +252,37 @@ impl Laid {
         let shown = self.shown_offset(*start) + found.unwrap_or_else(|nearest| nearest);
         self.real_offset(shown)
     }
+
+    fn selection_bounds(&self, selection: Range<usize>) -> Vec<Bounds<Pixels>> {
+        let mut result = Vec::new();
+        for ((line, start), top) in self.lines.iter().zip(self.paragraph_tops()) {
+            let base = self.shown_offset(*start);
+            let from = self.shown_offset(selection.start).saturating_sub(base);
+            let to = self.shown_offset(selection.end).saturating_sub(base);
+            let layout = &line.unwrapped_layout;
+            let ends = line
+                .wrap_boundaries
+                .iter()
+                .map(|boundary| layout.runs[boundary.run_ix].glyphs[boundary.glyph_ix].index)
+                .chain([line.len()]);
+            let mut row_start = 0;
+            for (row, row_end) in ends.enumerate() {
+                let first = from.max(row_start);
+                let last = to.min(row_end);
+                if first < last {
+                    let origin = layout.x_for_index(row_start);
+                    let left = layout.x_for_index(first) - origin;
+                    let right = layout.x_for_index(last) - origin;
+                    result.push(Bounds::new(
+                        point(left.min(right), top + self.line_height() * row as f32),
+                        size((right - left).abs(), self.line_height()),
+                    ));
+                }
+                row_start = row_end;
+            }
+        }
+        result
+    }
 }
 
 pub struct Editor {
@@ -254,6 +309,8 @@ pub struct Editor {
     markdown: bool,
     /// A one-line field whose text ends at the right edge (`text-align: end`).
     align_end: bool,
+    /// Keeps the visual column across short lines and the side of a soft-wrap boundary.
+    vertical: Option<VerticalMove>,
 }
 
 impl EventEmitter<EditorEvent> for Editor {}
@@ -301,6 +358,7 @@ impl Editor {
             align_end: false,
             spell: None,
             markdown: false,
+            vertical: None,
         }
     }
 
@@ -403,6 +461,7 @@ impl Editor {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> ContextClick {
+        self.vertical = None;
         window.focus(&self.focus, cx);
         let at = self.index_for_window_point(position);
         let selection = self.buffer.selection();
@@ -448,6 +507,7 @@ impl Editor {
             return;
         }
         self.copy_selection(cx);
+        self.vertical = None;
         self.buffer.backspace();
         cx.emit(EditorEvent::Edited);
         cx.notify();
@@ -489,6 +549,7 @@ impl Editor {
 
     /// A new look, for an editor that outlives a palette change.
     pub fn set_style(&mut self, style: EditorStyle) {
+        self.vertical = None;
         self.style = Rc::new(style);
     }
 
@@ -497,6 +558,7 @@ impl Editor {
     }
 
     pub fn set_text(&mut self, text: &str) {
+        self.vertical = None;
         self.buffer.clear();
         self.buffer.insert(text);
     }
@@ -522,6 +584,7 @@ impl Editor {
 
     /// Types `text` at the caret, replacing any selection, as a paste would.
     pub fn insert(&mut self, text: &str, cx: &mut Context<Self>) {
+        self.vertical = None;
         self.buffer.insert(text);
         cx.emit(EditorEvent::Edited);
         cx.notify();
@@ -550,6 +613,7 @@ impl Editor {
         text: &str,
         cx: &mut Context<Self>,
     ) {
+        self.vertical = None;
         self.buffer.replace(Some(range), text);
         cx.emit(EditorEvent::Edited);
         cx.notify();
@@ -557,6 +621,7 @@ impl Editor {
 
     /// Enter. An empty field still submits, because the composer may have files to send; listeners decide.
     pub fn submit(&mut self, cx: &mut Context<Self>) {
+        self.vertical = None;
         if self.keeps_text {
             cx.emit(EditorEvent::Submit(String::new()));
             return;
@@ -566,17 +631,85 @@ impl Editor {
         cx.emit(EditorEvent::Submit(text));
     }
 
-    fn on_key(&mut self, event: &KeyDownEvent, _: &mut Window, cx: &mut Context<Self>) {
+    fn move_vertical(&mut self, down: bool, shift: bool, window: &Window) {
+        let width = self.laid.borrow().bounds.map(|bounds| bounds.size.width);
+        let Some(width) = width else { return };
+        // Input can change between paints. Navigate the current text at the last measured width.
+        let lines = shape(self, Some(width), window);
+        let mut laid = self.laid.borrow_mut();
+        laid.lines = lines;
+        laid.line_height = px(self.style.line_height);
+        laid.masked_text = self.masked.then(|| self.buffer.text().to_owned());
+        let Some(position) = laid.caret_position(self.buffer.caret(), self.vertical) else {
+            return;
+        };
+        let x = self
+            .vertical
+            .filter(|motion| motion.width == width)
+            .map_or(position.x, |motion| motion.x);
+        let height: Pixels = laid
+            .lines
+            .iter()
+            .map(|(line, _)| line.size(laid.line_height()).height.max(laid.line_height()))
+            .sum();
+        let y = position.y
+            + if down {
+                laid.line_height()
+            } else {
+                -laid.line_height()
+            };
+        let outside = y < px(0.) || y >= height;
+        let at = if outside {
+            if down { self.buffer.text().len() } else { 0 }
+        } else {
+            laid.index_at(point(x, y + laid.line_height() / 2.))
+        };
+        let Some(mut target) = laid.position(at) else {
+            return;
+        };
+        if !outside && target.y != y {
+            // A soft-wrap boundary belongs to both rows; index lookup prefers the preceding row.
+            target = point(px(0.), y);
+        }
+        self.vertical = Some(VerticalMove {
+            x: if outside { target.x } else { x },
+            caret: at,
+            position: target,
+            width,
+        });
+        if shift {
+            self.buffer.select_to(at);
+        } else {
+            self.buffer.set_caret(at);
+        }
+    }
+
+    fn on_key(&mut self, event: &KeyDownEvent, window: &mut Window, cx: &mut Context<Self>) {
         let stroke = &event.keystroke;
         let (control, shift) = (stroke.modifiers.control, stroke.modifiers.shift);
         // While the input method composes, it owns these keys.
         if self.buffer.marked().is_some() {
             return;
         }
-        if matches!(stroke.key.as_str(), "left" | "right" | "home" | "end")
-            && let Some(spell) = self.spell.as_mut()
+        let vertical = matches!(stroke.key.as_str(), "up" | "down")
+            && !control
+            && !stroke.modifiers.alt
+            && !stroke.modifiers.platform;
+        if !vertical {
+            self.vertical = None;
+        }
+        if matches!(
+            stroke.key.as_str(),
+            "left" | "right" | "up" | "down" | "home" | "end"
+        ) && let Some(spell) = self.spell.as_mut()
         {
             spell.typing_hold = false;
+        }
+        if vertical && !self.buffer.is_single_line() {
+            self.move_vertical(stroke.key == "down", shift, window);
+            cx.stop_propagation();
+            cx.notify();
+            return;
         }
         let before = self
             .reports_all_edits
@@ -660,6 +793,7 @@ impl Editor {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        self.vertical = None;
         window.prevent_default();
         cx.stop_propagation();
         window.focus(&self.focus, cx);
@@ -748,6 +882,7 @@ impl EntityInputHandler for Editor {
         _: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        self.vertical = None;
         let range = range.map(|range| self.buffer.range_from_utf16(&range));
         self.buffer.replace(range, text);
         cx.emit(EditorEvent::Edited);
@@ -762,6 +897,7 @@ impl EntityInputHandler for Editor {
         _: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        self.vertical = None;
         let range = range.map(|range| self.buffer.range_from_utf16(&range));
         let caret = selection.map(|inner| TextBuffer::utf16_range_in(text, &inner));
         self.buffer.compose(range, text, caret);
@@ -799,6 +935,7 @@ impl EntityInputHandler for Editor {
         _: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        self.vertical = None;
         let bytes = self.buffer.range_from_utf16(&range);
         self.buffer.set_caret(bytes.start);
         self.buffer.select_to(bytes.end);
@@ -1050,6 +1187,7 @@ impl Element for EditorElement {
             ellipsis,
             marks,
             align_end,
+            vertical,
         ) = {
             let editor = self.editor.read(cx);
             (
@@ -1070,6 +1208,7 @@ impl Element for EditorElement {
                 editor.ellipsis_placeholder,
                 editor.spell_marks(editor.focus.is_focused(window)),
                 editor.align_end,
+                editor.vertical,
             )
         };
         let signature = self.editor.read(cx).blink_signature();
@@ -1144,16 +1283,9 @@ impl Element for EditorElement {
             }
         };
         let laid = laid.borrow();
-        if !selection.is_empty()
-            && let (Some(from), Some(to)) =
-                (laid.position(selection.start), laid.position(selection.end))
-            && from.y == to.y
-        {
+        for selected in laid.selection_bounds(selection.clone()) {
             window.paint_quad(fill(
-                Bounds::new(
-                    bounds.origin + from,
-                    size(to.x - from.x, px(style.line_height)),
-                ),
+                Bounds::new(bounds.origin + selected.origin, selected.size),
                 style.selection,
             ));
         }
@@ -1241,7 +1373,7 @@ impl Element for EditorElement {
         if focused
             && selection.is_empty()
             && caret_shown
-            && let Some(position) = laid.position(caret)
+            && let Some(position) = laid.caret_position(caret, vertical)
         {
             window.paint_quad(fill(
                 Bounds::new(
@@ -1399,5 +1531,91 @@ mod blink_tests {
         assert_eq!(caret_next_toggle_ms(100, 530), 430);
         assert_eq!(caret_next_toggle_ms(530, 530), 530);
         assert_eq!(caret_next_toggle_ms(1000, 530), 60);
+    }
+}
+
+#[cfg(all(test, feature = "capture"))]
+mod navigation_tests {
+    use super::*;
+
+    #[gpui::test]
+    fn vertical_keys_keep_column_selection_and_wrapped_row(cx: &mut gpui::TestAppContext) {
+        let window = cx.open_window(size(px(180.), px(200.)), |_, cx| {
+            Editor::new(
+                EditorStyle {
+                    font: gpui::font("Arial"),
+                    size: 16.,
+                    line_height: 22.,
+                    text: gpui::white(),
+                    placeholder: gpui::white(),
+                    placeholder_italic: false,
+                    selection: gpui::black(),
+                    caret: gpui::white(),
+                },
+                cx,
+            )
+        });
+        cx.run_until_parked();
+        window
+            .update(cx, |editor, window, cx| {
+                fn press(
+                    editor: &mut Editor,
+                    key: &'static str,
+                    window: &mut Window,
+                    cx: &mut Context<Editor>,
+                ) {
+                    editor.on_key(
+                        &KeyDownEvent {
+                            keystroke: gpui::Keystroke::parse(key).unwrap(),
+                            is_held: false,
+                            prefer_character_input: false,
+                        },
+                        window,
+                        cx,
+                    );
+                }
+                editor.set_text("abcdefghij\nx\nabcdefghij");
+                editor.buffer.set_caret(20);
+                press(editor, "up", window, cx);
+                assert_eq!(editor.buffer.caret(), 12);
+                press(editor, "up", window, cx);
+                assert_eq!(editor.buffer.caret(), 7);
+                press(editor, "shift-down", window, cx);
+                assert_eq!(editor.buffer.selection(), 7..12);
+                press(editor, "shift-down", window, cx);
+                assert_eq!(editor.buffer.selection(), 7..20);
+                assert_eq!(editor.laid.borrow().selection_bounds(7..20).len(), 3);
+                press(editor, "shift-up", window, cx);
+                assert_eq!(editor.buffer.selection(), 7..12);
+                press(editor, "left", window, cx);
+                assert_eq!(editor.buffer.caret(), 7);
+                press(editor, "home", window, cx);
+                press(editor, "down", window, cx);
+                assert_eq!(editor.buffer.caret(), 11);
+
+                let line = "ab😀éğxyz";
+                editor.set_text(&format!("{line}\nx\n{line}"));
+                editor.buffer.set_caret(line.len() + 3 + "ab😀é".len());
+                press(editor, "up", window, cx);
+                press(editor, "up", window, cx);
+                assert_eq!(editor.buffer.caret(), "ab😀é".len());
+                assert!(editor.text().is_char_boundary(editor.buffer.caret()));
+
+                editor.set_text(&"m".repeat(100));
+                editor.buffer.set_caret(0);
+                press(editor, "down", window, cx);
+                let first = editor.buffer.caret();
+                assert!(first > 0 && first < 100);
+                press(editor, "down", window, cx);
+                assert!(editor.buffer.caret() > first);
+                press(editor, "up", window, cx);
+                assert_eq!(editor.buffer.caret(), first);
+                press(editor, "up", window, cx);
+                assert_eq!(editor.buffer.caret(), 0);
+                assert!(editor.laid.borrow().selection_bounds(0..100).len() > 2);
+                press(editor, "up", window, cx);
+                assert_eq!(editor.buffer.caret(), 0);
+            })
+            .unwrap();
     }
 }

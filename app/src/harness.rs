@@ -669,6 +669,12 @@ pub async fn run(
                     editor.replace_text_in_range(None, text, window, cx);
                 });
             }
+            ["editor", "state", label @ ..] => {
+                with_composer(cx, window, &root, |editor, window, cx| {
+                    let selection = editor.selected_text_range(false, window, cx);
+                    let _ = writeln!(output, "editor {}: {selection:?}", label.join(" "));
+                });
+            }
             // Pastes a picture file as if it were on the clipboard (the system clipboard is never touched).
             ["paste-image", path] => {
                 let path = std::path::PathBuf::from(*path);
