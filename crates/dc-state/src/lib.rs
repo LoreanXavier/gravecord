@@ -38,6 +38,7 @@ pub mod message_window;
 pub mod notes;
 pub mod notification_center;
 pub mod notifications;
+pub mod now_playing;
 pub mod permissions;
 pub mod pins_unread;
 pub mod polls;
@@ -2072,6 +2073,8 @@ pub struct VoiceState {
     pub self_video: bool,
     /// Going live (`self_stream`).
     pub self_stream: bool,
+    /// Explicitly false voice states are excluded from fully private Active Now groups.
+    pub discoverable: Option<bool>,
 }
 
 impl VoiceState {
@@ -2088,6 +2091,7 @@ impl VoiceState {
             request_to_speak_timestamp: text(&value["request_to_speak_timestamp"]),
             self_video: value["self_video"].as_bool().unwrap_or(false),
             self_stream: value["self_stream"].as_bool().unwrap_or(false),
+            discoverable: value["discoverable"].as_bool(),
         })
     }
 }
@@ -2246,6 +2250,13 @@ pub struct Stores {
 
 impl Stores {
     pub fn dispatch(&mut self, name: &str, data: &Value) {
+        // Only complete INITIAL_GUILD snapshots can use the replacement path (225123).
+        // Partial payloads require cache hydration before they can become GUILD_CREATE.
+        let name = if name == "INITIAL_GUILD" && data["data_mode"] != "partial" {
+            "GUILD_CREATE"
+        } else {
+            name
+        };
         if name == "VOICE_STATE_UPDATE_BATCH" {
             self.voice_state_batch(data);
             return;
@@ -2448,6 +2459,16 @@ impl Stores {
                     for thread in &guild.threads {
                         self.note_thread_latest(thread);
                     }
+                    // 225123 replaces the guild then dispatches its complete voice snapshot; 977997 clears the old one.
+                    self.voice_states.insert(
+                        guild.id,
+                        data["voice_states"]
+                            .as_array()
+                            .into_iter()
+                            .flatten()
+                            .filter_map(VoiceState::from_value)
+                            .collect(),
+                    );
                     self.unavailable_guilds.remove(&guild.id);
                     self.guilds.retain(|known| known.id != guild.id);
                     self.guilds.push(guild);
@@ -4132,6 +4153,32 @@ impl Stores {
 
     fn passive_update(&mut self, data: &Value) {
         let guild_id = id(&data["guild_id"]);
+        for member in data["updated_members"].as_array().into_iter().flatten() {
+            self.merge_user(&member["user"]);
+        }
+        if let Some(guild) = guild_id {
+            let voices = self.voice_states.entry(guild).or_default();
+            for value in data["updated_voice_states"]
+                .as_array()
+                .into_iter()
+                .flatten()
+            {
+                if let Some(user) = id(&value["user_id"]) {
+                    voices.retain(|voice| voice.user_id != user);
+                    if let Some(voice) = VoiceState::from_value(value) {
+                        voices.push(voice);
+                    }
+                }
+            }
+            for user in data["removed_voice_states"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .filter_map(id)
+            {
+                voices.retain(|voice| voice.user_id != user);
+            }
+        }
         let entries = data["updated_channels"]
             .as_array()
             .or_else(|| data["channels"].as_array());

@@ -173,10 +173,9 @@ impl PresenceStore {
                     .cmp(&priority(a))
                     .then_with(|| rich(b).cmp(&rich(a)))
                     .then_with(|| {
-                        b["created_at"]
-                            .as_u64()
+                        crate::id(&b["created_at"])
                             .unwrap_or(0)
-                            .cmp(&a["created_at"].as_u64().unwrap_or(0))
+                            .cmp(&crate::id(&a["created_at"]).unwrap_or(0))
                     })
             });
         }
