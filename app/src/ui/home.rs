@@ -672,19 +672,21 @@ impl Root {
                     .when(!shop_selected && !quests_selected, |row| {
                         row.child(
                             div()
+                                .parity("shop-new-badge")
                                 .absolute()
-                                .left(px(self.sidebar_row_width() - 50.))
+                                // The inset row's 16px end padding, plus its 8px outer gap.
+                                .right(px(24.))
                                 .top(px(12.))
                                 .h(px(16.))
                                 .px(px(8.))
                                 .rounded(px(8.))
-                                .bg(color("--white"))
+                                .bg(color("--badge-expressive-background"))
                                 .flex()
                                 .items_center()
                                 .text_size(px(12.))
                                 .line_height(px(16.))
                                 .font_weight(FontWeight(600.))
-                                .text_color(color("--background-surface-highest"))
+                                .text_color(color("--badge-expressive-text"))
                                 .child(dc_intl::tr("NEW")),
                         )
                     }),

@@ -418,9 +418,10 @@ impl Root {
                         column.child(
                             div()
                                 .parity("active-card")
-                                .mt(px(12.))
+                                .mt(px(9.))
                                 .p(px(16.))
                                 .rounded(px(8.))
+                                .bg(color("--background-base-low"))
                                 .text_center()
                                 .child(text(dc_intl::t!("ngJ/5u"), 16., 20., 600., "--text-strong"))
                                 .child(
