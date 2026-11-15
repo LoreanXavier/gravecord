@@ -103,6 +103,26 @@ pub(crate) fn window_state(window: &gpui::Window) -> String {
     }
 }
 
+pub(crate) fn close(window: &mut gpui::Window, cx: &mut gpui::App) -> Result<(), String> {
+    #[cfg(windows)]
+    {
+        use windows::Win32::{
+            Foundation::{LPARAM, WPARAM},
+            UI::WindowsAndMessaging::{PostMessageW, WM_CLOSE},
+        };
+        let hwnd = owned_hidden_window(window)?;
+        window.allow_close_in_inert_tests();
+        cx.allow_quit_in_inert_tests();
+        unsafe { PostMessageW(Some(hwnd), WM_CLOSE, WPARAM(0), LPARAM(0)) }
+            .map_err(|error| error.to_string())
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = (window, cx);
+        Err("native close test requires Windows".into())
+    }
+}
+
 pub(crate) fn minimize_or_restore(window: &gpui::Window, minimize: bool) -> Result<(), String> {
     #[cfg(windows)]
     {

@@ -444,6 +444,18 @@ fn run() -> Result<()> {
                     },
                 )
                 .expect("the window must open");
+            #[cfg(any(target_os = "windows", target_os = "linux"))]
+            {
+                // The desktop main-window close handler quits even when popouts remain.
+                // Close-to-tray intercepts the native close before the window is removed.
+                let main_window = window.window_id();
+                cx.on_window_closed(move |cx, closed| {
+                    if closed == main_window {
+                        cx.quit();
+                    }
+                })
+                .detach();
+            }
             #[cfg(feature = "capture")]
             perf::mark(&perf::WINDOW_MS);
             #[cfg(feature = "capture")]

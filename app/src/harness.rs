@@ -196,6 +196,17 @@ pub async fn run(
             ["native", "state"] => {
                 let _ = writeln!(output, "native state: {}", native::state(window, cx));
             }
+            ["native", "close-main"] => {
+                let result = cx.update(|cx| {
+                    let count = cx.windows().len();
+                    window.update(cx, |_, window, cx| (count, native::close(window, cx)))
+                });
+                let _ = writeln!(output, "native close-main: {result:?}");
+            }
+            ["native", "windows"] => {
+                let count = cx.update(|cx| cx.windows().len());
+                let _ = writeln!(output, "native windows: {count}");
+            }
             ["discover", "dump"] => {
                 let note = cx.update(|cx| root.update(cx, |root, _| root.discover_dump()));
                 let _ = writeln!(output, "{note}");

@@ -246,27 +246,13 @@ impl Root {
                     return format!("call-window refused: {error}");
                 }
             }
-            "close-native" =>
-            {
-                #[cfg(windows)]
+            "close-native" => {
                 if let Some(handle) = self.vv.popout {
-                    cx.defer(move |cx| {
-                        let _ = handle.update(cx, |_, window, _| {
-                            use raw_window_handle::{HasWindowHandle, RawWindowHandle};
-                            use windows::Win32::{
-                                Foundation::{HWND, LPARAM, WPARAM},
-                                UI::WindowsAndMessaging::{PostMessageW, WM_CLOSE},
-                            };
-                            if let Ok(handle) = HasWindowHandle::window_handle(window)
-                                && let RawWindowHandle::Win32(handle) = handle.as_raw()
-                            {
-                                let hwnd = HWND(handle.hwnd.get() as *mut _);
-                                let _ = unsafe {
-                                    PostMessageW(Some(hwnd), WM_CLOSE, WPARAM(0), LPARAM(0))
-                                };
-                            }
-                        });
-                    });
+                    match handle.update(cx, |_, window, cx| crate::harness::native::close(window, cx)) {
+                        Ok(Ok(())) => {}
+                        Ok(Err(error)) => return format!("call-window refused: {error}"),
+                        Err(error) => return format!("call-window unavailable: {error}"),
+                    }
                 }
             }
             "state" => {}
