@@ -63,24 +63,26 @@ fn elapsed(activity: &Value, now: i64) -> Option<String> {
     };
     Some(duration_text(span.max(0) / 1000, false))
 }
-fn asset_url(activity: &Value, key: &str) -> Option<String> {
+pub(super) fn asset_url(activity: &Value, key: &str) -> Option<String> {
     let asset = field(&activity["assets"], key)?;
     if let Some(hash) = asset.strip_prefix("spotify:") {
         return Some(format!("https://i.scdn.co/image/{}", component(hash)));
     }
     if let Some(path) = asset.strip_prefix("mp:") {
-        let mut url = format!(
-            "https://media.discordapp.net/{}",
-            path.trim_start_matches('/')
-        );
+        let mut url = reqwest::Url::parse("https://media.discordapp.net/")
+            .ok()?
+            .join(path)
+            .ok()?;
         if path.to_ascii_lowercase().ends_with(".gif") {
-            url.push_str("?format=webp&animated=true");
+            url.query_pairs_mut()
+                .append_pair("format", "webp")
+                .append_pair("animated", "true");
         } else if path.to_ascii_lowercase().ends_with(".webp")
             || path.to_ascii_lowercase().ends_with(".avif")
         {
-            url.push_str("?animated=true");
+            url.query_pairs_mut().append_pair("animated", "true");
         }
-        return Some(url);
+        return Some(url.into());
     }
     if asset.contains(':') {
         return None;
@@ -846,6 +848,25 @@ mod tests {
             asset_url(&a, "small_image").as_deref(),
             Some("https://media.discordapp.net/external/a/image.gif?format=webp&animated=true")
         );
+        for (asset, expected) in [
+            (
+                "mp://discord.com/assets/cover.svg",
+                "https://discord.com/assets/cover.svg",
+            ),
+            (
+                "mp:/external/a/cover.webp",
+                "https://media.discordapp.net/external/a/cover.webp?animated=true",
+            ),
+            (
+                "mp:external/a/cover.png?width=32",
+                "https://media.discordapp.net/external/a/cover.png?width=32",
+            ),
+        ] {
+            assert_eq!(
+                asset_url(&json!({"assets":{"large_image":asset}}), "large_image").as_deref(),
+                Some(expected)
+            );
+        }
         assert!(
             steam_url(&json!({"third_party_skus":[{"distributor":"other","id":"1"}]})).is_none()
         );
