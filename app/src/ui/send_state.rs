@@ -463,6 +463,15 @@ impl Root {
             || !sticker_ids.is_empty()
             || !files.is_empty()
             || forward.is_some();
+        if !files.is_empty() {
+            let names = files.iter().map(Upload::filename).collect::<Vec<_>>();
+            let label = super::upload_progress::label(&names);
+            let kind = super::uploads::file_kind(&label, None);
+            self.request_image(
+                super::uploads::kind_icon_key(kind),
+                super::uploads::kind_icon_url(kind),
+            );
+        }
         if shown && let Some(message) = message.clone() {
             self.insert_local(message);
         }

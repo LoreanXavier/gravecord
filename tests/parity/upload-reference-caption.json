@@ -1,0 +1,11 @@
+{
+  "upload-file-card": { "class": "file_-9z-XO" },
+  "upload-file-icon": { "class": "icon_-9z-XO" },
+  "upload-file-inner": { "class": "fileInner_-9z-XO" },
+  "upload-file-name-row": { "class": "filenameWrapper_-9z-XO" },
+  "upload-file-progress": { "class": "progressContainer_-9z-XO" },
+  "upload-file-track": { "class": "track_TPSqXu" },
+  "upload-file-fill": { "class": "fill_TPSqXu" },
+  "upload-file-cancel": { "class": "cancelButton_-9z-XO" },
+  "upload-file-caption": { "class": "content_-9z-XO" }
+}

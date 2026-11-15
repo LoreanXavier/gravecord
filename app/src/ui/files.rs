@@ -464,6 +464,7 @@ impl Root {
         if !crate::inert::on() {
             return "file-card requires inert capture".into();
         }
+        self.capture_upload_card = None;
         if variant == "off" {
             self.capture_file_card = None;
         } else {

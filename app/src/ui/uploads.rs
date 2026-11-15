@@ -159,11 +159,6 @@ fn mime_of(path: &std::path::Path) -> Option<&'static str> {
     })
 }
 
-/// The kind of a file about to be sent, as its card names it.
-pub(super) fn upload_kind(upload: &crate::net::Upload) -> &'static str {
-    file_kind(&upload.filename(), mime_of(&upload.path))
-}
-
 pub(crate) struct Pending {
     pub path: PathBuf,
     pub name: String,

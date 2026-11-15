@@ -471,6 +471,8 @@ pub struct Root {
     #[cfg(feature = "capture")]
     capture_file_card: Option<Message>,
     #[cfg(feature = "capture")]
+    capture_upload_card: Option<(u64, f32, bool)>,
+    #[cfg(feature = "capture")]
     capture_requests: Option<u64>,
     #[cfg(feature = "capture")]
     capture_dm_rail: Option<(u64, bool)>,
@@ -901,6 +903,8 @@ impl Root {
             capture_badge: None,
             #[cfg(feature = "capture")]
             capture_file_card: None,
+            #[cfg(feature = "capture")]
+            capture_upload_card: None,
             #[cfg(feature = "capture")]
             capture_requests: None,
             #[cfg(feature = "capture")]
@@ -7543,10 +7547,12 @@ impl Root {
                             )),
                         }
                     });
-                let content = match editing {
-                    Some(editor) => self.edit_box(editor).into_any_element(),
-                    None if missing_starter => self.starter_missing_line(message),
-                    None => div()
+                let upload = self.upload_message_content(message, cx);
+                let content = match (editing, upload) {
+                    (Some(editor), _) => self.edit_box(editor).into_any_element(),
+                    (None, _) if missing_starter => self.starter_missing_line(message),
+                    (None, Some(upload)) => upload,
+                    (None, None) => div()
                         .when(
                             !self.hides_inline_media_content(message)
                                 && !self.command_replaces_content(message)
@@ -10360,7 +10366,8 @@ impl Render for Root {
         #[cfg(feature = "capture")]
         let element = element
             .children(name_styles::sheet_layer())
-            .children(self.capture_file_card_layer(cx));
+            .children(self.capture_file_card_layer(cx))
+            .children(self.capture_upload_card_layer(cx));
         self.focus_new_menu(window, cx);
         self.end_call_background_frame(cx);
         motion::leave_view();
