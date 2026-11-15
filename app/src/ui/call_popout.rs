@@ -50,7 +50,7 @@ impl Root {
     }
 
     /// Pop Out: opens the window, or closes it when it is open.
-    pub(super) fn toggle_call_popout(&mut self, cx: &mut Context<Self>) {
+    pub(super) fn toggle_call_popout(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.vv.popout.is_some() {
             self.close_call_popout(cx);
             return;
@@ -60,6 +60,9 @@ impl Root {
         }
         if self.vv.fullscreen {
             self.vv.fullscreen = false;
+            if window.is_fullscreen() {
+                window.toggle_fullscreen();
+            }
         }
         self.vv.menu = None;
         let root = cx.entity().downgrade();
@@ -197,6 +200,53 @@ impl Root {
             .text_color(rgb(0xffffff))
             .child("You've popped out the player to another window")
             .into_any_element()
+    }
+}
+
+#[cfg(feature = "capture")]
+impl Root {
+    /// Drives only this run's windows; the close step posts the same native message as the popout's X.
+    pub(crate) fn script_call_window(
+        &mut self,
+        action: &str,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> String {
+        match action {
+            "fullscreen" => self.toggle_call_fullscreen(window, cx),
+            "popout" => self.toggle_call_popout(window, cx),
+            "close-native" =>
+            {
+                #[cfg(windows)]
+                if let Some(handle) = self.vv.popout {
+                    cx.defer(move |cx| {
+                        let _ = handle.update(cx, |_, window, _| {
+                            use raw_window_handle::{HasWindowHandle, RawWindowHandle};
+                            use windows::Win32::{
+                                Foundation::{HWND, LPARAM, WPARAM},
+                                UI::WindowsAndMessaging::{PostMessageW, WM_CLOSE},
+                            };
+                            if let Ok(handle) = HasWindowHandle::window_handle(window)
+                                && let RawWindowHandle::Win32(handle) = handle.as_raw()
+                            {
+                                let hwnd = HWND(handle.hwnd.get() as *mut _);
+                                let _ = unsafe {
+                                    PostMessageW(Some(hwnd), WM_CLOSE, WPARAM(0), LPARAM(0))
+                                };
+                            }
+                        });
+                    });
+                }
+            }
+            "state" => {}
+            _ => return "call-window: expected fullscreen, popout, close-native or state".into(),
+        }
+        format!(
+            "native_fullscreen={} call_fullscreen={} popped_out={}",
+            window.is_fullscreen(),
+            self.vv.fullscreen,
+            self.vv.popout.is_some()
+        )
     }
 }
 

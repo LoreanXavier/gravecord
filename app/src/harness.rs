@@ -1058,6 +1058,12 @@ pub async fn run(
                 let active = window.update(cx, |_, window, _| window.is_window_active());
                 let _ = writeln!(output, "window: {state}, active={active:?}");
             }
+            ["call-window", action] => {
+                let state = window.update(cx, |_, window, cx| {
+                    root.update(cx, |root, cx| root.script_call_window(action, window, cx))
+                });
+                let _ = writeln!(output, "call-window {action}: {state:?}");
+            }
             // Capture only: `link <url>` opens a `discord://` or discord.com link in the app, as a click on it would.
             ["link", url] => {
                 let line = root.update(cx, |root, cx| root.script_deep_link(url, cx));

@@ -2852,9 +2852,9 @@ impl Root {
                             this.child(self.with_tip(
                                 "call-popout-tip",
                                 Tip::text(dc_intl::tr("Pop Out"), Side::Top),
-                                tray("call-popout", "voice_view_popout").on_click(
-                                    cx.listener(|this, _, _, cx| this.toggle_call_popout(cx)),
-                                ),
+                                tray("call-popout", "voice_view_popout").on_click(cx.listener(
+                                    |this, _, window, cx| this.toggle_call_popout(window, cx),
+                                )),
                                 cx,
                             ))
                             .child(self.with_tip(
