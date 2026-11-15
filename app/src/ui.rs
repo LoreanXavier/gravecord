@@ -29,6 +29,7 @@ use std::time::Instant;
 use tokio::sync::mpsc::UnboundedSender;
 
 mod actions;
+mod active_now;
 mod activity_host;
 mod activity_launch;
 mod activity_shelf;
@@ -755,6 +756,7 @@ pub struct Root {
     clips: settings::ClipsState,
     /// Bodies of `Request::Fetch`, by key.
     fetched: HashMap<String, serde_json::Value>,
+    active_now: active_now::State,
     /// The Nitro page: its plans and scroll, and whether it is the Home content.
     nitro: nitro::NitroState,
     nitro_open: bool,
@@ -1098,6 +1100,7 @@ impl Root {
             voice,
             clips: settings::ClipsState::restore(),
             fetched: HashMap::new(),
+            active_now: active_now::State::default(),
             nitro: nitro::NitroState::default(),
             nitro_open: false,
             discover: discover::State::default(),
@@ -1574,6 +1577,7 @@ impl Root {
                 }
             }
             Update::Fetched { key, body } => {
+                self.active_now_fetched(&key, &body);
                 if key.starts_with(message_requests::KEY_PREFIX) {
                     self.message_requests_fetched(&key, &body, cx);
                     return;

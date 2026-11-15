@@ -202,7 +202,7 @@ impl Root {
     }
 
     /// A round avatar of `size`, or an empty disc while the picture loads.
-    pub(super) fn event_avatar(&self, user: Option<&User>, size: f32) -> AnyElement {
+    pub(in crate::ui) fn event_avatar(&self, user: Option<&User>, size: f32) -> AnyElement {
         let image = user.and_then(|user| self.images.get(&avatar_source(user).0).cloned());
         match image {
             Some(image) => img(image).size(px(size)).rounded_full().into_any_element(),

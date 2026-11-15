@@ -189,9 +189,10 @@ fn footer_button_sized(spec: Button, fill: bool, cx: &mut Context<Root>) -> AnyE
         .when(fill, |this| this.flex_1())
         .when(!fill, |this| this.px(px(15.)))
         // A secondary button beside an action bar input is 100 wide (Cancel in Filters).
-        .when(!fill && spec.tone == Tone::Secondary, |this| {
-            this.min_w(px(100.))
-        })
+        .when(
+            !fill && (spec.tone == Tone::Secondary || spec.id == "voice-dialog-confirm"),
+            |this| this.min_w(px(100.)),
+        )
         .h(px(40.))
         .rounded(px(8.))
         .border_1()
@@ -343,6 +344,7 @@ fn render_sized_at(
     cx: &mut Context<Root>,
 ) -> AnyElement {
     let fill = input.is_none();
+    let voice_switch = spec.id == "voice-switch-channel";
     let pinned_bar = pinned.is_some() && input.is_some();
     let close: std::rc::Rc<Handler> = std::rc::Rc::new(spec.close);
     let close_button = close.clone();
@@ -393,6 +395,7 @@ fn render_sized_at(
         .flex_col()
         .child(
             div()
+                .when(voice_switch, |header| header.parity("voice-switch-header"))
                 .pt(px(16.))
                 .px(px(24.))
                 .pb(px(8.))
@@ -456,7 +459,8 @@ fn render_sized_at(
         .when(!buttons.is_empty(), |this| {
             let bar = div()
                 // The small dialog's action bar follows its header directly.
-                .when(width > 400., |this| this.mt(px(8.)))
+                .when(width > 400. && !voice_switch, |this| this.mt(px(8.)))
+                .when(voice_switch, |bar| bar.parity("voice-switch-actions"))
                 .pt(px(16.))
                 .px(px(24.))
                 .pb(px(8.))

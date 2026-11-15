@@ -116,6 +116,7 @@ pub(super) enum Dialog {
         guild: Id,
         channel: Id,
         name: String,
+        watch: Option<Id>,
     },
     /// `dU`: what the notice's close button asks.
     Silence {
@@ -714,12 +715,41 @@ impl Root {
                     guild,
                     channel,
                     name,
+                    watch: None,
                 });
                 cx.notify();
                 return;
             }
         }
         self.join_voice(guild, channel, cx);
+    }
+
+    /// Active Now selects the stream's channel before watching (596339 `_k`).
+    /// Keep the watch on the confirmation itself so cancelling cannot leave a delayed watch behind.
+    pub(in crate::ui) fn request_watch_voice(
+        &mut self,
+        guild: Id,
+        channel: Id,
+        owner: Id,
+        cx: &mut Context<Self>,
+    ) {
+        self.request_join_voice(guild, channel, cx);
+        if let Some(Dialog::SwitchChannel {
+            guild: target_guild,
+            channel: target_channel,
+            watch,
+            ..
+        }) = &mut self.voice.extra.dialog
+            && (*target_guild, *target_channel) == (guild, channel)
+        {
+            *watch = Some(owner);
+        } else if self
+            .call
+            .as_ref()
+            .is_some_and(|call| (call.guild, call.channel) == (guild, channel))
+        {
+            self.watch_stream_of(owner, cx);
+        }
     }
 
     /// Whether this account can enter the channel: Connect, and room under `user_limit` unless it may move members
@@ -1060,6 +1090,7 @@ impl Root {
                 guild,
                 channel,
                 name,
+                watch,
             } => {
                 let checked = self.voice.extra.switch_alert_disabled;
                 let input = self.dialog_checkbox(
@@ -1095,6 +1126,9 @@ impl Root {
                                 move |this, _, cx| {
                                     this.close_voice_dialog(cx);
                                     this.join_voice(guild, channel, cx);
+                                    if let Some(owner) = watch {
+                                        this.watch_stream_of(owner, cx);
+                                    }
                                 },
                             ),
                         ],
@@ -1242,7 +1276,7 @@ impl Root {
             .id(id)
             .flex()
             .items_center()
-            .gap(px(8.))
+            .gap(px(if id == "voice-dont-ask" { 12. } else { 8. }))
             .cursor_pointer()
             .on_click(cx.listener(move |this, _, _, cx| {
                 toggle(this);

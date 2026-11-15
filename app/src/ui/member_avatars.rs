@@ -464,6 +464,12 @@ impl Root {
                 _ => None,
             })
             .collect();
+        if self.active_now_visible() {
+            members.extend(self.active_now.avatars.iter().filter_map(|id| {
+                let user = self.stores.users.get(id)?;
+                Some((*id, self.equipped_decoration(user).cloned()))
+            }));
+        }
         let mut users: HashSet<_> = members
             .iter()
             .map(|(user, _)| (*user, Size::Member))

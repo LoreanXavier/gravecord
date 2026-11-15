@@ -1,0 +1,21 @@
+{
+  "active-now": {
+    "class": "nowPlayingColumn_zrUwGA"
+  },
+  "active-now-card": {
+    "class": "wrapper_o3hXTo"
+  },
+  "active-now-header": {
+    "class": "header_o3hXTo"
+  },
+  "active-now-activity": {
+    "class": "gameSection_o3hXTo"
+  },
+  "active-now-art": {
+    "class": "gameSectionIcon_o3hXTo"
+  },
+  "active-now-activity-title": {
+    "class": "textContent_o3hXTo",
+    "ancestor": "gameSection_o3hXTo"
+  }
+}

@@ -896,6 +896,10 @@ pub async fn run(
             }
             // The fixture guild's General voice channel, the only one a script can name.
             // Calls in the test DM: starts, and official-shaped call dispatches fed to the stores (nothing is sent).
+            ["active-now", variant] => {
+                let line = root.update(cx, |root, cx| root.script_active_now(variant, cx));
+                let _ = writeln!(output, "active-now: {line}");
+            }
             ["golive", rest @ ..] => {
                 let line = root.update(cx, |root, cx| root.script_go_live(rest, cx));
                 let _ = writeln!(output, "golive: {line}");

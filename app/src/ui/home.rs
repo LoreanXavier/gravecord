@@ -779,455 +779,6 @@ impl Root {
                     .when(wide, |row| row.child(self.active_now_column(cx))),
             )
     }
-
-    fn active_now_column(&self, cx: &mut Context<Self>) -> AnyElement {
-        let cards = active_now_cards(&self.stores);
-        div()
-            .parity_left("active-now", 1.)
-            .flex()
-            .flex_col()
-            .flex_grow_0()
-            .flex_shrink_1()
-            .flex_basis(gpui::relative(0.3))
-            .min_w(px(360.))
-            .max_w(px(420.))
-            .h_full()
-            .border_l_1()
-            .border_color(color("--background-mod-subtle"))
-            .pl(px(16.))
-            .pr(px(16.))
-            .pt(px(14.))
-            .child(
-                div()
-                    .flex_none()
-                    .text_size(px(20.))
-                    .line_height(px(24.))
-                    .font_weight(FontWeight(600.))
-                    .text_color(color("--text-strong"))
-                    .child(dc_intl::tr("Active Now")),
-            )
-            .when(cards.is_empty(), |col| {
-                col.child(
-                    div()
-                        .parity("active-card")
-                        .mt(px(9.))
-                        .rounded(px(8.))
-                        .bg(color("--background-base-low"))
-                        .flex()
-                        .flex_col()
-                        .items_center()
-                        .p(px(16.))
-                        .child(
-                            div()
-                                .line_height(px(20.))
-                                .font_weight(FontWeight(600.))
-                                .text_color(color("--text-strong"))
-                                .child(dc_intl::tr("It's quiet for now...")),
-                        )
-                        .child(
-                            div()
-                                .mt(px(4.))
-                                .text_size(px(14.))
-                                .line_height(px(18.))
-                                .text_center()
-                                .text_color(color("--interactive-text-default"))
-                                .child(dc_intl::t!("99ZWxQ")),
-                        ),
-                )
-            })
-            .when(!cards.is_empty(), |col| {
-                col.child(
-                    div()
-                        .id("active-now-list")
-                        .flex_1()
-                        .min_h(px(0.))
-                        .overflow_y_scroll()
-                        .mt(px(16.))
-                        .pb(px(16.))
-                        .flex()
-                        .flex_col()
-                        .gap(px(8.))
-                        .children(
-                            cards
-                                .into_iter()
-                                .map(|card| self.active_now_card(card, cx)),
-                        ),
-                )
-            })
-            .into_any_element()
-    }
-
-    fn active_now_card(&self, card: ActiveNowCard, cx: &mut Context<Self>) -> AnyElement {
-        let user = &card.user;
-        let user_id = user.id;
-        let (avatar_key, avatar_url) = super::avatar_source(user);
-        let avatar = self.images.get(&avatar_key).cloned();
-        if avatar.is_none() {
-            self.want_image(avatar_key, avatar_url, cx);
-        }
-        let subtitle = active_now_subtitle(&card);
-        let glyph = card
-            .activity
-            .as_ref()
-            .map(|act| act.glyph)
-            .or_else(|| card.voice.as_ref().map(|_| "voice_status_in_voice"));
-        let voice_tint = if card.voice.is_some() {
-            "--status-positive"
-        } else {
-            "--icon-subtle"
-        };
-        let avatar_box = {
-            let loading = avatar.is_none();
-            div()
-                .relative()
-                .flex_none()
-                .size(px(32.))
-                .when(loading, |this| {
-                    this.rounded_full().bg(color("--background-mod-subtle"))
-                })
-                .children(
-                    avatar
-                        .map(|image| gpui::img(image).size(px(32.)).rounded_full().into_any_element()),
-                )
-                .child(super::status_dot(&card.status, "--background-base-low"))
-        };
-        let inner = card.voice.as_ref().map(|voice| {
-            let guild_id = voice.guild_id;
-            let channel_id = voice.channel_id;
-            let icon_key = format!("guild:{guild_id}");
-            let guild_img = self.images.get(&icon_key).cloned();
-            if guild_img.is_none()
-                && let Some(hash) = &voice.guild_icon
-            {
-                self.want_image(
-                    icon_key,
-                    format!("https://cdn.discordapp.com/icons/{guild_id}/{hash}.webp?size=64"),
-                    cx,
-                );
-            }
-            let badge = div()
-                .size(px(32.))
-                .flex_none()
-                .rounded(px(8.))
-                .overflow_hidden()
-                .bg(color("--background-base-low"))
-                .flex()
-                .items_center()
-                .justify_center()
-                .text_size(px(12.))
-                .font_weight(FontWeight(600.))
-                .text_color(color("--text-default"))
-                .when_some(guild_img, |d, picture| {
-                    d.child(gpui::img(picture).size(px(32.)).rounded(px(8.)))
-                })
-                .when(voice.guild_icon.is_none(), |d| {
-                    d.child(voice.guild_acronym.clone())
-                });
-            div()
-                .id(SharedString::from(format!("active-now-voice-{user_id}")))
-                .w_full()
-                .p(px(10.))
-                .rounded(px(8.))
-                .bg(color("--background-surface-higher"))
-                .hover(|style| style.bg(color("--background-mod-normal")))
-                .cursor_pointer()
-                .flex()
-                .items_center()
-                .gap(px(10.))
-                .on_click(cx.listener(move |this, _, _, cx| {
-                    cx.stop_propagation();
-                    this.select(guild_id, Some(channel_id));
-                    cx.notify();
-                }))
-                .child(badge)
-                .child(
-                    div()
-                        .flex_1()
-                        .min_w(px(0.))
-                        .flex()
-                        .flex_col()
-                        .child(
-                            div()
-                                .text_size(px(13.))
-                                .line_height(px(16.))
-                                .font_weight(FontWeight(600.))
-                                .text_color(color("--text-strong"))
-                                .truncate()
-                                .child(voice.guild_name.clone()),
-                        )
-                        .child(
-                            div()
-                                .flex()
-                                .items_center()
-                                .gap(px(4.))
-                                .min_w(px(0.))
-                                .child(icon(
-                                    if voice.is_stage {
-                                        "stage_channel"
-                                    } else {
-                                        "voice_channel"
-                                    },
-                                    14.,
-                                    "--text-muted",
-                                ))
-                                .child(
-                                    div()
-                                        .flex_1()
-                                        .min_w(px(0.))
-                                        .text_size(px(12.))
-                                        .line_height(px(16.))
-                                        .text_color(color("--text-muted"))
-                                        .truncate()
-                                        .child(voice.channel_name.clone()),
-                                ),
-                        ),
-                )
-                .into_any_element()
-        }).or_else(|| {
-            let act = card.activity.as_ref()?;
-            let line1 = act.details.clone().or_else(|| Some(act.title.clone()))?;
-            let line2 = act.details.as_ref().and(act.state.clone());
-            Some(
-                div()
-                    .w_full()
-                    .p(px(10.))
-                    .rounded(px(8.))
-                    .bg(color("--background-surface-higher"))
-                    .flex()
-                    .flex_col()
-                    .gap(px(2.))
-                    .child(
-                        div()
-                            .min_w(px(0.))
-                            .text_size(px(13.))
-                            .line_height(px(16.))
-                            .font_weight(FontWeight(600.))
-                            .text_color(color("--text-strong"))
-                            .truncate()
-                            .child(line1),
-                    )
-                    .when_some(line2, |box_div, detail| {
-                        box_div.child(
-                            div()
-                                .min_w(px(0.))
-                                .text_size(px(12.))
-                                .line_height(px(16.))
-                                .text_color(color("--text-muted"))
-                                .truncate()
-                                .child(detail),
-                        )
-                    })
-                    .into_any_element(),
-            )
-        });
-        div()
-            .id(SharedString::from(format!("active-now-card-{user_id}")))
-            .w_full()
-            .p(px(12.))
-            .rounded(px(8.))
-            .border_1()
-            .border_color(color("--border-subtle"))
-            .bg(color("--background-base-low"))
-            .hover(|style| style.bg(color("--background-surface-high")))
-            .cursor_pointer()
-            .flex()
-            .flex_col()
-            .gap(px(10.))
-            .on_click(cx.listener(move |this, _, window, cx| {
-                this.open_full_profile(user_id, window, cx);
-            }))
-            .child(
-                div()
-                    .w_full()
-                    .min_w(px(0.))
-                    .flex()
-                    .items_center()
-                    .gap(px(10.))
-                    .child(avatar_box)
-                    .child(
-                        div()
-                            .flex_1()
-                            .min_w(px(0.))
-                            .flex()
-                            .flex_col()
-                            .child(
-                                div()
-                                    .min_w(px(0.))
-                                    .text_size(px(14.))
-                                    .line_height(px(18.))
-                                    .font_weight(FontWeight(600.))
-                                    .text_color(color("--text-strong"))
-                                    .truncate()
-                                    .child(self.dm_display_name(user)),
-                            )
-                            .child(
-                                div()
-                                    .min_w(px(0.))
-                                    .text_size(px(12.))
-                                    .line_height(px(16.))
-                                    .text_color(color("--interactive-text-default"))
-                                    .truncate()
-                                    .child(subtitle),
-                            ),
-                    )
-                    .when_some(glyph, |row, path| row.child(icon(path, 16., voice_tint))),
-            )
-            .children(inner)
-            .into_any_element()
-    }
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub(super) struct ActiveNowVoice {
-    pub guild_id: dc_state::Id,
-    pub channel_id: dc_state::Id,
-    pub guild_name: String,
-    pub channel_name: String,
-    pub guild_icon: Option<String>,
-    pub guild_acronym: String,
-    pub is_stage: bool,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub(super) struct ActiveNowActivity {
-    pub verb: &'static str,
-    pub glyph: &'static str,
-    pub title: String,
-    pub details: Option<String>,
-    pub state: Option<String>,
-}
-
-#[derive(Clone, Debug, PartialEq)]
-pub(super) struct ActiveNowCard {
-    pub user: dc_state::User,
-    pub status: String,
-    pub is_friend: bool,
-    pub voice: Option<ActiveNowVoice>,
-    pub activity: Option<ActiveNowActivity>,
-}
-
-fn active_now_subtitle(card: &ActiveNowCard) -> String {
-    if let Some(act) = &card.activity {
-        format!("{} {}", act.verb, act.title)
-    } else if let Some(voice) = &card.voice {
-        if voice.is_stage {
-            dc_intl::tr("In a Stage").to_owned()
-        } else {
-            dc_intl::tr("In a Voice Channel").to_owned()
-        }
-    } else {
-        String::new()
-    }
-}
-
-/// Active friends and DM recipients currently in a visible voice channel or with a live Rich Presence / game / Spotify activity.
-pub(super) fn active_now_cards(stores: &dc_state::Stores) -> Vec<ActiveNowCard> {
-    let me = stores.current_user.as_ref().map(|user| user.id);
-    let mut candidates: std::collections::HashMap<dc_state::Id, bool> =
-        std::collections::HashMap::new();
-    for (&user_id, &kind) in &stores.relationships {
-        if kind == dc_state::RELATIONSHIP_FRIEND {
-            candidates.insert(user_id, true);
-        }
-    }
-    for dm in &stores.private_channels {
-        for &user_id in &dm.recipients {
-            candidates.entry(user_id).or_insert(false);
-        }
-    }
-
-    let mut cards = Vec::new();
-    for (user_id, is_friend) in candidates {
-        if Some(user_id) == me
-            || stores.is_ignored(user_id)
-            || stores.relationships.get(&user_id) == Some(&super::blocked::RELATIONSHIP_BLOCKED)
-        {
-            continue;
-        }
-        let Some(user) = stores.users.get(&user_id).cloned() else {
-            continue;
-        };
-
-        let voice = stores.voice_states.iter().find_map(|(&guild_id, states)| {
-            let state = states.iter().find(|state| state.user_id == user_id)?;
-            let guild = stores.guild(guild_id)?;
-            let channel = guild
-                .channels
-                .iter()
-                .find(|channel| channel.id == state.channel_id)?;
-            Some(ActiveNowVoice {
-                guild_id,
-                channel_id: channel.id,
-                guild_name: guild.name.clone(),
-                channel_name: channel.name.clone(),
-                guild_icon: guild.icon.clone(),
-                guild_acronym: guild.acronym(),
-                is_stage: channel.kind == dc_state::ChannelKind::Other(13),
-            })
-        });
-
-        let presence = stores.presence.get(user_id, None);
-        let status = presence
-            .map(|p| p.status.clone())
-            .unwrap_or_else(|| stores.status(user_id).to_owned());
-        let online = !matches!(status.as_str(), "offline" | "invisible");
-
-        let activity = presence
-            .filter(|_| online)
-            .and_then(|p| p.visible_activities().into_iter().next())
-            .and_then(|act| {
-                let (verb, glyph) = match act["type"].as_u64() {
-                    Some(0) => (dc_intl::tr("Playing"), "activity_game"),
-                    Some(1) => (dc_intl::tr("Streaming"), "activity_tv"),
-                    Some(2) => (dc_intl::tr("Listening to"), "activity_music"),
-                    Some(3) => (dc_intl::tr("Watching"), "activity_tv"),
-                    Some(5) => (dc_intl::tr("Competing in"), "activity_game"),
-                    _ => return None,
-                };
-                let name = act["name"]
-                    .as_str()
-                    .filter(|s| !s.is_empty())
-                    .map(str::to_owned)
-                    .or_else(|| dc_state::presence::activity_text(act))?;
-                let details = act["details"]
-                    .as_str()
-                    .filter(|s| !s.is_empty())
-                    .map(str::to_owned);
-                let state = act["state"]
-                    .as_str()
-                    .filter(|s| !s.is_empty())
-                    .map(|s| {
-                        if act["type"] == 2 && act["name"] == "Spotify" {
-                            s.replace("; ", ", ")
-                        } else {
-                            s.to_owned()
-                        }
-                    });
-                Some(ActiveNowActivity {
-                    verb,
-                    glyph,
-                    title: name,
-                    details,
-                    state,
-                })
-            });
-
-        if voice.is_some() || activity.is_some() {
-            cards.push(ActiveNowCard {
-                user,
-                status,
-                is_friend,
-                voice,
-                activity,
-            });
-        }
-    }
-
-    cards.sort_by(|a, b| {
-        (!a.is_friend, a.voice.is_none(), a.user.display_name().to_lowercase(), a.user.id)
-            .cmp(&(!b.is_friend, b.voice.is_none(), b.user.display_name().to_lowercase(), b.user.id))
-    });
-    cards
 }
 
 /// How a row of the DM list looks (module 181254 `eY` and its stylesheets 834050, 884848 and 121046).
@@ -1426,13 +977,20 @@ mod tests {
                 "guilds": [{
                     "id": "10",
                     "name": "Raid Squad",
+                    "owner_id": "1",
                     "channels": [{"id": "100", "type": 2, "name": "Lounge"}],
                     "voice_states": []
                 }]
             }),
         );
         // Online friends with no activity or voice fall back to empty Active Now state.
-        assert!(super::active_now_cards(&stores).is_empty());
+        assert!(
+            dc_state::now_playing::feed(&stores, &[], dc_state::now_playing::Sort::Default, |_| {
+                None
+            })
+            .parties
+            .is_empty()
+        );
 
         stores.dispatch(
             "PRESENCE_UPDATE",
@@ -1443,6 +1001,7 @@ mod tests {
                     "type": 2,
                     "name": "Spotify",
                     "details": "Clair de Lune",
+                    "party": {"id": "spotify:session"},
                     "state": "Debussy; Jean"
                 }]
             }),
@@ -1456,16 +1015,20 @@ mod tests {
                 "session_id": "s3"
             }),
         );
-        let cards = super::active_now_cards(&stores);
+        let cards =
+            dc_state::now_playing::feed(&stores, &[], dc_state::now_playing::Sort::Default, |_| {
+                None
+            })
+            .parties;
         assert_eq!(cards.len(), 2);
         // Voice friend first, then activity friend.
-        assert_eq!(cards[0].user.id, 3);
-        assert_eq!(cards[0].voice.as_ref().unwrap().guild_name, "Raid Squad");
-        assert_eq!(cards[0].voice.as_ref().unwrap().channel_name, "Lounge");
-        assert_eq!(cards[1].user.id, 2);
-        let act = cards[1].activity.as_ref().unwrap();
-        assert_eq!(act.title, "Spotify");
-        assert_eq!(act.details.as_deref(), Some("Clair de Lune"));
-        assert_eq!(act.state.as_deref(), Some("Debussy, Jean"));
+        assert_eq!(cards[0].priority, vec![3]);
+        assert_eq!(cards[0].voice[0].guild, 10);
+        assert_eq!(cards[0].voice[0].channel, 100);
+        assert_eq!(cards[1].priority, vec![2]);
+        let act = &cards[1].activities[0];
+        assert_eq!(act.application.name, "Spotify");
+        assert_eq!(act.value["details"], "Clair de Lune");
+        assert_eq!(act.value["state"], "Debussy; Jean");
     }
 }

@@ -1,0 +1,14 @@
+{
+  "active-now": {
+    "class": "nowPlayingColumn_zrUwGA"
+  },
+  "active-now-card": {
+    "class": "wrapper_o3hXTo"
+  },
+  "active-now-header": {
+    "class": "header_o3hXTo"
+  },
+  "active-now-voice": {
+    "class": "voiceSection_o3hXTo"
+  }
+}

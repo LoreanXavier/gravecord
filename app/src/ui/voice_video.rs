@@ -661,6 +661,7 @@ impl Root {
         const FIXTURE_GUILD: u64 = 1_568_692_564_637_524_109;
         const FIXTURE_VOICE: u64 = 1_568_692_565_136_375_901;
         match words {
+            ["pending-watch"] => format!("pending watch {:?}; call {:?}",self.video.pending_watch,self.call.as_ref().map(|call|(call.guild,call.channel))),
             ["ptt-mode", value @ ("on" | "off")] => {
                 if self.kb_push_to_talk() != (*value == "on") {
                     self.kb_toggle_voice_mode();

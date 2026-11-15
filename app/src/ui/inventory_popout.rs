@@ -78,7 +78,7 @@ fn spotify_url(kind: &str, id: &str) -> Option<String> {
     Some(url.into())
 }
 
-fn canonical_game_id(application: &Value) -> Option<&str> {
+pub(super) fn canonical_game_id(application: &Value) -> Option<&str> {
     // 327891/705751: GAME=5; old detectable applications must resolve a linked GAME.
     if application["type"] == 5 {
         application["id"].as_str()
@@ -187,12 +187,6 @@ impl Root {
         url.into()
     }
     pub(super) fn prepare_inventory_games(&mut self) {
-        // A failed batch: the games it asked for may be asked for again.
-        if self.retry_failed_fetch("inventory-games") {
-            let fetched = &self.fetched;
-            self.requested
-                .retain(|key| !key.starts_with("inventory-game:") || fetched.contains_key(key));
-        }
         let Some(feed) = self.stores.content_inventory.get_feed(GLOBAL_FEED) else {
             return;
         };
@@ -212,6 +206,16 @@ impl Root {
                     .map(str::to_owned)
             })
             .collect();
+        self.request_inventory_game_ids(games);
+    }
+
+    pub(super) fn request_inventory_game_ids(&mut self, games: Vec<String>) {
+        // A failed batch: the games it asked for may be asked for again.
+        if self.retry_failed_fetch("inventory-games") {
+            let fetched = &self.fetched;
+            self.requested
+                .retain(|key| !key.starts_with("inventory-game:") || fetched.contains_key(key));
+        }
         let games: Vec<_> = games
             .into_iter()
             .filter(|id| self.requested.insert(format!("inventory-game:{id}")))
