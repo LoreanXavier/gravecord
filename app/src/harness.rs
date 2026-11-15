@@ -1055,6 +1055,10 @@ pub async fn run(
                 let line = root.update(cx, |root, cx| root.script_messages(rest, cx));
                 let _ = writeln!(output, "{line}");
             }
+            ["pins", rest @ ..] => {
+                let line = root.update(cx, |root, cx| root.script_pins(rest, cx));
+                let _ = writeln!(output, "{line}");
+            }
             // Capture only: `window minimize` / `window activate` change the window's own state, so the caret's wake
             // count can be read with the window minimised (`motion idle`).
             ["window", state @ ("minimize" | "activate")] => {

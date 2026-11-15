@@ -2551,83 +2551,11 @@ impl Root {
                 }
             }
             for message in messages.iter().chain(&starters) {
-                media.extend(embed::wanted(
+                media.extend(media_image::wanted(
                     message,
                     self.pref_on("animate_gifs", true) && !motion::reduced(),
+                    self.pref_on("animate_emojis", true),
                 ));
-                media.extend(files::wanted(message));
-                media.extend(stickers::wanted(message));
-                media.extend(poll::wanted(message));
-                media.extend(components::wanted(message));
-            }
-            for attachment in messages
-                .iter()
-                .chain(&starters)
-                .flat_map(|message| &message.attachments)
-            {
-                if attachment.is_image() {
-                    let (width, height) = fit_media(
-                        attachment.width.unwrap_or(1),
-                        attachment.height.unwrap_or(1),
-                    );
-                    let url = media_image::attachment_url(attachment, width, height);
-                    media.push((format!("attachment:{}", attachment.id), url));
-                } else if attachment.is_video() {
-                    let (width, height) = fit_media(
-                        attachment.width.unwrap_or(1),
-                        attachment.height.unwrap_or(1),
-                    );
-                    let url = if reqwest::Url::parse(&attachment.proxy_url).is_ok() {
-                        media_image::image_url(&attachment.proxy_url, false, width, height)
-                    } else {
-                        attachment
-                            .video_poster_url()
-                            .unwrap_or_else(|| attachment.proxy_url.clone())
-                    };
-                    media.push((format!("attachment:{}", attachment.id), url));
-                }
-            }
-        }
-        let animate_emoji = self.pref_on("animate_emojis", true);
-        if let Some(messages) = self
-            .channel
-            .and_then(|channel| self.stores.messages.get(&channel))
-        {
-            for block in messages
-                .iter()
-                .chain(&starters)
-                .flat_map(|message| parse(&message.content))
-            {
-                for span in block_spans(&block) {
-                    match &span.kind {
-                        Kind::Unicode => {
-                            if let Some(file) = dc_tokens::emoji_file(&span.text) {
-                                let url = format!("{}/assets/{file}", dc_proto::pin::WEBAPP_ORIGIN);
-                                media.push((format!("emoji:{}", span.text), url));
-                            }
-                        }
-                        // Module 486020 `getEmojiURL`: an animated emoji asks for `&animated=true`, and module
-                        // 565645 does so while the window is focused and "Play animated emoji" is on.
-                        Kind::Emoji { id, animated, .. } if *animated && animate_emoji => media
-                            .push((
-                                format!("custom-animated:{id}"),
-                                format!(
-                                    "https://cdn.discordapp.com/emojis/{id}.webp?size=96&animated=true"
-                                ),
-                            )),
-                        Kind::Emoji { id, .. } => media.push((
-                            format!("custom:{id}"),
-                            format!("https://cdn.discordapp.com/emojis/{id}.webp?size=96"),
-                        )),
-                        _ => {}
-                    }
-                }
-            }
-            for reaction in messages.iter().flat_map(|message| &message.reactions) {
-                if let Some(file) = dc_tokens::emoji_file(&reaction.name) {
-                    let url = format!("{}/assets/{file}", dc_proto::pin::WEBAPP_ORIGIN);
-                    media.push((format!("emoji:{}", reaction.name), url));
-                }
             }
         }
         for (key, url) in media {

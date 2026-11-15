@@ -11,6 +11,86 @@ use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
+/// Assets used by the same message renderer in the timeline, pins and forwarded copies.
+pub(super) fn wanted(
+    message: &Message,
+    animate_gifs: bool,
+    animate_emoji: bool,
+) -> Vec<(String, String)> {
+    use dc_markdown::{Kind, parse};
+
+    let mut media = super::embed::wanted(message, animate_gifs);
+    media.extend(super::files::wanted(message));
+    media.extend(super::stickers::wanted(message));
+    media.extend(super::poll::wanted(message));
+    media.extend(super::components::wanted(message));
+    for attachment in &message.attachments {
+        let (width, height) = super::fit_media(
+            attachment.width.unwrap_or(1),
+            attachment.height.unwrap_or(1),
+        );
+        let url = if attachment.is_image() {
+            attachment_url(attachment, width, height)
+        } else if attachment.is_video() {
+            if reqwest::Url::parse(&attachment.proxy_url).is_ok() {
+                image_url(&attachment.proxy_url, false, width, height)
+            } else {
+                attachment
+                    .video_poster_url()
+                    .unwrap_or_else(|| attachment.proxy_url.clone())
+            }
+        } else {
+            continue;
+        };
+        media.push((format!("attachment:{}", attachment.id), url));
+    }
+    for block in parse(&message.content) {
+        for span in super::block_spans(&block) {
+            match &span.kind {
+                Kind::Unicode => {
+                    if let Some(file) = dc_tokens::emoji_file(&span.text) {
+                        media.push((
+                            format!("emoji:{}", span.text),
+                            format!("{}/assets/{file}", dc_proto::pin::WEBAPP_ORIGIN),
+                        ));
+                    }
+                }
+                Kind::Emoji { id, animated, .. } if *animated && animate_emoji => media.push((
+                    format!("custom-animated:{id}"),
+                    format!("https://cdn.discordapp.com/emojis/{id}.webp?size=96&animated=true"),
+                )),
+                Kind::Emoji { id, .. } => media.push((
+                    format!("custom:{id}"),
+                    format!("https://cdn.discordapp.com/emojis/{id}.webp?size=96"),
+                )),
+                _ => {}
+            }
+        }
+    }
+    for reaction in &message.reactions {
+        if let Some(file) = dc_tokens::emoji_file(&reaction.name) {
+            media.push((
+                format!("emoji:{}", reaction.name),
+                format!("{}/assets/{file}", dc_proto::pin::WEBAPP_ORIGIN),
+            ));
+        }
+    }
+    if let Some(forwarded) = &message.forwarded {
+        // `forwarded_block` renders this copy with the forwarding message's cache keys.
+        let copy = Message {
+            content: forwarded.content.clone(),
+            attachments: forwarded.attachments.clone(),
+            embeds: forwarded.embeds.clone(),
+            flags: forwarded.flags,
+            reactions: Vec::new(),
+            forwarded: None,
+            ..message.clone()
+        };
+        media.extend(wanted(&copy, animate_gifs, animate_emoji));
+    }
+    media
+}
+
 /// `AttachmentFlags.IS_SPOILER` (`1 << 3`).
 pub(super) const ATTACHMENT_FLAG_SPOILER: u64 = 1 << 3;
 /// `AttachmentFlags.CONTAINS_EXPLICIT_MEDIA` (`1 << 4`).
@@ -715,6 +795,45 @@ pub(super) fn should_play_media(setting: bool, reduced: bool, hovered: bool) -> 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn unloaded_message_assets_include_files_embeds_and_forwarded_pictures() {
+        let message = Message::from_value(&serde_json::json!({
+            "id": "101", "channel_id": "102",
+            "timestamp": "2026-11-15T12:00:00Z",
+            "author": {"id": "103", "username": "fixture"},
+            "content": "<a:wave:104>",
+            "attachments": [
+                {"id": "105", "filename": "notes.txt", "url": "https://example.test/notes.txt", "size": 40},
+                {"id": "106", "content_type": "image/png", "filename": "image.png", "url": "https://example.test/image.png", "proxy_url": "https://example.test/image.png", "width": 640, "height": 480}
+            ],
+            "embeds": [{"type": "rich", "thumbnail": {"url": "https://example.test/thumb.png", "width": 80, "height": 80}}],
+            "message_reference": {"type": 1, "message_id": "107", "channel_id": "102"},
+            "message_snapshots": [{"message": {
+                "content": "<:static:108>",
+                "attachments": [{"id": "109", "content_type": "image/png", "filename": "forward.png", "url": "https://example.test/forward.png", "proxy_url": "https://example.test/forward.png", "width": 100, "height": 100}]
+            }}]
+        })).unwrap();
+        let assets = wanted(&message, true, true);
+        for key in [
+            "text:105",
+            "attachment:106",
+            "attachment:109",
+            "custom-animated:104",
+            "custom:108",
+        ] {
+            assert!(
+                assets.iter().any(|(found, _)| found == key),
+                "missing {key}"
+            );
+        }
+        assert!(assets.iter().any(|(_, url)| url.contains("thumb.png")));
+        assert!(
+            wanted(&message, false, false)
+                .iter()
+                .any(|(key, url)| { key == "custom:104" && !url.contains("animated=true") })
+        );
+    }
 
     #[test]
     fn viewer_size_replaces_thumbnail_parameters_without_losing_signatures() {

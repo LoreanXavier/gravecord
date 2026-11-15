@@ -19,6 +19,61 @@ fn pins_key(channel: Id) -> String {
 }
 
 impl Root {
+    /// Local response injection: never pins, unpins or acknowledges a message on the server.
+    #[cfg(feature = "capture")]
+    pub(crate) fn script_pins(&mut self, words: &[&str], cx: &mut Context<Self>) -> String {
+        match words {
+            ["seed", json @ ..] => {
+                let Some(channel) = self.channel else {
+                    return "pins: no channel".into();
+                };
+                let body = match serde_json::from_str(&json.join(" ")) {
+                    Ok(body) => body,
+                    Err(error) => return format!("pins: invalid response: {error}"),
+                };
+                self.update(
+                    crate::net::Update::Fetched {
+                        key: pins_key(channel),
+                        body,
+                    },
+                    cx,
+                );
+                self.pins_open = Some(if self.current_dm().is_some() {
+                    "dm-pins"
+                } else {
+                    "pins"
+                });
+                cx.notify();
+                "pins: local response loaded".into()
+            }
+            ["state"] => {
+                let messages = self.pinned_messages();
+                let assets: Vec<_> = messages
+                    .iter()
+                    .flat_map(|message| {
+                        super::media_image::wanted(
+                            message,
+                            self.pref_on("animate_gifs", true) && !super::motion::reduced(),
+                            self.pref_on("animate_emojis", true),
+                        )
+                    })
+                    .collect();
+                let ready = assets
+                    .iter()
+                    .filter(|(key, _)| {
+                        self.images.contains_key(key) || self.texts.contains_key(key)
+                    })
+                    .count();
+                format!(
+                    "pins: {} messages, {ready}/{} assets ready",
+                    messages.len(),
+                    assets.len()
+                )
+            }
+            _ => "pins: seed <response json> | state".into(),
+        }
+    }
+
     /// Prefetches a channel's pinned messages and empty-state artwork in the background.
     pub(super) fn warm_channel_pins(&mut self, channel: Id) {
         if !super::start_cache::enabled() {
@@ -36,19 +91,24 @@ impl Root {
         }
     }
 
-    /// Prefetches author avatars after a channel's pinned messages response arrives.
+    /// Pins can be outside the loaded history window, so fetch their own avatars and media.
     pub(super) fn pins_fetched(&mut self, key: &str) {
-        let sources: Vec<(String, String)> = self
+        let messages: Vec<Message> = self
             .fetched
             .get(key)
             .and_then(|body| body["items"].as_array())
             .into_iter()
             .flatten()
             .filter_map(|item| Message::from_value(&item["message"]))
-            .map(|message| avatar_source(&message.author))
             .collect();
-        for (avatar_key, avatar_url) in sources {
+        let animate_gifs = self.pref_on("animate_gifs", true) && !super::motion::reduced();
+        let animate_emoji = self.pref_on("animate_emojis", true);
+        for message in messages {
+            let (avatar_key, avatar_url) = avatar_source(&message.author);
             self.request_image(avatar_key, avatar_url);
+            for (key, url) in super::media_image::wanted(&message, animate_gifs, animate_emoji) {
+                self.request_image(key, url);
+            }
         }
     }
 
