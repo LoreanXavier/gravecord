@@ -417,6 +417,23 @@ const COMPARE: [(&str, &[(&str, Cell3, Cell3)]); 3] = [
 ];
 
 impl Root {
+    /// Pre-requests shared Nitro assets after startup so opening the Nitro tab renders immediately.
+    pub(super) fn warm_nitro_art(&mut self) {
+        if !super::start_cache::enabled() {
+            return;
+        }
+        for (name, file) in ART {
+            self.request_image(art_key(name), format!("{CDN}{file}"));
+        }
+        if self.premium() == PremiumType::Nitro {
+            self.warm_subscriber_home();
+        } else {
+            for item in WHATS_NEW.iter().chain(BEST_OF.iter()) {
+                self.request_image(item.poster.to_owned(), item.poster.to_owned());
+            }
+        }
+    }
+
     /// Starts the reads the page needs: the plans of each SKU, the saved payment sources and the subscriptions.
     pub(super) fn request_nitro(&mut self) {
         // A Nitro subscriber sees the subscriber home: its pictures go first, in parallel.

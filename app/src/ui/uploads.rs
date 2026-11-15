@@ -328,6 +328,40 @@ fn fitted(picture: (u32, u32)) -> (f32, f32) {
     (width * scale, height * scale)
 }
 
+struct VideoPreview {
+    preview: Arc<Image>,
+    size: (u32, u32),
+    blurred: Option<Arc<Image>>,
+}
+
+fn decode_video_preview(path: &std::path::Path) -> Option<VideoPreview> {
+    const MAX_PREVIEW_FILE_BYTES: u64 = 256 * 1024 * 1024;
+    let meta = std::fs::metadata(path).ok()?;
+    if meta.len() == 0 || meta.len() > MAX_PREVIEW_FILE_BYTES {
+        return None;
+    }
+    let bytes = std::fs::read(path).ok()?;
+    let rgba = crate::video_clip::mp4_first_frame_rgba(&bytes)?;
+    let size = (rgba.width(), rgba.height());
+    let decoded = image::DynamicImage::ImageRgba8(rgba);
+    let blurred = spoiler_bake(&decoded);
+    let (fw, fh) = fitted(size);
+    let thumb = decoded.resize_exact(
+        (fw.round().max(1.) as u32).saturating_mul(2),
+        (fh.round().max(1.) as u32).saturating_mul(2),
+        image::imageops::FilterType::Triangle,
+    );
+    let mut png = Vec::new();
+    thumb
+        .write_to(&mut std::io::Cursor::new(&mut png), image::ImageFormat::Png)
+        .ok()?;
+    Some(VideoPreview {
+        preview: Arc::new(Image::from_bytes(ImageFormat::Png, png)),
+        size,
+        blurred,
+    })
+}
+
 impl Root {
     pub(crate) fn attach_files(&mut self, paths: Vec<PathBuf>, cx: &mut Context<Self>) {
         // A batch the official client refuses (empty, over the limit, too many) adds none of its files.
@@ -341,12 +375,42 @@ impl Root {
             cx.notify();
             return;
         }
+        let mut video_paths = Vec::new();
         for path in paths {
             if let Some(pending) = Pending::new(path) {
                 // The art of the kind also draws the card of the message that sends this file.
                 self.request_image(kind_icon_key(pending.kind), kind_icon_url(pending.kind));
+                if pending.kind == "video" && pending.preview.is_none() {
+                    video_paths.push(pending.path.clone());
+                }
                 self.pending_files.push(pending);
             }
+        }
+        for path in video_paths {
+            cx.spawn(async move |this, cx| {
+                let worker_path = path.clone();
+                let decoded = cx
+                    .background_executor()
+                    .spawn(async move { decode_video_preview(&worker_path) })
+                    .await;
+                if let Some(decoded) = decoded {
+                    let _ = this.update(cx, |root, cx| {
+                        let mut updated = false;
+                        for item in &mut root.pending_files {
+                            if item.path == path && item.preview.is_none() {
+                                item.preview = Some(decoded.preview.clone());
+                                item.picture = Some(decoded.size);
+                                item.blurred = decoded.blurred.clone();
+                                updated = true;
+                            }
+                        }
+                        if updated {
+                            cx.notify();
+                        }
+                    });
+                }
+            })
+            .detach();
         }
         cx.notify();
     }

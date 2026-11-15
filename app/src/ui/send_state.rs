@@ -66,6 +66,7 @@ pub(super) struct State {
     /// The messages waiting for the queue, oldest first (module 870801 sends one at a time).
     queue: VecDeque<Id>,
     in_flight: Option<Id>,
+    last_local_id: Id,
     /// Harness: nothing is posted, so a row stays in the sending state until a step ends it.
     pub hold: bool,
     /// The notices Clyde added, per channel.
@@ -77,6 +78,14 @@ pub(super) struct State {
 impl State {
     pub fn state_of(&self, id: Id) -> Option<SendState> {
         self.sends.get(&id).map(|send| send.state)
+    }
+
+    pub(super) fn next_local_id(&mut self, nonce_id: Id, channel_latest_id: Id) -> Id {
+        let next = nonce_id
+            .max(channel_latest_id.saturating_add(1))
+            .max(self.last_local_id.saturating_add(1));
+        self.last_local_id = next;
+        next
     }
 
     fn begin(&mut self, id: Id, send: LocalSend) {
@@ -167,6 +176,7 @@ pub(super) fn id_of(nonce: &str) -> Option<Id> {
 /// `createMessage` (module 963852) as the JSON the store reads.
 fn local_message_value(
     id: Id,
+    nonce: &str,
     channel: Id,
     content: &str,
     author: Value,
@@ -188,7 +198,7 @@ fn local_message_value(
         "mention_everyone": false,
         "timestamp": now.to_rfc3339_opts(chrono::SecondsFormat::Micros, false),
         "tts": false,
-        "nonce": id.to_string(),
+        "nonce": nonce,
     });
     if let Some((guild, message, _)) = reply {
         let mut reference =
@@ -322,16 +332,43 @@ impl Root {
             sticker_ids,
             forward,
         } = parts;
-        let Some(id) = id_of(&nonce) else {
+        let Some(nonce_id) = id_of(&nonce) else {
             return;
+        };
+        let (msg_latest, max_ts) = self.stores.messages.get(&channel).map_or((0, None), |list| {
+            let latest = list.iter().map(|m| m.id).max().unwrap_or(0);
+            let ts = list.iter().map(|m| m.timestamp).max();
+            (latest, ts)
+        });
+        let guild_latest = self
+            .stores
+            .guilds
+            .iter()
+            .flat_map(|guild| guild.channels.iter())
+            .find(|known| known.id == channel)
+            .and_then(|known| known.last_message_id)
+            .unwrap_or(0);
+        let dm_latest = self
+            .stores
+            .private_channels
+            .iter()
+            .find(|known| known.id == channel)
+            .map(|known| known.last_message_id)
+            .unwrap_or(0);
+        let channel_latest_id = msg_latest.max(guild_latest).max(dm_latest);
+        let id = self.send_ui.next_local_id(nonce_id, channel_latest_id);
+        let now = match max_ts {
+            Some(ts) => ts.max(chrono::Utc::now()),
+            None => chrono::Utc::now(),
         };
         let mut message = Message::from_value(&local_message_value(
             id,
+            &nonce,
             channel,
             &content,
             self.me_json(),
             reply,
-            chrono::Utc::now(),
+            now,
         ));
         if let (Some(message), Some((_, replied, _))) = (message.as_mut(), reply) {
             message.referenced = self
@@ -406,7 +443,7 @@ impl Root {
         outcome: Outcome,
         cx: &mut Context<Self>,
     ) {
-        let Some(id) = id_of(nonce) else {
+        let Some(id) = self.send_ui.id_of_nonce(nonce).or_else(|| id_of(nonce)) else {
             return;
         };
         self.send_ui.ended(id);
@@ -445,7 +482,7 @@ impl Root {
         total: u64,
         cx: &mut Context<Self>,
     ) {
-        if let Some(id) = id_of(nonce)
+        if let Some(id) = self.send_ui.id_of_nonce(nonce).or_else(|| id_of(nonce))
             && self.send_ui.state_of(id) == Some(SendState::Sending)
         {
             self.send_ui.progress.insert(id, (index, sent, total));
@@ -899,6 +936,7 @@ mod tests {
     fn the_local_row_is_a_message_of_this_account_with_the_nonce_as_id() {
         let value = local_message_value(
             7 << 22,
+            &(7_u64 << 22).to_string(),
             55,
             "a message",
             json!({"id": "9", "username": "me"}),
@@ -914,6 +952,7 @@ mod tests {
         assert_eq!(message.reference_id, Some(44));
         let plain = local_message_value(
             1,
+            "1",
             2,
             "x",
             json!({"id": "9", "username": "me"}),
@@ -921,6 +960,18 @@ mod tests {
             chrono::Utc::now(),
         );
         assert_eq!(Message::from_value(&plain).expect("a message").kind, 0);
+    }
+
+    #[test]
+    fn next_local_id_sorts_after_lagging_nonce_and_resolves_nonce() {
+        let mut state = State::default();
+        let first = state.next_local_id(500, 1000);
+        assert!(first > 1000);
+        state.begin(first, send(10, "500"));
+        assert_eq!(state.id_of_nonce("500"), Some(first));
+        let second = state.next_local_id(501, first);
+        assert!(second > first);
+        assert!(state.next_local_id(5000, second) >= 5000);
     }
 
     #[test]

@@ -98,6 +98,59 @@ pub fn decode(bytes: &[u8], maximum: (u32, u32)) -> Result<Clip, String> {
     })
 }
 
+fn yuv_to_rgba(yuv: &openh264::decoder::DecodedYUV<'_>) -> Option<RgbaImage> {
+    let (width, height) = yuv.dimensions();
+    let pixels = width.checked_mul(height)?;
+    if pixels == 0 || pixels > 4096 * 4096 {
+        return None;
+    }
+    let mut rgba = vec![0; pixels.checked_mul(4)?];
+    yuv.write_rgba8(&mut rgba);
+    RgbaImage::from_raw(width as u32, height as u32, rgba)
+}
+
+/// Decodes the first H.264 video frame from an MP4 payload into RGBA pixels.
+pub(crate) fn mp4_first_frame_rgba(bytes: &[u8]) -> Option<RgbaImage> {
+    let track = H264Track::read(bytes).ok()?;
+    let limit = track.len().min(16);
+    if limit == 0 {
+        return None;
+    }
+    let mut decoder = openh264::decoder::Decoder::new().ok()?;
+    for index in 0..limit {
+        let unit = track.sample(index).ok()?;
+        let options = openh264::decoder::DecodeOptions::new()
+            .flush_after_decode(openh264::decoder::Flush::NoFlush);
+        if let Ok(Some(yuv)) = decoder.decode_with_options(&unit, options)
+            && let Some(frame) = yuv_to_rgba(&yuv)
+        {
+            return Some(frame);
+        }
+    }
+    if let Ok(remaining) = decoder.flush_remaining()
+        && let Some(yuv) = remaining.into_iter().next()
+    {
+        return yuv_to_rgba(&yuv);
+    }
+    None
+}
+
+/// Decodes the first H.264 video frame from an MP4 payload as a bounded PNG thumbnail.
+pub(crate) fn mp4_first_frame_png(bytes: &[u8]) -> Option<Vec<u8>> {
+    let rgba = mp4_first_frame_rgba(bytes)?;
+    let image = image::DynamicImage::ImageRgba8(rgba);
+    let thumb = if image.width() > 480 || image.height() > 480 {
+        image.thumbnail(480, 480)
+    } else {
+        image
+    };
+    let mut png = Vec::new();
+    thumb
+        .write_to(&mut std::io::Cursor::new(&mut png), image::ImageFormat::Png)
+        .ok()?;
+    Some(png)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

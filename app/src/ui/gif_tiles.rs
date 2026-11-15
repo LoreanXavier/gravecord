@@ -40,7 +40,7 @@ const TOTAL_DECODED: usize = 64 * 1024 * 1024;
 /// Frames a playing tile's decoder may have ready ahead of the one shown.
 const AHEAD: usize = 3;
 /// Poster decodes running at once.
-const DECODING: usize = 2;
+const DECODING: usize = 8;
 /// Wakes for the next frame fall on this grid (60 a second), so tiles with their own frame times share redraws.
 const GRID: Duration = Duration::from_nanos(16_666_667);
 /// A tile that fell further behind than this (a window that did not draw for a while) starts its clock again

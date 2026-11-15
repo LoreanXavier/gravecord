@@ -4,7 +4,9 @@
 use super::audio_attachment::{BUFFER_MIN_SECONDS, clock, clock_pair, control_icon, control_tint};
 use super::audio_menu::{slider_to_volume, volume_to_slider};
 use super::tooltip::{Side, Tip};
-use super::voice_message::{fraction_of, position_of, store_volume, stored_volume, tnum};
+use super::voice_message::{
+    fraction_of, position_of, store_volume, stored_volume, tnum, unmute_restore_volume,
+};
 use super::{Root, color, icon};
 use crate::parity::Parity;
 use crate::video_vod::{KEY_PREFIX, LoadStatus, TickResult, VodPlayer};
@@ -191,6 +193,20 @@ impl VideoHub {
         self.preloaded.insert(src, bytes);
     }
 
+    fn sync_stored_volume(&mut self) {
+        if self.volume_drag.is_some() {
+            return;
+        }
+        let (volume, muted) = stored_volume();
+        if (self.volume - volume).abs() > 1e-6 || self.muted != muted {
+            self.volume = volume;
+            self.muted = muted;
+            for entry in self.entries.values_mut() {
+                entry.player.set_audio_output(volume, muted);
+            }
+        }
+    }
+
     fn ensure_entry(
         &mut self,
         key: &str,
@@ -198,6 +214,7 @@ impl VideoHub {
         aspect_size: (u32, u32),
         auto_play: bool,
     ) -> &mut Entry {
+        self.sync_stored_volume();
         let epoch = self.epoch;
         let preloaded = self.preloaded.get(src).cloned();
         let (volume, muted) = (self.volume, self.muted);
@@ -252,6 +269,7 @@ impl VideoHub {
     }
 
     fn play_or_toggle(&mut self, key: &str, now: Instant) {
+        self.sync_stored_volume();
         let was_playing = self
             .entries
             .get(key)
@@ -276,9 +294,13 @@ impl VideoHub {
     }
 
     fn toggle_mute(&mut self) {
+        self.sync_stored_volume();
         self.muted = !self.muted;
+        if !self.muted && self.volume <= 0.0 {
+            self.volume = unmute_restore_volume();
+        }
         store_volume(self.volume, self.muted);
-        for entry in self.entries.values() {
+        for entry in self.entries.values_mut() {
             entry.player.set_audio_output(self.volume, self.muted);
         }
     }
@@ -287,7 +309,7 @@ impl VideoHub {
         self.volume = (slider_to_volume(slider.clamp(0.0, 100.0)) / 100.0).clamp(0.0, 1.0);
         self.muted = self.volume <= 0.0;
         store_volume(self.volume, self.muted);
-        for entry in self.entries.values() {
+        for entry in self.entries.values_mut() {
             entry.player.set_audio_output(self.volume, self.muted);
         }
     }
@@ -572,6 +594,7 @@ impl Root {
                 window.toggle_fullscreen();
             }
         } else {
+            hub.sync_stored_volume();
             hub.fullscreen = Some(spec.clone());
             let (vol, muted) = (hub.volume, hub.muted);
             let entry = hub.ensure_entry(&spec.key, &spec.src, spec.aspect_size, false);
@@ -1810,8 +1833,11 @@ mod tests {
         assert!(hub.controls_visible("k1", entry, false, t0 + Duration::from_secs(20)));
     }
 
+    static VOLUME_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
     #[test]
     fn volume_popout_honors_150ms_leave_grace_and_persists_slider() {
+        let _guard = VOLUME_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let mut hub = VideoHub::new();
         hub.ensure_entry("k2", "https://example.test/v2.mp4", (320, 180), false);
         let t0 = Instant::now();
@@ -1839,6 +1865,34 @@ mod tests {
         assert!((volume_to_slider(hub.volume * 100.0) - 100.0).abs() < 1e-3);
         hub.toggle_mute();
         assert!(hub.muted);
+    }
+
+    #[test]
+    fn volume_and_mute_sync_between_video_and_voice_hubs() {
+        let _guard = VOLUME_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let mut video = VideoHub::new();
+        let mut voice = super::super::voice_message::Hub::new();
+        video.set_slider_volume(40.0);
+        let expected = video.volume;
+        assert!(!video.muted && expected > 0.0);
+
+        voice.sync_stored_volume();
+        assert!((voice.volume - expected).abs() < 1e-6);
+        assert!(!voice.muted);
+
+        voice.toggle_mute();
+        assert!(voice.muted);
+        video.ensure_entry("sync-test", "https://example.test/sync.mp4", (320, 180), false);
+        assert!(video.muted);
+
+        video.set_slider_volume(0.0);
+        assert!(video.muted);
+        voice.toggle_mute();
+        assert!(!voice.muted);
+        assert!((voice.volume - expected).abs() < 1e-5);
+        video.ensure_entry("sync-test", "https://example.test/sync.mp4", (320, 180), false);
+        assert!(!video.muted);
+        assert!((video.volume - expected).abs() < 1e-5);
     }
 
     #[test]

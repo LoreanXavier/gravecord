@@ -386,6 +386,7 @@ impl Root {
                 self.shop_take_wishlist(&body["body"]);
             }
             "shop:home" | "shop:orbs" => {
+                self.shop_seed_effects(&body);
                 let home = data::parse_home(&body);
                 for category in &home.categories {
                     remember(self, &category.products);
@@ -444,6 +445,7 @@ impl Root {
                 self.shop_take_wishlist(&body);
             }
             _ if key.starts_with("shop:collections:") => {
+                self.shop_seed_effects(&body);
                 let (categories, total) = data::parse_collections(&body);
                 for category in &categories {
                     remember(self, &category.products);
@@ -461,6 +463,19 @@ impl Root {
             _ if key.starts_with("shop:skus:") => {
                 let products = data::parse_products(&body);
                 remember(self, &products);
+                self.shop_seed_effects(&body);
+                let mut touched_wishlist = false;
+                for product in &products {
+                    if self.wishlist_prefetch_skus.contains(&product.sku_id)
+                        || self.shop.wishlist.contains(&product.sku_id)
+                    {
+                        self.shop_prefetch_product_art(product, 78.);
+                        touched_wishlist = true;
+                    }
+                }
+                if touched_wishlist {
+                    self.persist_wishlist_cache();
+                }
                 if let Some(asked) = self.shop.sku_batches.get(key) {
                     let absent = data::absent_skus(asked, &products);
                     self.shop.absent.extend(absent);
@@ -480,6 +495,7 @@ impl Root {
                 self.shop.feed = skus;
             }
             _ if key.starts_with("shop:product:") => {
+                self.shop_seed_effects(&body);
                 if let Some(product) = data::parse_product(&body) {
                     remember(self, &[product]);
                 }
@@ -489,10 +505,131 @@ impl Root {
         cx.notify();
     }
 
+    /// Seeds `ProfileEffectStore` from any shop, storefront, or wishlist payload with embedded effect layers.
+    pub(in crate::ui) fn shop_seed_effects(&mut self, body: &serde_json::Value) {
+        let effects = data::parse_profile_effects(body);
+        if effects.is_empty() {
+            return;
+        }
+        let mut cache = self.profile_effects.borrow_mut();
+        for (sku, effect) in effects {
+            cache.store.insert_for(sku, effect);
+        }
+    }
+
+    /// Warms `shop_img` / `shop_img_box` / effect art for a product likely to be rendered soon (e.g. wishlists).
+    pub(in crate::ui) fn shop_prefetch_product_art(&mut self, product: &Product, size: f32) {
+        let item = product.items.first();
+        match product.kind {
+            data::KIND_BUNDLE => {
+                if let Some(bg) = &product.bg_static {
+                    self.shop_img_box(bg, 242., 242.);
+                }
+                if let Some(fg) = &product.fg_static {
+                    self.shop_img_box(fg, size, size);
+                } else {
+                    let scale = size / 242.;
+                    let area_height = 186. * scale;
+                    let box_width = area_height * 1.1;
+                    let three = product
+                        .items
+                        .iter()
+                        .any(|i| i.kind == data::KIND_PROFILE_EFFECT)
+                        && product
+                            .items
+                            .iter()
+                            .any(|i| i.kind == data::KIND_AVATAR_DECORATION)
+                        && product
+                            .items
+                            .iter()
+                            .any(|i| i.kind == data::KIND_NAMEPLATE);
+                    let avatar = if three { 72. } else { 80. } * scale;
+                    for item in &product.items {
+                        match item.kind {
+                            data::KIND_PROFILE_EFFECT => {
+                                let height = area_height * 0.8;
+                                let width = height * if three { 0.8 } else { 0.86 };
+                                self.shop_img_box(cards::PROFILE_MOCK, width, height);
+                                let still = item
+                                    .thumbnail
+                                    .clone()
+                                    .unwrap_or_else(|| cards::item_static(&item.sku_id));
+                                self.shop_img_box(&still, width, height);
+                                if let Ok(sku) = item.sku_id.parse::<u64>() {
+                                    self.profile_effect_prefetch_sku(sku);
+                                }
+                            }
+                            data::KIND_AVATAR_DECORATION => {
+                                let ring = avatar * 1.2;
+                                self.shop_img_box(&cards::item_static(&item.sku_id), ring, ring);
+                            }
+                            data::KIND_NAMEPLATE => {
+                                let width = box_width * 0.96;
+                                self.shop_img_box(
+                                    &cards::item_static(&item.sku_id),
+                                    width,
+                                    42. * scale,
+                                );
+                            }
+                            _ => {}
+                        }
+                    }
+                    for sub in &product.bundled {
+                        self.shop_prefetch_product_art(sub, size);
+                    }
+                }
+            }
+            data::KIND_EXTERNAL => {
+                if let Some(url) = data::external_art_url(&product.sku_id) {
+                    self.shop_img_box(&url, size, 252.);
+                }
+            }
+            data::KIND_AVATAR_DECORATION => {
+                let id = item.map_or(product.sku_id.as_str(), |item| item.sku_id.as_str());
+                let box_side = 144. * (size / 242.);
+                self.shop_img_box(&cards::item_static(id), box_side, box_side);
+            }
+            data::KIND_NAMEPLATE => {
+                let id = item.map_or(product.sku_id.as_str(), |item| item.sku_id.as_str());
+                self.shop_img(&cards::item_static(id));
+            }
+            data::KIND_PROFILE_EFFECT | data::KIND_PROFILE_FRAME => {
+                self.shop_img_box(cards::PROFILE_MOCK, size, size);
+                if let Some(item) = item {
+                    if let Some(thumbnail) = &item.thumbnail {
+                        self.shop_img(thumbnail);
+                    }
+                    for layer in &item.layers {
+                        let url = format!(
+                            "https://cdn.discordapp.com/media/v1/collectibles-shop/{}/{layer}/static",
+                            item.sku_id
+                        );
+                        self.shop_img(&url);
+                    }
+                }
+                if product.kind == data::KIND_PROFILE_EFFECT
+                    && let Ok(sku) = product.sku_id.parse::<u64>()
+                {
+                    self.profile_effect_prefetch_sku(sku);
+                }
+            }
+            _ => {
+                self.shop_img(&cards::item_static(&product.sku_id));
+            }
+        }
+    }
+
     /// The wishlist an answer carries: its id, its skus, and the products behind them.
     fn shop_take_wishlist(&mut self, list: &serde_json::Value) {
         if let Some(id) = list["id"].as_str() {
             self.shop.wishlist_id = Some(id.to_owned());
+        }
+        self.shop_seed_effects(list);
+        for product in data::parse_wishlist_products(list) {
+            self.shop
+                .products
+                .insert(product.sku_id.clone(), product.clone());
+            self.shop_prefetch_product_art(&product, 78.);
         }
         if let Some(items) = list["wishlist_items"].as_array() {
             let skus: Vec<String> = items
@@ -504,14 +641,24 @@ impl Root {
                         .map(str::to_owned)
                 })
                 .collect();
+            self.wishlist_prefetch_skus.extend(skus.iter().cloned());
             self.shop.wishlist = skus.iter().cloned().collect();
             self.shop.wishlist_order = skus.clone();
+            for sku in &skus {
+                if let Some(product) = self.shop.products.get(sku).cloned() {
+                    self.shop_prefetch_product_art(&product, 78.);
+                }
+            }
             self.shop_need_products(&skus);
             self.editor_wishlist_need(&skus);
             if let Some(me) = self.stores.current_user.as_ref().map(|user| user.id) {
                 self.fetched
                     .insert(format!("profile-wishlist:{me}"), list.clone());
+                if let Some(wid) = list["id"].as_str() {
+                    self.wishlist_ids_cache.insert(me, wid.to_owned());
+                }
             }
+            self.persist_wishlist_cache();
         }
     }
 

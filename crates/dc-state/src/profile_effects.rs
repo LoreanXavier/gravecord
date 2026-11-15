@@ -294,6 +294,18 @@ impl ProfileEffectStore {
         self.effects.insert(effect.sku_id, effect);
     }
 
+    /// Stores an effect keyed by both its product `sku` and its item's `sku_id`, clearing any pending fetch/failure.
+    pub fn insert_for(&mut self, sku: Id, effect: ProfileEffect) {
+        self.fetching.remove(&sku);
+        self.fetching.remove(&effect.sku_id);
+        self.failed.remove(&sku);
+        self.failed.remove(&effect.sku_id);
+        if sku != effect.sku_id {
+            self.effects.insert(sku, effect.clone());
+        }
+        self.effects.insert(effect.sku_id, effect);
+    }
+
     pub fn len(&self) -> usize {
         self.effects.len()
     }

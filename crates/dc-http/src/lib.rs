@@ -122,6 +122,8 @@ impl Client {
         let http = reqwest::Client::builder()
             .user_agent(pin::USER_AGENT)
             .default_headers(fixed_headers(&identity)?)
+            .tcp_nodelay(true)
+            .pool_max_idle_per_host(32)
             .build()?;
         Ok(Self {
             http,

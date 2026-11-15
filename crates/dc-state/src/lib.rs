@@ -62,7 +62,7 @@ pub mod unread;
 
 use chrono::{DateTime, Local, Utc};
 use dc_proto::settings;
-use serde_json::Value;
+use serde_json::{Map, Value, json};
 use std::collections::{HashMap, HashSet};
 use std::time::{Duration, Instant};
 
@@ -250,6 +250,63 @@ impl User {
     /// 619019 `hasFlag`: `(flags | publicFlags) & flag === flag`.
     pub fn has_flag(&self, flag: u64) -> bool {
         (self.flags | self.public_flags) & flag == flag
+    }
+
+    /// Serializes this user into the JSON shape accepted by [`Self::from_value`] for start-cache persistence.
+    pub fn to_cache_value(&self) -> Value {
+        let mut out = Map::new();
+        out.insert("id".to_owned(), json!(self.id.to_string()));
+        out.insert("username".to_owned(), json!(self.username));
+        out.insert("global_name".to_owned(), json!(self.global_name));
+        out.insert("avatar".to_owned(), json!(self.avatar));
+        out.insert("discriminator".to_owned(), json!(self.discriminator));
+        out.insert("bot".to_owned(), json!(self.bot));
+        out.insert("flags".to_owned(), json!(self.flags));
+        out.insert("public_flags".to_owned(), json!(self.public_flags));
+        if let Some(tag) = &self.tag {
+            out.insert(
+                "primary_guild".to_owned(),
+                json!({
+                    "identity_enabled": true,
+                    "identity_guild_id": tag.guild_id.to_string(),
+                    "badge": tag.badge,
+                    "tag": tag.tag,
+                }),
+            );
+        }
+        if let Some(nameplate) = &self.nameplate {
+            out.insert(
+                "collectibles".to_owned(),
+                json!({
+                    "nameplate": {
+                        "sku_id": nameplate.sku_id.to_string(),
+                        "label": nameplate.label,
+                        "palette": nameplate.palette,
+                    }
+                }),
+            );
+        }
+        if let Some(decoration) = &self.avatar_decoration {
+            out.insert(
+                "avatar_decoration_data".to_owned(),
+                json!({
+                    "sku_id": decoration.sku_id.to_string(),
+                    "asset": decoration.asset,
+                    "expires_at": decoration.expires_at,
+                }),
+            );
+        }
+        if let Some(styles) = &self.display_name_styles {
+            out.insert(
+                "display_name_styles".to_owned(),
+                json!({
+                    "font_id": styles.font_id,
+                    "effect_id": styles.effect_id,
+                    "colors": styles.colors,
+                }),
+            );
+        }
+        Value::Object(out)
     }
 
     pub fn display_name(&self) -> &str {
@@ -1871,6 +1928,46 @@ impl PrivateChannel {
                 .map(|stamp| stamp.with_timezone(&Utc));
         }
     }
+
+    /// Serializes this private channel into the JSON shape accepted by [`Self::from_value`].
+    pub fn to_cache_value(&self) -> Value {
+        let mut out = Map::new();
+        out.insert("id".to_owned(), json!(self.id.to_string()));
+        out.insert("type".to_owned(), json!(self.kind));
+        out.insert(
+            "recipient_ids".to_owned(),
+            Value::Array(
+                self.recipients
+                    .iter()
+                    .map(|id| json!(id.to_string()))
+                    .collect(),
+            ),
+        );
+        out.insert(
+            "last_message_id".to_owned(),
+            if self.last_message_id > 0 {
+                json!(self.last_message_id.to_string())
+            } else {
+                Value::Null
+            },
+        );
+        out.insert("name".to_owned(), json!(self.name));
+        out.insert("icon".to_owned(), json!(self.icon));
+        if let Some(application_id) = self.application_id {
+            out.insert("application_id".to_owned(), json!(application_id.to_string()));
+        }
+        if let Some(owner_id) = self.owner_id {
+            out.insert("owner_id".to_owned(), json!(owner_id.to_string()));
+        }
+        out.insert("flags".to_owned(), json!(self.flags));
+        out.insert("is_message_request".to_owned(), json!(self.message_request));
+        out.insert("is_spam".to_owned(), json!(self.spam));
+        out.insert(
+            "is_message_request_timestamp".to_owned(),
+            json!(self.request_timestamp.map(|stamp| stamp.to_rfc3339())),
+        );
+        Value::Object(out)
+    }
 }
 
 /// `T` in module 741961: how long a typing notice lasts.
@@ -2110,6 +2207,9 @@ pub struct Stores {
     /// Current user's `merged_members` entry per guild (including unavailable stubs), so delayed
     /// `GUILD_CREATE` or partial updates preserve roles and join date.
     pub my_members_by_guild: HashMap<Id, Value>,
+    /// True when `READY` for the same account carried an empty `private_channels` list while cached/prior DMs
+    /// remained loaded, so `READY_SUPPLEMENTAL` replaces them cleanly without a blank flash.
+    cached_private_channels_pending: bool,
     /// Per guild, the last `unread::guild_counts` answer; cleared by every event that can change one.
     counts_cache: std::sync::Mutex<HashMap<Id, unread::CountsEntry>>,
 }
@@ -2163,22 +2263,17 @@ impl Stores {
                         }
                     }
                 }
-                let mut lazy_dm_changed = false;
-                for channel in data["lazy_private_channels"]
-                    .as_array()
-                    .into_iter()
-                    .flatten()
-                {
-                    let prev_len = self.private_channels.len();
-                    self.add_private_channel(channel);
-                    if self.private_channels.len() != prev_len {
-                        lazy_dm_changed = true;
+                if let Some(lazy) = data["lazy_private_channels"].as_array() {
+                    if self.cached_private_channels_pending {
+                        self.private_channels.clear();
+                        self.cached_private_channels_pending = false;
                     }
-                    for recipient in channel["recipients"].as_array().into_iter().flatten() {
-                        self.merge_embedded_user(recipient);
+                    for channel in lazy {
+                        self.add_private_channel(channel);
+                        for recipient in channel["recipients"].as_array().into_iter().flatten() {
+                            self.merge_embedded_user(recipient);
+                        }
                     }
-                }
-                if lazy_dm_changed {
                     self.private_channels
                         .sort_by_key(|channel| std::cmp::Reverse(channel.last_message_id));
                 }
@@ -3117,7 +3212,13 @@ impl Stores {
     }
 
     fn on_ready(&mut self, data: &Value) {
-        self.current_user = User::from_value(&data["user"]);
+        let incoming_user = User::from_value(&data["user"]);
+        let same_account = self
+            .current_user
+            .as_ref()
+            .zip(incoming_user.as_ref())
+            .is_some_and(|(prev, next)| prev.id == next.id);
+        self.current_user = incoming_user;
         self.experiments = experiments::Assignments::from_ready(
             &data["apex_experiments"],
             data["user"]["id"].as_str().unwrap_or_default(),
@@ -3208,7 +3309,7 @@ impl Stores {
             .filter(|entry| entry["user_ignored"] == true && entry["type"] == 3)
             .filter_map(|entry| id(&entry["id"]))
             .collect();
-        self.private_channels = data["private_channels"]
+        let incoming_private: Vec<PrivateChannel> = data["private_channels"]
             .as_array()
             .map(|channels| {
                 channels
@@ -3217,9 +3318,17 @@ impl Stores {
                     .collect()
             })
             .unwrap_or_default();
-        // Most recent conversation first, as the official list is.
-        self.private_channels
-            .sort_by_key(|channel| std::cmp::Reverse(channel.last_message_id));
+        if incoming_private.is_empty() && same_account && !self.private_channels.is_empty() {
+            // Live READY omits `private_channels` for user accounts until `READY_SUPPLEMENTAL`:
+            // retain prior/cached DMs in the meantime so the sidebar does not flicker empty.
+            self.cached_private_channels_pending = true;
+        } else {
+            self.cached_private_channels_pending = false;
+            self.private_channels = incoming_private;
+            // Most recent conversation first, as the official list is.
+            self.private_channels
+                .sort_by_key(|channel| std::cmp::Reverse(channel.last_message_id));
+        }
         self.guilds = data["guilds"]
             .as_array()
             .map(|guilds| guilds.iter().filter_map(Guild::from_value).collect())
@@ -6023,5 +6132,88 @@ mod tests {
             }]),
         );
         assert_eq!(stores.read_states.latest.get(&20), Some(&260));
+    }
+
+    #[test]
+    fn user_and_private_channel_cache_roundtrip_and_ready_keeps_cached_dms_until_supplemental() {
+        let mut stores = Stores::default();
+        stores.dispatch(
+            "READY",
+            &json!({
+                "user": {"id": "1", "username": "me"},
+                "users": [
+                    {
+                        "id": "42",
+                        "username": "alice",
+                        "global_name": "Alice",
+                        "avatar": "av42",
+                        "primary_guild": {
+                            "identity_enabled": true,
+                            "identity_guild_id": "77",
+                            "badge": "b1",
+                            "tag": "TAG"
+                        },
+                        "display_name_styles": {
+                            "font_id": 2,
+                            "effect_id": 1,
+                            "colors": [0xFF0000]
+                        }
+                    }
+                ],
+                "private_channels": [
+                    {
+                        "id": "900",
+                        "type": 1,
+                        "recipient_ids": ["42"],
+                        "last_message_id": "1000"
+                    },
+                    {
+                        "id": "901",
+                        "type": 3,
+                        "recipient_ids": ["42"],
+                        "last_message_id": "999",
+                        "name": "Squad",
+                        "icon": "grp1",
+                        "owner_id": "1"
+                    }
+                ]
+            }),
+        );
+        let serialized_user = stores.users[&42].to_cache_value();
+        let reparsed_user = User::from_value(&serialized_user).expect("user roundtrips");
+        assert_eq!(reparsed_user, stores.users[&42]);
+
+        let serialized_group = stores.private_channels[1].to_cache_value();
+        let reparsed_group =
+            PrivateChannel::from_value(&serialized_group).expect("channel roundtrips");
+        assert_eq!(reparsed_group, stores.private_channels[1]);
+
+        // Live READY with empty private_channels on the same account preserves cached DMs.
+        stores.dispatch(
+            "READY",
+            &json!({
+                "user": {"id": "1", "username": "me"},
+                "private_channels": []
+            }),
+        );
+        assert_eq!(stores.private_channels.len(), 2);
+
+        // READY_SUPPLEMENTAL replaces cached stale DMs with the authoritative server list.
+        stores.dispatch(
+            "READY_SUPPLEMENTAL",
+            &json!({
+                "lazy_private_channels": [
+                    {
+                        "id": "900",
+                        "type": 1,
+                        "last_message_id": "1100",
+                        "recipients": [{"id": "42", "username": "alice"}]
+                    }
+                ]
+            }),
+        );
+        assert_eq!(stores.private_channels.len(), 1);
+        assert_eq!(stores.private_channels[0].id, 900);
+        assert_eq!(stores.private_channels[0].last_message_id, 1100);
     }
 }

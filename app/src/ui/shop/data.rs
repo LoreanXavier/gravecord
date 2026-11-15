@@ -70,7 +70,8 @@ pub const ORB_BADGE: &str = "1342211853484429445";
 pub const COINS_RIV: &str = "https://cdn.discordapp.com/assets/content/fac02dd925a746a61291e1f604a8affff663e9d8a22cd9b21749991ff745f1f2.riv";
 pub const ORB_BADGE_PNG: &str = "https://cdn.discordapp.com/assets/content/615334270467aa3d5adc86cc67efee89f8380a87b945a96e89ec2eb37c27993d.png";
 
-#[derive(Clone, Debug, Default, PartialEq)]
+#[derive(Clone, Debug, Default, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(default)]
 pub struct Price {
     pub amount: i64,
     pub currency: String,
@@ -111,7 +112,8 @@ impl Price {
     }
 }
 
-#[derive(Clone, Debug, Default, PartialEq)]
+#[derive(Clone, Debug, Default, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(default)]
 pub struct Item {
     pub kind: i64,
     pub sku_id: String,
@@ -123,7 +125,8 @@ pub struct Item {
     pub layers: Vec<String>,
 }
 
-#[derive(Clone, Debug, Default, PartialEq)]
+#[derive(Clone, Debug, Default, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(default)]
 pub struct Product {
     pub sku_id: String,
     pub name: String,
@@ -641,6 +644,102 @@ pub fn parse_products(body: &serde_json::Value) -> Vec<Product> {
                 }
             }
             None => out.extend(parse_product(product)),
+        }
+    }
+    out
+}
+
+/// Complete product records embedded directly inside a `/wishlists/<id>` payload (`wishlist_items[*].sku`).
+/// Minimal `{sku: {id}}` stubs without collectibles metadata are skipped so batch lookup still runs for them.
+pub fn parse_wishlist_products(body: &serde_json::Value) -> Vec<Product> {
+    let mut out = Vec::new();
+    for entry in body["wishlist_items"].as_array().into_iter().flatten() {
+        let sku = &entry["sku"];
+        if !sku.is_object() {
+            continue;
+        }
+        if sku["tenant_metadata"]["collectibles"]["type"].is_i64() {
+            let shaped = storefront_sku(sku, &serde_json::Value::Null, &serde_json::Value::Null);
+            out.extend(parse_product(&shaped));
+        } else if sku["sku_id"].is_string()
+            && sku["type"].is_i64()
+            && sku["name"].as_str().is_some_and(|n| !n.is_empty())
+        {
+            out.extend(parse_product(sku));
+        }
+    }
+    out
+}
+
+fn push_effect_item(
+    parent_sku: Option<u64>,
+    item: &serde_json::Value,
+    out: &mut Vec<(u64, dc_state::profile_effects::ProfileEffect)>,
+) {
+    if !item["effects"]
+        .as_array()
+        .is_some_and(|effects| !effects.is_empty())
+    {
+        return;
+    }
+    if let Some(effect) = dc_state::profile_effects::ProfileEffect::from_item(item) {
+        let key_sku = parent_sku.unwrap_or(effect.sku_id);
+        out.push((key_sku, effect));
+    }
+}
+
+fn collect_effects_from_sku(
+    sku: &serde_json::Value,
+    out: &mut Vec<(u64, dc_state::profile_effects::ProfileEffect)>,
+) {
+    let sku_id = sku["id"]
+        .as_str()
+        .or_else(|| sku["sku_id"].as_str())
+        .and_then(|s| s.parse::<u64>().ok());
+    let item = &sku["tenant_metadata"]["collectibles"]["item"];
+    if item.is_object() {
+        push_effect_item(sku_id, item, out);
+    }
+    for sub in sku["bundled_skus"].as_array().into_iter().flatten() {
+        collect_effects_from_sku(sub, out);
+    }
+}
+
+fn collect_effects_from_product(
+    product: &serde_json::Value,
+    out: &mut Vec<(u64, dc_state::profile_effects::ProfileEffect)>,
+) {
+    let sku_id = product["sku_id"]
+        .as_str()
+        .and_then(|s| s.parse::<u64>().ok());
+    for item in product["items"].as_array().into_iter().flatten() {
+        push_effect_item(sku_id, item, out);
+    }
+    for sub in product["bundled_products"].as_array().into_iter().flatten() {
+        collect_effects_from_product(sub, out);
+    }
+    for sku in product["skus"].as_array().into_iter().flatten() {
+        collect_effects_from_sku(sku, out);
+    }
+}
+
+/// Complete profile effects (`effects` array present and non-empty) extracted from shop, storefront, or wishlist payloads.
+pub fn parse_profile_effects(
+    body: &serde_json::Value,
+) -> Vec<(u64, dc_state::profile_effects::ProfileEffect)> {
+    let mut out = Vec::new();
+    collect_effects_from_product(body, &mut out);
+    for product in body["products"].as_array().into_iter().flatten() {
+        collect_effects_from_product(product, &mut out);
+    }
+    for category in body["categories"].as_array().into_iter().flatten() {
+        for product in category["products"].as_array().into_iter().flatten() {
+            collect_effects_from_product(product, &mut out);
+        }
+    }
+    for entry in body["wishlist_items"].as_array().into_iter().flatten() {
+        if entry["sku"].is_object() {
+            collect_effects_from_sku(&entry["sku"], &mut out);
         }
     }
     out
@@ -2135,5 +2234,48 @@ mod tests {
         assert!(pulse_phase(0.0001, 0.) < 1e-10);
         // The second run plays backwards: 0.2 s into it is 0.2 s before the end of the first.
         assert!((pulse_phase(2200., 0.) - pulse_phase(1800., 0.)).abs() < 1e-4);
+    }
+
+    #[test]
+    fn wishlist_embedded_skus_and_profile_effects_are_extracted_without_stub_shadowing() {
+        let body = json!({
+            "wishlist_items": [
+                {
+                    "sku_id": "100",
+                    "sku": {"id": "100"}
+                },
+                {
+                    "sku_id": "200",
+                    "sku": {
+                        "id": "200",
+                        "name": "Galaxy Effect",
+                        "description": "Stars",
+                        "prices": {},
+                        "tenant_metadata": {
+                            "collectibles": {
+                                "type": 1,
+                                "premium_type": 0,
+                                "item": {
+                                    "type": 1,
+                                    "sku_id": "201",
+                                    "title": "Galaxy Effect",
+                                    "thumbnailPreviewSrc": "https://cdn.discordapp.com/thumb.png",
+                                    "effects": [{"src": "https://cdn.discordapp.com/layer.png", "zIndex": 1}]
+                                }
+                            }
+                        }
+                    }
+                }
+            ]
+        });
+        let products = parse_wishlist_products(&body);
+        assert_eq!(products.len(), 1);
+        assert_eq!(products[0].sku_id, "200");
+        assert_eq!(products[0].kind, KIND_PROFILE_EFFECT);
+        let effects = parse_profile_effects(&body);
+        assert_eq!(effects.len(), 1);
+        assert_eq!(effects[0].0, 200);
+        assert_eq!(effects[0].1.sku_id, 201);
+        assert_eq!(effects[0].1.layers.len(), 1);
     }
 }

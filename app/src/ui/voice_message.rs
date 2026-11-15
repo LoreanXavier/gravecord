@@ -18,7 +18,7 @@ use gpui::{
     prelude::*, px, size,
 };
 use std::collections::{HashMap, HashSet};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, OnceLock};
 use tracing::info;
 
 /// A clip fetched for a message.
@@ -70,11 +70,38 @@ pub(super) fn volume_of(value: Option<&serde_json::Value>) -> (f32, bool) {
     (volume, muted)
 }
 
+fn shared_volume_cell() -> &'static Mutex<(f32, bool, f32)> {
+    static SHARED_MEDIA_VOLUME: OnceLock<Mutex<(f32, bool, f32)>> = OnceLock::new();
+    SHARED_MEDIA_VOLUME.get_or_init(|| {
+        let (volume, muted) = volume_of(crate::storage::get("MediaPlayerVolume").as_ref());
+        let last_nonzero = if volume > 0. { volume } else { 1. };
+        Mutex::new((volume, muted, last_nonzero))
+    })
+}
+
 pub(super) fn stored_volume() -> (f32, bool) {
-    volume_of(crate::storage::get("MediaPlayerVolume").as_ref())
+    shared_volume_cell()
+        .lock()
+        .map(|state| (state.0, state.1))
+        .unwrap_or((1., false))
+}
+
+pub(super) fn unmute_restore_volume() -> f32 {
+    shared_volume_cell()
+        .lock()
+        .map(|state| if state.2 > 0. { state.2 } else { 1. })
+        .unwrap_or(1.)
 }
 
 pub(super) fn store_volume(volume: f32, muted: bool) {
+    let volume = volume.clamp(0., 1.);
+    if let Ok(mut state) = shared_volume_cell().lock() {
+        state.0 = volume;
+        state.1 = muted;
+        if volume > 0. {
+            state.2 = volume;
+        }
+    }
     crate::storage::set(
         "MediaPlayerVolume",
         serde_json::json!({"volume": volume, "muted": muted}),
@@ -158,6 +185,14 @@ impl Hub {
         self.pills.entry(key.to_owned()).or_default()
     }
 
+    pub(super) fn sync_stored_volume(&mut self) {
+        if self.volume_drag.is_none() {
+            let (volume, muted) = stored_volume();
+            self.volume = volume;
+            self.muted = muted;
+        }
+    }
+
     fn apply_output(&self) {
         let engine = voice_player::engine();
         engine.set_speed(self.speed);
@@ -166,6 +201,7 @@ impl Hub {
     }
 
     pub(super) fn start_if_ready(&mut self, key: &str, duration: f64) {
+        self.sync_stored_volume();
         if !self.pills.get(key).is_some_and(|pill| pill.want_play) {
             return;
         }
@@ -192,6 +228,7 @@ impl Hub {
 
     /// The play or pause button.
     pub(super) fn toggle(&mut self, key: &str, url: &str, duration: f64) {
+        self.sync_stored_volume();
         let status = voice_player::engine().status();
         if status.key.as_deref() == Some(key) && status.playing {
             voice_player::engine().pause();
@@ -250,20 +287,28 @@ impl Hub {
 
     pub(super) fn set_volume(&mut self, volume: f32) {
         self.volume = volume.clamp(0., 1.);
-        self.muted = false;
+        self.muted = self.volume <= 0.;
         store_volume(self.volume, self.muted);
-        voice_player::engine().set_volume(self.volume);
-        voice_player::engine().set_muted(false);
+        let engine = voice_player::engine();
+        engine.set_volume(self.volume);
+        engine.set_muted(self.muted);
     }
 
     pub(super) fn toggle_mute(&mut self) {
+        self.sync_stored_volume();
         self.muted = !self.muted;
+        if !self.muted && self.volume <= 0. {
+            self.volume = unmute_restore_volume();
+        }
         store_volume(self.volume, self.muted);
-        voice_player::engine().set_muted(self.muted);
+        let engine = voice_player::engine();
+        engine.set_volume(self.volume);
+        engine.set_muted(self.muted);
     }
 
     /// What this frame shows for `key`; also carries the pill through the end of a playback.
     fn view(&mut self, key: &str, duration: f64) -> View {
+        self.sync_stored_volume();
         let status = voice_player::engine().status();
         let now = motion::now();
         let me = status.key.as_deref() == Some(key);

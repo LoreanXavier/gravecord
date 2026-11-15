@@ -38,7 +38,7 @@ use std::{
 /// `Update::Fetched` key of a product read: `profile-effect:<sku>`.
 pub(super) const PRODUCT_PREFIX: &str = "profile-effect:";
 /// `Update::Image` key of a layer or still: `profile-effect-art:<url>`.
-pub(super) const ART_PREFIX: &str = "profile-effect-art:";
+pub(crate) const ART_PREFIX: &str = "profile-effect-art:";
 
 /// The clock of a profile effect starts this far below zero (`delayIntro`: `useState(-500)`); without the intro it is
 /// 0.1 ms.
@@ -403,7 +403,7 @@ struct Override {
 
 #[derive(Default)]
 pub(super) struct Cache {
-    store: ProfileEffectStore,
+    pub(super) store: ProfileEffectStore,
     instances: HashMap<String, Instance>,
     hovered: HashSet<String>,
     encoded: HashMap<String, (Arc<Vec<u8>>, u64)>,
@@ -889,6 +889,35 @@ impl Root {
         }
     }
 
+    /// Prefetches the `/collectibles-products/{sku}` metadata and/or its static thumbnail without waiting for a render.
+    pub(super) fn profile_effect_prefetch_sku(&self, sku: Id) {
+        let mut cache = self.profile_effects.borrow_mut();
+        if let Some(effect) = cache.store.get(sku) {
+            let url = if !effect.thumbnail_preview_src.is_empty() {
+                effect.thumbnail_preview_src.clone()
+            } else {
+                effect.reduced_motion_src.clone()
+            };
+            if !url.is_empty()
+                && !cache.encoded.contains_key(&url)
+                && !cache.failed.contains(&url)
+                && cache.requested.insert(url.clone())
+            {
+                let _ = self.requests.send(Request::Image {
+                    key: art_key(&url),
+                    url,
+                });
+            }
+            return;
+        }
+        if cache.store.begin_fetch(sku, now_ms()) {
+            let _ = self.requests.send(Request::Fetch {
+                key: format!("{PRODUCT_PREFIX}{sku}"),
+                route: dc_state::profile_effects::product_route(sku),
+            });
+        }
+    }
+
     /// The body of a product read for an effect (`PRODUCT_PREFIX`). True when the key was an effect's.
     pub(super) fn profile_effect_fetched(
         &mut self,
@@ -902,10 +931,14 @@ impl Root {
         else {
             return false;
         };
-        self.profile_effects
+        let loaded = self
+            .profile_effects
             .borrow_mut()
             .store
             .fetched(sku, body, now_ms());
+        if loaded && super::start_cache::enabled() {
+            self.profile_effect_prefetch_sku(sku);
+        }
         cx.notify();
         true
     }

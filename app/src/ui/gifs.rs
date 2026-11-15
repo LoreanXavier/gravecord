@@ -81,6 +81,46 @@ pub(super) fn encode_query(value: &str) -> String {
         .collect()
 }
 
+/// Rewrites Tenor/Giphy full-resolution media URLs to compact preview assets so picker tiles load fast.
+pub(crate) fn preview_gif_url(src: &str) -> String {
+    let (base, suffix) = match src.find(['?', '#']) {
+        Some(index) => (&src[..index], &src[index..]),
+        None => (src, ""),
+    };
+    if (base.contains("//media.tenor.com/")
+        || base.contains("//c.tenor.com/")
+        || base.contains("//media1.tenor.com/"))
+        && let Some((dir, file)) = base.rsplit_once('/')
+        && let Some((prefix, id_seg)) = dir.rsplit_once('/')
+        && id_seg.len() > 5
+        && matches!(&id_seg[id_seg.len() - 5..], "AAAAC" | "AAAPo" | "AAAPs")
+    {
+        let stem = file.rsplit_once('.').map_or(file, |(s, _)| s);
+        if !stem.is_empty() {
+            return format!(
+                "{prefix}/{}AAAAM/{stem}.gif{suffix}",
+                &id_seg[..id_seg.len() - 5]
+            );
+        }
+    }
+    if base.contains(".giphy.com/media/") {
+        for tail in ["/giphy.gif", "/giphy.mp4", "/giphy.webp"] {
+            if let Some(prefix) = base.strip_suffix(tail) {
+                return format!("{prefix}/200w.gif{suffix}");
+            }
+        }
+    }
+    src.to_owned()
+}
+
+fn runtime_gif_url(src: &str) -> String {
+    if super::start_cache::enabled() {
+        preview_gif_url(src)
+    } else {
+        src.to_owned()
+    }
+}
+
 /// Two 230px columns: each GIF goes under the shorter one, scaled to the column width, 12px apart.
 pub(crate) fn masonry(gifs: &[Gif]) -> Vec<(usize, f32, f32)> {
     let mut columns = [0f32; 2];
@@ -135,7 +175,13 @@ impl Root {
                 route: "/gifs/trending?locale=en-US&media_format=webm".to_owned(),
             });
         }
-        self.request_image("gif:favorites".to_owned(), FAVORITES_PICTURE.to_owned());
+        self.request_image("gif:favorites".to_owned(), runtime_gif_url(FAVORITES_PICTURE));
+        if let Some(favorite) = self.favorite_gif_list().last() {
+            self.request_image(
+                format!("gif:{}", favorite.url),
+                runtime_gif_url(&favorite.src),
+            );
+        }
         if let Some(gifs) = self.gifs.as_ref() {
             window.focus(&gpui::Focusable::focus_handle(gifs.search.read(cx), cx), cx);
         }
@@ -219,19 +265,47 @@ impl Root {
         if key == TRENDING_KEY {
             for entry in body["categories"].as_array().into_iter().flatten() {
                 if let (Some(name), Some(src)) = (entry["name"].as_str(), entry["src"].as_str()) {
-                    wanted.push((format!("gif-category:{name}"), src.to_owned()));
+                    wanted.push((format!("gif-category:{name}"), runtime_gif_url(src)));
                 }
             }
             for gif in gifs_of(&json!([body["gifs"][0].clone()])) {
-                wanted.push((format!("gif:{}", gif.id), gif.picture));
+                wanted.push((format!("gif:{}", gif.id), runtime_gif_url(&gif.picture)));
             }
         } else if key == TRENDING_GIFS_KEY || key.starts_with(SEARCH_PREFIX) {
             for gif in gifs_of(&body) {
-                wanted.push((format!("gif:{}", gif.id), gif.picture));
+                wanted.push((format!("gif:{}", gif.id), runtime_gif_url(&gif.picture)));
             }
         }
         for (image, url) in wanted {
             self.request_image(image, url);
+        }
+    }
+
+    pub(super) fn warm_gifs(&mut self) {
+        if !super::start_cache::enabled() {
+            return;
+        }
+        if !self.fetched.contains_key(TRENDING_KEY)
+            && self.requested.insert(TRENDING_KEY.to_owned())
+        {
+            let _ = self.requests.send(Request::Fetch {
+                key: TRENDING_KEY.to_owned(),
+                route: "/gifs/trending?locale=en-US&media_format=webm".to_owned(),
+            });
+        }
+        if !self.fetched.contains_key(TRENDING_GIFS_KEY)
+            && self.requested.insert(TRENDING_GIFS_KEY.to_owned())
+        {
+            let _ = self.requests.send(Request::Fetch {
+                key: TRENDING_GIFS_KEY.to_owned(),
+                route: format!(
+                    "/gifs/trending-gifs?media_format=webm&locale=en-US&limit={SEARCH_LIMIT}"
+                ),
+            });
+        }
+        self.request_image("gif:favorites".to_owned(), runtime_gif_url(FAVORITES_PICTURE));
+        for gif in self.favorites_as_gifs().into_iter().take(24) {
+            self.request_image(format!("gif:{}", gif.id), runtime_gif_url(&gif.picture));
         }
     }
 
@@ -304,7 +378,7 @@ impl Root {
         match &view {
             GifView::Favorites => {
                 for gif in self.favorites_as_gifs() {
-                    self.request_image(format!("gif:{}", gif.id), gif.picture);
+                    self.request_image(format!("gif:{}", gif.id), runtime_gif_url(&gif.picture));
                 }
             }
             GifView::Trending if !self.fetched.contains_key(TRENDING_GIFS_KEY) => {
@@ -749,8 +823,14 @@ impl Root {
             .flex()
             .flex_col()
             .bg(color("--background-surface-high"))
-            .child(div().bg(color("--background-surface-higher")).child(header))
-            .child(div().flex_1().min_h(px(0.)).child(content))
+            .child(header)
+            .child(
+                div()
+                    .flex_1()
+                    .min_h(px(0.))
+                    .bg(color("--background-base-lower"))
+                    .child(content),
+            )
             .into_any_element()
     }
 }
@@ -784,5 +864,33 @@ mod tests {
         let list = gifs_of(&body);
         assert_eq!(list[0].picture, "a.webp");
         assert_eq!(list[0].url, "https://klipy.com/gifs/life-saturday");
+    }
+
+    #[test]
+    fn preview_gif_url_downscales_tenor_and_giphy_and_keeps_other_hosts() {
+        assert_eq!(
+            preview_gif_url("https://media.tenor.com/abc123AAAAC/wave.gif"),
+            "https://media.tenor.com/abc123AAAAM/wave.gif"
+        );
+        assert_eq!(
+            preview_gif_url("https://c.tenor.com/xyzAAAPo/dance.mp4?c=1"),
+            "https://c.tenor.com/xyzAAAAM/dance.gif?c=1"
+        );
+        assert_eq!(
+            preview_gif_url("https://media1.tenor.com/m/qrsAAAPs/cat.webm"),
+            "https://media1.tenor.com/m/qrsAAAAM/cat.gif"
+        );
+        assert_eq!(
+            preview_gif_url("https://media.giphy.com/media/1TOSaJsWtnhe0/giphy.gif"),
+            "https://media.giphy.com/media/1TOSaJsWtnhe0/200w.gif"
+        );
+        assert_eq!(
+            preview_gif_url("https://media2.giphy.com/media/v1.abc/XYZ/giphy.mp4"),
+            "https://media2.giphy.com/media/v1.abc/XYZ/200w.gif"
+        );
+        assert_eq!(
+            preview_gif_url("https://static.klipy.com/gifs/life-saturday.webp"),
+            "https://static.klipy.com/gifs/life-saturday.webp"
+        );
     }
 }

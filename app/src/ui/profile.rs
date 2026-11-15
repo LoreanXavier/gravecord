@@ -153,6 +153,7 @@ impl Root {
             message,
         });
         self.request_profile_images(user);
+        self.prefetch_known_wishlist(user);
         cx.notify();
     }
 

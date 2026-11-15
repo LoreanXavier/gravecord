@@ -10,7 +10,7 @@ use gpui::{
 };
 
 /// The profile mock the effect cards sit on (`preview_lG0NAh` in the capture).
-const PROFILE_MOCK: &str = "https://cdn.discordapp.com/assets/content/3e995a411944311d4d318143819ce2d6623bb74c0fc162d6726e0377c3c31a4f.png";
+pub(super) const PROFILE_MOCK: &str = "https://cdn.discordapp.com/assets/content/3e995a411944311d4d318143819ce2d6623bb74c0fc162d6726e0377c3c31a4f.png";
 
 /// `https://cdn.discordapp.com/media/v1/collectibles-shop/<id>/static`: the still art of an item or a product.
 pub(super) fn item_static(id: &str) -> String {

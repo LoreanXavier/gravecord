@@ -660,6 +660,8 @@ impl Editor {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        window.prevent_default();
+        cx.stop_propagation();
         window.focus(&self.focus, cx);
         if let Some(spell) = self.spell.as_mut() {
             spell.typing_hold = false;

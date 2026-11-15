@@ -711,6 +711,7 @@ impl Root {
         }
         self.request_profile_images(user);
         self.request_profile_cards(user);
+        self.prefetch_known_wishlist(user);
         let _ = window;
         cx.notify();
     }

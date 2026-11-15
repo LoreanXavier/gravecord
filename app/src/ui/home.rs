@@ -113,6 +113,7 @@ impl Root {
                 key: format!("profile:{user}"),
                 route: self.dm_profile_route(user),
             });
+            self.prefetch_known_wishlist(user);
         }
         self.stop_lurking_elsewhere();
         self.rebuild_rows();

@@ -19,6 +19,39 @@ fn pins_key(channel: Id) -> String {
 }
 
 impl Root {
+    /// Prefetches a channel's pinned messages and empty-state artwork in the background.
+    pub(super) fn warm_channel_pins(&mut self, channel: Id) {
+        if !super::start_cache::enabled() {
+            return;
+        }
+        let key = pins_key(channel);
+        if !self.fetched.contains_key(&key)
+            && self.requested.insert(format!("warm-pins:{channel}"))
+        {
+            let _ = self.requests.send(Request::Fetch {
+                key,
+                route: format!("/channels/{channel}/messages/pins?limit=25"),
+            });
+            self.request_image("pins-empty".to_owned(), EMPTY_IMAGE.to_owned());
+        }
+    }
+
+    /// Prefetches author avatars after a channel's pinned messages response arrives.
+    pub(super) fn pins_fetched(&mut self, key: &str) {
+        let sources: Vec<(String, String)> = self
+            .fetched
+            .get(key)
+            .and_then(|body| body["items"].as_array())
+            .into_iter()
+            .flatten()
+            .filter_map(|item| Message::from_value(&item["message"]))
+            .map(|message| avatar_source(&message.author))
+            .collect();
+        for (avatar_key, avatar_url) in sources {
+            self.request_image(avatar_key, avatar_url);
+        }
+    }
+
     pub(super) fn toggle_pins(&mut self, anchor: &'static str, cx: &mut Context<Self>) {
         if self.pins_open.take().is_some() {
             cx.notify();
@@ -217,13 +250,24 @@ impl Root {
         cx: &mut Context<Self>,
     ) -> Option<AnyElement> {
         let anchor_key = self.pins_open?;
+        let channel = self.channel?;
         let button = self.tip_anchors.borrow().get(anchor_key).copied()?;
         let pins = self.pinned_messages();
         let dm = self.current_dm().is_some();
         let viewport = window.viewport_size();
         let right = (f32::from(viewport.width) - f32::from(button.right())).max(8.);
         let top = f32::from(button.bottom()) + 8.;
-        let body: AnyElement = if pins.is_empty() {
+        let body: AnyElement =
+            if !self.fetched.contains_key(&pins_key(channel)) && super::start_cache::enabled() {
+                div()
+                    .h(px(180.))
+                    .w_full()
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .child(crate::ui::login::wandering_cubes())
+                    .into_any_element()
+            } else if pins.is_empty() {
             let picture = self.images.get("pins-empty").cloned();
             div()
                 .flex()

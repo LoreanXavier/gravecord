@@ -194,7 +194,7 @@ mod popout_roles;
 mod profile;
 mod profile_art;
 mod profile_editor;
-mod profile_effects;
+pub(crate) mod profile_effects;
 mod profile_menu;
 mod profile_other;
 mod profile_theme;
@@ -784,6 +784,14 @@ pub struct Root {
     sidebar_width_combined: f32,
     /// Active drag state for the sidebar resize handle: `(start_x, start_combined_width)`.
     sidebar_resizing: Option<(f32, f32)>,
+    /// Trimmed READY snapshot used to keep persisted private channels in sync for instant cold starts.
+    cached_ready: Option<serde_json::Value>,
+    /// Last time `cached_ready` was flushed to disk during live DM updates.
+    last_ready_cache_save: Option<Instant>,
+    /// Cached first wishlist IDs keyed by user id, persisted across launches.
+    wishlist_ids_cache: HashMap<u64, String>,
+    /// Wishlist SKU ids whose Shop preview art should prefetch as soon as products load.
+    wishlist_prefetch_skus: HashSet<String>,
 }
 
 impl Root {
@@ -1117,6 +1125,10 @@ impl Root {
                     .unwrap_or(375.)
             },
             sidebar_resizing: None,
+            cached_ready: None,
+            last_ready_cache_save: None,
+            wishlist_ids_cache: HashMap::new(),
+            wishlist_prefetch_skus: HashSet::new(),
         }
     }
 
@@ -1423,7 +1435,40 @@ impl Root {
                     } else {
                         self.after_ready();
                     }
-                    start_cache::save_ready(&data, self.cache_guild());
+                    if let Some(mut trimmed) =
+                        start_cache::trim_ready(&data, self.cache_guild().as_deref())
+                    {
+                        if !self.stores.private_channels.is_empty() {
+                            start_cache::sync_private_channels(&mut trimmed, &self.stores);
+                        }
+                        self.cached_ready = Some(trimmed.clone());
+                        self.last_ready_cache_save = Some(Instant::now());
+                        start_cache::save_trimmed_ready(trimmed);
+                    }
+                }
+                if name == "READY_SUPPLEMENTAL" {
+                    self.request_group_images();
+                    self.sync_ready_dm_cache(true);
+                    self.warm_top_dm_profiles();
+                    self.warm_gifs();
+                    self.warm_nitro_art();
+                    if let Some(ch) = self.channel {
+                        self.warm_channel_pins(ch);
+                    }
+                }
+                if matches!(
+                    name.as_str(),
+                    "CHANNEL_CREATE" | "CHANNEL_DELETE" | "CHANNEL_RECIPIENT_ADD"
+                ) {
+                    self.sync_ready_dm_cache(false);
+                }
+                if name == "MESSAGE_CREATE"
+                    && let Some(cid) = data["channel_id"]
+                        .as_str()
+                        .and_then(|id| id.parse::<Id>().ok())
+                    && self.stores.private_channels.iter().any(|dm| dm.id == cid)
+                {
+                    self.sync_ready_dm_cache(false);
                 }
                 if name == "MESSAGE_CREATE"
                     && self.notification_focused
@@ -1695,9 +1740,16 @@ impl Root {
                     return;
                 }
                 if self.full_profile.is_some()
-                    && ["outbox:", "apps:", "note:", "profile:"]
-                        .iter()
-                        .any(|prefix| key.starts_with(prefix))
+                    && [
+                        "outbox:",
+                        "apps:",
+                        "note:",
+                        "profile:",
+                        "profile-games:",
+                        "profile-wishlist:",
+                    ]
+                    .iter()
+                    .any(|prefix| key.starts_with(prefix))
                 {
                     self.fetched.insert(key.clone(), body.clone());
                     self.full_profile_fetched(&key, cx);
@@ -1906,6 +1958,9 @@ impl Root {
                 if gif_answer {
                     self.request_gif_images(&key);
                 }
+                if key.starts_with("pins:") {
+                    self.pins_fetched(&key);
+                }
                 if key == stickers::PACKS_KEY {
                     self.sticker_packs_fetched(cx);
                 }
@@ -1970,6 +2025,55 @@ impl Root {
                     let payload = self.fetched[&key]["user"].clone();
                     self.stores.merge_user(&payload);
                     self.request_profile_images(user);
+                    let wid_opt = shop::data::wishlist_ids(&self.fetched[&key])
+                        .into_iter()
+                        .next();
+                    if let Some(wid) = wid_opt {
+                        let changed = self
+                            .wishlist_ids_cache
+                            .insert(user, wid.clone())
+                            .as_deref()
+                            != Some(wid.as_str());
+                        if changed {
+                            self.persist_wishlist_cache();
+                        }
+                        let wl_key = format!("profile-wishlist:{user}");
+                        if self.requested.insert(wl_key.clone()) {
+                            let _ = self.requests.send(Request::Fetch {
+                                key: wl_key,
+                                route: shop::data::wishlist_route(&wid),
+                            });
+                        }
+                    }
+                }
+                if let Some(uid) = key
+                    .strip_prefix("profile-wishlist:")
+                    .and_then(|s| s.parse::<Id>().ok())
+                {
+                    let list = self.fetched[&key].clone();
+                    self.shop_seed_effects(&list);
+                    for product in shop::data::parse_wishlist_products(&list) {
+                        self.shop
+                            .products
+                            .insert(product.sku_id.clone(), product.clone());
+                        self.shop_prefetch_product_art(&product, 78.);
+                    }
+                    let all_skus: Vec<String> = dm_profile::wishlist_entries(&list)
+                        .into_iter()
+                        .map(|(sku, _)| sku)
+                        .collect();
+                    for sku in &all_skus {
+                        self.wishlist_prefetch_skus.insert(sku.clone());
+                        if let Some(product) = self.shop.products.get(sku).cloned() {
+                            self.shop_prefetch_product_art(&product, 78.);
+                        }
+                    }
+                    self.shop_need_products(&all_skus);
+                    self.editor_wishlist_need(&all_skus);
+                    if let Some(wid) = list["id"].as_str() {
+                        self.wishlist_ids_cache.insert(uid, wid.to_owned());
+                    }
+                    self.persist_wishlist_cache();
                 }
                 if frecency {
                     let wanted: Vec<&'static str> = self
@@ -1980,6 +2084,7 @@ impl Root {
                     for surrogates in wanted {
                         self.request_emoji_image(surrogates);
                     }
+                    self.warm_gifs();
                 }
                 cx.notify();
             }
@@ -2159,6 +2264,135 @@ impl Root {
             tint,
         });
         let _ = self.requests.send(Request::EmojiButtonSprites);
+    }
+
+    fn sync_ready_dm_cache(&mut self, force: bool) {
+        if !start_cache::enabled() {
+            return;
+        }
+        if !force
+            && self
+                .last_ready_cache_save
+                .is_some_and(|at| at.elapsed() < std::time::Duration::from_secs(2))
+        {
+            return;
+        }
+        let Some(mut trimmed) = self.cached_ready.clone() else {
+            return;
+        };
+        start_cache::sync_private_channels(&mut trimmed, &self.stores);
+        self.cached_ready = Some(trimmed.clone());
+        self.last_ready_cache_save = Some(Instant::now());
+        start_cache::save_trimmed_ready(trimmed);
+    }
+
+    pub(super) fn persist_wishlist_cache(&self) {
+        if !start_cache::enabled() {
+            return;
+        }
+        let wishlists: HashMap<u64, serde_json::Value> = self
+            .fetched
+            .iter()
+            .filter_map(|(k, v)| {
+                let uid = k.strip_prefix("profile-wishlist:")?.parse::<u64>().ok()?;
+                Some((uid, v.clone()))
+            })
+            .collect();
+        let mut wishlist_ids = self.wishlist_ids_cache.clone();
+        if let Some(me) = self.stores.current_user.as_ref().map(|u| u.id)
+            && let Some(wid) = &self.shop.wishlist_id
+        {
+            wishlist_ids.entry(me).or_insert_with(|| wid.clone());
+        }
+        let mut skus = HashSet::new();
+        for list in wishlists.values() {
+            for (sku, _) in dm_profile::wishlist_entries(list) {
+                skus.insert(sku);
+            }
+        }
+        let products = skus
+            .into_iter()
+            .filter_map(|sku| self.shop.products.get(&sku).cloned())
+            .collect();
+        start_cache::save_wishlists(start_cache::CachedWishlists {
+            wishlist_ids,
+            wishlists,
+            products,
+        });
+    }
+
+    pub(super) fn prefetch_known_wishlist(&mut self, user: Id) {
+        if let Some(wid) = self.wishlist_ids_cache.get(&user).cloned() {
+            let key = format!("profile-wishlist:{user}");
+            if self.requested.insert(key.clone()) {
+                let _ = self.requests.send(Request::Fetch {
+                    key,
+                    route: shop::data::wishlist_route(&wid),
+                });
+            }
+        }
+        if let Some(list) = self.fetched.get(&format!("profile-wishlist:{user}")).cloned() {
+            self.shop_seed_effects(&list);
+            let all_skus: Vec<String> = dm_profile::wishlist_entries(&list)
+                .into_iter()
+                .map(|(sku, _)| sku)
+                .collect();
+            self.wishlist_prefetch_skus.extend(all_skus.iter().cloned());
+            for sku in &all_skus {
+                if let Some(product) = self.shop.products.get(sku).cloned() {
+                    self.shop_prefetch_product_art(&product, 78.);
+                }
+            }
+            self.shop_need_products(&all_skus);
+            self.editor_wishlist_need(&all_skus);
+        }
+    }
+
+    fn warm_top_dm_profiles(&mut self) {
+        if !start_cache::enabled() {
+            return;
+        }
+        let mut targets: Vec<Id> = Vec::new();
+        if let Some(dm) = self.current_dm()
+            && let Some(recipient) = self.stores.dm_recipient(dm)
+        {
+            targets.push(recipient.id);
+        }
+        let mut dms: Vec<(u64, Id)> = self
+            .stores
+            .private_channels
+            .iter()
+            .filter_map(|dm| {
+                let uid = self.stores.dm_recipient(dm)?.id;
+                Some((dm.last_message_id.max(dm.id), uid))
+            })
+            .collect();
+        dms.sort_by_key(|b| std::cmp::Reverse(b.0));
+        for (_, uid) in dms {
+            if !targets.contains(&uid) {
+                targets.push(uid);
+            }
+            if targets.len() >= 8 {
+                break;
+            }
+        }
+        if let Some(me) = self.stores.current_user.as_ref().map(|u| u.id)
+            && !targets.contains(&me)
+        {
+            targets.push(me);
+        }
+        for (idx, uid) in targets.into_iter().enumerate() {
+            self.prefetch_known_wishlist(uid);
+            if idx < 4 && !self.fetched.contains_key(&format!("profile:{uid}")) {
+                let key = format!("profile:{uid}");
+                if self.requested.insert(key.clone()) {
+                    let _ = self.requests.send(Request::Fetch {
+                        key,
+                        route: self.dm_profile_route(uid),
+                    });
+                }
+            }
+        }
     }
 
     fn select(&mut self, guild: Id, channel: Option<Id>) {
@@ -8370,11 +8604,26 @@ impl Root {
                             .items_start()
                             .pl(px(11.))
                             .pr(px(12.))
+                            .cursor(gpui::CursorStyle::IBeam)
+                            .on_mouse_down(
+                                MouseButton::Left,
+                                cx.listener(|this, event: &MouseDownEvent, window, cx| {
+                                    if window.default_prevented() {
+                                        return;
+                                    }
+                                    this.composer.update(cx, |editor, cx| {
+                                        editor.on_mouse_down(event, window, cx);
+                                    });
+                                }),
+                            )
                             .child(
                                 div()
                                     .id("attach")
-                                    .pt(px(12.))
+                                    .mt(px(12.))
                                     .cursor_pointer()
+                                    .on_mouse_down(MouseButton::Left, |_, window, _| {
+                                        window.prevent_default();
+                                    })
                                     .on_click(
                                         cx.listener(|this, _, _, cx| this.toggle_plus_menu(cx)),
                                     )
@@ -8434,9 +8683,13 @@ impl Root {
                             )
                             .child(
                                 div()
-                                    .pt(px(12.))
+                                    .mt(px(12.))
                                     .flex()
                                     .gap(px(8.))
+                                    .cursor_default()
+                                    .on_mouse_down(MouseButton::Left, |_, window, _| {
+                                        window.prevent_default();
+                                    })
                                     .when(!docked, |this| {
                                         this.child(gift_button)
                                             .child(gif_button)

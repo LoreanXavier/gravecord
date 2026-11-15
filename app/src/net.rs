@@ -373,7 +373,7 @@ pub(crate) const MESSAGE_PAGE: u32 = dc_state::message_window::INITIAL_PAGE;
 /// Held while a settings-proto PATCH is in flight.
 /// Pictures downloaded at once. Opening a picker or a shop asks for hundreds together; without a limit they all start
 /// at once and the connections, the memory and the CPU are shared out among them.
-static IMAGE_FETCHES: tokio::sync::Semaphore = tokio::sync::Semaphore::const_new(24);
+static IMAGE_FETCHES: tokio::sync::Semaphore = tokio::sync::Semaphore::const_new(48);
 /// The longest one picture download may take before it counts as failed.
 const IMAGE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(60);
 /// Download slots not in use, for the harness's `badge state` line.
@@ -415,7 +415,66 @@ fn injected_image_failure(key: &str) -> bool {
 }
 /// Pictures drawn from vector files (Lottie, Rive) at once, each on a blocking thread. Without a limit a picker of
 /// forty stickers starts forty threads that each render a frame.
-static IMAGE_DRAWS: tokio::sync::Semaphore = tokio::sync::Semaphore::const_new(3);
+static IMAGE_DRAWS: tokio::sync::Semaphore = tokio::sync::Semaphore::const_new(6);
+/// Content-addressed CDN assets cached raw on disk under `img-cache` when the start cache is active.
+fn disk_cacheable_raw_image(key: &str, url: &str) -> bool {
+    crate::ui::start_cache::enabled()
+        && !url.starts_with("data:")
+        && (key.starts_with("avatar:")
+            || key.starts_with("guild:")
+            || key.starts_with("rail-image:")
+            || key.starts_with("avatar-decoration:")
+            || key.starts_with("nameplate:")
+            || key.starts_with(crate::ui::profile_effects::ART_PREFIX)
+            || key.starts_with("gif:")
+            || key.starts_with("gif-category:")
+            || key.starts_with("badge:")
+            || key.starts_with("nitro")
+            || key.starts_with("profile-game:")
+            || url.contains("/collectibles-shop/")
+            || url.contains("/clan-badges/")
+            || url.contains("/app-icons/")
+            || url.contains("/banners/")
+            || url.contains("/stickers/")
+            || url.contains("/role-icons/")
+            || url.contains("/assets/"))
+}
+
+async fn fetch_cached_sheet(
+    client: &Arc<Client>,
+    url: &str,
+) -> Result<Vec<u8>, dc_http::Error> {
+    if crate::ui::start_cache::enabled() {
+        let lookup = url.to_owned();
+        if let Ok(Some(cached)) =
+            tokio::task::spawn_blocking(move || crate::ui::shop::art_cache::read_raw(&lookup))
+                .await
+        {
+            if cached.stale {
+                let refresh_client = Arc::clone(client);
+                let refresh_url = url.to_owned();
+                tokio::spawn(async move {
+                    if let Ok(fresh) = refresh_client.fetch_public(&refresh_url).await {
+                        tokio::task::spawn_blocking(move || {
+                            crate::ui::shop::art_cache::write_raw(&refresh_url, &fresh);
+                        });
+                    }
+                });
+            }
+            return Ok(cached.bytes);
+        }
+    }
+    let bytes = client.fetch_public(url).await?;
+    if crate::ui::start_cache::enabled() {
+        let save_url = url.to_owned();
+        let save_bytes = bytes.clone();
+        tokio::task::spawn_blocking(move || {
+            crate::ui::shop::art_cache::write_raw(&save_url, &save_bytes);
+        });
+    }
+    Ok(bytes)
+}
+
 /// The box a Shop picture is drawn in (logical width, height, and the window's scale), for its name on disk.
 fn shop_art_box(key: &str) -> Option<(f32, f32, f32)> {
     let scale = SHOP_SCALE.load(std::sync::atomic::Ordering::Relaxed) as f32 / 100.;
@@ -2076,8 +2135,7 @@ pub async fn run(token: Token, updates: mpsc::UnboundedSender<Update>, requests:
             }
             Request::Sprite { key, tint } => {
                 tokio::spawn(async move {
-                    match client
-                        .fetch_public(EMOJI_SPRITE)
+                    match fetch_cached_sheet(&client, EMOJI_SPRITE)
                         .await
                         .map(|bytes| emoji_cell(&bytes, tint))
                     {
@@ -2091,7 +2149,7 @@ pub async fn run(token: Token, updates: mpsc::UnboundedSender<Update>, requests:
             }
             Request::EmojiButtonSprites => {
                 tokio::spawn(async move {
-                    match client.fetch_public(EMOJI_SPRITE_COLORED).await {
+                    match fetch_cached_sheet(&client, EMOJI_SPRITE_COLORED).await {
                         Ok(bytes) => {
                             let cut = tokio::task::spawn_blocking(move || {
                                 sheet_cells(&bytes, 77, 20, "button-sprite")
@@ -2126,7 +2184,7 @@ pub async fn run(token: Token, updates: mpsc::UnboundedSender<Update>, requests:
                     let client = client.clone();
                     let updates = updates.clone();
                     tokio::spawn(async move {
-                        match client.fetch_public(url).await {
+                        match fetch_cached_sheet(&client, url).await {
                             Ok(bytes) => {
                                 let cut = tokio::task::spawn_blocking(move || {
                                     sheet_cells(&bytes, count, columns, prefix)
@@ -2147,12 +2205,30 @@ pub async fn run(token: Token, updates: mpsc::UnboundedSender<Update>, requests:
             }
             Request::Image { key, url } => {
                 tokio::spawn(async move {
-                    // A Shop picture kept on disk is drawn at once; a stale one is fetched again behind it.
+                    // A Shop or CDN picture kept on disk is drawn at once; a stale one is fetched again behind it.
                     let shop_box = shop_art_box(&key);
+                    let cache_raw = !key.starts_with("shop:img:") && disk_cacheable_raw_image(&key, &url);
                     if key.starts_with("shop:img:") {
                         let (at, drawn_in) = (url.clone(), shop_box);
                         let cached = tokio::task::spawn_blocking(move || {
                             crate::ui::shop::art_cache::read(&at, drawn_in)
+                        })
+                        .await
+                        .ok()
+                        .flatten();
+                        if let Some(cached) = cached {
+                            let _ = updates.send(Update::Image {
+                                key: key.clone(),
+                                bytes: cached.bytes,
+                            });
+                            if !cached.stale {
+                                return;
+                            }
+                        }
+                    } else if cache_raw {
+                        let at = url.clone();
+                        let cached = tokio::task::spawn_blocking(move || {
+                            crate::ui::shop::art_cache::read_raw(&at)
                         })
                         .await
                         .ok()
@@ -2296,7 +2372,40 @@ pub async fn run(token: Token, updates: mpsc::UnboundedSender<Update>, requests:
                                 }
                             }
                         }
+                        Ok(bytes)
+                            if (key.starts_with("gif:") || key.starts_with("gif-category:"))
+                                && bytes.len() >= 12
+                                && &bytes[4..8] == b"ftyp" =>
+                        {
+                            if cache_raw {
+                                let (at, written) = (url.clone(), bytes.clone());
+                                tokio::task::spawn_blocking(move || {
+                                    crate::ui::shop::art_cache::write_raw(&at, &written);
+                                });
+                            }
+                            let _decode = IMAGE_DRAWS.acquire().await;
+                            let png = tokio::task::spawn_blocking(move || {
+                                crate::video_clip::mp4_first_frame_png(&bytes)
+                            })
+                            .await
+                            .ok()
+                            .flatten();
+                            match png {
+                                Some(png) => {
+                                    let _ = updates.send(Update::Image { key, bytes: png });
+                                }
+                                None => {
+                                    let _ = updates.send(Update::ImageFailed { key });
+                                }
+                            }
+                        }
                         Ok(bytes) => {
+                            if cache_raw {
+                                let (at, written) = (url.clone(), bytes.clone());
+                                tokio::task::spawn_blocking(move || {
+                                    crate::ui::shop::art_cache::write_raw(&at, &written);
+                                });
+                            }
                             let _ = updates.send(Update::Image { key, bytes });
                         }
                         Err(error) => {

@@ -544,6 +544,9 @@ impl Root {
 
     /// `sQ` renders once the profile is there and the rewards store is ready (fetched, failed, or not eligible).
     fn subscriber_home_ready(&self) -> bool {
+        if crate::ui::start_cache::enabled() {
+            return self.stores.current_user.is_some();
+        }
         let Some(me) = self.stores.current_user.as_ref().map(|user| user.id) else {
             return false;
         };
@@ -692,6 +695,15 @@ impl Root {
             tracing::debug!("nitro home: opened");
         }
         self.request_subscriber_data();
+        self.request_subscriber_card_art();
+        self.request_subscriber_hero_art();
+        if let Some(user) = self.stores.current_user.clone() {
+            let (key, url) = avatar_source(&user);
+            self.request_image(key, url);
+        }
+    }
+
+    fn request_subscriber_card_art(&mut self) {
         let (whats_new, favorites) = self.subscriber_cards();
         let sources: Vec<(String, String)> = whats_new
             .iter()
@@ -702,6 +714,9 @@ impl Root {
         for (key, url) in sources {
             self.request_image(key, url);
         }
+    }
+
+    fn request_subscriber_hero_art(&mut self) {
         for piece in &trinkets::PIECES {
             self.request_image(piece.key.to_owned(), piece.url());
         }
@@ -715,9 +730,17 @@ impl Root {
         self.request_image(BACKGROUND_KEY.to_owned(), BACKGROUND_URL.to_owned());
         self.request_image(GIFT_BANNER_KEY.to_owned(), GIFT_BANNER_URL.to_owned());
         self.request_image(BOTTOM_KEY.to_owned(), BOTTOM_URL.to_owned());
-        if let Some(user) = self.stores.current_user.clone() {
-            let (key, url) = avatar_source(&user);
-            self.request_image(key, url);
+    }
+
+    /// Pre-requests Nitro subscriber home art and profile data on startup when cached.
+    pub(super) fn warm_subscriber_home(&mut self) {
+        if !crate::ui::start_cache::enabled() {
+            return;
+        }
+        self.request_subscriber_hero_art();
+        if self.premium() == PremiumType::Nitro {
+            self.request_subscriber_data();
+            self.request_subscriber_card_art();
         }
     }
 
@@ -1331,31 +1354,47 @@ impl Root {
                             .child(probe)
                             // `gradient_u8qKJM`: 984px tall at the top, masked to nothing from 60% down; the mask is
                             // drawn as a gradient of the page color over the lower 40%.
-                            .children(background.map(|image| {
-                                div()
-                                    .absolute()
-                                    .top_0()
-                                    .left_0()
-                                    .w_full()
-                                    .h(px(984.))
-                                    .overflow_hidden()
-                                    .child(
-                                        img(image).w_full().h(px(984.)).object_fit(ObjectFit::Fill),
-                                    )
-                                    .child(
-                                        div()
-                                            .absolute()
-                                            .left_0()
-                                            .bottom_0()
-                                            .w_full()
-                                            .h(px(394.))
-                                            .bg(linear_gradient(
-                                                180.,
-                                                linear_color_stop(page_color.opacity(0.), 0.),
-                                                linear_color_stop(page_color, 1.),
-                                            )),
-                                    )
-                            }))
+                            .children(match background {
+                                Some(image) => Some(
+                                    div()
+                                        .absolute()
+                                        .top_0()
+                                        .left_0()
+                                        .w_full()
+                                        .h(px(984.))
+                                        .overflow_hidden()
+                                        .child(
+                                            img(image).w_full().h(px(984.)).object_fit(ObjectFit::Fill),
+                                        )
+                                        .child(
+                                            div()
+                                                .absolute()
+                                                .left_0()
+                                                .bottom_0()
+                                                .w_full()
+                                                .h(px(394.))
+                                                .bg(linear_gradient(
+                                                    180.,
+                                                    linear_color_stop(page_color.opacity(0.), 0.),
+                                                    linear_color_stop(page_color, 1.),
+                                                )),
+                                        ),
+                                ),
+                                None if crate::ui::start_cache::enabled() => Some(
+                                    div()
+                                        .absolute()
+                                        .top_0()
+                                        .left_0()
+                                        .w_full()
+                                        .h(px(984.))
+                                        .bg(linear_gradient(
+                                            180.,
+                                            linear_color_stop(gpui::rgba(0x2c1f5eff), 0.),
+                                            linear_color_stop(page_color, 1.),
+                                        )),
+                                ),
+                                None => None,
+                            })
                             .child(
                                 div()
                                     .relative()

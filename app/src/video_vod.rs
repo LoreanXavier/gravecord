@@ -112,6 +112,8 @@ pub(crate) struct VodPlayer {
     playing: bool,
     ended: bool,
     position_secs: f64,
+    volume: f32,
+    muted: bool,
     clock_anchor: Option<Instant>,
     clock_base_secs: f64,
     active_seek_generation: u64,
@@ -119,6 +121,8 @@ pub(crate) struct VodPlayer {
     worker: Option<std::thread::JoinHandle<()>>,
     #[cfg(test)]
     test_engine: Option<Arc<voice_player::Engine>>,
+    #[cfg(test)]
+    last_applied_output: Option<(f32, bool)>,
 }
 
 impl VodPlayer {
@@ -138,6 +142,8 @@ impl VodPlayer {
             playing: false,
             ended: false,
             position_secs: 0.0,
+            volume: 1.0,
+            muted: false,
             clock_anchor: None,
             clock_base_secs: 0.0,
             active_seek_generation: 0,
@@ -145,7 +151,23 @@ impl VodPlayer {
             worker: None,
             #[cfg(test)]
             test_engine: None,
+            #[cfg(test)]
+            last_applied_output: None,
         }
+    }
+
+    fn start_audio_clip(&mut self, clip: Arc<Clip>, from: f64) {
+        let (volume, muted) = (self.volume, self.muted);
+        #[cfg(test)]
+        {
+            self.last_applied_output = Some((volume, muted));
+        }
+        let key = self.key.clone();
+        let engine = self.audio_engine();
+        engine.set_speed(1.0);
+        engine.set_volume(volume);
+        engine.set_muted(muted);
+        engine.play(&key, clip, from);
     }
 
     fn audio_engine(&self) -> &voice_player::Engine {
@@ -231,6 +253,8 @@ impl VodPlayer {
     }
 
     pub(crate) fn play(&mut self, volume: f32, muted: bool) {
+        self.volume = volume.clamp(0.0, 1.0);
+        self.muted = muted;
         self.start_load();
         let (audio, duration) = self
             .sync
@@ -249,14 +273,14 @@ impl VodPlayer {
         self.clock_base_secs = self.position_secs;
         self.clock_anchor = Some(Instant::now());
         if let Some(clip) = audio {
-            let engine = self.audio_engine();
-            engine.set_speed(1.0);
-            engine.set_volume(volume);
-            engine.set_muted(muted);
-            engine.play(&self.key, clip, self.position_secs);
+            self.start_audio_clip(clip, self.position_secs);
         } else {
             // Pause any active audio/voice clip when a silent video starts so only one media plays.
-            self.audio_engine().pause();
+            let (vol, is_muted) = (self.volume, self.muted);
+            let engine = self.audio_engine();
+            engine.pause();
+            engine.set_volume(vol);
+            engine.set_muted(is_muted);
         }
         self.sync.wake.notify_all();
     }
@@ -282,7 +306,9 @@ impl VodPlayer {
         self.sync.wake.notify_all();
     }
 
-    pub(crate) fn set_audio_output(&self, volume: f32, muted: bool) {
+    pub(crate) fn set_audio_output(&mut self, volume: f32, muted: bool) {
+        self.volume = volume.clamp(0.0, 1.0);
+        self.muted = muted;
         let has_audio = self
             .sync
             .shared
@@ -291,10 +317,19 @@ impl VodPlayer {
         if !has_audio {
             return;
         }
-        let engine = self.audio_engine();
-        if engine.status().key.as_deref() == Some(&self.key) {
-            engine.set_volume(volume);
-            engine.set_muted(muted);
+        let (vol, is_muted) = (self.volume, self.muted);
+        let key = self.key.clone();
+        let active_key = self.audio_engine().status().key;
+        if active_key.as_deref() == Some(key.as_str())
+            || (self.playing && active_key.is_none())
+        {
+            let engine = self.audio_engine();
+            engine.set_volume(vol);
+            engine.set_muted(is_muted);
+            #[cfg(test)]
+            {
+                self.last_applied_output = Some((vol, is_muted));
+            }
         }
     }
 
@@ -330,15 +365,16 @@ impl VodPlayer {
             }
         }
         if let Some(clip) = audio {
-            let engine = self.audio_engine();
-            if engine.status().key.as_deref() == Some(&self.key) {
+            let status = self.audio_engine().status();
+            if status.key.as_deref() == Some(&self.key) {
                 if self.playing {
-                    if engine.status().ended {
-                        engine.play(&self.key, clip, clamped);
+                    if status.ended {
+                        self.start_audio_clip(clip, clamped);
                     } else {
-                        engine.seek(clamped);
+                        self.audio_engine().seek(clamped);
                     }
                 } else {
+                    let engine = self.audio_engine();
                     engine.pause();
                     engine.seek(clamped);
                 }
@@ -444,8 +480,7 @@ impl VodPlayer {
 
         // Start delayed audio playback once the worker finishes loading while waiting in playing state.
         if self.playing && has_audio {
-            let engine = self.audio_engine();
-            let engine_status = engine.status();
+            let engine_status = self.audio_engine().status();
             if engine_status.key.as_deref() == Some(&self.key) {
                 if !engine_status.playing && !engine_status.ended {
                     if engine_status.error.is_some() {
@@ -483,7 +518,7 @@ impl VodPlayer {
                 self.clock_anchor = None;
             } else if let Some(clip) = audio_clip {
                 // Worker just finished loading audio after user clicked Play.
-                engine.play(&self.key, clip, self.position_secs);
+                self.start_audio_clip(clip, self.position_secs);
             }
         } else if self.playing {
             if let Some(anchor) = self.clock_anchor {
@@ -1190,6 +1225,44 @@ mod tests {
         std::thread::sleep(Duration::from_millis(20));
         let after_seek = player.tick();
         assert!((after_seek.position - 1.5).abs() < 0.01);
+        player.audio_engine().stop();
+        let _ = player.take_all_images();
+    }
+
+    #[test]
+    fn delayed_audio_load_preserves_muted_and_volume_settings() {
+        voice_player::set_silent(true);
+        let palette = [[200, 40, 40], [40, 200, 40], [40, 40, 200], [200, 200, 40]];
+        let mp4 = Arc::new(synthetic_mp4(64, 48, 2, &palette, 2).unwrap());
+        let mut player = VodPlayer::new(
+            "video:test-delayed-mute",
+            "https://example.invalid/delayed.mp4",
+            Some(mp4),
+        );
+        player.start_load();
+        let _ = wait_ready(&mut player);
+
+        player.play(0.4, true);
+        assert!(player.muted);
+        assert!((player.volume - 0.4).abs() < 1e-6);
+        player.set_audio_output(0.25, true);
+
+        let clip = Arc::new(Clip::from_samples(vec![0.1; 48_000 * 3]));
+        player.attach_audio_for_test(clip);
+        let mut started = None;
+        for _ in 0..50 {
+            let tick = player.tick();
+            if tick.playing && tick.has_audio {
+                started = Some(tick);
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        assert!(started.is_some(), "late-arriving audio starts under tick");
+        assert_eq!(player.last_applied_output, Some((0.25, true)));
+
+        player.set_audio_output(0.7, false);
+        assert_eq!(player.last_applied_output, Some((0.7, false)));
         player.audio_engine().stop();
         let _ = player.take_all_images();
     }

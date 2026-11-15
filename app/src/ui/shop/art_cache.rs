@@ -25,8 +25,8 @@ pub(crate) struct Cached {
     pub stale: bool,
 }
 
-fn dir() -> Option<PathBuf> {
-    let dir = crate::storage::data_dir()?.join("shop-art");
+fn dir_for(folder: &str) -> Option<PathBuf> {
+    let dir = crate::storage::data_dir()?.join(folder);
     std::fs::create_dir_all(&dir).ok()?;
     Some(dir)
 }
@@ -72,8 +72,8 @@ pub(crate) fn is_fresh(modified: SystemTime, now: SystemTime) -> bool {
     now.duration_since(modified).map_or(true, |age| age < FRESH)
 }
 
-pub(crate) fn read(url: &str, box_: Option<(f32, f32, f32)>) -> Option<Cached> {
-    let path = dir()?.join(file_name(url, box_));
+fn read_in(folder: &str, url: &str, box_: Option<(f32, f32, f32)>) -> Option<Cached> {
+    let path = dir_for(folder)?.join(file_name(url, box_));
     let modified = std::fs::metadata(&path).ok()?.modified().ok()?;
     let bytes = std::fs::read(&path)
         .ok()
@@ -84,21 +84,46 @@ pub(crate) fn read(url: &str, box_: Option<(f32, f32, f32)>) -> Option<Cached> {
     })
 }
 
-/// Writes the copy through a temporary file, so a failed write never leaves half a picture.
-pub(crate) fn write(url: &str, box_: Option<(f32, f32, f32)>, bytes: &[u8]) {
-    let Some(dir) = dir() else { return };
+fn write_in(
+    folder: &str,
+    prune: &'static std::sync::Once,
+    url: &str,
+    box_: Option<(f32, f32, f32)>,
+    bytes: &[u8],
+) {
+    let Some(dir) = dir_for(folder) else { return };
     let name = file_name(url, box_);
     let temporary = dir.join(format!("{name}.part"));
     if std::fs::write(&temporary, bytes).is_ok() {
         let _ = std::fs::rename(&temporary, dir.join(name));
     }
-    prune_once(&dir);
+    prune_once(&dir, prune);
 }
 
-/// Once a run: removes copies not written for `KEEP_DAYS`.
-fn prune_once(dir: &std::path::Path) {
+pub(crate) fn read(url: &str, box_: Option<(f32, f32, f32)>) -> Option<Cached> {
+    read_in("shop-art", url, box_)
+}
+
+/// Reads an unresized CDN asset (avatars, guild/group icons, profile-effect APNGs, badges) from disk.
+pub(crate) fn read_raw(url: &str) -> Option<Cached> {
+    read_in("img-cache", url, None)
+}
+
+/// Writes the copy through a temporary file, so a failed write never leaves half a picture.
+pub(crate) fn write(url: &str, box_: Option<(f32, f32, f32)>, bytes: &[u8]) {
     static PRUNED: std::sync::Once = std::sync::Once::new();
-    PRUNED.call_once(|| {
+    write_in("shop-art", &PRUNED, url, box_, bytes);
+}
+
+/// Writes an unresized CDN asset through a temporary file under `img-cache`.
+pub(crate) fn write_raw(url: &str, bytes: &[u8]) {
+    static PRUNED: std::sync::Once = std::sync::Once::new();
+    write_in("img-cache", &PRUNED, url, None, bytes);
+}
+
+/// Removes copies from `dir` that have not been written for `KEEP_DAYS`, once per bucket per run.
+fn prune_once(dir: &std::path::Path, gate: &'static std::sync::Once) {
+    gate.call_once(|| {
         let Ok(entries) = std::fs::read_dir(dir) else {
             return;
         };

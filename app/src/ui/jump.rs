@@ -144,6 +144,7 @@ impl Root {
             return;
         }
         let _ = self.requests.send(Request::LoadMessages { channel });
+        self.warm_channel_pins(channel);
     }
 
     /// The one way to go to a message (`jumpToMessage`): opens its channel when another one is open, loads the page
