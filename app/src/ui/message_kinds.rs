@@ -20,16 +20,6 @@ fn icon_image(icon: LineIcon) -> Option<(&'static str, &'static str)> {
             "system:arrow-out",
             "https://discordapp.com/assets/53e42368b1409f1a.svg",
         ),
-        // Module 175476.
-        LineIcon::Call => (
-            "system:call",
-            "https://discordapp.com/assets/61ccab047dad737a.svg",
-        ),
-        // Module 130158.
-        LineIcon::CallMissed => (
-            "system:call-missed",
-            "https://discordapp.com/assets/6f076a64de25de4b.svg",
-        ),
         // Module 290388.
         LineIcon::Warning => (
             "system:warning",
@@ -131,14 +121,13 @@ impl Root {
 
     /// The gutter icon of a system line.
     fn line_icon(&self, line_icon: LineIcon) -> AnyElement {
-        // Modules 175476 and 130158: the handset, green for a call and red for a missed one, 16px (golden
-        // `design/golden/windows/dm-call`). Drawn from the local glyph so it does not wait for the asset.
+        // Modules 175476/130158 use distinct SVGs with these fixed fills; CSS scales both from 18 to 16px.
         match line_icon {
             LineIcon::Call => {
-                return icon("system_call", 16., "--status-positive").into_any_element();
+                return svg_in("system_call", 16., rgb(0x3ba55c));
             }
             LineIcon::CallMissed => {
-                return icon("system_call", 16., "--red-400").into_any_element();
+                return svg_in("system_call_missed", 16., rgb(0x99aab5));
             }
             _ => {}
         }
@@ -528,6 +517,21 @@ impl Root {
             made.push(value);
         };
         match *set {
+            "calls" => {
+                let me = self.stores.current_user.as_ref().map_or(0, |user| user.id);
+                let ended = (now - chrono::Duration::seconds(10)).to_rfc3339();
+                push(
+                    3,
+                    "",
+                    json!({"call": {"participants": [me.to_string(), "900"], "ended_timestamp": ended}}),
+                );
+                push(
+                    3,
+                    "",
+                    json!({"call": {"participants": ["900"], "ended_timestamp": ended}}),
+                );
+                push(3, "", json!({"call": {"participants": ["900"]}}));
+            }
             "history" => {
                 for index in 0..80 {
                     push(
