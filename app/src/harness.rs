@@ -905,6 +905,10 @@ pub async fn run(
                 let line = root.update(cx, |root, cx| root.script_active_now(variant, cx));
                 let _ = writeln!(output, "active-now: {line}");
             }
+            ["file-card", variant] => {
+                let line = root.update(cx, |root, cx| root.script_file_card(variant, cx));
+                let _ = writeln!(output, "file-card: {line}");
+            }
             ["golive", rest @ ..] => {
                 let line = root.update(cx, |root, cx| root.script_go_live(rest, cx));
                 let _ = writeln!(output, "golive: {line}");

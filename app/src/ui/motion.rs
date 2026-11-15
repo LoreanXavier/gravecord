@@ -2306,6 +2306,7 @@ fn open_dialog(
             let attachment = dc_state::Attachment {
                 id: 1,
                 filename: "notes.txt".to_owned(),
+                title: None,
                 url: String::new(),
                 proxy_url: String::new(),
                 content_type: Some("text/plain".to_owned()),

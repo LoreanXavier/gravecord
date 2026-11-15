@@ -469,6 +469,8 @@ pub struct Root {
     #[cfg(feature = "capture")]
     capture_badge: Option<(u64, bool)>,
     #[cfg(feature = "capture")]
+    capture_file_card: Option<Message>,
+    #[cfg(feature = "capture")]
     capture_requests: Option<u64>,
     #[cfg(feature = "capture")]
     capture_dm_rail: Option<(u64, bool)>,
@@ -897,6 +899,8 @@ impl Root {
             tray_runtime: crate::tray::Runtime::new(updates.clone()),
             #[cfg(feature = "capture")]
             capture_badge: None,
+            #[cfg(feature = "capture")]
+            capture_file_card: None,
             #[cfg(feature = "capture")]
             capture_requests: None,
             #[cfg(feature = "capture")]
@@ -10354,7 +10358,9 @@ impl Render for Root {
             .children(self.splash_layer(window, cx));
         // Capture only: the display name style comparison sheet (`name-sheet` step).
         #[cfg(feature = "capture")]
-        let element = element.children(name_styles::sheet_layer());
+        let element = element
+            .children(name_styles::sheet_layer())
+            .children(self.capture_file_card_layer(cx));
         self.focus_new_menu(window, cx);
         self.end_call_background_frame(cx);
         motion::leave_view();

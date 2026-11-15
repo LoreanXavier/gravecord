@@ -1077,6 +1077,7 @@ fn attachment_scan_versions() -> &'static std::sync::Mutex<HashMap<Id, i64>> {
 pub struct Attachment {
     pub id: Id,
     pub filename: String,
+    pub title: Option<String>,
     /// The CDN address, for downloads and text previews.
     pub url: String,
     pub proxy_url: String,
@@ -1109,6 +1110,7 @@ impl Attachment {
         Some(Self {
             id,
             filename: text(&value["filename"])?,
+            title: text(&value["title"]),
             url: text(&value["url"]).unwrap_or_default(),
             proxy_url: text(&value["proxy_url"]).or_else(|| text(&value["url"]))?,
             content_type: text(&value["content_type"]),
@@ -1120,6 +1122,21 @@ impl Attachment {
             duration_secs: value["duration_secs"].as_f64(),
             waveform: text(&value["waveform"]),
         })
+    }
+
+    /// Module 465856: a supplied title keeps the filename's final extension, except for dotfiles.
+    pub fn display_name(&self) -> String {
+        match &self.title {
+            Some(title) => {
+                let extension = self
+                    .filename
+                    .rfind('.')
+                    .filter(|index| *index > 0)
+                    .map_or("", |index| &self.filename[index..]);
+                format!("{title}{extension}")
+            }
+            None => self.filename.clone(),
+        }
     }
 
     /// `content_scan_version` from the gateway/REST payload, for explicit-media pending scan checks (module 282108).

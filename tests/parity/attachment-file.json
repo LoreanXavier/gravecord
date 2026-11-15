@@ -1,0 +1,9 @@
+{
+  "attachment-file-card": { "class": "file_-9z-XO" },
+  "attachment-file-icon": { "class": "icon_-9z-XO" },
+  "attachment-file-inner": { "class": "fileInner_-9z-XO" },
+  "attachment-file-name": { "class": "filenameLinkWrapper_-9z-XO" },
+  "attachment-file-size": { "class": "body-xs/normal_RAOoio", "ancestor": "fileInner_-9z-XO" },
+  "attachment-file-buttons": { "class": "hoverButtonGroup_n2rO26" },
+  "attachment-file-download": { "class": "hoverButton_n2rO26" }
+}
