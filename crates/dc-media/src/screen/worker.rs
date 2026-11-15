@@ -6,9 +6,9 @@
 use super::audio::{AudioCapture, AudioChunk};
 use super::capture::{Capture, Frame};
 use super::{LocalSink, Settings, thumbnail_from};
-use crate::convert::{PixelOrder, Raw, SourceMeta, downscale_rgba, to_yuv420_vec};
+use crate::convert::{Chroma, PixelOrder, Raw, SourceMeta, downscale_rgba, to_yuv420_vec};
 use crate::encode::{Backend, Config, Content, Encoder, Profile};
-use crate::{EncodedFrame, Error, Picture, Result, h264, rtp_ticks};
+use crate::{EncodedFrame, Error, Layout, Picture, Result, h264, rtp_ticks};
 use std::sync::{
     Arc, Mutex,
     atomic::{AtomicBool, AtomicU8, AtomicU32, AtomicU64, Ordering},
@@ -17,11 +17,9 @@ use std::sync::{
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
-/// The widest preview kept for the stream's uploaded thumbnail and local self-preview.
+/// The widest preview kept for the stream's uploaded thumbnail.
 pub const PREVIEW_WIDTH: u32 = 640;
 const PREVIEW_HEIGHT: u32 = 360;
-/// Self-preview renders into the UI at most 30 fps to avoid saturating GPUI with 1440p60 textures.
-const LOCAL_PREVIEW_INTERVAL: Duration = Duration::from_millis(33);
 /// A preview is only produced while someone is taking them.
 const PREVIEW_ACTIVE: Duration = Duration::from_secs(2);
 const PREVIEW_INTERVAL: Duration = Duration::from_millis(66);
@@ -159,9 +157,8 @@ impl Worker {
         self.state.keyframe.store(true, Ordering::Release);
     }
 
-    /// Hands every encoded picture to `sink` as well, the way the native engine feeds the sharer's own video sink: the
-    /// stream itself at its size and rate. The copy is made on another core while the hardware encodes, so it costs
-    /// the encoder nothing. `None` stops it.
+    /// Hands each admitted picture to the local sink at the encoder's size and cadence. The already converted YUV
+    /// planes are copied; the UI converts them on its worker and keeps only the newest frame. `None` stops it.
     pub fn set_local_sink(&self, sink: Option<LocalSink>) {
         *self.state.local.lock().unwrap_or_else(|e| e.into_inner()) = sink;
     }
@@ -348,7 +345,6 @@ fn run(
     let mut last_frame: Option<Frame> = None;
     let mut last_encoded = Instant::now();
     let mut last_preview = Instant::now() - PREVIEW_INTERVAL;
-    let mut last_local = Instant::now() - LOCAL_PREVIEW_INTERVAL;
     let mut initial_preview_sent = false;
     let mut keyframe_wait: Option<Instant> = None;
 
@@ -405,8 +401,7 @@ fn run(
         let taken = state.preview_taken.load(Ordering::Acquire);
         let active = !initial_preview_sent
             || (taken != 0
-                && micros(state.origin).saturating_sub(taken)
-                    < PREVIEW_ACTIVE.as_micros() as u64);
+                && micros(state.origin).saturating_sub(taken) < PREVIEW_ACTIVE.as_micros() as u64);
         let preview_due = active && last_preview.elapsed() >= PREVIEW_INTERVAL;
         if preview_due {
             last_preview = Instant::now();
@@ -475,8 +470,10 @@ fn run(
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .clone();
-        let local_due = local.is_some() && last_local.elapsed() >= LOCAL_PREVIEW_INTERVAL;
-        if local_due || preview_due {
+        if let Some(sink) = local {
+            publish_local(&sink, settings.width, settings.height, chroma, &yuv);
+        }
+        if preview_due {
             let raw = Raw {
                 width: frame_w as usize,
                 height: frame_h as usize,
@@ -485,21 +482,7 @@ fn run(
                 data: &frame.data,
             };
             if let Ok(downscaled) = downscale_rgba(raw, PREVIEW_WIDTH, PREVIEW_HEIGHT) {
-                if preview_due && local_due {
-                    last_local = Instant::now();
-                    *state.preview.lock().unwrap_or_else(|e| e.into_inner()) =
-                        Some(downscaled.clone());
-                    if let Some(sink) = local {
-                        sink(downscaled);
-                    }
-                } else if local_due {
-                    last_local = Instant::now();
-                    if let Some(sink) = local {
-                        sink(downscaled);
-                    }
-                } else {
-                    *state.preview.lock().unwrap_or_else(|e| e.into_inner()) = Some(downscaled);
-                }
+                *state.preview.lock().unwrap_or_else(|e| e.into_inner()) = Some(downscaled);
             }
         }
     }
@@ -545,9 +528,50 @@ pub(super) fn thumbnail(
     )
 }
 
+fn publish_local(sink: &LocalSink, width: u32, height: u32, chroma: Chroma, planes: &[u8]) {
+    sink(Picture {
+        width,
+        height,
+        layout: match chroma {
+            Chroma::Interleaved => Layout::Nv12,
+            Chroma::Planar => Layout::I420,
+        },
+        data: planes.to_vec(),
+    });
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn local_stream_keeps_full_size_planes_and_every_admitted_frame() {
+        for (chroma, layout) in [
+            (Chroma::Interleaved, Layout::Nv12),
+            (Chroma::Planar, Layout::I420),
+        ] {
+            let (width, height) = (1920, 1080);
+            let mut planes = vec![128; layout.len(width, height).unwrap()];
+            let received = Arc::new(Mutex::new(Vec::new()));
+            let seen = received.clone();
+            let sink: LocalSink = Arc::new(move |picture| {
+                assert_eq!(
+                    (picture.width, picture.height, picture.layout),
+                    (width, height, layout)
+                );
+                assert_eq!(picture.data.len(), layout.len(width, height).unwrap());
+                assert!(picture.data[1..].iter().all(|&value| value == 128));
+                seen.lock().unwrap().push(picture.data[0]);
+            });
+            let cadence = Cadence::new(60);
+            for frame in 0..60 {
+                assert!(cadence.admit(1 + u64::from(frame) * 16_667));
+                planes[0] = frame;
+                publish_local(&sink, width, height, chroma, &planes);
+            }
+            assert_eq!(*received.lock().unwrap(), (0..60).collect::<Vec<u8>>());
+        }
+    }
 
     /// Frames of a `hz` display for one second, through the gate of a `fps` share: how many are taken and the longest
     /// gap between two taken ones, in microseconds.

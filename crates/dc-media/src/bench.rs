@@ -67,7 +67,7 @@ fn bench_go_live_1440p60_picture_path() {
         "convert BGRA->NV12 {WIDTH}x{HEIGHT}: {:.2} ms per picture",
         per(started.elapsed(), PICTURES)
     );
-    // The sender's own tile: a preview cut down to 640 wide, on the encode thread.
+    // The uploaded thumbnail, still cut down to 640 wide on the encode thread.
     let started = Instant::now();
     for index in 0..30 {
         let raw = Raw {
@@ -81,6 +81,28 @@ fn bench_go_live_1440p60_picture_path() {
     }
     println!(
         "preview BGRA->640 wide RGBA: {:.2} ms per picture",
+        per(started.elapsed(), 30)
+    );
+    let started = Instant::now();
+    for _ in 0..PICTURES {
+        std::hint::black_box(nv12.clone());
+    }
+    println!(
+        "local full-size NV12 handoff: {:.2} ms per picture",
+        per(started.elapsed(), PICTURES)
+    );
+    let local = Picture {
+        width: WIDTH as u32,
+        height: HEIGHT as u32,
+        layout: Layout::Nv12,
+        data: nv12.clone(),
+    };
+    let started = Instant::now();
+    for _ in 0..30 {
+        std::hint::black_box(local.to_bgra().unwrap());
+    }
+    println!(
+        "local full-size NV12->BGRA UI worker: {:.2} ms per picture",
         per(started.elapsed(), 30)
     );
     let inputs: Vec<Vec<u8>> = sources
