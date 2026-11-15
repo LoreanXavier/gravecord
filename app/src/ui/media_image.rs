@@ -116,8 +116,22 @@ pub(super) fn image_url(base: &str, animated: bool, width: u32, height: u32) -> 
     let Ok(mut url) = reqwest::Url::parse(base) else {
         return base.to_owned();
     };
+    // A proxy URL may already describe a thumbnail. Replace its sizing parameters instead of sending two
+    // widths (the proxy can keep the first), while retaining the attachment's signed query.
+    let retained: Vec<(String, String)> = url
+        .query_pairs()
+        .filter(|(key, _)| {
+            !matches!(
+                key.as_ref(),
+                "width" | "height" | "size" | "quality" | "format"
+            )
+        })
+        .map(|(key, value)| (key.into_owned(), value.into_owned()))
+        .collect();
+    url.set_query(None);
     {
         let mut query = url.query_pairs_mut();
+        query.extend_pairs(retained);
         if !animated {
             query
                 .append_pair("format", "webp")
@@ -701,6 +715,37 @@ pub(super) fn should_play_media(setting: bool, reduced: bool, hovered: bool) -> 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn viewer_size_replaces_thumbnail_parameters_without_losing_signatures() {
+        let result = image_url(
+            "https://media.discordapp.net/attachments/a/b.png?ex=abc&hm=def&width=240&height=120&format=webp&quality=low",
+            false,
+            1920,
+            960,
+        );
+        let url = reqwest::Url::parse(&result).unwrap();
+        let pairs: Vec<_> = url.query_pairs().collect();
+        assert_eq!(pairs.iter().filter(|(key, _)| key == "width").count(), 1);
+        assert!(
+            pairs
+                .iter()
+                .any(|(key, value)| key == "width" && value == "1920")
+        );
+        assert!(
+            pairs
+                .iter()
+                .any(|(key, value)| key == "ex" && value == "abc")
+        );
+        assert!(
+            pairs
+                .iter()
+                .any(|(key, value)| key == "hm" && value == "def")
+        );
+        let animated = image_url(&result, true, 960, 480);
+        assert!(!animated.contains("format="));
+        assert!(!animated.contains("quality="));
+    }
 
     fn sample_attachment(filename: &str, flags: u64, proxy_url: &str) -> Attachment {
         let value = serde_json::json!({

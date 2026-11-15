@@ -776,6 +776,13 @@ impl Root {
     ) -> gpui::Stateful<gpui::Div> {
         let picture = self.images.get(&key).cloned();
         let (clicked, open, hovered) = (message.clone(), key.clone(), key.clone());
+        let media_hit = super::lightbox::items_of(message)
+            .into_iter()
+            .find(|item| item.key == key)
+            .map(|item| super::menu::Hit::Media {
+                url: item.url,
+                key: item.key,
+            });
         let (width, height) = (px(size.0), px(size.1));
         div()
             .id(SharedString::from(format!("picture-{key}")))
@@ -786,6 +793,14 @@ impl Root {
             .rounded(px(4.))
             .overflow_hidden()
             .bg(color("--background-base-low"))
+            .on_mouse_up(
+                MouseButton::Right,
+                cx.listener(move |this, event: &gpui::MouseUpEvent, _, _| {
+                    if let Some(hit) = media_hit.clone() {
+                        this.menu_hit = Some((event.position, hit));
+                    }
+                }),
+            )
             .when(playable, |this| {
                 this.cursor_pointer()
                     .on_hover(cx.listener(move |this, inside: &bool, _, cx| {
