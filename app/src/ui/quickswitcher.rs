@@ -1327,7 +1327,7 @@ impl Root {
         out
     }
 
-    fn switcher_frecency(&self) -> (HashMap<String, f64>, Vec<Id>) {
+    pub(super) fn switcher_frecency(&self) -> (HashMap<String, f64>, Vec<Id>) {
         let mut frecency = Frecency::new(Kind::Channel);
         let stored = self
             .fetched
@@ -1366,7 +1366,7 @@ impl Root {
         (scores, frequent_ids)
     }
 
-    fn compute_switcher_rows(&self, raw_query: &str) -> Vec<SwitcherRow> {
+    pub(super) fn compute_switcher_rows(&self, raw_query: &str) -> Vec<SwitcherRow> {
         let drafts = self.switcher_draft_channels();
         let (frecency_scores, frequent_ids) = self.switcher_frecency();
         let ctx = SwitcherContext {

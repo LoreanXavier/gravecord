@@ -1,0 +1,10 @@
+{
+  "golive-modal": { "class": "container_dvN-MP" },
+  "golive-game-channel-selector": { "class": "root_SkOY6k" },
+  "golive-game-search": { "class": "searchBar_SkOY6k" },
+  "golive-game-first-channel": { "class": "channelResult_SkOY6k" },
+  "golive-footer": { "class": "footer_oszuaw" },
+  "golive-footer-content": { "class": "footerContent_oszuaw" },
+  "golive-buttons": { "class": "rightButtonGroup_oszuaw" },
+  "golive-ribbon": { "class": "root_RmOtW7" }
+}

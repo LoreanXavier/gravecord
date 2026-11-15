@@ -513,7 +513,7 @@ impl Root {
     }
 
     /// Our user id and the voice session id of the call, which a stream connection reuses.
-    fn stream_identity(&self) -> Option<(u64, String)> {
+    pub(super) fn stream_identity(&self) -> Option<(u64, String)> {
         let me = self.stores.current_user.as_ref()?.id;
         let call = self.call.as_ref()?;
         // The voice state must be this connection's own: the account may be in the call from another device, and a

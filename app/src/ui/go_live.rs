@@ -8,12 +8,13 @@
 
 use super::video_tiles::render_image;
 use super::{Root, color, icon};
+use crate::parity::Parity;
 use crate::ui::motion::Posed as _;
 use dc_media::screen::{self, Resolution, Settings, Source, SourceId};
 use dc_state::premium::{Feature, PremiumType};
 use gpui::{
     AnyElement, Context, FontWeight, IntoElement, MouseDownEvent, RenderImage, SharedString,
-    deferred, div, prelude::*, px, relative, rgba, svg,
+    Window, deferred, div, prelude::*, px, relative, rgba, svg,
 };
 use serde_json::{Value, json};
 use std::cell::{Cell, RefCell};
@@ -30,6 +31,16 @@ const THUMB: (u32, u32) = (447, 251);
 const REFRESH: Duration = Duration::from_millis(1000);
 /// `GUILD_BOOSTING_PINK` (module 646514): the Nitro wheel beside the premium choices.
 const BOOSTING_PINK: u32 = 0xff73faff;
+
+fn nitro_ribbon_icon() -> Arc<gpui::Image> {
+    static IMAGE: std::sync::LazyLock<Arc<gpui::Image>> = std::sync::LazyLock::new(|| {
+        Arc::new(gpui::Image::from_bytes(
+            gpui::ImageFormat::Svg,
+            include_bytes!("../../assets/icons/golive_nitro_gradient.svg").to_vec(),
+        ))
+    });
+    IMAGE.clone()
+}
 /// `getArticleURL(0x53d41ade17)` of the empty Devices tab.
 const DEVICES_HELP: &str = "https://support.discord.com/hc/en-us/articles/360040816151";
 
@@ -512,6 +523,7 @@ struct Card {
 
 /// What the Go Live modal holds while it is open.
 pub(super) struct State {
+    pub game: Option<super::go_live_game::GameShare>,
     pub tab: Tab,
     pub prefs: Prefs,
     pub selected_device: Option<String>,
@@ -526,8 +538,9 @@ pub(super) struct State {
 }
 
 impl State {
-    fn new(generation: u64, account: Account) -> Self {
+    pub(super) fn new(generation: u64, account: Account) -> Self {
         Self {
+            game: None,
             tab: Tab::Applications,
             prefs: Prefs::load().for_modal(account),
             selected_device: None,
@@ -957,11 +970,15 @@ impl Root {
     }
 
     /// The modal over a dimmed window, and the streaming upsell over it when it is open.
-    pub(super) fn go_live_layer(&mut self, cx: &mut Context<Self>) -> Option<AnyElement> {
+    pub(super) fn go_live_layer(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Option<AnyElement> {
         let upsell = UPSELL
             .with(|upsell| upsell.get())
             .map(|_| self.stream_upsell(cx));
-        let modal = self.go_live_modal(cx);
+        let modal = self.go_live_modal(window, cx);
         match (modal, upsell) {
             (None, None) => None,
             (Some(one), None) | (None, Some(one)) => Some(one),
@@ -976,11 +993,13 @@ impl Root {
         }
     }
 
-    fn go_live_modal(&mut self, cx: &mut Context<Self>) -> Option<AnyElement> {
+    fn go_live_modal(&mut self, window: &mut Window, cx: &mut Context<Self>) -> Option<AnyElement> {
         let state = self.go_live.as_ref()?;
         let account = self.stream_account();
         let upsell = account.needs_hd_upsell();
         let (resolution, fps) = state.prefs.shown(account);
+        let is_game = state.game.is_some();
+        let choose_channel = state.game.as_ref().is_some_and(|game| game.choose_channel);
 
         let tab = |tab: Tab, label: &'static str, glyph: &'static str, cx: &mut Context<Root>| {
             let selected = state.tab == tab;
@@ -1131,7 +1150,8 @@ impl Root {
             .as_ref()
             .filter(|_| state.tab == Tab::Devices)
             .and_then(|id| devices.iter().find(|(known, _)| known == id))
-            .map(|(_, name)| name.clone());
+            .map(|(_, name)| name.clone())
+            .or_else(|| state.game.as_ref().map(|game| game.name.clone()));
         let bullet = || div().text_color(rgba(0x97979f1f)).child("\u{2022}");
         let mut detail_row = div()
             .flex()
@@ -1175,6 +1195,8 @@ impl Root {
 
         let pill_item = |label: &'static str, selected: bool, premium: bool| {
             div()
+                // Fixed SD/HD labels, measured in the pinned confirmation DOM.
+                .w(px(if label == "SD" { 49.234375 } else { 50.84375 }))
                 .h(px(32.))
                 .px(px(16.))
                 .rounded(px(8.))
@@ -1237,35 +1259,68 @@ impl Root {
             }))
             .child(icon("voice_view_gear", 20., "--text-strong"));
         // The Devices tab's "Stream", off until a device is chosen.
-        let stream_button = (state.tab == Tab::Devices).then(|| {
-            let ready = selected_device.is_some();
+        let stream_button =
+            (state.tab == Tab::Devices || (is_game && !choose_channel)).then(|| {
+                let ready = if let Some(game) = &state.game {
+                    game.source.is_some()
+                        && game.pending_channel.is_none()
+                        && self.game_stream_allowed()
+                } else {
+                    selected_device.is_some()
+                };
+                div()
+                    .id("golive-stream")
+                    .min_w(px(100.))
+                    .h(px(40.))
+                    .px(px(16.))
+                    .rounded(px(8.))
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .bg(color("--control-primary-background-default"))
+                    .text_color(color("--control-primary-text-default"))
+                    .text_size(px(16.))
+                    .line_height(px(20.))
+                    .font_weight(FontWeight(500.))
+                    .when(!ready, |this| this.opacity(0.5))
+                    .when(ready, |this| {
+                        this.cursor_pointer()
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                if this
+                                    .go_live
+                                    .as_ref()
+                                    .is_some_and(|state| state.game.is_some())
+                                {
+                                    this.game_share_start(cx);
+                                } else {
+                                    this.put_app_toast(
+                                        "This source can't be shared.".to_owned(),
+                                        false,
+                                        cx,
+                                    );
+                                }
+                            }))
+                    })
+                    .child(dc_intl::tr("Stream"))
+            });
+
+        let game_icon = state.game.as_ref().map(|game| {
+            let picture = self.overlay_game_icon(game.application_id.as_deref());
             div()
-                .id("golive-stream")
-                .h(px(40.))
-                .px(px(16.))
-                .rounded(px(8.))
+                .size(px(40.))
+                .flex_none()
                 .flex()
                 .items_center()
-                .bg(color("--control-primary-background-default"))
-                .text_color(color("--control-primary-text-default"))
-                .text_size(px(14.))
-                .line_height(px(18.))
-                .font_weight(FontWeight(500.))
-                .when(!ready, |this| this.opacity(0.5))
-                .when(ready, |this| {
-                    this.cursor_pointer()
-                        .on_click(cx.listener(|this, _, _, cx| {
-                            this.put_app_toast(
-                                "This source can't be shared.".to_owned(),
-                                false,
-                                cx,
-                            );
-                        }))
+                .justify_center()
+                .when_some(picture.clone(), |element, picture| {
+                    element.child(gpui::img(picture).size_full().rounded(px(8.)))
                 })
-                .child(dc_intl::tr("Stream"))
+                .when(picture.is_none(), |element| {
+                    element.child(icon("inventory_unknown_game", 40., "--text-strong"))
+                })
         });
-
         let footer = div()
+            .parity("golive-footer")
             .w_full()
             .flex_none()
             .bg(color("--background-surface-high"))
@@ -1273,6 +1328,7 @@ impl Root {
             .flex_col()
             .child(
                 div()
+                    .parity("golive-footer-content")
                     .px(px(24.))
                     .pt(px(16.))
                     .flex()
@@ -1281,29 +1337,41 @@ impl Root {
                     .gap(px(32.))
                     .child(
                         div()
+                            .parity("golive-summary")
                             .flex()
-                            .flex_col()
-                            .gap(px(2.))
+                            .items_center()
+                            .gap(px(16.))
                             .min_w(px(0.))
+                            .children(game_icon)
                             .child(
                                 div()
-                                    .text_size(px(16.))
-                                    .line_height(px(20.))
-                                    .font_weight(FontWeight(600.))
-                                    .text_color(color("--text-strong"))
-                                    .truncate()
-                                    .child(match &selected_device {
-                                        Some(name) => SharedString::from(name.clone()),
-                                        None => SharedString::from(state.prefs.preset.title()),
-                                    }),
-                            )
-                            .child(detail_row),
+                                    .flex()
+                                    .flex_col()
+                                    .gap(px(2.))
+                                    .min_w(px(0.))
+                                    .child(
+                                        div()
+                                            .text_size(px(16.))
+                                            .line_height(px(20.))
+                                            .font_weight(FontWeight(600.))
+                                            .text_color(color("--text-strong"))
+                                            .truncate()
+                                            .child(match &selected_device {
+                                                Some(name) => SharedString::from(name.clone()),
+                                                None => {
+                                                    SharedString::from(state.prefs.preset.title())
+                                                }
+                                            }),
+                                    )
+                                    .child(detail_row),
+                            ),
                     )
                     .child(
                         div()
                             .flex()
                             .items_center()
                             .gap(px(8.))
+                            .parity("golive-buttons")
                             .children(sd_hd)
                             .children(stream_button)
                             .child(gear),
@@ -1315,32 +1383,53 @@ impl Root {
             .options
             .then(|| self.go_live_options(state, account, upsell, cx));
 
-        let body: AnyElement = match shown {
-            Content::Loading => div()
-                .size_full()
-                .flex()
-                .items_center()
-                .justify_center()
-                .child(super::login::wandering_cubes())
-                .into_any_element(),
-            Content::NoDevices => self.go_live_no_devices(cx),
-            Content::Cards => div()
-                .w_full()
-                .flex()
-                .flex_wrap()
-                .content_start()
-                .gap_x(px(16.))
-                .gap_y(px(24.))
-                .children(cards)
-                .into_any_element(),
+        let body: AnyElement = if is_game {
+            self.game_share_body(window, cx)?
+        } else {
+            match shown {
+                Content::Loading => div()
+                    .size_full()
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .child(super::login::wandering_cubes())
+                    .into_any_element(),
+                Content::NoDevices => self.go_live_no_devices(cx),
+                Content::Cards => div()
+                    .w_full()
+                    .flex()
+                    .flex_wrap()
+                    .content_start()
+                    .gap_x(px(16.))
+                    .gap_y(px(24.))
+                    .children(cards)
+                    .into_any_element(),
+            }
+        };
+
+        let modal_width = if is_game {
+            960f32.min((f32::from(window.viewport_size().width) - 48.).max(0.))
+        } else {
+            960.
+        };
+        let modal_height = if is_game {
+            let desired = if choose_channel {
+                530.
+            } else {
+                (modal_width - 2.) * 9. / 16. + if upsell { 112. } else { 56. } + 26.
+            };
+            desired.min((f32::from(window.viewport_size().height) - 112.).max(0.))
+        } else {
+            608.
         };
 
         let modal = div()
             .id("golive-modal")
+            .parity_with_border("golive-modal", 1.)
             .occlude()
             .relative()
-            .w(px(960.))
-            .h(px(608.))
+            .w(px(modal_width))
+            .h(px(modal_height))
             .pt(px(8.))
             .pb(px(16.))
             .rounded(px(12.))
@@ -1349,22 +1438,25 @@ impl Root {
             .bg(color("--background-surface-high"))
             .flex()
             .flex_col()
-            .child(
-                div()
-                    .h(px(72.))
-                    .flex_none()
-                    .px(px(24.))
-                    .py(px(16.))
-                    .child(tabs),
-            )
+            .when(!is_game, |this| {
+                this.child(
+                    div()
+                        .h(px(72.))
+                        .flex_none()
+                        .px(px(24.))
+                        .py(px(16.))
+                        .child(tabs),
+                )
+            })
             .child(
                 div()
                     .id("golive-content")
                     .flex_1()
                     .min_h(px(0.))
-                    .overflow_y_scroll()
-                    .px(px(24.))
-                    .py(px(8.))
+                    .when(!is_game, |this| {
+                        this.overflow_y_scroll().px(px(24.)).py(px(8.))
+                    })
+                    .when(choose_channel, |this| this.px(px(16.)).pt(px(16.)))
                     .child(body),
             )
             .child(footer)
@@ -1462,7 +1554,9 @@ impl Root {
         } = card;
         let hover_id = index;
         div()
-            .id(SharedString::from(format!("golive-card-{id_prefix}-{index}")))
+            .id(SharedString::from(format!(
+                "golive-card-{id_prefix}-{index}"
+            )))
             .w(px(439.))
             .flex()
             .flex_col()
@@ -1580,6 +1674,7 @@ impl Root {
             .map(|(text, _)| text.as_str())
             .collect();
         div()
+            .parity("golive-ribbon")
             .mx(px(16.))
             .mt(px(16.))
             .h(px(40.))
@@ -1628,7 +1723,7 @@ impl Root {
                     .items_center()
                     .gap(px(4.))
                     .child(icon("golive_lock", 12., "--white"))
-                    .child(lead)
+                    .child(lead.trim_end().to_owned())
                     .child(
                         div()
                             .id("golive-nitro-link")
@@ -1675,7 +1770,7 @@ impl Root {
                                 this.close_go_live(cx);
                                 this.open_purchase(false, cx);
                             }))
-                            .child(icon("golive_nitro", 16., "--brand-500"))
+                            .child(gpui::img(nitro_ribbon_icon()).size(px(16.)))
                             .child(dc_intl::tr("Get Nitro")),
                     ),
             )
@@ -1833,7 +1928,12 @@ impl Root {
                                     "stream-option-resolution-{}",
                                     resolution.height()
                                 )),
-                                if option_shows_premium(account, state.prefs.preset, resolution, fps) {
+                                if option_shows_premium(
+                                    account,
+                                    state.prefs.preset,
+                                    resolution,
+                                    fps,
+                                ) {
                                     premium_label(label)
                                 } else {
                                     div().child(label).into_any_element()
@@ -1868,7 +1968,12 @@ impl Root {
                         items.push(
                             radio_row(
                                 SharedString::from(format!("stream-option-frame-rate-{fps}")),
-                                if option_shows_premium(account, state.prefs.preset, resolution, fps) {
+                                if option_shows_premium(
+                                    account,
+                                    state.prefs.preset,
+                                    resolution,
+                                    fps,
+                                ) {
                                     premium_label(label)
                                 } else {
                                     div().child(label).into_any_element()
@@ -2108,6 +2213,32 @@ impl Root {
     #[cfg(feature = "capture")]
     pub(crate) fn script_go_live(&mut self, words: &[&str], cx: &mut Context<Self>) -> String {
         match words {
+            ["connected"] => {
+                if !crate::inert::on() {
+                    return "simulated connection requires inert capture".into();
+                }
+                let pending = self.go_live.as_ref().and_then(|state| state.game.as_ref())
+                    .and_then(|game| game.pending_channel);
+                let Some((guild, channel)) = pending.filter(|&(guild, channel)|
+                    (guild, channel) == (1_568_692_564_637_524_109, 1_568_692_565_136_375_901)
+                    || (guild, channel) == (0, 1_568_693_333_864_480_939)) else {
+                    return "no pending game share in an allowed fixture channel".into();
+                };
+                if !self.call.as_ref().is_some_and(|call| call.guild == guild && call.channel == channel) {
+                    return "pending game share did not join its target".into();
+                }
+                let Some(me) = self.stores.current_user.as_ref().map(|user| user.id) else {
+                    return "no test user".into();
+                };
+                self.stores.dispatch("VOICE_STATE_UPDATE", &json!({
+                    "guild_id": (guild != 0).then(|| guild.to_string()), "channel_id": channel.to_string(),
+                    "user_id": me.to_string(), "session_id": self.stores.session_id.clone().unwrap_or_else(|| "harness".into()),
+                    "self_mute": true, "self_deaf": false, "self_video": false,
+                }));
+                self.call.as_mut().unwrap().connected = true;
+                self.game_share_pending(cx);
+                "simulated fixture connection; network remains inert".into()
+            }
             ["open"] => {
                 self.open_go_live(cx);
                 if self.go_live.is_some() {
@@ -2141,8 +2272,21 @@ impl Root {
                     None => "closed".to_owned(),
                 };
                 let thumbs = LISTING.with(|listing| listing.borrow().thumbs.len());
+                let game = self
+                    .go_live
+                    .as_ref()
+                    .and_then(|state| state.game.as_ref())
+                    .map(|game| {
+                        format!(
+                            "choose_channel={} source={:?} preview={} pending={:?}",
+                            game.choose_channel,
+                            game.source.as_ref().map(|source| source.id),
+                            game.preview.is_some(),
+                            game.pending_channel
+                        )
+                    });
                 format!(
-                    "{modal}; thumbs={thumbs}; upsell={:?}; stored={:?}/{:?}/{}/sound={}; focus={:?}; stream={:?}",
+                    "{modal}; game={game:?}; thumbs={thumbs}; upsell={:?}; stored={:?}/{:?}/{}/sound={}; focus={:?}; stream={:?}",
                     UPSELL.with(|upsell| upsell.get()),
                     stored.preset,
                     stored.resolution,
@@ -2152,7 +2296,7 @@ impl Root {
                     self.own_started().map(|started| started.quality),
                 )
             }
-            _ => "usage: golive open | golive close | golive state".to_owned(),
+            _ => "usage: golive open | golive close | golive state | golive connected (inert fixture only)".to_owned(),
         }
     }
 }
@@ -2736,16 +2880,56 @@ mod tests {
         };
 
         // Free user: 720p/30fps has no Nitro wheel; 1080p, 1440p, Source, and 60fps show it.
-        assert!(!option_shows_premium(free, Preset::Custom, Resolution::P720, 30));
-        assert!(option_shows_premium(free, Preset::Custom, Resolution::P720, 60));
-        assert!(option_shows_premium(free, Preset::Custom, Resolution::P1080, 30));
-        assert!(option_shows_premium(free, Preset::Custom, Resolution::P1440, 30));
-        assert!(option_shows_premium(free, Preset::Custom, Resolution::Source, 30));
+        assert!(!option_shows_premium(
+            free,
+            Preset::Custom,
+            Resolution::P720,
+            30
+        ));
+        assert!(option_shows_premium(
+            free,
+            Preset::Custom,
+            Resolution::P720,
+            60
+        ));
+        assert!(option_shows_premium(
+            free,
+            Preset::Custom,
+            Resolution::P1080,
+            30
+        ));
+        assert!(option_shows_premium(
+            free,
+            Preset::Custom,
+            Resolution::P1440,
+            30
+        ));
+        assert!(option_shows_premium(
+            free,
+            Preset::Custom,
+            Resolution::Source,
+            30
+        ));
 
         // Nitro Basic does not grant StreamMidQuality or StreamHighQuality.
-        assert!(!option_shows_premium(basic, Preset::Custom, Resolution::P720, 30));
-        assert!(option_shows_premium(basic, Preset::Custom, Resolution::P720, 60));
-        assert!(option_shows_premium(basic, Preset::Custom, Resolution::P1080, 30));
+        assert!(!option_shows_premium(
+            basic,
+            Preset::Custom,
+            Resolution::P720,
+            30
+        ));
+        assert!(option_shows_premium(
+            basic,
+            Preset::Custom,
+            Resolution::P720,
+            60
+        ));
+        assert!(option_shows_premium(
+            basic,
+            Preset::Custom,
+            Resolution::P1080,
+            30
+        ));
 
         // Nitro grants Mid and High streaming quality everywhere: no Nitro wheel on any option.
         for resolution in [
@@ -2755,15 +2939,35 @@ mod tests {
             Resolution::Source,
         ] {
             for fps in [15, 30, 60] {
-                assert!(!option_shows_premium(nitro, Preset::Custom, resolution, fps));
+                assert!(!option_shows_premium(
+                    nitro,
+                    Preset::Custom,
+                    resolution,
+                    fps
+                ));
             }
         }
 
         // Guild Boost Tier 2/3 unlocks up to 1440p 60fps for free users, leaving only Source locked.
         for boosted in [boosted_t2, boosted_t3] {
-            assert!(!option_shows_premium(boosted, Preset::Custom, Resolution::P1080, 60));
-            assert!(!option_shows_premium(boosted, Preset::Custom, Resolution::P1440, 60));
-            assert!(option_shows_premium(boosted, Preset::Custom, Resolution::Source, 30));
+            assert!(!option_shows_premium(
+                boosted,
+                Preset::Custom,
+                Resolution::P1080,
+                60
+            ));
+            assert!(!option_shows_premium(
+                boosted,
+                Preset::Custom,
+                Resolution::P1440,
+                60
+            ));
+            assert!(option_shows_premium(
+                boosted,
+                Preset::Custom,
+                Resolution::Source,
+                30
+            ));
         }
     }
 }

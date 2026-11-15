@@ -473,6 +473,8 @@ pub struct Guild {
     pub lockdown_duration_hours: Option<u64>,
     pub premium_tier: u64,
     pub premium_subscription_count: u64,
+    /// Stage video is available only when the guild's advertised capacity is positive (module 279250).
+    pub max_stage_video_channel_users: u64,
     /// `premium_progress_bar_enabled`: the boost progress bar in the channel list.
     pub premium_progress_bar_enabled: bool,
     pub emojis: Vec<GuildEmoji>,
@@ -855,6 +857,10 @@ impl Guild {
                 .as_u64()
                 .or(properties["premium_subscription_count"].as_u64())
                 .unwrap_or(0),
+            max_stage_video_channel_users: value["max_stage_video_channel_users"]
+                .as_u64()
+                .or(properties["max_stage_video_channel_users"].as_u64())
+                .unwrap_or(0),
             premium_progress_bar_enabled: value["premium_progress_bar_enabled"]
                 .as_bool()
                 .or(properties["premium_progress_bar_enabled"].as_bool())
@@ -894,6 +900,9 @@ impl Guild {
         self.premium_subscription_count = value["premium_subscription_count"]
             .as_u64()
             .unwrap_or(self.premium_subscription_count);
+        self.max_stage_video_channel_users = value["max_stage_video_channel_users"]
+            .as_u64()
+            .unwrap_or(self.max_stage_video_channel_users);
         self.premium_progress_bar_enabled = value["premium_progress_bar_enabled"]
             .as_bool()
             .unwrap_or(self.premium_progress_bar_enabled);
@@ -4757,6 +4766,7 @@ mod tests {
                 .collect(),
             premium_tier: 0,
             premium_subscription_count: 0,
+            max_stage_video_channel_users: 0,
             premium_progress_bar_enabled: false,
             emojis: Vec::new(),
             threads: Vec::new(),

@@ -90,6 +90,7 @@ mod games_spec;
 mod gateway_screens;
 mod gifs;
 mod go_live;
+mod go_live_game;
 mod group_dm;
 mod group_manage;
 mod guild_menu;
@@ -3653,6 +3654,13 @@ impl Root {
     #[cfg(feature = "capture")]
     pub fn open_editors(&self) -> Vec<Entity<Editor>> {
         let mut list: Vec<Entity<Editor>> = Vec::new();
+        list.extend(
+            self.go_live
+                .as_ref()
+                .and_then(|state| state.game.as_ref())
+                .filter(|game| game.choose_channel)
+                .map(|game| game.search.clone()),
+        );
         list.extend(self.inventory_reply_editor());
         list.extend(settings::client_theme::editor_fields());
         if self.channel_browser_open {
@@ -10261,7 +10269,7 @@ impl Render for Root {
             .children(self.poll_modals(cx))
             .children(self.audio_menu_layer(cx))
             .children(self.voice_panel_layer(window, cx))
-            .children(self.go_live_layer(cx))
+            .children(self.go_live_layer(window, cx))
             .children(self.camera_error_modal(cx))
             .children(self.incoming_call_layer(window, cx))
             .children(self.search_filters_modal(cx))

@@ -86,6 +86,7 @@ impl Root {
         }
         if matches!(name, "VOICE_STATE_UPDATE" | "CALL_CREATE" | "CALL_DELETE") {
             self.stream_pending_watch(cx);
+            self.game_share_pending(cx);
         }
         if matches!(name, "READY" | "RESUMED")
             && self.guild.is_none()

@@ -40,6 +40,8 @@ pub const REQUEST_TO_SPEAK: u64 = 1 << 32;
 /// Every bit: what the owner and administrators hold (`R`).
 /// `xBc.CONNECT`, `xBc.MOVE_MEMBERS` (module 375389).
 pub const CONNECT: u64 = 1 << 20;
+/// `STREAM` (module 818348, bit 9).
+pub const STREAM: u64 = 1 << 9;
 pub const MOVE_MEMBERS: u64 = 1 << 24;
 /// `MUTE_MEMBERS` and `DEAFEN_MEMBERS` (module 375389, bits 22 and 23).
 pub const MUTE_MEMBERS: u64 = 1 << 22;
@@ -213,6 +215,24 @@ pub fn can_in_channel(guild: &Guild, channel: &Channel, me: Me, permission: u64)
     channel_permissions(guild, channel, me) & permission == permission
 }
 
+/// Module 279250 `vz`: guild streaming requires Stream, a non-AFK channel and Stage video capacity.
+/// The channel chooser also requires basic Connect/View access; an existing call checks Stream only.
+pub fn can_stream_in_channel(
+    guild: &Guild,
+    channel: &Channel,
+    me: Me,
+    afk_channel: Option<Id>,
+    require_connect: bool,
+) -> bool {
+    matches!(
+        channel.kind,
+        crate::ChannelKind::Voice | crate::ChannelKind::Other(13)
+    ) && (channel.kind != crate::ChannelKind::Other(13) || guild.max_stage_video_channel_users > 0)
+        && afk_channel != Some(channel.id)
+        && can_in_channel(guild, channel, me, STREAM)
+        && (!require_connect || can_in_channel(guild, channel, me, CONNECT | VIEW_CHANNEL))
+}
+
 /// `can(permission, guild)`.
 pub fn can_in_guild(guild: &Guild, me: Me, permission: u64) -> bool {
     guild_permissions(guild, me) & permission == permission
@@ -259,6 +279,66 @@ pub fn pending_gate(guild: &Guild) -> bool {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn game_stream_destinations_require_access_and_exclude_afk_and_unavailable_stages() {
+        let mut guild = guild();
+        let me = Me {
+            id: 5,
+            mfa_enabled: false,
+        };
+        guild
+            .role_permissions
+            .insert(guild.id, VIEW_CHANNEL | CONNECT | STREAM);
+        let mut channel = guild.channels[0].clone();
+        channel.kind = crate::ChannelKind::Voice;
+        assert!(can_stream_in_channel(&guild, &channel, me, None, true));
+        assert!(!can_stream_in_channel(
+            &guild,
+            &channel,
+            me,
+            Some(channel.id),
+            true
+        ));
+        guild.my_pending = true;
+        assert!(!can_stream_in_channel(&guild, &channel, me, None, true));
+        guild.my_pending = false;
+        guild.role_permissions.insert(guild.id, STREAM);
+        assert!(!can_stream_in_channel(&guild, &channel, me, None, true));
+        assert!(can_stream_in_channel(&guild, &channel, me, None, false));
+        guild
+            .role_permissions
+            .insert(guild.id, VIEW_CHANNEL | CONNECT);
+        assert!(!can_stream_in_channel(&guild, &channel, me, None, true));
+        guild
+            .role_permissions
+            .insert(guild.id, VIEW_CHANNEL | CONNECT | STREAM);
+        channel.kind = crate::ChannelKind::Other(13);
+        assert!(!can_stream_in_channel(&guild, &channel, me, None, true));
+        guild.max_stage_video_channel_users = 50;
+        assert!(can_stream_in_channel(&guild, &channel, me, None, true));
+        channel.kind = crate::ChannelKind::Text;
+        assert!(!can_stream_in_channel(&guild, &channel, me, None, true));
+    }
+
+    #[test]
+    fn stage_stream_capacity_loads_and_follows_partial_guild_updates() {
+        let mut stores = crate::Stores::default();
+        stores.dispatch(
+            "READY",
+            &json!({"guilds": [{"id": "100", "channels": [], "properties": {
+                "name": "fixture", "max_stage_video_channel_users": 50
+            }}]}),
+        );
+        assert_eq!(stores.guild(100).unwrap().max_stage_video_channel_users, 50);
+        stores.dispatch("GUILD_UPDATE", &json!({"id": "100", "name": "renamed"}));
+        assert_eq!(stores.guild(100).unwrap().max_stage_video_channel_users, 50);
+        stores.dispatch(
+            "GUILD_UPDATE",
+            &json!({"id": "100", "max_stage_video_channel_users": 0}),
+        );
+        assert_eq!(stores.guild(100).unwrap().max_stage_video_channel_users, 0);
+    }
 
     fn guild() -> Guild {
         let mut stores = crate::Stores::default();

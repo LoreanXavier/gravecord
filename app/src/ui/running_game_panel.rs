@@ -6,7 +6,7 @@ use dc_state::running_games::Game;
 use gpui::{AnyElement, Context, FontWeight, div, img, prelude::*, px, svg};
 
 impl Root {
-    fn panel_running_game(&self) -> Option<Game> {
+    pub(super) fn panel_running_game(&self) -> Option<Game> {
         // A whole-display stream uses the stream-metadata card instead of the game (483364 `eh`).
         if self
             .own_started()
@@ -28,6 +28,69 @@ impl Root {
 
     pub(super) fn running_game_panel(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
         let game = self.panel_running_game()?;
+        let streaming = self.own_stream_active();
+        let enabled = streaming || self.game_stream_allowed();
+        let label = if streaming {
+            dc_intl::t!("S5anIc").to_owned()
+        } else if !enabled {
+            dc_intl::t!("uQn9B8").to_owned()
+        } else {
+            dc_intl::format(
+                "AB5gTy",
+                &[("game", game.name.clone().unwrap_or_default().into())],
+            )
+        };
+        let button = div()
+            .id("running-game-stream")
+            .parity("running-game-stream")
+            .size(px(32.))
+            .rounded(px(8.))
+            .text_color(color("--icon-subtle"))
+            .flex()
+            .items_center()
+            .justify_center()
+            .when(!enabled, |element| element.opacity(0.4))
+            .when(enabled, |element| {
+                element
+                    .cursor_pointer()
+                    .hover(|style| {
+                        style
+                            .bg(color("--control-secondary-background-hover"))
+                            .text_color(color("--interactive-text-hover"))
+                    })
+                    .on_click(cx.listener(|root, _, window, cx| {
+                        if root.own_stream_active() {
+                            root.stream_stop(cx);
+                        } else {
+                            root.open_game_share(window, cx);
+                        }
+                    }))
+            })
+            .child(
+                svg()
+                    .path(if streaming {
+                        "icons/voice_panel_stop_stream.svg"
+                    } else {
+                        "icons/overlay_screen_arrow.svg"
+                    })
+                    .size(px(20.)),
+            );
+        let handle = self.stop("tool-running-game-stream", cx);
+        let button = super::keyboard::focusable(
+            button,
+            &handle,
+            enabled && self.modal_open() == 0,
+            self.keyboard_mode(),
+        );
+        let button = self.with_tip(
+            "running-game-stream",
+            super::tooltip::Tip::body(
+                super::tooltip::Body::Text(label.into()),
+                super::tooltip::Side::Top,
+            ),
+            button,
+            cx,
+        );
         let picture = self.overlay_game_icon(game.id.as_deref());
         if let Some(id) = game.id {
             let root = cx.entity().downgrade();
@@ -107,6 +170,7 @@ impl Root {
                         )
                         .children(hint),
                 )
+                .child(div().ml(px(4.)).flex_none().child(button))
                 .into_any_element(),
         )
     }

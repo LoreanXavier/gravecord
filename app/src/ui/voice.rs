@@ -599,6 +599,7 @@ impl Root {
                 self.rtc_step();
                 super::voice_panel::rtc_debug::ingest_call_rtc_stats(self, cx);
                 self.sync_ptt_hook();
+                self.game_share_pending(cx);
             }
             dc_voice::Event::SpeakingChanged { user_id, speaking } => {
                 // `SPEAKING` of the account itself is activity to `IdleStore` (module 885576).
@@ -728,8 +729,7 @@ impl Root {
                     if attempts >= MAX_FAILED_RECONNECTS {
                         self.end_voice(true, cx);
                     } else {
-                        let delay =
-                            std::time::Duration::from_millis(1000 << u32::from(attempts));
+                        let delay = std::time::Duration::from_millis(1000 << u32::from(attempts));
                         cx.spawn(async move |this, cx| {
                             cx.background_executor().timer(delay).await;
                             let _ = this.update(cx, |root, cx| {
@@ -1192,95 +1192,96 @@ impl Root {
             )
             .into_any_element()
         };
-        let stream_row = own_stream.as_ref().map(|info| {
-            let name = info.name.clone().unwrap_or_default();
-            let stop = self.with_tip(
-                "voice-stream-stop-tip",
-                Tip::text(dc_intl::tr("Stop Streaming"), Side::Top),
-                div()
-                    .id("voice-stream-stop")
-                    .size(px(32.))
-                    .rounded(px(8.))
-                    .flex()
-                    .items_center()
-                    .justify_center()
-                    .cursor_pointer()
-                    .hover(|style| style.bg(color("--interactive-background-hover")))
-                    .on_click(cx.listener(|this, _, _, cx| this.stream_stop(cx)))
-                    .child(super::icon(
-                        "voice_stream_stop",
-                        20.,
-                        "--interactive-text-default",
-                    )),
-                cx,
-            );
-            div()
-                .ml(px(-1.))
-                .h(px(57.))
-                .px(px(12.))
-                .py(px(12.))
-                .flex()
-                .items_center()
-                .gap(px(8.))
-                .bg(color("--background-surface-high"))
-                .border_b_1()
-                .border_color(color("--background-mod-subtle"))
-                .child(
+        // Module 483364 chooses the game card before stream metadata; they are one panel.
+        let stream_row =
+            own_stream
+                .as_ref()
+                .filter(|_| self.panel_running_game().is_none())
+                .map(|info| {
+                    let name = info.name.clone().unwrap_or_default();
+                    let stop = self.with_tip(
+                        "voice-stream-stop-tip",
+                        Tip::text(dc_intl::tr("Stop Streaming"), Side::Top),
+                        div()
+                            .id("voice-stream-stop")
+                            .size(px(32.))
+                            .rounded(px(8.))
+                            .flex()
+                            .items_center()
+                            .justify_center()
+                            .cursor_pointer()
+                            .hover(|style| style.bg(color("--interactive-background-hover")))
+                            .on_click(cx.listener(|this, _, _, cx| this.stream_stop(cx)))
+                            .child(super::icon(
+                                "voice_stream_stop",
+                                20.,
+                                "--interactive-text-default",
+                            )),
+                        cx,
+                    );
                     div()
-                        .relative()
-                        .size(px(32.))
-                        .flex_none()
-                        // `icon_Yjv1d0`: the source's icon, or its first letter on a colour taken from the name.
-                        .child(match info.icon.clone() {
-                            Some(image) => {
-                                img(image).size(px(32.)).rounded(px(4.)).into_any_element()
-                            }
-                            None => div()
-                                .size(px(32.))
-                                .rounded(px(4.))
-                                .flex()
-                                .items_start()
-                                .justify_center()
-                                .bg(gpui::rgb(source_color(&name)))
-                                .text_size(px(16.))
-                                .line_height(px(34.))
-                                .font_weight(FontWeight::BOLD)
-                                .text_color(color("--white"))
-                                .child(source_letter(&name))
-                                .into_any_element(),
-                        })
-                        // `svg-mask-status-screenshare`: the badge's corner is cut out of the icon.
+                        .ml(px(-1.))
+                        .h(px(57.))
+                        .px(px(12.))
+                        .py(px(12.))
+                        .flex()
+                        .items_center()
+                        .gap(px(8.))
+                        .bg(color("--background-surface-high"))
+                        .border_b_1()
+                        .border_color(color("--background-mod-subtle"))
                         .child(
                             div()
-                                .absolute()
-                                .left(px(16.))
-                                .top(px(19.))
-                                .w(px(16.))
-                                .h(px(13.))
-                                .rounded_tl(px(4.))
-                                .bg(color("--background-surface-high")),
+                                .relative()
+                                .size(px(32.))
+                                .flex_none()
+                                // `icon_Yjv1d0`: the source's icon, or its first letter on a colour taken from the name.
+                                .child(match info.icon.clone() {
+                                    Some(image) => {
+                                        img(image).size(px(32.)).rounded(px(4.)).into_any_element()
+                                    }
+                                    None => div()
+                                        .size(px(32.))
+                                        .rounded(px(4.))
+                                        .flex()
+                                        .items_start()
+                                        .justify_center()
+                                        .bg(gpui::rgb(source_color(&name)))
+                                        .text_size(px(16.))
+                                        .line_height(px(34.))
+                                        .font_weight(FontWeight::BOLD)
+                                        .text_color(color("--white"))
+                                        .child(source_letter(&name))
+                                        .into_any_element(),
+                                })
+                                // `svg-mask-status-screenshare`: the badge's corner is cut out of the icon.
+                                .child(
+                                    div()
+                                        .absolute()
+                                        .left(px(16.))
+                                        .top(px(19.))
+                                        .w(px(16.))
+                                        .h(px(13.))
+                                        .rounded_tl(px(4.))
+                                        .bg(color("--background-surface-high")),
+                                )
+                                .child(div().absolute().left(px(19.)).top(px(20.)).child(
+                                    super::icon("voice_member_camera", 14., "--text-strong"),
+                                )),
                         )
                         .child(
                             div()
-                                .absolute()
-                                .left(px(19.))
-                                .top(px(20.))
-                                .child(super::icon("voice_member_camera", 14., "--text-strong")),
-                        ),
-                )
-                .child(
-                    div()
-                        .flex_1()
-                        .min_w(px(0.))
-                        .truncate()
-                        .text_size(px(16.))
-                        .line_height(px(18.))
-                        .font_weight(FontWeight(500.))
-                        .text_color(color("--text-strong"))
-                        .child(name),
-                )
-                .child(stop)
-        });
+                                .flex_1()
+                                .min_w(px(0.))
+                                .truncate()
+                                .text_size(px(16.))
+                                .line_height(px(18.))
+                                .font_weight(FontWeight(500.))
+                                .text_color(color("--text-strong"))
+                                .child(name),
+                        )
+                        .child(stop)
+                });
         Some(
             div()
                 .flex()
