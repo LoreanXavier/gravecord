@@ -661,6 +661,13 @@ impl Root {
         const FIXTURE_GUILD: u64 = 1_568_692_564_637_524_109;
         const FIXTURE_VOICE: u64 = 1_568_692_565_136_375_901;
         match words {
+            ["ptt-mode", value @ ("on" | "off")] => {
+                if self.kb_push_to_talk() != (*value == "on") {
+                    self.kb_toggle_voice_mode();
+                }
+                cx.notify();
+                format!("push-to-talk mode={}", self.kb_push_to_talk())
+            }
             ["ptt-event", value @ ("on" | "off")] => {
                 dc_voice::prefs().processing.set_push_to_talk_held(*value == "on");
                 self.ptt_held_changed(*value == "on");

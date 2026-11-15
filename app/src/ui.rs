@@ -5165,6 +5165,12 @@ impl Root {
         };
         // Module 993382 draws `useMicrophoneLottie(muted ? "unmute" : "mute")` and
         // `useDeafenLottie(deafened ? "undeafen" : "deafen")` (348858), the hover events on the button.
+        let ptt_indicator = self.call.is_some() && self.kb_push_to_talk();
+        let self_speaking = self
+            .stores
+            .current_user
+            .as_ref()
+            .is_some_and(|me| self.speaking.contains(&me.id));
         let toggle =
             |anim: lottie_icon::Anim, state: &'static str, muted: bool, parent: &'static str| {
                 let lottie = format!("user-panel-{parent}");
@@ -5175,11 +5181,12 @@ impl Root {
                     parent,
                 )
                 .size(px(32.))
+                .relative()
                 .rounded_l(px(8.))
                 .flex()
                 .items_center()
                 .justify_center()
-                .child(lottie_icon::icon(
+                .child(lottie_icon::icon_with_panel_mask(
                     &lottie,
                     anim,
                     Some(state),
@@ -5189,7 +5196,28 @@ impl Root {
                         (false, true) => "--interactive-text-hover",
                         (false, false) => "--interactive-text-default",
                     }),
+                    anim == lottie_icon::Anim::Microphone && ptt_indicator,
                 ))
+                .when(
+                    anim == lottie_icon::Anim::Microphone && ptt_indicator,
+                    |button| {
+                        button.child(
+                            div()
+                                .parity("user-panel-ptt-indicator")
+                                .absolute()
+                                .bottom(px(7.))
+                                .right(px(7.))
+                                .size(px(8.))
+                                .rounded_full()
+                                .border_2()
+                                .border_color(color(if self_speaking {
+                                    "--status-positive"
+                                } else {
+                                    "--status-danger"
+                                })),
+                        )
+                    },
+                )
             };
         let chevron = |muted: bool, side: audio_menu::Side| {
             let (probe, parent) = match side {

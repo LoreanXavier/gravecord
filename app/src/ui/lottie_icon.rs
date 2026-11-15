@@ -512,11 +512,33 @@ fn channel(value: f32) -> u8 {
 }
 
 /// The mask in `tint`: straight-alpha BGRA, the layout the atlas takes.
-fn tinted(mask: &Mask, tint: [u8; 4]) -> Arc<RenderImage> {
+fn tinted(mask: &Mask, tint: [u8; 4], panel: bool) -> Arc<RenderImage> {
     let [r, g, b, a] = tint;
+    // 573435 `svg-mask-panel-button`: subtract a circle at (.75, .75), radius .25.
+    let cutout = panel
+        .then(|| {
+            let mut cutout = tiny_skia::Mask::new(mask.width, mask.height)?;
+            let path = tiny_skia::PathBuilder::from_circle(
+                mask.width as f32 * 0.75,
+                mask.height as f32 * 0.75,
+                mask.width as f32 * 0.25,
+            )?;
+            cutout.fill_path(
+                &path,
+                tiny_skia::FillRule::Winding,
+                true,
+                tiny_skia::Transform::identity(),
+            );
+            Some(cutout)
+        })
+        .flatten();
     let mut pixels = Vec::with_capacity(mask.alpha.len() * 4);
-    for coverage in &mask.alpha {
-        let alpha = (u16::from(*coverage) * u16::from(a) + 127) / 255;
+    for (index, coverage) in mask.alpha.iter().enumerate() {
+        let remaining = cutout
+            .as_ref()
+            .map_or(255, |cutout| 255 - cutout.data()[index]);
+        let coverage = (u16::from(*coverage) * u16::from(remaining) + 127) / 255;
+        let alpha = (coverage * u16::from(a) + 127) / 255;
         pixels.extend_from_slice(&[b, g, r, alpha as u8]);
     }
     let buffer = image::RgbaImage::from_raw(mask.width, mask.height, pixels)
@@ -530,7 +552,7 @@ const MASK_BUDGET: usize = 4 * 1024 * 1024;
 const IMAGE_LIMIT: usize = 96;
 
 type MaskKey = (Anim, u32, u32);
-type ImageKey = (Anim, u32, u32, [u8; 4]);
+type ImageKey = (Anim, u32, u32, [u8; 4], bool);
 
 #[derive(Default)]
 struct Store {
@@ -583,10 +605,11 @@ impl Store {
         frame: u32,
         side: u32,
         tint: [u8; 4],
+        panel: bool,
     ) -> Option<Arc<RenderImage>> {
         self.tick += 1;
         let tick = self.tick;
-        let key = (anim, side, frame, tint);
+        let key = (anim, side, frame, tint, panel);
         if let Some((image, used)) = self.images.get_mut(&key) {
             *used = tick;
             return Some(image.clone());
@@ -615,7 +638,7 @@ impl Store {
         }
         let mask = self.masks.get_mut(&mask_key)?;
         mask.used = tick;
-        let image = tinted(mask, tint);
+        let image = tinted(mask, tint, panel);
         self.images.insert(key, (image.clone(), tick));
         while self.images.len() > IMAGE_LIMIT {
             let oldest = self
@@ -654,6 +677,17 @@ pub(crate) fn icon(
     size: f32,
     tint: Rgba,
 ) -> AnyElement {
+    icon_with_panel_mask(id, anim, state, size, tint, false)
+}
+
+pub(crate) fn icon_with_panel_mask(
+    id: &str,
+    anim: Anim,
+    state: Option<&'static str>,
+    size: f32,
+    tint: Rgba,
+    panel: bool,
+) -> AnyElement {
     let now = motion::now();
     let reduced = motion::reduced();
     let shown = with(|store| {
@@ -674,7 +708,7 @@ pub(crate) fn icon(
             let side = ((size * window.scale_factor()).round() as u32).max(1);
             let (image, retired) = with(|store| {
                 (
-                    store.image(anim, frame, side, tint),
+                    store.image(anim, frame, side, tint, panel),
                     std::mem::take(&mut store.retired),
                 )
             });
@@ -1134,32 +1168,68 @@ mod tests {
             alpha: vec![255, 128],
             used: 0,
         };
-        let image = tinted(&mask, [10, 20, 30, 255]);
+        let image = tinted(&mask, [10, 20, 30, 255], false);
         let bytes = image.as_bytes(0).expect("one frame");
         assert_eq!(bytes, &[30, 20, 10, 255, 30, 20, 10, 128]);
-        let half = tinted(&mask, [10, 20, 30, 128]);
+        let half = tinted(&mask, [10, 20, 30, 128], false);
         assert_eq!(half.as_bytes(0).expect("one frame")[3], 128);
         assert_eq!(half.as_bytes(0).expect("one frame")[7], 64);
+    }
+
+    #[test]
+    fn panel_cutout_is_antialiased_and_does_not_poison_unmasked_frames() {
+        let mask = Mask {
+            width: 20,
+            height: 20,
+            alpha: vec![255; 400],
+            used: 0,
+        };
+        let picture = tinted(&mask, [255; 4], true);
+        let bytes = picture.as_bytes(0).unwrap();
+        assert_eq!(bytes[(15 * 20 + 15) * 4 + 3], 0);
+        assert_eq!(bytes[(2 * 20 + 2) * 4 + 3], 255);
+        assert!(
+            bytes
+                .as_chunks::<4>()
+                .0
+                .iter()
+                .any(|pixel| pixel[3] > 0 && pixel[3] < 255)
+        );
+        assert!(mask.alpha.iter().all(|alpha| *alpha == 255));
+
+        let mut store = Store::default();
+        let normal = store
+            .image(Anim::Microphone, 0, 20, [255; 4], false)
+            .unwrap();
+        let badge = store
+            .image(Anim::Microphone, 0, 20, [255; 4], true)
+            .unwrap();
+        let again = store
+            .image(Anim::Microphone, 0, 20, [255; 4], false)
+            .unwrap();
+        assert_ne!(normal.as_bytes(0), badge.as_bytes(0));
+        assert!(Arc::ptr_eq(&normal, &again));
+        assert_eq!(store.rendered, 1);
     }
 
     #[test]
     fn the_store_caches_frames_and_retires_images_past_the_limit() {
         let mut store = Store::default();
         let first = store
-            .image(Anim::Disconnect, 0, 24, [255; 4])
+            .image(Anim::Disconnect, 0, 24, [255; 4], false)
             .expect("image");
         let again = store
-            .image(Anim::Disconnect, 0, 24, [255; 4])
+            .image(Anim::Disconnect, 0, 24, [255; 4], false)
             .expect("image");
         assert!(Arc::ptr_eq(&first, &again));
         assert_eq!(store.rendered, 1);
         // Another tint reuses the mask.
         store
-            .image(Anim::Disconnect, 0, 24, [0, 0, 0, 255])
+            .image(Anim::Disconnect, 0, 24, [0, 0, 0, 255], false)
             .expect("image");
         assert_eq!(store.rendered, 1);
         for shade in 0..(IMAGE_LIMIT as u8 + 4) {
-            store.image(Anim::Disconnect, 0, 24, [shade, 2, 3, 255]);
+            store.image(Anim::Disconnect, 0, 24, [shade, 2, 3, 255], false);
         }
         assert!(store.images.len() <= IMAGE_LIMIT);
         assert!(!store.retired.is_empty());
