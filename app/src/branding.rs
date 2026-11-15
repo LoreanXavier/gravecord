@@ -134,6 +134,11 @@ fn tray_at(
     icon: crate::tray::Icon,
     size: u32,
 ) -> Option<(u32, Vec<u8>)> {
+    // Voice state uses the call indicator rather than an application-logo badge (desktop core systemtray/win32).
+    let set = match icon {
+        crate::tray::Icon::Default | crate::tray::Icon::Unread => set,
+        _ => IconSet::Original,
+    };
     // Native optical sizes supplied in both packs, matching the pinned Windows resources.
     let variants = [
         (16, ""),
@@ -181,6 +186,48 @@ fn badge_at(root: &Path, _set: IconSet, index: usize) -> Option<Vec<u8>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn voice_indicators_keep_their_native_artwork_without_replacing_app_branding() {
+        use crate::tray::Icon::*;
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("assets");
+        for (width, suffix) in [
+            (16, ""),
+            (20, "@1.25x"),
+            (21, "@1.33x"),
+            (22, "@1.4x"),
+            (24, "@1.5x"),
+            (29, "@1.8x"),
+            (32, "@2x"),
+            (40, "@2.5x"),
+            (48, "@3x"),
+            (64, "@4x"),
+            (80, "@5x"),
+        ] {
+            for icon in [Connected, Speaking, Muted, Deafened] {
+                let reference = image::open(root.join(format!(
+                    "branding/original/systemtray/win32/{}{suffix}.png",
+                    icon.file()
+                )))
+                .unwrap()
+                .into_rgba8();
+                let expected = (width, premultiplied(reference));
+                for set in [IconSet::Gravecord, IconSet::Original] {
+                    assert_eq!(tray_at(&root, set, icon, width).unwrap(), expected);
+                }
+            }
+            for icon in [Default, Unread] {
+                assert_ne!(
+                    tray_at(&root, IconSet::Gravecord, icon, width),
+                    tray_at(&root, IconSet::Original, icon, width),
+                );
+            }
+        }
+        assert_ne!(
+            tray_at(&root, IconSet::Gravecord, Connected, 16),
+            tray_at(&root, IconSet::Gravecord, Speaking, 16),
+        );
+    }
+
     #[test]
     fn both_tray_sets_supply_all_states_at_each_optical_size() {
         use crate::tray::Icon::*;
