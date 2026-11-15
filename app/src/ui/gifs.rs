@@ -175,7 +175,10 @@ impl Root {
                 route: "/gifs/trending?locale=en-US&media_format=webm".to_owned(),
             });
         }
-        self.request_image("gif:favorites".to_owned(), runtime_gif_url(FAVORITES_PICTURE));
+        self.request_image(
+            "gif:favorites".to_owned(),
+            runtime_gif_url(FAVORITES_PICTURE),
+        );
         if let Some(favorite) = self.favorite_gif_list().last() {
             self.request_image(
                 format!("gif:{}", favorite.url),
@@ -197,6 +200,27 @@ impl Root {
             .and_then(|body| body["settings"].as_str())
             .map(dc_proto::frecency::favorite_gifs)
             .unwrap_or_default()
+    }
+
+    #[cfg(feature = "capture")]
+    pub(crate) fn seed_gif_favorite(
+        &mut self,
+        url: &str,
+        width: u32,
+        height: u32,
+        cx: &mut Context<Self>,
+    ) {
+        let list = self.favorite_gifs.get_or_insert_with(Vec::new);
+        list.push(dc_proto::frecency::FavoriteGif {
+            url: url.to_owned(),
+            src: url.to_owned(),
+            format: 1,
+            width,
+            height,
+            order: list.len() as u32,
+        });
+        self.request_image(format!("gif:{url}"), runtime_gif_url(url));
+        cx.notify();
     }
 
     /// Whether the account's frecency settings (favourite GIFs and stickers) have arrived. Their writers send a
@@ -303,7 +327,10 @@ impl Root {
                 ),
             });
         }
-        self.request_image("gif:favorites".to_owned(), runtime_gif_url(FAVORITES_PICTURE));
+        self.request_image(
+            "gif:favorites".to_owned(),
+            runtime_gif_url(FAVORITES_PICTURE),
+        );
         for gif in self.favorites_as_gifs().into_iter().take(24) {
             self.request_image(format!("gif:{}", gif.id), runtime_gif_url(&gif.picture));
         }

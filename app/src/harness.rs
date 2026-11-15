@@ -1575,6 +1575,14 @@ pub async fn run(
                 let report = root.read_with(cx, |root, _| root.gif_report());
                 let _ = writeln!(output, "gif state: {report}");
             }
+            ["gif", "seed-url", url, width, height] => {
+                if let (Ok(width), Ok(height)) = (width.parse(), height.parse()) {
+                    root.update(cx, |root, cx| {
+                        root.seed_gif_favorite(url, width, height, cx)
+                    });
+                    let _ = writeln!(output, "gif fixture added in memory");
+                }
+            }
             ["note", label @ ..] => {
                 let state = root.read_with(cx, |root, cx| root.describe(cx));
                 let _ = writeln!(output, "{}: {state}", label.join(" "));

@@ -2243,12 +2243,22 @@ pub async fn run(token: Token, updates: mpsc::UnboundedSender<Update>, requests:
                         .ok()
                         .flatten();
                         if let Some(cached) = cached {
-                            let _ = updates.send(Update::Image {
-                                key: key.clone(),
-                                bytes: cached.bytes,
-                            });
-                            if !cached.stale {
-                                return;
+                            let image_key = key.clone();
+                            let _slot = IMAGE_DRAWS.acquire().await;
+                            let decoded = tokio::task::spawn_blocking(move || {
+                                cached_image_bytes(&image_key, cached.bytes)
+                            })
+                            .await
+                            .ok()
+                            .flatten();
+                            if let Some(bytes) = decoded {
+                                let _ = updates.send(Update::Image {
+                                    key: key.clone(),
+                                    bytes,
+                                });
+                                if !cached.stale {
+                                    return;
+                                }
                             }
                         }
                     }
@@ -2493,6 +2503,18 @@ async fn save_download(url: &str, filename: &str) -> bool {
     }
 }
 
+fn cached_image_bytes(key: &str, bytes: Vec<u8>) -> Option<Vec<u8>> {
+    if (key.starts_with("gif:") || key.starts_with("gif-category:"))
+        && bytes.get(4..8) == Some(b"ftyp")
+    {
+        // The raw disk cache keeps the source MP4, just as it arrived over HTTP. A cache hit must use the
+        // same poster decoder as a download; feeding MP4 bytes to an image marks an undrawable tile as loaded.
+        crate::video_clip::mp4_first_frame_png(&bytes)
+    } else {
+        Some(bytes)
+    }
+}
+
 /// `name`, or `name (1)`, `name (2)` ... until `taken` says the path is free.
 fn free_name(
     folder: &std::path::Path,
@@ -2530,6 +2552,19 @@ fn guild_member_requests(guilds: &[u64], query: &str, limit: u64, user_ids: &[u6
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn cached_gif_video_is_decoded_before_it_becomes_an_image() {
+        let video = crate::video_vod::synthetic_mp4(32, 32, 30, &[[220, 40, 20]], 1).unwrap();
+        let poster = super::cached_image_bytes("gif:favorite", video).unwrap();
+        assert!(poster.starts_with(b"\x89PNG"));
+        let image = image::load_from_memory(&poster).unwrap();
+        assert_eq!((image.width(), image.height()), (32, 32));
+        assert!(super::cached_image_bytes("gif:broken", b"0000ftypbroken".to_vec()).is_none());
+        assert_eq!(
+            super::cached_image_bytes("gif:still", b"GIF89a".to_vec()).unwrap(),
+            b"GIF89a"
+        );
+    }
     #[test]
     fn a_password_change_answer_gives_up_its_token() {
         use super::take_renewed_token;
