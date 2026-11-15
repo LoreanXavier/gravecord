@@ -543,6 +543,14 @@ pub(in crate::ui) struct ClipsState {
 }
 
 impl ClipsState {
+    /// Separate keycaps for the running-game hint (483364 `nh`, 475358).
+    pub(in crate::ui) fn panel_keys(&self) -> Vec<String> {
+        self.keybind
+            .iter()
+            .map(|key| shortcut_text(std::slice::from_ref(key)))
+            .collect()
+    }
+
     /// `canShowReminders()`: the Reminders switch.
     pub(in crate::ui) fn reminders_enabled(&self) -> bool {
         self.store.settings.reminders_enabled

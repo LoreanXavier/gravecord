@@ -209,6 +209,7 @@ pub(crate) mod regions;
 mod remediation;
 mod reminder_modal;
 mod report;
+mod running_game_panel;
 mod running_games;
 mod saved;
 mod screening;

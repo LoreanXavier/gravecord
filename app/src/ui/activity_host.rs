@@ -91,9 +91,12 @@ pub(super) fn elapsed_text(seconds: u64) -> String {
 }
 
 impl Root {
-    /// `panel_8eCwJY activityPanel`: the activity's icon and name, how long we have been in it, and Leave. It sits
+    /// `panel_8eCwJY activityPanel`: the visible game first, otherwise the embedded activity and Leave. It sits
     /// above the call panel (golden: 57px, a 12px pad, the 32px row, a 1px rule).
     pub(super) fn activity_panel(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
+        if let Some(panel) = self.running_game_panel(cx) {
+            return Some(panel);
+        }
         let running = self.activities.running.as_ref()?;
         let app = running.application_id.clone();
         let name = if running.name.is_empty() {
