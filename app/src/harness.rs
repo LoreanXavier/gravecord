@@ -224,6 +224,11 @@ pub async fn run(
                 let note = cx.update(|cx| root.update(cx, |root, _| root.script_tray()));
                 let _ = writeln!(output, "{note}");
             }
+            ["tray", "check-updates"] => {
+                let note =
+                    cx.update(|cx| root.update(cx, |root, cx| root.script_tray_check_updates(cx)));
+                let _ = writeln!(output, "{note}");
+            }
             // Capture-only: the picture the tray or the taskbar overlay would get, written to a PNG; no shell call.
             ["tray", "render", rest @ ..] => {
                 let note = cx.update(|cx| root.update(cx, |root, _| root.script_tray_render(rest)));

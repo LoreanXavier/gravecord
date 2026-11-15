@@ -64,6 +64,7 @@ pub enum Action {
     VoiceSettings = 3,
     Acknowledgements = 4,
     Quit = 5,
+    CheckUpdates = 6,
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -117,7 +118,7 @@ impl State {
         self.close_to_tray && available
     }
 
-    /// None is a separator. The update entry stays disabled until a product updater exists.
+    /// None is a separator (desktop-core 1275).
     pub fn menu(self) -> Vec<Option<MenuItem>> {
         let mut items = vec![Some(MenuItem::disabled("gravecord"))];
         let v = self.voice;
@@ -150,7 +151,10 @@ impl State {
         }
         items.extend([
             None,
-            Some(MenuItem::disabled("Check For Updates...")),
+            Some(MenuItem::action(
+                "Check For Updates...",
+                Action::CheckUpdates,
+            )),
             Some(MenuItem::action(
                 "Acknowledgements",
                 Action::Acknowledgements,
@@ -259,6 +263,28 @@ mod tests {
         state.unread = false;
         assert_eq!(state.icon(), Icon::Default);
     }
+    #[test]
+    fn update_check_is_enabled_in_idle_and_voice_menus() {
+        for connected in [false, true] {
+            let state = State {
+                voice: Voice {
+                    connected,
+                    ..Voice::default()
+                },
+                ..State::default()
+            };
+            assert!(state.allows(Action::CheckUpdates));
+            let items: Vec<_> = state.menu().into_iter().flatten().collect();
+            let update = items
+                .iter()
+                .position(|item| item.action == Some(Action::CheckUpdates))
+                .unwrap();
+            assert_eq!(items[update].label, "Check For Updates...");
+            assert_eq!(items[update + 1].action, Some(Action::Acknowledgements));
+            assert_eq!(items.last().unwrap().action, Some(Action::Quit));
+        }
+    }
+
     #[test]
     fn server_voice_restrictions_disable_menu_actions_and_disconnect_removes_them() {
         let mut state = State::default();

@@ -43,8 +43,23 @@ impl Root {
             Action::VoiceSettings => self.open_settings_section("Voice & Video", cx),
             Action::Acknowledgements => cx.open_url("https://discord.com/acknowledgements"),
             Action::Quit => cx.quit(),
+            Action::CheckUpdates => {
+                crate::updater::request_check();
+            }
         }
     }
+    #[cfg(feature = "capture")]
+    pub(crate) fn script_tray_check_updates(&mut self, cx: &mut Context<Self>) -> String {
+        if !crate::storage::is_capture_run() {
+            return "tray update check requires capture".into();
+        }
+        self.tray_action(Action::CheckUpdates, cx);
+        format!(
+            "tray update check: capture no-op; state {:?}",
+            crate::updater::state()
+        )
+    }
+
     #[cfg(feature = "capture")]
     pub(crate) fn script_tray(&mut self) -> String {
         if !crate::storage::is_capture_run() {

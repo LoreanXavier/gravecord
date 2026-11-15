@@ -21,7 +21,8 @@ use std::cmp::Ordering;
 use std::ffi::OsString;
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
-use std::sync::Mutex;
+use std::sync::atomic::{AtomicBool, Ordering as AtomicOrdering};
+use std::sync::{LazyLock, Mutex};
 use std::time::Duration;
 use tokio::sync::mpsc::UnboundedSender;
 
@@ -590,6 +591,44 @@ static STATE: Mutex<State> = Mutex::new(State::NotAvailable);
 static READY: Mutex<Option<Ready>> = Mutex::new(None);
 static SENDER: Mutex<Option<UnboundedSender<Update>>> = Mutex::new(None);
 
+#[derive(Default)]
+struct CheckRequests {
+    busy: AtomicBool,
+    wake: tokio::sync::Notify,
+}
+
+impl CheckRequests {
+    fn begin(&self) -> bool {
+        self.busy
+            .compare_exchange(false, true, AtomicOrdering::AcqRel, AtomicOrdering::Acquire)
+            .is_ok()
+    }
+
+    fn finish(&self) {
+        self.busy.store(false, AtomicOrdering::Release);
+    }
+
+    fn request(&self, capture: bool, idle: bool) -> bool {
+        // Desktop checkForUpdatesWithUpdater ignores another request while checking/downloading/ready.
+        if capture || !idle || !self.begin() {
+            return false;
+        }
+        self.wake.notify_one();
+        true
+    }
+}
+
+static CHECK_REQUESTS: LazyLock<CheckRequests> = LazyLock::new(CheckRequests::default);
+
+/// The tray's manual check wakes the existing worker; it never starts a second download.
+pub fn request_check() -> bool {
+    let capture = crate::storage::is_capture_run();
+    if capture {
+        tracing::info!("update check (capture no-op)");
+    }
+    CHECK_REQUESTS.request(capture, matches!(state(), State::NotAvailable))
+}
+
 pub fn state() -> State {
     STATE
         .lock()
@@ -660,13 +699,20 @@ pub fn attach(sender: UnboundedSender<Update>) {
                     return;
                 };
                 runtime.block_on(async {
+                    let mut requested = false;
                     loop {
-                        if let Err(error) = cycle().await {
-                            // The official client shows nothing for an update error.
-                            tracing::debug!(error = %format!("{error:#}"), "update check failed");
-                            set_state(State::NotAvailable);
+                        if requested || CHECK_REQUESTS.begin() {
+                            if let Err(error) = cycle().await {
+                                // The official client shows nothing for an update error.
+                                tracing::debug!(error = %format!("{error:#}"), "update check failed");
+                                set_state(State::NotAvailable);
+                            }
+                            CHECK_REQUESTS.finish();
                         }
-                        tokio::time::sleep(CHECK_INTERVAL).await;
+                        requested = tokio::select! {
+                            _ = tokio::time::sleep(CHECK_INTERVAL) => false,
+                            _ = CHECK_REQUESTS.wake.notified() => true,
+                        };
                     }
                 });
             });

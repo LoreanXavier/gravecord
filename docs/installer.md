@@ -114,6 +114,10 @@ send WM_CLOSE and cannot request this bypass.
 
 ## Automatic updates
 
+The tray's Check For Updates action wakes the same worker used by automatic checks. Requests during a check,
+download or ready state are ignored; capture runs log the action without checking or downloading. The worker and
+menu routing are unit tested; an actual tray-triggered update remains unverified.
+
 The app checks `update.json` (see `DECISIONS.md`, "Open on startup, window behaviour and automatic updates") at launch and
 every hour. `cargo xtask package` writes it beside the setup: `version` (from `app/Cargo.toml`), `url` (the setup's
 name, relative to the feed), `size` and `sha256` of the setup file just written. Publishing a release is attaching

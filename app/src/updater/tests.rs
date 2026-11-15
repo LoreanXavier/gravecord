@@ -5,6 +5,48 @@ use std::net::TcpListener;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering as AtomicOrdering};
 
+#[test]
+fn manual_checks_wake_once_and_do_not_queue_behind_an_active_check() {
+    use std::future::Future;
+    use std::task::{Context as TaskContext, Poll, Waker};
+
+    let requests = CheckRequests::default();
+    let mut cx = TaskContext::from_waker(Waker::noop());
+    assert!(requests.request(false, true));
+    assert!(!requests.request(false, true));
+    let mut notified = Box::pin(requests.wake.notified());
+    assert_eq!(notified.as_mut().poll(&mut cx), Poll::Ready(()));
+    requests.finish();
+
+    assert!(requests.begin());
+    assert!(!requests.request(false, true));
+    requests.finish();
+    let mut notified = Box::pin(requests.wake.notified());
+    assert_eq!(notified.as_mut().poll(&mut cx), Poll::Pending);
+    assert!(requests.request(false, true));
+    assert_eq!(notified.as_mut().poll(&mut cx), Poll::Ready(()));
+    requests.finish();
+}
+
+#[test]
+fn capture_and_non_idle_states_never_wake_the_update_worker() {
+    use std::future::Future;
+    use std::task::{Context as TaskContext, Poll, Waker};
+
+    let requests = CheckRequests::default();
+    assert!(!requests.request(true, true));
+    assert!(!requests.request(false, false));
+    let mut notified = Box::pin(requests.wake.notified());
+    assert_eq!(
+        notified
+            .as_mut()
+            .poll(&mut TaskContext::from_waker(Waker::noop())),
+        Poll::Pending
+    );
+    assert!(requests.begin());
+    requests.finish();
+}
+
 fn version(text: &str) -> Version {
     Version::parse(text).unwrap()
 }
