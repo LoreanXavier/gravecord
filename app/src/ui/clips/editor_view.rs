@@ -241,7 +241,8 @@ impl Root {
                     div()
                         .absolute()
                         .left(px(x + 4.))
-                        .top_0()
+                        .bottom(px(1.))
+                        .whitespace_nowrap()
                         .text_size(px(10.))
                         .line_height(px(12.))
                         .text_color(color("--text-muted"))
@@ -297,6 +298,14 @@ impl Root {
                 .h_full()
                 .bg(color("--brand-500"))
                 .cursor_ew_resize()
+                .flex()
+                .items_center()
+                .justify_center()
+                // 503535 / cropArrow_wUYaqe: the visible grip inside each crop handle.
+                .child(div().w(px(2.)).h(px(16.)).rounded(px(100.)).bg(gpui::Rgba {
+                    a: 0.7,
+                    ..color("--white")
+                }))
                 .on_mouse_down(
                     gpui::MouseButton::Left,
                     cx.listener(move |this, event: &gpui::MouseDownEvent, _, cx| {
