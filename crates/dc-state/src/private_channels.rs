@@ -2,8 +2,8 @@
 use crate::{PrivateChannel, Stores, read_state::snowflake_at};
 use std::cmp::Reverse;
 
-/// Favorites precede the recency-sorted ordinary list; message requests/spam are not in either.
-pub fn unread_channels(stores: &Stores) -> Vec<&PrivateChannel> {
+/// PrivateChannelSortStore: favorites first, then live message/request recency within each group.
+pub fn sorted_channels(stores: &Stores) -> Vec<&PrivateChannel> {
     let mut channels: Vec<_> = stores
         .private_channels
         .iter()
@@ -12,7 +12,6 @@ pub fn unread_channels(stores: &Stores) -> Vec<&PrivateChannel> {
                 && channel.id != 131
                 && channel.flags & 0x4000000 == 0
                 && !channel.is_request()
-                && stores.read_states.mentions(channel.id) > 0
         })
         .collect();
     channels.sort_by_key(|channel| {
@@ -38,8 +37,16 @@ pub fn unread_channels(stores: &Stores) -> Vec<&PrivateChannel> {
         });
         (!favorite, Reverse(latest.max(request) >> 22))
     });
-    channels.truncate(20);
     channels
+}
+
+/// The rail shows at most twenty mentioned conversations in the same order as the DM sidebar.
+pub fn unread_channels(stores: &Stores) -> Vec<&PrivateChannel> {
+    sorted_channels(stores)
+        .into_iter()
+        .filter(|channel| stores.read_states.mentions(channel.id) > 0)
+        .take(20)
+        .collect()
 }
 
 #[cfg(test)]
@@ -52,6 +59,39 @@ mod tests {
             .iter()
             .map(|channel| channel.id)
             .collect()
+    }
+
+    #[test]
+    fn sidebar_reorders_for_messages_and_call_messages_even_without_mentions() {
+        let mut stores = Stores::default();
+        stores.dispatch("READY", &json!({"user":{"id":"1","username":"self"},
+            "private_channels":[
+                {"id":"100","type":1,"last_message_id":(1u64<<22).to_string()},
+                {"id":"200","type":1,"last_message_id":(2u64<<22).to_string()},
+                {"id":"300","type":1,"last_message_id":(3u64<<22).to_string()}
+            ],
+            "user_guild_settings":{"entries":[{"guild_id":null,"channel_overrides":[{"channel_id":"100","flags":2048}]}]}
+        }));
+        let order = |stores: &Stores| {
+            sorted_channels(stores)
+                .iter()
+                .map(|dm| dm.id)
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(order(&stores), [100, 300, 200]);
+        for (channel, sequence, kind) in [(200, 4, 0), (300, 5, 3)] {
+            stores.dispatch(
+                "MESSAGE_CREATE",
+                &json!({
+                    "id":((sequence as u64)<<22).to_string(),"channel_id":channel.to_string(),
+                    "author":{"id":"1","username":"self"},"content":"","type":kind,
+                    "timestamp":"2026-11-15T00:00:00Z"
+                }),
+            );
+            assert_eq!(order(&stores)[0], 100);
+            assert_eq!(order(&stores)[1], channel);
+            assert_eq!(stores.read_states.mentions(channel), 0);
+        }
     }
 
     #[test]

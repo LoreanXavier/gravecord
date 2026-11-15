@@ -580,15 +580,7 @@ impl Root {
         let nitro_selected = self.guild.is_none() && self.channel.is_none() && self.nitro_open;
         // 645959: a message request or spam channel is in neither sorted list; pinned conversations (`FAVORITE`, the
         // "@me" override flag) come first, each group newest first.
-        let mut listed: Vec<_> = self
-            .stores
-            .private_channels
-            .iter()
-            .filter(|channel| !channel.is_request())
-            .collect();
-        listed.sort_by_key(|channel| {
-            self.stores.guild_settings.channel(0, channel.id).flags & 2048 == 0
-        });
+        let listed = dc_state::private_channels::sorted_channels(&self.stores);
         let rows: Vec<AnyElement> = listed
             .into_iter()
             .filter_map(|channel| self.dm_row(channel, cx))
