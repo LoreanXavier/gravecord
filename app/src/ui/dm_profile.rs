@@ -1481,8 +1481,7 @@ impl Root {
             .p(px(8.))
             .bg(color("--background-base-lower"))
             .flex()
-            .flex_col()
-            .items_center()
+            .justify_center()
             .child(card)
             .into_any_element()
     }
