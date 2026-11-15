@@ -498,13 +498,24 @@ pub async fn run(
                 }
             }
             // `middle down|up <x> <y>`: the middle button, for autoscroll (`ui/autoscroll.rs`).
-            ["middle", edge @ ("down" | "up"), x, y] => {
+            [
+                button @ ("middle" | "mouse-back" | "mouse-forward" | "mouse-right"),
+                edge @ ("down" | "up"),
+                x,
+                y,
+            ] => {
+                let button = match *button {
+                    "mouse-back" => MouseButton::Navigate(gpui::NavigationDirection::Back),
+                    "mouse-forward" => MouseButton::Navigate(gpui::NavigationDirection::Forward),
+                    "mouse-right" => MouseButton::Right,
+                    _ => MouseButton::Middle,
+                };
                 if let Some(position) = at(x, y) {
                     cx.update(|cx| {
                         dispatch(cx, window, moved(position, None));
                         let event = if *edge == "down" {
                             PlatformInput::MouseDown(MouseDownEvent {
-                                button: MouseButton::Middle,
+                                button,
                                 position,
                                 modifiers: Modifiers::default(),
                                 click_count: 1,
@@ -512,7 +523,7 @@ pub async fn run(
                             })
                         } else {
                             PlatformInput::MouseUp(MouseUpEvent {
-                                button: MouseButton::Middle,
+                                button,
                                 position,
                                 modifiers: Modifiers::default(),
                                 click_count: 1,

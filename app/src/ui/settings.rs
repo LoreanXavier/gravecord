@@ -2410,6 +2410,16 @@ impl Root {
         let modal = div()
             .parity_with_border("settings-modal", if full { 0. } else { 1. })
             .id("settings-modal")
+            .capture_any_mouse_down(cx.listener(|this, event: &gpui::MouseDownEvent, _, cx| {
+                if this.voice_mouse(event.button, true, cx) {
+                    cx.stop_propagation();
+                }
+            }))
+            .capture_any_mouse_up(cx.listener(|this, event: &gpui::MouseUpEvent, _, cx| {
+                if this.voice_mouse(event.button, false, cx) {
+                    cx.stop_propagation();
+                }
+            }))
             .opacity(pose.opacity)
             .paint_scale(pose.scale, point(0.5, 0.5))
             .occlude()

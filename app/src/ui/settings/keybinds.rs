@@ -354,16 +354,18 @@ impl Root {
     /// The hooks follow the list: one per registered keybind, none in a harness run (nothing there may read the
     /// real keyboard) and none while a shortcut is being recorded.
     pub(in crate::ui) fn kb_sync_hooks(&mut self) {
-        let wanted: Vec<(String, Vec<[u32; 3]>)> =
-            if storage::is_capture_run() || self.settings_extra.kb.recording.is_some() {
-                Vec::new()
-            } else {
-                load()
-                    .into_iter()
-                    .filter(registered)
-                    .map(|keybind| (keybind.id, keybind.shortcut))
-                    .collect()
-            };
+        let wanted: Vec<(String, Vec<[u32; 3]>)> = if storage::is_capture_run()
+            || self.settings_extra.kb.recording.is_some()
+            || self.voice_is_recording()
+        {
+            Vec::new()
+        } else {
+            load()
+                .into_iter()
+                .filter(registered)
+                .map(|keybind| (keybind.id, keybind.shortcut))
+                .collect()
+        };
         let old = std::mem::take(&mut self.settings_extra.kb.hooks);
         let mut kept: Vec<(String, dc_hotkey::Hook)> = Vec::new();
         for (id, hook) in old {
@@ -403,7 +405,7 @@ impl Root {
         let Some(keybind) = load().into_iter().find(|keybind| keybind.id == id) else {
             return;
         };
-        if !keybind.enabled || self.keybinds_page_visible() {
+        if !keybind.enabled || self.keybinds_page_visible() || self.voice_is_recording() {
             return;
         }
         let push_to_talk = self.kb_push_to_talk();

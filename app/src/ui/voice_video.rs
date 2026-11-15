@@ -661,6 +661,31 @@ impl Root {
         const FIXTURE_GUILD: u64 = 1_568_692_564_637_524_109;
         const FIXTURE_VOICE: u64 = 1_568_692_565_136_375_901;
         match words {
+            ["ptt-event", value @ ("on" | "off")] => {
+                dc_voice::prefs().processing.set_push_to_talk_held(*value == "on");
+                self.ptt_held_changed(*value == "on");
+                cx.notify();
+                format!(
+                    "ptt={} engine={}",
+                    self.ptt_down,
+                    dc_voice::prefs().processing.push_to_talk_held()
+                )
+            }
+            ["speaking", "self", value @ ("on" | "off")] => {
+                let Some(user_id) = self.stores.current_user.as_ref().map(|user| user.id) else {
+                    return "no current user".to_owned();
+                };
+                if *value == "on" {
+                    self.speaking.insert(user_id);
+                } else {
+                    self.speaking.remove(&user_id);
+                }
+                cx.notify();
+                format!(
+                    "local speaking={} mute={} deaf={}",
+                    value, self.self_mute, self.self_deaf
+                )
+            }
             ["join"] => {
                 self.join_voice(FIXTURE_GUILD, FIXTURE_VOICE, cx);
                 "joining the fixture voice channel".to_owned()

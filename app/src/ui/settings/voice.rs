@@ -1113,7 +1113,11 @@ impl Root {
             if self.voice.mic_test.is_some() {
                 self.stop_mic_test(cx);
             }
-            self.voice.recording = false;
+            if self.voice.recording {
+                self.voice_stop_recording();
+                self.sync_ptt_hook();
+                self.kb_sync_hooks();
+            }
             self.voice.device_open = None;
             self.voice.camera.open = false;
             self.voice_sync_select_flag();
@@ -1275,6 +1279,8 @@ impl Root {
             if key == "escape" {
                 self.voice.recording = false;
                 self.voice.recording_held.clear();
+                self.sync_ptt_hook();
+                self.kb_sync_hooks();
             } else if let Some(code) = code {
                 self.record_part(KEYBOARD_KEY, code);
             }
@@ -1320,6 +1326,7 @@ impl Root {
             .retain(|held| *held != [kind, code]);
         if self.voice.recording && before > 0 && self.voice.recording_held.is_empty() {
             self.voice.recording = false;
+            self.kb_sync_hooks();
         }
     }
 
@@ -1372,6 +1379,10 @@ impl Root {
         self.voice.recording_held.clear();
     }
 
+    pub(in crate::ui) fn voice_is_recording(&self) -> bool {
+        self.voice.recording
+    }
+
     /// `TOGGLE_VOICE_MODE`: push to talk and voice activity swap (`setMode` with the other mode).
     pub(in crate::ui) fn kb_toggle_voice_mode(&mut self) {
         let push_to_talk = self.voice.stored.effective().push_to_talk;
@@ -1401,6 +1412,12 @@ impl Root {
     /// Push to talk is held while every key of the keybind is down (in this window; the system-wide hook is
     /// another task).
     fn update_push_to_talk(&mut self) {
+        if self.voice.recording {
+            set_push_to_talk_held(false);
+            self.ptt_down = false;
+            self.sync_ptt_hook();
+            return;
+        }
         // While the system-wide hook runs it reports the keybind itself, with the window's keys included.
         if self.ptt_hook.is_some() {
             self.sync_ptt_hook();
@@ -1448,15 +1465,22 @@ impl Root {
             return true;
         }
         if !down {
+            let recording = self.voice.recording;
             self.release_recorded(MOUSE_BUTTON, code);
             self.sync_ptt_hook();
             cx.notify();
+            return recording;
         }
         false
     }
 
     /// The push to talk state changed (from the window's keys or the hook): its sound, inside a call.
     pub(in crate::ui) fn ptt_held_changed(&mut self, held: bool) {
+        if self.voice.recording {
+            set_push_to_talk_held(false);
+            self.ptt_down = false;
+            return;
+        }
         if std::mem::replace(&mut self.ptt_down, held) == held || self.call.is_none() {
             return;
         }
@@ -2552,6 +2576,11 @@ impl Root {
             .on_click(cx.listener(|this, _, _, cx| {
                 this.voice.recording = !this.voice.recording;
                 this.voice.recording_held.clear();
+                this.voice.held.clear();
+                set_push_to_talk_held(false);
+                this.ptt_down = false;
+                this.sync_ptt_hook();
+                this.kb_sync_hooks();
                 cx.notify();
             }))
             .child(
