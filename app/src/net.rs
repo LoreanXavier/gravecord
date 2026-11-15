@@ -440,15 +440,11 @@ fn disk_cacheable_raw_image(key: &str, url: &str) -> bool {
             || url.contains("/assets/"))
 }
 
-async fn fetch_cached_sheet(
-    client: &Arc<Client>,
-    url: &str,
-) -> Result<Vec<u8>, dc_http::Error> {
+async fn fetch_cached_sheet(client: &Arc<Client>, url: &str) -> Result<Vec<u8>, dc_http::Error> {
     if crate::ui::start_cache::enabled() {
         let lookup = url.to_owned();
         if let Ok(Some(cached)) =
-            tokio::task::spawn_blocking(move || crate::ui::shop::art_cache::read_raw(&lookup))
-                .await
+            tokio::task::spawn_blocking(move || crate::ui::shop::art_cache::read_raw(&lookup)).await
         {
             if cached.stale {
                 let refresh_client = Arc::clone(client);
@@ -1246,6 +1242,7 @@ async fn send_local(
     let mut backoff = Backoff::default();
     let mut retries = RETRIES;
     loop {
+        let mut retry_after_wait = None;
         let failure = match tokio::time::timeout(TIMEOUT, client.post(&route, &body)).await {
             Ok(Ok(sent)) => return Outcome::Sent(sent),
             Ok(Err(dc_http::Error::Status {
@@ -1260,11 +1257,21 @@ async fn send_local(
                     return Outcome::Failed(Failure::from_response(status.as_u16(), &answer));
                 }
             }
-            Ok(Err(dc_http::Error::RateLimited { .. })) => {
-                return Outcome::Failed(Failure {
+            Ok(Err(dc_http::Error::RateLimited { retry_after, .. })) => {
+                let failure = Failure {
                     status: Some(429),
+                    retry_after,
                     ..Failure::default()
-                });
+                };
+                if retries > 0 {
+                    retry_after_wait = retry_after
+                        .filter(|seconds| seconds.is_finite() && *seconds > 0.)
+                        .map(std::time::Duration::from_secs_f64);
+                    failure
+                } else {
+                    warn!("sending stayed rate limited");
+                    return Outcome::Failed(failure);
+                }
             }
             // A transport error or a timeout: sent again while the retries last.
             Ok(Err(error)) => {
@@ -1286,7 +1293,7 @@ async fn send_local(
                 .map_or(0, |elapsed| elapsed.subsec_nanos())
                 % 1000,
         ) / 1000.;
-        let wait = backoff.fail(jitter, None);
+        let wait = backoff.fail(jitter, retry_after_wait);
         warn!("sending again in {wait:?} (failure {})", backoff.fails());
         tokio::time::sleep(wait).await;
     }
@@ -1954,7 +1961,8 @@ pub async fn run(token: Token, updates: mpsc::UnboundedSender<Update>, requests:
             }
             Request::FetchCdn { key, url, etag } => {
                 tokio::spawn(async move {
-                    let update = match client.fetch_public_conditional(&url, etag.as_deref()).await {
+                    let update = match client.fetch_public_conditional(&url, etag.as_deref()).await
+                    {
                         Ok(dc_http::ConditionalGet::NotModified { etag }) => {
                             Update::DetectablesCdn {
                                 key,
@@ -2207,7 +2215,8 @@ pub async fn run(token: Token, updates: mpsc::UnboundedSender<Update>, requests:
                 tokio::spawn(async move {
                     // A Shop or CDN picture kept on disk is drawn at once; a stale one is fetched again behind it.
                     let shop_box = shop_art_box(&key);
-                    let cache_raw = !key.starts_with("shop:img:") && disk_cacheable_raw_image(&key, &url);
+                    let cache_raw =
+                        !key.starts_with("shop:img:") && disk_cacheable_raw_image(&key, &url);
                     if key.starts_with("shop:img:") {
                         let (at, drawn_in) = (url.clone(), shop_box);
                         let cached = tokio::task::spawn_blocking(move || {

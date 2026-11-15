@@ -13,9 +13,9 @@ use crate::storage;
 use dc_state::{Id, User};
 use dc_tokens::Theme;
 use gpui::{
-    AnyElement, Context, FontWeight, Hsla, IntoElement, MouseMoveEvent, Pixels, Point, Rgba,
-    SharedString, Window, deferred, div, img, linear_color_stop, linear_gradient, point,
-    prelude::*, px, rgba,
+    AnyElement, Bounds, Context, FontWeight, Hsla, IntoElement, MouseMoveEvent, PathBuilder,
+    Pixels, Point, Rgba, SharedString, Window, canvas, deferred, div, img, linear_color_stop,
+    linear_gradient, point, prelude::*, px, rgba,
 };
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
@@ -2131,11 +2131,11 @@ impl Root {
         let muted = self.self_mute || self.self_deaf;
         let soundboard_reason = self.soundboard_disabled();
         let tray = |id: &'static str, glyph: &'static str| {
-            div()
-                .id(id)
-                .size(px(24.))
-                .cursor_pointer()
-                .child(icon(glyph, 24., "--interactive-icon-default"))
+            div().id(id).size(px(24.)).cursor_pointer().child(icon(
+                glyph,
+                24.,
+                "--interactive-icon-default",
+            ))
         };
         let primary_box = |id: &'static str| {
             div()
@@ -3265,13 +3265,28 @@ impl Root {
                         .relative()
                         .size(px(24.))
                         .flex_none()
-                        .child(
-                            img(self.invite_ring(
-                                since.elapsed().as_secs_f32() / INVITE_ROW_TIMEOUT.as_secs_f32(),
-                            ))
-                            .absolute()
-                            .size(px(24.)),
-                        )
+                        .when(!super::motion::reduced(), |ring_box| {
+                            ring_box.child(
+                                canvas(
+                                    |_, _, _| (),
+                                    move |bounds, _, window, cx| {
+                                        let progress = (since.elapsed().as_secs_f32()
+                                            / INVITE_ROW_TIMEOUT.as_secs_f32())
+                                        .clamp(0., 1.);
+                                        paint_invite_ring(bounds, progress, window);
+                                        if progress < 1.
+                                            && window.is_window_active()
+                                            && !cx.reduce_motion()
+                                        {
+                                            window.request_animation_frame();
+                                        }
+                                    },
+                                )
+                                .absolute()
+                                .inset_0()
+                                .size_full(),
+                            )
+                        })
                         .child(
                             div()
                                 .absolute()
@@ -3289,11 +3304,15 @@ impl Root {
                         .line_height(px(18.))
                         .font_weight(FontWeight(500.))
                         .text_color(color("--channels-default"))
+                        .group_hover("voice-invite-row", |style| {
+                            style.text_color(color("--interactive-text-hover"))
+                        })
                         .child("Invite to Voice"),
                 )
                 .child(
                     div()
                         .id("voice-invite-dismiss")
+                        .relative()
                         .size(px(16.))
                         .child(
                             div()
@@ -3303,6 +3322,7 @@ impl Root {
                         .child(
                             div()
                                 .absolute()
+                                .inset_0()
                                 .opacity(0.)
                                 .group_hover("voice-invite-row", |style| style.opacity(1.))
                                 .child(icon("close", 16., "--channels-default")),
@@ -3315,39 +3335,6 @@ impl Root {
                 )
                 .into_any_element(),
         )
-    }
-
-    /// `timer_MRjIbW`: a 2px ring of `--border-normal` with `--border-strong` over it, a dash of 24 pi that the
-    /// animation walks off the path from the top, clockwise, as the ten seconds pass. Drawn per tenth of a second.
-    fn invite_ring(&self, progress: f32) -> std::sync::Arc<gpui::Image> {
-        let step = (progress.clamp(0., 1.) * 100.).round() as u32;
-        let key = format!("voice-invite-ring:{step}:{:?}", crate::ui::theme() as u8);
-        if let Some(found) = self.generated_images.borrow().get(&key) {
-            return found.clone();
-        }
-        let hex = |name: &str| {
-            let value = color(name);
-            let byte = |channel: f32| (channel * 255.).round() as u8;
-            format!(
-                "#{:02x}{:02x}{:02x}",
-                byte(value.r),
-                byte(value.g),
-                byte(value.b)
-            )
-        };
-        let dash = 24. * std::f32::consts::PI;
-        let offset = -(step as f32 / 100.) * dash;
-        let svg = format!(
-            r#"<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24"><g transform="rotate(-90 12 12)" fill="none" stroke-width="2"><circle cx="12" cy="12" r="11" stroke="{}"/><circle cx="12" cy="12" r="11" stroke="{}" stroke-dasharray="{dash}" stroke-dashoffset="{offset}"/></g></svg>"#,
-            hex("--border-normal"),
-            hex("--border-strong"),
-        );
-        let made = std::sync::Arc::new(gpui::Image::from_bytes(
-            gpui::ImageFormat::Svg,
-            svg.into_bytes(),
-        ));
-        self.generated_images.borrow_mut().insert(key, made.clone());
-        made
     }
 
     // ---- not in the call ----
@@ -3654,6 +3641,60 @@ impl Root {
     }
 }
 
+/// Remaining ring fraction of `.timer_MRjIbW .progress_MRjIbW`: a 24pi dash walking clockwise off a 22pi circle.
+fn invite_ring_fraction(progress: f32) -> f32 {
+    ((1. - progress.clamp(0., 1.)) * (24. / 22.)).clamp(0., 1.)
+}
+
+fn paint_ring_circle(cx: Pixels, cy: Pixels, radius: f32, stroke: Rgba, window: &mut Window) {
+    const SEGMENTS: usize = 64;
+    let mut path = PathBuilder::stroke(px(2.));
+    for step in 0..SEGMENTS {
+        let angle = (step as f32 / SEGMENTS as f32) * std::f32::consts::TAU;
+        let (sin, cos) = angle.sin_cos();
+        let pt = point(cx + px(radius * cos), cy + px(radius * sin));
+        if step == 0 {
+            path.move_to(pt);
+        } else {
+            path.line_to(pt);
+        }
+    }
+    path.close();
+    if let Ok(built) = path.build() {
+        window.paint_path(built, stroke);
+    }
+}
+
+/// `timer_MRjIbW`: 2px ring (`r = 11`) of `--border-normal` with `--border-strong` walking clockwise from 12 o'clock.
+fn paint_invite_ring(bounds: Bounds<Pixels>, progress: f32, window: &mut Window) {
+    const RADIUS: f32 = 11.;
+    let cx = bounds.origin.x + bounds.size.width * 0.5;
+    let cy = bounds.origin.y + bounds.size.height * 0.5;
+    paint_ring_circle(cx, cy, RADIUS, color("--border-normal"), window);
+    let remaining = invite_ring_fraction(progress);
+    if remaining >= 0.9999 {
+        paint_ring_circle(cx, cy, RADIUS, color("--border-strong"), window);
+    } else if remaining > 0.001 {
+        let segments = ((remaining * 64.).ceil() as usize).max(2);
+        let start = -std::f32::consts::FRAC_PI_2;
+        let sweep = remaining * std::f32::consts::TAU;
+        let mut path = PathBuilder::stroke(px(2.));
+        for step in 0..=segments {
+            let angle = start + sweep * (step as f32 / segments as f32);
+            let (sin, cos) = angle.sin_cos();
+            let pt = point(cx + px(RADIUS * cos), cy + px(RADIUS * sin));
+            if step == 0 {
+                path.move_to(pt);
+            } else {
+                path.line_to(pt);
+            }
+        }
+        if let Ok(built) = path.build() {
+            window.paint_path(built, color("--border-strong"));
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -3714,5 +3755,16 @@ mod tests {
         }
         // A bigger window never makes the tiles smaller.
         assert!(grid_layout(4, 1225., 868.).tile_width >= grid_layout(4, 905., 688.).tile_width);
+    }
+
+    #[test]
+    fn invite_ring_walks_from_full_circle_to_zero_over_ten_seconds() {
+        assert_eq!(invite_ring_fraction(0.), 1.);
+        assert_eq!(invite_ring_fraction(-0.2), 1.);
+        let mid = invite_ring_fraction(0.5);
+        assert!(mid > 0.5 && mid < 0.6);
+        assert!(invite_ring_fraction(0.75) < mid);
+        assert_eq!(invite_ring_fraction(1.), 0.);
+        assert_eq!(invite_ring_fraction(1.5), 0.);
     }
 }

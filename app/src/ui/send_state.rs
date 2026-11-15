@@ -63,9 +63,11 @@ struct Parts {
 #[derive(Default)]
 pub(super) struct State {
     sends: HashMap<Id, LocalSend>,
+    /// `nonce -> local id`, kept until the request ends so an early gateway echo does not orphan `in_flight`.
+    nonce_ids: HashMap<String, Id>,
     /// The messages waiting for the queue, oldest first (module 870801 sends one at a time).
     queue: VecDeque<Id>,
-    in_flight: Option<Id>,
+    in_flight: Option<(Id, String)>,
     last_local_id: Id,
     /// Harness: nothing is posted, so a row stays in the sending state until a step ends it.
     pub hold: bool,
@@ -80,6 +82,10 @@ impl State {
         self.sends.get(&id).map(|send| send.state)
     }
 
+    fn in_flight_id(&self) -> Option<Id> {
+        self.in_flight.as_ref().map(|(id, _)| *id)
+    }
+
     pub(super) fn next_local_id(&mut self, nonce_id: Id, channel_latest_id: Id) -> Id {
         let next = nonce_id
             .max(channel_latest_id.saturating_add(1))
@@ -89,6 +95,7 @@ impl State {
     }
 
     fn begin(&mut self, id: Id, send: LocalSend) {
+        self.nonce_ids.insert(send.nonce.clone(), id);
         self.sends.insert(id, send);
         self.queue.push_back(id);
     }
@@ -99,12 +106,10 @@ impl State {
             return None;
         }
         while let Some(id) = self.queue.pop_front() {
-            if self
-                .sends
-                .get(&id)
-                .is_some_and(|send| send.state == SendState::Sending)
+            if let Some(send) = self.sends.get(&id)
+                && send.state == SendState::Sending
             {
-                self.in_flight = Some(id);
+                self.in_flight = Some((id, send.nonce.clone()));
                 return Some(id);
             }
         }
@@ -113,11 +118,43 @@ impl State {
 
     /// The request of `id` ended: the queue goes on.
     fn ended(&mut self, id: Id) {
-        if self.in_flight == Some(id) {
+        if self.in_flight_id() == Some(id) {
             self.in_flight = None;
         }
         self.queue.retain(|known| *known != id);
         self.progress.remove(&id);
+        if !self.sends.contains_key(&id) {
+            self.nonce_ids.retain(|_, mapped| *mapped != id);
+        }
+    }
+
+    /// Clears `in_flight` by local id or request nonce so an early gateway echo cannot stall the queue.
+    fn ended_for(&mut self, id: Option<Id>, nonce: &str) {
+        if self
+            .in_flight
+            .as_ref()
+            .is_some_and(|(flying_id, flying_nonce)| {
+                id == Some(*flying_id) || flying_nonce == nonce
+            })
+        {
+            self.in_flight = None;
+        }
+        if let Some(id) = id {
+            self.ended(id);
+        } else {
+            self.nonce_ids.remove(nonce);
+        }
+    }
+
+    fn remove_send(&mut self, id: Id) -> Option<LocalSend> {
+        let removed = self.sends.remove(&id);
+        if self.in_flight_id() != Some(id)
+            && let Some(ref send) = removed
+            && self.nonce_ids.get(&send.nonce).copied() == Some(id)
+        {
+            self.nonce_ids.remove(&send.nonce);
+        }
+        removed
     }
 
     /// `cancelPendingSendRequests(channel)`: what still waits in that channel, which now fails with the message.
@@ -137,6 +174,14 @@ impl State {
     }
 
     fn id_of_nonce(&self, nonce: &str) -> Option<Id> {
+        if let Some((id, flying_nonce)) = &self.in_flight
+            && flying_nonce == nonce
+        {
+            return Some(*id);
+        }
+        if let Some(&id) = self.nonce_ids.get(nonce) {
+            return Some(id);
+        }
         self.sends
             .iter()
             .find(|(_, send)| send.nonce == nonce)
@@ -160,17 +205,38 @@ impl State {
     /// The oldest message still sending, for the harness.
     #[cfg(any(test, feature = "capture"))]
     fn first_sending(&self) -> Option<Id> {
-        self.queue.iter().copied().chain(self.in_flight).find(|id| {
-            self.sends
-                .get(id)
-                .is_some_and(|send| send.state == SendState::Sending)
-        })
+        self.queue
+            .iter()
+            .copied()
+            .chain(self.in_flight_id())
+            .find(|id| {
+                self.sends
+                    .get(id)
+                    .is_some_and(|send| send.state == SendState::Sending)
+            })
     }
 }
 
 /// The nonce `createMessage` stamps is a snowflake, and the message takes it as its id.
 pub(super) fn id_of(nonce: &str) -> Option<Id> {
     nonce.parse().ok().filter(|id| *id > 0)
+}
+
+fn json_str(value: &Value) -> Option<std::borrow::Cow<'_, str>> {
+    if let Some(s) = value.as_str() {
+        return Some(std::borrow::Cow::Borrowed(s));
+    }
+    if let Some(n) = value.as_u64() {
+        return Some(std::borrow::Cow::Owned(n.to_string()));
+    }
+    value
+        .as_i64()
+        .filter(|n| *n > 0)
+        .map(|n| std::borrow::Cow::Owned(n.to_string()))
+}
+
+fn json_id(value: &Value) -> Option<Id> {
+    json_str(value).and_then(|s| id_of(&s))
 }
 
 /// `createMessage` (module 963852) as the JSON the store reads.
@@ -335,11 +401,15 @@ impl Root {
         let Some(nonce_id) = id_of(&nonce) else {
             return;
         };
-        let (msg_latest, max_ts) = self.stores.messages.get(&channel).map_or((0, None), |list| {
-            let latest = list.iter().map(|m| m.id).max().unwrap_or(0);
-            let ts = list.iter().map(|m| m.timestamp).max();
-            (latest, ts)
-        });
+        let (msg_latest, max_ts) = self
+            .stores
+            .messages
+            .get(&channel)
+            .map_or((0, None), |list| {
+                let latest = list.iter().map(|m| m.id).max().unwrap_or(0);
+                let ts = list.iter().map(|m| m.timestamp).max();
+                (latest, ts)
+            });
         let guild_latest = self
             .stores
             .guilds
@@ -443,15 +513,18 @@ impl Root {
         outcome: Outcome,
         cx: &mut Context<Self>,
     ) {
-        let Some(id) = self.send_ui.id_of_nonce(nonce).or_else(|| id_of(nonce)) else {
+        let resolved = self.send_ui.id_of_nonce(nonce).or_else(|| id_of(nonce));
+        self.send_ui.ended_for(resolved, nonce);
+        let Some(id) = resolved else {
+            self.send_pump();
             return;
         };
-        self.send_ui.ended(id);
         match outcome {
             Outcome::Sent(body) => {
                 // `SLOWMODE_RESET_COOLDOWN` follows a message that went through.
                 self.set_slowmode(channel, dc_state::slowmode::Kind::SendMessage, None, cx);
                 if self.send_ui.sends.contains_key(&id) {
+                    let real_id = json_id(&body["id"]);
                     // `receiveMessage(channel, response, optimistic)`: the same path a gateway event takes.
                     self.apply_update(
                         crate::net::Update::Dispatch {
@@ -461,7 +534,9 @@ impl Root {
                         cx,
                     );
                     // The echo may have come first and already took the row; this takes it otherwise.
-                    self.drop_local(channel, id);
+                    if self.send_ui.remove_send(id).is_some() && real_id != Some(id) {
+                        self.remove_local(channel, id);
+                    }
                 }
             }
             Outcome::Failed(failure) => self.send_failed(channel, id, &failure, cx),
@@ -496,19 +571,20 @@ impl Root {
             return;
         };
         let (channel, nonce) = (send.channel, send.nonce.clone());
-        if self.send_ui.in_flight == Some(id) {
+        if self.send_ui.in_flight_id() == Some(id) {
             // The task answers with `Outcome::Dropped`.
             crate::upload_flow::cancel(&nonce);
             return;
         }
         self.send_ui.ended(id);
         self.drop_local(channel, id);
+        self.send_pump();
         self.rebuild_rows();
         cx.notify();
     }
 
     fn drop_local(&mut self, channel: Id, id: Id) {
-        if self.send_ui.sends.remove(&id).is_some() {
+        if self.send_ui.remove_send(id).is_some() {
             self.remove_local(channel, id);
         }
     }
@@ -647,29 +723,29 @@ impl Root {
 
     /// A gateway message of this account whose nonce is a row here: the real message takes the row's place.
     pub(super) fn send_echo(&mut self, data: &Value) {
-        let Some(nonce) = data["nonce"].as_str() else {
+        let Some(nonce) = json_str(&data["nonce"]) else {
             return;
         };
         let (Some(id), Some(channel)) = (
-            self.send_ui.id_of_nonce(nonce),
-            data["channel_id"]
-                .as_str()
-                .and_then(|id| id.parse::<Id>().ok()),
+            self.send_ui.id_of_nonce(nonce.as_ref()),
+            json_id(&data["channel_id"]),
         ) else {
             return;
         };
-        let mine =
-            self.stores.current_user.as_ref().is_some_and(|me| {
-                data["author"]["id"].as_str() == Some(me.id.to_string().as_str())
-            });
-        if mine && data["id"].as_str() != Some(id.to_string().as_str()) {
-            self.drop_local(channel, id);
+        let mine = self
+            .stores
+            .current_user
+            .as_ref()
+            .is_some_and(|me| json_id(&data["author"]["id"]) == Some(me.id));
+        let real_id = json_id(&data["id"]);
+        if mine && self.send_ui.remove_send(id).is_some() && real_id != Some(id) {
+            self.remove_local(channel, id);
         }
     }
 
     /// Retry in the hover bar and "Resend message": the row goes and the same message is sent again with its nonce.
     pub(super) fn retry_send(&mut self, id: Id, cx: &mut Context<Self>) {
-        let Some(send) = self.send_ui.sends.remove(&id) else {
+        let Some(send) = self.send_ui.remove_send(id) else {
             return;
         };
         self.remove_local(send.channel, id);
@@ -686,7 +762,7 @@ impl Root {
 
     /// Delete on a failed message: local, with no request and no question (`RC` of module 519222).
     pub(super) fn delete_failed(&mut self, id: Id, cx: &mut Context<Self>) {
-        let Some(send) = self.send_ui.sends.remove(&id) else {
+        let Some(send) = self.send_ui.remove_send(id) else {
             return;
         };
         self.send_ui.ended(id);
@@ -844,7 +920,7 @@ impl Root {
                     "send: {} (hold {}, in flight {:?}, queued {})",
                     lines.join("; "),
                     self.send_ui.hold,
-                    self.send_ui.in_flight,
+                    self.send_ui.in_flight_id(),
                     self.send_ui.queue.len()
                 )
             }
@@ -972,6 +1048,47 @@ mod tests {
         let second = state.next_local_id(501, first);
         assert!(second > first);
         assert!(state.next_local_id(5000, second) >= 5000);
+    }
+
+    #[test]
+    fn echo_before_send_result_with_lagging_nonce_releases_in_flight_and_pumps_queue() {
+        let mut state = State::default();
+        let first = state.next_local_id(500, 1000);
+        assert!(first > 1000);
+        assert_ne!(first, 500);
+        state.begin(first, send(10, "500"));
+        let second = state.next_local_id(501, first);
+        state.begin(second, send(10, "501"));
+        let third = state.next_local_id(502, second);
+        state.begin(third, send(10, "502"));
+
+        assert_eq!(state.next(), Some(first));
+        assert_eq!(state.in_flight_id(), Some(first));
+
+        // Simulate gateway MESSAGE_CREATE echo arriving before HTTP SendResult.
+        assert!(state.remove_send(first).is_some());
+        assert_eq!(state.id_of_nonce("500"), Some(first));
+
+        // Simulate HTTP Update::SendResult resolving the nonce and ending in_flight.
+        let resolved = state.id_of_nonce("500").or_else(|| id_of("500"));
+        assert_eq!(resolved, Some(first));
+        state.ended_for(resolved, "500");
+        assert_eq!(state.in_flight_id(), None);
+        assert_eq!(state.next(), Some(second));
+        state.ended_for(Some(second), "501");
+        assert_eq!(state.next(), Some(third));
+    }
+
+    #[test]
+    fn json_str_and_json_id_accept_string_and_integer_values() {
+        assert_eq!(json_str(&json!("12345")).as_deref(), Some("12345"));
+        assert_eq!(json_str(&json!(12345)).as_deref(), Some("12345"));
+        assert_eq!(json_str(&json!(0)).as_deref(), Some("0"));
+        assert_eq!(json_str(&json!(null)), None);
+        assert_eq!(json_id(&json!("99")), Some(99));
+        assert_eq!(json_id(&json!(99)), Some(99));
+        assert_eq!(json_id(&json!(0)), None);
+        assert_eq!(json_id(&json!(-5)), None);
     }
 
     #[test]
