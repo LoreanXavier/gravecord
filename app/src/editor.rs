@@ -311,6 +311,7 @@ pub struct Editor {
     align_end: bool,
     /// Keeps the visual column across short lines and the side of a soft-wrap boundary.
     vertical: Option<VerticalMove>,
+    tab_stop: bool,
 }
 
 impl EventEmitter<EditorEvent> for Editor {}
@@ -359,6 +360,7 @@ impl Editor {
             spell: None,
             markdown: false,
             vertical: None,
+            tab_stop: false,
         }
     }
 
@@ -555,6 +557,15 @@ impl Editor {
 
     pub fn set_single_line(&mut self, on: bool) {
         self.buffer.set_single_line(on);
+    }
+
+    /// The containing view excludes a field covered by a dialog from the page's tab order.
+    pub fn set_tab_stop(&mut self, on: bool, cx: &mut Context<Self>) {
+        if self.tab_stop != on {
+            self.tab_stop = on;
+            self.focus = self.focus.clone().tab_index(0).tab_stop(on);
+            cx.notify();
+        }
     }
 
     pub fn set_text(&mut self, text: &str) {
@@ -1538,23 +1549,72 @@ mod blink_tests {
 mod navigation_tests {
     use super::*;
 
+    fn style() -> EditorStyle {
+        EditorStyle {
+            font: gpui::font("Arial"),
+            size: 16.,
+            line_height: 22.,
+            text: gpui::white(),
+            placeholder: gpui::white(),
+            placeholder_italic: false,
+            selection: gpui::black(),
+            caret: gpui::white(),
+        }
+    }
+
+    #[gpui::test]
+    fn covered_fields_leave_the_tab_order_and_return_when_uncovered(cx: &mut gpui::TestAppContext) {
+        struct Fields([Entity<Editor>; 2]);
+        impl Render for Fields {
+            fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+                div().flex().flex_col().children(self.0.iter().cloned())
+            }
+        }
+        let window = cx.open_window(size(px(180.), px(200.)), |_, cx| {
+            Fields(std::array::from_fn(|_| {
+                cx.new(|cx| {
+                    let mut editor = Editor::new(style(), cx);
+                    editor.set_text("field");
+                    editor.set_tab_stop(true, cx);
+                    editor
+                })
+            }))
+        });
+        cx.run_until_parked();
+        window
+            .update(cx, |fields, window, cx| {
+                let first = fields.0[0].read(cx).focus_handle(cx);
+                let second = fields.0[1].read(cx).focus_handle(cx);
+                window.focus(&first, cx);
+                window.focus_next(cx);
+                assert!(second.is_focused(window));
+                window.focus_prev(cx);
+                assert!(first.is_focused(window));
+                fields.0[0].update(cx, |editor, cx| editor.set_tab_stop(false, cx));
+            })
+            .unwrap();
+        cx.run_until_parked();
+        window
+            .update(cx, |fields, window, cx| {
+                let second = fields.0[1].read(cx).focus_handle(cx);
+                window.focus(&second, cx);
+                window.focus_next(cx);
+                assert!(second.is_focused(window));
+                fields.0[0].update(cx, |editor, cx| editor.set_tab_stop(true, cx));
+            })
+            .unwrap();
+        cx.run_until_parked();
+        window
+            .update(cx, |fields, window, cx| {
+                window.focus_next(cx);
+                assert!(fields.0[0].read(cx).focus_handle(cx).is_focused(window));
+            })
+            .unwrap();
+    }
+
     #[gpui::test]
     fn vertical_keys_keep_column_selection_and_wrapped_row(cx: &mut gpui::TestAppContext) {
-        let window = cx.open_window(size(px(180.), px(200.)), |_, cx| {
-            Editor::new(
-                EditorStyle {
-                    font: gpui::font("Arial"),
-                    size: 16.,
-                    line_height: 22.,
-                    text: gpui::white(),
-                    placeholder: gpui::white(),
-                    placeholder_italic: false,
-                    selection: gpui::black(),
-                    caret: gpui::white(),
-                },
-                cx,
-            )
-        });
+        let window = cx.open_window(size(px(180.), px(200.)), |_, cx| Editor::new(style(), cx));
         cx.run_until_parked();
         window
             .update(cx, |editor, window, cx| {

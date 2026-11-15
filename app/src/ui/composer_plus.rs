@@ -315,6 +315,9 @@ impl Root {
                         cx.notify();
                     }))
                 })
+                .when(!disabled, |row| {
+                    self.menu_stop(row, id, color("--background-mod-subtle"), cx)
+                })
         };
         let record_finalizing = self.record_voice_disabled();
         let menu = div()

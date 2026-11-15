@@ -287,6 +287,7 @@ impl Root {
                 self.quick_switcher.is_some(),
                 self.menu.is_some(),
                 self.context.open.is_some(),
+                self.plus_menu,
                 self.too_long.is_some(),
                 self.confirm_delete.is_some(),
                 self.menu_extra.reactions_confirm.is_some(),
@@ -368,7 +369,6 @@ impl Root {
                 self.status_popout.is_some(),
                 self.profile.is_some(),
                 self.notify_open,
-                self.plus_menu,
                 self.submenu.is_some(),
                 self.skin_menu,
                 self.thread_browser.is_some(),
@@ -460,12 +460,18 @@ impl Root {
         // A click on a menu row focuses the row; when that click closed the menu (or replaced it with a dialog) the
         // row is no longer drawn, and a focus handle that is not drawn receives no keys, Escape included.
         if menu_row_focus_is_gone(
-            self.menu.is_some() || self.context.open.is_some(),
+            self.menu.is_some() || self.context.open.is_some() || self.plus_menu,
             self.keys.stops.menu_had_focus.get(),
         ) {
             window.focus(&self.focus, cx);
         }
         let layers = self.layer_count();
+        let composer_tab = layers == 0 && self.composer_reachable_or_voice();
+        self.composer
+            .update(cx, |editor, cx| editor.set_tab_stop(composer_tab, cx));
+        if let Some((_, editor)) = self.editing.as_ref() {
+            editor.update(cx, |editor, cx| editor.set_tab_stop(layers == 0, cx));
+        }
         let now = Seen {
             layers,
             modals: self.modal_open(),
@@ -677,8 +683,11 @@ impl Root {
         {
             return true;
         }
-        // Tab leaves a field of a dialog; in the composer it stays with the autocomplete.
-        if (!typing || self.modal_open() > 0) && self.tab_key(keystroke, window, cx) {
+        // An open autocomplete gets Tab before the browser-style tab order.
+        if keystroke.key == "tab" && typing && self.composer_key(keystroke, window, cx) {
+            return true;
+        }
+        if self.tab_key(keystroke, window, cx) {
             return true;
         }
         let facts = Facts {

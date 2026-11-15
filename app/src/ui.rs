@@ -8556,10 +8556,9 @@ impl Root {
                                     .on_mouse_down(MouseButton::Left, |_, window, _| {
                                         window.prevent_default();
                                     })
-                                    .on_click(
+                                    .child(tool("attach", cx).on_click(
                                         cx.listener(|this, _, _, cx| this.toggle_plus_menu(cx)),
-                                    )
-                                    .child(tool("attach", cx)),
+                                    )),
                             )
                             .child(
                                 div()
@@ -9044,7 +9043,6 @@ impl Render for Root {
         window.set_ui_zoom(self.zoom_factor(), cx);
         self.sync_client_theme();
         self.ui_scale.set(window.scale_factor());
-        self.focus_new_menu(window, cx);
         self.account_form_focus(window, cx);
         self.focus_new_dialog(window, cx);
         // The base layer of the layer stack fades while a full-window layer is open (module 596339).
@@ -10316,6 +10314,7 @@ impl Render for Root {
         // Capture only: the display name style comparison sheet (`name-sheet` step).
         #[cfg(feature = "capture")]
         let element = element.children(name_styles::sheet_layer());
+        self.focus_new_menu(window, cx);
         self.end_call_background_frame(cx);
         motion::leave_view();
         element
