@@ -5,6 +5,7 @@
 //! `POST /users/@me/channels {recipients}` when none exists.
 
 use super::motion::{self, Transitions as _};
+use super::tooltip::{Side, Tip};
 use super::{Root, avatar_source, color, editor_style, icon, status_dot, status_label};
 use crate::editor::{Editor, EditorEvent};
 use crate::net::Request;
@@ -444,7 +445,13 @@ impl Root {
             .any(|kind| matches!(*kind, RELATIONSHIP_INCOMING | RELATIONSHIP_OUTGOING))
     }
 
-    fn person_row(&self, user: &User, kind: u64, cx: &mut Context<Self>) -> AnyElement {
+    fn person_row(
+        &self,
+        user: &User,
+        kind: u64,
+        probe: bool,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
         let (avatar_key, _) = avatar_source(user);
         let avatar = self.images.get(&avatar_key).cloned();
         if let Some((key, url)) = missing_person_avatar(user, &self.images) {
@@ -454,23 +461,26 @@ impl Root {
         let id = user.id;
         let group = SharedString::from(format!("friend-{}", user.id));
         let menu_open = self.friend_menu.is_some_and(|menu| menu.user == id);
-        // `actionButton_5GqXgh`: surface-high, the lowest base while the row is hovered or its menu is open.
-        let action = |name: &'static str, key: String, _tint: &'static str| {
+        // `actionButton_5GqXgh`: base-lower, the lowest base while the row is hovered or its menu is open.
+        let action = |name: &'static str, key: String, tint: &'static str| {
             div()
                 .id(SharedString::from(key))
+                .when(probe && name == "chat_bubble", |button| {
+                    button.parity("friend-message-action")
+                })
                 .size(px(36.))
                 .rounded_full()
                 .bg(if menu_open {
                     color("--background-base-lowest")
                 } else {
-                    color("--background-surface-high")
+                    color("--background-base-lower")
                 })
                 .group_hover(group.clone(), |style| {
                     style.bg(color("--background-base-lowest"))
                 })
                 // `.actionButton_5GqXgh:hover` the hovered text colour (accept green, deny red), `:active` the active
                 // background and text colour (827776); the icon follows the button's colour.
-                .text_color(color("--text-subtle"))
+                .text_color(color(tint))
                 .hover(move |style| style.text_color(color(action_hover_token(name))))
                 .active(|style| {
                     style
@@ -532,29 +542,41 @@ impl Root {
                 .into_any_element(),
             ],
             _ => vec![
-                action(
-                    "chat_bubble",
-                    format!("message-{id}"),
-                    "--interactive-text-default",
+                self.with_tip(
+                    format!("friend-message-{id}"),
+                    Tip::text(dc_intl::tr("Message"), Side::Top),
+                    action(
+                        "chat_bubble",
+                        format!("message-{id}"),
+                        "--interactive-text-default",
+                    )
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        cx.stop_propagation();
+                        this.open_dm_with(id, cx);
+                    })),
+                    cx,
                 )
-                .on_click(cx.listener(move |this, _, _, cx| {
-                    cx.stop_propagation();
-                    this.open_dm_with(id, cx);
-                }))
                 .into_any_element(),
-                action(
-                    "more_dots",
-                    format!("more-{id}"),
-                    "--interactive-text-default",
+                self.with_tip(
+                    format!("friend-more-{id}"),
+                    Tip::text(dc_intl::tr("More"), Side::Top),
+                    action(
+                        "more_dots",
+                        format!("more-{id}"),
+                        "--interactive-text-default",
+                    )
+                    .on_click(cx.listener(
+                        move |this, event: &gpui::ClickEvent, _, cx| {
+                            cx.stop_propagation();
+                            this.friend_menu = Some(FriendMenu {
+                                user: id,
+                                at: event.position(),
+                            });
+                            cx.notify();
+                        },
+                    )),
+                    cx,
                 )
-                .on_click(cx.listener(move |this, event: &gpui::ClickEvent, _, cx| {
-                    cx.stop_propagation();
-                    this.friend_menu = Some(FriendMenu {
-                        user: id,
-                        at: event.position(),
-                    });
-                    cx.notify();
-                }))
                 .into_any_element(),
             ],
         };
@@ -562,6 +584,7 @@ impl Root {
             .relative()
             .w_full()
             .min_w(px(0.))
+            .pt(px(1.))
             .pl(px(14.))
             .pr(px(26.))
             .child(
@@ -576,6 +599,7 @@ impl Root {
             .child(
                 div()
                     .id(SharedString::from(format!("person-{id}")))
+                    .when(probe, |row| row.parity("friend-person-row"))
                     .group(group.clone())
                     .on_hover(self.avatar_hover(group.to_string(), cx))
                     .h(px(61.))
@@ -1193,11 +1217,9 @@ impl Root {
                             .flex()
                             .flex_col()
                             .overflow_y_scroll()
-                            .children(
-                                people
-                                    .iter()
-                                    .map(|(user, kind)| self.person_row(user, *kind, cx)),
-                            ),
+                            .children(people.iter().enumerate().map(|(index, (user, kind))| {
+                                self.person_row(user, *kind, index == 0, cx)
+                            })),
                     )
             })
             .into_any_element()
