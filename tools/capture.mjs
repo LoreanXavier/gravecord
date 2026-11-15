@@ -1,9 +1,10 @@
 // node tools/capture.mjs <screen> <variant> [hover x,y]
 // Writes design/dom/<screen>/<variant>.json (full DOM, bounds, computed styles) and
 // design/golden/windows/<screen>/<variant>@<dpr>.png from the clean client's current state.
-import { mkdirSync, writeFileSync } from 'node:fs';
+import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { connect } from './cdp.mjs';
+import { assertPinnedBuild } from './pinned-client.mjs';
 
 const [screen, variant, hover] = process.argv.slice(2);
 if (!screen || !variant) throw new Error('usage: capture.mjs <screen> <variant>');
@@ -24,6 +25,10 @@ const COMPUTED = [
 
 const root = join(import.meta.dirname, '..', 'design');
 const page = await connect();
+assertPinnedBuild(
+  await page.evaluate('({build:window.GLOBAL_ENV?.BUILD_NUMBER,hash:window.GLOBAL_ENV?.VERSION_HASH})'),
+  JSON.parse(readFileSync(join(root, 'snapshot', 'WEB_BUILD.json'), 'utf8')),
+);
 await page.send('DOMSnapshot.enable');
 // A golden must not depend on where the pointer was left: park it on empty titlebar space.
 const [x, y] = hover ? hover.split(',').map(Number) : [320, 16];
