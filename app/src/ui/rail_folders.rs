@@ -10,7 +10,7 @@ use dc_state::Id;
 use dc_state::folders::{Folder, Item};
 use gpui::{
     AnyElement, Bounds, Context, DragMoveEvent, FontWeight, Image, IntoElement, MouseButton,
-    MouseDownEvent, Pixels, Render, Rgba, SharedString, Window, canvas, div, img, prelude::*, px,
+    Pixels, Render, Rgba, SharedString, Window, canvas, div, img, prelude::*, px,
 };
 use serde_json::json;
 use std::cell::RefCell;
@@ -759,9 +759,9 @@ impl Root {
             .cursor_pointer()
             .child(content)
             .on_click(cx.listener(move |this, _, _, cx| this.toggle_folder(id, cx)))
-            .on_mouse_down(
+            .on_mouse_up(
                 MouseButton::Right,
-                cx.listener(move |this, event: &MouseDownEvent, _, cx| {
+                cx.listener(move |this, event: &gpui::MouseUpEvent, _, cx| {
                     this.open_folder_menu(id, event.position, cx);
                     cx.stop_propagation();
                 }),

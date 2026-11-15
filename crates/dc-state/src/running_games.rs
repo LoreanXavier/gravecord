@@ -239,10 +239,15 @@ impl RunningGames {
         self.overrides.values()
     }
 
-    /// `eG`: the visible game is the first that shows; it keeps its start while its pid stays.
+    /// `eG`: prefers non-launcher games over launchers, then falls back to the first that shows; keeps its start while its pid stays.
     fn refresh_visible(&mut self, now_ms: u64) {
         let previous = self.visible.take();
-        self.visible = self.running.iter().find(|game| self.shows(game)).cloned();
+        self.visible = self
+            .running
+            .iter()
+            .find(|game| self.shows(game) && !game.is_launcher)
+            .or_else(|| self.running.iter().find(|game| self.shows(game)))
+            .cloned();
         if let Some(visible) = &mut self.visible {
             visible.start = match previous {
                 Some(previous) if previous.pid == visible.pid => previous.start,
@@ -731,5 +736,20 @@ mod tests {
         assert_eq!(stored["enableOverlayV3"]["c:/games/game.exe:Game"], false);
         let read = RunningGames::from_json(&stored);
         assert_eq!(read.overlay_override(&game), (Some(false), Some(false)));
+    }
+
+    #[test]
+    fn non_launcher_game_beats_preceding_launcher_for_visible_and_activity() {
+        let mut store = RunningGames::default();
+        let mut launcher = running(10, Some("1"), "Hytale Launcher", "c:/games/hytalelauncher.exe");
+        launcher.is_launcher = true;
+        let client = running(20, Some("1"), "Hytale", "c:/games/hytaleclient.exe");
+
+        store.set_running(vec![launcher, client], 5_000);
+        let visible = store.visible_game().expect("client should be visible");
+        assert_eq!(visible.pid, Some(20));
+        assert!(!visible.is_launcher);
+        let activity = store.activity().expect("client should produce an activity");
+        assert_eq!(activity["name"], "Hytale");
     }
 }

@@ -11,7 +11,7 @@
 
 use super::super::Root;
 use super::super::settings::Choice;
-use gpui::{Context, InteractiveElement, MouseDownEvent};
+use gpui::{Context, InteractiveElement, IntoElement as _, MouseDownEvent, Styled as _};
 
 /// How a layer answers a press outside it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -323,6 +323,8 @@ impl Root {
 
     /// `ContextMenuStore` (module 712687): opening any context menu closes any other open context menu first.
     pub(in crate::ui) fn close_all_context_menus(&mut self) {
+        self.tip = None;
+        self.tip_pending = None;
         self.menu = None;
         self.submenu = None;
         self.context.open = None;
@@ -340,6 +342,35 @@ impl Root {
         self.clear_event_menu();
         self.rail_folders.menu = None;
         self.clips_close_menu();
+    }
+
+    /// Full-window pointer trap behind open right-click menus so background hovers cease and outside clicks dismiss.
+    pub(in crate::ui) fn menu_backdrop(&self, cx: &mut Context<Self>) -> gpui::AnyElement {
+        gpui::deferred(
+            gpui::div()
+                .id("context-menu-backdrop")
+                .occlude()
+                .absolute()
+                .inset_0()
+                .on_mouse_down(
+                    gpui::MouseButton::Left,
+                    cx.listener(|this, _, _, cx| {
+                        this.close_all_context_menus();
+                        cx.stop_propagation();
+                        cx.notify();
+                    }),
+                )
+                .on_mouse_down(
+                    gpui::MouseButton::Right,
+                    cx.listener(|this, _, _, cx| {
+                        this.close_all_context_menus();
+                        cx.stop_propagation();
+                        cx.notify();
+                    }),
+                ),
+        )
+        .with_priority(1)
+        .into_any_element()
     }
 
     /// A press outside `layer`'s card: closes it when it is the top layer. True when it did.

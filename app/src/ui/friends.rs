@@ -589,9 +589,9 @@ impl Root {
                     .rule(motion::Rule::PeopleRow)
                     // A person's row opens the same user menu as their name does elsewhere (a row of the people
                     // list has no server behind it).
-                    .on_mouse_down(
+                    .on_mouse_up(
                         gpui::MouseButton::Right,
-                        cx.listener(move |this, event: &gpui::MouseDownEvent, _, cx| {
+                        cx.listener(move |this, event: &gpui::MouseUpEvent, _, cx| {
                             this.open_context_menu(
                                 super::context_menu::Target::User {
                                     user: id,

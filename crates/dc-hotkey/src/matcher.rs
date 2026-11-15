@@ -68,6 +68,16 @@ impl Matcher {
         self.update()
     }
 
+    /// Currently depressed virtual key codes.
+    pub fn held_keys(&self) -> &[u32] {
+        &self.keys
+    }
+
+    /// Force a key state to released without modifying other held keys.
+    pub fn force_up(&mut self, code: u32) -> Option<bool> {
+        self.key(code, false)
+    }
+
     /// Forget everything that was down, as when the hook stops.
     pub fn release_all(&mut self) -> Option<bool> {
         self.keys.clear();
@@ -172,5 +182,16 @@ mod tests {
         assert_eq!(matcher.release_all(), Some(false));
         assert_eq!(matcher.release_all(), None);
         assert_eq!(matcher.key(F9, true), None, "the old state is gone");
+    }
+
+    #[test]
+    fn force_up_clears_stuck_key_and_releases_held_shortcut() {
+        let mut matcher = ctrl_f9();
+        assert_eq!(matcher.key(CTRL, true), None);
+        assert_eq!(matcher.key(F9, true), Some(true));
+        assert_eq!(matcher.held_keys(), &[CTRL, F9]);
+        assert_eq!(matcher.force_up(CTRL), Some(false));
+        assert_eq!(matcher.held_keys(), &[F9]);
+        assert_eq!(matcher.force_up(CTRL), None);
     }
 }

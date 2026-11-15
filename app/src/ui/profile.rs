@@ -83,9 +83,9 @@ impl Root {
             trigger
         };
         trigger
-            .on_mouse_down(
+            .on_mouse_up(
                 gpui::MouseButton::Right,
-                cx.listener(move |this, event: &gpui::MouseDownEvent, _, cx| {
+                cx.listener(move |this, event: &gpui::MouseUpEvent, _, cx| {
                     let guild = this.guild;
                     this.open_context_menu(
                         super::context_menu::Target::User { user, guild },

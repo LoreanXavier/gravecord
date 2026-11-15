@@ -585,9 +585,9 @@ impl Root {
                 div()
                     .id(gpui::SharedString::from(format!("dm-call-avatar-{id}")))
                     .mx(px(8.))
-                    .on_mouse_down(
+                    .on_mouse_up(
                         gpui::MouseButton::Right,
-                        cx.listener(move |this, event: &gpui::MouseDownEvent, _, cx| {
+                        cx.listener(move |this, event: &gpui::MouseUpEvent, _, cx| {
                             cx.stop_propagation();
                             this.open_tile_menu(
                                 super::call_menus::Subject::User(id),

@@ -9,16 +9,23 @@
 //! The file is not bundled (DECISIONS.md): it is fetched once from the build's CDN, kept under the run's data folder and
 //! decoded when the connecting screen needs it.
 
+#[cfg(feature = "capture")]
 use crate::storage;
+#[cfg(feature = "capture")]
 use dc_proto::pin;
+#[cfg(any(feature = "capture", test))]
 use openh264::formats::YUVSource;
+#[cfg(feature = "capture")]
 use std::path::PathBuf;
 
 /// The dark theme's H.264 source of `AppSpinner`.
+#[cfg(feature = "capture")]
 const CLIP: &str = "7c5b005481eed9fc.mp4";
 /// White in limited range video, the top of the luma scale.
+#[cfg(any(feature = "capture", test))]
 const LUMA_WHITE: f32 = 235.0;
 /// Alpha below this is compression noise on the matte.
+#[cfg(any(feature = "capture", test))]
 const ALPHA_FLOOR: f32 = 0.03;
 /// The clip's frame rate; the official page plays it at its own 60 fps.
 pub const FPS: f32 = 60.0;
@@ -43,6 +50,7 @@ impl Clip {
 
 // ---- the file ----
 
+#[cfg(feature = "capture")]
 fn cache_path() -> Option<PathBuf> {
     let dir = storage::data_dir()?.join("spinner");
     std::fs::create_dir_all(&dir).ok()?;
@@ -51,6 +59,7 @@ fn cache_path() -> Option<PathBuf> {
 
 /// Writes through a temporary file in the same folder and renames it over `path`, so a crash or a full disk leaves
 /// the old file or none, never half of one.
+#[cfg(any(feature = "capture", test))]
 fn write_atomic(path: &std::path::Path, bytes: &[u8]) -> std::io::Result<()> {
     let temp = path.with_extension("part");
     let written = std::fs::write(&temp, bytes).and_then(|()| std::fs::rename(&temp, path));
@@ -61,6 +70,7 @@ fn write_atomic(path: &std::path::Path, bytes: &[u8]) -> std::io::Result<()> {
 }
 
 /// What the decode says about the cache: a download that decoded is kept, a cached file that did not is deleted.
+#[cfg(any(feature = "capture", test))]
 fn settle_cache(path: &std::path::Path, decoded: bool, cached: bool, bytes: &[u8]) {
     match (decoded, cached) {
         (true, false) => {
@@ -76,6 +86,7 @@ fn settle_cache(path: &std::path::Path, decoded: bool, cached: bool, bytes: &[u8
 }
 
 /// The clip's bytes, and whether they came from the cache. The cache is only trusted once it decoded: see `load`.
+#[cfg(feature = "capture")]
 async fn file(client: &dc_http::Client) -> Option<(Vec<u8>, bool)> {
     let cached = cache_path()?;
     if let Ok(bytes) = std::fs::read(&cached)
@@ -88,9 +99,25 @@ async fn file(client: &dc_http::Client) -> Option<(Vec<u8>, bool)> {
     Some((bytes, false))
 }
 
+/// Synchronously decodes the cached spinner clip from disk, if present and valid.
+#[cfg(feature = "capture")]
+pub fn load_cached() -> Option<Clip> {
+    let cached = storage::data_dir()?.join("spinner").join(CLIP);
+    let bytes = std::fs::read(&cached).ok()?;
+    if bytes.is_empty() {
+        return None;
+    }
+    let decoded = decode(&bytes);
+    settle_cache(&cached, decoded.is_ok(), true, &bytes);
+    decoded
+        .map_err(|error| tracing::debug!("loading cached spinner: {error}"))
+        .ok()
+}
+
 /// The spinner, fetched or read from disk and decoded. None when the file or the decode is not to be had: the screen
 /// shows without the mark then, as the official page does while its video loads. A download is kept on disk only
 /// once it decoded; a cached file that no longer decodes is deleted so the next start downloads it again.
+#[cfg(feature = "capture")]
 pub async fn load(client: &dc_http::Client) -> Option<Clip> {
     let (bytes, cached) = file(client).await?;
     tokio::task::spawn_blocking(move || {
@@ -568,6 +595,7 @@ fn timing(
 }
 
 /// A pixel's alpha from its luma and the matte's.
+#[cfg(any(feature = "capture", test))]
 fn alpha(luma: u8, matte: u8) -> u8 {
     let matte = f32::from(matte);
     let span = (LUMA_WHITE - matte).max(1.0);
@@ -580,6 +608,7 @@ fn alpha(luma: u8, matte: u8) -> u8 {
 }
 
 /// The alpha of a white mark from one luma plane.
+#[cfg(any(feature = "capture", test))]
 fn frame(plane: &[u8], stride: usize, width: usize, height: usize) -> Vec<u8> {
     let matte = plane.first().copied().unwrap_or(0);
     let mut out = Vec::with_capacity(width * height);
@@ -592,6 +621,7 @@ fn frame(plane: &[u8], stride: usize, width: usize, height: usize) -> Vec<u8> {
 }
 
 /// The loop of an H.264 MP4 with one video track, as frames of a white mark.
+#[cfg(any(feature = "capture", test))]
 pub fn decode(mp4: &[u8]) -> Result<Clip, String> {
     let track = H264Track::read(mp4)?;
     let mut decoder = openh264::decoder::Decoder::new().map_err(|error| error.to_string())?;

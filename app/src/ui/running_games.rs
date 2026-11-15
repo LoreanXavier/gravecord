@@ -48,6 +48,8 @@ pub(super) struct Games {
     menu: RefCell<Option<String>>,
     /// The name inputs of games that are not in the database, by game key.
     editors: RefCell<HashMap<String, NameInput>>,
+    #[cfg(windows)]
+    pending_window_pid: Option<u32>,
 }
 
 struct NameInput {
@@ -76,6 +78,8 @@ impl Games {
             connected: false,
             menu: RefCell::new(None),
             editors: RefCell::new(HashMap::new()),
+            #[cfg(windows)]
+            pending_window_pid: None,
         }
     }
 }
@@ -247,7 +251,7 @@ impl Root {
         // The clip path records the visible game's window (module 489496: `getVisibleGame()?.windowHandle`).
         #[cfg(windows)]
         if !self.clips.engine.test_game {
-            let game = self.detect.store.visible_game().and_then(|game| {
+            let resolve = |game: &Game| {
                 let pid = game.pid?;
                 Some(crate::clips_capture::Game {
                     pid,
@@ -255,7 +259,71 @@ impl Root {
                     name: game.name.clone().unwrap_or_default(),
                     application_id: game.id.clone(),
                 })
+            };
+            let visible = self.detect.store.visible_game().cloned();
+            let game = visible.as_ref().and_then(resolve).or_else(|| {
+                self.detect
+                    .store
+                    .visible_running_games()
+                    .into_iter()
+                    .filter(|game| !game.is_launcher)
+                    .find_map(resolve)
             });
+            if game.is_some() {
+                self.detect.pending_window_pid = None;
+            } else if let Some(pid) = visible
+                .as_ref()
+                .filter(|game| !game.is_launcher)
+                .and_then(|game| game.pid)
+                && self.detect.pending_window_pid != Some(pid)
+            {
+                // Newly launched DX/Vulkan games may register before their render window opens.
+                self.detect.pending_window_pid = Some(pid);
+                cx.spawn(async move |this, cx| {
+                    for secs in [1u64, 1, 2] {
+                        cx.background_executor()
+                            .timer(std::time::Duration::from_secs(secs))
+                            .await;
+                        let done = this
+                            .update(cx, |this, cx| {
+                                if this.detect.pending_window_pid != Some(pid) {
+                                    return true;
+                                }
+                                let Some(vis) = this.detect.store.visible_game() else {
+                                    this.detect.pending_window_pid = None;
+                                    return true;
+                                };
+                                if vis.pid != Some(pid) {
+                                    this.detect.pending_window_pid = None;
+                                    return true;
+                                }
+                                if let Some(window) = dc_detect::main_window(pid) {
+                                    let resolved = crate::clips_capture::Game {
+                                        pid,
+                                        window,
+                                        name: vis.name.clone().unwrap_or_default(),
+                                        application_id: vis.id.clone(),
+                                    };
+                                    this.detect.pending_window_pid = None;
+                                    this.clips_game_changed(Some(resolved), cx);
+                                    cx.notify();
+                                    return true;
+                                }
+                                false
+                            })
+                            .unwrap_or(true);
+                        if done {
+                            return;
+                        }
+                    }
+                    let _ = this.update(cx, |this, _| {
+                        if this.detect.pending_window_pid == Some(pid) {
+                            this.detect.pending_window_pid = None;
+                        }
+                    });
+                })
+                .detach();
+            }
             self.clips_game_changed(game, cx);
         }
         self.refresh_own_presence();

@@ -1541,9 +1541,9 @@ impl Root {
             .bg(background)
             // Module 175203: a right click opens the tile's menu at the pointer, `minimal` on a stream, whether joined
             // or observing (`outside`).
-            .on_mouse_down(
+            .on_mouse_up(
                 gpui::MouseButton::Right,
-                cx.listener(move |this, event: &gpui::MouseDownEvent, _, cx| {
+                cx.listener(move |this, event: &gpui::MouseUpEvent, _, cx| {
                     cx.stop_propagation();
                     let subject = if stream_tile {
                         super::call_menus::Subject::Stream(user_id)

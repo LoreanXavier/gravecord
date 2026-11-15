@@ -56,6 +56,17 @@ pub fn sources() -> Result<Vec<Source>> {
     Err(Error::Unsupported("screen sources"))
 }
 
+/// Current dimensions of a capturable window handle without re-enumerating all sources.
+#[cfg(windows)]
+pub fn window_dimensions(hwnd: u64) -> Option<(u32, u32)> {
+    enumerate::window_dimensions(hwnd)
+}
+
+#[cfg(not(windows))]
+pub fn window_dimensions(_hwnd: u64) -> Option<(u32, u32)> {
+    None
+}
+
 /// One picture of `source`, scaled down (never up) to fit `max_width` x `max_height`, RGBA.
 #[cfg(windows)]
 pub fn thumbnail(source: &SourceId, max_width: u32, max_height: u32) -> Result<Picture> {

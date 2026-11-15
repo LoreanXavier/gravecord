@@ -15,6 +15,7 @@ mod widgets;
 use super::*;
 pub(in crate::ui) use actions::ShareClip;
 pub(in crate::ui) use gallery::Facet;
+pub(in crate::ui) use reminder::clip_session_key;
 use gpui::deferred;
 use std::cell::RefCell;
 use std::collections::HashMap;

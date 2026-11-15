@@ -14,6 +14,7 @@ struct Speaker {
     ssrc: u32,
     slot: u8,
     gain: f32,
+    allow_clips: bool,
     neteq: Box<NetEq>,
     activity: u8,
     half_energy: f32,
@@ -52,6 +53,8 @@ pub(crate) struct Mixer {
     speakers: Vec<Speaker>,
     /// User to (volume as a factor, muted here): fixed-capacity table so RT mix updates never hash-reallocate.
     mix: Vec<(u64, f32, bool)>,
+    /// Users whose client announced `ALLOW_VOICE_RECORDING`; fixed-capacity table so RT updates never reallocate.
+    clips_allowed: Vec<u64>,
     /// Decodes and mixes in stereo (a watched stream's soundshare), else mono (the call's voices).
     stereo: bool,
     /// Counters of speakers that left, and the totals at the last report.
@@ -127,6 +130,10 @@ impl Mixer {
             self.mix
                 .reserve_exact(MAX_MIX_ENTRIES - self.mix.capacity());
         }
+        if self.clips_allowed.capacity() < MAX_MIX_ENTRIES {
+            self.clips_allowed
+                .reserve_exact(MAX_MIX_ENTRIES - self.clips_allowed.capacity());
+        }
     }
     fn channels(&self) -> usize {
         if self.stereo { 2 } else { 1 }
@@ -166,6 +173,36 @@ impl Mixer {
         for speaker in &mut self.speakers {
             if speaker.user == user {
                 speaker.gain = gain;
+            }
+        }
+    }
+    /// Updates whether `user` consents to clip recording (`ALLOW_VOICE_RECORDING`) without RT reallocation.
+    pub fn set_user_clips(&mut self, user: u64, allow: bool) {
+        if allow {
+            if !self.clips_allowed.contains(&user) {
+                if self.clips_allowed.len() < self.clips_allowed.capacity()
+                    || (self.clips_allowed.capacity() == 0
+                        && self.clips_allowed.len() < MAX_MIX_ENTRIES)
+                {
+                    if self.clips_allowed.capacity() == 0 {
+                        self.clips_allowed.reserve_exact(MAX_MIX_ENTRIES);
+                    }
+                    self.clips_allowed.push(user);
+                } else if let Some(slot) = self
+                    .clips_allowed
+                    .iter()
+                    .position(|u| !self.speakers.iter().any(|s| s.user == *u))
+                    .or_else(|| (!self.clips_allowed.is_empty()).then_some(0))
+                {
+                    self.clips_allowed[slot] = user;
+                }
+            }
+        } else if let Some(pos) = self.clips_allowed.iter().position(|u| *u == user) {
+            self.clips_allowed.swap_remove(pos);
+        }
+        for speaker in &mut self.speakers {
+            if speaker.user == user {
+                speaker.allow_clips = allow;
             }
         }
     }
@@ -215,11 +252,13 @@ impl Mixer {
         }
         let slot = self.alloc_slot();
         let gain = gain_for(&self.mix, user);
+        let allow_clips = self.clips_allowed.contains(&user);
         self.speakers.push(Speaker {
             user,
             ssrc,
             slot,
             gain,
+            allow_clips,
             neteq,
             activity: 0,
             half_energy: 0.0,
@@ -380,10 +419,24 @@ impl Mixer {
     }
     /// Mixes one 10 ms block (`OUTPUT_SIZE * channels` samples) into `output` with zero heap allocations.
     pub fn mix_10ms(&mut self, output: &mut [f32]) -> bool {
+        self.mix_10ms_with_clips(output, None).0
+    }
+    /// Mixes one 10 ms block into `output`, and when `clips_out` is provided for mono voices,
+    /// mixes unmuted consented speakers (`allow_clips && gain > 0.0`) into `clips_out`.
+    pub fn mix_10ms_with_clips(
+        &mut self,
+        output: &mut [f32],
+        mut clips_out: Option<&mut [f32]>,
+    ) -> (bool, bool) {
         let channels = self.channels();
         debug_assert_eq!(output.len(), OUTPUT_SIZE * channels);
         output.fill(0.0);
+        if let Some(clips) = clips_out.as_deref_mut() {
+            debug_assert_eq!(clips.len(), OUTPUT_SIZE);
+            clips.fill(0.0);
+        }
         let mut active = false;
+        let mut clips_active = false;
         let mut block = [0.0f32; OUTPUT_SIZE * 2];
         let block = &mut block[..OUTPUT_SIZE * channels];
         let samples_per_20ms = (OUTPUT_SIZE * 2 * channels) as f32;
@@ -393,9 +446,20 @@ impl Mixer {
             if !speaker.neteq.is_muted() {
                 active = true;
                 let gain = speaker.gain;
-                for (mixed, sample) in output.iter_mut().zip(block.iter()) {
+                let record_clips = !self.stereo && speaker.allow_clips && gain > 0.0;
+                let mut clip_slot = clips_out.as_deref_mut().filter(|_| record_clips);
+                if clip_slot.is_some() {
+                    clips_active = true;
+                }
+                for (i, (mixed, sample)) in output.iter_mut().zip(block.iter()).enumerate() {
                     if sample.is_finite() {
-                        *mixed += *sample * gain;
+                        let weighted = *sample * gain;
+                        *mixed += weighted;
+                        if let Some(clips) = clip_slot.as_deref_mut()
+                            && let Some(clip) = clips.get_mut(i)
+                        {
+                            *clip += weighted;
+                        }
                         // Speaking indicators follow the voice itself, not the local volume.
                         energy += *sample * *sample;
                     }
@@ -416,7 +480,12 @@ impl Mixer {
         for sample in output.iter_mut() {
             *sample = sample.clamp(-1.0, 1.0);
         }
-        active
+        if let Some(clips) = clips_out {
+            for sample in clips.iter_mut() {
+                *sample = sample.clamp(-1.0, 1.0);
+            }
+        }
+        (active, clips_active)
     }
     /// Mixes 20 ms into `output` (960 samples per channel): two 10 ms blocks of every speaker's NetEq. False when
     /// nobody had anything but muted output.
@@ -561,5 +630,65 @@ mod tests {
             }
             assert_eq!(frames, packets * samples / 960);
         }
+    }
+
+    #[test]
+    fn unconsented_speaker_excluded_until_set_user_clips_allows_them() {
+        let mut mixer = Mixer::default();
+        mixer.preallocate();
+        mixer.announce(1, 11).unwrap();
+        mixer.announce(2, 22).unwrap();
+        let pkt_a = opus(0.05);
+        let pkt_b = opus(0.09);
+        for seq in 0..4u16 {
+            let ts = u32::from(seq) * 960;
+            mixer.push(11, seq, ts, &pkt_a);
+            mixer.push(22, seq, ts, &pkt_b);
+        }
+
+        let mut out = [0.0f32; OUTPUT_SIZE];
+        let mut clips = [0.0f32; OUTPUT_SIZE];
+        let mut saw_playback = false;
+        for _ in 0..8 {
+            let (play_active, clips_active) = mixer.mix_10ms_with_clips(&mut out, Some(&mut clips));
+            saw_playback |= play_active;
+            assert!(!clips_active, "unconsented voices must stay out of clip mix");
+            assert!(clips.iter().all(|&s| s == 0.0));
+        }
+        assert!(saw_playback);
+
+        mixer.set_user_clips(1, true);
+        let mut solo = Mixer::default();
+        solo.announce(1, 11).unwrap();
+        for seq in 4..8u16 {
+            let ts = u32::from(seq) * 960;
+            mixer.push(11, seq, ts, &pkt_a);
+            mixer.push(22, seq, ts, &pkt_b);
+            solo.push(11, seq, ts, &pkt_a);
+        }
+
+        let mut solo_out = [0.0f32; OUTPUT_SIZE];
+        let mut saw_clips = false;
+        for _ in 0..4 {
+            let _ = solo.mix_10ms(&mut solo_out);
+            let (_, clips_active) = mixer.mix_10ms_with_clips(&mut out, Some(&mut clips));
+            saw_clips |= clips_active;
+            if clips_active {
+                assert!(clips.iter().any(|&s| s.abs() > 0.001));
+                assert!(
+                    clips
+                        .iter()
+                        .zip(out.iter())
+                        .any(|(c, o)| (c - o).abs() > 0.001),
+                    "unconsented second speaker stays in playback but not clip mix"
+                );
+            }
+        }
+        assert!(saw_clips);
+
+        mixer.set_user_clips(1, false);
+        let (_, clips_after_revoke) = mixer.mix_10ms_with_clips(&mut out, Some(&mut clips));
+        assert!(!clips_after_revoke);
+        assert!(clips.iter().all(|&s| s == 0.0));
     }
 }

@@ -762,12 +762,14 @@ impl Root {
                 .items_center()
                 .justify_center()
                 .rounded(px(2.))
-                .children(
+                .children(if let Some(name) = key.strip_prefix("icon:") {
+                    Some(icon(name, 24., onyx("--text-default")).into_any_element())
+                } else {
                     self.images
                         .get(key)
                         .cloned()
-                        .map(|image| img(image).size(px(40.)).rounded_full()),
-                )
+                        .map(|image| img(image).size(px(40.)).rounded_full().into_any_element())
+                })
         });
         let button = |label: String, confirm: bool, action: ToastAction| {
             let (background, border, text) = if confirm {

@@ -11,7 +11,7 @@
 //! `progress.txt` in the output directory before and after it is tried, so a crawl that dies shows where.
 //! Runs only with `GRAVECORD_INERT=1`, so a click on Delete or Leave cannot reach the outside world.
 
-use super::{dispatch, down, key, moved, right_down, up};
+use super::{dispatch, down, key, moved, right_down, right_up, up};
 use crate::ui::Root;
 use gpui::{AnyWindowHandle, AsyncApp, Bounds, Entity, Keystroke, Pixels, point, px};
 use std::hash::{Hash, Hasher};
@@ -586,6 +586,7 @@ pub async fn run(
                     dispatch(cx, window, moved(centre, None));
                     if other == "right" {
                         dispatch(cx, window, right_down(centre));
+                        dispatch(cx, window, right_up(centre));
                     } else {
                         dispatch(cx, window, down(centre));
                         dispatch(cx, window, up(centre));

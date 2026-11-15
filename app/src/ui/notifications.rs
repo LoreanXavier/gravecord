@@ -330,6 +330,18 @@ impl Root {
                 self.notification_runtime.clear(channel);
             }
             self.read_current_channel();
+        } else if let Some((channel, _)) = self.unread_from
+            && Some(channel) == self.channel
+            && !self.has_unread_or_mentions(channel)
+            && !self
+                .stores
+                .read_states
+                .states
+                .get(&channel)
+                .is_some_and(|state| state.manual)
+        {
+            self.unread_from = None;
+            self.rebuild_rows();
         }
         cx.notify();
     }

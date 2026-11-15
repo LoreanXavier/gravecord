@@ -53,15 +53,13 @@ pub fn capture_size(width: u32, height: u32, resolution_height: u32) -> Option<(
     if width < 2 || height < 2 {
         return None;
     }
-    let (mut out_width, mut out_height) = (width, height);
-    if let Some((box_width, box_height)) = quality_box(resolution_height) {
-        let scale = (f64::from(box_width) / f64::from(width))
-            .min(f64::from(box_height) / f64::from(height))
-            .min(1.0);
-        out_width = (f64::from(width) * scale).round() as u32;
-        out_height = (f64::from(height) * scale).round() as u32;
-    }
-    let (out_width, out_height) = (out_width & !1, out_height & !1);
+    let (box_width, box_height) =
+        quality_box(resolution_height).unwrap_or((screen::MAX_WIDTH, screen::MAX_HEIGHT));
+    let scale = (f64::from(box_width) / f64::from(width))
+        .min(f64::from(box_height) / f64::from(height))
+        .min(1.0);
+    let out_width = ((f64::from(width) * scale).round() as u32) & !1;
+    let out_height = ((f64::from(height) * scale).round() as u32) & !1;
     (out_width >= 2 && out_height >= 2).then_some((out_width, out_height))
 }
 
@@ -99,9 +97,8 @@ pub fn settings_for(
     })
 }
 
-/// How long a game that was just detected is left alone before its window is captured (module 516130
-/// `handleClipsInitOnGamesChange`: a 30 s timeout for a game added to the list).
-pub const NEW_GAME_DELAY: std::time::Duration = std::time::Duration::from_secs(30);
+/// How long a newly detected game settles before window capture starts so splash screens clear.
+pub const NEW_GAME_DELAY: std::time::Duration = std::time::Duration::from_secs(3);
 
 /// The capture that runs: its game, the quality it started with and why it ended, if it did.
 pub type Running<'a> = (&'a Game, (u32, u32, u32), Option<String>);
@@ -194,20 +191,29 @@ impl GameCapture {
         let (game, (window_width, window_height)) = if game.window == TEST_WINDOW {
             (game, TEST_WINDOW_SIZE)
         } else {
-            let sources = screen::sources().map_err(|error| error.to_string())?;
             let mut game = game;
-            let source = sources
-                .iter()
-                .find(|source| source.id == SourceId::Window(game.window))
-                .or_else(|| {
-                    let fresh = dc_detect::main_window(game.pid)?;
-                    game.window = fresh;
-                    sources
-                        .iter()
-                        .find(|source| source.id == SourceId::Window(fresh))
-                })
-                .ok_or_else(|| "the game's window is not capturable".to_owned())?;
-            (game, (source.width, source.height))
+            let direct = screen::window_dimensions(game.window).or_else(|| {
+                let fresh = dc_detect::main_window(game.pid)?;
+                game.window = fresh;
+                screen::window_dimensions(fresh)
+            });
+            if let Some(dims) = direct {
+                (game, dims)
+            } else {
+                let sources = screen::sources().map_err(|error| error.to_string())?;
+                let source = sources
+                    .iter()
+                    .find(|source| source.id == SourceId::Window(game.window))
+                    .or_else(|| {
+                        let fresh = dc_detect::main_window(game.pid)?;
+                        game.window = fresh;
+                        sources
+                            .iter()
+                            .find(|source| source.id == SourceId::Window(fresh))
+                    })
+                    .ok_or_else(|| "the game's window is not capturable".to_owned())?;
+                (game, (source.width, source.height))
+            }
         };
         let settings = settings_for(
             game.window,
@@ -340,6 +346,10 @@ mod tests {
         // A tall window is bounded by the height.
         assert_eq!(capture_size(1000, 2000, 720), Some((360, 720)));
         assert_eq!(capture_size(1, 1, 0), None);
+        // Source (0) clamps ultrawide/5K windows within 3840x2160.
+        let source_5k = capture_size(5120, 2160, 0).unwrap();
+        assert!(source_5k.0 <= 3840 && source_5k.1 <= 2160);
+        assert_eq!(source_5k, (3840, 1620));
     }
 
     #[test]
@@ -399,12 +409,12 @@ mod tests {
     }
 
     #[test]
-    fn a_new_game_waits_thirty_seconds() {
+    fn a_new_game_waits_short_delay() {
         let g = game(1);
         let mut s = base(&g);
-        s.game_age = std::time::Duration::from_secs(29);
+        s.game_age = std::time::Duration::from_secs(2);
         assert!(!plan(&s).start);
-        s.game_age = std::time::Duration::from_secs(30);
+        s.game_age = std::time::Duration::from_secs(3);
         assert!(plan(&s).start);
     }
 

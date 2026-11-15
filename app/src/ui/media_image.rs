@@ -4,8 +4,8 @@ use super::{Root, Side, Tip, color, icon, menu};
 use crate::parity::Parity;
 use dc_state::{Attachment, Id, Message};
 use gpui::{
-    AnyElement, Context, EntityId, FontWeight, Image, IntoElement, MouseButton, MouseDownEvent,
-    Pixels, SharedString, div, img, prelude::*, px, rgba, svg,
+    AnyElement, Context, EntityId, FontWeight, Image, IntoElement, MouseButton, Pixels,
+    SharedString, div, img, prelude::*, px, rgba, svg,
 };
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
@@ -535,9 +535,9 @@ impl Root {
                     .on_click(cx.listener(move |this, _, _, cx| {
                         this.open_lightbox(&clicked, &open_key, cx);
                     }))
-                    .on_mouse_down(
+                    .on_mouse_up(
                         MouseButton::Right,
-                        cx.listener(move |this, event: &MouseDownEvent, _, _| {
+                        cx.listener(move |this, event: &gpui::MouseUpEvent, _, _| {
                             this.menu_hit = Some((
                                 event.position,
                                 menu::Hit::Media {

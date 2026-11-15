@@ -46,6 +46,8 @@ pub(in crate::ui) struct Loaded {
     pub height: u32,
     /// The audio track names (`application`, `voice`) with their packet counts.
     pub tracks: Vec<(String, u32)>,
+    /// Decoded mono 48 kHz samples per track name, in track order.
+    pub audio_tracks: Vec<(String, Vec<f32>)>,
 }
 
 pub(super) enum Command {
@@ -144,6 +146,20 @@ fn load(path: &Path) -> Result<Loaded, String> {
             .iter()
             .map(|track| (track.name.clone(), track.packets.len() as u32))
             .collect(),
+        audio_tracks: clip
+            .audio
+            .iter()
+            .map(|track| {
+                (
+                    track.name.clone(),
+                    dc_clips::audio::decode_track_mono(
+                        track.channels,
+                        track.pre_skip,
+                        &track.packets,
+                    ),
+                )
+            })
+            .collect(),
         units: Arc::new(units),
     })
 }
@@ -158,7 +174,7 @@ struct Feeder {
 impl Feeder {
     fn new() -> Option<Self> {
         Some(Self {
-            decoder: Decoder::software().ok()?,
+            decoder: Decoder::new().ok()?,
             fed: None,
         })
     }

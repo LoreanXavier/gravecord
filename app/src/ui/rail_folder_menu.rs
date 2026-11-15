@@ -138,12 +138,7 @@ impl Root {
             .folder(folder)
             .map(|folder| folder.guilds.clone())
             .unwrap_or_default();
-        // One bulk ack for all the folder's servers, as `A([guildIds])` of module 567035 builds it.
-        let reads: Vec<(u64, u64)> = guilds
-            .into_iter()
-            .flat_map(|guild| self.guild_unread_reads(guild))
-            .collect();
-        self.mark_read_bulk(&reads, cx);
+        self.mark_guilds_read(&guilds, cx);
     }
 
     pub(super) fn folder_menu_layer(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
@@ -305,19 +300,23 @@ impl Root {
             .flex_col()
             .children(rows);
         Some(
-            deferred(
-                anchored()
-                    .anchor(gpui::Anchor::TopLeft)
-                    .position(open.at)
-                    .snap_to_window_with_margin(px(8.))
-                    .child(super::keyboard::outside(
-                        frame,
-                        super::keyboard::Layer::FolderMenu,
-                        cx,
-                    )),
-            )
-            .with_priority(2)
-            .into_any_element(),
+            div()
+                .child(self.menu_backdrop(cx))
+                .child(
+                    deferred(
+                        anchored()
+                            .anchor(gpui::Anchor::TopLeft)
+                            .position(open.at)
+                            .snap_to_window_with_margin(px(8.))
+                            .child(super::keyboard::outside(
+                                frame,
+                                super::keyboard::Layer::FolderMenu,
+                                cx,
+                            )),
+                    )
+                    .with_priority(2),
+                )
+                .into_any_element(),
         )
     }
 

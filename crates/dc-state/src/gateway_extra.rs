@@ -15,13 +15,13 @@ impl Stores {
         let Some(channel) = id(&data["channel_id"]) else {
             return;
         };
-        let Some(list) = self.messages.get_mut(&channel) else {
-            return;
-        };
-        let window = self.windows.entry(channel).or_default();
-        for message in data["ids"].as_array().into_iter().flatten().filter_map(id) {
-            window.remove(list, message);
-        }
+        let ids: Vec<Id> = data["ids"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(id)
+            .collect();
+        self.delete_messages(channel, &ids);
     }
 
     /// `VOICE_STATE_UPDATE_BATCH {voice_states: [...]}`: each state is one `VOICE_STATE_UPDATE` (module 225123 `eH`).

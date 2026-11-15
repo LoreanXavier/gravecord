@@ -671,7 +671,13 @@ fn worker_main(key: String, url: String, sync: Arc<SyncState>) {
     decoder.set_vod_reorder(reorder_depth);
     let mut dimensions = track.dimensions();
     let video_secs = (total_100ns as f64) / 10_000_000.0;
-    let audio = Clip::from_file(bytes.as_ref().clone()).ok().map(Arc::new);
+    let audio = dc_clips::mp4::read_clip(&mut std::io::Cursor::new(bytes.as_slice()))
+        .ok()
+        .filter(|clip| !clip.audio.is_empty())
+        .map(|clip| clip.decode_mixed_mono(None))
+        .filter(|samples| !samples.is_empty())
+        .map(|samples| Arc::new(Clip::from_samples(samples)))
+        .or_else(|| Clip::from_file(bytes.as_ref().clone()).ok().map(Arc::new));
     let duration_secs = audio
         .as_ref()
         .map_or(video_secs, |clip| video_secs.max(clip.seconds()));

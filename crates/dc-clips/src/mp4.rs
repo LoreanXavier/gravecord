@@ -1027,9 +1027,61 @@ impl ClipFile {
             .retain(|track| keep.contains(&track.name.as_str()));
     }
 
+    /// Decodes matching audio tracks (`None` means all tracks) and mixes them down to mono 48 kHz PCM.
+    pub fn decode_mixed_mono(&self, keep: Option<&[&str]>) -> Vec<f32> {
+        let mut mixed: Vec<f32> = Vec::new();
+        for track in &self.audio {
+            if keep.is_some_and(|names| !names.contains(&track.name.as_str())) {
+                continue;
+            }
+            let pcm = crate::audio::decode_track_mono(track.channels, track.pre_skip, &track.packets);
+            accumulate_pcm(&mut mixed, &pcm);
+        }
+        clamp_pcm(&mut mixed);
+        mixed
+    }
+
+    /// Folds multiple audio tracks down into a single stereo Opus track so standard players hear all kept tracks.
+    pub fn fold_audio_to_single_stereo(&mut self) {
+        if self.audio.len() <= 1 {
+            return;
+        }
+        let mut mixed: Vec<f32> = Vec::new();
+        for track in &self.audio {
+            let pcm =
+                crate::audio::decode_track_stereo(track.channels, track.pre_skip, &track.packets);
+            accumulate_pcm(&mut mixed, &pcm);
+        }
+        clamp_pcm(&mut mixed);
+        let (pre_skip, packets) = crate::audio::encode_stereo_packets(&mixed);
+        if !packets.is_empty() {
+            self.audio = vec![AudioInput {
+                name: "application".to_owned(),
+                channels: 2,
+                pre_skip,
+                packets,
+            }];
+        }
+    }
+
     /// Writes the clip with `metadata` as its document. Returns the size.
     pub fn write(&self, out: &mut impl Write, metadata: &[u8]) -> io::Result<u64> {
         write(out, &self.video, &self.audio, metadata)
+    }
+}
+
+fn accumulate_pcm(mixed: &mut Vec<f32>, pcm: &[f32]) {
+    if pcm.len() > mixed.len() {
+        mixed.resize(pcm.len(), 0.0);
+    }
+    for (dst, src) in mixed.iter_mut().zip(pcm) {
+        *dst += *src;
+    }
+}
+
+fn clamp_pcm(samples: &mut [f32]) {
+    for sample in samples {
+        *sample = sample.clamp(-1.0, 1.0);
     }
 }
 
@@ -1075,5 +1127,116 @@ pub fn replace_metadata(path: &std::path::Path, metadata: &[u8]) -> io::Result<(
             let _ = std::fs::remove_file(&temp);
             Err(error)
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::audio::TrackEncoder;
+    use crate::buffer::PACKET_SAMPLES;
+    use std::io::Cursor;
+
+    fn sine_samples(frames: usize, channels: usize, freq_hz: f32, amp: f32) -> Vec<f32> {
+        let mut out = Vec::with_capacity(frames * channels);
+        for i in 0..frames {
+            let s = (2.0 * std::f32::consts::PI * freq_hz * i as f32 / 48_000.0).sin() * amp;
+            for _ in 0..channels {
+                out.push(s);
+            }
+        }
+        out
+    }
+
+    fn rms(samples: &[f32]) -> f32 {
+        if samples.is_empty() {
+            return 0.0;
+        }
+        let sum: f32 = samples.iter().map(|s| s * s).sum();
+        (sum / samples.len() as f32).sqrt()
+    }
+
+    #[test]
+    fn multi_track_clip_decodes_and_folds_to_single_stereo_track() {
+        let mut generator = dc_media::synthetic::Generator::new(320, 180, 10, 400_000).unwrap();
+        let frame = generator.next(true).unwrap().unwrap();
+        let sps = dc_media::h264::nals(&frame.data)
+            .find(|n| n[0] & 31 == 7)
+            .expect("keyframe has sps")
+            .to_vec();
+        let pps = dc_media::h264::nals(&frame.data)
+            .find(|n| n[0] & 31 == 8)
+            .expect("keyframe has pps")
+            .to_vec();
+        let info = crate::sps::parse(&sps).unwrap();
+        let video = VideoInput {
+            sps,
+            pps,
+            info,
+            samples: vec![VideoSample {
+                data: to_length_prefixed(&frame.data),
+                duration: VIDEO_TIMESCALE / 5,
+                sync: true,
+            }],
+        };
+
+        let samples_total = PACKET_SAMPLES * 10;
+        let mut app_enc = TrackEncoder::new(2).unwrap();
+        let app_skip = app_enc.pre_skip();
+        let app_packets: Vec<Vec<u8>> = app_enc
+            .push(&sine_samples(samples_total, 2, 440.0, 0.25), 200)
+            .into_iter()
+            .map(|p| p.data)
+            .collect();
+
+        let mut voice_enc = TrackEncoder::new(1).unwrap();
+        let voice_skip = voice_enc.pre_skip();
+        let voice_packets: Vec<Vec<u8>> = voice_enc
+            .push(&sine_samples(samples_total, 1, 660.0, 0.30), 200)
+            .into_iter()
+            .map(|p| p.data)
+            .collect();
+
+        let audio = vec![
+            AudioInput {
+                name: "application".to_owned(),
+                channels: 2,
+                pre_skip: app_skip,
+                packets: app_packets,
+            },
+            AudioInput {
+                name: "voice".to_owned(),
+                channels: 1,
+                pre_skip: voice_skip,
+                packets: voice_packets,
+            },
+        ];
+
+        let mut raw = Vec::new();
+        write(&mut raw, &video, &audio, &[]).unwrap();
+        let mut read_back = read_clip(&mut Cursor::new(&raw)).unwrap();
+        assert_eq!(read_back.audio.len(), 2);
+
+        let only_app = read_back.decode_mixed_mono(Some(&["application"]));
+        let only_voice = read_back.decode_mixed_mono(Some(&["voice"]));
+        let both = read_back.decode_mixed_mono(None);
+        assert!(!only_app.is_empty());
+        assert!(!only_voice.is_empty());
+        assert!(rms(&both) > rms(&only_app) * 0.9);
+        assert!(rms(&only_app) > 0.05);
+        assert!(rms(&only_voice) > 0.05);
+        assert_ne!(only_app, both);
+
+        read_back.fold_audio_to_single_stereo();
+        assert_eq!(read_back.audio.len(), 1);
+        assert_eq!(read_back.audio[0].channels, 2);
+        assert!(!read_back.audio[0].packets.is_empty());
+
+        let mut folded_raw = Vec::new();
+        read_back.write(&mut folded_raw, &[]).unwrap();
+        let folded = read_clip(&mut Cursor::new(&folded_raw)).unwrap();
+        assert_eq!(folded.audio.len(), 1);
+        let folded_mono = folded.decode_mixed_mono(None);
+        assert!(rms(&folded_mono) > 0.05);
     }
 }

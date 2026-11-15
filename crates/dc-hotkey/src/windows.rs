@@ -14,6 +14,7 @@ use std::thread::JoinHandle;
 use windows_sys::Win32::Foundation::{LPARAM, LRESULT, WPARAM};
 use windows_sys::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows_sys::Win32::System::Threading::GetCurrentThreadId;
+use windows_sys::Win32::UI::Input::KeyboardAndMouse::GetAsyncKeyState;
 use windows_sys::Win32::UI::WindowsAndMessaging::{
     CallNextHookEx, GetMessageW, HC_ACTION, HHOOK, KBDLLHOOKSTRUCT, MSG, MSLLHOOKSTRUCT,
     PM_NOREMOVE, PeekMessageW, PostThreadMessageW, SetWindowsHookExW, UnhookWindowsHookEx,
@@ -54,6 +55,31 @@ impl Shared {
         self.apply(|matcher| matcher.button(code, down));
     }
 
+    fn prune_stale_modifiers(&self, current_vk: u32) {
+        self.apply(|matcher| {
+            if matcher.held_keys().is_empty() {
+                return None;
+            }
+            let stale: Vec<u32> = matcher
+                .held_keys()
+                .iter()
+                .copied()
+                .filter(|&vk| {
+                    vk != current_vk
+                        && is_modifier_vk(vk)
+                        && (unsafe { GetAsyncKeyState(vk as i32) } as u16 & 0x8000) == 0
+                })
+                .collect();
+            let mut changed = None;
+            for vk in stale {
+                if let Some(held) = matcher.force_up(vk) {
+                    changed = Some(held);
+                }
+            }
+            changed
+        });
+    }
+
     fn apply(&self, change: impl FnOnce(&mut Matcher) -> Option<bool>) {
         let changed = match self.matcher.lock() {
             Ok(mut matcher) => change(&mut matcher),
@@ -85,6 +111,10 @@ fn mouse_event(message: u32, mouse_data: u32) -> Option<(u32, bool)> {
     }
 }
 
+fn is_modifier_vk(vk: u32) -> bool {
+    matches!(vk, 16..=18 | 91 | 92 | 160..=165)
+}
+
 thread_local! {
     /// The callbacks have no user data, but Windows runs them on the thread that installed the hook, so each hook
     /// thread keeps its own state here. Several hooks (push to talk, the clip keybind) can run side by side.
@@ -102,6 +132,7 @@ unsafe extern "system" fn keyboard_proc(code: i32, wparam: WPARAM, lparam: LPARA
     {
         // SAFETY: for HC_ACTION, lParam points at the KBDLLHOOKSTRUCT of this event.
         let info = unsafe { &*(lparam as *const KBDLLHOOKSTRUCT) };
+        shared.prune_stale_modifiers(info.vkCode);
         shared.keyboard(wparam as u32, info.vkCode);
     }
     // SAFETY: passing the call on unchanged is what a hook must do.

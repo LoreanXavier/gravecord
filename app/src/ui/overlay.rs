@@ -1274,6 +1274,43 @@ impl Root {
         self.overlay.notices.tidy_text(3, now);
     }
 
+    /// Overlay toast notification when a clip is saved or fails to save.
+    pub(in crate::ui) fn overlay_clip_notice(
+        &mut self,
+        title: String,
+        body: Option<String>,
+        cx: &mut Context<Self>,
+    ) {
+        if crate::storage::is_capture_run() || self.overlay.shown.is_none() {
+            return;
+        }
+        let toast = Toast {
+            kind: ToastKind::Text,
+            icon: Some("icon:overlay_clips".to_owned()),
+            title: Some(title),
+            body,
+            hint: None,
+            max_lines: Some(2),
+            confirm: None,
+            cancel: None,
+            click: None,
+            channel: None,
+            no_zone: true,
+        };
+        self.overlay_push(
+            toast,
+            Options {
+                priority: Priority::Urgent,
+                kind: Kind::Nudge,
+                duration: notify::NUDGE_DURATION,
+                ..Options::default()
+            },
+            cx,
+        );
+        self.overlay_schedule_tick(cx);
+        cx.notify();
+    }
+
     /// `eO` and `CALL_DELETE`: a call that rings us gets its toast (Join Call / Decline), gone when it stops. None in
     /// Do Not Disturb or quiet mode.
     fn overlay_calls(&mut self, cx: &mut Context<Self>) {

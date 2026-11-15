@@ -585,9 +585,12 @@ fn scan_with(lists: &Detectables, index: &dc_detect::Index) -> GameScan {
             )
         })
         .count();
+    let mut games = scan.games;
+    // Prefer real game executables over launchers in visible-game selection.
+    games.sort_by_key(|game| game.is_launcher);
     GameScan {
         streamer_tools,
-        games: scan.games,
+        games,
         candidates,
         foreground: dc_detect::foreground_pid(),
     }

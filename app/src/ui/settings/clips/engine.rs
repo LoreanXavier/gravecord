@@ -249,7 +249,12 @@ impl Root {
             // `CLIPS_SESSION_STOP` / `CLIPS_SESSION_START` (module 516130): the game that was running offers its clips,
             // and a session that starts with no game before it closes the panel.
             let previous = self.clips.engine.game.take();
-            match previous.and_then(|previous| previous.application_id) {
+            match previous.and_then(|previous| {
+                crate::ui::clips::clip_session_key(
+                    previous.application_id.as_deref(),
+                    &previous.name,
+                )
+            }) {
                 Some(id) => self.clips_session_stop(Some(id), cx),
                 None => self.clips_session_start(cx),
             }
@@ -296,12 +301,18 @@ impl Root {
             quality.frame_rate.fps() as u32,
             quality.bitrate_percent as u32,
         );
-        let game = self.clips.engine.game.clone();
-        let location = &self.clips.store.settings.storage_location;
+        let location = self.clips.store.settings.storage_location.clone();
         let location_set = !location.is_empty() && location != DEFAULT_LOCATION;
         let enabled = self.clips_enabled();
         let own_stream = self.own_stream_active();
         let engine = &mut self.clips.engine;
+        if !engine.test_game
+            && let Some(current) = engine.game.as_mut()
+            && let Some(fresh) = dc_detect::main_window(current.pid)
+        {
+            current.window = fresh;
+        }
+        let game = engine.game.clone();
         let ended = engine.capture.as_ref().and_then(|capture| capture.ended());
         let plan = crate::clips_capture::plan(&crate::clips_capture::Situation {
             enabled,
@@ -392,11 +403,60 @@ impl Root {
 
     /// A stream of ours is about to start: the recorder learns what it shows (`sourceName`) and the settings are
     /// current.
-    pub(in crate::ui) fn clips_stream_starting(&mut self, source_name: &str) {
+    pub(in crate::ui) fn clips_stream_starting(
+        &mut self,
+        source_name: &str,
+        source_id: dc_media::screen::SourceId,
+    ) {
         self.clips_sync_engine();
+        let application_id = match source_id {
+            dc_media::screen::SourceId::Window(hwnd) => {
+                #[cfg(windows)]
+                {
+                    self.clips
+                        .engine
+                        .game
+                        .as_ref()
+                        .filter(|game| {
+                            game.window == hwnd || game.name.eq_ignore_ascii_case(source_name)
+                        })
+                        .and_then(|game| game.application_id.clone())
+                        .or_else(|| {
+                            self.detect
+                                .store
+                                .visible_running_games()
+                                .into_iter()
+                                .find(|game| {
+                                    game.pid.is_some_and(|pid| {
+                                        dc_detect::main_window(pid) == Some(hwnd)
+                                    }) || game
+                                        .name
+                                        .as_deref()
+                                        .is_some_and(|name| name.eq_ignore_ascii_case(source_name))
+                                })
+                                .and_then(|game| game.id.clone())
+                        })
+                }
+                #[cfg(not(windows))]
+                {
+                    let _ = hwnd;
+                    self.detect
+                        .store
+                        .visible_running_games()
+                        .into_iter()
+                        .find(|game| {
+                            game.name
+                                .as_deref()
+                                .is_some_and(|name| name.eq_ignore_ascii_case(source_name))
+                        })
+                        .and_then(|game| game.id.clone())
+                }
+            }
+            dc_media::screen::SourceId::Display(_) => None,
+        };
         dc_clips::recorder().announce_source(SourceInfo {
             name: source_name.to_owned(),
-            application_id: None,
+            application_id,
         });
     }
 
@@ -590,6 +650,10 @@ impl Root {
                 ));
                 self.clips.engine.clip_saved(clip);
                 self.clips_after_save(cx);
+                if !crate::storage::is_capture_run() {
+                    self.show_success_toast("Clip saved".to_owned(), cx);
+                    self.overlay_clip_notice("Clip saved".to_owned(), None, cx);
+                }
             }
             Err(SaveFailure::WarmingUp) => {
                 // A no-op that gives the counter back: the sound stops, nothing is shown.
@@ -599,6 +663,14 @@ impl Root {
                     "CLIPS_SAVE_CLIP_NO_OP reason={}",
                     NoOp::BufferWarmingUp.code()
                 ));
+                if !crate::storage::is_capture_run() {
+                    self.show_app_toast("Clip buffer is still warming up", cx);
+                    self.overlay_clip_notice(
+                        "Clip buffer is still warming up".to_owned(),
+                        None,
+                        cx,
+                    );
+                }
             }
             Err(SaveFailure::Error(message)) => {
                 // `CLIPS_SAVE_CLIP_ERROR`: the sound stops, `clip_error` plays, "Unable to save clip" is shown.
@@ -612,6 +684,14 @@ impl Root {
                 self.clips
                     .engine
                     .note("notification \"Unable to save clip\" (not drawn: no capture of it)");
+                if !crate::storage::is_capture_run() {
+                    self.show_app_toast("Unable to save clip", cx);
+                    self.overlay_clip_notice(
+                        "Unable to save clip".to_owned(),
+                        Some(message.clone()),
+                        cx,
+                    );
+                }
                 self.clips.engine.last_error = Some(message);
             }
         }

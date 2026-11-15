@@ -53,15 +53,55 @@ impl Root {
                 .filter(|thread| thread.joined && !thread.archived)
                 .map(|thread| thread.id),
         );
-        ids.filter(|id| self.stores.is_unread(*id))
-            .filter_map(|id| {
-                self.stores
-                    .read_states
-                    .latest
-                    .get(&id)
-                    .map(|latest| (id, *latest))
-            })
+        ids.filter(|id| self.has_unread_or_mentions(*id))
+            .map(|id| (id, self.ack_target_id(id)))
             .collect()
+    }
+
+    pub(super) fn ack_guild_events(&mut self, guild: Id) {
+        const GUILD_EVENT: u64 = 1;
+        let now = dc_state::read_state::snowflake_at(super::picker::now_ms());
+        let latest = self
+            .stores
+            .read_states
+            .typed
+            .get(&(guild, GUILD_EVENT))
+            .map(|state| state.last)
+            .unwrap_or(0)
+            .max(
+                self.stores
+                    .scheduled_events
+                    .get_guild_scheduled_events_for_guild(guild)
+                    .into_iter()
+                    .map(|event| event.id)
+                    .max()
+                    .unwrap_or(0),
+            );
+        if self
+            .stores
+            .read_states
+            .non_channel_ack(guild, GUILD_EVENT, (latest > 0).then_some(latest), now)
+        {
+            self.data_revision += 1;
+            let entity = if latest > 0 { latest } else { now };
+            let _ = self.requests.send(Request::Rest {
+                key: None,
+                method: reqwest::Method::POST,
+                route: format!("/guilds/{guild}/ack/{GUILD_EVENT}/{entity}"),
+                body: Some(json!({})),
+            });
+        }
+    }
+
+    pub(super) fn mark_guilds_read(&mut self, guilds: &[Id], cx: &mut Context<Self>) {
+        let reads: Vec<(Id, Id)> = guilds
+            .iter()
+            .flat_map(|guild| self.guild_unread_reads(*guild))
+            .collect();
+        self.mark_read_bulk(&reads, cx);
+        for &guild in guilds {
+            self.ack_guild_events(guild);
+        }
     }
 
     /// Acks every pair here at once, and sends the bulk requests: the first now, the others a second apart.
@@ -70,7 +110,19 @@ impl Root {
             return;
         }
         for (channel, message) in reads {
+            if let Some(state) = self.stores.read_states.states.get_mut(channel) {
+                state.manual = false;
+            }
+            if self.channel == Some(*channel) {
+                self.unread_from = None;
+            }
             self.stores.read_states.ack_local(*channel, *message, false);
+        }
+        if self
+            .channel
+            .is_some_and(|open| reads.iter().any(|(channel, _)| *channel == open))
+        {
+            self.rebuild_rows();
         }
         self.data_revision += 1;
         let mut requests = bulk_ack_requests(reads).into_iter();

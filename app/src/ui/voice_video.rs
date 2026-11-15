@@ -564,7 +564,7 @@ impl Root {
         };
         let (guild, channel) = (call.guild, call.channel);
         let guild = (guild != 0).then_some(guild);
-        self.clips_stream_starting(&started.name);
+        self.clips_stream_starting(&started.name, started.info.id);
         let key = match guild {
             Some(guild) => StreamKey::Guild {
                 guild,

@@ -162,7 +162,7 @@ impl Root {
 
     /// The threads listed under `parent` (`ActiveJoinedThreadsStore` and `eA.computeState`/`eT` in module 791513, ported
     /// in `dc_state::thread_list`): joined, active and relevant, newest joined first, the open thread on top.
-    fn sidebar_threads(&self, parent: Id) -> Vec<Thread> {
+    pub(super) fn sidebar_threads(&self, parent: Id) -> Vec<Thread> {
         let Some(guild) = self.current_guild() else {
             return Vec::new();
         };
@@ -402,6 +402,7 @@ impl Root {
     pub(super) fn thread_rows(&self, parent: Id, cx: &mut Context<Self>) -> Vec<AnyElement> {
         let threads = self.sidebar_threads(parent);
         let count = threads.len();
+        let now = chrono::Utc::now();
         threads
             .into_iter()
             .enumerate()
@@ -409,11 +410,13 @@ impl Root {
                 let selected = self.channel == Some(thread.id);
                 let id = thread.id;
                 let guild = self.guild;
+                let mentions = self.stores.read_states.mentions(id);
+                let unread = !thread.is_muted(now) && self.stores.is_unread(id);
                 div()
                     .id(SharedString::from(format!("thread-row-{id}")))
-                    .on_mouse_down(
+                    .on_mouse_up(
                         gpui::MouseButton::Right,
-                        cx.listener(move |this, event: &gpui::MouseDownEvent, _, cx| {
+                        cx.listener(move |this, event: &gpui::MouseUpEvent, _, cx| {
                             this.open_context_menu(
                                 super::context_menu::Target::Thread(id),
                                 event.position,
@@ -425,6 +428,18 @@ impl Root {
                     .relative()
                     .w(px(294.))
                     .h(px(34.))
+                    .when(unread && !selected, |this| {
+                        this.child(
+                            div()
+                                .absolute()
+                                .left(px(1.))
+                                .top(px(13.))
+                                .w(px(4.))
+                                .h(px(8.))
+                                .rounded_r(px(4.))
+                                .bg(color("--interactive-text-active")),
+                        )
+                    })
                     // `spineBorder_reDhww`: one 2px rule down the whole list, ending 24px above the last row's bottom, in
                     // `--spine-default` like the branch (`spine_reDhww`). The token is opaque, so the two can overlap.
                     .child(
@@ -458,6 +473,7 @@ impl Root {
                                 .cursor_pointer()
                                 .flex()
                                 .items_center()
+                                .gap(px(4.))
                                 .when(selected, |this| this.bg(color("--background-mod-strong")))
                                 .when(!selected, |this| {
                                     this.hover(|style| style.bg(color("--background-mod-subtle")))
@@ -465,12 +481,19 @@ impl Root {
                                 .text_size(px(14.))
                                 .line_height(px(24.))
                                 .font_weight(FontWeight(500.))
-                                .text_color(if selected {
+                                .text_color(if selected || unread || mentions > 0 {
                                     color("--text-strong")
                                 } else {
                                     color("--channels-default")
                                 })
-                                .child(thread.name.clone()),
+                                .child(div().flex_1().truncate().child(thread.name.clone()))
+                                .when(mentions > 0, |this| {
+                                    this.child(super::unread_badges::number(
+                                        mentions,
+                                        "--background-feedback-notification",
+                                        None,
+                                    ))
+                                }),
                         ),
                     )
                     .on_click(cx.listener(move |this, _, _, cx| {

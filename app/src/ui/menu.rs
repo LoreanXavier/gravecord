@@ -1180,6 +1180,7 @@ impl Root {
                 item => self.menu_row(index, item, open.message, cx),
             });
         }
+        let pointer_anchor = matches!(open.anchor, Anchor::Pointer(_));
         let (position, margin) = match open.anchor {
             Anchor::Pointer(at) => (at, EDGE_MARGIN),
             Anchor::MoreButton(at) => {
@@ -1192,11 +1193,16 @@ impl Root {
                 )
             }
         };
-        let max_height = f32::from(window.viewport_size().height) - 96.;
-        Some(deferred(
+        let max_height = (f32::from(window.viewport_size().height) - 96.).max(120.);
+        let menu = deferred(
             anchored()
                 .position(position)
-                .snap_to_window_with_margin(px(margin))
+                .when(pointer_anchor, |this| {
+                    this.flip_horizontal_snap_with_margin(px(margin))
+                })
+                .when(!pointer_anchor, |this| {
+                    this.snap_to_window_with_margin(px(margin))
+                })
                 .child(
                     div()
                         .parity_with_border("message-menu", 1.)
@@ -1268,7 +1274,14 @@ impl Root {
                         )
                         .child(menu_scrollbar(self.menu_scroll.clone())),
                 ),
-        ))
+        )
+        .with_priority(2);
+        Some(
+            div()
+                .child(self.menu_backdrop(cx))
+                .child(menu)
+                .into_any_element(),
+        )
     }
 
     /// The submenu of the open menu, beside the row it hangs off.

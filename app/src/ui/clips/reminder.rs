@@ -134,6 +134,15 @@ pub(super) fn count_text(count: usize) -> String {
     }
 }
 
+/// Matches a clip or running game to a reminder session by application ID or custom-game name.
+pub(in crate::ui) fn clip_session_key(app_id: Option<&str>, name: &str) -> Option<String> {
+    if let Some(id) = app_id.filter(|id| !id.is_empty()) {
+        return Some(id.to_owned());
+    }
+    let trimmed = name.trim();
+    (!trimmed.is_empty()).then(|| format!("name:{}", trimmed.to_ascii_lowercase()))
+}
+
 impl Root {
     /// `handleClipsReminder(gameId)`: opens the panel when reminders are on and the last session has a clip of the game.
     pub(in crate::ui) fn clips_session_stop(
@@ -149,10 +158,15 @@ impl Root {
         }
         let engine = &self.clips.engine;
         let has = engine.new_clip_ids.iter().any(|id| {
-            engine
-                .clips
-                .get(id)
-                .is_some_and(|clip| clip.meta.application_id.as_deref() == Some(app_id.as_str()))
+            engine.clips.get(id).is_some_and(|clip| {
+                clip.meta.application_id.as_deref() == Some(app_id.as_str())
+                    || clip_session_key(
+                        clip.meta.application_id.as_deref(),
+                        &clip.meta.application_name,
+                    )
+                    .as_deref()
+                        == Some(app_id.as_str())
+            })
         });
         if has {
             self.clips.engine.ui.reminder = Some(Reminder::new(app_id, motion::now()));
@@ -200,7 +214,15 @@ impl Root {
             .new_clip_ids
             .iter()
             .filter_map(|id| engine.clips.get(id))
-            .filter(|clip| clip.meta.application_id.as_deref() == Some(app_id))
+            .filter(|clip| {
+                clip.meta.application_id.as_deref() == Some(app_id)
+                    || clip_session_key(
+                        clip.meta.application_id.as_deref(),
+                        &clip.meta.application_name,
+                    )
+                    .as_deref()
+                        == Some(app_id)
+            })
             .collect();
         clips.sort_by_key(|clip| std::cmp::Reverse(clip.meta.created_at));
         clips

@@ -689,9 +689,9 @@ impl Root {
                     .line_height(px(18.))
                     .font_weight(FontWeight(500.))
                     .text_color(color("--channels-default"))
-                    .on_mouse_down(
+                    .on_mouse_up(
                         gpui::MouseButton::Right,
-                        cx.listener(|this, event: &gpui::MouseDownEvent, _, cx| {
+                        cx.listener(|this, event: &gpui::MouseUpEvent, _, cx| {
                             this.open_context_menu(
                                 super::context_menu::Target::InventoryFeedAtPointer,
                                 event.position,

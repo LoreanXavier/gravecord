@@ -49,6 +49,7 @@ fn stamp(stores: &Stores, guild: &Guild) -> u64 {
                 settings.mute_end,
                 settings.suppress_everyone,
                 settings.suppress_roles,
+                settings.mute_scheduled_events,
             )
                 .hash(h);
         }));
@@ -104,6 +105,10 @@ fn stamp(stores: &Stores, guild: &Guild) -> u64 {
             (thread.muted, thread.mute_end).hash(h);
         }));
     }
+    let events = stores.read_states.typed.get(&(guild.id, 1));
+    total = total.wrapping_add(hash(&|h| {
+        events.map(|s| (s.acked, s.last, s.mention_count)).hash(h);
+    }));
     total
 }
 
@@ -217,12 +222,15 @@ fn allowed_age(stores: &Stores, guild: &Guild, channel: &Channel) -> bool {
     stores.account.nsfw_allowed || (!channel.nsfw && !matches!(guild.nsfw_level, 1 | 3))
 }
 
-/// Badge mentions differ from desktop notifications: muted channels can still contain direct pings.
-pub fn message_mention(stores: &Stores, message: &Value, now: DateTime<Utc>) -> Option<Importance> {
-    let me = stores.current_user.as_ref()?.id;
-    let channel = crate::id(&message["channel_id"])?;
-    crate::id(&message["author"]["id"])?;
-    if notifications::blocked_or_ignored_for_message(stores, message) {
+fn mention_with(
+    stores: &Stores,
+    channel: Id,
+    kind: u64,
+    blocked_or_ignored: bool,
+    now: DateTime<Utc>,
+    mentions_me: impl FnOnce(&[Id], bool, bool) -> bool,
+) -> Option<Importance> {
+    if blocked_or_ignored {
         return None;
     }
     if let Some(guild) = stores.guild_of_channel(channel) {
@@ -233,9 +241,7 @@ pub fn message_mention(stores: &Stores, message: &Value, now: DateTime<Utc>) -> 
             return None;
         }
         let settings = stores.guild_settings.guilds.get(&guild.id);
-        if notifications::mentions_user(
-            message,
-            me,
+        if mentions_me(
             &guild.my_roles,
             settings.is_some_and(|s| s.suppress_everyone),
             settings.is_some_and(|s| s.suppress_roles),
@@ -261,16 +267,52 @@ pub fn message_mention(stores: &Stores, message: &Value, now: DateTime<Utc>) -> 
         }
     } else {
         let private = stores.private_channels.iter().find(|c| c.id == channel);
-        if private.is_some_and(|c| c.kind == 3) && message["type"].as_u64() == Some(2) {
+        if private.is_some_and(|c| c.kind == 3) && kind == 2 {
             return None;
         }
-        if notifications::mentions_user(message, me, &[], false, false)
+        if mentions_me(&[], false, false)
             || (private.is_some() && !muted(stores, 0, channel, None, now))
         {
             return Some(Importance::High);
         }
     }
     None
+}
+
+/// Badge mentions differ from desktop notifications: muted channels can still contain direct pings.
+pub fn message_mention(stores: &Stores, message: &Value, now: DateTime<Utc>) -> Option<Importance> {
+    let me = stores.current_user.as_ref()?.id;
+    let channel = crate::id(&message["channel_id"])?;
+    crate::id(&message["author"]["id"])?;
+    let kind = message["type"].as_u64().unwrap_or(0);
+    let blocked = notifications::blocked_or_ignored_for_message(stores, message);
+    mention_with(stores, channel, kind, blocked, now, |roles, se, sr| {
+        notifications::mentions_user(message, me, roles, se, sr)
+    })
+}
+
+/// Same mention rule evaluated against a stored [`crate::Message`] on delete.
+pub(crate) fn stored_message_mention(
+    stores: &Stores,
+    message: &crate::Message,
+    now: DateTime<Utc>,
+) -> Option<Importance> {
+    let me = stores.current_user.as_ref()?.id;
+    if message.author.id == me && message.kind != 46 {
+        return None;
+    }
+    let blocked = message.blocked
+        || message.ignored
+        || stores.relationships.get(&message.author.id) == Some(&2)
+        || stores.is_ignored(message.author.id);
+    mention_with(
+        stores,
+        message.channel_id,
+        message.kind,
+        blocked,
+        now,
+        |roles, se, sr| message.mentions_me(me, roles, se, sr),
+    )
 }
 
 fn add_mentions(counts: &mut Counts, stores: &Stores, channel: Id) {
@@ -331,8 +373,10 @@ pub fn guild_counts_uncached(stores: &Stores, guild: &Guild, now: DateTime<Utc>)
     let opt_in = opt_in_enabled(stores, guild);
     let joined = guild.joined_snowflake();
     for channel in &guild.channels {
-        if channel.kind == ChannelKind::Category
-            || channel.flags & 128 != 0
+        if matches!(
+            channel.kind,
+            ChannelKind::Category | ChannelKind::Other(6 | 14)
+        ) || channel.flags & 128 != 0
             || !allowed_age(stores, guild, channel)
             || !permissions::can_in_channel(guild, channel, me, permissions::VIEW_CHANNEL)
         {
@@ -375,6 +419,22 @@ pub fn guild_counts_uncached(stores: &Stores, guild: &Guild, now: DateTime<Utc>)
             counts.unread = true;
         }
         add_mentions(&mut counts, stores, thread.id);
+    }
+    let mute_events = stores
+        .guild_settings
+        .guilds
+        .get(&guild.id)
+        .is_some_and(|s| s.mute_scheduled_events);
+    if !counts.unread
+        && !guild_muted
+        && !mute_events
+        && stores
+            .read_states
+            .typed
+            .get(&(guild.id, 1))
+            .is_some_and(|state| state.last > state.acked || state.mention_count > 0)
+    {
+        counts.unread = true;
     }
     counts
 }
@@ -976,5 +1036,51 @@ mod tests {
         let mut stores = setup();
         stores.dispatch("GUILD_DELETE", &json!({"id":"10","unavailable":true}));
         assert_eq!(stores.guilds.len(), 1);
+    }
+
+    #[test]
+    fn store_and_directory_channels_skip_while_unmuted_events_mark_unread() {
+        let mut stores = Stores::default();
+        stores.dispatch(
+            "READY",
+            &json!({
+                "user": {"id": "1", "username": "me"},
+                "guilds": [{
+                    "id": "10",
+                    "properties": {"name": "g", "default_message_notifications": 0},
+                    "roles": [{"id": "10", "permissions": "1024"}],
+                    "channels": [
+                        {"id": "20", "name": "store", "type": 6, "last_message_id": "500"},
+                        {"id": "21", "name": "dir", "type": 14, "last_message_id": "500"}
+                    ]
+                }],
+                "read_state": {
+                    "entries": [
+                        {"id": "10", "read_state_type": 1, "last_acked_id": "100", "badge_count": 0}
+                    ]
+                }
+            }),
+        );
+        assert!(!guild_counts(&stores, &stores.guilds[0], Utc::now()).unread);
+
+        stores.dispatch(
+            "GUILD_SCHEDULED_EVENT_CREATE",
+            &json!({"id": "200", "guild_id": "10", "creator_id": "2", "name": "Ev"}),
+        );
+        assert!(guild_counts(&stores, &stores.guilds[0], Utc::now()).unread);
+
+        stores.guild_settings.update(
+            &json!({"guild_id": "10", "mute_scheduled_events": true}),
+        );
+        assert!(!guild_counts(&stores, &stores.guilds[0], Utc::now()).unread);
+
+        stores.guild_settings.update(
+            &json!({"guild_id": "10", "mute_scheduled_events": false}),
+        );
+        stores.dispatch(
+            "GUILD_FEATURE_ACK",
+            &json!({"id": "10", "ack_type": 1, "acked_id": "200"}),
+        );
+        assert!(!guild_counts(&stores, &stores.guilds[0], Utc::now()).unread);
     }
 }

@@ -378,18 +378,25 @@ fn run() -> Result<()> {
 
     #[cfg(feature = "capture")]
     perf::checkpoint("pre_runtime");
+    let start = initial_start();
+    let cache_task =
+        matches!(start, shell::Start::Token(_)).then(|| std::thread::spawn(ui::start_cache::load));
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .worker_threads(2)
         .build()?;
-    // The fonts are public files: no login is needed (or known) yet.
-    let font_client = dc_http::Client::new(Token::new(""), Identity::new())?;
-    let faces = runtime.block_on(fonts::load(&font_client))?;
+    let faces = match fonts::load_cached() {
+        Some(faces) => faces,
+        None => {
+            // The fonts are public files: no login is needed (or known) yet.
+            let font_client = dc_http::Client::new(Token::new(""), Identity::new())?;
+            runtime.block_on(fonts::load(&font_client))?
+        }
+    };
     #[cfg(feature = "capture")]
     perf::mark(&perf::FONTS_MS);
     #[cfg(feature = "capture")]
     perf::checkpoint("fonts_read");
-    let start = initial_start();
     let handle = runtime.handle().clone();
     // The Run value's arguments (`--start-minimized`, `--start-inactive`). Minimized only means anything with a signed
     // in session: the tray icon that brings the window back exists from then on, and the login screen has none.
@@ -432,7 +439,8 @@ fn run() -> Result<()> {
                     },
                     move |window, cx| {
                         notifications::observe_window(window);
-                        cx.new(|cx| shell::Shell::new(handle, start, window, cx))
+                        let cached = cache_task.and_then(|task| task.join().ok()).flatten();
+                        cx.new(|cx| shell::Shell::new(handle, start, cached, window, cx))
                     },
                 )
                 .expect("the window must open");

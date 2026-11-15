@@ -4,7 +4,7 @@
 //! PCM the same way, once, so a clip's audio is what the viewers heard. The user's own voice is mono (the processed
 //! microphone frames) at 64 kb/s.
 use crate::buffer::{AudioPacket, PACKET_MS, PACKET_SAMPLES};
-use opus2::{Application, Bitrate, Channels, Encoder};
+use opus2::{Application, Bitrate, Channels, Decoder, Encoder};
 
 pub struct TrackEncoder {
     encoder: Encoder,
@@ -96,6 +96,106 @@ impl TrackEncoder {
             Err(_) => vec![0xF8, 0xFF, 0xFE],
         }
     }
+}
+
+fn decode_track_raw(channels: u8, pre_skip: u16, packets: &[Vec<u8>]) -> (usize, Vec<f32>) {
+    let ch = if channels == 1 { 1 } else { 2 };
+    if packets.is_empty() || channels == 0 {
+        return (ch, Vec::new());
+    }
+    let layout = if ch == 1 {
+        Channels::Mono
+    } else {
+        Channels::Stereo
+    };
+    let Ok(mut decoder) = Decoder::new(48_000, layout) else {
+        return (ch, Vec::new());
+    };
+    let mut frame = vec![0.0f32; PACKET_SAMPLES * ch];
+    let mut pcm = Vec::with_capacity(packets.len() * PACKET_SAMPLES * ch);
+    for packet in packets {
+        let count = match decoder.decode_float(packet, &mut frame, false) {
+            Ok(samples) => samples.min(PACKET_SAMPLES) * ch,
+            Err(_) => {
+                frame.fill(0.0);
+                PACKET_SAMPLES * ch
+            }
+        };
+        pcm.extend(frame[..count].iter().map(|&s| {
+            if s.is_finite() {
+                s.clamp(-1.0, 1.0)
+            } else {
+                0.0
+            }
+        }));
+    }
+    let skip = usize::from(pre_skip) * ch;
+    let drop_len = skip.min(pcm.len());
+    pcm.drain(..drop_len);
+    (ch, pcm)
+}
+
+/// Decodes one MP4 Opus track to mono 48 kHz samples after stripping `pre_skip`.
+pub fn decode_track_mono(channels: u8, pre_skip: u16, packets: &[Vec<u8>]) -> Vec<f32> {
+    let (ch, raw) = decode_track_raw(channels, pre_skip, packets);
+    if ch == 1 {
+        raw
+    } else {
+        raw.as_chunks::<2>()
+            .0
+            .iter()
+            .map(|&[left, right]| ((left + right) * 0.5).clamp(-1.0, 1.0))
+            .collect()
+    }
+}
+
+/// Decodes one MP4 Opus track to interleaved stereo 48 kHz samples after stripping `pre_skip`.
+pub fn decode_track_stereo(channels: u8, pre_skip: u16, packets: &[Vec<u8>]) -> Vec<f32> {
+    let (ch, raw) = decode_track_raw(channels, pre_skip, packets);
+    if ch == 1 {
+        let mut stereo = Vec::with_capacity(raw.len() * 2);
+        for sample in raw {
+            stereo.push(sample);
+            stereo.push(sample);
+        }
+        stereo
+    } else {
+        raw
+    }
+}
+
+/// Encodes interleaved stereo 48 kHz PCM into 20 ms Opus packets and returns `(pre_skip, packets)`.
+pub fn encode_stereo_packets(interleaved_stereo: &[f32]) -> (u16, Vec<Vec<u8>>) {
+    if interleaved_stereo.is_empty() {
+        return (0, Vec::new());
+    }
+    let Ok(mut encoder) = TrackEncoder::new(2) else {
+        return (0, Vec::new());
+    };
+    let pre_skip = encoder.pre_skip();
+    let frame_samples = PACKET_SAMPLES * 2;
+    let mut padded = vec![0.0f32; frame_samples];
+    let mut buffer = [0u8; 1275];
+    let mut packets = Vec::with_capacity(interleaved_stereo.len().div_ceil(frame_samples));
+    for chunk in interleaved_stereo.chunks(frame_samples) {
+        let src = if chunk.len() == frame_samples && chunk.iter().all(|s| s.is_finite()) {
+            chunk
+        } else {
+            padded.fill(0.0);
+            for (dst, &s) in padded.iter_mut().zip(chunk.iter()) {
+                *dst = if s.is_finite() {
+                    s.clamp(-1.0, 1.0)
+                } else {
+                    0.0
+                };
+            }
+            &padded[..]
+        };
+        if let Ok(len) = encoder.encoder.encode_float(src, &mut buffer) {
+            packets.push(buffer[..len].to_vec());
+        }
+    }
+    (pre_skip, packets)
 }
 
 #[cfg(test)]

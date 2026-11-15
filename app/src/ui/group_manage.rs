@@ -260,9 +260,9 @@ impl Root {
         let group = SharedString::from(format!("dm-row-{id}"));
         div()
             .id(SharedString::from(format!("dm-{id}")))
-            .on_mouse_down(
+            .on_mouse_up(
                 gpui::MouseButton::Right,
-                cx.listener(move |this, event: &gpui::MouseDownEvent, _, cx| {
+                cx.listener(move |this, event: &gpui::MouseUpEvent, _, cx| {
                     this.open_context_menu(context_menu::Target::Dm(id), event.position, cx);
                     cx.stop_propagation();
                 }),
@@ -413,9 +413,9 @@ impl Root {
                 this.tip = None;
                 this.open_group_edit(id, window, cx);
             }))
-            .on_mouse_down(
+            .on_mouse_up(
                 gpui::MouseButton::Right,
-                cx.listener(move |this, event: &gpui::MouseDownEvent, _, cx| {
+                cx.listener(move |this, event: &gpui::MouseUpEvent, _, cx| {
                     this.open_context_menu(context_menu::Target::Dm(id), event.position, cx);
                     cx.stop_propagation();
                 }),

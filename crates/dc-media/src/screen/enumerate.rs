@@ -312,6 +312,39 @@ fn icon_pixels(icon: HICON) -> Option<Picture> {
     }
 }
 
+/// Logical screen/capture size of a window handle, preferring its client rect when positive.
+pub(super) fn window_dimensions(hwnd: u64) -> Option<(u32, u32)> {
+    let window = HWND(hwnd as usize as _);
+    // SAFETY: read-only window geometry query; closed or invalid handles return false/Err.
+    unsafe {
+        if !IsWindow(Some(window)).as_bool() || !IsWindowVisible(window).as_bool() {
+            return None;
+        }
+        let mut client = RECT::default();
+        if GetClientRect(window, &mut client).is_ok() {
+            let width = client.right - client.left;
+            let height = client.bottom - client.top;
+            if width >= 2 && height >= 2 {
+                return Some((width as u32, height as u32));
+            }
+        }
+        let mut bounds = RECT::default();
+        let framed = DwmGetWindowAttribute(
+            window,
+            DWMWA_EXTENDED_FRAME_BOUNDS,
+            (&mut bounds as *mut RECT).cast(),
+            size_of::<RECT>() as u32,
+        )
+        .is_ok();
+        if !framed && GetWindowRect(window, &mut bounds).is_err() {
+            return None;
+        }
+        let width = bounds.right - bounds.left;
+        let height = bounds.bottom - bounds.top;
+        (width >= 2 && height >= 2).then_some((width as u32, height as u32))
+    }
+}
+
 /// The id a window handle is listed under.
 #[allow(dead_code)]
 pub(super) fn window_id(hwnd: HWND) -> SourceId {

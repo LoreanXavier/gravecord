@@ -44,6 +44,19 @@ async fn face(client: &dc_http::Client, hash: &str) -> Result<Vec<u8>> {
     Ok(bytes)
 }
 
+pub fn load_cached() -> Option<Vec<Vec<u8>>> {
+    let dir = crate::storage::data_dir()?.join("fonts");
+    let mut faces = Vec::with_capacity(FACES.len());
+    for hash in FACES {
+        let bytes = std::fs::read(dir.join(format!("{hash}.ttf"))).ok()?;
+        if bytes.is_empty() {
+            return None;
+        }
+        faces.push(bytes);
+    }
+    Some(faces)
+}
+
 pub async fn load(client: &dc_http::Client) -> Result<Vec<Vec<u8>>> {
     let mut faces = Vec::with_capacity(FACES.len());
     for hash in FACES {

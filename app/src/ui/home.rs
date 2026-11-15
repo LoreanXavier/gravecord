@@ -330,9 +330,9 @@ impl Root {
         Some(
             div()
                 .id(SharedString::from(format!("dm-{id}")))
-                .on_mouse_down(
+                .on_mouse_up(
                     gpui::MouseButton::Right,
-                    cx.listener(move |this, event: &gpui::MouseDownEvent, _, cx| {
+                    cx.listener(move |this, event: &gpui::MouseUpEvent, _, cx| {
                         this.open_context_menu(
                             super::context_menu::Target::Dm(id),
                             event.position,

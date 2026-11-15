@@ -481,7 +481,10 @@ impl Root {
             )
             .on_hover(cx.listener(move |this, inside: &bool, window, cx| {
                 let window = window.window_handle().window_id();
-                if *inside && tip.delay > 0 {
+                let menu_open = this.menu.is_some()
+                    || this.context.open.is_some()
+                    || this.rail_folders.menu.is_some();
+                if *inside && !menu_open && tip.delay > 0 {
                     // The tooltip opens once the pointer has stayed; leaving or pressing first cancels it.
                     this.tip_pending = Some(hovered.clone());
                     let (key, tip, wait) = (hovered.clone(), tip.clone(), tip.delay);
@@ -490,7 +493,12 @@ impl Root {
                             .timer(std::time::Duration::from_millis(wait))
                             .await;
                         let _ = this.update(cx, |this, cx| {
-                            if this.tip_pending.as_ref() != Some(&key) {
+                            if this.tip_pending.as_ref() != Some(&key)
+                                || this.menu.is_some()
+                                || this.context.open.is_some()
+                                || this.rail_folders.menu.is_some()
+                            {
+                                this.tip_pending = None;
                                 return;
                             }
                             this.tip_pending = None;
@@ -502,7 +510,7 @@ impl Root {
                         });
                     })
                     .detach();
-                } else if *inside {
+                } else if *inside && !menu_open {
                     let anchor = this.tip_anchors.borrow().get(&hovered).copied();
                     this.tip = anchor.map(|anchor| {
                         Active::new(hovered.clone(), tip.clone(), anchor).in_window(window)

@@ -73,6 +73,15 @@ fn right_down(position: Point<gpui::Pixels>) -> PlatformInput {
     })
 }
 
+fn right_up(position: Point<gpui::Pixels>) -> PlatformInput {
+    PlatformInput::MouseUp(MouseUpEvent {
+        button: MouseButton::Right,
+        position,
+        modifiers: Modifiers::default(),
+        click_count: 1,
+    })
+}
+
 fn up(position: Point<gpui::Pixels>) -> PlatformInput {
     PlatformInput::MouseUp(MouseUpEvent {
         button: MouseButton::Left,
@@ -461,6 +470,7 @@ pub async fn run(
                     cx.update(|cx| {
                         dispatch(cx, window, moved(position, None));
                         dispatch(cx, window, right_down(position));
+                        dispatch(cx, window, right_up(position));
                     });
                 }
             }

@@ -28,6 +28,7 @@ pub enum Start {
 }
 
 enum Screen {
+    Empty,
     Login(Entity<LoginView>),
     Main(Entity<Root>),
 }
@@ -49,16 +50,17 @@ pub struct Shell {
 }
 
 impl Shell {
-    pub fn new(handle: Handle, start: Start, window: &mut Window, cx: &mut Context<Self>) -> Self {
-        let placeholder = cx.new(|cx| {
-            let (commands, _) = mpsc::unbounded_channel();
-            let (_, events) = mpsc::unbounded_channel();
-            LoginView::new(commands, events, None, cx)
-        });
+    pub fn new(
+        handle: Handle,
+        start: Start,
+        cached: Option<crate::ui::start_cache::Cached>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Self {
         let mut this = Self {
             handle,
             store: Store::app(),
-            screen: Screen::Login(placeholder),
+            screen: Screen::Empty,
             session: None,
             token: None,
             _pump: None,
@@ -68,7 +70,7 @@ impl Shell {
             switched: false,
         };
         match start {
-            Start::Token(token) => this.start_session(token, window, cx),
+            Start::Token(token) => this.start_session(token, cached, window, cx),
             Start::Login => this.show_login(false, window, cx),
             Start::Preview(state) => {
                 this.show_login(true, window, cx);
@@ -85,7 +87,7 @@ impl Shell {
     pub fn root(&self) -> Option<Entity<Root>> {
         match &self.screen {
             Screen::Main(root) => Some(root.clone()),
-            Screen::Login(_) => None,
+            Screen::Empty | Screen::Login(_) => None,
         }
     }
 
@@ -95,6 +97,7 @@ impl Shell {
         match &self.screen {
             Screen::Main(root) => root.read(cx).ready_for_capture(),
             Screen::Login(login) => login.read(cx).has_art(),
+            Screen::Empty => false,
         }
     }
 
@@ -136,27 +139,29 @@ impl Shell {
         }
     }
 
-    fn start_session(&mut self, token: Token, window: &mut Window, cx: &mut Context<Self>) {
+    fn start_session(
+        &mut self,
+        token: Token,
+        preloaded: Option<crate::ui::start_cache::Cached>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         let (update_tx, mut update_rx) = mpsc::unbounded_channel();
         let (request_tx, request_rx) = net::request_channel();
         let hook_tx = update_tx.clone();
-        if let Some(cached) = crate::ui::start_cache::load() {
-            let _ = update_tx.send(net::Update::Cached(Box::new(cached)));
-        }
-        if let Ok(client) = dc_http::Client::new(Token::new(""), Identity::new()) {
-            let spinner_tx = update_tx.clone();
-            self.handle.spawn(async move {
-                if let Some(clip) = crate::spinner::load(&client).await {
-                    let _ = spinner_tx.send(net::Update::Spinner(std::sync::Arc::new(clip)));
-                }
-            });
-        }
+        let cached = preloaded.or_else(crate::ui::start_cache::load);
         self.session = Some(
             self.handle
                 .spawn(net::run(token.clone(), update_tx, request_rx)),
         );
         self.token = Some(token);
-        let root = cx.new(|cx| Root::new(request_tx, hook_tx, cx));
+        let root = cx.new(|cx| {
+            let mut root = Root::new(request_tx, hook_tx, cx);
+            if let Some(cached) = cached {
+                root.apply_cache(cached, cx);
+            }
+            root
+        });
         if std::mem::take(&mut self.switched) {
             root.update(cx, |root, _| root.announce_switch());
         }
@@ -353,13 +358,14 @@ impl Shell {
                 }
             });
         }
-        self.start_session(token, window, cx);
+        self.start_session(token, None, window, cx);
     }
 }
 
 impl Render for Shell {
     fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
         let screen: AnyElement = match &self.screen {
+            Screen::Empty => div().into_any_element(),
             Screen::Login(login) => login.clone().into_any_element(),
             Screen::Main(root) => root.clone().into_any_element(),
         };

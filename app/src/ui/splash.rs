@@ -320,7 +320,7 @@ impl Splash {
         Self {
             started: Instant::now(),
             loaded_at: None,
-            done: false,
+            done: true,
             hold: false,
             tip: nanos % TIPS.len(),
             clip: None,
@@ -560,6 +560,7 @@ impl Root {
     }
 
     /// The spinner's loop came in. Its frames become pictures one at a time as they are drawn at 200px.
+    #[cfg(feature = "capture")]
     pub(super) fn splash_clip(&mut self, clip: Arc<Clip>) {
         if self.splash.done && !keeps_frames_after_done() {
             return;
@@ -616,6 +617,28 @@ impl Root {
             ["hold"] => {
                 self.splash.done = false;
                 self.splash.hold = true;
+                if self.splash.clip.is_none() {
+                    if let Some(clip) = crate::spinner::load_cached() {
+                        self.splash_clip(Arc::new(clip));
+                    } else {
+                        let updates = self.updates.clone();
+                        std::thread::spawn(move || {
+                            let Ok(rt) = tokio::runtime::Builder::new_current_thread()
+                                .enable_all()
+                                .build()
+                            else {
+                                return;
+                            };
+                            if let Ok(client) = dc_http::Client::new(
+                                dc_proto::secrets::Token::new(""),
+                                dc_proto::identity::Identity::new(),
+                            ) && let Some(clip) = rt.block_on(crate::spinner::load(&client))
+                            {
+                                let _ = updates.send(crate::net::Update::Spinner(Arc::new(clip)));
+                            }
+                        });
+                    }
+                }
                 "splash held".to_owned()
             }
             ["release"] => {

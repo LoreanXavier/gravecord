@@ -516,11 +516,11 @@ impl Root {
                 }])
             })
             .on_click(cx.listener(move |this, _, _, cx| this.clips_edit_from_grid(&open_id, cx)))
-            .on_mouse_down(
+            .on_mouse_up(
                 gpui::MouseButton::Right,
                 cx.listener({
                     let id = id.clone();
-                    move |this, event: &gpui::MouseDownEvent, _, cx| {
+                    move |this, event: &gpui::MouseUpEvent, _, cx| {
                         let at = event.position;
                         this.close_all_context_menus();
                         if let Some(state) = this.clips_gallery_mut() {

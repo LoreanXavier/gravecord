@@ -3,34 +3,43 @@
 //!
 //! The official client does the same with its lazy cache (`READY_SUPPLEMENTAL` and the stores in `STORES.md`): the
 //! guild list with icons, the channel list of the server in view, the last channel's recent messages and the user.
-//! Two files in the app's data folder: `start-ready.json` (READY, cut down) and `start-messages.json` (one page of
-//! the last channel). Never a token: READY is cut to a list of the keys the stores read, and the session and the
-//! account's private fields are not among them. Both files are versioned and bounded; one that is unreadable, from
-//! another version, or too large is ignored, and the app starts as it does without a cache.
+//! Two files in the app's data folder: `start-ready.json.zst` (READY, compressed & cut down) and
+//! `start-messages.json` (one page of the last channel). Never a token: READY is cut to a list of the keys the
+//! stores read, and the session and the account's private fields are not among them. Both files are versioned and
+//! bounded; one that is unreadable, from another version, or too large is ignored, and the app starts as it does
+//! without a cache.
 //!
-//! A harness run neither reads nor writes them unless it sets `GRAVECORD_CACHE=1`, so every run starts the same.
+//! A harness or inert run neither reads nor writes them unless it sets `GRAVECORD_CACHE=1`, so every capture starts
+//! the same; normal desktop runs use the cache by default unless `GRAVECORD_CACHE=0`.
 
 use super::Root;
 use gpui::Context;
 use serde_json::{Map, Value, json};
-use std::path::PathBuf;
+use std::io::Read as _;
+use std::path::{Path, PathBuf};
 
 /// Bumped when the stores read other fields of READY, or the files change shape.
-const VERSION: u64 = 1;
-/// The most a cache file may hold, in bytes.
-const MAX_READY_BYTES: usize = 3 * 1024 * 1024;
+const VERSION: u64 = 2;
+/// The most an uncompressed READY cache payload may hold, in bytes.
+const MAX_READY_BYTES: usize = 8 * 1024 * 1024;
 const MAX_MESSAGES_BYTES: usize = 512 * 1024;
 /// Messages kept of the last channel.
 const MAX_MESSAGES: usize = 50;
 
+const READY_FILE: &str = "start-ready.json.zst";
+const LEGACY_READY_FILE: &str = "start-ready.json";
+const MESSAGES_FILE: &str = "start-messages.json";
+
 /// The keys of READY the stores read to draw the first screen. Everything else is left out, which keeps the session
 /// (`session_id`, `sessions`, `analytics_token`, `auth_session_id_hash`) and the geo list out of the file.
-const READY_KEYS: [&str; 11] = [
+const READY_KEYS: [&str; 13] = [
     "user",
     "users",
     "relationships",
     "private_channels",
     "guilds",
+    "merged_members",
+    "notification_settings",
     "user_settings_proto",
     "user_guild_settings",
     "read_state",
@@ -63,10 +72,14 @@ pub(crate) struct Cached {
     pub(crate) messages: Option<(u64, Value)>,
 }
 
-/// Whether this run uses the cache: only a run that sets `GRAVECORD_CACHE=1`. It is not on by default until it has
-/// been run against a real account's READY, not only the test server's.
+/// Whether this run uses the cache: enabled by default on normal desktop launches unless
+/// `GRAVECORD_CACHE=0`, and disabled in tests, capture runs, or inert runs unless `GRAVECORD_CACHE=1`.
 pub(crate) fn enabled() -> bool {
-    std::env::var("GRAVECORD_CACHE").as_deref() == Ok("1")
+    match std::env::var("GRAVECORD_CACHE").as_deref() {
+        Ok("1") => true,
+        Ok("0") => false,
+        _ => !(cfg!(test) || crate::storage::is_capture_run() || crate::inert::on()),
+    }
 }
 
 fn file(name: &str) -> Option<PathBuf> {
@@ -103,7 +116,7 @@ pub(crate) fn trim_ready(ready: &Value, last_guild: Option<&str>) -> Option<Valu
 }
 
 /// One guild of READY without what is large and not needed to draw it: its members and presences, its threads,
-/// its voice states, and (for a server that is not open) its roles, emoji and stickers.
+/// its voice states, and (for a server that is not open) its emoji and stickers.
 fn trim_guild(guild: &Value, last_guild: Option<&str>) -> Value {
     let Some(object) = guild.as_object() else {
         return guild.clone();
@@ -118,7 +131,7 @@ fn trim_guild(guild: &Value, last_guild: Option<&str>) -> Value {
         "activity_instances",
         "threads",
     ];
-    let dropped_when_closed = ["roles", "emojis", "stickers"];
+    let dropped_when_closed = ["emojis", "stickers"];
     let kept: Map<String, Value> = object
         .iter()
         .filter(|(key, _)| !always_dropped.contains(&key.as_str()))
@@ -126,6 +139,17 @@ fn trim_guild(guild: &Value, last_guild: Option<&str>) -> Value {
         .map(|(key, value)| (key.clone(), value.clone()))
         .collect();
     Value::Object(kept)
+}
+
+/// Writes `bytes` to a sibling temp file and renames it over `path`, so a crash mid-write never leaves a half file.
+fn write_atomic_bytes(path: &Path, bytes: &[u8]) {
+    if let Some(dir) = path.parent() {
+        let _ = std::fs::create_dir_all(dir);
+    }
+    let temporary = path.with_extension("tmp");
+    if std::fs::write(&temporary, bytes).is_ok() {
+        let _ = std::fs::rename(&temporary, path);
+    }
 }
 
 /// Writes `value` to `name` beside and renames it over the file, so a crash mid-write never leaves half a file.
@@ -136,13 +160,20 @@ fn write_atomic(name: &str, value: &Value) {
     let Ok(bytes) = serde_json::to_vec(value) else {
         return;
     };
-    if let Some(dir) = path.parent() {
-        let _ = std::fs::create_dir_all(dir);
-    }
-    let temporary = path.with_extension("json.tmp");
-    if std::fs::write(&temporary, bytes).is_ok() {
-        let _ = std::fs::rename(&temporary, &path);
-    }
+    write_atomic_bytes(&path, &bytes);
+}
+
+fn save_ready_to(path: &Path, ready: &Value, last_guild: Option<&str>) {
+    let Some(trimmed) = trim_ready(ready, last_guild) else {
+        return;
+    };
+    let Ok(json) = serde_json::to_vec(&json!({"version": VERSION, "ready": trimmed})) else {
+        return;
+    };
+    let Ok(compressed) = zstd::encode_all(json.as_slice(), 1) else {
+        return;
+    };
+    write_atomic_bytes(path, &compressed);
 }
 
 /// Keeps READY for the next start, on a thread of its own so the frame that applies it is not held up.
@@ -152,11 +183,11 @@ pub(crate) fn save_ready(ready: &Value, last_guild: Option<String>) {
     }
     let ready = ready.clone();
     std::thread::spawn(move || {
-        if let Some(trimmed) = trim_ready(&ready, last_guild.as_deref()) {
-            write_atomic(
-                "start-ready.json",
-                &json!({"version": VERSION, "ready": trimmed}),
-            );
+        if let Some(path) = file(READY_FILE) {
+            save_ready_to(&path, &ready, last_guild.as_deref());
+        }
+        if let Some(legacy) = file(LEGACY_READY_FILE) {
+            let _ = std::fs::remove_file(legacy);
         }
     });
 }
@@ -173,7 +204,7 @@ pub(crate) fn save_messages(channel: u64, page: &Value) {
     let kept: Vec<Value> = list.iter().take(MAX_MESSAGES).cloned().collect();
     let value = json!({"version": VERSION, "channel": channel.to_string(), "page": kept});
     if serde_json::to_vec(&value).is_ok_and(|bytes| bytes.len() <= MAX_MESSAGES_BYTES) {
-        std::thread::spawn(move || write_atomic("start-messages.json", &value));
+        std::thread::spawn(move || write_atomic(MESSAGES_FILE, &value));
     }
 }
 
@@ -186,14 +217,29 @@ fn read(name: &str, limit: usize) -> Option<Value> {
     (value["version"].as_u64() == Some(VERSION)).then_some(value)
 }
 
+fn load_ready_from(path: &Path, limit: usize) -> Option<Value> {
+    let file = std::fs::File::open(path).ok()?;
+    let decoder = zstd::Decoder::new(file).ok()?;
+    let mut buf = Vec::new();
+    decoder
+        .take((limit as u64).saturating_add(1))
+        .read_to_end(&mut buf)
+        .ok()?;
+    if buf.len() > limit {
+        return None;
+    }
+    let value: Value = serde_json::from_slice(&buf).ok()?;
+    (value["version"].as_u64() == Some(VERSION)).then_some(value)
+}
+
 /// What the last run left, if this run uses the cache and the files are good.
 pub(crate) fn load() -> Option<Cached> {
     if !enabled() {
         return None;
     }
-    let ready = read("start-ready.json", MAX_READY_BYTES)?["ready"].clone();
+    let ready = load_ready_from(&file(READY_FILE)?, MAX_READY_BYTES + 1024)?["ready"].clone();
     ready["user"]["id"].as_str()?;
-    let messages = read("start-messages.json", MAX_MESSAGES_BYTES).and_then(|value| {
+    let messages = read(MESSAGES_FILE, MAX_MESSAGES_BYTES).and_then(|value| {
         let channel = value["channel"].as_str()?.parse().ok()?;
         Some((channel, value["page"].clone()))
     });
@@ -202,7 +248,7 @@ pub(crate) fn load() -> Option<Cached> {
 
 /// Logging out removes what the account left, so the next login never starts from it.
 pub(crate) fn forget() {
-    for name in ["start-ready.json", "start-messages.json"] {
+    for name in [READY_FILE, LEGACY_READY_FILE, MESSAGES_FILE] {
         if let Some(path) = file(name) {
             let _ = std::fs::remove_file(path);
         }
@@ -212,12 +258,13 @@ pub(crate) fn forget() {
 impl Root {
     /// Applies the cache before the gateway answers: the same stores, filled the way READY fills them, and the
     /// server and channel the app opens on. The real READY that follows replaces them as a reconnect's does.
-    pub(super) fn apply_cache(&mut self, cached: Cached, cx: &mut Context<Self>) {
+    pub(crate) fn apply_cache(&mut self, cached: Cached, cx: &mut Context<Self>) {
         if self.stores.current_user.is_some() {
             // The gateway was first: nothing to draw from the past.
             return;
         }
         self.stores.dispatch("READY", &cached.ready);
+        self.hydrated_from_cache = true;
         self.reset_theme_sync();
         self.after_ready();
         if let Some((channel, page)) = cached.messages
@@ -279,14 +326,33 @@ mod tests {
     }
 
     #[test]
-    fn the_open_server_keeps_its_roles_and_the_others_keep_the_rail() {
+    fn the_open_server_keeps_all_fields_and_closed_servers_keep_roles() {
         let trimmed = trim_ready(&ready(), Some("10")).unwrap();
         let guilds = trimmed["guilds"].as_array().unwrap();
         assert!(guilds[0]["roles"].is_array() && guilds[0]["emojis"].is_array());
         assert!(guilds[0].get("members").is_none() && guilds[0].get("threads").is_none());
-        assert!(guilds[1].get("roles").is_none() && guilds[1].get("emojis").is_none());
+        assert!(guilds[1]["roles"].is_array() && guilds[1].get("emojis").is_none());
         assert!(guilds[1]["channels"].is_array());
         assert_eq!(guilds[1]["properties"]["name"], "closed");
+    }
+
+    #[test]
+    fn zstd_ready_roundtrips_and_honors_decompression_cap() {
+        let dir = std::env::temp_dir().join(format!(
+            "gravecord-start-cache-test-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::create_dir_all(&dir);
+        let path = dir.join(READY_FILE);
+        save_ready_to(&path, &ready(), Some("10"));
+        let loaded = load_ready_from(&path, MAX_READY_BYTES + 1024).expect("loads valid cache");
+        assert_eq!(loaded["version"].as_u64(), Some(VERSION));
+        assert_eq!(loaded["ready"]["user"]["username"], "me");
+        assert!(
+            load_ready_from(&path, 32).is_none(),
+            "capped reader must reject payloads exceeding decompression limit"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

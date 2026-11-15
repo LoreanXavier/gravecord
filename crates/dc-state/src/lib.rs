@@ -872,17 +872,18 @@ impl Guild {
         if let Some(joined) = member["joined_at"].as_str() {
             self.joined_at = joined.to_owned();
         }
-        self.my_roles = member["roles"]
-            .as_array()
-            .into_iter()
-            .flatten()
-            .filter_map(id)
-            .collect();
-        self.my_pending = member["pending"].as_bool().unwrap_or(false);
-        self.my_timeout_until = member["communication_disabled_until"]
-            .as_str()
-            .and_then(|until| chrono::DateTime::parse_from_rfc3339(until).ok())
-            .map(|until| until.timestamp_millis());
+        if let Some(roles) = member["roles"].as_array() {
+            self.my_roles = roles.iter().filter_map(id).collect();
+        }
+        if let Some(pending) = member["pending"].as_bool() {
+            self.my_pending = pending;
+        }
+        if member.get("communication_disabled_until").is_some() {
+            self.my_timeout_until = member["communication_disabled_until"]
+                .as_str()
+                .and_then(|until| chrono::DateTime::parse_from_rfc3339(until).ok())
+                .map(|until| until.timestamp_millis());
+        }
     }
 
     /// The join date as a snowflake, so it compares with message ids.
@@ -1678,6 +1679,9 @@ impl Message {
         suppress_everyone: bool,
         suppress_roles: bool,
     ) -> bool {
+        if self.kind == 24 {
+            return false;
+        }
         if (self.mention_everyone && !suppress_everyone) || self.mention_user_ids.contains(&me) {
             return true;
         }
@@ -2103,6 +2107,9 @@ pub struct Stores {
     /// their place in the folders: `SortedGuildStore` (711014 `N`) drops a guild only when it is neither known nor
     /// unavailable, so a reorder during an outage must not write them out of the account's settings.
     pub unavailable_guilds: HashSet<Id>,
+    /// Current user's `merged_members` entry per guild (including unavailable stubs), so delayed
+    /// `GUILD_CREATE` or partial updates preserve roles and join date.
+    pub my_members_by_guild: HashMap<Id, Value>,
     /// Per guild, the last `unread::guild_counts` answer; cleared by every event that can change one.
     counts_cache: std::sync::Mutex<HashMap<Id, unread::CountsEntry>>,
 }
@@ -2274,14 +2281,34 @@ impl Stores {
             "GUILD_CREATE" => {
                 self.note_afk_channel(data);
                 if let Some(mut guild) = Guild::from_value(data) {
+                    if let Some(cached) = self.my_members_by_guild.get(&guild.id) {
+                        guild.set_my_member(cached);
+                    } else if let Some(prior) =
+                        self.guilds.iter().find(|known| known.id == guild.id)
+                    {
+                        if guild.joined_at.is_empty() {
+                            guild.joined_at = prior.joined_at.clone();
+                        }
+                        if guild.my_roles.is_empty() {
+                            guild.my_roles = prior.my_roles.clone();
+                        }
+                        guild.my_pending = prior.my_pending;
+                        guild.my_flags = prior.my_flags;
+                        guild.my_timeout_until = prior.my_timeout_until;
+                    }
                     let me = self.current_user.as_ref().map(|user| user.id);
                     if let Some(member) = data["members"]
                         .as_array()
                         .into_iter()
                         .flatten()
-                        .find(|member| me.is_some() && id(&member["user"]["id"]) == me)
+                        .find(|member| {
+                            me.is_some()
+                                && (id(&member["user"]["id"]) == me
+                                    || id(&member["user_id"]) == me)
+                        })
                     {
                         guild.set_my_member(member);
+                        self.my_members_by_guild.insert(guild.id, member.clone());
                     }
                     for channel in &guild.channels {
                         if let Some(latest) = channel.last_message_id {
@@ -2299,6 +2326,7 @@ impl Stores {
                     self.unavailable_guilds.remove(&guild.id);
                     self.guilds.retain(|known| known.id != guild.id);
                     self.guilds.push(guild);
+                    self.note_guild_scheduled_events(data);
                     self.sort_guilds();
                 }
             }
@@ -2371,11 +2399,12 @@ impl Stores {
                 }
                 let me = self.current_user.as_ref().map(|user| user.id);
                 if me.is_some()
-                    && id(&data["user"]["id"]) == me
+                    && (id(&data["user"]["id"]) == me || id(&data["user_id"]) == me)
                     && let Some(guild) = id(&data["guild_id"])
                         .and_then(|guild| self.guilds.iter_mut().find(|known| known.id == guild))
                 {
                     guild.set_my_member(data);
+                    self.my_members_by_guild.insert(guild.id, data.clone());
                     if data["joined_at"].is_string() {
                         self.lurking_guilds.remove(&guild.id);
                     }
@@ -2588,13 +2617,8 @@ impl Stores {
             "MESSAGE_POLL_VOTE_REMOVE" => self.poll_vote(data, false),
             "MESSAGE_POLL_VOTE_ADD_MANY" => self.poll_vote_many(data),
             "MESSAGE_DELETE" => {
-                if let (Some(channel), Some(message)) = (id(&data["channel_id"]), id(&data["id"]))
-                    && let Some(list) = self.messages.get_mut(&channel)
-                {
-                    self.windows
-                        .entry(channel)
-                        .or_default()
-                        .remove(list, message);
+                if let (Some(channel), Some(message)) = (id(&data["channel_id"]), id(&data["id"])) {
+                    self.delete_messages(channel, &[message]);
                 }
             }
             "MESSAGE_DELETE_BULK" => self.message_delete_bulk(data),
@@ -2602,6 +2626,69 @@ impl Stores {
             "MESSAGE_REACTION_REMOVE_EMOJI" => self.reactions_removed(data, true),
             "MESSAGE_REACTION_ADD_MANY" => self.reaction_add_many(data),
             "USER_UPDATE" => self.user_update(data),
+            "PASSIVE_UPDATE_V1" | "PASSIVE_UPDATE_V2" => self.passive_update(data),
+            "GUILD_FEATURE_ACK" => {
+                if let (Some(guild), Some(kind)) = (id(&data["id"]), data["ack_type"].as_u64()) {
+                    let now = read_state::snowflake_at(
+                        chrono::Utc::now().timestamp_millis().max(0) as u64,
+                    );
+                    self.read_states
+                        .non_channel_ack(guild, kind, id(&data["acked_id"]), now);
+                }
+            }
+            "USER_NON_CHANNEL_ACK" => {
+                if let (Some(me), Some(kind)) = (
+                    self.current_user.as_ref().map(|u| u.id),
+                    data["ack_type"].as_u64(),
+                ) {
+                    let now = read_state::snowflake_at(
+                        chrono::Utc::now().timestamp_millis().max(0) as u64,
+                    );
+                    self.read_states
+                        .non_channel_ack(me, kind, id(&data["acked_id"]), now);
+                }
+            }
+            "GUILD_SCHEDULED_EVENT_CREATE" => {
+                if let (Some(guild), Some(event_id)) =
+                    (id(&data["guild_id"]), id(&data["id"]))
+                {
+                    let me = self.current_user.as_ref().map(|u| u.id);
+                    let creator = id(&data["creator_id"]);
+                    let mute_events = self
+                        .guild_settings
+                        .guilds
+                        .get(&guild)
+                        .is_some_and(|s| s.mute_scheduled_events);
+                    let state = self.read_states.typed.entry((guild, 1)).or_default();
+                    state.last = state.last.max(event_id);
+                    if me.is_some() && creator == me {
+                        self.read_states
+                            .non_channel_ack(guild, 1, Some(event_id), event_id);
+                    } else if !mute_events {
+                        state.mention_count = state.mention_count.saturating_add(1);
+                    }
+                }
+            }
+            "GUILD_SCHEDULED_EVENT_UPDATE" | "GUILD_SCHEDULED_EVENT_DELETE" => {
+                if let Some(guild) = id(&data["guild_id"]) {
+                    let gone = name == "GUILD_SCHEDULED_EVENT_DELETE"
+                        || matches!(data["status"].as_u64(), Some(3 | 4));
+                    if gone && let Some(state) = self.read_states.typed.get_mut(&(guild, 1)) {
+                        state.mention_count = state.mention_count.saturating_sub(1);
+                        if let Some(event_id) = id(&data["id"])
+                            && state.last == event_id
+                        {
+                            state.last = self
+                                .scheduled_events
+                                .get_guild_scheduled_events_for_guild(guild)
+                                .iter()
+                                .map(|event| event.id)
+                                .max()
+                                .unwrap_or(state.acked);
+                        }
+                    }
+                }
+            }
             _ => {}
         }
         // Populate `private_channels` from `READY`, `READY_SUPPLEMENTAL`, and `CHANNEL_CREATE` before call dispatch
@@ -3163,14 +3250,17 @@ impl Stores {
         for guild in data["guilds"].as_array().into_iter().flatten() {
             self.note_afk_channel(guild);
         }
+        self.my_members_by_guild.clear();
         for (guild_id, member) in guild_ids.into_iter().zip(merged) {
-            if let (Some(guild), Some(member)) = (
-                self.guilds
+            if let (Some(guild_id), Some(member)) = (guild_id, member) {
+                if let Some(guild) = self
+                    .guilds
                     .iter_mut()
-                    .find(|guild| Some(guild.id) == guild_id),
-                member,
-            ) {
-                guild.set_my_member(&member);
+                    .find(|guild| guild.id == guild_id)
+                {
+                    guild.set_my_member(&member);
+                }
+                self.my_members_by_guild.insert(guild_id, member);
             }
         }
         self.voice_states = data["guilds"]
@@ -3208,6 +3298,9 @@ impl Stores {
             .collect();
         for thread in &threads {
             self.note_thread_latest(thread);
+        }
+        for guild in data["guilds"].as_array().into_iter().flatten() {
+            self.note_guild_scheduled_events(guild);
         }
         self.lurking_guilds = data["guilds"]
             .as_array()
@@ -3524,6 +3617,20 @@ impl Stores {
             known.edited = data["edited_timestamp"].is_string();
             known.edited_at = edited_at(&data["edited_timestamp"]);
         }
+        if let Some(everyone) = data["mention_everyone"].as_bool() {
+            known.mention_everyone = everyone;
+        }
+        if let Some(mentions) = data["mentions"].as_array() {
+            known.mentions = mentions.len();
+            known.mention_user_ids = mentions
+                .iter()
+                .filter_map(|user| id(&user["id"]))
+                .collect();
+        }
+        if let Some(roles) = data["mention_roles"].as_array() {
+            known.mention_roles = roles.len();
+            known.mention_role_ids = roles.iter().filter_map(id).collect();
+        }
         if let Some(pinned) = data["pinned"].as_bool() {
             known.pinned = pinned;
         }
@@ -3786,6 +3893,10 @@ impl Stores {
             fetched.push(message);
         }
         let ids: Vec<Id> = fetched.iter().map(|message| message.id).collect();
+        if let Some(&newest) = ids.iter().max() {
+            let latest = self.read_states.latest.entry(channel).or_insert(0);
+            *latest = (*latest).max(newest);
+        }
         let (more_before, more_after) = message_window::has_more(spec, &ids);
         let loaded = message_window::Loaded {
             is_before: spec.is_before(),
@@ -3820,6 +3931,116 @@ impl Stores {
 
     pub fn guild(&self, guild: Id) -> Option<&Guild> {
         self.guilds.iter().find(|known| known.id == guild)
+    }
+
+    pub(crate) fn delete_messages(&mut self, channel: Id, ids: &[Id]) {
+        if ids.is_empty() {
+            return;
+        }
+        let joined = self
+            .guild_of_channel(channel)
+            .map_or(0, Guild::joined_snowflake);
+        let acked = self.read_states.acked(channel, joined);
+        let now = chrono::Utc::now();
+        let mention_drops: u64 = self.messages.get(&channel).map_or(0, |list| {
+            list.iter()
+                .filter(|msg| ids.contains(&msg.id) && msg.id > acked)
+                .filter(|msg| unread::stored_message_mention(self, msg, now).is_some())
+                .count() as u64
+        });
+        if mention_drops > 0
+            && let Some(state) = self.read_states.states.get_mut(&channel)
+        {
+            state.mention_count = state.mention_count.saturating_sub(mention_drops);
+            if state.mention_count == 0 {
+                state.low_importance = false;
+            }
+        }
+        if let Some(list) = self.messages.get_mut(&channel) {
+            let window = self.windows.entry(channel).or_default();
+            for &message in ids {
+                window.remove(list, message);
+            }
+        }
+        if self
+            .read_states
+            .latest
+            .get(&channel)
+            .copied()
+            .is_some_and(|latest| ids.contains(&latest))
+        {
+            if let Some(newest) = self
+                .messages
+                .get(&channel)
+                .and_then(|list| list.last())
+                .map(|m| m.id)
+            {
+                self.read_states.latest.insert(channel, newest);
+            } else if let Some(acked) = self.read_states.states.get(&channel).map(|s| s.acked) {
+                self.read_states.latest.insert(channel, acked);
+            } else {
+                self.read_states.latest.remove(&channel);
+            }
+        }
+    }
+
+    fn passive_update(&mut self, data: &Value) {
+        let guild_id = id(&data["guild_id"]);
+        let entries = data["updated_channels"]
+            .as_array()
+            .or_else(|| data["channels"].as_array());
+        for entry in entries.into_iter().flatten() {
+            let Some(channel_id) = id(&entry["id"]) else {
+                continue;
+            };
+            if let Some(last) = id(&entry["last_message_id"]) {
+                let latest = self.read_states.latest.entry(channel_id).or_insert(0);
+                *latest = (*latest).max(last);
+                if let Some(guild) = guild_id.and_then(|gid| {
+                    self.guilds.iter_mut().find(|known| known.id == gid)
+                }) {
+                    if let Some(channel) =
+                        guild.channels.iter_mut().find(|c| c.id == channel_id)
+                    {
+                        if channel.last_message_id.is_none_or(|prev| last > prev) {
+                            channel.last_message_id = Some(last);
+                        }
+                    } else if let Some(thread) =
+                        guild.threads.iter_mut().find(|t| t.id == channel_id)
+                        && thread.last_message_id.is_none_or(|prev| last > prev)
+                    {
+                        thread.last_message_id = Some(last);
+                    }
+                }
+            }
+        }
+    }
+
+    fn note_guild_scheduled_events(&mut self, guild_value: &Value) {
+        let Some(gid) = id(&guild_value["id"]) else {
+            return;
+        };
+        let events = guild_value["guild_scheduled_events"].as_array();
+        let max_id = events
+            .into_iter()
+            .flatten()
+            .filter_map(|event| id(&event["id"]))
+            .max();
+        if max_id.is_none() && !self.read_states.typed.contains_key(&(gid, 1)) {
+            return;
+        }
+        let joined = self
+            .guilds
+            .iter()
+            .find(|g| g.id == gid)
+            .map_or(0, Guild::joined_snowflake);
+        let state = self.read_states.typed.entry((gid, 1)).or_default();
+        if state.acked == 0 && joined > 0 {
+            state.acked = joined;
+        }
+        if let Some(max_id) = max_id {
+            state.last = state.last.max(max_id);
+        }
     }
 }
 
@@ -5713,5 +5934,94 @@ mod tests {
         stores.dispatch("MESSAGE_REACTION_REMOVE", &reaction_event("10"));
         let reaction = &stores.messages[&23][0].reactions[0];
         assert_eq!((reaction.count, reaction.me), (1, false));
+    }
+
+    #[test]
+    fn message_update_delete_loaded_and_passive_updates_keep_mentions_and_latest_accurate() {
+        let mut stores = Stores::default();
+        stores.dispatch(
+            "READY",
+            &json!({
+                "user": {"id": "1", "username": "me"},
+                "guilds": [{
+                    "id": "10",
+                    "properties": {"name": "g", "default_message_notifications": 0},
+                    "roles": [{"id": "10", "permissions": "1024"}, {"id": "50", "name": "mods"}],
+                    "channels": [{"id": "20", "name": "chat", "type": 0}]
+                }],
+                "merged_members": [[{"user_id": "1", "roles": ["50"]}]]
+            }),
+        );
+        assert_eq!(stores.guilds[0].my_roles, vec![50]);
+        assert_eq!(stores.my_members_by_guild[&10]["roles"], json!(["50"]));
+
+        // Mention added on MESSAGE_UPDATE updates stored mention fields.
+        stores.dispatch(
+            "MESSAGE_CREATE",
+            &json!({
+                "id": "200",
+                "channel_id": "20",
+                "timestamp": "2026-11-09T12:00:00Z",
+                "author": {"id": "2", "username": "sender"},
+                "content": "hi"
+            }),
+        );
+        stores.dispatch(
+            "MESSAGE_UPDATE",
+            &json!({
+                "id": "200",
+                "channel_id": "20",
+                "content": "<@&50>",
+                "mention_roles": ["50"],
+                "mention_everyone": false
+            }),
+        );
+        assert!(stores.messages[&20][0].mentions_me(1, &[50], false, false));
+
+        // Mentioned message created & deleted decrements mention_count and rewinds latest.
+        stores.dispatch(
+            "MESSAGE_CREATE",
+            &json!({
+                "id": "201",
+                "channel_id": "20",
+                "timestamp": "2026-11-09T12:01:00Z",
+                "author": {"id": "2", "username": "sender"},
+                "content": "@everyone",
+                "mention_everyone": true
+            }),
+        );
+        assert_eq!(stores.read_states.mentions(20), 1);
+        assert_eq!(stores.read_states.latest.get(&20), Some(&201));
+        stores.dispatch(
+            "MESSAGE_DELETE",
+            &json!({"id": "201", "channel_id": "20"}),
+        );
+        assert_eq!(stores.read_states.mentions(20), 0);
+        assert_eq!(stores.read_states.latest.get(&20), Some(&200));
+
+        // PASSIVE_UPDATE_V2 and messages_loaded update `latest` monotonically.
+        stores.dispatch(
+            "PASSIVE_UPDATE_V2",
+            &json!({"guild_id": "10", "updated_channels": [{"id": "20", "last_message_id": "250"}]}),
+        );
+        assert_eq!(stores.read_states.latest.get(&20), Some(&250));
+        assert_eq!(stores.guilds[0].channels[0].last_message_id, Some(250));
+
+        let spec = crate::message_window::FetchSpec {
+            channel: 20,
+            limit: 50,
+            ..Default::default()
+        };
+        stores.messages_loaded(
+            &spec,
+            &json!([{
+                "id": "260",
+                "channel_id": "20",
+                "timestamp": "2026-11-09T12:02:00Z",
+                "author": {"id": "2", "username": "sender"},
+                "content": "loaded"
+            }]),
+        );
+        assert_eq!(stores.read_states.latest.get(&20), Some(&260));
     }
 }

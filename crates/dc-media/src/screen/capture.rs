@@ -139,12 +139,55 @@ struct Locked<T>(T);
 // devices created without the single-threaded flag are free-threaded.
 unsafe impl<T> Send for Locked<T> {}
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct PendingRead<T> {
+    slot: usize,
+    meta: T,
+}
+
+/// Pure 2-slot ping-pong tracker: frame 0 reads immediately so single-shot consumers (thumbnails) don't stall, while
+/// steady-state frames write into slot `next` and map the previously flushed slot (`next ^ 1`) one frame later.
+#[derive(Debug)]
+struct StagingRing<T> {
+    next: usize,
+    primed: bool,
+    pending: Option<PendingRead<T>>,
+}
+
+impl<T> Default for StagingRing<T> {
+    fn default() -> Self {
+        Self {
+            next: 0,
+            primed: false,
+            pending: None,
+        }
+    }
+}
+
+impl<T> StagingRing<T> {
+    fn acquire_slot(&mut self) -> usize {
+        let slot = self.next & 1;
+        self.next = self.next.wrapping_add(1);
+        slot
+    }
+
+    fn complete_copy(&mut self, slot: usize, meta: T) -> Option<(usize, T)> {
+        let previous = self.pending.take();
+        if !self.primed {
+            self.primed = true;
+            return Some((slot, meta));
+        }
+        self.pending = Some(PendingRead { slot, meta });
+        previous.map(|prev| (prev.slot, prev.meta))
+    }
+}
+
 struct Reader {
     device: ID3D11Device,
     context: ID3D11DeviceContext,
     d3d: IDirect3DDevice,
     staging: [Option<(ID3D11Texture2D, u32, u32)>; 2],
-    next_staging: usize,
+    ring: StagingRing<(u32, u32, Instant)>,
     last_size: SizeInt32,
     buffers: Arc<BufferPool>,
 }
@@ -228,7 +271,7 @@ impl Capture {
                 context,
                 d3d,
                 staging: [None, None],
-                next_staging: 0,
+                ring: StagingRing::default(),
                 last_size: size,
                 buffers: BufferPool::new(),
             },
@@ -253,7 +296,7 @@ impl Capture {
                     return Ok(());
                 };
                 let Locked((reader, deliver)) = &mut *guard;
-                if let Ok(captured) = read_frame(reader, pool, frame, at) {
+                if let Ok(Some(captured)) = read_frame(reader, pool, frame, at) {
                     deliver(captured);
                 }
                 Ok(())
@@ -347,86 +390,24 @@ fn create_device() -> Result<(ID3D11Device, ID3D11DeviceContext)> {
     }
 }
 
-/// Copies the frame's texture to a ping-pong staging texture, releases the WGC frame immediately, and reads BGRA
-/// rows out into a pooled buffer.
-fn read_frame(
-    reader: &mut Reader,
-    pool: &Direct3D11CaptureFramePool,
-    mut frame: ClosingFrame,
+/// Maps an already-copied staging slot and reads BGRA rows into a pooled host buffer.
+///
+/// # Safety
+/// The caller must guarantee `slot < 2` and that `CopyResource` + `Flush` on `reader.staging[slot]` already ran
+/// sequentially under the reader lock.
+unsafe fn map_staging(
+    reader: &Reader,
+    slot: usize,
+    width: u32,
+    height: u32,
     at: Instant,
 ) -> windows::core::Result<Frame> {
-    let raw_frame = frame.as_ref().ok_or_else(|| {
-        windows::core::Error::from_hresult(windows::core::HRESULT(0x8000_4005_u32 as i32))
-    })?;
-    let content = raw_frame.ContentSize()?;
-    if content.Width <= 0 || content.Height <= 0 {
+    let Some((staging, _, _)) = reader.staging[slot].as_ref() else {
         return Err(windows::core::Error::from_hresult(windows::core::HRESULT(
             0x8000_4005_u32 as i32,
         )));
-    }
-    let resized =
-        content.Width != reader.last_size.Width || content.Height != reader.last_size.Height;
-    let surface = raw_frame.Surface()?;
-    let access: IDirect3DDxgiInterfaceAccess = surface.cast()?;
-    // SAFETY: the texture is the frame's own; the staging ring, CopyResource, Map and Unmap execute sequentially under
-    // the reader lock, and the WGC frame is closed immediately after CopyResource (and before any pool.Recreate).
+    };
     unsafe {
-        let texture: ID3D11Texture2D = access.GetInterface()?;
-        let mut desc = D3D11_TEXTURE2D_DESC::default();
-        texture.GetDesc(&mut desc);
-        let (width, height) = (
-            (content.Width as u32).min(desc.Width),
-            (content.Height as u32).min(desc.Height),
-        );
-        let slot_index = reader.next_staging & 1;
-        reader.next_staging = reader.next_staging.wrapping_add(1);
-        if reader.staging[slot_index]
-            .as_ref()
-            .is_none_or(|(_, w, h)| *w != desc.Width || *h != desc.Height)
-        {
-            let staging_desc = D3D11_TEXTURE2D_DESC {
-                Width: desc.Width,
-                Height: desc.Height,
-                MipLevels: 1,
-                ArraySize: 1,
-                Format: desc.Format,
-                SampleDesc: DXGI_SAMPLE_DESC {
-                    Count: 1,
-                    Quality: 0,
-                },
-                Usage: D3D11_USAGE_STAGING,
-                BindFlags: 0,
-                CPUAccessFlags: D3D11_CPU_ACCESS_READ.0 as u32,
-                MiscFlags: 0,
-            };
-            let mut staging = None;
-            reader
-                .device
-                .CreateTexture2D(&staging_desc, None, Some(&mut staging))?;
-            reader.staging[slot_index] = staging.map(|tex| (tex, desc.Width, desc.Height));
-        }
-        let Some((staging, _, _)) = reader.staging[slot_index].as_ref() else {
-            return Err(windows::core::Error::from_hresult(windows::core::HRESULT(
-                0x8000_4005_u32 as i32,
-            )));
-        };
-        reader.context.CopyResource(staging, &texture);
-        // Release the WGC frame pool slot before pool.Recreate and the blocking CPU Map so swapchains are never held.
-        drop(texture);
-        drop(access);
-        drop(surface);
-        frame.close_now();
-        if resized {
-            // The source was resized: later frames come at the new size.
-            reader.last_size = content;
-            pool.Recreate(
-                &reader.d3d,
-                DirectXPixelFormat::B8G8R8A8UIntNormalized,
-                POOL_BUFFERS,
-                content,
-            )?;
-        }
-
         let mut mapped = D3D11_MAPPED_SUBRESOURCE::default();
         reader
             .context
@@ -465,8 +446,97 @@ fn read_frame(
     }
 }
 
-/// Asks Windows for the programmatic capture consent this application needs, waiting at most [`CONSENT_TIMEOUT`] and
-/// giving up at once when `cancel` is set. Adapted from Serein's `request_access`.
+/// Copies the frame's texture to a ping-pong staging texture, flushes and releases the WGC frame immediately, and
+/// reads back the previously flushed staging slot (or frame 0 immediately when unprimed).
+fn read_frame(
+    reader: &mut Reader,
+    pool: &Direct3D11CaptureFramePool,
+    mut frame: ClosingFrame,
+    at: Instant,
+) -> windows::core::Result<Option<Frame>> {
+    let raw_frame = frame.as_ref().ok_or_else(|| {
+        windows::core::Error::from_hresult(windows::core::HRESULT(0x8000_4005_u32 as i32))
+    })?;
+    let content = raw_frame.ContentSize()?;
+    if content.Width <= 0 || content.Height <= 0 {
+        return Err(windows::core::Error::from_hresult(windows::core::HRESULT(
+            0x8000_4005_u32 as i32,
+        )));
+    }
+    let resized =
+        content.Width != reader.last_size.Width || content.Height != reader.last_size.Height;
+    let surface = raw_frame.Surface()?;
+    let access: IDirect3DDxgiInterfaceAccess = surface.cast()?;
+    // SAFETY: the texture is the frame's own; the 2-slot staging ring, CopyResource, Flush, Map and Unmap execute
+    // sequentially under the reader lock, and the WGC frame closes before any pool.Recreate or Map.
+    unsafe {
+        let texture: ID3D11Texture2D = access.GetInterface()?;
+        let mut desc = D3D11_TEXTURE2D_DESC::default();
+        texture.GetDesc(&mut desc);
+        let (width, height) = (
+            (content.Width as u32).min(desc.Width),
+            (content.Height as u32).min(desc.Height),
+        );
+        let slot_index = reader.ring.acquire_slot();
+        if reader.staging[slot_index]
+            .as_ref()
+            .is_none_or(|(_, w, h)| *w != desc.Width || *h != desc.Height)
+        {
+            let staging_desc = D3D11_TEXTURE2D_DESC {
+                Width: desc.Width,
+                Height: desc.Height,
+                MipLevels: 1,
+                ArraySize: 1,
+                Format: desc.Format,
+                SampleDesc: DXGI_SAMPLE_DESC {
+                    Count: 1,
+                    Quality: 0,
+                },
+                Usage: D3D11_USAGE_STAGING,
+                BindFlags: 0,
+                CPUAccessFlags: D3D11_CPU_ACCESS_READ.0 as u32,
+                MiscFlags: 0,
+            };
+            let mut staging = None;
+            reader
+                .device
+                .CreateTexture2D(&staging_desc, None, Some(&mut staging))?;
+            reader.staging[slot_index] = staging.map(|tex| (tex, desc.Width, desc.Height));
+        }
+        let Some((staging, _, _)) = reader.staging[slot_index].as_ref() else {
+            return Err(windows::core::Error::from_hresult(windows::core::HRESULT(
+                0x8000_4005_u32 as i32,
+            )));
+        };
+        reader.context.CopyResource(staging, &texture);
+        // Kick the GPU DMA copy now so mapping `previous` in the alternate slot sees completed work.
+        reader.context.Flush();
+        // Release the WGC frame pool slot before pool.Recreate and any CPU Map so swapchains are never held.
+        drop(texture);
+        drop(access);
+        drop(surface);
+        frame.close_now();
+        if resized {
+            // The source was resized: later frames come at the new size.
+            reader.last_size = content;
+            pool.Recreate(
+                &reader.d3d,
+                DirectXPixelFormat::B8G8R8A8UIntNormalized,
+                POOL_BUFFERS,
+                content,
+            )?;
+        }
+
+        let Some((read_slot, (read_w, read_h, read_at))) =
+            reader.ring.complete_copy(slot_index, (width, height, at))
+        else {
+            return Ok(None);
+        };
+        map_staging(reader, read_slot, read_w, read_h, read_at).map(Some)
+    }
+}
+
+/// Asks Windows for programmatic and best-effort borderless capture consent, giving up at once when `cancel` is set.
 fn request_access(cancel: &AtomicBool) -> Result<()> {
     let Ok(operation) =
         GraphicsCaptureAccess::RequestAccessAsync(GraphicsCaptureAccessKind::Programmatic)
@@ -486,17 +556,31 @@ fn request_access(cancel: &AtomicBool) -> Result<()> {
         std::thread::sleep(CONSENT_POLL);
     }
     match operation.GetResults() {
-        Ok(status) if status == AppCapabilityAccessStatus::Allowed => Ok(()),
         // Only a decision the owner made is trusted: an unpackaged executable reports NotDeclaredByApp even where
         // capture is already allowed, and that decision still belongs to the capture item.
         Ok(status)
             if status == AppCapabilityAccessStatus::DeniedByUser
                 || status == AppCapabilityAccessStatus::DeniedBySystem =>
         {
-            Err(Error::unavailable(DENIED))
+            return Err(Error::unavailable(DENIED));
         }
-        _ => Ok(()),
+        _ => {}
     }
+    if let Ok(borderless) =
+        GraphicsCaptureAccess::RequestAccessAsync(GraphicsCaptureAccessKind::Borderless)
+    {
+        let border_deadline = Instant::now() + CONSENT_TIMEOUT.min(Duration::from_millis(250));
+        while borderless.Status().is_ok_and(|status| status.0 == 0) {
+            if cancel.load(Ordering::Acquire) {
+                return Err(Error::unavailable("Screen sharing was cancelled"));
+            }
+            if Instant::now() >= border_deadline {
+                break;
+            }
+            std::thread::sleep(CONSENT_POLL);
+        }
+    }
+    Ok(())
 }
 
 fn refusal(error: &windows::core::Error) -> Error {
@@ -581,5 +665,26 @@ mod tests {
         assert_eq!(drops.get(), 3);
         drop(kept);
         assert_eq!(drops.get(), 4);
+    }
+
+    #[test]
+    fn staging_ring_primes_first_frame_then_alternates_ping_pong_slots() {
+        let mut ring = StagingRing::default();
+
+        let s0 = ring.acquire_slot();
+        assert_eq!(s0, 0);
+        assert_eq!(ring.complete_copy(s0, 100), Some((0, 100)));
+
+        let s1 = ring.acquire_slot();
+        assert_eq!(s1, 1);
+        assert_eq!(ring.complete_copy(s1, 200), None);
+
+        let s2 = ring.acquire_slot();
+        assert_eq!(s2, 0);
+        assert_eq!(ring.complete_copy(s2, 300), Some((1, 200)));
+
+        let s3 = ring.acquire_slot();
+        assert_eq!(s3, 1);
+        assert_eq!(ring.complete_copy(s3, 400), Some((0, 300)));
     }
 }

@@ -156,6 +156,18 @@ impl Root {
             || dc_intl::t!("tlopTM").to_owned(),
             |guild| self.events_title(guild),
         );
+        let event_mentions = self
+            .guild
+            .filter(|&guild| {
+                !self
+                    .stores
+                    .guild_settings
+                    .guilds
+                    .get(&guild)
+                    .is_some_and(|s| s.mute_scheduled_events)
+            })
+            .and_then(|guild| self.stores.read_states.typed.get(&(guild, 1)))
+            .map_or(0, |state| state.mention_count);
         div()
             .flex_none()
             .h(px(34.))
@@ -167,7 +179,7 @@ impl Root {
                     .group("guild-events-row")
                     .h(px(32.))
                     .w(px(self.sidebar_row_width()))
-                    .pl(px(8.))
+                    .px(px(8.))
                     .rounded(px(8.))
                     .flex()
                     .items_center()
@@ -180,15 +192,28 @@ impl Root {
                     .child(icon("events", 20., "--channels-default"))
                     .child(
                         div()
+                            .flex_1()
+                            .truncate()
                             .text_size(px(16.))
                             .line_height(px(24.))
                             .font_weight(FontWeight(500.))
-                            .text_color(color("--channels-default"))
+                            .text_color(color(if event_mentions > 0 {
+                                "--text-strong"
+                            } else {
+                                "--channels-default"
+                            }))
                             .group_hover("guild-events-row", |style| {
                                 style.text_color(color("--interactive-text-hover"))
                             })
                             .child(label),
-                    ),
+                    )
+                    .when(event_mentions > 0, |this| {
+                        this.child(super::unread_badges::number(
+                            event_mentions,
+                            "--background-feedback-notification",
+                            None,
+                        ))
+                    }),
             )
             .into_any_element()
     }
@@ -198,6 +223,7 @@ impl Root {
         let Some(guild) = self.guild else {
             return;
         };
+        self.ack_guild_events(guild);
         self.guild_events = Some(GuildEvents {
             guild,
             create: None,

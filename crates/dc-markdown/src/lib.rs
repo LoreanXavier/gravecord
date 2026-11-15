@@ -443,6 +443,24 @@ fn closing(body: &str, mark: &str) -> Option<usize> {
     None
 }
 
+fn everyone_here_prefix(source: &str, at: usize) -> Option<usize> {
+    let rest = &source[at..];
+    let length = if rest.starts_with("@everyone") {
+        9
+    } else if rest.starts_with("@here") {
+        5
+    } else {
+        return None;
+    };
+    let prev = source[..at].chars().next_back();
+    let next = rest[length..].chars().next();
+    let valid_boundary = |c: char| !c.is_alphanumeric() && c != '_';
+    if prev.is_some_and(|c| !valid_boundary(c)) || next.is_some_and(|c| !valid_boundary(c)) {
+        return None;
+    }
+    Some(length)
+}
+
 fn walk(source: &str, style: Style, rules: Rules, spans: &mut Vec<Span>) {
     let mut at = 0;
     while at < source.len() {
@@ -459,8 +477,9 @@ fn walk(source: &str, style: Style, rules: Rules, spans: &mut Vec<Span>) {
             at += consumed;
             continue;
         }
-        if rules.mentions && (rest.starts_with("@everyone") || rest.starts_with("@here")) {
-            let length = if rest.starts_with("@everyone") { 9 } else { 5 };
+        if rules.mentions
+            && let Some(length) = everyone_here_prefix(source, at)
+        {
             spans.push(Span {
                 text: rest[..length].to_owned(),
                 style,
@@ -886,5 +905,13 @@ mod tests {
                 .iter()
                 .any(|span| matches!(span.kind, Kind::Link(_)))
         );
+    }
+
+    #[test]
+    fn everyone_and_here_require_word_boundaries() {
+        assert!(!kinds("mail foo@here.com and @everyones or @here1").contains(&Kind::Everyone));
+        assert!(!kinds("user@everyone").contains(&Kind::Everyone));
+        assert!(kinds("hello @here!").contains(&Kind::Everyone));
+        assert!(kinds("(@everyone)").contains(&Kind::Everyone));
     }
 }

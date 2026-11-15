@@ -925,8 +925,6 @@ pub(crate) async fn run(
                 if enabled && (active || silence > 0) {
                     let data = if let Some(frame) = latest.filter(|_| active) {
                         outbound_audio_frames += 1;
-                        // The user's own voice, as it leaves, for the clip buffer of a live stream (off otherwise).
-                        dc_clips::recorder().push_voice(&frame);
                         for (sample, pair) in frame.iter().zip(stereo.as_chunks_mut::<2>().0) {
                             let sample = if sample.is_finite() { sample.clamp(-1.0, 1.0) } else { 0.0 };
                             pair[0] = sample;
@@ -973,6 +971,25 @@ pub(crate) async fn run(
                     hub.clear_stream_audio();
                 }
                 was_playout_active = playout_active;
+                // Combined voice track for the clip buffer (off when no live stream tap is attached): local mic plus consented remote speakers.
+                let local_clips = latest.filter(|_| enabled && active);
+                let remote_clips = if playout_active {
+                    playout.pop_clips_20ms()
+                } else {
+                    playout.clear_clips_tap();
+                    None
+                };
+                match (local_clips, remote_clips) {
+                    (Some(mut mixed), Some(remote)) => {
+                        for (sample, r) in mixed.iter_mut().zip(remote.iter()) {
+                            *sample = (*sample + *r).clamp(-1.0, 1.0);
+                        }
+                        dc_clips::recorder().push_voice(&mixed);
+                    }
+                    (Some(local), None) => dc_clips::recorder().push_voice(&local),
+                    (None, Some(remote)) => dc_clips::recorder().push_voice(&remote),
+                    (None, None) => {}
+                }
                 // Video never gates audio: every step here fails alone.
                 secure = enabled && dave.session.is_ready() && !dave.transitioning();
                 if !secure {
@@ -1658,6 +1675,7 @@ pub(crate) async fn run(
                                 if let (Ok(user_id), Some(flags)) =
                                     (signal::id(data, "user_id"), data["flags"].as_u64())
                                 {
+                                    playout.set_user_clips(user_id, (flags & 2) != 0);
                                     emit(&events, Event::Flags { user_id, flags });
                                 }
                             }
@@ -1682,6 +1700,7 @@ pub(crate) async fn run(
                             Some(VoiceOp::ClientDisconnect) => {
                                 let user = signal::id(data, "user_id")?;
                                 playout.remove(user);
+                                playout.set_user_clips(user, false);
                                 receivers.remove(user);
                                 decoders.remove(user);
                                 if clients.remove(&user) {

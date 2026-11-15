@@ -147,6 +147,7 @@ pub(super) struct Encoder {
     output_pool: Vec<PooledSample>,
     pending_outputs: VecDeque<Output>,
     force_next_keyframe: bool,
+    sequence_header: Vec<u8>,
     waiter: HighResWaiter,
 }
 
@@ -236,6 +237,11 @@ impl Encoder {
             transform
                 .SetOutputType(0, &output, 0)
                 .map_err(|e| unavailable("output type", e))?;
+            let sequence_header = transform
+                .GetOutputCurrentType(0)
+                .ok()
+                .map(|ty| read_sequence_header(&ty))
+                .unwrap_or_default();
 
             let input = video_type(config, MFVideoFormat_NV12)?;
             input
@@ -289,6 +295,7 @@ impl Encoder {
                 output_pool: Vec::with_capacity(SAMPLE_POOL_LIMIT),
                 pending_outputs: VecDeque::new(),
                 force_next_keyframe: false,
+                sequence_header,
                 waiter: HighResWaiter::new(),
             })
         }
@@ -504,7 +511,15 @@ impl Encoder {
                     continue;
                 }
                 match self.transform.SetOutputType(0, &candidate, 0) {
-                    Ok(()) => break,
+                    Ok(()) => {
+                        if let Ok(current) = self.transform.GetOutputCurrentType(0) {
+                            let header = read_sequence_header(&current);
+                            if !header.is_empty() {
+                                self.sequence_header = header;
+                            }
+                        }
+                        break;
+                    }
                     Err(error) => last_error = Some(failed("set renegotiated output type", error)),
                 }
             }
@@ -563,6 +578,12 @@ impl Encoder {
                         SampleRead::Bytes(data) if data.is_empty() => Ok(OutputStep::NeedMoreInput),
                         SampleRead::Bytes(data) => {
                             let keyframe = h264::is_keyframe(&data);
+                            let data = prepend_sequence_header_if_needed(
+                                data,
+                                keyframe,
+                                &self.sequence_header,
+                                self.max_bytes,
+                            );
                             Ok(OutputStep::Ready(Output { data, keyframe }))
                         }
                         SampleRead::Oversized => Ok(OutputStep::Oversized),
@@ -653,6 +674,47 @@ unsafe fn hardware_encoders() -> Result<Vec<IMFActivate>> {
             return Err(Error::unavailable("no hardware H.264 encoder"));
         }
         Ok(found)
+    }
+}
+
+/// Prepends an Annex B SPS/PPS sequence header to keyframes emitted without inline parameter sets.
+fn prepend_sequence_header_if_needed(
+    data: Vec<u8>,
+    keyframe: bool,
+    header: &[u8],
+    max_bytes: usize,
+) -> Vec<u8> {
+    if !keyframe
+        || header.is_empty()
+        || h264::has_parameter_sets(&data)
+        || header.len().saturating_add(data.len()) > max_bytes
+    {
+        return data;
+    }
+    let mut out = Vec::with_capacity(header.len() + data.len());
+    out.extend_from_slice(header);
+    out.extend_from_slice(&data);
+    out
+}
+
+unsafe fn read_sequence_header(media_type: &IMFMediaType) -> Vec<u8> {
+    // SAFETY: GetBlobSize + GetBlob read `MF_MT_MPEG_SEQUENCE_HEADER` into a right-sized buffer.
+    unsafe {
+        let Ok(len) = media_type.GetBlobSize(&MF_MT_MPEG_SEQUENCE_HEADER) else {
+            return Vec::new();
+        };
+        if len == 0 {
+            return Vec::new();
+        }
+        let mut buf = vec![0u8; len as usize];
+        if media_type
+            .GetBlob(&MF_MT_MPEG_SEQUENCE_HEADER, &mut buf, None)
+            .is_ok()
+        {
+            buf
+        } else {
+            Vec::new()
+        }
     }
 }
 
@@ -825,5 +887,30 @@ mod tests {
         let started = Instant::now();
         waiter.sleep(Duration::from_millis(1));
         assert!(started.elapsed() < Duration::from_secs(1));
+    }
+
+    #[test]
+    fn keyframes_without_sps_pps_receive_sequence_header_and_others_stay_intact() {
+        let header = [0, 0, 0, 1, 0x67, 0x42, 0x00, 0x1e, 0, 0, 0, 1, 0x68, 0xce];
+        let idr_only = vec![0, 0, 0, 1, 0x65, 0x88, 0x84];
+        let out = prepend_sequence_header_if_needed(idr_only.clone(), true, &header, 1024);
+        assert!(h264::has_parameter_sets(&out));
+        assert!(out.starts_with(&header));
+        assert!(out.ends_with(&idr_only));
+
+        // Frame already carrying SPS/PPS is untouched.
+        let untouched = prepend_sequence_header_if_needed(out.clone(), true, &header, 1024);
+        assert_eq!(untouched, out);
+
+        // Delta frame or oversized payload stays untouched.
+        let delta = vec![0, 0, 0, 1, 0x41, 0x9a];
+        assert_eq!(
+            prepend_sequence_header_if_needed(delta.clone(), false, &header, 1024),
+            delta
+        );
+        assert_eq!(
+            prepend_sequence_header_if_needed(idr_only.clone(), true, &header, 16),
+            idr_only
+        );
     }
 }

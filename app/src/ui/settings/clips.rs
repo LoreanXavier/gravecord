@@ -35,6 +35,10 @@ const KEYBIND_STORED: &str = "KeybindsStore.SAVE_CLIP";
 
 pub(super) const ENABLE: &str = "clips_enable";
 pub(super) const REMINDERS: &str = "clips_enable_reminders";
+
+pub(super) fn is_clips_setting(key: &str) -> bool {
+    key == ENABLE || key == REMINDERS
+}
 const GENERAL_CATEGORY: &str = "clips_general_category";
 const CAPTURE_CATEGORY: &str = "clips_capture_settings_category";
 const STORAGE_CATEGORY: &str = "clips_storage_category";
@@ -567,6 +571,15 @@ impl ClipsState {
                 storage::set(STORED, store.to_value());
             }
         }
+        if cfg!(windows)
+            && !storage::is_capture_run()
+            && !cfg!(test)
+            && store.enabled_source == EnabledSource::Unset
+        {
+            store.settings.clips_enabled = true;
+            store.enabled_source = EnabledSource::Default;
+            storage::set(STORED, store.to_value());
+        }
         Self {
             store,
             keybind: keybind.unwrap_or_else(default_keybind),
@@ -723,7 +736,11 @@ impl Root {
     /// `sw` in module 734066: the entry is listed for Nitro (`TIER_2`; Nitro Basic and Classic rank below it) on a
     /// platform whose engine can clip, which is Windows here.
     pub(in crate::ui) fn clips_listed(&self) -> bool {
-        cfg!(windows) && self.premium() == PremiumType::Nitro
+        if storage::is_capture_run() || cfg!(test) {
+            cfg!(windows) && self.premium() == PremiumType::Nitro
+        } else {
+            cfg!(windows)
+        }
     }
 
     /// `useClipsEnabled` (module 572164): the entry is listed and Enable Clipping is on.
@@ -1110,6 +1127,8 @@ impl Root {
                     })
                     .on_click(cx.listener(move |this, _, _, cx| {
                         this.clips_choose(select, index);
+                        #[cfg(windows)]
+                        this.clips_sync_capture(cx);
                         cx.notify();
                     }))
                     .into_any_element()
@@ -1457,6 +1476,8 @@ impl Root {
             return;
         };
         self.clips_set_percent(drag.percent);
+        #[cfg(windows)]
+        self.clips_sync_capture(cx);
         self.tip = None;
         cx.notify();
     }
@@ -1466,6 +1487,8 @@ impl Root {
         let current = i32::from(self.clips.store.settings.clips_quality.bitrate_percent);
         let next = (current + direction).clamp(QUALITY_MIN as i32, QUALITY_MAX as i32);
         self.clips_set_percent(next as u8);
+        #[cfg(windows)]
+        self.clips_sync_capture(cx);
         cx.notify();
     }
 
@@ -1544,6 +1567,26 @@ impl Root {
                 dc_intl::tr("Edit Location"),
                 ButtonKind::Secondary,
             ));
+        let gallery = (!storage::is_capture_run()).then(|| {
+            div()
+                .pt(px(8.))
+                .flex()
+                .items_start()
+                .child(
+                    div()
+                        .id("clips-open-gallery")
+                        .flex_none()
+                        .cursor_pointer()
+                        .on_click(cx.listener(|this, _, _, cx| {
+                            this.clips_open_gallery(crate::ui::clips::Facet::All, cx);
+                        }))
+                        .child(button(
+                            "clips-open-gallery-button",
+                            "Open Clips Gallery",
+                            ButtonKind::Secondary,
+                        )),
+                )
+        });
         div()
             .flex()
             .flex_col()
@@ -1567,7 +1610,8 @@ impl Root {
                                 .gap(px(12.))
                                 .child(input)
                                 .child(edit),
-                        ),
+                        )
+                        .children(gallery),
                 ),
             )
             .into_any_element()
@@ -1607,6 +1651,8 @@ impl Root {
         self.clips.store.settings.storage_location = path.to_string_lossy().into_owned();
         self.clips.save();
         self.clips_reload_directory(cx);
+        #[cfg(windows)]
+        self.clips_sync_capture(cx);
     }
 
     /// The Enable Clipping and Enable Reminders switches (`yO`, `Mt`): a click on the generated switch row wrote
@@ -1797,6 +1843,8 @@ impl Root {
                 self.clips.store.set_enabled(true);
                 self.clips.save();
                 self.clips_sync_engine();
+                #[cfg(windows)]
+                self.clips_sync_capture(cx);
                 cx.notify();
                 "enabled".to_owned()
             }
@@ -1864,6 +1912,8 @@ impl Root {
                 }
                 self.clips.save();
                 self.clips_sync_engine();
+                #[cfg(windows)]
+                self.clips_sync_capture(cx);
                 cx.notify();
                 format!("{what} = {value}")
             }

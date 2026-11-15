@@ -18,6 +18,40 @@ fn now_ms() -> u64 {
 }
 
 impl Root {
+    pub(super) fn has_unread_or_mentions(&self, channel: Id) -> bool {
+        self.stores.is_unread(channel) || self.stores.read_states.mentions(channel) > 0
+    }
+
+    pub(super) fn ack_target_id(&self, channel: Id) -> Id {
+        self.stores
+            .read_states
+            .latest
+            .get(&channel)
+            .copied()
+            .filter(|id| *id > 0)
+            .or_else(|| {
+                self.stores
+                    .read_states
+                    .states
+                    .get(&channel)
+                    .map(|state| state.acked)
+                    .filter(|id| *id > 0)
+            })
+            .unwrap_or_else(|| dc_state::read_state::snowflake_at(now_ms()))
+    }
+
+    fn send_channel_ack(&mut self, channel: Id, message: Id) {
+        self.stores.read_states.ack_local(channel, message, false);
+        self.data_revision += 1;
+        let _ = self.requests.send(Request::Ack {
+            channel,
+            message,
+            manual: false,
+            mention_count: 0,
+            last_viewed: days_since_epoch(now_ms()),
+        });
+    }
+
     /// Acks the newest message of the open channel, unless Mark Unread holds it, and keeps where the unread
     /// messages started so the NEW divider stays while the channel is open.
     pub(super) fn read_current_channel(&mut self) {
@@ -30,29 +64,44 @@ impl Root {
         self.notification_runtime.clear(channel);
         self.view_new_channel(channel);
         // A window that stops short of the newest message is not the end of the channel: nothing is read there.
-        if self.window_detached() || !self.stores.is_unread(channel) {
+        if self.window_detached() || !self.has_unread_or_mentions(channel) {
             return;
         }
         let state = self.stores.read_states.states.get(&channel).copied();
         if state.is_some_and(|state| state.manual) {
             return;
         }
-        let Some(latest) = self.stores.read_states.latest.get(&channel).copied() else {
-            return;
-        };
+        let latest = self.ack_target_id(channel);
         let joined = self
             .current_guild()
             .map_or(0, dc_state::Guild::joined_snowflake);
-        self.unread_from = Some((channel, self.stores.read_states.acked(channel, joined)));
-        self.stores.read_states.ack_local(channel, latest, false);
-        self.data_revision += 1;
-        let _ = self.requests.send(Request::Ack {
-            channel,
-            message: latest,
-            manual: false,
-            mention_count: 0,
-            last_viewed: days_since_epoch(now_ms()),
-        });
+        if self.stores.is_unread(channel)
+            && self.unread_from.is_none_or(|(open, _)| open != channel)
+        {
+            self.unread_from = Some((channel, self.stores.read_states.acked(channel, joined)));
+        }
+        self.send_channel_ack(channel, latest);
+    }
+
+    /// Acks a live message arriving in the already-focused, bottom-scrolled channel without creating a NEW divider.
+    pub(super) fn read_current_channel_live(&mut self) {
+        if !self.notification_focused {
+            return;
+        }
+        let Some(channel) = self.channel else {
+            return;
+        };
+        self.notification_runtime.clear(channel);
+        self.view_new_channel(channel);
+        if self.window_detached() || !self.has_unread_or_mentions(channel) {
+            return;
+        }
+        let state = self.stores.read_states.states.get(&channel).copied();
+        if state.is_some_and(|state| state.manual) {
+            return;
+        }
+        let latest = self.ack_target_id(channel);
+        self.send_channel_ack(channel, latest);
     }
 
     /// Mark Unread: ack the message before `message` by hand, so `message` and those after it read as new.
@@ -80,21 +129,19 @@ impl Root {
         let Some(channel) = self.channel else {
             return;
         };
+        let was_manual = self
+            .stores
+            .read_states
+            .states
+            .get(&channel)
+            .is_some_and(|state| state.manual);
         if let Some(state) = self.stores.read_states.states.get_mut(&channel) {
             state.manual = false;
         }
         self.unread_from = None;
-        let latest = self.stores.read_states.latest.get(&channel).copied();
-        if let Some(latest) = latest {
-            self.stores.read_states.ack_local(channel, latest, false);
-            self.data_revision += 1;
-            let _ = self.requests.send(Request::Ack {
-                channel,
-                message: latest,
-                manual: false,
-                mention_count: 0,
-                last_viewed: days_since_epoch(now_ms()),
-            });
+        if was_manual || self.has_unread_or_mentions(channel) {
+            let latest = self.ack_target_id(channel);
+            self.send_channel_ack(channel, latest);
         }
         self.rebuild_rows();
         cx.notify();

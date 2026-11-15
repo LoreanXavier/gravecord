@@ -40,6 +40,8 @@ pub(super) enum Plus {
     Schedule,
     /// "Record Voice Message": starts a voice message recording in the composer (module 316576).
     RecordVoice,
+    /// "Share a Clip": opens the Clips Gallery to pick a clip to share.
+    ShareClip,
 }
 
 pub(super) struct PollForm {
@@ -121,6 +123,7 @@ impl Root {
                     window.focus(&self.focus, cx);
                 }
             }
+            Plus::ShareClip => self.clips_open_gallery(super::clips::Facet::All, cx),
             Plus::Schedule => {}
         }
         cx.notify();
@@ -387,7 +390,22 @@ impl Root {
                     record_finalizing,
                     cx,
                 )
-            }));
+            }))
+            .children(
+                (cfg!(windows) && !crate::storage::is_capture_run() && self.clips_listed()).then(
+                    || {
+                        row(
+                            "plus-share-clip",
+                            "clips_clips",
+                            dc_intl::tr("Share a Clip"),
+                            Some(Plus::ShareClip),
+                            false,
+                            false,
+                            cx,
+                        )
+                    },
+                ),
+            );
         let layer = div()
             .id("composer-plus-layer")
             .absolute()

@@ -374,9 +374,10 @@ impl Root {
             .on_drop(cx.listener(move |this, drag: &Drag, _, cx| {
                 this.welcome_move(guild, drag.0, position, cx)
             }))
-            .on_mouse_down(
+            .on_mouse_up(
                 gpui::MouseButton::Right,
-                cx.listener(move |this, event: &gpui::MouseDownEvent, _, cx| {
+                cx.listener(move |this, event: &gpui::MouseUpEvent, _, cx| {
+                    this.close_all_context_menus();
                     if let Some(state) = this.welcome_mut() {
                         state.menu = Some((position, event.position));
                     }

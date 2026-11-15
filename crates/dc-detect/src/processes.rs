@@ -113,19 +113,62 @@ mod native {
         }
     }
 
+    /// Top-level visible window info: `(pid, area, titled)`, excluding cloaked or tool windows.
+    unsafe fn window_info(window: *mut core::ffi::c_void) -> Option<(u32, i64, bool)> {
+        use windows_sys::Win32::Graphics::Dwm::{DWMWA_CLOAKED, DwmGetWindowAttribute};
+        use windows_sys::Win32::UI::WindowsAndMessaging::{
+            GWL_EXSTYLE, GetWindowLongW, IsIconic, WS_EX_APPWINDOW, WS_EX_TOOLWINDOW,
+        };
+        // SAFETY: caller passes a valid window handle enumerated by `EnumWindows`.
+        unsafe {
+            if IsWindowVisible(window) == 0 || !GetWindow(window, GW_OWNER).is_null() {
+                return None;
+            }
+            let mut cloaked = 0u32;
+            if DwmGetWindowAttribute(
+                window,
+                DWMWA_CLOAKED as u32,
+                (&mut cloaked as *mut u32).cast(),
+                core::mem::size_of::<u32>() as u32,
+            ) == 0
+                && cloaked != 0
+            {
+                return None;
+            }
+            let ex_style = GetWindowLongW(window, GWL_EXSTYLE) as u32;
+            if (ex_style & WS_EX_TOOLWINDOW) != 0 && (ex_style & WS_EX_APPWINDOW) == 0 {
+                return None;
+            }
+            let mut pid = 0u32;
+            GetWindowThreadProcessId(window, &mut pid);
+            if pid == 0 {
+                return None;
+            }
+            let titled = GetWindowTextLengthW(window) > 0;
+            if IsIconic(window) != 0 {
+                return titled.then_some((pid, 1, true));
+            }
+            let mut rect: RECT = std::mem::zeroed();
+            if GetWindowRect(window, &mut rect) == 0 {
+                return None;
+            }
+            let width = i64::from(rect.right - rect.left);
+            let height = i64::from(rect.bottom - rect.top);
+            if width < 64 || height < 64 {
+                return None;
+            }
+            Some((pid, width * height, titled))
+        }
+    }
+
     unsafe extern "system" fn each_window(window: *mut core::ffi::c_void, param: isize) -> i32 {
         // SAFETY: `param` is the address of the set `visible_window_pids` passes to `EnumWindows` below.
         unsafe {
             let pids = &mut *(param as *mut HashSet<u32>);
-            if IsWindowVisible(window) != 0
-                && GetWindowTextLengthW(window) > 0
-                && GetWindow(window, GW_OWNER).is_null()
+            if let Some((pid, area, titled)) = window_info(window)
+                && (titled || area >= 320 * 200)
             {
-                let mut pid = 0u32;
-                GetWindowThreadProcessId(window, &mut pid);
-                if pid != 0 {
-                    pids.insert(pid);
-                }
+                pids.insert(pid);
             }
         }
         1
@@ -133,31 +176,24 @@ mod native {
 
     struct Search {
         pid: u32,
-        best: Option<(i64, u64)>,
+        best: Option<(bool, i64, u64)>,
     }
 
     unsafe extern "system" fn each_candidate(window: *mut core::ffi::c_void, param: isize) -> i32 {
         // SAFETY: `param` is the address of the `Search` that `main_window` passes to `EnumWindows` below.
         unsafe {
             let search = &mut *(param as *mut Search);
-            if IsWindowVisible(window) == 0
-                || GetWindowTextLengthW(window) == 0
-                || !GetWindow(window, GW_OWNER).is_null()
-            {
+            let Some((pid, area, titled)) = window_info(window) else {
                 return 1;
-            }
-            let mut pid = 0u32;
-            GetWindowThreadProcessId(window, &mut pid);
+            };
             if pid != search.pid {
                 return 1;
             }
-            let mut rect: RECT = std::mem::zeroed();
-            if GetWindowRect(window, &mut rect) == 0 {
-                return 1;
-            }
-            let area = i64::from(rect.right - rect.left) * i64::from(rect.bottom - rect.top);
-            if search.best.is_none_or(|(best, _)| area > best) {
-                search.best = Some((area, window as usize as u64));
+            if search
+                .best
+                .is_none_or(|(best_titled, best_area, _)| (titled, area) > (best_titled, best_area))
+            {
+                search.best = Some((titled, area, window as usize as u64));
             }
         }
         1
@@ -169,7 +205,7 @@ mod native {
         unsafe {
             EnumWindows(Some(each_candidate), &mut search as *mut Search as isize);
         }
-        search.best.map(|(_, window)| window)
+        search.best.map(|(_, _, window)| window)
     }
 
     pub fn foreground_pid() -> Option<u32> {

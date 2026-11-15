@@ -216,6 +216,10 @@ fn label_block_toggling(
         .on_click(cx.listener(move |this, _, _, cx| {
             this.setting_choices.insert(key, Choice::On(!on));
             this.voice_setting_changed(key);
+            #[cfg(windows)]
+            if super::clips::is_clips_setting(key) {
+                this.clips_sync_capture(cx);
+            }
             cx.notify();
         }));
     label_block_with(label, badge, description, cap, Some(title))
@@ -295,6 +299,10 @@ fn switch(
                 .on_click(cx.listener(move |this, _, _, cx| {
                     this.setting_choices.insert(key, Choice::On(!on));
                     this.voice_setting_changed(key);
+                    #[cfg(windows)]
+                    if super::clips::is_clips_setting(key) {
+                        this.clips_sync_capture(cx);
+                    }
                     cx.notify();
                 }))
         })

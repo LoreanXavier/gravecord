@@ -13,6 +13,7 @@ use dc_proto::{etf, pin};
 use futures_util::{SinkExt, StreamExt};
 use rand::Rng;
 use serde_json::{Value, json};
+use std::collections::VecDeque;
 use std::time::{Duration, Instant};
 use tokio::net::TcpStream;
 use tokio::sync::mpsc;
@@ -30,6 +31,7 @@ const RESUME_WINDOW: Duration = Duration::from_secs(180);
 const AUTHENTICATION_FAILED: u16 = 4004;
 const CLOSE_RECONNECT: u16 = 4000;
 const MAX_FAILS_BEFORE_RESET: u32 = 4;
+const MAX_PENDING_SENDS: usize = 64;
 
 type Socket = WebSocketStream<MaybeTlsStream<TcpStream>>;
 
@@ -77,6 +79,8 @@ struct Session {
     resume_url: Option<String>,
     last_ack: Option<Instant>,
     active: bool,
+    identified: bool,
+    pending_sends: VecDeque<(Op, Value)>,
     /// The last op 4 that put this account in a voice channel or call, until one takes it out. A shutdown sends
     /// the leave itself: a call left open at exit stays open on the service for minutes (a DM call's message then
     /// reads "lasted 2 minutes" for a call that ended at once).
@@ -104,6 +108,8 @@ pub fn spawn(
     let (command_tx, command_rx) = mpsc::unbounded_channel();
     let session = Session {
         active: config.state.active,
+        identified: false,
+        pending_sends: VecDeque::new(),
         config,
         events: event_tx,
         commands: command_rx,
@@ -175,6 +181,16 @@ impl Session {
         socket.send(Message::Binary(bytes.into())).await
     }
 
+    async fn flush_pending_sends(&mut self, socket: &mut Socket) -> Result<(), tungstenite::Error> {
+        while let Some((op, data)) = self.pending_sends.pop_front() {
+            if let Err(error) = self.send(socket, op, data.clone()).await {
+                self.pending_sends.push_front((op, data));
+                return Err(error);
+            }
+        }
+        Ok(())
+    }
+
     fn resumable(&self) -> bool {
         self.session_id.is_some()
             && self
@@ -232,6 +248,7 @@ impl Session {
     }
 
     async fn drive(&mut self, mut socket: Socket) -> Next {
+        self.identified = false;
         let mut inflater = match Inflater::new() {
             Ok(inflater) => inflater,
             Err(error) => {
@@ -280,7 +297,9 @@ impl Session {
                         if op == Op::VoiceStateUpdate {
                             self.voice = (!data["channel_id"].is_null()).then(|| data.clone());
                         }
-                        if self.send(&mut socket, op, data).await.is_err() {
+                        if !self.identified {
+                            enqueue_pending_send(&mut self.pending_sends, op, data);
+                        } else if self.send(&mut socket, op, data).await.is_err() {
                             return Next::Reconnect;
                         }
                     }
@@ -324,6 +343,10 @@ impl Session {
                             if self.resume_or_identify(&mut socket).await.is_err() {
                                 return Next::Reconnect;
                             }
+                            self.identified = true;
+                            if self.flush_pending_sends(&mut socket).await.is_err() {
+                                return Next::Reconnect;
+                            }
                         }
                         Some(Op::HeartbeatAck) => {
                             acked = true;
@@ -342,12 +365,17 @@ impl Session {
                         Some(Op::InvalidSession) => {
                             let resumable = payload["d"].as_bool().unwrap_or(false);
                             info!("gateway invalid session, resumable: {resumable}");
+                            self.identified = false;
                             let sent = if resumable {
                                 self.resume_or_identify(&mut socket).await
                             } else {
                                 self.identify(&mut socket).await
                             };
                             if sent.is_err() {
+                                return Next::Reconnect;
+                            }
+                            self.identified = true;
+                            if self.flush_pending_sends(&mut socket).await.is_err() {
                                 return Next::Reconnect;
                             }
                         }
@@ -389,6 +417,13 @@ async fn close(socket: &mut Socket, code: u16) -> Result<(), tungstenite::Error>
         .await
 }
 
+fn enqueue_pending_send(queue: &mut VecDeque<(Op, Value)>, op: Op, data: Value) {
+    if queue.len() >= MAX_PENDING_SENDS {
+        queue.pop_front();
+    }
+    queue.push_back((op, data));
+}
+
 /// The op 4 that undoes `last`: the same guild (null for a DM call) with a null channel, no camera.
 pub fn voice_leave(last: Option<&serde_json::Value>) -> Option<serde_json::Value> {
     let mut leave = last?.clone();
@@ -421,6 +456,20 @@ mod tests {
         assert_eq!(
             gateway_url("wss://gateway-us-east1-d.discord.gg/"),
             "wss://gateway-us-east1-d.discord.gg/?encoding=etf&v=9&compress=zstd-stream"
+        );
+    }
+
+    #[test]
+    fn pre_identify_queue_preserves_order_and_caps_at_limit() {
+        let mut queue = VecDeque::new();
+        for index in 0..(MAX_PENDING_SENDS + 5) {
+            enqueue_pending_send(&mut queue, Op::GuildSubscriptions, json!({"n": index}));
+        }
+        assert_eq!(queue.len(), MAX_PENDING_SENDS);
+        assert_eq!(queue.front().unwrap().1["n"], json!(5));
+        assert_eq!(
+            queue.back().unwrap().1["n"],
+            json!(MAX_PENDING_SENDS + 4)
         );
     }
 }

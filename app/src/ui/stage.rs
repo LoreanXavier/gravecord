@@ -564,9 +564,9 @@ impl Root {
                                 this.open_profile(person, bounds, true, cx);
                             }
                         }))
-                        .on_mouse_down(
+                        .on_mouse_up(
                             gpui::MouseButton::Right,
-                            cx.listener(move |this, event: &gpui::MouseDownEvent, _, cx| {
+                            cx.listener(move |this, event: &gpui::MouseUpEvent, _, cx| {
                                 cx.stop_propagation();
                                 this.context_stage_audience();
                                 this.open_context_menu(
@@ -583,9 +583,9 @@ impl Root {
                 .when(is_speaker, |this| {
                     // Module 540462 -> 107632: right-click on any speaker tile opens the full Guild call user menu
                     // with `showStageChannelItems: true`.
-                    this.on_mouse_down(
+                    this.on_mouse_up(
                         gpui::MouseButton::Right,
-                        cx.listener(move |this, event: &gpui::MouseDownEvent, _, cx| {
+                        cx.listener(move |this, event: &gpui::MouseUpEvent, _, cx| {
                             cx.stop_propagation();
                             this.vv.shown_call = (guild, target);
                             this.open_tile_menu(

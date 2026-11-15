@@ -93,7 +93,44 @@ pub(in crate::ui) struct Editor {
     /// Escape and Enter as its own actions before any key listener).
     pub shell: gpui::FocusHandle,
     pub refocus: Cell<bool>,
+    pub audio_clip: Option<Arc<dc_voice::voice_player::Clip>>,
     _title_events: Subscription,
+}
+
+fn mix_editor_audio(
+    tracks: &[(String, Vec<f32>)],
+    keep: &[&str],
+) -> Option<Arc<dc_voice::voice_player::Clip>> {
+    let mut mixed: Vec<f32> = Vec::new();
+    let mut any = false;
+    for (name, pcm) in tracks {
+        if !keep.contains(&name.as_str()) || pcm.is_empty() {
+            continue;
+        }
+        any = true;
+        if pcm.len() > mixed.len() {
+            mixed.resize(pcm.len(), 0.0);
+        }
+        for (dst, &src) in mixed.iter_mut().zip(pcm.iter()) {
+            *dst += src;
+        }
+    }
+    if !any {
+        return None;
+    }
+    for sample in &mut mixed {
+        *sample = sample.clamp(-1.0, 1.0);
+    }
+    Some(Arc::new(dc_voice::voice_player::Clip::from_samples(mixed)))
+}
+
+impl Drop for Editor {
+    fn drop(&mut self) {
+        let engine = Self::audio_engine();
+        if engine.status().key.as_deref() == Some(self.audio_key().as_str()) {
+            engine.pause();
+        }
+    }
 }
 
 impl Editor {
@@ -144,8 +181,29 @@ impl Editor {
             title_editing: false,
             shell: cx.focus_handle(),
             refocus: Cell::new(true),
+            audio_clip: None,
             _title_events: events,
         }
+    }
+
+    fn audio_engine() -> &'static dc_voice::voice_player::Engine {
+        if crate::storage::is_capture_run() || cfg!(test) {
+            dc_voice::voice_player::set_silent(true);
+        }
+        dc_voice::voice_player::engine()
+    }
+
+    fn audio_key(&self) -> String {
+        format!("clip-editor:{}", self.generation)
+    }
+
+    pub(super) fn rebuild_audio_clip(&mut self) {
+        let Some(loaded) = self.player.shared.loaded.get() else {
+            self.audio_clip = None;
+            return;
+        };
+        let keep = self.edit.kept_tracks();
+        self.audio_clip = mix_editor_audio(&loaded.audio_tracks, &keep);
     }
 
     pub(super) fn duration(&self) -> f64 {
@@ -167,6 +225,10 @@ impl Editor {
             ms: (self.position * 1000.).round() as u64,
             serial: self.serial,
         });
+        let engine = Self::audio_engine();
+        if engine.status().key.as_deref() == Some(self.audio_key().as_str()) {
+            engine.seek(self.position);
+        }
     }
 
     pub(super) fn play(&mut self) {
@@ -182,12 +244,26 @@ impl Editor {
             to: (crop.end * 1000.).round() as u64,
             serial: self.serial,
         });
+        let engine = Self::audio_engine();
+        let key = self.audio_key();
+        if let Some(clip) = self.audio_clip.clone() {
+            engine.set_speed(1.0);
+            engine.set_volume(1.0);
+            engine.set_muted(false);
+            engine.play(&key, clip, self.position);
+        } else if engine.status().key.as_deref() == Some(key.as_str()) {
+            engine.pause();
+        }
     }
 
     pub(super) fn pause(&mut self) {
         if self.playing {
             self.playing = false;
             self.player.send(Command::Pause);
+        }
+        let engine = Self::audio_engine();
+        if engine.status().key.as_deref() == Some(self.audio_key().as_str()) {
+            engine.pause();
         }
     }
 
@@ -270,6 +346,7 @@ impl Editor {
                     self.edit.crop = edit.crop;
                     self.position = position;
                 }
+                self.rebuild_audio_clip();
                 self.seek(self.position);
                 changed = true;
             } else if let Some(error) = shared.failed.lock().ok().and_then(|failed| failed.clone())
@@ -313,6 +390,10 @@ impl Editor {
         if shared.ended.swap(false, Ordering::AcqRel) && self.playing {
             self.playing = false;
             self.position = self.edit.crop.end;
+            let engine = Self::audio_engine();
+            if engine.status().key.as_deref() == Some(self.audio_key().as_str()) {
+                engine.pause();
+            }
             changed = true;
         }
         changed
@@ -668,6 +749,19 @@ impl Root {
             match track {
                 "application" => editor.edit.application_audio ^= true,
                 _ => editor.edit.voice_audio ^= true,
+            }
+            editor.rebuild_audio_clip();
+            if editor.playing {
+                let engine = Editor::audio_engine();
+                let key = editor.audio_key();
+                if let Some(clip) = editor.audio_clip.clone() {
+                    engine.set_speed(1.0);
+                    engine.set_volume(1.0);
+                    engine.set_muted(false);
+                    engine.play(&key, clip, editor.position);
+                } else if engine.status().key.as_deref() == Some(key.as_str()) {
+                    engine.pause();
+                }
             }
             cx.notify();
         }

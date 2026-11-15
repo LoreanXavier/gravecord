@@ -1978,8 +1978,9 @@ impl Root {
                 let Some(known) = self.stores.guild(guild) else {
                     return;
                 };
+                let counts = self.guild_rail_counts(known);
                 let facts = GuildFacts {
-                    unread: self.stores.guild_unread(known),
+                    unread: counts.unread || counts.mentions > 0,
                     can_invite: self.my_permission(guild, None, CREATE_INSTANT_INVITE)
                         || known.vanity_url_code.is_some(),
                     can_manage_channels: self.my_permission(guild, None, MANAGE_CHANNELS),
@@ -2007,15 +2008,23 @@ impl Root {
                 if known.kind == ChannelKind::Category {
                     let collapsed = self.stores.guild_settings.channel(guild, id).collapsed;
                     let unread = self.stores.guild(guild).is_some_and(|guild| {
-                        guild
+                        let children: Vec<Id> = guild
                             .channels
                             .iter()
                             .filter(|child| child.parent_id == Some(id))
-                            .any(|child| self.stores.is_unread(child.id))
+                            .map(|child| child.id)
+                            .collect();
+                        children.iter().any(|child| self.has_unread_or_mentions(*child))
+                            || guild.threads.iter().any(|thread| {
+                                thread.joined
+                                    && !thread.archived
+                                    && children.contains(&thread.parent_id)
+                                    && self.has_unread_or_mentions(thread.id)
+                            })
                     });
                     category_items(unread, collapsed, can_manage, developer, level)
                 } else if self.in_favorites() {
-                    favorite_channel_items(self.stores.is_unread(id), level)
+                    favorite_channel_items(self.has_unread_or_mentions(id), level)
                 } else {
                     let in_channel = self.call.as_ref().is_some_and(|call| call.channel == id);
                     let has_status = self
@@ -2029,7 +2038,7 @@ impl Root {
                             && !in_channel
                             && has_status,
                         voice: matches!(known.kind, ChannelKind::Voice | ChannelKind::Other(13)),
-                        unread: self.stores.is_unread(id),
+                        unread: self.has_unread_or_mentions(id),
                         can_manage,
                         can_invite: self.my_permission(guild, Some(&known), CREATE_INSTANT_INVITE),
                         developer,
@@ -2066,7 +2075,7 @@ impl Root {
                 let owner = thread.owner_id.is_some()
                     && thread.owner_id == self.stores.current_user.as_ref().map(|me| me.id);
                 thread_items(
-                    self.stores.is_unread(id),
+                    self.has_unread_or_mentions(id),
                     manage,
                     owner,
                     thread.joined,
@@ -2090,7 +2099,7 @@ impl Root {
                 };
                 if dm.kind == 3 {
                     group_items(
-                        self.stores.is_unread(channel),
+                        self.has_unread_or_mentions(channel),
                         dm.owner_id.is_some()
                             && dm.owner_id == self.stores.current_user.as_ref().map(|me| me.id),
                         developer,
@@ -2113,7 +2122,7 @@ impl Root {
                         blocked: self.stores.relationships.get(&user.id) == Some(&2),
                         ignored: self.stores.is_ignored(user.id),
                         developer,
-                        dm: Some(self.stores.is_unread(channel)),
+                        dm: Some(self.has_unread_or_mentions(channel)),
                         dm_favorite: self.stores.favorites().is_favorite(channel),
                         hide_call: user.bot
                             || self.vv.popout_render
@@ -2319,14 +2328,21 @@ impl Root {
     }
 
     pub(super) fn mark_channel_read(&mut self, channel: Id) {
-        if !self.stores.is_unread(channel) {
+        if !self.has_unread_or_mentions(channel) {
             return;
         }
-        let Some(latest) = self.stores.read_states.latest.get(&channel).copied() else {
-            return;
-        };
+        let latest = self.ack_target_id(channel);
+        if self.channel == Some(channel) {
+            self.unread_from = None;
+        }
+        if let Some(state) = self.stores.read_states.states.get_mut(&channel) {
+            state.manual = false;
+        }
         self.stores.read_states.ack_local(channel, latest, false);
         self.data_revision += 1;
+        if self.channel == Some(channel) {
+            self.rebuild_rows();
+        }
         let _ = self.requests.send(Request::Ack {
             channel,
             message: latest,
@@ -2356,23 +2372,33 @@ impl Root {
             }
             // Module 871638: the server's Mark As Read is `BULK_ACK` of its channels and threads (module 567035).
             (Act::MarkRead, Target::Guild(guild)) => {
-                let reads = self.guild_unread_reads(guild);
-                self.mark_read_bulk(&reads, cx);
+                self.mark_guilds_read(&[guild], cx);
             }
             (Act::MarkRead, Target::Category(category)) => {
-                let children: Vec<Id> = self
+                let targets: Vec<Id> = self
                     .guild_of_channel(category)
                     .and_then(|guild| self.stores.guild(guild))
                     .map(|guild| {
-                        guild
+                        let children: Vec<Id> = guild
                             .channels
                             .iter()
                             .filter(|channel| channel.parent_id == Some(category))
                             .map(|channel| channel.id)
-                            .collect()
+                            .collect();
+                        let threads: Vec<Id> = guild
+                            .threads
+                            .iter()
+                            .filter(|thread| {
+                                thread.joined
+                                    && !thread.archived
+                                    && children.contains(&thread.parent_id)
+                            })
+                            .map(|thread| thread.id)
+                            .collect();
+                        children.into_iter().chain(threads).collect()
                     })
                     .unwrap_or_default();
-                for channel in children {
+                for channel in targets {
                     self.mark_channel_read(channel);
                 }
             }
@@ -3535,6 +3561,15 @@ impl Root {
                         .when(matches!(target, Target::InventoryAuthor { .. }), |d| {
                             d.min_w(px(144.))
                         })
+                        .when(
+                            !matches!(
+                                target,
+                                Target::InventoryAuthor { .. }
+                                    | Target::InventoryFeed
+                                    | Target::AppDirectory(_)
+                            ),
+                            |d| d.min_w(px(188.)),
+                        )
                         .occlude()
                         .rounded(px(8.))
                         .bg(color("--background-surface-higher"))
@@ -3566,7 +3601,7 @@ impl Root {
                         // `flexible_M3qk4j`: the menu grows with its labels up to 320 wide.
                         .max_w(px(320.))
                         // A menu taller than the window stops 96px short of its height and scrolls (user-guild: 624 of 720).
-                        .max_h(px(f32::from(window.viewport_size().height) - 96.))
+                        .max_h(px((f32::from(window.viewport_size().height) - 96.).max(120.)))
                         .flex()
                         .flex_col()
                         .child(
@@ -3873,6 +3908,7 @@ impl Root {
                 .absolute()
                 .top(px(0.))
                 .left(px(0.))
+                .child(self.menu_backdrop(cx))
                 .child(menu)
                 .children(sub)
                 .children(nested)

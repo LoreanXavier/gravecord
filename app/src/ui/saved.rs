@@ -119,16 +119,16 @@ impl Root {
         cx.notify();
     }
 
-    pub(super) fn show_app_toast(&mut self, message: &'static str, cx: &mut Context<Self>) {
+    pub(in crate::ui) fn show_app_toast(&mut self, message: &'static str, cx: &mut Context<Self>) {
         self.put_app_toast(message.to_owned(), false, cx);
     }
 
     /// `showBlockSuccessToast` and the other `P0({variant: "success"})` toasts.
-    pub(super) fn show_success_toast(&mut self, message: String, cx: &mut Context<Self>) {
+    pub(in crate::ui) fn show_success_toast(&mut self, message: String, cx: &mut Context<Self>) {
         self.put_app_toast(message, true, cx);
     }
 
-    pub(super) fn put_app_toast(&mut self, message: String, success: bool, cx: &mut Context<Self>) {
+    pub(in crate::ui) fn put_app_toast(&mut self, message: String, success: bool, cx: &mut Context<Self>) {
         // `minToastDurationMs` (Accessibility, Notification Duration) lengthens the toast; never below the 3s default.
         let duration = std::time::Duration::from_millis(self.toast_duration_ms().max(3000));
         self.app_toast = Some(AppToast {

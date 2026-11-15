@@ -43,6 +43,7 @@ pub struct VideoRing {
     bytes: usize,
     last_timestamp: Option<u32>,
     pts: u64,
+    last_params: Option<ParameterSets>,
 }
 
 impl VideoRing {
@@ -79,6 +80,9 @@ impl VideoRing {
         self.last_timestamp = Some(timestamp);
         self.pts += u64::from(delta);
         let params = parameter_sets(&data);
+        if let Some(found) = &params {
+            self.last_params = Some(found.clone());
+        }
         self.bytes += data.len();
         self.frames.push_back(VideoFrame {
             arrival_ms,
@@ -142,12 +146,13 @@ impl VideoRing {
         ))
     }
 
-    /// The newest parameter sets any held unit carries.
+    /// The newest parameter sets any held unit carries, or the last parameter sets seen before eviction.
     pub fn latest_params(&self) -> Option<&ParameterSets> {
         self.frames
             .iter()
             .rev()
             .find_map(|frame| frame.params.as_ref())
+            .or(self.last_params.as_ref())
     }
 }
 
@@ -322,5 +327,30 @@ mod tests {
         let cut = ring.cut(9_000, 9_500);
         assert_eq!(cut.first().unwrap().start_ms, 9_000);
         assert_eq!(cut.last().unwrap().start_ms, 9_500);
+    }
+
+    #[test]
+    fn latest_params_survives_keyframe_eviction() {
+        let mut ring = VideoRing::default();
+        // First keyframe carries SPS + PPS + IDR.
+        let kf_with_params = vec![
+            0, 0, 0, 1, 0x67, 0x42, 0x00, 0x1e, // SPS
+            0, 0, 0, 1, 0x68, 0xce, // PPS
+            0, 0, 0, 1, 0x65, 0x88, // IDR
+        ];
+        ring.push(0, 0, true, kf_with_params);
+        // Newer keyframes omit repeated SPS/PPS (as some encoders do mid-stream).
+        for idx in 1..=5u64 {
+            let idr_only = vec![0, 0, 0, 1, 0x65, idx as u8];
+            ring.push(idx * 1_000, (idx as u32) * 90_000, true, idr_only);
+        }
+        ring.evict(5_000, 2_000, usize::MAX);
+        assert_eq!(ring.span().unwrap().0, 3_000);
+        assert_eq!(
+            ring.latest_params(),
+            Some(&(vec![0x67, 0x42, 0x00, 0x1e], vec![0x68, 0xce]))
+        );
+        ring.clear();
+        assert!(ring.latest_params().is_none());
     }
 }

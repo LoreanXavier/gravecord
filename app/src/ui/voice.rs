@@ -1519,9 +1519,9 @@ impl Root {
                 let member = state.user_id;
                 div()
                     .id(gpui::SharedString::from(format!("voice-member-{member}")))
-                    .on_mouse_down(
+                    .on_mouse_up(
                         gpui::MouseButton::Right,
-                        cx.listener(move |this, event: &gpui::MouseDownEvent, _, cx| {
+                        cx.listener(move |this, event: &gpui::MouseUpEvent, _, cx| {
                             // The voice list's user menu carries the media items (module 340851).
                             this.context_voice_row();
                             this.open_context_menu(

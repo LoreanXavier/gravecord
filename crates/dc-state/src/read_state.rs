@@ -106,11 +106,13 @@ impl ReadStates {
         ) else {
             return;
         };
+        let prev = self.states.get(&channel).copied();
         let manual = data["manual"].as_bool().unwrap_or_else(|| {
-            self.states
-                .get(&channel)
-                .is_some_and(|prev| prev.manual && message <= prev.acked)
+            prev.is_some_and(|prev| prev.manual && message <= prev.acked)
         });
+        if !manual && prev.is_some_and(|prev| !prev.manual && message < prev.acked) {
+            return;
+        }
         self.states.insert(
             channel,
             ReadState {
@@ -291,5 +293,27 @@ mod tests {
             "manual": false
         }));
         assert!(!states.states[&10].manual);
+    }
+
+    #[test]
+    fn ack_ignores_stale_non_manual_regression() {
+        let mut states = ReadStates::default();
+        states.ack_local(10, 600, false);
+        states.ack(&serde_json::json!({
+            "channel_id": "10",
+            "message_id": "500",
+            "mention_count": 3
+        }));
+        assert_eq!(states.states[&10].acked, 600);
+        assert_eq!(states.states[&10].mention_count, 0);
+
+        // Explicit `manual: true` still rewinds `acked`.
+        states.ack(&serde_json::json!({
+            "channel_id": "10",
+            "message_id": "500",
+            "manual": true
+        }));
+        assert_eq!(states.states[&10].acked, 500);
+        assert!(states.states[&10].manual);
     }
 }

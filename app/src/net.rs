@@ -12,8 +12,6 @@ use tokio::sync::mpsc;
 use tracing::warn;
 
 pub enum Update {
-    /// What the last run left (`ui/start_cache.rs`), applied before the gateway answers.
-    Cached(Box<crate::ui::start_cache::Cached>),
     GatewayConnected(bool),
     /// The local RPC server: a game connected, set or cleared its activity, or left (`dc-rpc`).
     Rpc(dc_rpc::Event),
@@ -26,6 +24,7 @@ pub enum Update {
     /// The updater's state changed (`updater::state`): the title bar button follows it.
     Updater,
     /// The connecting screen's spinner, fetched and decoded.
+    #[cfg(feature = "capture")]
     Spinner(Arc<crate::spinner::Clip>),
     /// `None` resets from the channel's interval; a value sets the server's remaining cooldown.
     Slowmode {

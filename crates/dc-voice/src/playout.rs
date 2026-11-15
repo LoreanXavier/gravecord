@@ -18,6 +18,7 @@ const INGRESS_PACKET_CAP: usize = 256;
 const INGRESS_CONTROL_CAP: usize = 128;
 const RETIRED_DECODER_CAP: usize = 512;
 const RENDER_TAP_RING: usize = 32;
+const CLIPS_TAP_RING: usize = 32;
 const VOICE_AUDIBLE: f32 = 0.002;
 const STATS_PUBLISH_INTERVAL_BLOCKS: u64 = 20;
 
@@ -55,6 +56,10 @@ enum PlayoutControl {
         user: u64,
         volume: f32,
         muted: bool,
+    },
+    SetUserClips {
+        user: u64,
+        allow: bool,
     },
     AnnounceStream {
         owner: u64,
@@ -170,6 +175,10 @@ struct PlayoutCore {
     render_tap: Option<rtrb::Producer<Frame>>,
     ref_frame: Frame,
     ref_half: usize,
+    clips_tap: rtrb::Producer<Frame>,
+    clips_frame: Frame,
+    clips_half: usize,
+    clips_half_active: bool,
     loopback_rx: Option<rtrb::Consumer<Stereo>>,
     loopback_frame: Stereo,
     loopback_half: usize,
@@ -229,6 +238,9 @@ impl PlayoutCore {
                 muted,
             } => {
                 self.voice_mixer.set_user_mix(user, volume, muted);
+            }
+            PlayoutControl::SetUserClips { user, allow } => {
+                self.voice_mixer.set_user_clips(user, allow);
             }
             PlayoutControl::AnnounceStream {
                 owner,
@@ -309,6 +321,18 @@ impl PlayoutCore {
         }
     }
 
+    fn push_clips_tap(&mut self) {
+        if self.clips_half == 0 {
+            self.clips_half = 1;
+        } else {
+            if self.clips_half_active && dc_clips::recorder().is_enabled() {
+                let _ = self.clips_tap.push(self.clips_frame);
+            }
+            self.clips_half = 0;
+            self.clips_half_active = false;
+        }
+    }
+
     fn mix_loopback(&mut self, out: &mut [f32; OUTPUT_SIZE * 2], loopback: bool) {
         let Some(rx) = self.loopback_rx.as_mut() else {
             return;
@@ -367,7 +391,10 @@ impl PlayoutCore {
             }
             out.fill(0.0);
             self.ref_frame[self.ref_half * OUTPUT_SIZE..(self.ref_half + 1) * OUTPUT_SIZE].fill(0.0);
+            self.clips_frame[self.clips_half * OUTPUT_SIZE..(self.clips_half + 1) * OUTPUT_SIZE]
+                .fill(0.0);
             self.push_render_tap();
+            self.push_clips_tap();
             self.mix_loopback(out, loopback);
             self.blocks_pulled += 1;
             if self
@@ -381,7 +408,17 @@ impl PlayoutCore {
         self.last_playing = true;
 
         let mut voices_mono = [0.0f32; OUTPUT_SIZE];
-        let voice_active = self.voice_mixer.mix_10ms(&mut voices_mono);
+        let clips_enabled = dc_clips::recorder().is_enabled();
+        let clip_dst =
+            &mut self.clips_frame[self.clips_half * OUTPUT_SIZE..(self.clips_half + 1) * OUTPUT_SIZE];
+        let (voice_active, clips_active) = if clips_enabled {
+            self.voice_mixer
+                .mix_10ms_with_clips(&mut voices_mono, Some(clip_dst))
+        } else {
+            clip_dst.fill(0.0);
+            (self.voice_mixer.mix_10ms(&mut voices_mono), false)
+        };
+        self.clips_half_active |= clips_active;
         self.speaking_mask
             .store(self.voice_mixer.speaking_mask(), Ordering::Release);
 
@@ -415,6 +452,7 @@ impl PlayoutCore {
 
         let active = voice_active || stream_active;
         self.push_render_tap();
+        self.push_clips_tap();
         self.mix_loopback(out, loopback);
 
         self.blocks_pulled += 1;
@@ -473,6 +511,7 @@ pub(crate) struct CallPlayout {
     core: Arc<Mutex<PlayoutCore>>,
     roster: Mutex<RosterShadow>,
     garbage_rx: Mutex<rtrb::Consumer<Box<NetEq>>>,
+    clips_rx: Mutex<rtrb::Consumer<Frame>>,
     speaking_mask: Arc<AtomicU64>,
     slot_occupied: Arc<AtomicU64>,
     slot_users: Arc<[AtomicU64; MAX_PARTICIPANTS]>,
@@ -484,6 +523,7 @@ impl CallPlayout {
     pub(crate) fn new(sidechain: Arc<AtomicU32>) -> Self {
         let ingress = Arc::new(Mutex::new(PlayoutIngress::new()));
         let (garbage_tx, garbage_rx) = rtrb::RingBuffer::new(RETIRED_DECODER_CAP);
+        let (clips_tap, clips_rx) = rtrb::RingBuffer::new(CLIPS_TAP_RING);
         let speaking_mask = Arc::new(AtomicU64::new(0));
         let slot_occupied = Arc::new(AtomicU64::new(0));
         let slot_users = Arc::new(std::array::from_fn(|_| AtomicU64::new(0)));
@@ -508,6 +548,10 @@ impl CallPlayout {
             render_tap: None,
             ref_frame: [0.0; 960],
             ref_half: 0,
+            clips_tap,
+            clips_frame: [0.0; 960],
+            clips_half: 0,
+            clips_half_active: false,
             loopback_rx: None,
             loopback_frame: [0.0; 1920],
             loopback_half: 0,
@@ -524,6 +568,7 @@ impl CallPlayout {
             core,
             roster: Mutex::new(RosterShadow::default()),
             garbage_rx: Mutex::new(garbage_rx),
+            clips_rx: Mutex::new(clips_rx),
             speaking_mask,
             slot_occupied,
             slot_users,
@@ -628,6 +673,26 @@ impl CallPlayout {
                 muted,
             });
         }
+    }
+
+    pub(crate) fn set_user_clips(&self, user: u64, allow: bool) {
+        self.ingress
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .push_control(PlayoutControl::SetUserClips { user, allow });
+    }
+
+    pub(crate) fn pop_clips_20ms(&self) -> Option<Frame> {
+        self.clips_rx
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .pop()
+            .ok()
+    }
+
+    pub(crate) fn clear_clips_tap(&self) {
+        let mut rx = self.clips_rx.lock().unwrap_or_else(|e| e.into_inner());
+        while rx.pop().is_ok() {}
     }
 
     pub(crate) fn push_packet(&self, ssrc: u32, sequence: u16, timestamp: u32, opus: &[u8]) {
@@ -980,5 +1045,45 @@ mod tests {
             reference.iter().all(|&s| s == 0.0),
             "Mic Test loopback audio must never enter AEC3 render_tap"
         );
+    }
+
+    #[test]
+    fn clips_tap_collects_only_consented_speakers_when_clips_enabled() {
+        let was_enabled = dc_clips::recorder().is_enabled();
+        dc_clips::recorder().configure(true, 30_000);
+
+        let sidechain = Arc::new(AtomicU32::new(0));
+        let playout = CallPlayout::new(sidechain);
+        let (mut reader, _) = playout.open_reader();
+        playout.announce(1, 101).unwrap();
+        playout.announce(2, 202).unwrap();
+
+        let pkts_a = opus_sine(0.04, 6);
+        let pkts_b = opus_sine(0.08, 6);
+        for (i, (pa, pb)) in pkts_a.iter().zip(pkts_b.iter()).enumerate() {
+            playout.push_packet(101, i as u16, i as u32 * 960, pa);
+            playout.push_packet(202, i as u16, i as u32 * 960, pb);
+        }
+
+        let mut half = [0.0f32; 960];
+        for _ in 0..4 {
+            let _ = reader.pull_10ms(&mut half, true);
+        }
+        assert!(playout.pop_clips_20ms().is_none());
+
+        playout.set_user_clips(1, true);
+        for _ in 0..6 {
+            let _ = reader.pull_10ms(&mut half, true);
+        }
+        let mut captured = None;
+        while let Some(frame) = playout.pop_clips_20ms() {
+            captured = Some(frame);
+        }
+        let frame = captured.expect("consented speaker produces 20 ms clip frame");
+        assert!(frame.iter().any(|&s| s.abs() > 0.001));
+
+        dc_clips::recorder().configure(was_enabled, 30_000);
+        playout.clear_clips_tap();
+        assert!(playout.pop_clips_20ms().is_none());
     }
 }

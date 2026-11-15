@@ -240,9 +240,9 @@ impl Root {
                         .items_center()
                         .justify_center()
                         .cursor_pointer()
-                        .on_mouse_down(
+                        .on_mouse_up(
                             MouseButton::Right,
-                            cx.listener(|this, event: &MouseDownEvent, _, cx| {
+                            cx.listener(|this, event: &gpui::MouseUpEvent, _, cx| {
                                 this.open_context_menu(
                                     context_menu::Target::Favorites,
                                     event.position,
@@ -819,9 +819,9 @@ impl Root {
                     .id(SharedString::from(format!("favorite-row-{id}")))
                     .group(group)
                     .cursor_pointer()
-                    .on_mouse_down(
+                    .on_mouse_up(
                         MouseButton::Right,
-                        cx.listener(move |this, event: &MouseDownEvent, _, cx| {
+                        cx.listener(move |this, event: &gpui::MouseUpEvent, _, cx| {
                             this.open_context_menu(
                                 context_menu::Target::Channel(id),
                                 event.position,
@@ -942,9 +942,9 @@ impl Root {
                             }
                             cx.notify();
                         }))
-                        .on_mouse_down(
+                        .on_mouse_up(
                             MouseButton::Right,
-                            cx.listener(move |this, event: &MouseDownEvent, _, cx| {
+                            cx.listener(move |this, event: &gpui::MouseUpEvent, _, cx| {
                                 this.open_context_menu(
                                     context_menu::Target::Dm(id),
                                     event.position,

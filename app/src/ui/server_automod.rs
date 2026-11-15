@@ -2407,9 +2407,10 @@ impl Root {
             .border_1()
             .border_color(color("--border-subtle"))
             .bg(color("--background-surface-high"))
-            .on_mouse_down(
+            .on_mouse_up(
                 MouseButton::Right,
-                cx.listener(move |this, event: &MouseDownEvent, _, cx| {
+                cx.listener(move |this, event: &gpui::MouseUpEvent, _, cx| {
+                    this.close_all_context_menus();
                     if let Some(state) = this.automod_mut() {
                         state.menu = Some(Menu {
                             at: event.position,

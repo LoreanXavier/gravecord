@@ -433,6 +433,7 @@ pub struct Root {
     hovered_media: Option<String>,
     guild_guide_open: bool,
     guild_guide_scroll: gpui::ScrollHandle,
+    sidebar_scroll: gpui::ScrollHandle,
     /// The full-window Server Boost page (`boost_page.rs`).
     boost_page: Option<boost_page::BoostPage>,
     /// The "Boost This Server" dialog (`boost_apply.rs`).
@@ -773,6 +774,7 @@ pub struct Root {
     /// Code blocks whose copy button was pressed (`code_copy`).
     copied_code: HashSet<(u64, u32)>,
     pub ready: bool,
+    hydrated_from_cache: bool,
     /// The connecting screen, up until the first content is in.
     splash: splash::Splash,
     forums: HashMap<Id, forums::Forum>,
@@ -862,6 +864,7 @@ impl Root {
             hovered_media: None,
             guild_guide_open: false,
             guild_guide_scroll: gpui::ScrollHandle::new(),
+            sidebar_scroll: gpui::ScrollHandle::new(),
             boost_page: None,
             boost_apply: None,
             menu_scroll: gpui::ScrollHandle::new(),
@@ -1101,6 +1104,7 @@ impl Root {
             header_popout: None,
             copied_code: HashSet::new(),
             ready: false,
+            hydrated_from_cache: false,
             splash: splash::Splash::new(),
             forums: HashMap::new(),
             regions: regions::Regions::default(),
@@ -1233,7 +1237,6 @@ impl Root {
             Update::NotificationClicked(channel) => self.open_notification_channel(channel, cx),
             Update::Tray(action) => self.tray_action(action, cx),
             Update::Updater => cx.notify(),
-            Update::Cached(cached) => self.apply_cache(*cached, cx),
             Update::Slowmode {
                 channel,
                 kind,
@@ -1278,6 +1281,9 @@ impl Root {
                 }
                 let voice_before = (name == "VOICE_STATE_UPDATE")
                     .then(|| (self.others_in_call(), self.streamers_in_call()));
+                let ready_prev_place = (name == "READY"
+                    && (self.hydrated_from_cache || self.stores.current_user.is_some()))
+                .then_some((self.guild, self.channel));
                 if name == "MESSAGE_CREATE" {
                     self.send_echo(&data);
                 }
@@ -1411,7 +1417,12 @@ impl Root {
                         crate::sounds::now_ms(),
                         &self.stores.experiments,
                     );
-                    self.after_ready();
+                    self.hydrated_from_cache = false;
+                    if let Some((prev_guild, prev_channel)) = ready_prev_place {
+                        self.reconcile_after_ready(prev_guild, prev_channel);
+                    } else {
+                        self.after_ready();
+                    }
                     start_cache::save_ready(&data, self.cache_guild());
                 }
                 if name == "MESSAGE_CREATE"
@@ -1420,7 +1431,7 @@ impl Root {
                         == self.channel.map(|id| id.to_string()).as_deref()
                 {
                     // A message in the open channel is read as it arrives.
-                    self.read_current_channel();
+                    self.read_current_channel_live();
                 }
                 if matches!(
                     name.as_str(),
@@ -2025,6 +2036,7 @@ impl Root {
                 self.images
                     .insert(key, Arc::new(Image::from_bytes(format, bytes)));
             }
+            #[cfg(feature = "capture")]
             Update::Spinner(clip) => self.splash_clip(clip),
             Update::Images(images) => {
                 for (key, bytes) in images {
@@ -2083,6 +2095,56 @@ impl Root {
         }
         // Opening on the last place is not a step back can return from.
         self.history = history::History::default();
+        self.request_images();
+        self.request_emoji_button();
+        self.request_frecency();
+        self.request_saved();
+    }
+
+    fn reconcile_after_ready(&mut self, prev_guild: Option<Id>, prev_channel: Option<Id>) {
+        match prev_guild {
+            Some(guild_id) => {
+                if let Some(guild) = self.stores.guild(guild_id) {
+                    if let Some(chan) = prev_channel
+                        && guild.channels.iter().any(|ch| ch.id == chan)
+                    {
+                        self.guild = Some(guild_id);
+                        self.channel = Some(chan);
+                        let _ = self.requests.send(Request::Subscribe {
+                            guild: guild_id,
+                            channel: chan,
+                        });
+                        if !self.current_channel().is_some_and(Channel::is_forum) {
+                            let _ = self.requests.send(Request::LoadMessages { channel: chan });
+                        }
+                        self.rebuild_rows();
+                    } else {
+                        let channel = self.last_channel_of(guild_id);
+                        self.select(guild_id, channel);
+                    }
+                } else {
+                    self.select_home(None);
+                }
+            }
+            None => {
+                if let Some(dm_id) = prev_channel {
+                    if self.stores.private_channels.iter().any(|dm| dm.id == dm_id) {
+                        self.guild = None;
+                        self.channel = Some(dm_id);
+                        let _ = self.requests.send(Request::LoadMessages { channel: dm_id });
+                        self.stores.calls.connect_channel(dm_id, true, false);
+                        self.calls_after_dispatch_effects();
+                        self.rebuild_rows();
+                    } else {
+                        self.select_home(None);
+                    }
+                } else {
+                    self.guild = None;
+                    self.channel = None;
+                    self.rebuild_rows();
+                }
+            }
+        }
         self.request_images();
         self.request_emoji_button();
         self.request_frecency();
@@ -2917,7 +2979,9 @@ impl Root {
         let Some(me) = self.stores.current_user.as_ref().map(|user| user.id) else {
             return false;
         };
-        let guild = self.current_guild();
+        let guild = self
+            .current_guild()
+            .or_else(|| self.stores.guild_of_channel(message.channel_id));
         let settings = guild.and_then(|guild| self.stores.guild_settings.guilds.get(&guild.id));
         message.mentions_me(
             me,
@@ -3761,9 +3825,9 @@ impl Root {
         let tile = div()
             .id(SharedString::from(format!("guild-{id}")))
             .on_hover(self.avatar_hover(hover_key, cx))
-            .on_mouse_down(
+            .on_mouse_up(
                 MouseButton::Right,
-                cx.listener(move |this, event: &MouseDownEvent, _, cx| {
+                cx.listener(move |this, event: &gpui::MouseUpEvent, _, cx| {
                     this.open_context_menu(context_menu::Target::Guild(id), event.position, cx);
                     cx.stop_propagation();
                 }),
@@ -3998,9 +4062,9 @@ impl Root {
                 )
                 .relative()
                 .child(self.anchor_probe(format!("stop-category-{category}")))
-                .on_mouse_down(
+                .on_mouse_up(
                     MouseButton::Right,
-                    cx.listener(move |this, event: &MouseDownEvent, _, cx| {
+                    cx.listener(move |this, event: &gpui::MouseUpEvent, _, cx| {
                         this.open_context_menu(
                             context_menu::Target::Category(category),
                             event.position,
@@ -4107,9 +4171,11 @@ impl Root {
                 .guild_settings
                 .channel_muted(guild, channel.id, chrono::Utc::now())
         });
-        let unread =
-            !muted && channel.kind == ChannelKind::Text && self.stores.is_unread(channel.id);
-        let dim = muted && !selected && !in_call;
+        let unread = !muted
+            && matches!(channel.kind, ChannelKind::Text | ChannelKind::Other(5))
+            && self.stores.is_unread(channel.id);
+        let mentions = self.stores.read_states.mentions(channel.id);
+        let dim = muted && !selected && !in_call && mentions == 0;
         // A live Stage this client is connected to: green glyph and the three row actions, like a voice row
         // (stage-ann/stage-live).
         let in_stage = channel.kind == ChannelKind::Other(13)
@@ -4118,7 +4184,7 @@ impl Root {
                 .call
                 .as_ref()
                 .is_some_and(|call| call.channel == channel.id);
-        let tint = if selected || in_call || unread {
+        let tint = if selected || in_call || unread || mentions > 0 {
             "--text-strong"
         } else if dim {
             "--text-muted"
@@ -4226,9 +4292,9 @@ impl Root {
                 .cursor_pointer()
                 // `.wrapper_TNyK-N.modeSelected_TNyK-N{cursor:default}` (f4b2f93f8f92b7).
                 .when(selected, |this| this.cursor_default())
-                .on_mouse_down(
+                .on_mouse_up(
                     MouseButton::Right,
-                    cx.listener(move |this, event: &MouseDownEvent, _, cx| {
+                    cx.listener(move |this, event: &gpui::MouseUpEvent, _, cx| {
                         this.open_context_menu(
                             context_menu::Target::Channel(target),
                             event.position,
@@ -4303,9 +4369,29 @@ impl Root {
                                 })
                                 .child(channel.name.clone()),
                         )
-                        // `channelInfo_Wx6SnQ` with the primary badge (module 616740 `isNewChannel`): right edge of the
+                        // `channelInfo_Wx6SnQ` with the primary badge (module 616740 `isNewChannel` or mention count): right edge of the
                         // row's content, hidden while the row is hovered for the action icons (stage-ann/ann-view).
-                        .when(self.is_new_channel(channel), |row| {
+                        .when(mentions > 0, |row| {
+                            row.child(
+                                div()
+                                    .absolute()
+                                    .right(px(0.))
+                                    .when(!selected, |badge| {
+                                        badge.group_hover(pill_group.clone(), |style| {
+                                            style.opacity(0.)
+                                        })
+                                    })
+                                    .when(selected, |badge| {
+                                        badge.right(px(40.))
+                                    })
+                                    .child(unread_badges::number(
+                                        mentions,
+                                        "--background-feedback-notification",
+                                        None,
+                                    )),
+                            )
+                        })
+                        .when(mentions == 0 && self.is_new_channel(channel), |row| {
                             row.child(
                                 div()
                                     .absolute()
@@ -4438,6 +4524,19 @@ impl Root {
             )
         };
         self.channel_drag_begin();
+        let rows_pt = if self.has_channel_browser()
+            || self.current_guild().is_some_and(|guild| {
+                guild
+                    .sidebar_rows()
+                    .first()
+                    .is_some_and(|first| first.kind != ChannelKind::Category)
+            })
+        {
+            14.
+        } else {
+            2.
+        };
+        let mut sidebar_items: Vec<(f32, f32, bool, bool)> = Vec::new();
         let rows: Vec<AnyElement> = guild
             .map(|guild| {
                 let collapsed = |category: Option<Id>| {
@@ -4465,7 +4564,10 @@ impl Root {
                 let collapsed = |row: &Channel| {
                     !pinned.iter().any(|known| known.id == row.id) && collapsed(row.parent_id)
                 };
-                ordered
+                let now = chrono::Utc::now();
+                let mut y = rows_pt;
+                let mut rows = Vec::new();
+                for row in ordered
                     .into_iter()
                     .filter(|row| self.followed_sidebar_row(guild, row))
                     // Selected channels and mentions precede mute/collapse filtering (791513.eA).
@@ -4476,7 +4578,7 @@ impl Root {
                             || !self.stores.guild_settings.channel_muted(
                                 guild.id,
                                 row.id,
-                                chrono::Utc::now(),
+                                now,
                             )
                     })
                     .filter(|row| {
@@ -4484,25 +4586,96 @@ impl Root {
                             || !collapsed(row)
                             || self.sidebar_channel_attention(guild, row)
                     })
-                    .flat_map(|row| {
-                        let line = self.channel_row(row, cx);
-                        let mut rows = vec![self.channel_drag_wrap(row, line, cx)];
-                        if row.kind == ChannelKind::Text || row.is_forum() {
-                            rows.extend(self.thread_rows(row.id, cx));
+                {
+                    let line = self.channel_row(row, cx);
+                    rows.push(self.channel_drag_wrap(row, line, cx));
+                    if row.kind == ChannelKind::Category {
+                        y += self.category_space_before() + 24.;
+                    } else {
+                        let h = if self.voice_row_has_line(row) {
+                            50.
+                        } else {
+                            34. + self.name_line_extra()
+                        };
+                        let muted = self
+                            .stores
+                            .guild_settings
+                            .channel_muted(guild.id, row.id, now);
+                        let mentions = self.stores.read_states.mentions(row.id);
+                        let unread = !muted
+                            && matches!(row.kind, ChannelKind::Text | ChannelKind::Other(5))
+                            && self.stores.is_unread(row.id);
+                        if unread || mentions > 0 {
+                            sidebar_items.push((y, y + h, unread, mentions > 0));
                         }
-                        if row.kind == ChannelKind::Voice {
-                            // Hide Names collapses the channel (`CollapsedVoiceChannelStore`): no participant rows.
-                            if !self.names_hidden(row.id) {
-                                rows.extend(self.voice_members(guild.id, row.id, cx));
+                        y += h;
+                    }
+                    if row.kind == ChannelKind::Text || row.is_forum() {
+                        let thread_meta = self.sidebar_threads(row.id);
+                        let rendered_threads = self.thread_rows(row.id, cx);
+                        for thread in thread_meta {
+                            let mentions = self.stores.read_states.mentions(thread.id);
+                            let unread = !thread.is_muted(now) && self.stores.is_unread(thread.id);
+                            if unread || mentions > 0 {
+                                sidebar_items.push((y, y + 34., unread, mentions > 0));
                             }
-                            rows.extend(self.voice_activity_rows(row.id, cx));
-                            rows.extend(self.voice_invite_row(guild.id, row.id, cx));
+                            y += 34.;
                         }
-                        rows
-                    })
-                    .collect()
+                        rows.extend(rendered_threads);
+                    }
+                    if row.kind == ChannelKind::Voice {
+                        // Hide Names collapses the channel (`CollapsedVoiceChannelStore`): no participant rows.
+                        let before = rows.len();
+                        if !self.names_hidden(row.id) {
+                            rows.extend(self.voice_members(guild.id, row.id, cx));
+                        }
+                        rows.extend(self.voice_activity_rows(row.id, cx));
+                        rows.extend(self.voice_invite_row(guild.id, row.id, cx));
+                        y += 32. * (rows.len().saturating_sub(before) as f32);
+                    }
+                }
+                rows
             })
             .unwrap_or_default();
+        let view_h = f32::from(self.sidebar_scroll.bounds().size.height);
+        let max_scroll = f32::from(self.sidebar_scroll.max_offset().y);
+        let (top_bar, bottom_bar) = if view_h > 1. && max_scroll > 0.5 {
+            let scroll_y = (-f32::from(self.sidebar_scroll.offset().y)).clamp(0., max_scroll);
+            let mut top_mentions = false;
+            let mut top_unread = false;
+            let mut top_target: Option<f32> = None;
+            let mut bottom_mentions = false;
+            let mut bottom_unread = false;
+            let mut bottom_target: Option<f32> = None;
+            for &(row_top, row_bottom, unread, mentioned) in &sidebar_items {
+                if row_bottom <= scroll_y + 2. {
+                    if mentioned && !top_mentions {
+                        top_mentions = true;
+                        top_target = Some((row_top - 8.).max(0.));
+                    } else if unread && !top_mentions && top_target.is_none() {
+                        top_unread = true;
+                        top_target = Some((row_top - 8.).max(0.));
+                    }
+                } else if row_top >= scroll_y + view_h - 2. {
+                    let target = (row_bottom - view_h + 16.).clamp(0., max_scroll);
+                    if mentioned && !bottom_mentions {
+                        bottom_mentions = true;
+                        bottom_target = Some(target);
+                    } else if unread && !bottom_mentions {
+                        bottom_unread = true;
+                        bottom_target = Some(target);
+                    }
+                }
+            }
+            (
+                (top_mentions || top_unread)
+                    .then(|| (top_mentions, top_target.unwrap_or_default())),
+                (bottom_mentions || bottom_unread)
+                    .then(|| (bottom_mentions, bottom_target.unwrap_or(max_scroll))),
+            )
+        } else {
+            (None, None)
+        };
         div()
             .parity("sidebar")
             .relative()
@@ -4637,44 +4810,52 @@ impl Root {
             // the panel or beside its rounded corners (`design/dom/channel/text-darker-cozy.json`).
             .child(
                 div()
-                    .id("sidebar-rows")
-                    // 2px of room above the list for the drop line of its first row (`top: -2px`), taken back
-                    // from the margin so nothing moves.
-                    .mt(px(-2.))
-                    // 12px more above uncategorized channels (stage-ann/ann-view: divider at 207, spacer 208 to 220,
-                    // first row at 220).
-                    .pt(px(
-                        if self.has_channel_browser()
-                            || self.current_guild().is_some_and(|guild| {
-                                guild
-                                    .sidebar_rows()
-                                    .first()
-                                    .is_some_and(|first| first.kind != ChannelKind::Category)
-                            })
-                        {
-                            14.
-                        } else {
-                            2.
-                        },
-                    ))
                     .flex_1()
                     .min_h(px(0.))
-                    .mb(px(4.))
+                    .relative()
                     .flex()
                     .flex_col()
-                    .overflow_y_scroll()
-                    .on_drag_move::<channel_drag::ChannelDrag>(cx.listener(
-                        |this, event: &gpui::DragMoveEvent<channel_drag::ChannelDrag>, _, cx| {
-                            this.channel_drag_moved(event, cx)
-                        },
-                    ))
-                    .on_drop(
-                        cx.listener(|this, drag: &channel_drag::ChannelDrag, _, cx| {
-                            this.channel_dropped(drag, cx)
-                        }),
+                    .child(
+                        div()
+                            .id("sidebar-rows")
+                            .track_scroll(&self.sidebar_scroll)
+                            // 2px of room above the list for the drop line of its first row (`top: -2px`), taken back
+                            // from the margin so nothing moves.
+                            .mt(px(-2.))
+                            // 12px more above uncategorized channels (stage-ann/ann-view: divider at 207, spacer 208 to 220,
+                            // first row at 220).
+                            .pt(px(rows_pt))
+                            .flex_1()
+                            .min_h(px(0.))
+                            .mb(px(4.))
+                            .flex()
+                            .flex_col()
+                            .overflow_y_scroll()
+                            .on_drag_move::<channel_drag::ChannelDrag>(cx.listener(
+                                |this, event: &gpui::DragMoveEvent<channel_drag::ChannelDrag>, _, cx| {
+                                    this.channel_drag_moved(event, cx)
+                                },
+                            ))
+                            .on_drop(
+                                cx.listener(|this, drag: &channel_drag::ChannelDrag, _, cx| {
+                                    this.channel_dropped(drag, cx)
+                                }),
+                            )
+                            .children(rows)
+                            .child(div().flex_none().h(px(16.))),
                     )
-                    .children(rows)
-                    .child(div().flex_none().h(px(16.))),
+                    .children(top_bar.map(|(mentions, target)| {
+                        self.sidebar_unread_pill("sidebar-unread-top", mentions, target, true, cx)
+                    }))
+                    .children(bottom_bar.map(|(mentions, target)| {
+                        self.sidebar_unread_pill(
+                            "sidebar-unread-bottom",
+                            mentions,
+                            target,
+                            false,
+                            cx,
+                        )
+                    })),
             )
             .child(
                 div()
@@ -4692,6 +4873,62 @@ impl Root {
                     .h(px(8.))
                     .bg(color("--background-base-lowest"))
             }))
+    }
+
+    fn sidebar_unread_pill(
+        &self,
+        id: &'static str,
+        mentions: bool,
+        target: f32,
+        top: bool,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        div()
+            .absolute()
+            .when(top, |d| d.top(px(8.)))
+            .when(!top, |d| d.bottom(px(8.)))
+            .left_0()
+            .right_0()
+            .flex()
+            .justify_center()
+            .child(
+                div()
+                    .id(id)
+                    .h(px(24.))
+                    .px(px(12.))
+                    .rounded_full()
+                    .bg(color(if mentions {
+                        "--background-feedback-notification"
+                    } else {
+                        "--background-surface-highest"
+                    }))
+                    .when(!mentions, |pill| {
+                        pill.border_1().border_color(color("--border-subtle"))
+                    })
+                    .cursor_pointer()
+                    .flex()
+                    .items_center()
+                    .gap(px(4.))
+                    .text_size(px(12.))
+                    .line_height(px(16.))
+                    .font_weight(FontWeight(600.))
+                    .text_color(color(if mentions {
+                        "--white"
+                    } else {
+                        "--text-strong"
+                    }))
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        this.sidebar_scroll
+                            .set_offset(gpui::point(px(0.), px(-target)));
+                        cx.notify();
+                    }))
+                    .child(if mentions {
+                        dc_intl::tr("New Mentions")
+                    } else {
+                        dc_intl::tr("New Unreads")
+                    }),
+            )
+            .into_any_element()
     }
 
     fn user_panel(&self, cx: &mut Context<Self>) -> impl IntoElement {
@@ -5334,9 +5571,9 @@ impl Root {
                         .relative()
                         .size(px(20.))
                         .when_some(dm_channel, |d, channel| {
-                            d.on_mouse_down(
+                            d.on_mouse_up(
                                 MouseButton::Right,
-                                cx.listener(move |this, event: &gpui::MouseDownEvent, _, cx| {
+                                cx.listener(move |this, event: &gpui::MouseUpEvent, _, cx| {
                                     cx.stop_propagation();
                                     this.open_context_menu(
                                         context_menu::Target::Dm(channel),
@@ -5354,9 +5591,9 @@ impl Root {
                 let id = channel.id;
                 this.child(
                     div()
-                        .on_mouse_down(
+                        .on_mouse_up(
                             MouseButton::Right,
-                            cx.listener(move |this, event: &gpui::MouseDownEvent, _, cx| {
+                            cx.listener(move |this, event: &gpui::MouseUpEvent, _, cx| {
                                 cx.stop_propagation();
                                 this.open_context_menu(
                                     context_menu::Target::Dm(id),
@@ -5385,9 +5622,9 @@ impl Root {
                         .font_weight(FontWeight(500.))
                         .text_color(color("--text-strong"))
                         .when_some(dm_channel, |d, channel| {
-                            d.on_mouse_down(
+                            d.on_mouse_up(
                                 MouseButton::Right,
-                                cx.listener(move |this, event: &gpui::MouseDownEvent, _, cx| {
+                                cx.listener(move |this, event: &gpui::MouseUpEvent, _, cx| {
                                     cx.stop_propagation();
                                     this.open_context_menu(
                                         context_menu::Target::Dm(channel),
@@ -5433,9 +5670,9 @@ impl Root {
                     }),
             )
             .child(div().flex_1().h_full().when_some(dm_channel, |d, channel| {
-                d.on_mouse_down(
+                d.on_mouse_up(
                     MouseButton::Right,
-                    cx.listener(move |this, event: &gpui::MouseDownEvent, _, cx| {
+                    cx.listener(move |this, event: &gpui::MouseUpEvent, _, cx| {
                         cx.stop_propagation();
                         this.open_context_menu(
                             context_menu::Target::Dm(channel),
@@ -5848,10 +6085,14 @@ impl Root {
 
     fn piece(&self, span: &Span, base: Hsla, size: f32, weight: f32, emoji_size: f32) -> Piece {
         let style = span.style;
+        let deleted_role = matches!(
+            span.kind,
+            Kind::Role(id) if self.current_guild().is_none_or(|guild| !guild.roles.contains_key(&id))
+        );
         let mention = matches!(
             span.kind,
-            Kind::User(_) | Kind::Role(_) | Kind::Channel(_) | Kind::Everyone
-        );
+            Kind::User(_) | Kind::Channel(_) | Kind::Everyone
+        ) || (matches!(span.kind, Kind::Role(_)) && !deleted_role);
         let mut run_font: Font = font(if style.code { MONO } else { SANS });
         run_font.features = kerning();
         run_font.weight = match (style.bold, mention) {
@@ -7061,9 +7302,9 @@ impl Root {
                         cx.notify();
                     }))
                     .when(!is_starter, |this| {
-                        this.on_mouse_down(
+                        this.on_mouse_up(
                             MouseButton::Right,
-                            cx.listener(move |this, event: &MouseDownEvent, _, cx| {
+                            cx.listener(move |this, event: &gpui::MouseUpEvent, _, cx| {
                                 this.open_menu(menu::Anchor::Pointer(event.position), id, own, cx);
                             }),
                         )
@@ -7442,9 +7683,9 @@ impl Root {
                         );
                         cx.notify();
                     }))
-                    .on_mouse_down(
+                    .on_mouse_up(
                         MouseButton::Right,
-                        cx.listener(move |this, event: &MouseDownEvent, _, cx| {
+                        cx.listener(move |this, event: &gpui::MouseUpEvent, _, cx| {
                             this.open_menu(menu::Anchor::Pointer(event.position), id, own, cx);
                         }),
                     )
@@ -8173,10 +8414,13 @@ impl Root {
                                             } else {
                                                 0.
                                             }))
-                                            .on_mouse_down(
+                                            .on_mouse_up(
                                                 MouseButton::Right,
                                                 cx.listener(
-                                                    |this, event: &MouseDownEvent, window, cx| {
+                                                    |this,
+                                                     event: &gpui::MouseUpEvent,
+                                                     window,
+                                                     cx| {
                                                         this.open_composer_menu(
                                                             event.position,
                                                             window,

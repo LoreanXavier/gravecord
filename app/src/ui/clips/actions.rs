@@ -91,6 +91,7 @@ pub(super) fn export_trimmed(
         )
     })?;
     part.keep_audio(keep);
+    part.fold_audio_to_single_stereo();
     let (_, length_ms) = part.video_starts_ms();
     std::fs::create_dir_all(folder)?;
     let path = free_path(folder, stem, |path| path.exists());
