@@ -14,7 +14,7 @@ use crate::ui::motion::Posed as _;
 use crate::ui::{Root, SANS, color, kerning};
 use gpui::{
     AnyElement, Context, Font, FontWeight, IntoElement, ScrollHandle, SharedString, TextRun,
-    Window, deferred, div, font, img, prelude::*, px, rgba,
+    Window, deferred, div, font, img, prelude::*, px,
 };
 use std::time::{Duration, Instant};
 
@@ -600,7 +600,7 @@ impl Root {
                     .occlude()
                     .absolute()
                     .inset_0()
-                    .bg(pose.dim(rgba(0x000000b8)))
+                    .bg(pose.dim(color("--background-scrim")))
                     .flex()
                     .items_center()
                     .justify_center()

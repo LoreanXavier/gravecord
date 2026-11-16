@@ -1,7 +1,7 @@
 //! The design system modal (`container_dvN-MP`, size md): 480 wide on `--background-surface-high`, a 20px semibold
 //! title with a close button, a muted subtitle, an optional body, and a footer of two equal buttons. Measured in
-//! `design/dom/modals/leaving-discord-darker-cozy.json` and `pin-confirm-darker-cozy.json`; the scrim is black at
-//! 0.72 (`scrim_od1dl1`).
+//! `design/dom/modals/leaving-discord-darker-cozy.json` and `pin-confirm-darker-cozy.json`; `scrim_od1dl1` uses
+//! the theme's `--background-scrim` token.
 
 use super::motion::{self, Transitions as _};
 use super::{Root, avatar_source, color, header_time, icon};
@@ -10,7 +10,7 @@ use crate::parity::Parity;
 use dc_state::Message;
 use gpui::{
     AnyElement, ClickEvent, Context, FontWeight, IntoElement, SharedString, Window, deferred, div,
-    img, prelude::*, px, rgba,
+    img, prelude::*, px,
 };
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -378,7 +378,7 @@ fn render_sized_at(
         .collect();
     // The scrim and the dialog fade in on the official spring (modules 462824 and 150591).
     let pose = super::motion::modal_pose(spec.id);
-    let (scrim, body_opacity) = (pose.scrim, pose.opacity);
+    let body_opacity = pose.opacity;
     let modal = div()
         .parity_with_border(spec.id, 1.)
         .id(spec.id)
@@ -496,10 +496,7 @@ fn render_sized_at(
             .occlude()
             .absolute()
             .inset_0()
-            .bg(gpui::Rgba {
-                a: f32::from(0xb8u8) / 255. * scrim,
-                ..rgba(0x000000ff)
-            })
+            .bg(pose.dim(color("--background-scrim")))
             .flex()
             .when(pinned.is_none(), |this| this.items_center())
             .when_some(pinned, |this, (top, _)| this.items_start().pt(px(top)))
@@ -608,20 +605,35 @@ impl Root {
     /// soft drop shadow, 10px above and below.
     pub(super) fn message_preview(&self, message: &Message) -> AnyElement {
         let avatar = self.images.get(&avatar_source(&message.author).0).cloned();
+        // `message_LE5yVN`: legacy elevation border/high are theme-specific (355059).
+        let light = super::theme() == super::Theme::Light;
         div()
             .py(px(10.))
             .rounded(px(3.))
             .bg(color("--background-base-low"))
             .shadow(vec![
                 gpui::BoxShadow {
-                    color: gpui::hsla(225. / 360., 0.06, 0.13, 0.6),
+                    color: gpui::Rgba {
+                        a: if light { 0.3 } else { 0.6 },
+                        ..color(if light {
+                            "--primary-300"
+                        } else {
+                            "--primary-700"
+                        })
+                    }
+                    .into(),
                     offset: gpui::point(px(0.), px(0.)),
                     blur_radius: px(0.),
                     spread_radius: px(1.),
                     inset: false,
                 },
                 gpui::BoxShadow {
-                    color: gpui::hsla(0., 0., 0., 0.2),
+                    color: color(if light {
+                        "--opacity-black-8"
+                    } else {
+                        "--opacity-black-20"
+                    })
+                    .into(),
                     offset: gpui::point(px(0.), px(2.)),
                     blur_radius: px(10.),
                     spread_radius: px(0.),
