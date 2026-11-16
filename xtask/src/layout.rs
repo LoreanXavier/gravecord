@@ -65,6 +65,7 @@ impl Dom<'_> {
         tag: Option<&str>,
         ancestor: Option<&str>,
         ancestor_id: Option<&str>,
+        attribute: Option<(&str, &str)>,
     ) -> Option<[f64; 4]> {
         let nodes = self.document["layout"]["nodeIndex"].as_array()?;
         let bounds = self.document["layout"]["bounds"].as_array()?;
@@ -75,6 +76,7 @@ impl Dom<'_> {
                 .split(' ')
                 .any(|class| class.starts_with(prefix));
             if class_matches
+                && attribute.is_none_or(|(name, value)| self.attribute_of(node, name) == value)
                 && tag.is_none_or(|tag| self.tag_of(node) == tag)
                 && ancestor.is_none_or(|prefix| self.has_ancestor(node, prefix, false))
                 && ancestor_id.is_none_or(|id| self.has_ancestor(node, id, true))
@@ -158,6 +160,7 @@ pub fn compare(
             target["tag"].as_str(),
             target["ancestor"].as_str(),
             target["ancestor_id"].as_str(),
+            target["attribute"].as_str().zip(target["value"].as_str()),
         );
         if official.is_none_or(|official| differs(&mine, &official)) {
             mismatches.push(Mismatch {
@@ -199,20 +202,23 @@ mod tests {
     #[test]
     fn finds_by_class_prefix() {
         assert_eq!(
-            with_dom(|dom| dom.find("foo_", None, None, None)),
+            with_dom(|dom| dom.find("foo_", None, None, None, None)),
             Some([1., 2., 3., 4.])
         );
         assert_eq!(
-            with_dom(|dom| dom.find("other", None, None, None)),
+            with_dom(|dom| dom.find("other", None, None, None, None)),
             Some([1., 2., 3., 4.])
         );
-        assert_eq!(with_dom(|dom| dom.find("nope", None, None, None)), None);
+        assert_eq!(
+            with_dom(|dom| dom.find("nope", None, None, None, None)),
+            None
+        );
     }
 
     #[test]
     fn tag_narrows_the_match() {
         assert_eq!(
-            with_dom(|dom| dom.find("bar_", Some("A"), None, None)),
+            with_dom(|dom| dom.find("bar_", Some("A"), None, None, None)),
             Some([9., 9., 9., 9.])
         );
     }
@@ -220,11 +226,11 @@ mod tests {
     #[test]
     fn ancestor_disambiguates_reused_text_classes() {
         assert_eq!(
-            with_dom(|dom| dom.find("bar_", None, Some("foo_"), None)),
+            with_dom(|dom| dom.find("bar_", None, Some("foo_"), None, None)),
             Some([9., 9., 9., 9.])
         );
         assert_eq!(
-            with_dom(|dom| dom.find("bar_", None, Some("missing"), None)),
+            with_dom(|dom| dom.find("bar_", None, Some("missing"), None, None)),
             None
         );
     }
@@ -241,15 +247,40 @@ mod tests {
             document: &dump,
         };
         assert_eq!(
-            dom.find("bar_", Some("A"), Some("foo_"), Some("target")),
+            dom.find("bar_", Some("A"), Some("foo_"), Some("target"), None),
             Some([31., 32., 33., 34.])
         );
-        assert_eq!(dom.find("bar_", None, None, Some("missing")), None);
+        assert_eq!(dom.find("bar_", None, None, Some("missing"), None), None);
     }
 
     #[test]
     fn half_pixel_noise_is_not_a_difference() {
         assert!(!differs(&[1., 2., 3., 4.], &[1.5, 2., 3., 4.]));
         assert!(differs(&[1., 2., 3., 4.], &[2., 2., 3., 4.]));
+    }
+
+    #[test]
+    fn accessible_name_disambiguates_identical_button_classes() {
+        let dump = json!({"strings":["class","button_abc","BUTTON","aria-label","Listen Along"],
+            "nodes":{"attributes":[[0,1],[0,1,3,4]],"nodeName":[2,2],"parentIndex":[-1,-1]},
+            "layout":{"nodeIndex":[0,1],"bounds":[[730,552,212,32],[950,552,32,32]]}});
+        let dom = Dom {
+            strings: dump["strings"].as_array().unwrap(),
+            document: &dump,
+        };
+        assert_eq!(
+            dom.find(
+                "button_",
+                Some("BUTTON"),
+                None,
+                None,
+                Some(("aria-label", "Listen Along"))
+            ),
+            Some([950., 552., 32., 32.])
+        );
+        assert!(
+            dom.find("button_", None, None, None, Some(("aria-label", "Missing")))
+                .is_none()
+        );
     }
 }
