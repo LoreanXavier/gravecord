@@ -5,7 +5,8 @@ use openh264::formats::YUVSource;
 use std::time::Duration;
 
 pub const MAX_ENCODED: usize = 16 * 1024 * 1024;
-pub const MAX_DECODED: usize = 64 * 1024 * 1024;
+/// The inline cache reserves this much for each pending clip.
+pub const MAX_DECODED: usize = 16 * 1024 * 1024;
 const MAX_FRAMES: usize = 600;
 
 pub struct Clip {

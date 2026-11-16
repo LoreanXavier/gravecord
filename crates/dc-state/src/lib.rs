@@ -1244,7 +1244,18 @@ impl EmbedMedia {
     }
 
     pub fn is_animated(&self) -> bool {
+        // LazyImage (619517) also treats GIF URLs as animated when the payload has no animation flag.
+        let original = if self.url.is_empty() {
+            self.src()
+        } else {
+            &self.url
+        };
         self.flags & 32 != 0
+            || original
+                .split(['?', '#'])
+                .next()
+                .and_then(|path| path.rsplit_once('.'))
+                .is_some_and(|(_, ext)| ext.eq_ignore_ascii_case("gif"))
     }
 }
 

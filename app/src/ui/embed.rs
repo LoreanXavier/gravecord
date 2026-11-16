@@ -1636,6 +1636,34 @@ mod tests {
     use serde_json::json;
 
     #[test]
+    fn unflagged_gif_embeds_request_animation_through_the_proxy() {
+        let message = Message::from_value(&json!({
+            "id": "1438000000000000000", "channel_id": "5",
+            "content": "https://example.com/loop.GIF?key=value",
+            "timestamp": "2026-11-11T08:28:00+00:00",
+            "author": {"id": "10", "username": "a"},
+            "embeds": [{
+                "type": "image",
+                "url": "https://example.com/loop.GIF?key=value",
+                "thumbnail": {
+                    "url": "https://example.com/loop.GIF?key=value",
+                    "proxy_url": "https://media.example/preview.webp?format=webp",
+                    "width": 360,
+                    "height": 300
+                }
+            }]
+        }))
+        .unwrap();
+        assert_eq!(
+            wanted(&message, true),
+            vec![(
+                image_key(message.id, 0, "image"),
+                "https://media.example/preview.webp?width=360&height=300".to_owned()
+            )]
+        );
+    }
+
+    #[test]
     fn a_video_tweet_fetches_its_poster_at_the_video_size_and_both_icons() {
         let mut message = Message::from_value(&json!({
             "id": "1438000000000000000", "channel_id": "5", "content": "https://fxtwitter.com/a/status/1/video/1",

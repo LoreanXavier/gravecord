@@ -19,9 +19,7 @@ use std::{
 pub(super) const PREFIX: &str = "gifv:";
 const TOTAL_DECODED: usize = 48 * 1024 * 1024;
 const TOTAL_ENCODED: usize = 16 * 1024 * 1024;
-/// What a decode that is still running counts for against `TOTAL_DECODED` (its real size is only known when it
-/// ends, and at most `MAX_DECODED`).
-const DECODE_RESERVE: usize = 16 * 1024 * 1024;
+const DECODE_RESERVE: usize = crate::video_clip::MAX_DECODED;
 /// A download that fails is tried once more the next time its embed comes into view.
 const FETCH_ATTEMPTS: u8 = 2;
 type PaintedFrame = (Arc<RenderImage>, Option<Arc<RenderImage>>);
@@ -465,7 +463,7 @@ impl Root {
         if !supported_dimensions(video.width, video.height) {
             return None;
         }
-        let url = video.proxy_url.as_deref().unwrap_or(&video.url);
+        let url = video.src();
         // The clip is drawn at its poster's size (`eh` in module 265705 passes the thumbnail's).
         let (width, height) = super::embed_layout::gifv_size(embed)?;
         let key = key(message, index, url);
@@ -614,6 +612,25 @@ mod tests {
             frames: vec![(Duration::from_secs(1), image::RgbaImage::new(2, 2))],
             bytes: 16,
         }
+    }
+
+    #[test]
+    fn a_chat_sized_gifv_with_many_frames_enters_the_playback_cache() {
+        let mut colors = [[220, 40, 55]; 150];
+        colors[75..].fill([40, 200, 70]);
+        let size = (360, 300);
+        let encoded = crate::video_vod::synthetic_mp4(size.0, size.1, 30, &colors, 30).unwrap();
+        let decoded = crate::video_clip::decode(&encoded, size).unwrap();
+        assert_eq!(decoded.frames.len(), colors.len());
+        assert_ne!(decoded.frames[0].1, decoded.frames[75].1);
+
+        let mut cache = Cache::default();
+        cache.register("long", "https://example.com/clip.mp4", size);
+        cache.decoded("long", Ok(decoded));
+        cache.seen.insert("long".into(), true);
+        cache.prepare(true, true);
+        assert!(cache.entries["long"].clock.playing);
+        assert!(cache.frame("long").is_some());
     }
 
     #[test]
