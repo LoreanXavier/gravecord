@@ -503,6 +503,13 @@ impl Root {
         true
     }
 
+    /// The game's name, for the Report Issue dialog its More menu opens.
+    pub(super) fn game_profile_name(&self, id: &str) -> String {
+        self.game_record(id)
+            .and_then(|game| game["name"].as_str().map(str::to_owned))
+            .unwrap_or_default()
+    }
+
     fn game_record(&self, id: &str) -> Option<Value> {
         self.fetched
             .get(&format!("{KEY_PREFIX}{id}"))?
@@ -654,6 +661,28 @@ impl Root {
                         },
                         cx,
                     ))
+                    .child({
+                        let menu_game = id.clone();
+                        div()
+                            .id("game-profile-more")
+                            .size(px(32.))
+                            .rounded(px(8.))
+                            .bg(gpui::rgba(0x0000008f))
+                            .flex()
+                            .items_center()
+                            .justify_center()
+                            .cursor_pointer()
+                            .child(icon("more_horizontal", 16., "--white"))
+                            .on_click(cx.listener(move |this, event: &gpui::ClickEvent, _, cx| {
+                                if let Ok(game) = menu_game.parse::<u64>() {
+                                    this.open_context_menu(
+                                        super::context_menu::Target::GameProfile(game),
+                                        event.position(),
+                                        cx,
+                                    );
+                                }
+                            }))
+                    })
                     .child(self.game_profile_bar_button(
                         "game-profile-close",
                         "modal_close",

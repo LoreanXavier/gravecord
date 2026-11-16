@@ -50,6 +50,8 @@ pub(super) enum Target {
     AppDirectory(Id),
     /// The "..." of an app's page in the App Launcher (`app-details-more-menu` of module 621377).
     LauncherApp(Id),
+    /// The "..." of a game's profile (`game-profile-context` of module 581745).
+    GameProfile(Id),
     /// The Favorites server's star in the rail (module 132598): Thread Settings, Hide Favorites.
     Favorites,
 }
@@ -719,6 +721,25 @@ pub(super) fn launcher_app_items(developer: bool) -> Vec<Entry> {
         &mut out,
         if developer {
             vec![Row::new(Act::CopyId, dc_intl::tr("Copy App ID")).icon("menu_id")]
+        } else {
+            Vec::new()
+        },
+    );
+    out
+}
+
+/// `game-profile-context` of module 581745: Report Issue (danger, `game-profile-something-wrong`), then Copy Game ID in
+/// its own group in developer mode.
+pub(super) fn game_profile_items(developer: bool) -> Vec<Entry> {
+    let mut out = vec![Entry::Row(
+        Row::new(Act::ReportGameIssue, dc_intl::tr("Report Issue"))
+            .icon("shop_circle_error")
+            .danger(),
+    )];
+    group(
+        &mut out,
+        if developer {
+            vec![Row::new(Act::CopyId, dc_intl::tr("Copy Game ID")).icon("menu_id")]
         } else {
             Vec::new()
         },
@@ -2189,6 +2210,7 @@ impl Root {
             Target::Composer => composer_items(&self.context.composer.clone().unwrap_or_default()),
             Target::AppDirectory(_) => app_directory_items(developer),
             Target::LauncherApp(_) => launcher_app_items(developer),
+            Target::GameProfile(_) => game_profile_items(developer),
             Target::Favorites => favorites_items(),
             Target::Guild(guild) => {
                 let Some(known) = self.stores.guild(guild) else {
@@ -2678,6 +2700,20 @@ impl Root {
                     self.open_game_profile(app, cx);
                 }
             }
+            (Act::ReportGameIssue, Target::GameProfile(game)) => {
+                let game = game.to_string();
+                let name = self.game_profile_name(&game);
+                self.game_profile = None;
+                self.open_report_issue(
+                    Some(super::report_issue::Detected {
+                        name,
+                        application_id: Some(game),
+                        art: None,
+                    }),
+                    window,
+                    cx,
+                );
+            }
             (Act::ReportGameIssue, Target::GameActivity { .. }) => {
                 let detected = self.context.game_activity.take();
                 self.open_report_issue(detected, window, cx);
@@ -2791,7 +2827,9 @@ impl Root {
                     | Target::InventoryAuthor { user }
                     | Target::SpotifyActivity { user, .. }
                     | Target::GameActivity { user, .. } => user,
-                    Target::AppDirectory(id) | Target::LauncherApp(id) => id,
+                    Target::AppDirectory(id)
+                    | Target::LauncherApp(id)
+                    | Target::GameProfile(id) => id,
                     Target::InventoryFeed
                     | Target::InventoryFeedAtPointer
                     | Target::Composer
