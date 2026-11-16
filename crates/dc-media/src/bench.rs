@@ -255,3 +255,91 @@ fn bench_go_live_1440p60_picture_path() {
         println!("(hardware encoder in use)");
     }
 }
+
+/// The clip thumbnail decodes the first keyframe with openh264 only (`Decoder::software`), while playback takes the
+/// hardware decoder. This checks that a keyframe from the encoder Go Live and clips use (hardware Main profile when
+/// the machine has one) decodes on the software path to a picture that is not black. Synthetic pictures only.
+#[test]
+#[ignore = "opens the hardware encoder; run with --ignored"]
+fn a_hardware_keyframe_decodes_on_the_software_path() {
+    const W: usize = 1280;
+    const H: usize = 720;
+    let mut bgra = vec![0u8; W * H * 4];
+    for (i, pixel) in bgra.chunks_exact_mut(4).enumerate() {
+        let (x, y) = (i % W, i / W);
+        pixel.copy_from_slice(&[(x % 256) as u8, (y % 256) as u8, 160, 255]);
+    }
+    let mut nv12 = vec![0u8; W * H * 3 / 2];
+    let raw = Raw {
+        width: W,
+        height: H,
+        stride: W * 4,
+        order: PixelOrder::Bgra,
+        data: &bgra,
+    };
+    to_yuv420(raw, W, H, Chroma::Interleaved, &mut nv12).unwrap();
+    let config = Config {
+        width: W as u32,
+        height: H as u32,
+        fps: 30,
+        bitrate: 6_000_000,
+        max_bytes: h264::MAX_ACCESS_UNIT,
+        profile: Profile::Main,
+        content: Content::Screen,
+    };
+    let mut encoder = Encoder::new(config).unwrap();
+    let chroma = encoder.chroma();
+    println!("encoder backend {:?}", encoder.backend());
+    let mut keyframe = None;
+    for index in 0..30 {
+        let input = if chroma == Chroma::Interleaved {
+            nv12.clone()
+        } else {
+            let mut planar = vec![0u8; W * H * 3 / 2];
+            let raw = Raw {
+                width: W,
+                height: H,
+                stride: W * 4,
+                order: PixelOrder::Bgra,
+                data: &bgra,
+            };
+            to_yuv420(raw, W, H, Chroma::Planar, &mut planar).unwrap();
+            planar
+        };
+        if let Some(output) = encoder.encode(&input, chroma, index == 0).unwrap()
+            && h264::is_keyframe(&output.data)
+        {
+            keyframe = Some(output.data);
+            break;
+        }
+    }
+    let keyframe = keyframe.expect("a keyframe within 30 pictures");
+    let profile_idc = h264::nals(&keyframe)
+        .find(|nal| nal.first().is_some_and(|byte| byte & 0x1f == 7))
+        .and_then(|sps| sps.get(1).copied());
+    println!(
+        "keyframe {} bytes, profile_idc {profile_idc:?}",
+        keyframe.len()
+    );
+    let mut software = Decoder::software().unwrap();
+    let decoded = software.decode(&keyframe);
+    println!(
+        "software decode: {:?}",
+        decoded
+            .as_ref()
+            .map(|p| p.as_ref().map(|p| (p.width, p.height)))
+    );
+    let picture = decoded
+        .ok()
+        .flatten()
+        .expect("openh264 decodes the hardware keyframe");
+    let rgba = picture.to_rgba().unwrap();
+    let lit = rgba
+        .chunks_exact(4)
+        .filter(|p| p[0] > 16 || p[1] > 16 || p[2] > 16)
+        .count();
+    assert!(
+        lit * 2 > rgba.len() / 4,
+        "the decoded keyframe is mostly black"
+    );
+}
