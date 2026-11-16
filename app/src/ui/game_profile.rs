@@ -126,7 +126,151 @@ fn asset(game: &str, value: &Value, size: u32) -> Option<String> {
     }
 }
 
+/// The OpenCritic tier's badge (`it`) and the colour of its rating ring (`il`), by `l8` (MIGHTY 1 to WEAK 4).
+fn open_critic_tier(tier: u64) -> Option<(&'static str, u32)> {
+    match tier {
+        1 => Some((
+            "https://cdn.discordapp.com/assets/content/35c42952234dc88292af091e1f0a5eb2189dbe0e40253245f51637c4ff587173.png",
+            0xfc430a,
+        )),
+        2 => Some((
+            "https://cdn.discordapp.com/assets/content/8d450a540daa7b1a93e760d85891273058b41ed329141c86dae484c23817e0bb.png",
+            0x9e00b4,
+        )),
+        3 => Some((
+            "https://cdn.discordapp.com/assets/content/9008eb4e7484a2c84cc11e8dff3831398fedd2de795ebf7c70436fd747bab475.png",
+            0x4aa1ce,
+        )),
+        4 => Some((
+            "https://cdn.discordapp.com/assets/content/1538fd1d5a67d65aebc33a9b47ab87cafbd83433f31f064f8deba3f89104ac8f.png",
+            0x80b06a,
+        )),
+        _ => None,
+    }
+}
+
+/// `l6`: a 30px ring (r 16 of a 36 viewBox, so 13.3px, 2px wide) whose arc is the rating out of 100, turned by
+/// `(1 - rating) * 180deg` so it stays centred at the bottom; SVG circles start at three o'clock and run clockwise.
+fn paint_open_critic_arc(
+    bounds: gpui::Bounds<gpui::Pixels>,
+    rating: f32,
+    stroke: u32,
+    window: &mut gpui::Window,
+) {
+    let share = (rating / 100.).clamp(0., 1.);
+    if share <= 0. {
+        return;
+    }
+    let radius = 16. * 30. / 36.;
+    let cx = bounds.origin.x + bounds.size.width * 0.5;
+    let cy = bounds.origin.y + bounds.size.height * 0.5;
+    let start = (1. - share) * std::f32::consts::PI;
+    let sweep = share * std::f32::consts::TAU;
+    let segments = ((share * 96.).ceil() as usize).max(2);
+    let mut path = gpui::PathBuilder::stroke(px(2.));
+    for step in 0..=segments {
+        let angle = start + sweep * (step as f32 / segments as f32);
+        let (sin, cos) = angle.sin_cos();
+        let at = gpui::point(cx + px(radius * cos), cy + px(radius * sin));
+        if step == 0 {
+            path.move_to(at);
+        } else {
+            path.line_to(at);
+        }
+    }
+    if let Ok(built) = path.build() {
+        window.paint_path(built, rgb(stroke));
+    }
+}
+
 impl Root {
+    /// `ie`: OpenCritic with the tier's badge and the top critics' rating ring, or "Not Enough Top Critic Reviews"
+    /// without either; shown when the record has an OpenCritic review and page, beside the store reviews (`h`).
+    fn open_critic_row(&self, game: &Value, divider: bool) -> Option<AnyElement> {
+        let review = &game["reviews"]["opencritic"];
+        let url = game["opencritic_url"].as_str()?.to_owned();
+        if review.is_null() {
+            return None;
+        }
+        let rating = review["top_critic_rating"].as_f64().unwrap_or(-1.);
+        let count = review["top_critic_rating_count"].as_i64().unwrap_or(-1);
+        let tier = review["tier"].as_u64().and_then(open_critic_tier);
+        let badge = tier.and_then(|(src, _)| self.images.get(src).cloned());
+        let ring = tier
+            .filter(|_| rating > 0. && count > 0)
+            .map(|(_, stroke)| {
+                let shown = rating as f32;
+                div()
+                    .relative()
+                    .size(px(32.))
+                    .rounded_full()
+                    .bg(rgb(0x2e2e2e))
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .child(
+                        gpui::canvas(
+                            |_, _, _| {},
+                            move |bounds, _, window, _| {
+                                paint_open_critic_arc(bounds, shown, stroke, window)
+                            },
+                        )
+                        .absolute()
+                        .inset_0(),
+                    )
+                    .child(
+                        div()
+                            .text_size(px(12.))
+                            .line_height(px(16.))
+                            .font_weight(FontWeight(600.))
+                            .text_color(color("--text-overlay-light"))
+                            .child(format!("{}", rating.floor() as i64)),
+                    )
+            });
+        let none = tier.is_none() && (rating <= 0. || count <= 0);
+        Some(
+            div()
+                .id("game-profile-opencritic")
+                .h(px(56.))
+                .px(px(12.))
+                .flex()
+                .items_center()
+                .justify_between()
+                .cursor_pointer()
+                .when(divider, |this| {
+                    this.border_t_1().border_color(color("--border-subtle"))
+                })
+                .child(
+                    div()
+                        .text_size(px(14.))
+                        .line_height(px(18.))
+                        .font_weight(FontWeight(500.))
+                        .text_color(color("--text-strong"))
+                        .child("OpenCritic"),
+                )
+                .child(
+                    div()
+                        .flex()
+                        .items_center()
+                        .gap(px(12.))
+                        .children(badge.map(|badge| img(badge).size(px(32.)).rounded_full()))
+                        .children(ring)
+                        .when(none, |this| {
+                            this.child(
+                                div()
+                                    .text_size(px(12.))
+                                    .line_height(px(16.))
+                                    .font_weight(FontWeight(500.))
+                                    .text_color(color("--text-subtle"))
+                                    .child("Not Enough Top Critic Reviews"),
+                            )
+                        }),
+                )
+                .on_click(move |_, _, cx| cx.open_url(&url))
+                .into_any_element(),
+        )
+    }
+
     /// Asks for a game's record ahead of time, so a menu or a card can tell whether its profile opens
     /// (`useShouldOpenGameProfile` reads the game store).
     pub(super) fn request_game_record(&mut self, game: &str) {
@@ -181,6 +325,12 @@ impl Root {
             }
             if let Some(url) = asset(id, &media["icon"], 64) {
                 wanted.push(url);
+            }
+            if let Some((badge, _)) = game["reviews"]["opencritic"]["tier"]
+                .as_u64()
+                .and_then(open_critic_tier)
+            {
+                wanted.push(badge.to_owned());
             }
             for url in wanted {
                 self.request_image(url.clone(), url);
@@ -491,6 +641,13 @@ impl Root {
                     .into_any_element()
             })
             .collect();
+        let mut review_rows = review_rows;
+        if let Some(row) = game
+            .as_ref()
+            .and_then(|game| self.open_critic_row(game, !review_rows.is_empty()))
+        {
+            review_rows.push(row);
+        }
         let sidebar = div()
             .w(px(359.34))
             .ml(px(24.))
