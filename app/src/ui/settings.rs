@@ -989,12 +989,10 @@ impl Root {
         });
     }
 
-    pub(super) fn open_settings(&mut self, cx: &mut Context<Self>) {
-        self.settings = Some(Open::new(Page::Account));
-        self.guild_search_ready(cx);
-        self.settings_search_ready(cx);
-        self.gift_field_ready(cx);
-        self.request_nitro();
+    /// The pictures the settings pages draw at once: the custom theme banner, the overlay and preview art, the
+    /// Language select's flags, two emoji and the app icons. Asked for when settings open, and ahead of time after
+    /// startup (`READY_SUPPLEMENTAL`) so the first open draws them at once.
+    pub(super) fn request_settings_art(&mut self) {
         // The custom theme card's banner (`bannerImage_yH_g_W`).
         self.request_image(
             "theme_upsell_banner".to_owned(),
@@ -1020,6 +1018,17 @@ impl Root {
                 appearance::app_icon_url(index),
             );
         }
+    }
+
+    pub(super) fn open_settings(&mut self, cx: &mut Context<Self>) {
+        self.settings = Some(Open::new(Page::Account));
+        self.guild_search_ready(cx);
+        self.settings_search_ready(cx);
+        self.gift_field_ready(cx);
+        // The settings pages' own pictures go first: the Nitro reads below queue dozens of pictures for the Nitro
+        // pages, and the theme card's banner waited behind them for one to three seconds.
+        self.request_settings_art();
+        self.request_nitro();
         let _ = self.requests.send(Request::Fetch {
             key: "sessions".to_owned(),
             route: "/auth/sessions".to_owned(),

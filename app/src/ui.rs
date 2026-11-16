@@ -1488,6 +1488,10 @@ impl Root {
                     self.warm_top_dm_profiles();
                     self.warm_gifs();
                     self.warm_nitro_art();
+                    // As the Nitro art: the settings pictures are on disk before settings first open.
+                    if start_cache::enabled() {
+                        self.request_settings_art();
+                    }
                     if let Some(ch) = self.channel {
                         self.warm_channel_pins(ch);
                     }
