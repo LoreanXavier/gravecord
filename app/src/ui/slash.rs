@@ -1276,6 +1276,7 @@ impl Root {
             return;
         }
         self.request_command_index();
+        self.request_launcher_home();
         let search = cx.new(|cx| Editor::new(editor_style(), cx));
         search.update(cx, |editor, _| {
             editor.set_placeholder("Search Apps & Commands".to_owned())
@@ -1646,12 +1647,17 @@ impl Root {
                 .child(text.to_owned())
         };
         if query.is_empty() {
-            if !self.slash.recents.is_empty() {
-                body.push(heading("Recents").into_any_element());
+            let recent_activities = self
+                .launcher_recent_activities(8usize.saturating_sub(self.slash.recents.len()), cx);
+            if !self.slash.recents.is_empty() || !recent_activities.is_empty() {
+                // `frecentList_OfZRPz`: 48px icons 12px apart, under the section header like every collection.
+                body.push(self.launcher_header("Recents".to_owned(), false));
                 body.push(
                     div()
+                        .mt(px(8.))
+                        .mb(px(32.))
                         .flex()
-                        .gap(px(8.))
+                        .gap(px(12.))
                         .children(self.slash.recents.iter().map(|(app, icon, name)| {
                             let command = Cmd {
                                 id: String::new(),
@@ -1666,9 +1672,11 @@ impl Root {
                             };
                             self.command_icon(&command, 48.)
                         }))
+                        .children(recent_activities)
                         .into_any_element(),
                 );
             }
+            body.extend(self.launcher_collections(cx));
             let mut seen: Vec<&str> = Vec::new();
             let mut apps: Vec<AnyElement> = Vec::new();
             for command in commands.iter().filter(|command| command.built_in.is_none()) {
@@ -1790,51 +1798,74 @@ impl Root {
                 );
             }
         }
+        // `layer_VVADeK`: the launcher is a layer above the app, the title bar included.
         Some(
-            div()
-                .id("launcher")
-                .absolute()
-                .right(px(13.))
-                .bottom(px(32.))
-                .w(px(500.))
-                .h(px(680.))
-                .occlude()
-                .rounded(px(8.))
-                .bg(color("--background-base-lower"))
-                .border_1()
-                .border_color(gpui::hsla(0., 0., 1., 0.08))
-                .flex()
-                .flex_col()
-                .on_mouse_down_out(cx.listener(|this, _, _, cx| {
-                    this.slash.launcher = None;
-                    cx.notify();
-                }))
-                .child(
-                    div().p(px(16.)).child(
+            gpui::deferred(
+                div()
+                    .id("launcher")
+                    .absolute()
+                    // The 1px ring is drawn outside the box: the box itself starts one pixel further in.
+                    .right(px(12.))
+                    .bottom(px(31.))
+                    .w(px(500.))
+                    .h(px(680.))
+                    .occlude()
+                    .rounded(px(8.))
+                    .bg(color("--background-base-lower"))
+                    // `contentWrapper_Z0Mo0M`: a 1px ring of white at 8% outside the box (a shadow, no border), over the
+                    // 0 12px 24px shadow of the layers.
+                    .shadow(vec![
+                        gpui::BoxShadow {
+                            color: gpui::hsla(0., 0., 1., 0.08),
+                            offset: gpui::point(px(0.), px(0.)),
+                            blur_radius: px(0.),
+                            spread_radius: px(1.),
+                            inset: false,
+                        },
+                        gpui::BoxShadow {
+                            color: gpui::hsla(0., 0., 0., 0.24),
+                            offset: gpui::point(px(0.), px(12.)),
+                            blur_radius: px(24.),
+                            spread_radius: px(0.),
+                            inset: false,
+                        },
+                    ])
+                    .flex()
+                    .flex_col()
+                    .on_mouse_down_out(cx.listener(|this, _, _, cx| {
+                        this.slash.launcher = None;
+                        cx.notify();
+                    }))
+                    .child(
+                        div().p(px(16.)).child(
+                            div()
+                                .h(px(40.))
+                                .px(px(12.))
+                                .rounded(px(8.))
+                                .bg(gpui::hsla(0., 0., 0., 0.12))
+                                .border_1()
+                                .border_color(color("--border-focus"))
+                                .flex()
+                                .items_center()
+                                .gap(px(8.))
+                                .child(icon("search", 16., "--interactive-text-default"))
+                                .child(div().flex_1().child(launcher.search.clone())),
+                        ),
+                    )
+                    .child(
                         div()
-                            .h(px(40.))
-                            .px(px(12.))
-                            .rounded(px(8.))
-                            .bg(gpui::hsla(0., 0., 0., 0.12))
-                            .border_1()
-                            .border_color(color("--border-focus"))
-                            .flex()
-                            .items_center()
-                            .gap(px(8.))
-                            .child(icon("search", 16., "--interactive-text-default"))
-                            .child(div().flex_1().child(launcher.search.clone())),
+                            .id("launcher-scroll")
+                            .flex_1()
+                            .overflow_y_scroll()
+                            // `scrollbarGutterStable`: the 460px content keeps 8px for the scrollbar beside the 16px pad.
+                            .pl(px(16.))
+                            .pr(px(24.))
+                            .pb(px(16.))
+                            .children(body),
                     ),
-                )
-                .child(
-                    div()
-                        .id("launcher-scroll")
-                        .flex_1()
-                        .overflow_y_scroll()
-                        .px(px(16.))
-                        .pb(px(16.))
-                        .children(body),
-                )
-                .into_any_element(),
+            )
+            .with_priority(1)
+            .into_any_element(),
         )
     }
 }

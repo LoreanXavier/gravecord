@@ -213,6 +213,7 @@ mod remediation;
 mod reminder_modal;
 mod report;
 mod report_issue;
+mod launcher_home;
 mod running_game_panel;
 mod running_games;
 mod saved;
@@ -680,6 +681,8 @@ pub struct Root {
     modify_attachment: Option<attachment_modal::ModifyAttachment>,
     /// Report Issue for a detected game (module 651930).
     report_issue: Option<report_issue::ReportIssue>,
+    /// When the text launcher's collections last arrived (module 503406 asks again after ten minutes).
+    launcher_collections_at: Option<i64>,
     /// The dialog of a refused upload (too large, too many, empty).
     upload_error: Option<upload_error::UploadError>,
     /// The pencil or trash of a sent attachment's hover group (`sent_attachment.rs`).
@@ -1068,6 +1071,7 @@ impl Root {
             schedule: Default::default(),
             modify_attachment: None,
             report_issue: None,
+            launcher_collections_at: None,
             upload_error: None,
             sent_edit: None,
             snooze_menu: None,
@@ -1761,6 +1765,10 @@ impl Root {
                 }
                 if key.starts_with(activity_launch::ACTIVITY_PREFIX) {
                     self.activity_fetched(&key, &body, cx);
+                    return;
+                }
+                if key == launcher_home::COLLECTIONS_KEY {
+                    self.launcher_collections_fetched(body, cx);
                     return;
                 }
                 if key.starts_with(activity_shelf::SHELF_PREFIX) {

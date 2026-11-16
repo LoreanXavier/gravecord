@@ -54,6 +54,17 @@ pub(crate) enum Shelf {
     Cards(Vec<ShelfCard>),
 }
 
+impl Shelf {
+    /// A fetched shelf reply: its cards, or the failure.
+    pub(super) fn from_body(body: &Value) -> Self {
+        if body["error"].as_bool() == Some(true) {
+            Shelf::Failed
+        } else {
+            Shelf::Cards(parse_shelf(body, chrono::Utc::now()))
+        }
+    }
+}
+
 /// The key of a guild's shelf in `Root::fetched`: `K(guildId) = guildId ?? "0"`.
 pub(super) fn shelf_key(guild: Option<u64>) -> String {
     format!("{SHELF_PREFIX}{}", guild.unwrap_or(0))
@@ -191,7 +202,7 @@ pub(crate) fn search_cards(cards: &[ShelfCard], recents: &[String], query: &str)
         .collect()
 }
 
-fn stored_recents() -> Vec<String> {
+pub(super) fn stored_recents() -> Vec<String> {
     crate::storage::get(RECENTS_KEY)
         .and_then(|value| value.as_array().cloned())
         .map(|list| {
@@ -307,8 +318,7 @@ impl Root {
     fn shelf_state(&self, key: &str) -> Shelf {
         match self.fetched.get(key) {
             None => Shelf::Loading,
-            Some(body) if body["error"].as_bool() == Some(true) => Shelf::Failed,
-            Some(body) => Shelf::Cards(parse_shelf(body, chrono::Utc::now())),
+            Some(body) => Shelf::from_body(body),
         }
     }
 
@@ -321,7 +331,12 @@ impl Root {
         true
     }
 
-    fn shelf_card(&self, card: &ShelfCard, id: SharedString, cx: &mut Context<Self>) -> AnyElement {
+    pub(super) fn shelf_card(
+        &self,
+        card: &ShelfCard,
+        id: SharedString,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
         let banner = self
             .images
             .get(&format!("shelf-banner:{}", card.app_id))
@@ -439,7 +454,11 @@ impl Root {
             .into_any_element()
     }
 
-    fn shelf_icon(&self, picture: Option<std::sync::Arc<gpui::Image>>, size: f32) -> AnyElement {
+    pub(super) fn shelf_icon(
+        &self,
+        picture: Option<std::sync::Arc<gpui::Image>>,
+        size: f32,
+    ) -> AnyElement {
         // The picture is clipped by its own radius: 12px outside, 11px inside the 1px border.
         div()
             .size(px(size))
