@@ -259,7 +259,9 @@ impl fmt::Debug for StreamJoin {
     }
 }
 
-/// Waits for `STREAM_CREATE` and `STREAM_SERVER_UPDATE` of one stream, in either order.
+/// Waits for `STREAM_CREATE` and `STREAM_SERVER_UPDATE` of one stream, in either order. Once the stream exists, every
+/// later `STREAM_SERVER_UPDATE` names the server to connect to again, as the official `STREAM_SERVER_UPDATE` handler
+/// of module 753181 calls `connect(endpoint, token)` on the stream's existing connection each time.
 pub struct Rendezvous {
     key: StreamKey,
     role: Role,
@@ -268,6 +270,10 @@ pub struct Rendezvous {
     started: Instant,
     create: Option<(u64, u64)>,
     server: Option<(String, String)>,
+    /// The server of the last join, which a lost connection goes back to.
+    last: Option<(String, String)>,
+    /// A join was handed out: the thirty second bound no longer applies.
+    joined: bool,
 }
 
 impl Rendezvous {
@@ -280,10 +286,14 @@ impl Rendezvous {
             started: now,
             create: None,
             server: None,
+            last: None,
+            joined: false,
         }
     }
 
-    /// Takes a dispatch of this stream; returns the join once both halves are in. It returns it once.
+    /// Takes a dispatch of this stream; returns the join once both halves are in, and again for each later
+    /// `STREAM_SERVER_UPDATE` (the stream moved to another server, or its token was renewed). A repeated
+    /// `STREAM_CREATE` of a stream that exists joins nothing (`null == o` in the official handler).
     pub fn feed(&mut self, dispatch: &Dispatch) -> Option<StreamJoin> {
         if dispatch.key() != self.key {
             return None;
@@ -294,19 +304,25 @@ impl Rendezvous {
                 rtc_channel_id,
                 ..
             } => {
-                let channel = rtc_channel_id.unwrap_or(rtc_server_id.saturating_sub(1));
-                self.create = Some((*rtc_server_id, channel));
+                if self.create.is_none() {
+                    let channel = rtc_channel_id.unwrap_or(rtc_server_id.saturating_sub(1));
+                    self.create = Some((*rtc_server_id, channel));
+                }
             }
             Dispatch::ServerUpdate {
                 endpoint, token, ..
             } => self.server = Some((endpoint.clone(), token.clone())),
             _ => return None,
         }
-        let ((server_id, channel_id), (endpoint, token)) = (
-            self.create?,
-            self.server.take_if(|_| self.create.is_some())?,
-        );
-        self.create = None;
+        self.create?;
+        self.last = Some(self.server.take()?);
+        self.joined = true;
+        self.rejoin()
+    }
+
+    /// The join of the server last named, for a connection that was lost (`None` before the first join).
+    pub fn rejoin(&self) -> Option<StreamJoin> {
+        let ((server_id, channel_id), (endpoint, token)) = (self.create?, self.last.clone()?);
         Some(StreamJoin {
             key: self.key,
             role: self.role,
@@ -319,8 +335,9 @@ impl Rendezvous {
         })
     }
 
+    /// The first join did not come within thirty seconds.
     pub fn expired(&self, now: Instant) -> bool {
-        now.saturating_duration_since(self.started) >= RENDEZVOUS_TIMEOUT
+        !self.joined && now.saturating_duration_since(self.started) >= RENDEZVOUS_TIMEOUT
     }
 
     pub fn key(&self) -> StreamKey {
@@ -355,7 +372,7 @@ pub struct StreamUpdate {
 /// What a dispatch led to.
 #[derive(Debug, Default)]
 pub struct Step {
-    /// Both halves are in: start the voice connection with this.
+    /// Both halves are in, or the stream named a server again: (re)start the voice connection with this.
     pub join: Option<StreamJoin>,
     pub update: Option<StreamUpdate>,
 }
@@ -428,7 +445,10 @@ impl Tracker {
                 self.viewers = viewers.len();
                 self.viewer_ids = viewers.clone();
                 self.paused = *paused;
-                step.update = self.set(StreamStatus::Connecting);
+                // A repeated create of a stream that is up changes nothing of its connection.
+                if self.status == StreamStatus::Starting {
+                    step.update = self.set(StreamStatus::Connecting);
+                }
             }
             Dispatch::Update {
                 viewers, paused, ..
@@ -459,7 +479,6 @@ impl Tracker {
         if let Some(rendezvous) = &mut self.rendezvous
             && let Some(join) = rendezvous.feed(dispatch)
         {
-            self.rendezvous = None;
             step.join = Some(join);
         }
         step
@@ -482,6 +501,18 @@ impl Tracker {
             }),
             _ => None,
         }
+    }
+
+    /// The stream's voice connection was lost without being asked to end (module 921747 `_handleDisconnect`: anything
+    /// but a "Force Close" reconnects; the stream itself ends only with `STREAM_DELETE` or our own stop). Returns the
+    /// join to connect with again, and the status change to Connecting when there is one. `None` when the stream has
+    /// ended or never had a server.
+    pub fn lost(&mut self) -> Option<(StreamJoin, Option<StreamUpdate>)> {
+        if matches!(self.status, StreamStatus::Ended(_)) {
+            return None;
+        }
+        let join = self.rendezvous.as_ref()?.rejoin()?;
+        Some((join, self.set(StreamStatus::Connecting)))
     }
 
     /// Ends the stream as failed when the two halves did not arrive in time.
@@ -697,6 +728,152 @@ mod tests {
         assert_eq!(ended.status, StreamStatus::Ended(EndReason::StreamFull));
         assert!(tracker.stopped().is_none(), "an ended stream stays ended");
         assert!(tracker.tick(now + Duration::from_secs(60)).is_none());
+    }
+
+    /// Module 753181: `STREAM_SERVER_UPDATE` connects the stream's existing connection again each time; a repeated
+    /// `STREAM_CREATE` does not. A watch that was joined is never failed by the thirty second bound.
+    #[test]
+    fn a_later_server_update_moves_the_stream_connection() {
+        let now = Instant::now();
+        let key = StreamKey::parse("call:2:3").unwrap();
+        let mut tracker = Tracker::new(key, Role::Watch, 9, "s".into(), now);
+        let create = |server: u64| Dispatch::Create {
+            key,
+            rtc_server_id: server,
+            rtc_channel_id: Some(77),
+            region: None,
+            viewers: vec![9],
+            paused: false,
+        };
+        let server = |endpoint: &str, token: &str| Dispatch::ServerUpdate {
+            key,
+            endpoint: endpoint.into(),
+            token: token.into(),
+        };
+        assert!(tracker.dispatch(&create(900), now).join.is_none());
+        let first = tracker
+            .dispatch(&server("a.discord.media", "t1"), now)
+            .join
+            .unwrap();
+        assert_eq!(
+            (first.server_id, first.channel_id, first.endpoint.as_str()),
+            (900, 77, "a.discord.media")
+        );
+        tracker.connection(&crate::StreamEvent::Connected);
+        assert!(
+            tracker.dispatch(&create(901), now).join.is_none(),
+            "the stream exists: a second create joins nothing and keeps its server"
+        );
+        let moved = tracker
+            .dispatch(&server("b.discord.media", "t2"), now)
+            .join
+            .unwrap();
+        assert_eq!(
+            (
+                moved.server_id,
+                moved.endpoint.as_str(),
+                moved.token.as_str()
+            ),
+            (900, "b.discord.media", "t2")
+        );
+        assert_eq!(moved.session_id, "s");
+        assert_eq!(
+            tracker.status(),
+            StreamStatus::Live,
+            "a move is not a new stream"
+        );
+        assert!(tracker.tick(now + Duration::from_secs(120)).is_none());
+        let other = Dispatch::ServerUpdate {
+            key: StreamKey::parse("call:2:4").unwrap(),
+            endpoint: "c".into(),
+            token: "t".into(),
+        };
+        assert!(tracker.dispatch(&other, now).join.is_none());
+        tracker.stopped();
+        assert!(
+            tracker
+                .dispatch(&server("c.discord.media", "t3"), now)
+                .join
+                .is_none(),
+            "an ended stream stays ended"
+        );
+    }
+
+    /// A lost connection goes back to the server last named with its token; nothing to rejoin before the first
+    /// join or after the stream ended.
+    #[test]
+    fn a_lost_connection_rejoins_the_last_server_until_the_stream_ends() {
+        let now = Instant::now();
+        let key = StreamKey::parse("guild:1:2:3").unwrap();
+        let mut tracker = Tracker::new(key, Role::Watch, 9, "s".into(), now);
+        assert!(tracker.lost().is_none(), "no server yet");
+        let create = Dispatch::Create {
+            key,
+            rtc_server_id: 900,
+            rtc_channel_id: None,
+            region: None,
+            viewers: vec![],
+            paused: false,
+        };
+        tracker.dispatch(&create, now);
+        assert!(tracker.lost().is_none(), "half a rendezvous");
+        let server = |endpoint: &str, token: &str| Dispatch::ServerUpdate {
+            key,
+            endpoint: endpoint.into(),
+            token: token.into(),
+        };
+        tracker.dispatch(&server("a", "t1"), now);
+        tracker.connection(&crate::StreamEvent::Connected);
+        let (join, update) = tracker.lost().unwrap();
+        assert_eq!(
+            (
+                join.endpoint.as_str(),
+                join.token.as_str(),
+                join.server_id,
+                join.channel_id
+            ),
+            ("a", "t1", 900, 899)
+        );
+        assert_eq!(update.unwrap().status, StreamStatus::Connecting);
+        let (_, update) = tracker.lost().unwrap();
+        assert!(
+            update.is_none(),
+            "still connecting: no second status change"
+        );
+        tracker.dispatch(&server("b", "t2"), now);
+        assert_eq!(
+            tracker.lost().unwrap().0.endpoint,
+            "b",
+            "the newest server is the one to go back to"
+        );
+        tracker.dispatch(
+            &Dispatch::Delete {
+                key,
+                reason: EndReason::UserRequested,
+            },
+            now,
+        );
+        assert!(
+            tracker.lost().is_none(),
+            "an ended stream is not reconnected"
+        );
+    }
+
+    #[test]
+    fn only_socket_losses_reconnect() {
+        use crate::DisconnectReason;
+        assert!(!crate::ended_locally(&DisconnectReason::Closed(4009)));
+        assert!(!crate::ended_locally(&DisconnectReason::Kicked));
+        assert!(!crate::ended_locally(&DisconnectReason::Failed(
+            "Stream voice Hello timed out"
+        )));
+        assert!(crate::ended_locally(&DisconnectReason::Requested));
+        assert!(crate::ended_locally(&DisconnectReason::Failed(
+            "Screen capture ended"
+        )));
+        assert!(crate::ended_locally(&DisconnectReason::Failed(
+            "Screen capture could not start"
+        )));
     }
 
     #[test]

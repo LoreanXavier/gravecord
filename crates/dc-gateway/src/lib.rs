@@ -1,7 +1,7 @@
 //! Gateway connection. Port of `GatewaySocket` in module 868: ETF over zstd-stream, QOS heartbeats, resume, backoff.
 //! The reconnect shape follows Serein's `discord-gateway` (MIT/Apache-2.0); the protocol follows the pinned bundle.
 
-mod backoff;
+pub mod backoff;
 mod compression;
 
 use backoff::Backoff;

@@ -159,8 +159,12 @@ struct Live {
     generation: u64,
     tracker: Tracker,
     controls: StreamControls,
-    /// What a sender captures; taken when the connection starts.
+    /// What a sender captures; kept so that a stream moved to another server captures again.
     source: Option<StreamSource>,
+    /// A connection was started: a later join replaces it.
+    connected: bool,
+    /// The delay before a lost connection is tried again (module 921747 `tK`: 1 to 10 seconds).
+    retry: dc_gateway::backoff::Backoff,
     last: StreamUpdate,
     /// What the picker chose, for the panel row and the tile's badge.
     started: Option<Started>,
@@ -169,6 +173,11 @@ struct Live {
 }
 
 static STREAM_GENERATION: AtomicU64 = AtomicU64::new(0);
+
+/// `tK()` of module 921747: `new Backoff(1e3, 1e4)`, the reconnect delay of an RTC connection.
+fn stream_backoff() -> dc_gateway::backoff::Backoff {
+    dc_gateway::backoff::Backoff::new(Duration::from_secs(1), Duration::from_secs(10))
+}
 
 /// What a stream we send was started with.
 #[derive(Clone, Debug)]
@@ -588,6 +597,8 @@ impl Root {
                 tracker,
                 controls,
                 source: Some(source),
+                connected: false,
+                retry: stream_backoff(),
                 last,
                 started: Some(started),
                 remote_quality: None,
@@ -762,6 +773,8 @@ impl Root {
                 tracker,
                 controls: StreamControls::new(),
                 source: None,
+                connected: false,
+                retry: stream_backoff(),
                 last,
                 started: None,
                 remote_quality: watch.then_some((Some(1440), 60)),
@@ -925,6 +938,8 @@ impl Root {
                 tracker,
                 controls: StreamControls::new(),
                 source: None,
+                connected: false,
+                retry: stream_backoff(),
                 last,
                 started: None,
                 remote_quality: None,
@@ -1177,14 +1192,24 @@ impl Root {
         if let Some(live) = self.video.streams.get_mut(&key) {
             let step = live.tracker.dispatch(&dispatch, Instant::now());
             if let Some(join) = step.join {
-                let source = live.source.take();
-                let controls = live.controls.clone();
-                let generation = live.generation;
                 let hub = match &self.call {
                     Some(call) => call.controls.hub(),
                     None => return,
                 };
-                info!("stream: both dispatches in, connecting");
+                if live.connected {
+                    // `STREAM_SERVER_UPDATE` of a stream already connected (module 753181 `t.connect(endpoint,
+                    // token)`): the old connection ends and its late events are dropped by generation.
+                    live.controls = live.controls.renew();
+                    live.generation = STREAM_GENERATION.fetch_add(1, Ordering::Relaxed) + 1;
+                    live.remote_quality = None;
+                    info!("stream: server named again, reconnecting");
+                } else {
+                    info!("stream: both dispatches in, connecting");
+                }
+                live.connected = true;
+                let source = live.source;
+                let controls = live.controls.clone();
+                let generation = live.generation;
                 let _ = self.requests.send(Request::StreamConnect {
                     join,
                     source,
@@ -1237,9 +1262,61 @@ impl Root {
             cx.notify();
             return;
         }
+        if matches!(event, StreamEvent::Connected | StreamEvent::Live { .. }) {
+            live.retry.succeed();
+        }
+        if let StreamEvent::Ended { reason } = &event
+            && !dc_voice::ended_locally(reason)
+            && let Some((join, update)) = live.tracker.lost()
+        {
+            // Module 921747 `_handleDisconnect`: the connection is tried again after the backoff, on the server last
+            // named, until `STREAM_DELETE`, our own stop, or a new `STREAM_SERVER_UPDATE` replaces it.
+            let delay = live.retry.fail(&mut rand::rng());
+            live.controls = live.controls.renew();
+            live.generation = STREAM_GENERATION.fetch_add(1, Ordering::Relaxed) + 1;
+            live.remote_quality = None;
+            let generation = live.generation;
+            info!(
+                ?reason,
+                delay_ms = delay.as_millis() as u64,
+                "stream connection lost; reconnecting"
+            );
+            if let Some(update) = update {
+                self.stream_changed(update, true, cx);
+            }
+            cx.spawn(async move |this, cx| {
+                cx.background_executor().timer(delay).await;
+                let _ = this.update(cx, |root, _| root.stream_reconnect(key, generation, join));
+            })
+            .detach();
+            return;
+        }
         if let Some(update) = live.tracker.connection(&event) {
             self.stream_changed(update, true, cx);
         }
+    }
+
+    /// The backoff of a lost stream connection ran out: connect again, unless the stream ended or another connection
+    /// took its place meanwhile.
+    fn stream_reconnect(&mut self, key: StreamKey, generation: u64, join: streams::StreamJoin) {
+        let Some(hub) = self.call.as_ref().map(|call| call.controls.hub()) else {
+            return;
+        };
+        let Some(live) = self
+            .video
+            .streams
+            .get(&key)
+            .filter(|live| live.generation == generation)
+        else {
+            return;
+        };
+        let _ = self.requests.send(Request::StreamConnect {
+            join,
+            source: live.source,
+            hub,
+            controls: live.controls.clone(),
+            generation,
+        });
     }
 
     /// Records a status change; an ended stream is dropped, and the gateway told when it does not know yet.

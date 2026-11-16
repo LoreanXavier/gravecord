@@ -296,6 +296,20 @@ impl Sim {
         Inner::server_move(&self.inner)
     }
 
+    /// The stream of `owner` that our client watches or sends is named again by `STREAM_SERVER_UPDATE` with a new
+    /// token, and the stream server drops our old connection to it (a stream server reassignment).
+    pub fn stream_move(&self, owner: u64) -> String {
+        self.inner.stream_move(owner)
+    }
+
+    /// The stream server drops our connections to its streams with `code`, and nothing is dispatched: a transient
+    /// loss the client has to recover from by itself.
+    pub fn stream_drop(&self, code: u16) -> String {
+        let dropped = self.inner.stream_server.close("me", true, code)
+            + self.inner.stream_server.close("me", false, code);
+        format!("{dropped} stream connection(s) of ours dropped with {code}")
+    }
+
     /// Close code 4014 on our call connection; then `after`: "stay" (nothing), "moved" (a voice server update
     /// follows), "gone" (our voice state leaves the channel).
     pub fn kick(&self, after: &str) -> String {
@@ -508,6 +522,43 @@ impl Inner {
                 "endpoint": server.endpoint(),
             }),
         );
+    }
+
+    fn stream_move(&self, owner: u64) -> String {
+        let (found, me, session) = {
+            let world = self.lock();
+            let me = world.setup.me;
+            let found = world
+                .streams
+                .iter()
+                .find(|(_, stream)| {
+                    stream.owner == owner && (owner == me || stream.viewers.contains(&me))
+                })
+                .map(|(key, stream)| (*key, stream.rtc));
+            (found, me, world.setup.my_session.clone())
+        };
+        let Some((key, rtc)) = found else {
+            return "our client neither sends nor watches that stream".to_owned();
+        };
+        let dropped = self.stream_server.close("me", true, 1001)
+            + self.stream_server.close("me", false, 1001);
+        let token = self.stream_server.issue(Ticket {
+            user: me,
+            session,
+            server_id: rtc,
+            channel_id: rtc - 1,
+            label: "me".to_owned(),
+        });
+        self.note(format!(
+            "stream {key} moves: {dropped} old connection(s) dropped"
+        ));
+        self.emit(
+            Duration::from_millis(30),
+            "STREAM_SERVER_UPDATE",
+            json!({"stream_key": key.to_string(), "endpoint": self.stream_server.endpoint(), "token": token,
+                "guild_id": key.guild().map(|g| g.to_string())}),
+        );
+        format!("stream moved; {dropped} old connection(s) dropped")
     }
 
     fn my_ticket(&self) -> Ticket {

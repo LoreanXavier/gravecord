@@ -267,15 +267,18 @@ impl VideoHub {
         }
     }
 
-    /// `owner`'s stream is no longer watched: its queue and counts go.
-    pub(crate) fn forget_stream_audio(&self, owner: u64, connection: u64) {
+    /// `owner`'s stream is no longer watched by `connection`: its queue and counts go. False when a newer connection
+    /// to the same stream has taken the queue over (a reconnect), which then keeps the stream's playout slot too.
+    pub(crate) fn forget_stream_audio(&self, owner: u64, connection: u64) -> bool {
         let mut all = self.stream_audio.lock().unwrap_or_else(|e| e.into_inner());
         if all
             .get(&owner)
-            .is_some_and(|audio| audio.connection == connection)
+            .is_some_and(|audio| audio.connection != connection)
         {
-            all.remove(&owner);
+            return false;
         }
+        all.remove(&owner);
+        true
     }
 
     /// Times `owner`'s stream audio ran dry while playing, and frames dropped to keep it from lagging, for the log.

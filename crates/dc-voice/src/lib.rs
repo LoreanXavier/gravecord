@@ -84,7 +84,7 @@ mod video;
 pub mod voice_player;
 pub mod voice_recorder;
 pub mod voice_wave;
-pub use stream_conn::{StreamEvent, StreamSource};
+pub use stream_conn::{StreamEvent, StreamSource, ended_locally};
 pub use video::{RemoteFrame, VideoHub, VideoSink, VideoSource};
 
 pub use audio::{
@@ -302,6 +302,19 @@ impl StreamControls {
     pub fn set_previews(&self, previews: bool) {
         self.0
             .send_if_modified(|state| std::mem::replace(&mut state.previews, previews) != previews);
+    }
+    /// Ends the connection these controls drive and returns controls for its replacement, paused and previews as
+    /// they were (the stream moved to another server).
+    pub fn renew(&self) -> Self {
+        let current = *self.0.borrow();
+        self.stop();
+        Self(Arc::new(
+            watch::channel(stream_conn::StreamControlState {
+                stop: false,
+                ..current
+            })
+            .0,
+        ))
     }
 }
 

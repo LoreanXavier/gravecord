@@ -54,6 +54,30 @@ use tokio_tungstenite::tungstenite::{Message, protocol::frame::coding::CloseCode
 use tracing::debug;
 use zeroize::Zeroizing;
 
+const SCREEN_CAPTURE_ENDED: &str = "Screen capture ended";
+const SCREEN_CAPTURE_FAILED: &str = "Screen capture could not start";
+const NO_SOURCE: &str = "A stream sender needs a source";
+const PACER_STOPPED: &str = "Pacer clock stopped";
+const MEDIA_CLOCK_STOPPED: &str = "Media clock stopped";
+
+/// Whether a stream connection ended for a reason of this machine (its capture, its clocks, a stop asked for) rather
+/// than of its socket. Module 921747 `_handleDisconnect` reconnects after a socket disconnect; a sender whose capture
+/// is gone has nothing to reconnect with, so its stream ends instead.
+pub fn ended_locally(reason: &DisconnectReason) -> bool {
+    match reason {
+        DisconnectReason::Requested => true,
+        DisconnectReason::Failed(text) => [
+            SCREEN_CAPTURE_ENDED,
+            SCREEN_CAPTURE_FAILED,
+            NO_SOURCE,
+            PACER_STOPPED,
+            MEDIA_CLOCK_STOPPED,
+        ]
+        .contains(text),
+        DisconnectReason::Kicked | DisconnectReason::Closed(_) => false,
+    }
+}
+
 /// What a stream sender shows.
 #[derive(Clone, Copy, Debug)]
 pub enum StreamSource {
@@ -328,7 +352,7 @@ fn start_capture(
                     worker.set_bitrate(CALL_START_BITRATE);
                     Capture::Screen(worker)
                 })
-                .map_err(|_| "Screen capture could not start")
+                .map_err(|_| SCREEN_CAPTURE_FAILED)
         }
         StreamSource::Synthetic {
             width,
@@ -420,7 +444,10 @@ struct ForgetAudio {
 
 impl Drop for ForgetAudio {
     fn drop(&mut self) {
-        self.hub.forget_stream_audio(self.owner, self.audio_queue);
+        // A replacement connection that already began owns the queue, the playout slot and the telemetry.
+        if !self.hub.forget_stream_audio(self.owner, self.audio_queue) {
+            return;
+        }
         if let Some(playout) = &self.playout {
             playout.remove_stream(self.owner);
         }
@@ -453,7 +480,7 @@ pub(crate) async fn run(
     };
     let sending = join.role == Role::Send;
     if sending && source.is_none() {
-        return Err("A stream sender needs a source");
+        return Err(NO_SOURCE);
     }
     if controls.borrow_and_update().stop {
         return Ok(DisconnectReason::Requested);
@@ -635,7 +662,7 @@ pub(crate) async fn run(
             },
             wake = pacer_wakes.recv() => {
                 if wake.is_none() {
-                    return Err("Pacer clock stopped");
+                    return Err(PACER_STOPPED);
                 }
                 if let (Some(sender), Some(crypto), Some(socket)) = (sender.as_mut(), transport.as_mut(), udp.as_ref()) {
                     let was_empty = sender.idle();
@@ -648,7 +675,7 @@ pub(crate) async fn run(
                 }
             },
             frame = frames.recv(), if sender.as_ref().is_some_and(|sender| sender.accepts(Instant::now())) => {
-                let Some(frame) = frame else { return Ok(DisconnectReason::Closed(0)) };
+                let Some(frame) = frame else { return Err(SCREEN_CAPTURE_ENDED) };
                 let secure = announced && dave.ready && dave.session.is_ready() && !dave.transitioning() && transport.is_some() && !discovering && !controls.borrow().paused;
                 if !secure {
                     let was_awaiting = awaiting_keyframe;
@@ -692,7 +719,7 @@ pub(crate) async fn run(
             },
             tick = ticks.recv() => {
                 if tick.is_none() {
-                    return Err("Media clock stopped");
+                    return Err(MEDIA_CLOCK_STOPPED);
                 }
                 let now = Instant::now();
                 if deadline.is_some_and(|d| now >= d) {
@@ -787,7 +814,7 @@ pub(crate) async fn run(
                     if let Some(capture) = &capture && let Some(reason) = capture.finished() {
                         debug!(reason, "stream capture ended");
                         let _ = text(&mut ws, signal::video(ssrc, None)).await;
-                        return Err("Screen capture ended");
+                        return Err(SCREEN_CAPTURE_ENDED);
                     }
                     // Announce the source once, as soon as both ends are ready for it.
                     if !announced && capture.is_some() && transport.is_some() && !discovering && !resuming && let Some(source) = source {

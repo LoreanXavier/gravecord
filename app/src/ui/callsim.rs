@@ -353,6 +353,16 @@ impl Root {
                 format!("server feedback {feedback:?}")
             }
             ["server", "move"] => sim.server_move(),
+            // `STREAM_SERVER_UPDATE` again for a stream we watch or send, and the old connection dropped.
+            ["stream", "move", name] => match user_of(name) {
+                Some(owner) => sim.stream_move(owner),
+                None => format!("no participant {name}"),
+            },
+            // Our stream connections are dropped with this close code, and nothing follows on the gateway.
+            ["stream", "drop", code] => match code.parse() {
+                Ok(code) => sim.stream_drop(code),
+                Err(_) => "usage: callsim stream drop <close code>".to_owned(),
+            },
             ["kick"] => sim.kick("stay"),
             ["kick", after] => sim.kick(after),
             ["stats"] => sim.stats(Duration::from_secs(30)),
