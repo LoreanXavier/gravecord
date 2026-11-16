@@ -104,6 +104,145 @@ fn rating_texts(rating: f64, count: u64) -> (String, String) {
     (format!("{rating:.1} / 5"), format!("({grouped})"))
 }
 
+/// The thumbnails under the trailer: the trailers' posters (`app-assets/{game}/store/{id}`), then the screenshots
+/// at 128 (`thumbnail_67wC2_`).
+fn thumbnails(id: &str, game: &Value) -> Vec<String> {
+    let trailers = game["trailers"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|trailer| {
+            trailer["id"].as_str().map(|trailer| {
+                format!("https://cdn.discordapp.com/app-assets/{id}/store/{trailer}.png?size=128")
+            })
+        });
+    let shots = game["screenshot_urls"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|url| {
+            url.as_str()
+                .map(|url| format!("{url}?width=128&height=128&keep_aspect_ratio=true&format=webp"))
+        });
+    trailers.chain(shots).collect()
+}
+
+/// `lC`: the Details rows, each a label (singular or plural by the count) and its value, "-" when unknown.
+fn detail_rows(game: &Value) -> Vec<(&'static str, String)> {
+    let companies = |role: u64| -> Vec<String> {
+        game["companies"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter(|company| {
+                company["roles"]
+                    .as_array()
+                    .is_some_and(|roles| roles.iter().any(|known| known.as_u64() == Some(role)))
+            })
+            .filter_map(|company| company["name"].as_str().map(str::to_owned))
+            .collect()
+    };
+    let genre_count = game["genres"].as_array().map_or(0, Vec::len);
+    let publishers = companies(1);
+    let developers = companies(2);
+    let or_dash = |text: String| {
+        if text.is_empty() {
+            "-".to_owned()
+        } else {
+            text
+        }
+    };
+    let released = game["first_release_date"]
+        .as_str()
+        .and_then(|date| chrono::DateTime::parse_from_rfc3339(date).ok())
+        // moment's `LL` in English: "June 29, 2020".
+        .map(|date| date.format("%B %-d, %Y").to_string())
+        .unwrap_or_else(|| "-".to_owned());
+    vec![
+        (
+            if genre_count != 1 { "Genres" } else { "Genre" },
+            or_dash(genres(game)),
+        ),
+        (
+            if publishers.len() != 1 {
+                "Publishers"
+            } else {
+                "Publisher"
+            },
+            or_dash(publishers.join(", ")),
+        ),
+        (
+            if developers.len() != 1 {
+                "Developers"
+            } else {
+                "Developer"
+            },
+            or_dash(developers.join(", ")),
+        ),
+        ("Release Date", released),
+    ]
+}
+
+/// The platform glyphs of `lC`, in `n4`'s order: desktop (Windows, macOS or Linux), mobile (iOS or Android), Xbox,
+/// PlayStation, Nintendo.
+fn platform_glyphs(game: &Value) -> Vec<&'static str> {
+    let platforms: Vec<u64> = game["platforms"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(Value::as_u64)
+        .collect();
+    let has = |platform: u64| platforms.contains(&platform);
+    let mut glyphs = Vec::new();
+    if has(0) || has(6) || has(7) {
+        glyphs.push("platform_desktop");
+    }
+    if has(3) || has(4) {
+        glyphs.push("platform_mobile");
+    }
+    if has(1) {
+        glyphs.push("platform_xbox");
+    }
+    if has(2) {
+        glyphs.push("platform_playstation");
+    }
+    if has(5) {
+        glyphs.push("platform_nintendo");
+    }
+    glyphs
+}
+
+/// The link glyphs of `lx`, in the order of module 505779's `pF` categories; categories whose glyph has not been
+/// captured yet are left out.
+fn link_glyphs(game: &Value) -> Vec<(&'static str, String)> {
+    const ORDER: [(u64, Option<&str>); 14] = [
+        (1, Some("link_official")),
+        (4, Some("link_facebook")),
+        (5, Some("link_x")),
+        (8, Some("link_instagram")),
+        (9, Some("link_youtube")),
+        (19, None),
+        (14, Some("link_reddit")),
+        (6, Some("link_twitch")),
+        (22, None),
+        (15, None),
+        (2, Some("link_fandom")),
+        (10, Some("link_apple")),
+        (11, Some("link_apple")),
+        (12, Some("link_google_play")),
+    ];
+    let websites: Vec<&Value> = game["websites"].as_array().into_iter().flatten().collect();
+    ORDER
+        .iter()
+        .flat_map(|(category, glyph)| {
+            websites
+                .iter()
+                .filter(move |site| site["category"].as_u64() == Some(*category))
+                .filter_map(move |site| Some((*glyph.as_ref()?, site["url"].as_str()?.to_owned())))
+        })
+        .collect()
+}
+
 /// The genres as `t4` joins them.
 fn genres(game: &Value) -> String {
     game["genres"]
@@ -326,6 +465,7 @@ impl Root {
             if let Some(url) = asset(id, &media["icon"], 64) {
                 wanted.push(url);
             }
+            wanted.extend(thumbnails(id, game));
             if let Some((badge, _)) = game["reviews"]["opencritic"]["tier"]
                 .as_u64()
                 .and_then(open_critic_tier)
@@ -414,6 +554,16 @@ impl Root {
             .unwrap_or_default()
             .to_owned();
         let store = game.as_ref().and_then(store_website);
+        let thumbs: Vec<Option<std::sync::Arc<gpui::Image>>> = game
+            .as_ref()
+            .map(|game| thumbnails(&id, game))
+            .unwrap_or_default()
+            .into_iter()
+            .map(|url| self.images.get(&url).cloned())
+            .collect();
+        let details = game.as_ref().map(detail_rows).unwrap_or_default();
+        let platforms = game.as_ref().map(platform_glyphs).unwrap_or_default();
+        let links = game.as_ref().map(link_glyphs).unwrap_or_default();
         let reviews = game.as_ref().map(mobile_reviews).unwrap_or_default();
         let tab_item = |label: &'static str, which: Tab| {
             let selected = tab == which;
@@ -562,8 +712,49 @@ impl Root {
             // `trailerSection`: 16px above the black 16px-cornered video frame, 431px high.
             .child(
                 div()
-                    .pt(px(16.))
-                    .child(div().h(px(431.23)).rounded(px(16.)).bg(rgb(0x000000))),
+                    .flex()
+                    .flex_col()
+                    .gap(px(12.))
+                    .child(
+                        div()
+                            .pt(px(16.))
+                            .child(div().h(px(431.23)).rounded(px(16.)).bg(rgb(0x000000))),
+                    )
+                    // `children_s64Ydp`: 106 by 60 thumbnails 8px apart; the shown one is ringed 2px in
+                    // `--border-strong` with its picture 4px in.
+                    .child(
+                        div()
+                            .id("game-profile-thumbnails")
+                            .h(px(60.))
+                            .flex()
+                            .gap(px(8.))
+                            .overflow_x_scroll()
+                            .children(thumbs.into_iter().enumerate().map(|(index, picture)| {
+                                let selected = index == 0;
+                                div()
+                                    .flex_none()
+                                    .w(px(106.))
+                                    .h(px(60.))
+                                    .rounded(px(12.))
+                                    .when(selected, |this| {
+                                        this.border_2()
+                                            .border_color(color("--border-strong"))
+                                            .p(px(2.))
+                                    })
+                                    .child(
+                                        div()
+                                            .size_full()
+                                            .rounded(px(if selected { 8. } else { 12. }))
+                                            .overflow_hidden()
+                                            .bg(color("--background-mod-normal"))
+                                            .children(picture.map(|picture| {
+                                                img(picture)
+                                                    .size_full()
+                                                    .object_fit(gpui::ObjectFit::Cover)
+                                            })),
+                                    )
+                            })),
+                    ),
             )
             .when(!description.is_empty(), |this| {
                 this.child(
@@ -702,6 +893,115 @@ impl Root {
                                 .children(review_rows),
                         ),
                 )
+            })
+            .when(game.is_some(), |this| {
+                let row = |label: &'static str, value: AnyElement, first: bool| {
+                    div()
+                        .p(px(12.))
+                        .flex()
+                        .items_center()
+                        .justify_between()
+                        .when(!first, |this| {
+                            this.border_t_1().border_color(color("--border-subtle"))
+                        })
+                        .child(
+                            div()
+                                .text_size(px(14.))
+                                .line_height(px(18.))
+                                .text_color(color("--text-subtle"))
+                                .child(label),
+                        )
+                        .child(value)
+                        .into_any_element()
+                };
+                let text = |value: String| {
+                    div()
+                        .text_size(px(14.))
+                        .line_height(px(18.))
+                        .text_color(color("--text-subtle"))
+                        .child(value)
+                        .into_any_element()
+                };
+                let glyph_row = |glyphs: Vec<AnyElement>| {
+                    if glyphs.is_empty() {
+                        text("-".to_owned())
+                    } else {
+                        div()
+                            .flex()
+                            .gap(px(12.))
+                            .children(glyphs)
+                            .into_any_element()
+                    }
+                };
+                let mut rows: Vec<AnyElement> = details
+                    .iter()
+                    .enumerate()
+                    .map(|(index, (label, value))| row(label, text(value.clone()), index == 0))
+                    .collect();
+                rows.push(row(
+                    if platforms.len() > 1 {
+                        "Platforms"
+                    } else {
+                        "Platform"
+                    },
+                    glyph_row(
+                        platforms
+                            .iter()
+                            .map(|glyph| icon(glyph, 16., "--text-subtle").into_any_element())
+                            .collect(),
+                    ),
+                    false,
+                ));
+                rows.push(row(
+                    "Links",
+                    glyph_row(
+                        links
+                            .iter()
+                            .enumerate()
+                            .map(|(index, (glyph, url))| {
+                                let url = url.clone();
+                                div()
+                                    .id(("game-profile-link-site", index))
+                                    .cursor_pointer()
+                                    .child(icon(glyph, 16., "--text-subtle"))
+                                    .on_click(move |_, _, cx| cx.open_url(&url))
+                                    .into_any_element()
+                            })
+                            .collect(),
+                    ),
+                    false,
+                ));
+                rows.push(row(
+                    "Game metadata by",
+                    div()
+                        .id("game-profile-igdb")
+                        .cursor_pointer()
+                        .text_size(px(14.))
+                        .line_height(px(18.))
+                        .text_color(color("--text-link"))
+                        .child("IGDB")
+                        .on_click(|_, _, cx| cx.open_url("https://www.igdb.com/about"))
+                        .into_any_element(),
+                    false,
+                ));
+                this.child(
+                    div()
+                        .flex()
+                        .flex_col()
+                        .gap(px(8.))
+                        .child(section_title("Details"))
+                        .child(
+                            div()
+                                .rounded(px(16.))
+                                .border_1()
+                                .border_color(color("--border-subtle"))
+                                .bg(color("--background-surface-high"))
+                                .overflow_hidden()
+                                .flex()
+                                .flex_col()
+                                .children(rows),
+                        ),
+                )
             });
         let content = div()
             .id("game-profile-scroll")
@@ -780,7 +1080,10 @@ impl Root {
 
 #[cfg(test)]
 mod tests {
-    use super::{genres, mobile_reviews, rating_texts, store_website};
+    use super::{
+        detail_rows, genres, link_glyphs, mobile_reviews, platform_glyphs, rating_texts,
+        store_website,
+    };
     use serde_json::Value;
 
     fn fortnite() -> Value {
@@ -807,6 +1110,36 @@ mod tests {
         assert_eq!(
             reviews.iter().map(|row| row.0).collect::<Vec<_>>(),
             ["App Store", "Play Store"]
+        );
+        let mut full = game.clone();
+        full["companies"] = serde_json::json!([{"name": "Epic Games", "roles": [1, 2]}]);
+        full["first_release_date"] = serde_json::json!("2020-06-29T00:00:00+00:00");
+        full["platforms"] = serde_json::json!([0, 1, 2, 3, 4, 5, 7]);
+        assert_eq!(
+            detail_rows(&full),
+            [
+                ("Genres", "Simulation, Shooter".to_owned()),
+                ("Publisher", "Epic Games".to_owned()),
+                ("Developer", "Epic Games".to_owned()),
+                ("Release Date", "June 29, 2020".to_owned()),
+            ]
+        );
+        assert_eq!(
+            platform_glyphs(&full),
+            [
+                "platform_desktop",
+                "platform_mobile",
+                "platform_xbox",
+                "platform_playstation",
+                "platform_nintendo"
+            ]
+        );
+        assert_eq!(
+            link_glyphs(&full)
+                .iter()
+                .map(|(glyph, _)| *glyph)
+                .collect::<Vec<_>>(),
+            ["link_apple", "link_google_play"]
         );
         assert_eq!(
             rating_texts(reviews[0].2, reviews[0].3),
