@@ -33,6 +33,7 @@ mod sounds;
 mod speech;
 mod spellcheck;
 mod spinner;
+mod spotify;
 mod storage;
 mod text_buffer;
 mod tray;

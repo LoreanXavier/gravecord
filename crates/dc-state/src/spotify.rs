@@ -4,6 +4,62 @@
 use crate::{Id, id};
 use serde_json::{Value, json};
 
+/// Provider player snapshots become the same token-free `SPOTIFY_PLAYER_STATE` payload as 655116 `ec`.
+pub fn player_event(account: &str, state: &Value) -> Value {
+    let item = &state["item"];
+    let episode = item["type"] == "episode";
+    let track = if matches!(item["type"].as_str(), Some("track" | "episode")) {
+        let album = if episode {
+            &item["show"]
+        } else {
+            &item["album"]
+        };
+        let artists: Vec<Value> = if episode {
+            Vec::new()
+        } else {
+            item["artists"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .filter_map(|artist| {
+                    let id = artist["id"].as_str()?;
+                    let name = artist["name"].as_str()?;
+                    Some(json!({"id": id, "name": name}))
+                })
+                .collect()
+        };
+        let image = album["images"].as_array().and_then(|images| images.first()).map(|image| {
+            json!({"url": image["url"], "width": image["width"], "height": image["height"]})
+        });
+        json!({
+            "id": if episode { item["id"].as_str() } else { item["linked_from"]["id"].as_str().or_else(|| item["id"].as_str()) },
+            "name": item["name"].as_str().unwrap_or_default(),
+            "duration": item["duration_ms"].as_i64().unwrap_or_default(),
+            "type": if episode { "episode" } else { "track" },
+            "album": {"id": album["id"].as_str().unwrap_or_default(),
+                "name": album["name"].as_str().unwrap_or_default(), "image": image,
+                "type": if episode { "show" } else { album["type"].as_str().unwrap_or("album") }},
+            "artists": artists,
+            "isLocal": !episode && item["is_local"].as_bool().unwrap_or(false),
+        })
+    } else {
+        Value::Null
+    };
+    let device = if state["device"].is_object() {
+        let d = &state["device"];
+        json!({"id": d["id"], "name": d["name"], "type": d["type"], "is_active": true,
+            "is_restricted": d["is_restricted"].as_bool().unwrap_or(false),
+            "volume_percent": d["volume_percent"]})
+    } else {
+        Value::Null
+    };
+    json!({"accountId": account, "track": track, "device": device,
+        "volumePercent": state["device"]["volume_percent"].as_i64().unwrap_or_default(),
+        "isPlaying": state["is_playing"].as_bool().unwrap_or(false),
+        "repeat": !state.is_null() && state["repeat_state"] != "off", "position": state["progress_ms"].as_i64().unwrap_or_default(),
+        "context": null})
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Account {
     pub id: String,
@@ -504,6 +560,33 @@ impl SpotifyStore {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn provider_snapshots_keep_track_episode_and_empty_player_shapes() {
+        let raw = json!({"is_playing":true,"repeat_state":"off","progress_ms":2500,
+            "private":"discard", "device":{"id":"pc","is_active":false,"extra":"discard"},
+            "item":{"type":"track","id":"regional","linked_from":{"id":"original"},"name":"song","duration_ms":12345,
+                "album":{"id":"album","name":"album name","images":[{"url":"https://i.scdn.co/image/test"}]},
+                "artists":[{"id":"artist","name":"artist name","extra":"discard"},{"name":"invalid"}]}});
+        let event = player_event("a", &raw);
+        assert_eq!(event["track"]["id"], "original");
+        assert_eq!(event["track"]["artists"].as_array().unwrap().len(), 1);
+        assert_eq!(event["device"]["is_active"], true);
+        assert_eq!(event["repeat"], false);
+        assert!(!event.to_string().contains("discard"));
+        let episode = player_event(
+            "a",
+            &json!({"item":{"type":"episode","id":"episode","linked_from":{"id":"wrong"},
+            "show":{"id":"show","name":"series","images":[]}}}),
+        );
+        assert_eq!(episode["track"]["id"], "episode");
+        assert_eq!(episode["track"]["album"]["type"], "show");
+        assert_eq!(episode["track"]["artists"], json!([]));
+        let empty = player_event("a", &Value::Null);
+        assert_eq!(empty["repeat"], false);
+        assert_eq!(empty["isPlaying"], false);
+        assert!(empty["track"].is_null());
+    }
 
     fn linked() -> SpotifyStore {
         let mut store = SpotifyStore::default();

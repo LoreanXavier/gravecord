@@ -333,6 +333,44 @@ fn compose(avatar: &RgbaImage, decoration: Option<&RgbaImage>, spec: Spec) -> Rg
 
 impl Root {
     #[cfg(feature = "capture")]
+    pub(crate) fn capture_member_profile_target(
+        &self,
+        user: Id,
+        viewport: gpui::Size<gpui::Pixels>,
+    ) -> Option<gpui::Point<gpui::Pixels>> {
+        if !self.show_members
+            || self.settings.is_some()
+            || self.profile.is_some()
+            || self.modal_open() != 0
+        {
+            return None;
+        }
+        let guild = self.guild?;
+        let known = self.stores.members.get(guild, user).is_some()
+            || self.stores.member_lists.get(&guild).is_some_and(|list| list.rows.iter().any(|row| {
+                matches!(row, dc_state::member_list::Row::Member { user: member, .. } if member.id == user)
+            }));
+        if !known {
+            return None;
+        }
+        let key = gpui::SharedString::from(format!("member-{user}"));
+        let anchors = self.tip_anchors.borrow();
+        let bounds = anchors.get(&key)?;
+        (bounds.origin.y >= px(82.)
+            && bounds.bottom() <= viewport.height
+            && bounds.origin.x >= px(0.)
+            && bounds.right() <= viewport.width)
+            .then(|| bounds.center())
+    }
+
+    #[cfg(feature = "capture")]
+    pub(crate) fn capture_member_profile_selected(&self, user: Id) -> bool {
+        self.profile
+            .as_ref()
+            .is_some_and(|profile| profile.user == user)
+    }
+
+    #[cfg(feature = "capture")]
     pub(crate) fn mobile_member_target(
         &self,
         viewport: gpui::Size<gpui::Pixels>,

@@ -6,13 +6,19 @@
 //! and refresh rules come from the pinned client, rather than Serein's polling-only API.
 
 use crate::Client;
+use futures_util::{SinkExt, StreamExt};
 use reqwest::{Method, Response, StatusCode, header::HeaderValue};
 use serde::Deserialize;
 use serde_json::Value;
 use std::{sync::Arc, time::Duration};
+use tokio_tungstenite::tungstenite::{
+    self, Message, client::IntoClientRequest, protocol::WebSocketConfig,
+};
+use tokio_tungstenite::{MaybeTlsStream, WebSocketStream, connect_async_with_config};
 use zeroize::Zeroizing;
 
 const API: &str = "https://api.spotify.com/v1";
+const DEALER: &str = "wss://dealer.spotify.com/";
 const TOKEN_BYTES: usize = 16 * 1024;
 const PLAYER_BYTES: usize = 64 * 1024;
 const TIMEOUT: Duration = Duration::from_secs(10);
@@ -42,8 +48,56 @@ pub struct Spotify {
     http: reqwest::Client,
     account: String,
     credential: Option<Zeroizing<String>>,
+    on_credential: Option<Arc<dyn Fn() + Send + Sync>>,
     api: String,
+    dealer: String,
     retry_delay: Duration,
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq, Eq)]
+pub struct LinkedAccount {
+    pub id: String,
+    #[serde(default)]
+    pub show_activity: bool,
+}
+
+/// Refreshes only account metadata. Unknown fields, including credentials, are never copied out of the bounded body.
+pub async fn connected_accounts(discord: &Client) -> Result<Vec<LinkedAccount>, Error> {
+    tokio::time::timeout(TIMEOUT, async {
+        let response = discord
+            .send(&Method::GET, "/users/@me/connections", None)
+            .await
+            .map_err(|_| Error::Transport)?;
+        let status = response.status();
+        if status == StatusCode::TOO_MANY_REQUESTS {
+            return Err(Error::RateLimited(retry_after(&response)));
+        }
+        if !status.is_success() {
+            return Err(Error::Status(status.as_u16()));
+        }
+        #[derive(Deserialize)]
+        struct WireAccount {
+            id: Option<String>,
+            #[serde(rename = "type")]
+            kind: Option<String>,
+            show_activity: Option<bool>,
+        }
+        let bytes = bounded(response, PLAYER_BYTES).await?;
+        let accounts: Vec<WireAccount> =
+            serde_json::from_slice(&bytes).map_err(|_| Error::Protocol)?;
+        Ok(accounts
+            .into_iter()
+            .filter(|account| account.kind.as_deref() == Some("spotify"))
+            .filter_map(|account| {
+                Some(LinkedAccount {
+                    id: account.id?,
+                    show_activity: account.show_activity.unwrap_or(false),
+                })
+            })
+            .collect())
+    })
+    .await
+    .map_err(|_| Error::Transport)?
 }
 
 async fn bounded(mut response: Response, limit: usize) -> Result<Zeroizing<Vec<u8>>, Error> {
@@ -95,7 +149,9 @@ impl Spotify {
             http,
             account,
             credential: None,
+            on_credential: None,
             api: API.into(),
+            dealer: DEALER.into(),
             retry_delay: RETRY_DELAY,
         })
     }
@@ -114,6 +170,45 @@ impl Spotify {
 
     pub fn clear_credential(&mut self) {
         self.credential = None;
+    }
+
+    pub fn on_credential(mut self, callback: impl Fn() + Send + Sync + 'static) -> Self {
+        self.on_credential = Some(Arc::new(callback));
+        self
+    }
+
+    /// The credential-bearing handshake stays inside the network layer and never appears in an error.
+    pub async fn open_dealer(&mut self) -> Result<Dealer, Error> {
+        if self.credential.is_none() {
+            self.refresh().await?;
+        }
+        let encoded = Zeroizing::new(account_component(
+            self.credential.as_deref().ok_or(Error::Credential)?,
+        ));
+        let address = Zeroizing::new(format!("{}?access_token={}", self.dealer, encoded.as_str()));
+        let mut request = address
+            .as_str()
+            .into_client_request()
+            .map_err(|_| Error::Transport)?;
+        request.headers_mut().insert(
+            "Origin",
+            HeaderValue::from_static(dc_proto::pin::WEBAPP_ORIGIN),
+        );
+        request.headers_mut().insert(
+            "User-Agent",
+            HeaderValue::from_static(dc_proto::pin::USER_AGENT),
+        );
+        let config = WebSocketConfig::default()
+            .max_message_size(Some(PLAYER_BYTES))
+            .max_frame_size(Some(PLAYER_BYTES));
+        let (socket, _) = tokio::time::timeout(
+            TIMEOUT,
+            connect_async_with_config(request, Some(config), false),
+        )
+        .await
+        .map_err(|_| Error::Transport)?
+        .map_err(|_| Error::Transport)?;
+        Ok(Dealer { socket })
     }
 
     async fn refresh(&mut self) -> Result<(), Error> {
@@ -168,6 +263,9 @@ impl Spotify {
         .await
         .map_err(|_| Error::Transport)??;
         self.credential = Some(token);
+        if let Some(callback) = &self.on_credential {
+            callback();
+        }
         Ok(())
     }
 
@@ -301,10 +399,53 @@ impl Spotify {
                 break;
             }
             if attempt < 2 {
-                tokio::time::sleep(self.retry_delay).await;
+                let wait = match &result {
+                    Err(Error::RateLimited(wait)) => (*wait).max(self.retry_delay),
+                    _ => self.retry_delay,
+                };
+                tokio::time::sleep(wait).await;
             }
         }
         result.map(|_| ())
+    }
+}
+
+/// Bounded JSON messages from Spotify's dealer connection (655116 `et`).
+/// No credential accessor or `Debug` implementation is exposed to callers.
+pub struct Dealer {
+    socket: WebSocketStream<MaybeTlsStream<tokio::net::TcpStream>>,
+}
+
+impl Dealer {
+    pub async fn receive(&mut self) -> Result<Option<Value>, Error> {
+        while let Some(message) = self.socket.next().await {
+            let message = message.map_err(|error| match error {
+                tungstenite::Error::Capacity(_) => Error::Capacity,
+                _ => Error::Transport,
+            })?;
+            match message {
+                Message::Text(text) => {
+                    return serde_json::from_str(&text)
+                        .map(Some)
+                        .map_err(|_| Error::Protocol);
+                }
+                Message::Close(_) => return Ok(None),
+                _ => {}
+            }
+        }
+        Ok(None)
+    }
+
+    /// The source sends this application ping every30seconds, in addition to WebSocket control frames.
+    pub async fn ping(&mut self) -> Result<(), Error> {
+        self.socket
+            .send(Message::text(r#"{"type":"ping"}"#))
+            .await
+            .map_err(|_| Error::Transport)
+    }
+
+    pub async fn close(&mut self) -> Result<(), Error> {
+        self.socket.close(None).await.map_err(|_| Error::Transport)
     }
 }
 
@@ -406,7 +547,26 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn linked_account_reads_only_retain_spotify_metadata() {
+        let (base, broker) = server(vec![reply(200, r#"[{"id":"a","type":"spotify","show_activity":true,"access_token":"fixture-discard"},{"type":"contacts"},{"id":"b","type":"twitch"},{"type":"spotify"}]"#)]).await;
+        let discord = Client::new(Token::new("fixture"), Identity::new())
+            .unwrap()
+            .with_api_base(base);
+        let accounts = connected_accounts(&discord).await.unwrap();
+        assert_eq!(
+            accounts,
+            [LinkedAccount {
+                id: "a".into(),
+                show_activity: true
+            }]
+        );
+        assert!(!format!("{accounts:?}").contains("fixture-discard"));
+        assert!(broker.await.unwrap()[0].starts_with("GET /users/@me/connections "));
+    }
+
+    #[tokio::test]
     async fn provider_has_only_its_own_credential_and_refreshes_once_on_401() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
         let (mut spotify, broker, provider) = fixture(
             vec![
                 credential(),
@@ -418,7 +578,13 @@ mod tests {
             ],
         )
         .await;
+        let notices = Arc::new(AtomicUsize::new(0));
+        let observed = notices.clone();
+        spotify = spotify.on_credential(move || {
+            observed.fetch_add(1, Ordering::SeqCst);
+        });
         assert_eq!(spotify.profile().await.unwrap()["product"], "premium");
+        assert_eq!(notices.load(Ordering::SeqCst), 2);
         let broker = broker.await.unwrap();
         assert_eq!(broker.len(), 2);
         assert!(
@@ -568,5 +734,81 @@ mod tests {
         assert_eq!(broker.await.unwrap().len(), 1);
         unused.await.unwrap();
         chunked.await.unwrap();
+    }
+
+    #[tokio::test]
+    #[allow(
+        clippy::result_large_err,
+        reason = "tungstenite's handshake callback requires an HTTP response as its error"
+    )]
+    async fn dealer_handshake_stays_private_and_carries_bounded_json_and_ping() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let peer = tokio::spawn(async move {
+            let (stream, _) = tokio::time::timeout(TIMEOUT, listener.accept())
+                .await
+                .unwrap()
+                .unwrap();
+            let mut socket = tokio_tungstenite::accept_hdr_async(
+                stream,
+                |request: &tungstenite::handshake::server::Request,
+                 response: tungstenite::handshake::server::Response| {
+                    assert_eq!(request.uri().query(), Some("access_token=fixture-provider"));
+                    assert_eq!(request.headers()["origin"], dc_proto::pin::WEBAPP_ORIGIN);
+                    assert!(!request.headers().contains_key("authorization"));
+                    Ok(response)
+                },
+            )
+            .await
+            .unwrap();
+            socket
+                .send(Message::text(
+                    r#"{"type":"message","uri":"hm://pusher/v1/connections/fixture"}"#,
+                ))
+                .await
+                .unwrap();
+            let ping = tokio::time::timeout(TIMEOUT, socket.next())
+                .await
+                .unwrap()
+                .unwrap()
+                .unwrap();
+            assert_eq!(ping.into_text().unwrap(), r#"{"type":"ping"}"#);
+            socket.close(None).await.unwrap();
+        });
+        let (mut spotify, broker, unused) = fixture(vec![credential()], vec![]).await;
+        spotify.dealer = format!("ws://{address}/");
+        let mut dealer = spotify.open_dealer().await.unwrap();
+        assert_eq!(
+            dealer.receive().await.unwrap().unwrap()["uri"],
+            "hm://pusher/v1/connections/fixture"
+        );
+        dealer.ping().await.unwrap();
+        assert_eq!(dealer.receive().await.unwrap(), None);
+        peer.await.unwrap();
+        broker.await.unwrap();
+        unused.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn dealer_rejects_oversized_messages() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let peer = tokio::spawn(async move {
+            let (stream, _) = tokio::time::timeout(TIMEOUT, listener.accept())
+                .await
+                .unwrap()
+                .unwrap();
+            let mut socket = tokio_tungstenite::accept_async(stream).await.unwrap();
+            let _ = socket
+                .send(Message::text("x".repeat(PLAYER_BYTES + 1)))
+                .await;
+        });
+        let (mut spotify, broker, unused) = fixture(vec![credential()], vec![]).await;
+        spotify.dealer = format!("ws://{address}/");
+        let mut dealer = spotify.open_dealer().await.unwrap();
+        assert_eq!(dealer.receive().await, Err(Error::Capacity));
+        peer.await.unwrap();
+        broker.await.unwrap();
+        unused.await.unwrap();
     }
 }

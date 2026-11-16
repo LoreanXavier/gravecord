@@ -23,6 +23,10 @@ pub enum Update {
     Tray(crate::tray::Action),
     /// The updater's state changed (`updater::state`): the title bar button follows it.
     Updater,
+    SpotifySocket {
+        account: String,
+        connected: bool,
+    },
     /// The connecting screen's spinner, fetched and decoded.
     #[cfg(feature = "capture")]
     Spinner(Arc<crate::spinner::Clip>),
@@ -1365,6 +1369,8 @@ pub async fn run(token: Token, updates: mpsc::UnboundedSender<Update>, requests:
     };
     // The RPC pipe lives as long as this task, that is as long as the login.
     let _rpc = crate::rpc::start(client.clone(), updates.clone());
+    let spotify = crate::spotify::Worker::start(client.clone(), updates.clone());
+    let spotify_observer = spotify.as_ref().map(crate::spotify::Worker::observer);
     let (commands, mut events) = spawn(Config {
         token,
         identity,
@@ -1381,6 +1387,9 @@ pub async fn run(token: Token, updates: mpsc::UnboundedSender<Update>, requests:
         while let Some(event) = events.recv().await {
             match event {
                 Event::Dispatch { name, data } => {
+                    if let Some(observer) = &spotify_observer {
+                        observer.event(&name, &data);
+                    }
                     let connected = matches!(name.as_str(), "READY" | "RESUMED");
                     let _ = forward.send(Update::Dispatch { name, data });
                     if connected {

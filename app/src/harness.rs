@@ -373,6 +373,38 @@ pub async fn run(
                     let _ = writeln!(output, "mobile member profile: no visible mobile member");
                 }
             }
+            ["member-profile", user] => {
+                let Ok(user) = user.parse::<u64>() else { break };
+                let target = cx.update(|cx| {
+                    window
+                        .update(cx, |_, window, cx| {
+                            root.read(cx)
+                                .capture_member_profile_target(user, window.viewport_size())
+                        })
+                        .ok()
+                        .flatten()
+                });
+                let Some(position) = target else {
+                    let _ = writeln!(
+                        output,
+                        "member profile: visible row unavailable; script stopped"
+                    );
+                    break;
+                };
+                cx.update(|cx| {
+                    dispatch(cx, window, moved(position, None));
+                    dispatch(cx, window, down(position));
+                    dispatch(cx, window, up(position));
+                });
+                let selected = cx.update(|cx| root.read(cx).capture_member_profile_selected(user));
+                let _ = writeln!(
+                    output,
+                    "member profile: selected={selected} at {position:?}"
+                );
+                if !selected {
+                    break;
+                }
+            }
             ["context-spotify", who, surface] => {
                 let note =
                     root.update(cx, |root, cx| root.script_spotify_context(who, surface, cx));
@@ -1579,7 +1611,8 @@ pub async fn run(
                 );
             }
             ["keyboard-explainer", command] => {
-                let report = root.update(cx, |root, cx| root.script_keyboard_explainer(command, cx));
+                let report =
+                    root.update(cx, |root, cx| root.script_keyboard_explainer(command, cx));
                 let _ = writeln!(output, "keyboard-explainer: {report}");
             }
             // Which element has focus, by name and kind, for asserting keyboard focus in the run log.

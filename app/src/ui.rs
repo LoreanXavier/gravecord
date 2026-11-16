@@ -1262,6 +1262,10 @@ impl Root {
             Update::NotificationClicked(channel) => self.open_notification_channel(channel, cx),
             Update::Tray(action) => self.tray_action(action, cx),
             Update::Updater => cx.notify(),
+            Update::SpotifySocket { account, connected } => {
+                self.stores.spotify.set_socket_connected(&account, connected);
+                cx.notify();
+            }
             Update::Slowmode {
                 channel,
                 kind,

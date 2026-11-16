@@ -17,6 +17,8 @@ base64.workspace = true
 chrono.workspace = true
 uuid.workspace = true
 zeroize.workspace = true
+rand.workspace = true
+percent-encoding = "2"
 dc-clips.workspace = true
 dc-callsim = { path = "../crates/dc-callsim", optional = true }
 dc-gateway.workspace = true

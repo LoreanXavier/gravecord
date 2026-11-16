@@ -1758,12 +1758,14 @@ version = "0.0.0"
 dependencies = [
  "bytes",
  "dc-proto",
+ "futures-util",
  "http-body",
  "reqwest",
  "serde",
  "serde_json",
  "thiserror 2.0.21",
  "tokio",
+ "tokio-tungstenite",
  "tracing",
  "zeroize",
 ]
@@ -3443,6 +3445,8 @@ dependencies = [
  "image",
  "md-5",
  "openh264",
+ "percent-encoding",
+ "rand 0.9.5",
  "rasterlottie",
  "raw-window-handle",
  "reqwest",
