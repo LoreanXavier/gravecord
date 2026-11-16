@@ -11,6 +11,7 @@ use std::time::Duration;
 use thiserror::Error;
 use tracing::{debug, warn};
 
+pub mod spotify;
 mod upload;
 mod webhook;
 
