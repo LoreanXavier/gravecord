@@ -212,6 +212,7 @@ pub(crate) mod regions;
 mod remediation;
 mod reminder_modal;
 mod report;
+mod report_issue;
 mod running_game_panel;
 mod running_games;
 mod saved;
@@ -677,6 +678,8 @@ pub struct Root {
     custom_status: Option<status_menu::CustomStatusModal>,
     plus_menu: bool,
     modify_attachment: Option<attachment_modal::ModifyAttachment>,
+    /// Report Issue for a detected game (module 651930).
+    report_issue: Option<report_issue::ReportIssue>,
     /// The dialog of a refused upload (too large, too many, empty).
     upload_error: Option<upload_error::UploadError>,
     /// The pencil or trash of a sent attachment's hover group (`sent_attachment.rs`).
@@ -1064,6 +1067,7 @@ impl Root {
             plus_menu: false,
             schedule: Default::default(),
             modify_attachment: None,
+            report_issue: None,
             upload_error: None,
             sent_edit: None,
             snooze_menu: None,
@@ -3724,6 +3728,7 @@ impl Root {
         list.extend(self.group_edit.as_ref().map(|open| open.input.clone()));
         list.extend(self.member_action_input());
         list.extend(self.modify_attachment_editors());
+        list.extend(self.report_issue_editors());
         if let Some(form) = self.poll.as_ref() {
             list.push(form.question.clone());
             list.extend(form.answers.iter().cloned());
@@ -9570,6 +9575,12 @@ impl Render for Root {
                     cx.stop_propagation();
                     return;
                 }
+                if keys.key == "escape" && this.report_issue.is_some() {
+                    this.report_issue = None;
+                    cx.notify();
+                    cx.stop_propagation();
+                    return;
+                }
                 if keys.key == "escape" && this.modify_attachment.is_some() {
                     this.modify_attachment = None;
                     cx.notify();
@@ -10398,6 +10409,7 @@ impl Render for Root {
             .children(self.folder_menu_layer(cx))
             .children(self.settings_dialogs(cx))
             .children(self.modify_attachment_modal(cx))
+            .children(self.report_issue_modal(cx))
             .children(self.upload_error_modal(cx))
             .children(self.sent_edit_modal(cx))
             .children(self.snooze_layer(cx))

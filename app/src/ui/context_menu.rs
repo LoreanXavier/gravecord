@@ -28,6 +28,13 @@ pub(super) enum Target {
         user: Id,
         popout: bool,
     },
+    /// The "..." of a game's live card (module 285909 for a `PLAYING` activity); the game it showed is kept in
+    /// `State::game_activity`.
+    GameActivity {
+        user: Id,
+        popout: bool,
+        embedded: bool,
+    },
     Guild(Id),
     Channel(Id),
     Category(Id),
@@ -51,6 +58,7 @@ pub(super) enum Act {
     InventoryHide,
     ViewAllActivity,
     ManageSpotifyPrivacy,
+    ReportGameIssue,
     ReportApp,
     MarkRead,
     Invite,
@@ -155,7 +163,7 @@ impl Act {
     /// Every row kind once (`Correction` with its first index). `ordinal` is an exhaustive match, so adding a variant
     /// without listing it here fails the build or the `act_list_is_complete` test.
     #[cfg(test)]
-    pub(super) const ALL: [Act; 86] = [
+    pub(super) const ALL: [Act; 87] = [
         Act::InventoryAbout,
         Act::InventoryHide,
         Act::ReportApp,
@@ -242,6 +250,7 @@ impl Act {
         Act::StageMoveToAudience,
         Act::ViewAllActivity,
         Act::ManageSpotifyPrivacy,
+        Act::ReportGameIssue,
     ];
 
     #[cfg(test)]
@@ -333,6 +342,7 @@ impl Act {
             Act::StageMoveToAudience => 83,
             Act::ViewAllActivity => 84,
             Act::ManageSpotifyPrivacy => 85,
+            Act::ReportGameIssue => 86,
         }
     }
 }
@@ -355,6 +365,7 @@ pub(super) fn status(act: Act) -> Status {
         | Act::InventoryHide
         | Act::ViewAllActivity
         | Act::ManageSpotifyPrivacy
+        | Act::ReportGameIssue
         | Act::ReportApp
         | Act::MarkRead
         | Act::Invite
@@ -571,6 +582,31 @@ pub(super) fn spotify_activity_items(own: bool, popout: bool) -> Vec<Entry> {
         )));
     }
     if own {
+        items.push(Entry::Row(Row::new(
+            Act::ManageSpotifyPrivacy,
+            dc_intl::tr("Manage Privacy"),
+        )));
+    }
+    items
+}
+
+/// Module 285909 for a live `PLAYING` activity: View All Activity in a popout (`pD1L1u`), Report Issue
+/// (`game-detection-report-issue` of module 534465), then Manage Privacy on our own card when the game is not an
+/// embedded activity (module 939075, Activity Privacy on desktop). View Game Profile (534465 `Ay`) needs the game
+/// profile, which this client does not have yet.
+pub(super) fn game_activity_items(own: bool, popout: bool, embedded: bool) -> Vec<Entry> {
+    let mut items = Vec::new();
+    if popout {
+        items.push(Entry::Row(Row::new(
+            Act::ViewAllActivity,
+            dc_intl::tr("View All Activity"),
+        )));
+    }
+    items.push(Entry::Row(Row::new(
+        Act::ReportGameIssue,
+        dc_intl::tr("Report Issue"),
+    )));
+    if own && !embedded {
         items.push(Entry::Row(Row::new(
             Act::ManageSpotifyPrivacy,
             dc_intl::tr("Manage Privacy"),
@@ -1376,6 +1412,8 @@ pub(super) struct State {
     pub stage_channel_items: bool,
     /// Module 107632 `showChatItems: false` (Stage audience tile).
     pub omit_mention: bool,
+    /// The game of the card whose "..." is open (`detected` of the Report Issue dialog).
+    pub game_activity: Option<super::report_issue::Detected>,
 }
 
 const MUTE_FOR: [(i64, &str); 6] = [
@@ -2031,6 +2069,18 @@ impl Root {
                     .is_some_and(|me| me.id == user),
                 popout,
             ),
+            Target::GameActivity {
+                user,
+                popout,
+                embedded,
+            } => game_activity_items(
+                self.stores
+                    .current_user
+                    .as_ref()
+                    .is_some_and(|me| me.id == user),
+                popout,
+                embedded,
+            ),
             Target::InventoryAuthor { .. } => {
                 let mut items = vec![Entry::Row(Row::new(Act::Profile, dc_intl::tr("Profile")))];
                 if developer {
@@ -2096,7 +2146,9 @@ impl Root {
                             .filter(|child| child.parent_id == Some(id))
                             .map(|child| child.id)
                             .collect();
-                        children.iter().any(|child| self.has_unread_or_mentions(*child))
+                        children
+                            .iter()
+                            .any(|child| self.has_unread_or_mentions(*child))
                             || guild.threads.iter().any(|thread| {
                                 thread.joined
                                     && !thread.archived
@@ -2435,26 +2487,31 @@ impl Root {
     }
 
     /// The live card's More button opens beside its measured bounds (285909).
+    #[allow(clippy::too_many_arguments)]
     pub(super) fn open_live_activity_menu(
         &mut self,
         user: Id,
         spotify: bool,
+        game: Option<(super::report_issue::Detected, bool)>,
         popout: bool,
         anchor: &SharedString,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if !spotify {
-            self.profile = None;
-            self.open_full_profile_tab(user, super::full_profile::Tab::Activity, window, cx);
-            return;
-        }
         let own = self
             .stores
             .current_user
             .as_ref()
             .is_some_and(|me| me.id == user);
-        let items = spotify_activity_items(own, popout);
+        let embedded = game.as_ref().is_some_and(|(_, embedded)| *embedded);
+        let items = if spotify {
+            spotify_activity_items(own, popout)
+        } else if game.is_some() {
+            game_activity_items(own, popout, embedded)
+        } else {
+            // Another kind of activity: only View All Activity, in a popout.
+            spotify_activity_items(false, popout)
+        };
         if items.is_empty() {
             return;
         }
@@ -2475,11 +2532,18 @@ impl Root {
         } else {
             right
         };
-        self.open_context_menu(
-            Target::SpotifyActivity { user, popout },
-            gpui::point(x, bounds.top()),
-            cx,
-        );
+        let target = match game {
+            Some((detected, embedded)) if !spotify => {
+                self.context.game_activity = Some(detected);
+                Target::GameActivity {
+                    user,
+                    popout,
+                    embedded,
+                }
+            }
+            _ => Target::SpotifyActivity { user, popout },
+        };
+        self.open_context_menu(target, gpui::point(x, bounds.top()), cx);
     }
 
     /// Runs a row against its target.
@@ -2491,7 +2555,10 @@ impl Root {
         cx: &mut Context<Self>,
     ) {
         match (act, target) {
-            (Act::ViewAllActivity, Target::SpotifyActivity { user, .. }) => {
+            (
+                Act::ViewAllActivity,
+                Target::SpotifyActivity { user, .. } | Target::GameActivity { user, .. },
+            ) => {
                 self.profile = None;
                 self.open_full_profile_tab(user, super::full_profile::Tab::Activity, window, cx);
             }
@@ -2509,6 +2576,22 @@ impl Root {
                         dc_intl::tr("Connections"),
                         cx,
                     );
+                }
+            }
+            (Act::ReportGameIssue, Target::GameActivity { .. }) => {
+                let detected = self.context.game_activity.take();
+                self.open_report_issue(detected, window, cx);
+            }
+            (Act::ManageSpotifyPrivacy, Target::GameActivity { user, .. }) => {
+                if self
+                    .stores
+                    .current_user
+                    .as_ref()
+                    .is_some_and(|me| me.id == user)
+                {
+                    self.profile = None;
+                    self.close_full_profile(cx);
+                    self.open_settings_page("activity_privacy", cx);
                 }
             }
             (Act::ReportApp, Target::AppDirectory(app)) => {
@@ -2602,7 +2685,8 @@ impl Root {
                     | Target::Dm(id) => id,
                     Target::User { user, .. }
                     | Target::InventoryAuthor { user }
-                    | Target::SpotifyActivity { user, .. } => user,
+                    | Target::SpotifyActivity { user, .. }
+                    | Target::GameActivity { user, .. } => user,
                     Target::AppDirectory(id) => id,
                     Target::InventoryFeed
                     | Target::InventoryFeedAtPointer
@@ -3759,7 +3843,9 @@ impl Root {
                         // `flexible_M3qk4j`: the menu grows with its labels up to 320 wide.
                         .max_w(px(320.))
                         // A menu taller than the window stops 96px short of its height and scrolls (user-guild: 624 of 720).
-                        .max_h(px((f32::from(window.viewport_size().height) - 96.).max(120.)))
+                        .max_h(px(
+                            (f32::from(window.viewport_size().height) - 96.).max(120.)
+                        ))
                         .flex()
                         .flex_col()
                         .child(
@@ -4374,6 +4460,26 @@ mod tests {
                 })
             ]
         ));
+    }
+
+    #[test]
+    fn a_game_card_menu_reports_an_issue_and_manages_our_own_privacy() {
+        assert_eq!(
+            labels(&game_activity_items(false, false, false)),
+            ["Report Issue"]
+        );
+        assert_eq!(
+            labels(&game_activity_items(false, true, false)),
+            ["View All Activity", "Report Issue"]
+        );
+        assert_eq!(
+            labels(&game_activity_items(true, false, false)),
+            ["Report Issue", "Manage Privacy"]
+        );
+        assert_eq!(
+            labels(&game_activity_items(true, false, true)),
+            ["Report Issue"]
+        );
     }
 
     #[test]

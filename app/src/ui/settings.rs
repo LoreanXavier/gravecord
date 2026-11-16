@@ -508,7 +508,7 @@ fn button(id: impl Into<ElementId>, label: &'static str, kind: ButtonKind) -> im
         .child(label)
 }
 
-fn mask_icon(path: &str, size: f32, tint: &str) -> gpui::Svg {
+pub(super) fn mask_icon(path: &str, size: f32, tint: &str) -> gpui::Svg {
     svg()
         .path(format!("icons/{path}.svg"))
         .size(px(size))

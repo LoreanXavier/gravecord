@@ -125,6 +125,25 @@ fn footer_button_sized(spec: Button, fill: bool, cx: &mut Context<Root>) -> AnyE
     footer_button_shape(spec, fill, false, cx)
 }
 
+/// `color` at half opacity laid over the opaque `under`.
+fn half_over(top: gpui::Rgba, base: gpui::Rgba) -> gpui::Rgba {
+    let alpha = top.a * 0.5;
+    gpui::Rgba {
+        r: top.r * alpha + base.r * (1. - alpha),
+        g: top.g * alpha + base.g * (1. - alpha),
+        b: top.b * alpha + base.b * (1. - alpha),
+        a: 1.,
+    }
+}
+
+/// `color` at half its alpha.
+fn half(color: gpui::Rgba) -> gpui::Rgba {
+    gpui::Rgba {
+        a: color.a * 0.5,
+        ..color
+    }
+}
+
 fn footer_button_shape(
     spec: Button,
     fill: bool,
@@ -180,6 +199,18 @@ fn footer_button_shape(
     let loading = spec.tone == Tone::PrimaryLoading;
     // A loading button swallows clicks and hover (`ea = disabled || loading`), but keeps full opacity.
     let disabled = spec.tone == Tone::PrimaryDisabled || loading;
+    // `opacity:.5` fades the button as one layer in CSS: its label shows half over the dialog, not over its own
+    // half-faded fill. gpui fades each child on its own, so the fill and border take half their alpha and the label
+    // is drawn as the blend of its colour with the dialog's surface.
+    let (background, border, text) = if disabled && !loading {
+        (
+            half(background),
+            half(border),
+            half_over(text, color("--background-surface-high")),
+        )
+    } else {
+        (background, border, text)
+    };
     // The primary button of a dialog keeps a handle across frames: it is what a dialog takes focus on when it opens,
     // so that Enter confirms it (the footer's submit button of the official confirm modals).
     let spec_focus = spec.focus.clone().or_else(|| {
@@ -199,7 +230,6 @@ fn footer_button_shape(
             spec_focus.map(|handle| handle.tab_index(0).tab_stop(!disabled)),
             |button, focus| button.track_focus(&focus),
         )
-        .when(disabled && !loading, |this| this.opacity(0.5))
         .when(fill, |this| this.flex_1())
         .when(!fill, |this| this.px(px(if small { 11. } else { 15. })))
         .when(small, |this| this.min_w(px(60.)))

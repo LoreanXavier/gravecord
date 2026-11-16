@@ -430,11 +430,26 @@ impl Root {
                 let spotify = dc_state::now_playing::is_spotify(activity);
                 let missing_spotify_art = spotify && asset_url(activity, "large_image").is_none();
                 let own = self.stores.current_user.as_ref().is_some_and(|me| me.id == user);
-                let more = !bot && if spotify {
-                    own || surface == Surface::Popout
-                } else {
-                    !large
-                };
+                // Module 285909 draws the button when its menu has rows: a game always has Report Issue; another
+                // activity only View All Activity, in a popout.
+                let more = !bot
+                    && if spotify {
+                        own || surface == Surface::Popout
+                    } else if kind == 0 {
+                        !large
+                    } else {
+                        !large && surface == Surface::Popout
+                    };
+                let game = (kind == 0).then(|| {
+                    (
+                        super::report_issue::Detected {
+                            name: field(activity, "name").unwrap_or_default().to_owned(),
+                            application_id: app_id.map(|id| id.to_string()),
+                            art: asset_url(activity, "large_image"),
+                        },
+                        activity["flags"].as_u64().unwrap_or(0) & 256 != 0,
+                    )
+                });
                 let title = if kind == 0 {
                     field(activity, "name")
                 } else {
@@ -767,6 +782,7 @@ impl Root {
                                 let ringed = self.keyboard_mode() && self.keys.stops.has_focus(&focus);
                                 let key_focus = focus.clone();
                                 let popout = surface == Surface::Popout;
+                                let (game_click, game_right, game_key) = (game.clone(), game.clone(), game.clone());
                                 this.child(
                                     div()
                                         .w(px(20.))
@@ -788,16 +804,16 @@ impl Root {
                                                 .cursor_pointer()
                                                 .on_click(cx.listener(move |this, _, window, cx| {
                                                     cx.stop_propagation();
-                                                    this.open_live_activity_menu(user, spotify, popout, &clicked, window, cx);
+                                                    this.open_live_activity_menu(user, spotify, game_click.clone(), popout, &clicked, window, cx);
                                                 }))
                                                 .on_mouse_up(gpui::MouseButton::Right, cx.listener(move |this, _, window, cx| {
                                                     cx.stop_propagation();
-                                                    this.open_live_activity_menu(user, spotify, popout, &right_clicked, window, cx);
+                                                    this.open_live_activity_menu(user, spotify, game_right.clone(), popout, &right_clicked, window, cx);
                                                 }))
                                                 .on_key_down(cx.listener(move |this, event: &gpui::KeyDownEvent, window, cx| {
                                                     if key_focus.is_focused(window) && matches!(event.keystroke.key.as_str(), "enter" | "space") {
                                                         cx.stop_propagation();
-                                                        this.open_live_activity_menu(user, spotify, popout, &keyboard, window, cx);
+                                                        this.open_live_activity_menu(user, spotify, game_key.clone(), popout, &keyboard, window, cx);
                                                     }
                                                 }))
                                                 .child(icon("more_horizontal", 16., "--interactive-text-default")),

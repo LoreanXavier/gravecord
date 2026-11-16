@@ -463,6 +463,15 @@ pub async fn run(
                 let _ = writeln!(output, "{note:?}");
             }
             // Message Requests: fixture events only, nothing is sent (`ui/message_requests.rs`).
+            // `report-issue open <app id|-> <name>`: the Report Issue dialog for that game; `report-issue pick <n>`.
+            ["report-issue", rest @ ..] => {
+                let note = cx.update(|cx| {
+                    window.update(cx, |_, window, cx| {
+                        root.update(cx, |root, cx| root.script_report_issue(rest, window, cx))
+                    })
+                });
+                let _ = writeln!(output, "{note:?}");
+            }
             ["mr", rest @ ..] => {
                 let note = cx.update(|cx| {
                     root.update(cx, |root, cx| root.script_message_requests(rest, cx))

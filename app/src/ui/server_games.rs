@@ -91,7 +91,7 @@ fn parse_games(body: &Value) -> Vec<(String, Game)> {
 }
 
 /// Module 929396 `C7`: trimmed, lower case, underscores as spaces, at most 100 characters.
-fn normalize(query: &str) -> Option<String> {
+pub(super) fn normalize(query: &str) -> Option<String> {
     let normal: String = query
         .trim()
         .to_lowercase()
@@ -187,7 +187,7 @@ impl Root {
         });
     }
 
-    fn search_games(&mut self, query: &str) {
+    pub(super) fn search_games(&mut self, query: &str) {
         let Some(normal) = normalize(query) else {
             return;
         };
