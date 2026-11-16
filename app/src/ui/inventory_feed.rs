@@ -26,6 +26,9 @@ pub(super) struct State {
     idle_timer: Option<gpui::Task<()>>,
     expanded: bool,
     hidden: bool,
+    impressions: Impressions,
+    /// The member list's feed as it is being looked at, for the impressions it leaves when it goes.
+    viewing: Option<Viewing>,
     pub(super) about: bool,
     requested_members: HashSet<(Id, Id)>,
     #[cfg(feature = "capture")]
@@ -40,8 +43,112 @@ impl State {
             hidden: crate::storage::get("content_inventory.hidden")
                 .and_then(|value| value.as_bool())
                 .unwrap_or(false),
+            impressions: Impressions::restore(),
             ..Self::default()
         }
+    }
+}
+
+const DAY_MS: i64 = 24 * 60 * 60 * 1000;
+
+/// `ContentInventoryPersistedStore` (435738): when each entry was first seen in a member list. An entry first seen
+/// over three days ago is capped and leaves the member list unless it is live; impressions older than thirty days go,
+/// and only the latest 2048 stay.
+#[derive(Default, Debug, PartialEq)]
+pub(super) struct Impressions {
+    items: Vec<(Id, i64)>,
+}
+
+impl Impressions {
+    const KEY: &str = "content_inventory.impressions";
+
+    fn restore() -> Self {
+        let items = crate::storage::get(Self::KEY)
+            .and_then(|value| serde_json::from_value::<Vec<(String, i64)>>(value).ok())
+            .unwrap_or_default()
+            .into_iter()
+            .filter_map(|(id, at)| Some((id.parse().ok()?, at)))
+            .collect();
+        Self { items }
+    }
+
+    fn save(&self) {
+        let items: Vec<(String, i64)> = self
+            .items
+            .iter()
+            .map(|(id, at)| (id.to_string(), *at))
+            .collect();
+        crate::storage::set(Self::KEY, serde_json::json!(items));
+    }
+
+    fn prune(&mut self, now_ms: i64) {
+        let oldest = now_ms - 30 * DAY_MS;
+        let stale = self.items.iter().take_while(|(_, at)| *at < oldest).count();
+        self.items.drain(..stale);
+        if self.items.len() > 2048 {
+            let extra = self.items.len() - 2048;
+            self.items.drain(..extra);
+        }
+    }
+
+    /// `getImpressionCappedItemIds`.
+    pub(super) fn capped(&self, now_ms: i64) -> HashSet<Id> {
+        let since = now_ms - 3 * DAY_MS;
+        self.items
+            .iter()
+            .filter(|(_, at)| *at < since)
+            .map(|(id, _)| *id)
+            .collect()
+    }
+
+    /// `CONTENT_INVENTORY_TRACK_ITEM_IMPRESSIONS`: the first impression of each item; whether one was new.
+    pub(super) fn track(&mut self, ids: &[Id], now_ms: i64) -> bool {
+        self.prune(now_ms);
+        let mut added = false;
+        for id in ids {
+            if !self.items.iter().any(|(known, _)| known == id) {
+                self.items.push((*id, now_ms));
+                added = true;
+            }
+        }
+        self.prune(now_ms);
+        added
+    }
+}
+
+/// What a member list's feed shows from the moment it shows (the effect of 289287 keyed on the request, channel,
+/// server, hidden and focus).
+#[derive(Debug, PartialEq)]
+struct ViewKey {
+    request: Option<String>,
+    channel: Id,
+    guild: Id,
+    hidden: bool,
+    focused: bool,
+}
+
+#[derive(Debug)]
+struct Viewing {
+    key: ViewKey,
+    since_ms: i64,
+    /// `j`: the cards scrolled into view.
+    seen: usize,
+    entries: Vec<Id>,
+}
+
+/// 289287 `updateMaxContentFeedRowSeen`: the cards above the list's bottom edge, 72px each under the 42px header.
+fn rows_seen(scroll_top: f32, height: f32, shown: usize) -> usize {
+    (((scroll_top + height - 42.) / 72.).floor().max(0.) as usize).min(shown)
+}
+
+/// 583846 `W6`: the elapsed time as `m:ss`, or `h:mm:ss` from an hour.
+fn live_timer(start_ms: i64, now_ms: i64) -> String {
+    let seconds = (now_ms - start_ms).max(0) / 1000;
+    let (hours, minutes, seconds) = (seconds / 3600, seconds / 60 % 60, seconds % 60);
+    if hours > 0 {
+        format!("{hours}:{minutes:02}:{seconds:02}")
+    } else {
+        format!("{minutes}:{seconds:02}")
     }
 }
 
@@ -328,8 +435,78 @@ impl Root {
 
     /// `changed` is false when nothing the feed reads moved since the last render: the timers still run, the walk
     /// over its entries does not.
+    /// `sE` of module 99066: the member list experiment with impression capping, on unless its variation 0.
+    fn inventory_capping_enabled(&self) -> bool {
+        self.stores
+            .experiments
+            .variant("2026-03-content-inventory-memberlist-and-ranker")
+            != Some(0)
+    }
+
+    /// 289287: while the feed shows, how many of its cards came into view; once it goes, or what it shows changes,
+    /// after three seconds or more, a focused unhidden feed leaves an impression for each card seen.
+    fn track_inventory_view(&mut self) {
+        let now = chrono::Utc::now().timestamp_millis();
+        let entries: Vec<Id> = if self.show_members {
+            self.member_inventory_entries()
+                .into_iter()
+                .filter(|entry| self.inventory_renderable(entry))
+                .map(|entry| entry.id)
+                .collect()
+        } else {
+            Vec::new()
+        };
+        let key = match (self.show_members, self.current_channel(), self.guild) {
+            (true, Some(channel), Some(guild)) if !entries.is_empty() => Some(ViewKey {
+                request: self
+                    .stores
+                    .content_inventory
+                    .get_feed(GLOBAL_FEED)
+                    .and_then(|feed| feed.request_id.clone()),
+                channel: channel.id,
+                guild,
+                hidden: self.inventory.hidden,
+                focused: self.notification_focused,
+            }),
+            _ => None,
+        };
+        if self.inventory.viewing.as_ref().map(|view| &view.key) != key.as_ref() {
+            if let Some(view) = self.inventory.viewing.take()
+                && now - view.since_ms >= 3000
+                && !view.key.hidden
+                && view.key.focused
+                && self.inventory_capping_enabled()
+            {
+                let seen: Vec<Id> = view.entries.iter().take(view.seen).copied().collect();
+                if self.inventory.impressions.track(&seen, now) {
+                    self.inventory.impressions.save();
+                }
+            }
+            self.inventory.viewing = key.map(|key| Viewing {
+                key,
+                since_ms: now,
+                seen: 0,
+                entries: Vec::new(),
+            });
+        }
+        let shown = if self.inventory.expanded {
+            entries.len()
+        } else {
+            entries.len().min(3)
+        };
+        let bounds = self.member_window.scroll.bounds();
+        let top = -f32::from(self.member_window.scroll.offset().y);
+        if let Some(view) = self.inventory.viewing.as_mut() {
+            view.seen = view
+                .seen
+                .max(rows_seen(top, f32::from(bounds.size.height), shown));
+            view.entries = entries;
+        }
+    }
+
     pub(super) fn prepare_inventory_feed(&mut self, changed: bool, cx: &mut Context<Self>) {
         self.schedule_inventory(cx);
+        self.track_inventory_view();
         if !changed {
             return;
         }
@@ -415,8 +592,15 @@ impl Root {
             return Vec::new();
         };
         let now = chrono::Utc::now();
+        // 289287: an impression-capped entry stays out unless it is live (`useFilterImpressionCappedContent`).
+        let capped = if self.inventory_capping_enabled() {
+            self.inventory.impressions.capped(now.timestamp_millis())
+        } else {
+            HashSet::new()
+        };
         feed.entries
             .iter()
+            .filter(|entry| entry.is_live() || !capped.contains(&entry.id))
             .filter(|entry| {
                 let presence = self.stores.presence.get(entry.author, None);
                 let matched = presence.is_some_and(|p| {
@@ -450,6 +634,17 @@ impl Root {
             .collect()
     }
 
+    /// Whether a card of the member list counts up (a live game entry), so the clock ticks for it.
+    pub(super) fn inventory_has_live_card(&self) -> bool {
+        if self.inventory_hidden() {
+            return false;
+        }
+        let now = chrono::Utc::now().timestamp_millis();
+        self.member_inventory_entries()
+            .iter()
+            .any(|entry| entry.kind == 1 && entry.is_live() && !entry.expired(now))
+    }
+
     /// Whether `inventory_card` draws this entry: the kinds it has a card for, with their author known.
     fn inventory_renderable(&self, entry: &Entry) -> bool {
         card_kind(
@@ -466,16 +661,39 @@ impl Root {
     ) -> Option<AnyElement> {
         let id = entry.id;
         let user = self.stores.users.get(&entry.author)?;
+        let now = chrono::Utc::now().timestamp_millis();
+        // 506326 `$` with 693879: a live entry (583846 `Hd`) counts up in the positive colour from its matching
+        // activity's start (574520 `getMatchingActivity`), else from the entry itself; any other says how long ago.
+        let live = entry.kind == 1 && entry.is_live() && !entry.expired(now);
         let (title, art, first_badge) = match entry.kind {
             1 => {
                 let app = entry.extra["application_id"].as_str().unwrap_or_default();
+                let text = if live {
+                    let start = self
+                        .stores
+                        .presence
+                        .get(entry.author, None)
+                        .and_then(|presence| {
+                            presence
+                                .activities
+                                .iter()
+                                .find(|activity| entry.matches_activity(activity))
+                                .and_then(|activity| {
+                                    super::live_activity::millis(&activity["timestamps"]["start"])
+                                        .or_else(|| {
+                                            super::live_activity::millis(&activity["created_at"])
+                                        })
+                                })
+                        })
+                        .unwrap_or_else(|| entry.timestamp_ms());
+                    live_timer(start, now)
+                } else {
+                    entry.age_text(now)
+                };
                 (
                     entry.extra["game_name"].as_str().unwrap_or_default(),
                     self.images.get(&format!("app-icon:{app}")).cloned(),
-                    (
-                        "activity_game",
-                        entry.age_text(chrono::Utc::now().timestamp_millis()),
-                    ),
+                    ("activity_game", text),
                 )
             }
             6 if card_kind(6, entry.trait_value(4, "range").and_then(Value::as_u64)) => {
@@ -508,6 +726,31 @@ impl Root {
                         .text_size(px(12.))
                         .line_height(px(16.))
                         .text_color(color("--text-subtle"))
+                        .child(text),
+                )
+        };
+        let time_badge = |glyph, text: String| {
+            let tint = if live {
+                "--text-feedback-positive"
+            } else {
+                "--icon-subtle"
+            };
+            div()
+                .flex_none()
+                .flex()
+                .items_center()
+                .gap(px(4.))
+                .child(icon(glyph, 12., tint))
+                .child(
+                    div()
+                        .font_features(super::voice_message::tnum())
+                        .text_size(px(12.))
+                        .line_height(px(16.))
+                        .text_color(color(if live {
+                            "--text-feedback-positive"
+                        } else {
+                            "--text-subtle"
+                        }))
                         .child(text),
                 )
         };
@@ -567,7 +810,11 @@ impl Root {
                     .items_center()
                     .gap(px(8.))
                     .when(!first_badge.1.is_empty(), |d| {
-                        d.child(badge(first_badge.0, first_badge.1, "--icon-subtle"))
+                        d.child(if entry.kind == 1 {
+                            time_badge(first_badge.0, first_badge.1)
+                        } else {
+                            badge(first_badge.0, first_badge.1, "--icon-subtle")
+                        })
                     })
                     .when(
                         entry.kind == 1
@@ -788,6 +1035,44 @@ impl Root {
 #[cfg(test)]
 mod tests {
     use super::card_kind;
+
+    #[test]
+    fn impressions_cap_after_three_days_and_forget_after_thirty() {
+        use super::{DAY_MS, Impressions};
+        let mut impressions = Impressions::default();
+        assert!(impressions.track(&[1, 2], 0));
+        assert!(
+            !impressions.track(&[1], DAY_MS),
+            "only the first impression counts"
+        );
+        assert!(impressions.capped(3 * DAY_MS).is_empty());
+        assert_eq!(
+            impressions.capped(3 * DAY_MS + 1),
+            [1, 2].into_iter().collect()
+        );
+        assert!(impressions.track(&[3], 31 * DAY_MS));
+        assert_eq!(
+            impressions.items,
+            [(3, 31 * DAY_MS)],
+            "thirty days on, the first two go"
+        );
+    }
+
+    #[test]
+    fn rows_seen_counts_cards_above_the_bottom_edge() {
+        assert_eq!(super::rows_seen(0., 600., 3), 3);
+        assert_eq!(super::rows_seen(0., 150., 3), 1);
+        assert_eq!(super::rows_seen(0., 30., 3), 0);
+        assert_eq!(super::rows_seen(400., 600., 14), 13);
+    }
+
+    #[test]
+    fn a_live_entry_counts_up_like_w6() {
+        assert_eq!(super::live_timer(0, 61_000), "1:01");
+        assert_eq!(super::live_timer(0, 18 * 60_000 + 1_000), "18:01");
+        assert_eq!(super::live_timer(0, 3_661_000), "1:01:01");
+        assert_eq!(super::live_timer(5_000, 0), "0:00");
+    }
 
     #[test]
     fn only_kinds_with_a_card_are_counted() {

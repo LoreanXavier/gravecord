@@ -16,6 +16,30 @@ fn emoji_source(emoji: &Value) -> Option<String> {
     }
 }
 
+/// Module 342312 `L` with module 834757 `nr`: a stream is of the streamer's game, their first `PLAYING` activity
+/// that is not an embedded one (flag `EMBEDDED`, 256), and that activity then stays out of the entries after it.
+/// Returns the game's name for the stream entry and the activity entries.
+fn stream_entries<'a>(
+    all: &'a [Value],
+    visible: Vec<&'a Value>,
+    stream: bool,
+) -> (Option<&'a str>, Vec<&'a Value>) {
+    if !stream {
+        return (None, visible);
+    }
+    let game = all.iter().find(|activity| {
+        activity["type"] == 0 && activity["flags"].as_u64().unwrap_or(0) & 256 == 0
+    });
+    let entries = visible
+        .into_iter()
+        .filter(|activity| !game.is_some_and(|game| activity["name"] == game["name"]))
+        .collect();
+    let name = game
+        .and_then(|game| game["name"].as_str())
+        .filter(|name| !name.is_empty());
+    (name, entries)
+}
+
 impl Root {
     /// The custom-status emoji of the one presence a `PRESENCE_UPDATE` carries. A busy server sends many of these a
     /// second, so they must not rescan every presence the store holds (`request_presence_images`).
@@ -76,6 +100,18 @@ impl Root {
             || self.voice_activity(user.id, guild).is_some()
     }
 
+    /// Whether this person goes live in a voice channel of this server (`applicationStream` of module 342312, which
+    /// the streaming store keeps from the voice states' `self_stream`).
+    fn streams_in(&self, user: Id, guild: Option<Id>) -> bool {
+        guild
+            .and_then(|guild| self.stores.voice_states.get(&guild))
+            .is_some_and(|states| {
+                states
+                    .iter()
+                    .any(|state| state.user_id == user && state.self_stream)
+            })
+    }
+
     /// Module 342312 `F`: the line a person in a voice channel of this server gets after their activities, "In voice"
     /// (`msxteM`) or "In a stage" (`QygGCN`) for a Stage channel; `Some(true)` for the Stage.
     fn voice_activity(&self, user: Id, guild: Option<Id>) -> Option<bool> {
@@ -113,10 +149,14 @@ impl Root {
             return None;
         }
         let custom = presence.custom();
-        let activities = presence.visible_activities();
-        let first = activities.first().copied();
         let voice = self.voice_activity(user.id, guild);
-        if custom.is_none() && first.is_none() && voice.is_none() {
+        let stream = voice.is_some() && self.streams_in(user.id, guild);
+        let (game_name, activities) =
+            stream_entries(&presence.activities, presence.visible_activities(), stream);
+        let first = activities.first().copied();
+        // `Y`: the activities, plus one for the stream or else for the voice channel.
+        let total = activities.len() + usize::from(voice.is_some());
+        if custom.is_none() && total == 0 {
             return None;
         }
         let custom_text = custom.and_then(|a| a["state"].as_str());
@@ -131,7 +171,27 @@ impl Root {
             .line_height(px(line))
             .font_weight(FontWeight(500.))
             .text_color(color(tint));
-        if let Some(activity) = first {
+        if stream {
+            // `R`: the TV glyph and the game's name, or "Sharing their screen" (`eXan7B`).
+            if !user.bot {
+                row = row.child(icon(
+                    "activity_tv",
+                    if compact { 12. } else { 14. },
+                    "--status-positive",
+                ));
+            }
+            if !hide_activity_text {
+                row = row.child(
+                    div()
+                        .min_w(px(0.))
+                        .text_ellipsis()
+                        .child(game_name.map_or_else(
+                            || dc_intl::tr("Sharing their screen").to_string(),
+                            str::to_owned,
+                        )),
+                );
+            }
+        } else if let Some(activity) = first {
             let glyph = match activity["type"].as_u64() {
                 Some(0 | 5) => Some("activity_game"),
                 Some(2) => Some("activity_music"),
@@ -150,16 +210,10 @@ impl Root {
             if !hide_activity_text && let Some(text) = activity_text(activity) {
                 row = row.child(div().min_w(px(0.)).text_ellipsis().child(text));
             }
-            if !user.bot && activities.len() > 1 {
-                row = row.child(
-                    div()
-                        .flex_none()
-                        .child(format!("+{}", activities.len() - 1)),
-                );
-            }
         }
-        // Only when no activity leads: the voice entry is the last of the list and the first shown otherwise.
-        if first.is_none()
+        // Only when nothing else leads: the voice entry is the last of the list and the first shown otherwise.
+        if !stream
+            && first.is_none()
             && let Some(stage) = voice
         {
             row = row
@@ -176,8 +230,19 @@ impl Root {
                     }))
                 });
         }
+        // `$`: "+N" for the entries after the first one, in the positive status colour beside a custom status text.
+        if !user.bot && total > 1 {
+            row = row.child(
+                div()
+                    .flex_none()
+                    .when(custom_text.is_some(), |this| {
+                        this.text_color(color("--status-positive"))
+                    })
+                    .child(format!("+{}", total - 1)),
+            );
+        }
         if let Some(custom) = custom {
-            if first.is_some() || voice.is_some() {
+            if total > 0 {
                 row = row.child(div().flex_none().child("•"));
             }
             if let Some(url) = emoji_source(&custom["emoji"]) {
@@ -196,5 +261,36 @@ impl Root {
             }
         }
         Some(row.into_any_element())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::stream_entries;
+    use serde_json::json;
+
+    #[test]
+    fn a_stream_leads_with_its_game_and_drops_it_from_the_rest() {
+        let all = vec![
+            json!({"type": 0, "name": "Activity", "flags": 256}),
+            json!({"type": 0, "name": "Deadlock"}),
+            json!({"type": 2, "name": "Spotify"}),
+        ];
+        let visible: Vec<_> = all.iter().collect();
+        let (game, rest) = stream_entries(&all, visible.clone(), true);
+        assert_eq!(game, Some("Deadlock"));
+        assert_eq!(
+            rest.iter()
+                .map(|a| a["name"].as_str().unwrap())
+                .collect::<Vec<_>>(),
+            ["Activity", "Spotify"]
+        );
+        let (game, rest) = stream_entries(&all, visible, false);
+        assert_eq!(game, None);
+        assert_eq!(rest.len(), 3);
+        let none = vec![json!({"type": 2, "name": "Spotify"})];
+        let (game, rest) = stream_entries(&none, none.iter().collect(), true);
+        assert_eq!(game, None, "no game: the entry reads Sharing their screen");
+        assert_eq!(rest.len(), 1);
     }
 }

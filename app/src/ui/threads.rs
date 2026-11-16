@@ -266,7 +266,7 @@ impl Root {
         for thread in &guild.threads {
             out.push_str(&format!(
                 "
-  {} {:?} owner_is_me={} parent={} joined={} archived={} auto_archive_min={} last_activity_age_min={} unread={} mentions={} muted={} pinned={}",
+  {} {:?} owner_is_me={} parent={} joined={} archived={} auto_archive_min={} last_activity_age_min={} unread={} mentions={} muted={} pinned={} latest={:?} acked={}",
                 thread.id,
                 thread.name,
                 thread.owner_id.is_some() && thread.owner_id == me,
@@ -279,6 +279,8 @@ impl Root {
                 self.stores.read_states.mentions(thread.id),
                 thread.is_muted(now),
                 thread.pinned(),
+                self.stores.read_states.latest.get(&thread.id),
+                self.stores.read_states.acked(thread.id, guild.joined_snowflake()),
             ));
         }
         out

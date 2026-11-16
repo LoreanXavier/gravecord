@@ -31,7 +31,7 @@ fn component(value: &str) -> String {
     encoded
 }
 
-fn millis(value: &Value) -> Option<i64> {
+pub(super) fn millis(value: &Value) -> Option<i64> {
     value.as_i64().or_else(|| value.as_str()?.parse().ok())
 }
 fn field<'a>(value: &'a Value, key: &str) -> Option<&'a str> {
@@ -246,6 +246,7 @@ impl Root {
         } else if activities
             .iter()
             .any(|a| !a["timestamps"].is_null() || !a["created_at"].is_null())
+            || self.inventory_has_live_card()
         {
             Some(Duration::from_secs(
                 if !self.notification_focused || crate::ui::motion::reduced() {
@@ -271,7 +272,10 @@ impl Root {
         if activities.iter().any(dc_state::now_playing::is_spotify) {
             self.request_image(
                 super::spotify_activity::ICON_KEY.into(),
-                format!("{}/assets/168e10535f129f11.js", dc_proto::pin::WEBAPP_ORIGIN),
+                format!(
+                    "{}/assets/168e10535f129f11.js",
+                    dc_proto::pin::WEBAPP_ORIGIN
+                ),
             );
             self.request_image(
                 SPOTIFY_PLATFORM_ICON.into(),

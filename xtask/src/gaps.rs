@@ -35,6 +35,7 @@ pub fn run(repo: &Path) -> Result<()> {
 
     let modules_dir = snapshot.join("modules");
     let mut css: HashMap<String, Vec<String>> = HashMap::new();
+    let mut css_full: HashMap<String, Vec<String>> = HashMap::new();
     let mut uses: BTreeMap<String, (BTreeSet<String>, Vec<String>)> = BTreeMap::new();
     for entry in fs::read_dir(&modules_dir)? {
         let path = entry?.path();
@@ -46,6 +47,7 @@ pub fn run(repo: &Path) -> Result<()> {
         };
         if let Some(classes) = css_classes(&source) {
             css.insert(id.clone(), classes);
+            css_full.insert(id.clone(), css_full_classes(&source));
             continue;
         }
         let keys = keys_named(&source, &texts);
@@ -128,6 +130,66 @@ pub fn run(repo: &Path) -> Result<()> {
     }
     fs::write(out.join("gaps.md"), md)?;
     fs::write(out.join("gaps.tsv"), tsv)?;
+
+    // Whole components: a module we never name by number, none of whose imported CSS classes appear in our sources,
+    // with text of its own we never show. Our port cites the modules and classes it reproduces, so a module with
+    // neither is a component nobody wrote.
+    let numbers = numbers_in(&corpus);
+    let mut components: Vec<(&Row, usize)> = rows
+        .iter()
+        .filter(|row| !numbers.contains(row.module.as_str()))
+        .filter_map(|row| {
+            let classes: Vec<&String> = uses[&row.module]
+                .1
+                .iter()
+                .filter_map(|id| css_full.get(id))
+                .flatten()
+                .collect();
+            let mentioned = classes
+                .iter()
+                .filter(|class| corpus.contains(class.as_str()))
+                .count();
+            (mentioned == 0).then_some((row, classes.len()))
+        })
+        .collect();
+    components.sort_by_key(|(row, _)| std::cmp::Reverse(row.missing.len()));
+    let mut cmd = String::new();
+    let _ = writeln!(
+        cmd,
+        "# Components not built\n\nModules never cited by number, with none of their CSS classes in our sources, \
+         and interface text we never show: {}. Messages they hold: {}.\n",
+        components.len(),
+        components
+            .iter()
+            .map(|(row, _)| row.missing.len())
+            .sum::<usize>()
+    );
+    for (row, classes) in &components {
+        let _ = writeln!(
+            cmd,
+            "## {} ({} messages, {} classes) {}\n",
+            row.module,
+            row.missing.len(),
+            classes,
+            row.hints.join(", ")
+        );
+        for (key, text) in row.missing.iter().take(12) {
+            let _ = writeln!(cmd, "- `{key}` {}", one_line(text));
+        }
+        if row.missing.len() > 12 {
+            let _ = writeln!(cmd, "- ... {} more", row.missing.len() - 12);
+        }
+        cmd.push('\n');
+    }
+    fs::write(out.join("components.md"), cmd)?;
+    println!(
+        "{} components never built ({} messages); list in design/gaps/components.md",
+        components.len(),
+        components
+            .iter()
+            .map(|(row, _)| row.missing.len())
+            .sum::<usize>()
+    );
     println!(
         "{} interface messages, {} missing ({:.1}% covered), {} modules with gaps; report in design/gaps/",
         total_keys.len(),
@@ -308,6 +370,40 @@ fn css_classes(source: &str) -> Option<Vec<String>> {
         }
     }
     (!classes.is_empty()).then_some(classes)
+}
+
+/// Every run of 3 to 7 digits in our sources (module ids cited in comments).
+fn numbers_in(corpus: &str) -> BTreeSet<&str> {
+    let bytes = corpus.as_bytes();
+    let mut out = BTreeSet::new();
+    let mut start = None;
+    for (index, byte) in bytes.iter().enumerate() {
+        match (byte.is_ascii_digit(), start) {
+            (true, None) => start = Some(index),
+            (false, Some(from)) => {
+                if (3..=7).contains(&(index - from)) {
+                    out.insert(&corpus[from..index]);
+                }
+                start = None;
+            }
+            _ => {}
+        }
+    }
+    out
+}
+
+/// A CSS module's class names with their hash (`gifFavoriteButton_cT9zhv`), as our comments cite them.
+fn css_full_classes(source: &str) -> Vec<String> {
+    let Some(body) = source.split_once("exports={").map(|(_, body)| body) else {
+        return Vec::new();
+    };
+    body.split('"')
+        .skip(1)
+        .step_by(2)
+        .flat_map(|value| value.split(' '))
+        .filter(|class| class.contains('_') && !class.is_empty())
+        .map(str::to_owned)
+        .collect()
 }
 
 /// The module ids a module requires (`n(123456)`), in order.
