@@ -237,8 +237,7 @@ impl Root {
             Action::CopyImage => {
                 if let Some(image) = self.menu_image() {
                     log_effect("Copy Image", "clipboard image", image.bytes().len());
-                    cx.write_to_clipboard(gpui::ClipboardItem::new_image(&image));
-                    self.show_success_toast("Image Copied!".into(), cx);
+                    self.copy_picture(image, cx);
                 } else {
                     self.show_app_toast("Unable to copy image", cx);
                 }
@@ -283,6 +282,30 @@ impl Root {
                 Some(url.clone())
             }
         }
+    }
+
+    /// Module 115184 `copyImage`: the picture goes on the clipboard as a bitmap and as PNG (`clipboard_image`), then
+    /// "Image Copied!" or, when it cannot be decoded or the clipboard refuses it, "Unable to copy image".
+    pub(super) fn copy_picture(&mut self, picture: std::sync::Arc<gpui::Image>, cx: &mut Context<Self>) {
+        let decode = cx.background_executor().spawn(async move {
+            crate::clipboard_image::decode(picture.bytes())
+        });
+        cx.spawn(async move |this, cx| {
+            let decoded = decode.await;
+            let _ = this.update(cx, |this, cx| {
+                let written = decoded
+                    .ok_or("the picture could not be decoded")
+                    .and_then(|picture| crate::clipboard_image::write(&picture));
+                match written {
+                    Ok(()) => this.show_success_toast("Image Copied!".into(), cx),
+                    Err(reason) => {
+                        tracing::warn!(reason, "copy image failed");
+                        this.show_app_toast("Unable to copy image", cx);
+                    }
+                }
+            });
+        })
+        .detach();
     }
 
     fn menu_image(&self) -> Option<std::sync::Arc<gpui::Image>> {

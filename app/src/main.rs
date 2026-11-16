@@ -2,6 +2,7 @@
 
 mod autostart;
 mod branding;
+mod clipboard_image;
 #[cfg(windows)]
 mod clips_capture;
 mod deep_link;

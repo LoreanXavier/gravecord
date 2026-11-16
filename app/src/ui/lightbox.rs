@@ -748,10 +748,7 @@ impl Root {
                 .or_else(|| self.images.get(&item.key))
                 .cloned();
             match picture {
-                Some(picture) => {
-                    cx.write_to_clipboard(ClipboardItem::new_image(&picture));
-                    self.show_success_toast("Image Copied!".to_owned(), cx);
-                }
+                Some(picture) => self.copy_picture(picture, cx),
                 None => self.put_app_toast("Unable to copy image".to_owned(), false, cx),
             }
         } else {
