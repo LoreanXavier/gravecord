@@ -370,6 +370,7 @@ impl Root {
                 self.inbox.is_some(),
                 self.status_popout.is_some(),
                 self.profile.is_some(),
+                self.role_picker.is_some(),
                 self.notify_open,
                 self.submenu.is_some(),
                 self.skin_menu,

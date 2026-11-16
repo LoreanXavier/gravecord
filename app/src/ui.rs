@@ -10078,7 +10078,7 @@ impl Render for Root {
             .children(self.role_popout_layer(cx))
             .children(self.header_popout_layer(cx))
             .children(self.profile_layer(window, cx))
-            .children(self.role_picker_layer(cx))
+            .children(self.role_picker_layer(window, cx))
             .children(self.sticker_popout_layer(cx))
             .children(self.emoji_popout_layer(cx))
             .children(self.shop_modal(window, cx))

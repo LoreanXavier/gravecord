@@ -1,0 +1,7 @@
+{
+  "profile-roles": { "class": "roleListContainer_xL50-d" },
+  "profile-role-add": { "class": "addButton_xL50-d" },
+  "profile-role-picker": { "class": "container_7in7_8" },
+  "profile-role-picker-field": { "class": "selectField_vWC4bk" },
+  "profile-role-picker-dot": { "class": "roleCircle_7RsUnm", "ancestor": "container_7in7_8" }
+}

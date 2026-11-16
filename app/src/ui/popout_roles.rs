@@ -5,6 +5,7 @@
 
 use super::{Root, color, editor_style, icon, member_actions};
 use crate::editor::{Editor, EditorEvent};
+use crate::parity::Parity;
 use dc_state::{Id, permissions};
 use gpui::{
     Anchor, AnyElement, Context, Entity, Focusable, IntoElement, Subscription, Window, anchored,
@@ -52,7 +53,16 @@ fn without_role(roles: Vec<Id>, role: Id) -> Vec<Id> {
 
 /// Whether a role's name matches what was typed in the picker.
 fn matches_filter(name: &str, typed: &str) -> bool {
-    typed.is_empty() || name.to_lowercase().contains(&typed.to_lowercase())
+    if typed.trim().is_empty() {
+        return true;
+    }
+    // The ordered character match of 91871, used by 465738's customMatchSorter.
+    let name = name.to_lowercase();
+    let mut remaining = name.chars();
+    typed
+        .to_lowercase()
+        .chars()
+        .all(|wanted| remaining.any(|ch| ch == wanted))
 }
 
 /// The picker's window: 9px of padding (8 and its border), the 40px field and the list with 4px above and below,
@@ -64,6 +74,23 @@ fn picker_height(rows: usize) -> f32 {
         8. + 40. * rows.min(6) as f32
     };
     9. + 40. + list + 9.
+}
+
+/// 265872 / 623646: bottom-centred with 8px spacing, invert when it has more room, ceil the horizontal alignment.
+fn picker_position(anchor: [f32; 4], viewport: [f32; 2], height: f32) -> [f32; 2] {
+    let [left, top, width, anchor_height] = anchor;
+    let x = (left + (width - 268.) / 2.)
+        .clamp(12., (viewport[0] - 268. - 12.).max(12.))
+        .ceil();
+    let below = top + anchor_height + 8.;
+    let above = top - 8. - height;
+    let below_space = viewport[1] - below - height;
+    let y = if below_space < 0. && above > below_space {
+        above
+    } else {
+        below
+    };
+    [x, y.clamp(0., (viewport[1] - height).max(0.))]
 }
 
 impl Root {
@@ -249,34 +276,71 @@ impl Root {
             );
         }
         if can_add {
-            // `addButton_xL50-d`: a 24px button with the 18px plus; `showLabel` adds the words when the list is empty.
-            row = row.child(
-                div()
-                    .id("popout-role-add")
-                    .h(px(24.))
-                    .when(!none, |this| this.w(px(24.)))
-                    .when(none, |this| {
-                        this.px(px(6.))
-                            .border_1()
-                            .border_color(color("--border-subtle"))
-                            .rounded(px(8.))
-                            .gap(px(2.))
-                    })
-                    .flex()
-                    .items_center()
-                    .justify_center()
-                    .cursor_pointer()
-                    .text_size(px(12.))
-                    .line_height(px(16.))
-                    .text_color(color("--interactive-icon-default"))
-                    .child(icon("plus_small", 18., "--interactive-icon-default"))
-                    .when(none, |this| this.child("Add Role"))
-                    .on_click(cx.listener(move |this, _, window, cx| {
-                        this.open_role_picker(guild, user, window, cx);
-                    })),
-            );
+            row = row.child(self.profile_role_add_button(guild, user, none, cx));
         }
         Some(row.into_any_element())
+    }
+
+    /// `addButton_xL50-d` / `showLabel_xL50-d` of 166005: an empty list shows the label without a chip border.
+    pub(super) fn profile_role_add_button(
+        &self,
+        guild: Id,
+        user: Id,
+        none: bool,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let palette = self.profile_palette(user, Some(guild), false);
+        let tint = palette.token("--interactive-text-default");
+        let hover = palette.token("--interactive-text-hover");
+        let focus = self.stop("popout-role-add", cx).tab_index(0).tab_stop(true);
+        let ringed = self.keyboard_mode() && self.keys.stops.has_focus(&focus);
+        let key_focus = focus.clone();
+        div()
+            .parity("profile-role-add")
+            .id("popout-role-add")
+            .track_focus(&focus)
+            .tab_index(0)
+            .relative()
+            .h(px(24.))
+            .min_w(px(24.))
+            .rounded(px(8.))
+            .when(none, |button| button.pr(px(4.)))
+            .flex()
+            .items_center()
+            .justify_center()
+            .gap(px(2.))
+            .cursor_pointer()
+            .text_size(px(12.))
+            .line_height(px(16.))
+            .font_weight(gpui::FontWeight(400.))
+            .text_color(tint)
+            .hover(move |style| style.text_color(hover))
+            .child(
+                gpui::svg()
+                    .path("icons/plus_small.svg")
+                    .size(px(18.))
+                    .flex_none(),
+            )
+            .when(none, |button| button.child(dc_intl::t!("e3Wlyw")))
+            .child(self.anchor_probe("popout-role-add"))
+            .when(ringed, |button| {
+                button.child(super::keyboard::hollow_ring(8.))
+            })
+            .on_key_down(
+                cx.listener(move |this, event: &gpui::KeyDownEvent, window, cx| {
+                    if key_focus.is_focused(window)
+                        && matches!(event.keystroke.key.as_str(), "enter" | "space")
+                    {
+                        cx.stop_propagation();
+                        this.open_role_picker(guild, user, window, cx);
+                    }
+                }),
+            )
+            .on_click(cx.listener(move |this, _, window, cx| {
+                cx.stop_propagation();
+                this.open_role_picker(guild, user, window, cx);
+            }))
+            .into_any_element()
     }
 
     /// The add button: the picker opens with its field focused.
@@ -370,14 +434,31 @@ impl Root {
 
     /// The picker over the popout (`container_7in7_8`, 268 wide): the search field and the roles, above the list's
     /// top edge with 8px between.
-    pub(super) fn role_picker_layer(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
+    pub(super) fn role_picker_layer(
+        &self,
+        window: &Window,
+        cx: &mut Context<Self>,
+    ) -> Option<AnyElement> {
         let open = self.role_picker.as_ref()?;
         let (guild, user) = (open.guild, open.user);
         let typed = open.input.read(cx).text().to_owned();
         let entries = self.picker_entries(guild, user, &typed);
-        let bounds = self.tip_anchors.borrow().get("popout-roles").copied()?;
+        let bounds = self.tip_anchors.borrow().get("popout-role-add").copied()?;
         let height = picker_height(entries.len());
-        let rows = entries.into_iter().map(|entry| {
+        let [left, top] = picker_position(
+            [
+                bounds.left().into(),
+                bounds.top().into(),
+                bounds.size.width.into(),
+                bounds.size.height.into(),
+            ],
+            [
+                window.viewport_size().width.into(),
+                window.viewport_size().height.into(),
+            ],
+            height,
+        );
+        let rows = entries.into_iter().enumerate().map(|(index, entry)| {
             let role = entry.id;
             div()
                 .id(gpui::SharedString::from(format!("role-picker-{role}")))
@@ -397,12 +478,19 @@ impl Root {
                         .flex_none()
                         .flex()
                         .items_center()
-                        .justify_center()
-                        .child(div().size(px(12.)).rounded_full().bg(if entry.color == 0 {
-                            color("--primary-300")
-                        } else {
-                            rgb(entry.color)
-                        })),
+                        .pl(px(8.))
+                        .child(
+                            div()
+                                .when(index == 0, |dot| dot.parity("profile-role-picker-dot"))
+                                .size(px(12.))
+                                .rounded_full()
+                                .bg(if entry.color == 0 {
+                                    // DEFAULT_ROLE_COLOR (`652215.TpD`) in the picker differs from the profile chip fallback.
+                                    rgb(0x99aab5)
+                                } else {
+                                    rgb(entry.color)
+                                }),
+                        ),
                 )
                 .child(
                     div()
@@ -414,6 +502,7 @@ impl Root {
                 )
         });
         let card = div()
+            .parity_with_border("profile-role-picker", 1.)
             .id("role-picker")
             .occlude()
             .w(px(268.))
@@ -422,10 +511,11 @@ impl Root {
             .border_1()
             .border_color(color("--border-subtle"))
             .rounded(px(8.))
-            .bg(color("--background-surface-high"))
+            .bg(color("--modal-background"))
             .child(
                 // `selectField_vWC4bk` focused: a 40px box with the 2px brand border.
                 div()
+                    .parity_with_border("profile-role-picker-field", 2.)
                     .h(px(40.))
                     .w_full()
                     .rounded(px(8.))
@@ -450,8 +540,8 @@ impl Root {
         Some(
             deferred(
                 anchored()
-                    .anchor(Anchor::BottomLeft)
-                    .position(point(bounds.left(), bounds.top() - px(8.)))
+                    .anchor(Anchor::TopLeft)
+                    .position(point(px(left), px(top)))
                     .snap_to_window_with_margin(px(8.))
                     .child(super::keyboard::outside(
                         card,
@@ -490,7 +580,12 @@ mod tests {
     fn the_picker_filters_by_what_was_typed_ignoring_case() {
         assert!(matches_filter("gravecord plain", ""));
         assert!(matches_filter("gravecord plain", "PLA"));
-        assert!(!matches_filter("gravecord plain", "red"));
+        assert!(matches_filter("gravecord plain", "gpl"));
+        assert!(matches_filter("gravecord plain", "   "));
+        assert!(!matches_filter("gravecord plain", "plg"));
+        // The source's subsequence matcher finds r...e...d in "gravecord".
+        assert!(matches_filter("gravecord plain", "red"));
+        assert!(!matches_filter("gravecord plain", "plain!"));
     }
 
     #[test]
@@ -498,5 +593,25 @@ mod tests {
         assert_eq!(picker_height(1), 106.);
         assert_eq!(picker_height(0), 58.);
         assert_eq!(picker_height(20), picker_height(6));
+    }
+
+    #[test]
+    fn role_picker_centres_on_the_add_button_and_flips_at_the_window_edge() {
+        assert_eq!(
+            picker_position([722., 606., 66.9375, 24.], [1280., 720.], 146.),
+            [622., 452.]
+        );
+        assert_eq!(
+            picker_position([722., 100., 66.9375, 24.], [1280., 720.], 146.),
+            [622., 132.]
+        );
+        assert_eq!(
+            picker_position([0., 100., 24., 24.], [1280., 720.], 146.),
+            [12., 132.]
+        );
+        assert_eq!(
+            picker_position([1240., 100., 24., 24.], [1280., 720.], 146.),
+            [1000., 132.]
+        );
     }
 }

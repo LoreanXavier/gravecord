@@ -37,8 +37,13 @@ fn ordered_roles(guild: &dc_state::Guild, member: &dc_state::members::Member) ->
 }
 
 impl Root {
-    pub(super) fn profile_role_chips(&self, user: Id, strong: Hsla) -> Option<AnyElement> {
-        self.profile_role_chips_for(self.guild?, user, strong)
+    pub(super) fn profile_role_chips(
+        &self,
+        user: Id,
+        strong: Hsla,
+        cx: &mut Context<Self>,
+    ) -> Option<AnyElement> {
+        self.profile_role_chip_list(self.guild?, user, strong, Some(cx))
     }
 
     pub(super) fn profile_role_chips_for(
@@ -47,10 +52,24 @@ impl Root {
         user: Id,
         strong: Hsla,
     ) -> Option<AnyElement> {
+        self.profile_role_chip_list(guild, user, strong, None)
+    }
+
+    fn profile_role_chip_list(
+        &self,
+        guild: Id,
+        user: Id,
+        strong: Hsla,
+        cx: Option<&mut Context<Self>>,
+    ) -> Option<AnyElement> {
         let guild = self.stores.guilds.iter().find(|known| known.id == guild)?;
         let member = self.stores.members.get(guild.id, user)?;
         let roles = ordered_roles(guild, member);
-        if roles.is_empty() {
+        let none = roles.is_empty();
+        // 403369 passes allowEditing for the profile popout, including a member with no roles.
+        let can_add =
+            cx.is_some() && self.my_permission(guild.id, None, dc_state::permissions::MANAGE_ROLES);
+        if none && !can_add {
             return None;
         }
         let palette = self.profile_palette(user, Some(guild.id), false);
@@ -153,6 +172,9 @@ impl Root {
                         // `.roleIcon_xL50-d`: 12px, 4px after the name.
                         .children(role_icon.map(|art| div().flex_none().ml(px(4.)).child(art)))
                 }))
+                .when_some(cx.filter(|_| can_add), |row, cx| {
+                    row.child(self.profile_role_add_button(guild.id, user, none, cx))
+                })
                 .into_any_element(),
         )
     }
@@ -502,7 +524,7 @@ impl Root {
             ))
             .children(self.live_activity_cards(id, super::live_activity::Surface::Popout, strong, subtle, cx))
             .children(self.popout_voice_card(id, cx))
-            .children(self.profile_role_chips(id, strong))
+            .children(self.profile_role_chips(id, strong, cx))
             .into_any_element();
         let message: Option<AnyElement> = popout.message.as_ref().map(|message| {
             div()
