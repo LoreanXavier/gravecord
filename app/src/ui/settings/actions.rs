@@ -422,6 +422,13 @@ impl Root {
                 true
             }
             super::connections::CONNECTIONS_KEY => {
+                if body.is_array() {
+                    self.stores.spotify.dispatch(
+                        "USER_CONNECTIONS_UPDATE",
+                        &serde_json::json!({"local": true, "accounts": body}),
+                        chrono::Utc::now().timestamp_millis(),
+                    );
+                }
                 self.settings_extra.connections = body.as_array().cloned();
                 true
             }

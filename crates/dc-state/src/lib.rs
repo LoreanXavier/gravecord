@@ -52,6 +52,7 @@ pub mod running_games;
 pub mod scheduled_events;
 pub mod scheduled_message;
 pub mod slowmode;
+pub mod spotify;
 pub mod stage;
 pub mod stickers;
 pub mod thread_list;
@@ -2185,6 +2186,7 @@ pub struct Stores {
     /// User id to status, for people this session has presence for.
     pub presences: HashMap<Id, String>,
     pub presence: presence::PresenceStore,
+    pub spotify: spotify::SpotifyStore,
     pub member_counts: guild_member_counts::GuildMemberCountStore,
     /// The connection's country (`LocationMetadataStore`).
     pub location_metadata: location_metadata::LocationMetadataStore,
@@ -2287,6 +2289,8 @@ impl Stores {
             self.presence.set_current_user(id(&data["user"]["id"]));
         }
         self.presence.dispatch(name, data);
+        self.spotify
+            .dispatch(name, data, chrono::Utc::now().timestamp_millis());
         self.member_counts.dispatch(name, data);
         self.location_metadata.dispatch(name, data);
         self.scheduled_events.dispatch(name, data);
