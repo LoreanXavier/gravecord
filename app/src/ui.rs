@@ -10314,6 +10314,7 @@ impl Render for Root {
             .children(self.group_dm_modal(window, cx))
             .children(self.quick_switcher_modal(window, cx))
             .children(self.keyboard_help_modal(window, cx))
+            .children(self.keyboard_explainer_modal(cx))
             .children(self.activity_shelf_layer(window, cx))
             .children(self.activity_dialog_layer(cx))
             .children(self.update_dialog_layer(cx))

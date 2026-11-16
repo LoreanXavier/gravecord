@@ -115,8 +115,22 @@ pub(super) fn footer_button(spec: Button, cx: &mut Context<Root>) -> AnyElement 
     footer_button_sized(spec, true, cx)
 }
 
+/// The design system's `sm` footer action (32px, at least 60px wide).
+pub(super) fn small_footer_button(spec: Button, cx: &mut Context<Root>) -> AnyElement {
+    footer_button_shape(spec, false, true, cx)
+}
+
 /// `fill`: the button takes its share of the footer; else it is as wide as its text (beside an action bar input).
 fn footer_button_sized(spec: Button, fill: bool, cx: &mut Context<Root>) -> AnyElement {
+    footer_button_shape(spec, fill, false, cx)
+}
+
+fn footer_button_shape(
+    spec: Button,
+    fill: bool,
+    small: bool,
+    cx: &mut Context<Root>,
+) -> AnyElement {
     let (background, border, text) = match spec.tone {
         Tone::Secondary => (
             color("--control-secondary-background-default"),
@@ -178,22 +192,23 @@ fn footer_button_sized(spec: Button, fill: bool, cx: &mut Context<Root>) -> AnyE
     let focus = spec_focus.clone();
     super::keyboard::ring_when_focused(div().id(spec.id))
         // A button of a dialog is a tab stop; Enter and Space click it (gpui turns them into the click below).
-        .when(spec_focus.is_none(), |button| {
+        .when(spec_focus.is_none() && !disabled, |button| {
             button.focusable().tab_index(0)
         })
         .when_some(
-            spec_focus.map(|handle| handle.tab_index(0)),
+            spec_focus.map(|handle| handle.tab_index(0).tab_stop(!disabled)),
             |button, focus| button.track_focus(&focus),
         )
         .when(disabled && !loading, |this| this.opacity(0.5))
         .when(fill, |this| this.flex_1())
-        .when(!fill, |this| this.px(px(15.)))
+        .when(!fill, |this| this.px(px(if small { 11. } else { 15. })))
+        .when(small, |this| this.min_w(px(60.)))
         // A secondary button beside an action bar input is 100 wide (Cancel in Filters).
         .when(
-            !fill && (spec.tone == Tone::Secondary || spec.id == "voice-dialog-confirm"),
+            !small && !fill && (spec.tone == Tone::Secondary || spec.id == "voice-dialog-confirm"),
             |this| this.min_w(px(100.)),
         )
-        .h(px(40.))
+        .h(px(if small { 32. } else { 40. }))
         .rounded(px(8.))
         .border_1()
         .border_color(border)
@@ -204,8 +219,8 @@ fn footer_button_sized(spec: Button, fill: bool, cx: &mut Context<Root>) -> AnyE
         .cursor_pointer()
         // `.button_9OQtot:disabled, [aria-disabled=true]{cursor:not-allowed;opacity:.5}` (193433).
         .when(disabled && !loading, |this| this.cursor_not_allowed())
-        .text_size(px(16.))
-        .line_height(px(20.))
+        .text_size(px(if small { 14. } else { 16. }))
+        .line_height(px(if small { 18. } else { 20. }))
         .font_weight(FontWeight(500.))
         .text_color(text)
         .when(!disabled, |this| {

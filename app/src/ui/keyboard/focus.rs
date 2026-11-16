@@ -267,6 +267,7 @@ pub(in crate::ui) struct State {
     pub(super) last_step: Option<std::time::Instant>,
     /// The Keyboard Shortcuts help, while it is open.
     pub(super) help: Option<super::help::Help>,
+    pub(super) explainer: super::explainer::Explainer,
     /// The focus stops of lists and controls, and the groups the arrow keys move in.
     pub(in crate::ui) stops: super::Stops,
 }
@@ -352,6 +353,7 @@ impl Root {
                 self.activity_shelf.is_some(),
                 self.guild_events.is_some(),
                 self.keys.help.is_some(),
+                self.keys.explainer.open,
             ]
             .into_iter()
             .filter(|open| *open)
@@ -656,6 +658,15 @@ impl Root {
         cx: &mut Context<Self>,
     ) -> bool {
         let keystroke = &event.keystroke;
+        if self.keyboard_explainer_key(keystroke, cx) {
+            if self.keys.explainer.open {
+                // The source's Tab listener opens lazily without cancelling the browser's
+                // normal focus advance. Escape returns to that next stop when it closes.
+                self.tab_key(keystroke, window, cx);
+                self.keys.anchor = self.anchor_now(window, cx);
+            }
+            return true;
+        }
         let typing = window.focused(cx).is_some_and(|handle| is_field(&handle));
         if super::stops::enables_keyboard_mode(keystroke, typing) {
             self.keys.set_modality(true);

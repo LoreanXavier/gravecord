@@ -1573,6 +1573,10 @@ pub async fn run(
                     crate::perf::summary(&mut samples, 16.0)
                 );
             }
+            ["keyboard-explainer", command] => {
+                let report = root.update(cx, |root, cx| root.script_keyboard_explainer(command, cx));
+                let _ = writeln!(output, "keyboard-explainer: {report}");
+            }
             // Which element has focus, by name and kind, for asserting keyboard focus in the run log.
             ["focus", label @ ..] => {
                 let report = window

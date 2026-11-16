@@ -15,6 +15,7 @@ use gpui::Keystroke;
 
 mod actions;
 mod context_key;
+mod explainer;
 mod focus;
 mod grid;
 pub(in crate::ui) mod help;
