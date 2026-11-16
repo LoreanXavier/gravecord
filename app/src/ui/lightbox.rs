@@ -36,6 +36,44 @@ pub(super) struct Item {
     pub animated: bool,
     pub is_video: bool,
     pub video_src: Option<String>,
+    /// An attachment's own facts for View Details and Copy Attachment ID (module 2323: only for attachments).
+    pub details: Option<Details>,
+}
+
+/// What View Details lists for an attachment (`media-viewer-details` of module 2323).
+#[derive(Clone, Debug, PartialEq)]
+pub(super) struct Details {
+    pub id: u64,
+    /// Module 465856: the title with the file's extension when both are known, else the file name.
+    pub name: String,
+    /// `{width}x{height} ({size})`, the size in megabytes rounded up (module 255438 `Xq`).
+    pub size: String,
+    pub alt: Option<String>,
+}
+
+/// Module 465856 `A`.
+fn display_name(title: Option<&str>, filename: &str) -> String {
+    match title {
+        Some(title) => {
+            let extension = match filename.rfind('.') {
+                Some(dot) if dot > 0 => &filename[dot..],
+                _ => "",
+            };
+            format!("{title}{extension}")
+        }
+        None => filename.to_owned(),
+    }
+}
+
+/// Module 255438 `Xq` of the size in kilobytes: whole megabytes rounded up below 1000, else gigabytes to a tenth.
+fn size_label(bytes: u64) -> String {
+    let megabytes = ((bytes as f64 / 1000.) / 1000.).ceil();
+    if megabytes < 1000. {
+        format!("{megabytes} MB")
+    } else {
+        let gigabytes = (megabytes / 1000. * 10.).round() / 10.;
+        format!("{gigabytes} GB")
+    }
 }
 
 /// The state of the open viewer.
@@ -52,6 +90,8 @@ pub(super) struct Lightbox {
     /// The More menu (`image-menu` in module 2323) is open.
     pub more: bool,
     pub more_at: Option<Point<Pixels>>,
+    /// The pointer is on View Details: its submenu is open.
+    pub details_open: bool,
 }
 
 /// The message's pictures in the order the viewer pages through them: attachments, then embed pictures.
@@ -77,6 +117,7 @@ pub(super) fn items_of(message: &Message) -> Vec<Item> {
                     .ends_with(".gif"),
                 is_video: false,
                 video_src: None,
+                details: None,
             });
         }
         if embed.kind != "gifv"
@@ -100,6 +141,7 @@ pub(super) fn items_of(message: &Message) -> Vec<Item> {
                 animated: false,
                 is_video: true,
                 video_src: Some(proxy.clone()),
+                details: None,
             });
         }
     }
@@ -125,6 +167,17 @@ fn attachment_item(attachment: &Attachment) -> Item {
         animated: attachment.is_animated(),
         is_video,
         video_src,
+        details: Some(Details {
+            id: attachment.id,
+            name: display_name(attachment.title.as_deref(), &attachment.filename),
+            size: format!(
+                "{}x{} ({})",
+                attachment.width.unwrap_or(0),
+                attachment.height.unwrap_or(0),
+                size_label(attachment.size)
+            ),
+            alt: attachment.description.clone().filter(|alt| !alt.is_empty()),
+        }),
     }
 }
 
@@ -209,6 +262,7 @@ impl Root {
             saving: false,
             more: false,
             more_at: None,
+            details_open: false,
         });
         self.lightbox_images();
         cx.notify();
@@ -714,6 +768,12 @@ impl Root {
                 .font_weight(FontWeight(500.))
                 .text_color(midnight("--text-default"))
                 .child(label)
+                .on_hover(cx.listener(|this, hovered: &bool, _, cx| {
+                    if *hovered && let Some(open) = this.lightbox.as_mut() {
+                        open.details_open = false;
+                        cx.notify();
+                    }
+                }))
                 .on_click(cx.listener(move |this, _, _, cx| {
                     this.lightbox_copy(id == "lightbox-copy-image", cx)
                 }))
@@ -723,9 +783,161 @@ impl Root {
             .as_ref()
             .and_then(|open| open.more_at)
             .unwrap_or_else(|| gpui::point(px((self.viewport.0 - 276.).max(8.)), px(84.)));
+        let item = self
+            .lightbox
+            .as_ref()
+            .map(|open| open.items[open.index].clone());
+        let details = item.as_ref().and_then(|item| item.details.clone());
+        let details_open = self.lightbox.as_ref().is_some_and(|open| open.details_open);
+        let developer = self.developer_mode();
+        let separator = || {
+            div()
+                .my(px(4.))
+                .mx(px(4.))
+                .h(px(1.))
+                .bg(midnight("--border-subtle"))
+        };
+        // `eB` of module 2323: a row with its value under the label; a click copies the value.
+        let detail_row =
+            |id: &'static str, label: &'static str, value: String, cx: &mut Context<Self>| {
+                let copied = value.clone();
+                div()
+                    .id(id)
+                    .py(px(6.))
+                    .px(px(8.))
+                    .rounded(px(4.))
+                    .flex()
+                    .flex_col()
+                    .cursor_pointer()
+                    .hover(|this| this.bg(midnight("--background-mod-subtle")))
+                    .child(
+                        div()
+                            .text_size(px(14.))
+                            .line_height(px(18.))
+                            .font_weight(FontWeight(500.))
+                            .text_color(midnight("--text-default"))
+                            .child(label),
+                    )
+                    .child(
+                        div()
+                            .text_size(px(12.))
+                            .line_height(px(16.))
+                            .text_color(midnight("--text-muted"))
+                            .overflow_hidden()
+                            .text_ellipsis()
+                            .child(value),
+                    )
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        cx.write_to_clipboard(ClipboardItem::new_string(copied.clone()));
+                        this.show_success_toast("Copied to clipboard.".to_owned(), cx);
+                        if let Some(open) = this.lightbox.as_mut() {
+                            open.more = false;
+                            open.details_open = false;
+                        }
+                        cx.notify();
+                    }))
+            };
+        let submenu = details.as_ref().filter(|_| details_open).map(|details| {
+            div()
+                .id("lightbox-details-menu")
+                .occlude()
+                .absolute()
+                .left(px(196.))
+                .top(px(if is_video { 41. } else { 73. }))
+                .w(px(220.))
+                .p(px(8.))
+                .rounded(px(8.))
+                .border_1()
+                .border_color(midnight("--border-subtle"))
+                .bg(midnight("--background-surface-highest"))
+                .flex()
+                .flex_col()
+                .child(detail_row(
+                    "lightbox-details-name",
+                    "Filename",
+                    details.name.clone(),
+                    cx,
+                ))
+                .child(detail_row(
+                    "lightbox-details-size",
+                    "Size",
+                    details.size.clone(),
+                    cx,
+                ))
+                .children(details.alt.clone().map(|alt| {
+                    detail_row("lightbox-details-alt", "Description (Alt Text)", alt, cx)
+                }))
+                .on_click(|_, _, cx| cx.stop_propagation())
+        });
+        let view_details = details.as_ref().map(|_| {
+            div()
+                .id("lightbox-view-details")
+                .h(px(32.))
+                .px(px(8.))
+                .rounded(px(4.))
+                .flex()
+                .items_center()
+                .justify_between()
+                .cursor_pointer()
+                .when(details_open, |this| {
+                    this.bg(midnight("--background-mod-subtle"))
+                })
+                .hover(|this| this.bg(midnight("--background-mod-subtle")))
+                .text_size(px(14.))
+                .line_height(px(18.))
+                .font_weight(FontWeight(500.))
+                .text_color(midnight("--text-default"))
+                .child("View Details")
+                .child(
+                    gpui::svg()
+                        .path("icons/menu_caret.svg")
+                        .size(px(20.))
+                        .flex_none()
+                        .text_color(midnight("--text-muted")),
+                )
+                .on_hover(cx.listener(|this, hovered: &bool, _, cx| {
+                    if *hovered && let Some(open) = this.lightbox.as_mut() {
+                        open.details_open = true;
+                        cx.notify();
+                    }
+                }))
+        });
+        let copy_id = details.as_ref().filter(|_| developer).map(|details| {
+            let id = details.id.to_string();
+            div()
+                .id("lightbox-copy-attachment-id")
+                .h(px(32.))
+                .px(px(8.))
+                .rounded(px(4.))
+                .flex()
+                .items_center()
+                .cursor_pointer()
+                .hover(|this| this.bg(midnight("--background-mod-subtle")))
+                .text_size(px(14.))
+                .line_height(px(18.))
+                .font_weight(FontWeight(500.))
+                .text_color(midnight("--text-default"))
+                .child("Copy Attachment ID")
+                .on_hover(cx.listener(|this, hovered: &bool, _, cx| {
+                    if *hovered && let Some(open) = this.lightbox.as_mut() {
+                        open.details_open = false;
+                        cx.notify();
+                    }
+                }))
+                .on_click(cx.listener(move |this, _, _, cx| {
+                    cx.write_to_clipboard(ClipboardItem::new_string(id.clone()));
+                    if let Some(open) = this.lightbox.as_mut() {
+                        open.more = false;
+                    }
+                    cx.notify();
+                }))
+        });
+        // `image-menu` of module 2323: the copy group, View Details (attachments), Copy Attachment ID (Developer
+        // Mode).
         let menu = div()
             .id("lightbox-more-menu")
             .occlude()
+            .relative()
             .w(px(200.))
             .p(px(8.))
             .rounded(px(8.))
@@ -736,6 +948,12 @@ impl Root {
             .flex_col()
             .children((!is_video).then(|| row("lightbox-copy-image", "Copy Image", cx)))
             .child(row("lightbox-copy-link", "Copy Media Link", cx))
+            .when(view_details.is_some() || copy_id.is_some(), |this| {
+                this.child(separator())
+            })
+            .children(view_details)
+            .children(copy_id)
+            .children(submenu)
             .on_click(|_, _, cx| cx.stop_propagation());
         deferred(
             gpui::anchored()
@@ -861,6 +1079,23 @@ impl Root {
                     .children(thumbs),
             )
             .into_any_element()
+    }
+}
+
+#[cfg(test)]
+mod details_tests {
+    use super::{display_name, size_label};
+
+    /// Modules 465856 and 255438 as View Details uses them.
+    #[test]
+    fn details_name_and_size_follow_the_pinned_helpers() {
+        assert_eq!(display_name(Some("Holiday"), "IMG_0001.png"), "Holiday.png");
+        assert_eq!(display_name(Some("Notes"), "notes"), "Notes");
+        assert_eq!(display_name(None, "clip.mp4"), "clip.mp4");
+        assert_eq!(size_label(32_746), "1 MB");
+        assert_eq!(size_label(1_000_000), "1 MB");
+        assert_eq!(size_label(1_000_001), "2 MB");
+        assert_eq!(size_label(1_234_000_000), "1.2 GB");
     }
 }
 
