@@ -202,7 +202,7 @@ pub(super) fn set_pixel_ratio(ratio: f32) {
     }
 }
 
-fn pixel_ratio() -> f32 {
+pub(super) fn pixel_ratio() -> f32 {
     f32::from_bits(PIXEL_RATIO.load(std::sync::atomic::Ordering::Relaxed))
 }
 

@@ -2986,7 +2986,13 @@ impl Root {
                                                 ),
                                         )
                                         .children(user.tag.as_ref().map(|tag| {
-                                            self.server_tag_chip(tag).ml(px(4.)).flex_none()
+                                            self.server_tag_button(
+                                                tag,
+                                                format!("member-tag-{}", user.id),
+                                                cx,
+                                            )
+                                            .ml(px(4.))
+                                            .flex_none()
                                         }))
                                         .when(owner == Some(user.id), |this| {
                                             this.child(div().ml(px(4.)).child(icon(

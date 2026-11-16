@@ -1,6 +1,7 @@
 mod asar;
 mod audit;
 mod client;
+mod gaps;
 mod headless;
 mod layout;
 mod package;
@@ -27,6 +28,7 @@ fn main() -> Result<()> {
         ["snapshot", "pin", rest @ ..] => snapshot::pin(&repo_root(), rest),
         ["client", rest @ ..] => client::run(&repo_root(), rest),
         ["audit"] => audit::run(&repo_root()),
+        ["gaps"] => gaps::run(&repo_root()),
         ["report"] => report::run(&repo_root()),
         ["parity", rest @ ..] => parity::run(&repo_root(), rest),
         ["package"] => package::run(&repo_root()),

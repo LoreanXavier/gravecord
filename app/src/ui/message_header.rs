@@ -109,11 +109,38 @@ pub(super) fn established(guild: Id) -> String {
                 "zb2Q56",
                 createdAtDate = date
                     .with_timezone(&chrono::Local)
-                    .format("%B %-d, %Y")
+                    .format("%b %Y")
                     .to_string()
             )
         })
         .unwrap_or_default()
+}
+
+/// Module 649640 `_3`: a discoverable server's own banner (`custom_banner_hash`) as its discovery splash at 512 points
+/// (module 486020 `getGuildDiscoverySplashURL`, the size on the image ladder of module 776231 `kr`).
+fn splash_url(body: &serde_json::Value, guild: Id) -> Option<String> {
+    let hash = body["custom_banner_hash"]
+        .as_str()
+        .filter(|hash| !hash.is_empty())?;
+    let discoverable = body["features"]
+        .as_array()
+        .is_some_and(|list| list.iter().any(|one| one == "DISCOVERABLE"));
+    if !discoverable {
+        return None;
+    }
+    const LADDER: [u32; 31] = [
+        16, 20, 22, 24, 28, 32, 40, 44, 48, 56, 60, 64, 80, 96, 100, 128, 160, 240, 256, 300, 320,
+        480, 512, 600, 640, 1024, 1280, 1536, 2048, 3072, 4096,
+    ];
+    let wanted = (512. * super::media_image::pixel_ratio()) as u32;
+    let size = LADDER
+        .iter()
+        .copied()
+        .find(|step| wanted <= *step)
+        .unwrap_or(4096);
+    Some(format!(
+        "https://cdn.discordapp.com/discovery-splashes/{guild}/{hash}.jpg?size={size}"
+    ))
 }
 
 /// The `{n} Members` count (`zRl6XR`).
@@ -420,7 +447,12 @@ impl Root {
         cx.notify();
     }
 
-    fn open_guild_tag_popout(&mut self, guild: Id, anchor: Bounds<Pixels>, cx: &mut Context<Self>) {
+    pub(super) fn open_guild_tag_popout(
+        &mut self,
+        guild: Id,
+        anchor: Bounds<Pixels>,
+        cx: &mut Context<Self>,
+    ) {
         self.tip = None;
         self.tip_pending = None;
         let key = profile_key(guild);
@@ -472,6 +504,9 @@ impl Root {
         }
         if let Some(badge) = body["badge_hash"].as_str() {
             let url = format!("https://cdn.discordapp.com/clan-badges/{guild}/{badge}.png?size=16");
+            self.request_image(url.clone(), url);
+        }
+        if let Some(url) = splash_url(&body, guild) {
             self.request_image(url.clone(), url);
         }
     }
@@ -621,10 +656,15 @@ impl Root {
         let discoverable = body["features"]
             .as_array()
             .is_some_and(|list| list.iter().any(|one| one == "DISCOVERABLE"));
-        let banner = body["brand_color_primary"]
+        // Module 42780 `A`: the splash of a discoverable server with its own banner, else module 649640 `n6`'s gradient
+        // of the brand colour, or of the icon's main colour (`aG`).
+        let splash = splash_url(body, guild).and_then(|url| self.images.get(&url).cloned());
+        let base = body["brand_color_primary"]
             .as_str()
             .and_then(|hex| u32::from_str_radix(hex.trim_start_matches('#'), 16).ok())
-            .map_or_else(|| color("--brand-500"), gpui::rgb);
+            .map(|rgb| [(rgb >> 16) as u8, (rgb >> 8) as u8, rgb as u8])
+            .unwrap_or_else(|| self.guild_banner_base(guild));
+        let banner_picture = splash.unwrap_or_else(|| self.banner_image(base, 300, 120));
         let icon_image = self.images.get(&format!("guild:{guild}")).cloned();
         let acronym = dc_state::Guild::acronym_of(&name);
         let button = if joined {
@@ -653,7 +693,12 @@ impl Root {
             .occlude()
             .flex()
             .flex_col()
-            .child(div().h(px(120.)).w_full().bg(banner))
+            .child(
+                img(banner_picture)
+                    .h(px(120.))
+                    .w_full()
+                    .object_fit(gpui::ObjectFit::Cover),
+            )
             .child(
                 div().mt(px(-34.)).px(px(16.)).flex().child(
                     div()
@@ -674,7 +719,11 @@ impl Root {
                                 .bg(color("--background-mod-muted"))
                                 .text_size(px(22.))
                                 .text_color(color("--text-default"))
-                                .children(icon_image.clone().map(|image| img(image).size(px(64.))))
+                                .children(
+                                    icon_image
+                                        .clone()
+                                        .map(|image| img(image).size(px(64.)).rounded(px(16.))),
+                                )
                                 .when(icon_image.is_none(), |this| this.child(acronym)),
                         ),
                 ),
