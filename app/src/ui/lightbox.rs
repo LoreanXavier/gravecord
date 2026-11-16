@@ -515,6 +515,19 @@ impl Root {
                     div()
                         .id("lightbox-video-stage")
                         .on_click(|_, _, cx| cx.stop_propagation())
+                        // Module 2323: the media component's `onContextMenu` is the same for a video as for a
+                        // picture (`image-menu`, without Copy Image).
+                        .on_mouse_up(
+                            MouseButton::Right,
+                            cx.listener(|this, event: &gpui::MouseUpEvent, _, cx| {
+                                if let Some(open) = this.lightbox.as_mut() {
+                                    open.more = true;
+                                    open.more_at = Some(event.position);
+                                }
+                                cx.stop_propagation();
+                                cx.notify();
+                            }),
+                        )
                         .child(player),
                 )
         } else {
