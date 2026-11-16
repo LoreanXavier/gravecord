@@ -96,6 +96,8 @@ pub(super) enum Action {
     /// A picture of the message (module 115184).
     CopyImage,
     SaveImage,
+    /// "Save File" of a voice message (module 761304 `save-voice-message-audio`): its audio file is downloaded.
+    SaveVoiceFile,
     /// "Report Message" (module 847342): other people's messages, a danger row at the bottom.
     Report,
     /// "Remove Reactions" (a submenu of one row per emoji, `tT`) and "Remove All Reactions" (`tG`) of module 761304:
@@ -138,6 +140,8 @@ pub(super) struct SavedState {
     pub link: LinkKind,
     /// The pointer was on a picture the app can copy and save.
     pub image: bool,
+    /// A voice message with its audio file: Save File joins the picture rows' group.
+    pub voice_file: bool,
     /// A direct message: threads grow only in server channels.
     pub no_thread: bool,
     /// The message failed to send (`state === SEND_FAILED`): no Edit, Reply, Forward or Pin, and Resend message.
@@ -453,15 +457,16 @@ pub(super) fn message_items_saved(own: bool, saved: SavedState) -> Vec<Item> {
 
     // Module 761304 puts the picture rows (115184, in `tz`) and the link rows (777933, `tX`) in a group each, after
     // the delete group when the menu is the hover bar's or a right press's (`to`).
+    // `tz`: the picture rows (`tP`), then Save File of a voice message (`tB`).
+    let mut pictures = Vec::new();
     if saved.image {
-        push_menu_group(
-            &mut items,
-            vec![
-                Item::Entry("Copy Image", "clips_image", Action::CopyImage, false),
-                Item::Entry("Save Image", "clips_image", Action::SaveImage, false),
-            ],
-        );
+        pictures.push(Item::Entry("Copy Image", "clips_image", Action::CopyImage, false));
+        pictures.push(Item::Entry("Save Image", "clips_image", Action::SaveImage, false));
     }
+    if saved.voice_file {
+        pictures.push(Item::Entry("Save File", "clips_download", Action::SaveVoiceFile, false));
+    }
+    push_menu_group(&mut items, pictures);
     let mut media = Vec::new();
     let (copy, open) = match saved.link {
         LinkKind::None => (None, None),
@@ -632,6 +637,7 @@ impl Root {
             no_thread: self.guild.is_none(),
             failed: self.send_state_of(message) == Some(super::send_state::SendState::Failed),
             image: matches!(&self.menu_extra.hit, Some(Hit::Media { key, .. }) if self.images.contains_key(key)),
+            voice_file: found.is_some_and(|known| known.is_voice_message() && !known.attachments.is_empty()),
             no_react: !self.pref_on("chat_emoji_render_reactions", true)
                 || channel.is_some_and(|channel| {
                     !self.can_in_channel(channel, dc_state::permissions::ADD_REACTIONS)
@@ -1817,6 +1823,38 @@ mod tests {
                 Action::Delete
             )]
         );
+    }
+
+    /// Module 761304/777933: a voice message adds Save File to the media group; a video attachment's address reads as a
+    /// media link, an audio file's as a plain link (`.mp3`/`.wav` are not in `_`).
+    #[test]
+    fn attachment_menus_follow_the_media_kind() {
+        let tail = |saved: super::SavedState, count: usize| -> Vec<&'static str> {
+            let items = super::message_items_saved(false, saved);
+            let labels: Vec<&'static str> = items
+                .iter()
+                .map(|item| match item {
+                    Item::Entry(label, ..) | Item::Danger(label, ..) => *label,
+                    Item::Separator => "-",
+                })
+                .collect();
+            labels[labels.len() - count..].to_vec()
+        };
+        let voice = super::SavedState {
+            voice_file: true,
+            ..Default::default()
+        };
+        assert_eq!(tail(voice, 2), ["-", "Save File"]);
+        let video = super::SavedState {
+            link: super::LinkKind::of("https://cdn.discordapp.com/attachments/1/2/clip.mp4?ex=1"),
+            ..Default::default()
+        };
+        assert_eq!(tail(video, 3), ["-", "Copy Media Link", "Open Media Link"]);
+        let audio = super::SavedState {
+            link: super::LinkKind::of("https://cdn.discordapp.com/attachments/1/2/song.mp3"),
+            ..Default::default()
+        };
+        assert_eq!(tail(audio, 3), ["-", "Copy Link", "Open Link"]);
     }
 
     #[test]

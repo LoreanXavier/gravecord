@@ -455,6 +455,20 @@ impl Root {
                                 // The name is a plain anchor (`href` = the file): the link interceptor opens it.
                                 this.follow_link(&name_click.url, &name_click.filename, cx);
                             }))
+                            // The anchor under a right press gives the message menu its link rows (module 761304
+                            // walks up to the `<a>`: `href` and its text).
+                            .on_mouse_up(MouseButton::Right, {
+                                let (url, label) = (attachment.url.clone(), attachment.filename.clone());
+                                cx.listener(move |this, event: &gpui::MouseUpEvent, _, _| {
+                                    this.menu_hit = Some((
+                                        event.position,
+                                        super::menu::Hit::Link {
+                                            url: url.clone(),
+                                            label: label.clone(),
+                                        },
+                                    ));
+                                })
+                            })
                             .child(attachment.filename.clone()),
                     )
                     .child(

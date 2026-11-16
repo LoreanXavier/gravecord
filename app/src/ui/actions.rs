@@ -244,6 +244,11 @@ impl Root {
                 }
             }
             Action::SaveImage => self.save_menu_image(cx),
+            Action::SaveVoiceFile => {
+                if let Some(attachment) = message.attachments.first() {
+                    self.download_attachment(attachment, cx);
+                }
+            }
             Action::Forward => self.open_forward(message, window, cx),
             Action::Thread => self.open_new_thread_from(message, window, cx),
             Action::ViewReactions => self.open_view_reactions(message, cx),

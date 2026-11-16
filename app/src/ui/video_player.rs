@@ -1660,6 +1660,12 @@ impl Root {
         let (move_hub, move_key) = (hub.clone(), key.clone());
         let (click_hub, click_key) = (hub.clone(), key.clone());
         let show_actions = spec.actions.is_some();
+        // Module 761304: the media mosaic passes the attachment (`mediaItem`), so the message menu's link rows use its
+        // address (module 777933: a video by its extension reads Copy Media Link / Open Media Link).
+        let menu_url = spec
+            .actions
+            .as_ref()
+            .map(|actions| actions.attachment.url.clone());
 
         div()
             .id(("video-player", key_hash))
@@ -1668,6 +1674,20 @@ impl Root {
             .w(px(spec.width))
             .h(px(spec.height))
             .flex_none()
+            .when_some(menu_url, |this, url| {
+                this.on_mouse_up(
+                    MouseButton::Right,
+                    cx.listener(move |this, event: &gpui::MouseUpEvent, _, _| {
+                        this.menu_hit = Some((
+                            event.position,
+                            super::menu::Hit::Link {
+                                url: url.clone(),
+                                label: String::new(),
+                            },
+                        ));
+                    }),
+                )
+            })
             .on_hover(cx.listener(move |this, inside: &bool, _, cx| {
                 if let Some(entry) = hover_hub.borrow_mut().entries.get_mut(&hover_key) {
                     entry.mouse_inside = *inside;
