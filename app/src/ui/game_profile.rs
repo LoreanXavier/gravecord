@@ -243,6 +243,28 @@ fn link_glyphs(game: &Value) -> Vec<(&'static str, String)> {
         .collect()
 }
 
+/// `background-size: cover; background-position: 50% 50%` of a `width` by `height` box: the picture at the scale that
+/// covers it, centred, for the box to clip. Placed by hand because the image element here keeps the picture's own
+/// height under `object_fit(Cover)`.
+fn cover_fit(picture: std::sync::Arc<gpui::Image>, width: f32, height: f32) -> gpui::AnyElement {
+    let natural = image::ImageReader::new(std::io::Cursor::new(&picture.bytes))
+        .with_guessed_format()
+        .ok()
+        .and_then(|reader| reader.into_dimensions().ok());
+    let Some((natural_width, natural_height)) = natural.filter(|(w, h)| *w > 0 && *h > 0) else {
+        return img(picture).w(px(width)).h(px(height)).into_any_element();
+    };
+    let scale = (width / natural_width as f32).max(height / natural_height as f32);
+    let (shown_width, shown_height) = (natural_width as f32 * scale, natural_height as f32 * scale);
+    img(picture)
+        .absolute()
+        .left(px((width - shown_width) / 2.))
+        .top(px((height - shown_height) / 2.))
+        .w(px(shown_width))
+        .h(px(shown_height))
+        .into_any_element()
+}
+
 /// The genres as `t4` joins them.
 fn genres(game: &Value) -> String {
     game["genres"]
@@ -683,7 +705,8 @@ impl Root {
                                     .line_height(px(16.))
                                     .font_weight(FontWeight(600.))
                                     .text_color(rgb(0x000000))
-                                    .child(format!("#{rank} Global Rank")),
+                                    // `gameRankPill`: upper case, as the capture shows ("#2 GLOBAL RANK").
+                                    .child(format!("#{rank} Global Rank").to_uppercase()),
                             )
                     }))
                     .child(
@@ -1011,8 +1034,29 @@ impl Root {
             .track_scroll(&open.scroll)
             .child(
                 div()
+                    .relative()
                     .flex()
                     .flex_col()
+                    // `t8`: the banner art 500px high under a gradient to the dialog's colour 200px down; it sits
+                    // at the top of the page and scrolls away with it (the scrolled capture shows none of it).
+                    .children(banner.map(|banner| {
+                        div()
+                            .absolute()
+                            .top_0()
+                            .left_0()
+                            .right_0()
+                            .h(px(500.))
+                            // gpui draws a covered picture past its box: the box clips it, as CSS does.
+                            .overflow_hidden()
+                            .child(cover_fit(banner, 1198., 500.))
+                    }))
+                    .child(div().absolute().top_0().left_0().right_0().h(px(638.)).bg(
+                        gpui::linear_gradient(
+                            180.,
+                            gpui::linear_color_stop(gpui::hsla(0., 0., 0., 0.), 0.),
+                            gpui::linear_color_stop(color("--background-base-lower"), 200. / 638.),
+                        ),
+                    ))
                     .child(div().h(px(57.)).flex_none())
                     .child(hero)
                     .when(tab == Tab::Overview, |this| {
@@ -1038,21 +1082,6 @@ impl Root {
             .border_color(color("--border-subtle"))
             .bg(color("--background-base-lower"))
             .overflow_hidden()
-            // `t8`: the banner art 500px high under a gradient to the dialog's colour 200px down.
-            .children(banner.map(|banner| {
-                div()
-                    .absolute()
-                    .top_0()
-                    .left_0()
-                    .right_0()
-                    .h(px(500.))
-                    .child(img(banner).size_full().object_fit(gpui::ObjectFit::Cover))
-            }))
-            .child(div().absolute().inset_0().bg(gpui::linear_gradient(
-                180.,
-                gpui::linear_color_stop(gpui::hsla(0., 0., 0., 0.), 0.),
-                gpui::linear_color_stop(color("--background-base-lower"), 200. / 638.),
-            )))
             .child(content)
             .child(bar);
         Some(
