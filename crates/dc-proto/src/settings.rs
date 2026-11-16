@@ -240,6 +240,9 @@ pub const PROTO_PREFS: &[ProtoPref] = &[
     // animate_emoji 14, animate_stickers 15, enable_tts_command 16, message_display_compact 17,
     // convert_emoticons 21, use_legacy_chat_input 24, include_stickers_in_autocomplete 28.
     pref("chat_text_box_previews", &[6, 2], 1),
+    // show_command_suggestions 8 (`showCommandSuggestions`, on unless set): the composer menu's Suggestions >
+    // Slash Commands (module 194400).
+    pref("show_command_suggestions", &[6, 8], 1),
     pref("chat_threads_split_view", &[6, 3], 1),
     pref("chat_inline_media_image_descriptions", &[6, 7], 1),
     pref("chat_inline_media_uploads", &[6, 9], 1),

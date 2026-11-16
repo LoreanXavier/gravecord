@@ -812,6 +812,22 @@ impl Editor {
             spell.typing_hold = false;
         }
         let at = self.index_for_window_point(event.position);
+        // Double and triple clicks select a word or the line (Chromium on Windows, probed in the official composer).
+        match event.click_count {
+            2 => {
+                self.buffer.select_word_at(at);
+                self.dragging = false;
+                cx.notify();
+                return;
+            }
+            count if count >= 3 => {
+                self.buffer.select_line_at(at);
+                self.dragging = false;
+                cx.notify();
+                return;
+            }
+            _ => {}
+        }
         if event.modifiers.shift {
             self.buffer.select_to(at);
         } else {

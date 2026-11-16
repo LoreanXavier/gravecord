@@ -262,6 +262,64 @@ impl TextBuffer {
         self.last_edit = Edit::Other;
     }
 
+    /// A double click, as Chromium does it on Windows: the word at `at` (the character after it, or the last one at the
+    /// end) with the spaces that follow it; on a run of spaces, that run.
+    pub fn select_word_at(&mut self, at: usize) {
+        let text = &self.text;
+        if text.is_empty() {
+            return;
+        }
+        let at = at.min(text.len());
+        let probe = if at == text.len() {
+            previous_boundary(text, at)
+        } else {
+            at
+        };
+        let Some(character) = text[probe..].chars().next() else {
+            return;
+        };
+        let (start, end) = if is_word(character) {
+            let start = text[..probe]
+                .char_indices()
+                .rev()
+                .find(|(_, c)| !is_word(*c))
+                .map_or(0, |(index, c)| index + c.len_utf8());
+            let after = &text[probe..];
+            let word_end = probe + after.find(|c: char| !is_word(c)).unwrap_or(after.len());
+            let rest = &text[word_end..];
+            let spaces = rest.len() - rest.trim_start_matches([' ', '\t']).len();
+            (start, word_end + spaces)
+        } else if character == ' ' || character == '\t' {
+            let start = text[..probe]
+                .char_indices()
+                .rev()
+                .find(|(_, c)| *c != ' ' && *c != '\t')
+                .map_or(0, |(index, c)| index + c.len_utf8());
+            let after = &text[probe..];
+            (
+                start,
+                probe + after.len() - after.trim_start_matches([' ', '\t']).len(),
+            )
+        } else {
+            (probe, probe + character.len_utf8())
+        };
+        self.selection = start..end;
+        self.reversed = false;
+        self.last_edit = Edit::Other;
+    }
+
+    /// A triple click: the line (paragraph) around `at`.
+    pub fn select_line_at(&mut self, at: usize) {
+        let at = at.min(self.text.len());
+        let start = self.text[..at].rfind('\n').map_or(0, |index| index + 1);
+        let end = self.text[at..]
+            .find('\n')
+            .map_or(self.text.len(), |index| at + index);
+        self.selection = start..end;
+        self.reversed = false;
+        self.last_edit = Edit::Other;
+    }
+
     pub fn select_all(&mut self) {
         self.selection = 0..self.text.len();
         self.reversed = false;
@@ -405,6 +463,25 @@ impl TextBuffer {
 #[cfg(test)]
 mod tests {
     use super::TextBuffer;
+
+    #[test]
+    fn double_and_triple_clicks_select_as_the_official_composer() {
+        let mut buffer = TextBuffer::default();
+        buffer.insert("hello brave world");
+        // Probed in the official composer: the word and its trailing space; the last word alone.
+        buffer.select_word_at(2);
+        assert_eq!(buffer.selected_text(), "hello ");
+        buffer.select_word_at(6);
+        assert_eq!(buffer.selected_text(), "brave ");
+        buffer.select_word_at(17);
+        assert_eq!(buffer.selected_text(), "world");
+        buffer.select_line_at(3);
+        assert_eq!(buffer.selected_text(), "hello brave world");
+        let mut lines = TextBuffer::default();
+        lines.insert("one two\nthree");
+        lines.select_line_at(9);
+        assert_eq!(lines.selected_text(), "three");
+    }
 
     #[test]
     fn single_line_edits_preserve_suffixes_and_composition_offsets() {

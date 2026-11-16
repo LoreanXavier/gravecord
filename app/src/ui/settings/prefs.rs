@@ -276,6 +276,13 @@ impl Root {
         }
     }
 
+    /// Flips an on/off preference from outside the settings pages (a menu's checkbox), the way its row does.
+    pub(in crate::ui) fn toggle_pref(&mut self, key: &'static str, default: bool) {
+        let on = !self.pref_on(key, default);
+        self.setting_choices.insert(key, Choice::On(on));
+        self.pref_changed(key, on, 0);
+    }
+
     /// A generated row of one of these preferences changed (`setting_choices` already holds the new value). True when
     /// the key is one of them.
     pub(super) fn pref_changed(&mut self, key: &'static str, on: bool, index: usize) -> bool {
@@ -486,7 +493,12 @@ mod tests {
         let pages = include_str!("pages.rs");
         // The colour theme is set by the Appearance page's colour tiles (`client_theme.rs`), which have no row key.
         // "Enable Family Center tab" is drawn by the Family Center panel's Settings tab (`account_nested.rs`).
-        const TILES: &[&str] = &["appearance_client_theme_preset", "family_center_enabled"];
+        // Slash command suggestions are switched from the composer menu's Suggestions submenu (module 194400).
+        const TILES: &[&str] = &[
+            "appearance_client_theme_preset",
+            "family_center_enabled",
+            "show_command_suggestions",
+        ];
         for pref in PROTO_PREFS.iter().filter(|pref| !TILES.contains(&pref.key)) {
             assert!(
                 pages.contains(&format!("key: \"{}\"", pref.key)),

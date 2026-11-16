@@ -145,6 +145,10 @@ pub(super) enum Act {
     AddToDictionary,
     RemoveFromDictionary,
     Spellcheck,
+    /// The composer menu's Suggestions submenu (Slash Commands).
+    Suggestions,
+    /// The composer menu's Send Message Button checkbox (`AccessibilityStore.isSubmitButtonEnabled`).
+    SubmitButton,
     SpellLanguages,
     Cut,
     Copy,
@@ -165,7 +169,7 @@ impl Act {
     /// Every row kind once (`Correction` with its first index). `ordinal` is an exhaustive match, so adding a variant
     /// without listing it here fails the build or the `act_list_is_complete` test.
     #[cfg(test)]
-    pub(super) const ALL: [Act; 87] = [
+    pub(super) const ALL: [Act; 89] = [
         Act::InventoryAbout,
         Act::InventoryHide,
         Act::ReportApp,
@@ -253,6 +257,8 @@ impl Act {
         Act::ViewAllActivity,
         Act::ManageSpotifyPrivacy,
         Act::ReportGameIssue,
+        Act::Suggestions,
+        Act::SubmitButton,
     ];
 
     #[cfg(test)]
@@ -345,6 +351,8 @@ impl Act {
             Act::ViewAllActivity => 84,
             Act::ManageSpotifyPrivacy => 85,
             Act::ReportGameIssue => 86,
+            Act::Suggestions => 87,
+            Act::SubmitButton => 88,
         }
     }
 }
@@ -436,6 +444,8 @@ pub(super) fn status(act: Act) -> Status {
         | Act::RemoveFromDictionary
         | Act::Spellcheck
         | Act::SpellLanguages
+        | Act::Suggestions
+        | Act::SubmitButton
         | Act::Cut
         | Act::Copy
         | Act::Paste
@@ -551,6 +561,30 @@ pub(super) enum Entry {
     Separator,
 }
 
+/// A menu's height: its rows, 17px per separator, and the 8px padding and 1px border at the top and bottom.
+fn menu_height(items: &[Entry]) -> f32 {
+    items
+        .iter()
+        .map(|entry| match entry {
+            Entry::Row(row) => row.height(),
+            Entry::Separator => 17.,
+        })
+        .sum::<f32>()
+        + 18.
+}
+
+/// The layer's `autoInvert`: a menu that does not fit under the pointer opens above it, its bottom at the pointer, when
+/// it fits there (the composer menu, `menus/composer-context-empty`); else it keeps the pointer and the window snaps it
+/// 8px from the edge (the member menu).
+fn flip_above(at: Point<Pixels>, height: f32, window_height: f32) -> Point<Pixels> {
+    let y = f32::from(at.y);
+    if y + height > window_height - 8. && y - height >= 8. {
+        gpui::point(at.x, px(y - height))
+    } else {
+        at
+    }
+}
+
 /// Drops separators that lead, trail or repeat, as the official lists do when a group is empty.
 fn tidy(entries: Vec<Entry>) -> Vec<Entry> {
     let mut out: Vec<Entry> = Vec::new();
@@ -630,12 +664,16 @@ pub(super) struct ComposerMenu {
     pub learned: Option<String>,
     pub selection: bool,
     pub enabled: bool,
+    /// The send button shows in the composer (`isSubmitButtonEnabled`).
+    pub send_button: bool,
 }
 
 /// `textarea-context` (module 194400) with the spelling section of module 413756: the corrections, then Add to
 /// Dictionary (or Remove from Dictionary when the click is on no misspelling and the text holds a learned word), the
-/// Spellcheck switch and Languages, then Cut and Copy with a selection, then Paste. The Suggestions submenu, the send
-/// button switch and the AI rows of the official menu are account features this client does not have yet.
+/// Spellcheck switch and Languages, then Cut and Copy with a selection, then Paste; above them, ungrouped, Suggestions (a
+/// submenu with the Slash Commands checkbox) and the Send Message Button checkbox, which a chat composer always has
+/// (`commands.enabled`, `submit.button`). The AI rows of the official menu are account features this client does not
+/// have.
 /// `m` in module 586193: Report App (danger, a flag), then Copy Application ID in its own group when developer mode is on
 /// (`devmode-copy-id`, module 50268). The page's Copy Link button covers the wide layout, so the menu has no such row.
 pub(super) fn app_directory_items(developer: bool) -> Vec<Entry> {
@@ -674,7 +712,12 @@ pub(super) fn launcher_app_items(developer: bool) -> Vec<Entry> {
 }
 
 pub(super) fn composer_items(menu: &ComposerMenu) -> Vec<Entry> {
-    let mut out = Vec::new();
+    let mut out = vec![
+        Entry::Row(Row::new(Act::Suggestions, dc_intl::tr("Suggestions")).caret()),
+        Entry::Row(
+            Row::new(Act::SubmitButton, dc_intl::tr("Send Message Button")).check(menu.send_button),
+        ),
+    ];
     group(
         &mut out,
         menu.suggestions
@@ -2384,6 +2427,7 @@ impl Root {
         let items = self.adjust_menu_rows(target, items);
         self.close_all_context_menus();
         self.menu_scroll.set_offset(gpui::point(px(0.), px(0.)));
+        let at = flip_above(at, menu_height(&items), self.viewport.1);
         self.context.open = Some(Open {
             target,
             at,
@@ -2417,6 +2461,7 @@ impl Root {
             suggestions: Vec::new(),
             selection: !click.selected.is_empty(),
             enabled,
+            send_button: self.pref_on("enable_send_button_outside_experiment", false),
         };
         let Some((_, word)) = menu.word.clone() else {
             self.context.composer = Some(menu);
@@ -3135,6 +3180,9 @@ impl Root {
                     self.refresh_spelling(cx);
                 }
             }
+            (Act::SubmitButton, Target::Composer) => {
+                self.toggle_pref("enable_send_button_outside_experiment", false);
+            }
             (Act::Spellcheck, Target::Composer) => {
                 spellcheck::toggle();
                 self.refresh_spelling(cx);
@@ -3332,6 +3380,11 @@ impl Root {
             ..SubRow::default()
         };
         match act {
+            // `command-suggestions` of module 194400: Slash Commands, checked by the account's setting.
+            Act::Suggestions => vec![plain(
+                dc_intl::tr("Slash Commands"),
+                self.pref_on("show_command_suggestions", true),
+            )],
             Act::Roles => match target {
                 Target::User {
                     user,
@@ -3618,6 +3671,11 @@ impl Root {
     ) {
         let row = self.context_sub_rows(act, target).into_iter().nth(index);
         match act {
+            Act::Suggestions => {
+                if row.is_some() {
+                    self.toggle_pref("show_command_suggestions", true);
+                }
+            }
             Act::Roles => {
                 let (
                     Some(row),
@@ -4682,6 +4740,23 @@ mod tests {
     }
 
     #[test]
+    fn a_menu_that_fits_above_the_pointer_opens_there() {
+        let at = gpui::point(px(600.), px(682.));
+        // The composer menu: 228px high, its bottom at the pointer.
+        assert_eq!(flip_above(at, 228., 720.), gpui::point(px(600.), px(454.)));
+        // Room below: unchanged.
+        assert_eq!(
+            flip_above(gpui::point(px(600.), px(100.)), 228., 720.),
+            gpui::point(px(600.), px(100.))
+        );
+        // Too tall for either side: unchanged, the window snaps it.
+        assert_eq!(
+            flip_above(gpui::point(px(600.), px(300.)), 600., 720.),
+            gpui::point(px(600.), px(300.))
+        );
+    }
+
+    #[test]
     fn heights_follow_the_captures() {
         let items = channel_items(ChannelFacts::default(), "All Messages");
         let heights: Vec<f32> = items
@@ -5073,10 +5148,14 @@ mod tests {
             learned: None,
             selection: true,
             enabled: true,
+            send_button: false,
         };
         assert_eq!(
             labels(&composer_items(&menu)),
             [
+                "Suggestions",
+                "Send Message Button",
+                "-",
                 "hello",
                 "halo",
                 "helot",
@@ -5100,7 +5179,15 @@ mod tests {
         };
         assert_eq!(
             labels(&composer_items(&menu)),
-            ["Remove from Dictionary", "Spellcheck", "-", "Paste"]
+            [
+                "Suggestions",
+                "Send Message Button",
+                "-",
+                "Remove from Dictionary",
+                "Spellcheck",
+                "-",
+                "Paste"
+            ]
         );
     }
 }
