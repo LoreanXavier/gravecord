@@ -1,0 +1,5 @@
+{
+  "context-menu": { "class": "menu_M3qk4j" },
+  "activity-menu-row": { "class": "labelContainer_M3qk4j", "ancestor_id": "content-inventory-context" },
+  "activity-menu-label": { "class": "label_M3qk4j", "ancestor_id": "content-inventory-context" }
+}

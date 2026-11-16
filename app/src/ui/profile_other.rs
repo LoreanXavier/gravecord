@@ -500,7 +500,7 @@ impl Root {
                     .text_size(px(14.)).line_height(px(18.)).text_color(strong)
                     .child(format!("{display_name}'s profile is private, so some info is hidden. Add them as a friend to see more."))
             ))
-            .children(self.live_activity_cards(id, false, strong, subtle, cx))
+            .children(self.live_activity_cards(id, super::live_activity::Surface::Popout, strong, subtle, cx))
             .children(self.popout_voice_card(id, cx))
             .children(self.profile_role_chips(id, strong))
             .into_any_element();

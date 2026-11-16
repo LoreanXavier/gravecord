@@ -1255,7 +1255,13 @@ impl Root {
             )
             .into_any_element();
         let games = self.game_collection("dm-profile", user_id, palette, cx);
-        let activity = self.live_activity_cards(user_id, false, palette.text, palette.subtle, cx);
+        let activity = self.live_activity_cards(
+            user_id,
+            super::live_activity::Surface::Sidebar,
+            palette.text,
+            palette.subtle,
+            cx,
+        );
         let wishlist = self.wishlist_breadcrumb("dm-profile", user_id, palette, window, cx);
         SidebarParts {
             names,

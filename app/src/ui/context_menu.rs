@@ -24,6 +24,10 @@ pub(super) enum Target {
     InventoryAuthor {
         user: Id,
     },
+    SpotifyActivity {
+        user: Id,
+        popout: bool,
+    },
     Guild(Id),
     Channel(Id),
     Category(Id),
@@ -45,6 +49,8 @@ pub(super) enum Target {
 pub(super) enum Act {
     InventoryAbout,
     InventoryHide,
+    ViewAllActivity,
+    ManageSpotifyPrivacy,
     ReportApp,
     MarkRead,
     Invite,
@@ -149,7 +155,7 @@ impl Act {
     /// Every row kind once (`Correction` with its first index). `ordinal` is an exhaustive match, so adding a variant
     /// without listing it here fails the build or the `act_list_is_complete` test.
     #[cfg(test)]
-    pub(super) const ALL: [Act; 84] = [
+    pub(super) const ALL: [Act; 86] = [
         Act::InventoryAbout,
         Act::InventoryHide,
         Act::ReportApp,
@@ -234,6 +240,8 @@ impl Act {
         Act::StageInvite,
         Act::StageLeave,
         Act::StageMoveToAudience,
+        Act::ViewAllActivity,
+        Act::ManageSpotifyPrivacy,
     ];
 
     #[cfg(test)]
@@ -323,6 +331,8 @@ impl Act {
             Act::StageInvite => 81,
             Act::StageLeave => 82,
             Act::StageMoveToAudience => 83,
+            Act::ViewAllActivity => 84,
+            Act::ManageSpotifyPrivacy => 85,
         }
     }
 }
@@ -343,6 +353,8 @@ pub(super) fn status(act: Act) -> Status {
         Act::ModView => Wired,
         Act::InventoryAbout
         | Act::InventoryHide
+        | Act::ViewAllActivity
+        | Act::ManageSpotifyPrivacy
         | Act::ReportApp
         | Act::MarkRead
         | Act::Invite
@@ -547,6 +559,24 @@ fn group(entries: &mut Vec<Entry>, rows: Vec<Row>) {
     }
     entries.push(Entry::Separator);
     entries.extend(rows.into_iter().map(Entry::Row));
+}
+
+/// Live Spotify entries of 285909: the popout links to all activity; only our own card has privacy settings.
+pub(super) fn spotify_activity_items(own: bool, popout: bool) -> Vec<Entry> {
+    let mut items = Vec::new();
+    if popout {
+        items.push(Entry::Row(Row::new(
+            Act::ViewAllActivity,
+            dc_intl::tr("View All Activity"),
+        )));
+    }
+    if own {
+        items.push(Entry::Row(Row::new(
+            Act::ManageSpotifyPrivacy,
+            dc_intl::tr("Manage Privacy"),
+        )));
+    }
+    items
 }
 
 /// The help page the composer menu's Languages row opens: `getArticleURL(SPELLCHECK)` (module 413756).
@@ -1776,6 +1806,51 @@ impl Root {
         format!("menu open for {target:?}")
     }
 
+    /// Isolated menu capture at the fixture reference's coordinates; card placement is tested through its button.
+    #[cfg(feature = "capture")]
+    pub(crate) fn script_spotify_context(
+        &mut self,
+        who: &str,
+        surface: &str,
+        cx: &mut Context<Self>,
+    ) -> String {
+        let me = self.stores.current_user.as_ref().map(|me| me.id);
+        let user = match who {
+            "self" => me,
+            "other" => self
+                .stores
+                .private_channels
+                .iter()
+                .find(|channel| channel.id == 1_568_693_333_864_480_939)
+                .and_then(|channel| {
+                    channel
+                        .recipients
+                        .iter()
+                        .copied()
+                        .find(|id| Some(*id) != me)
+                }),
+            _ => None,
+        };
+        let Some(user) = user else {
+            return "Spotify menu: fixture person unavailable".into();
+        };
+        let popout = match surface {
+            "popout" => true,
+            "sidebar" | "modal" => false,
+            _ => return "Spotify menu: unknown surface".into(),
+        };
+        if spotify_activity_items(Some(user) == me, popout).is_empty() {
+            self.close_context_menu(cx);
+            return "Spotify menu: no entries on this surface".into();
+        }
+        self.open_context_menu(
+            Target::SpotifyActivity { user, popout },
+            gpui::point(px(986.), px(456.)),
+            cx,
+        );
+        "Spotify menu: opened".into()
+    }
+
     /// Harness: whether a submenu is open and how many rows it holds.
     #[cfg(feature = "capture")]
     pub(crate) fn script_context_sub_state(&self) -> String {
@@ -1949,6 +2024,13 @@ impl Root {
         let stage_channel_items = std::mem::take(&mut self.context.stage_channel_items);
         let omit_mention = std::mem::take(&mut self.context.omit_mention);
         let items = match target {
+            Target::SpotifyActivity { user, popout } => spotify_activity_items(
+                self.stores
+                    .current_user
+                    .as_ref()
+                    .is_some_and(|me| me.id == user),
+                popout,
+            ),
             Target::InventoryAuthor { .. } => {
                 let mut items = vec![Entry::Row(Row::new(Act::Profile, dc_intl::tr("Profile")))];
                 if developer {
@@ -2352,6 +2434,54 @@ impl Root {
         });
     }
 
+    /// The live card's More button opens beside its measured bounds (285909).
+    pub(super) fn open_live_activity_menu(
+        &mut self,
+        user: Id,
+        spotify: bool,
+        popout: bool,
+        anchor: &SharedString,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if !spotify {
+            self.profile = None;
+            self.open_full_profile_tab(user, super::full_profile::Tab::Activity, window, cx);
+            return;
+        }
+        let own = self
+            .stores
+            .current_user
+            .as_ref()
+            .is_some_and(|me| me.id == user);
+        let items = spotify_activity_items(own, popout);
+        if items.is_empty() {
+            return;
+        }
+        let Some(bounds) = self.tip_anchors.borrow().get(anchor).copied() else {
+            return;
+        };
+        let width = items
+            .iter()
+            .filter_map(|item| match item {
+                Entry::Row(row) => Some(label_width(window, &row.label) + 34.),
+                Entry::Separator => None,
+            })
+            .fold(144., f32::max)
+            .min(320.);
+        let right = bounds.right() + px(8.);
+        let x = if right + px(width) > window.viewport_size().width - px(8.) {
+            bounds.left() - px(8. + width)
+        } else {
+            right
+        };
+        self.open_context_menu(
+            Target::SpotifyActivity { user, popout },
+            gpui::point(x, bounds.top()),
+            cx,
+        );
+    }
+
     /// Runs a row against its target.
     pub(super) fn run_context(
         &mut self,
@@ -2361,6 +2491,26 @@ impl Root {
         cx: &mut Context<Self>,
     ) {
         match (act, target) {
+            (Act::ViewAllActivity, Target::SpotifyActivity { user, .. }) => {
+                self.profile = None;
+                self.open_full_profile_tab(user, super::full_profile::Tab::Activity, window, cx);
+            }
+            (Act::ManageSpotifyPrivacy, Target::SpotifyActivity { user, .. }) => {
+                if self
+                    .stores
+                    .current_user
+                    .as_ref()
+                    .is_some_and(|me| me.id == user)
+                {
+                    self.profile = None;
+                    self.close_full_profile(cx);
+                    self.open_settings_category(
+                        dc_intl::tr("Connected Apps"),
+                        dc_intl::tr("Connections"),
+                        cx,
+                    );
+                }
+            }
             (Act::ReportApp, Target::AppDirectory(app)) => {
                 self.open_report_app(app, "app_directory", cx);
             }
@@ -2450,7 +2600,9 @@ impl Root {
                     | Target::Category(id)
                     | Target::Thread(id)
                     | Target::Dm(id) => id,
-                    Target::User { user, .. } | Target::InventoryAuthor { user } => user,
+                    Target::User { user, .. }
+                    | Target::InventoryAuthor { user }
+                    | Target::SpotifyActivity { user, .. } => user,
                     Target::AppDirectory(id) => id,
                     Target::InventoryFeed
                     | Target::InventoryFeedAtPointer
@@ -3559,13 +3711,18 @@ impl Root {
                         .id("context-menu-generic")
                         .relative()
                         .child(self.anchor_probe("context-menu-generic"))
-                        .when(matches!(target, Target::InventoryAuthor { .. }), |d| {
-                            d.min_w(px(144.))
-                        })
+                        .when(
+                            matches!(
+                                target,
+                                Target::InventoryAuthor { .. } | Target::SpotifyActivity { .. }
+                            ),
+                            |d| d.min_w(px(144.)),
+                        )
                         .when(
                             !matches!(
                                 target,
                                 Target::InventoryAuthor { .. }
+                                    | Target::SpotifyActivity { .. }
                                     | Target::InventoryFeed
                                     | Target::AppDirectory(_)
                             ),
@@ -3999,6 +4156,9 @@ impl Root {
             cx,
         )
         .relative()
+        .when(act == Act::ViewAllActivity, |this| {
+            this.parity("activity-menu-row")
+        })
         .child(self.anchor_probe(probe))
         // `labelContainer_M3qk4j` has a min-height: a wrapped second line grows the row.
         .min_h(px(row.height()))
@@ -4089,6 +4249,9 @@ impl Root {
                 .flex_col()
                 .child(
                     div()
+                        .when(act == Act::ViewAllActivity, |this| {
+                            this.parity("activity-menu-label")
+                        })
                         .text_size(px(14.))
                         .line_height(px(18.))
                         .font_weight(FontWeight(500.))
@@ -4181,6 +4344,36 @@ mod tests {
                 Entry::Separator => "-".to_owned(),
             })
             .collect()
+    }
+
+    #[test]
+    fn live_spotify_menu_respects_profile_surface_and_ownership() {
+        assert_eq!(
+            labels(&spotify_activity_items(false, true)),
+            ["View All Activity"]
+        );
+        assert_eq!(
+            labels(&spotify_activity_items(true, true)),
+            ["View All Activity", "Manage Privacy"]
+        );
+        assert_eq!(
+            labels(&spotify_activity_items(true, false)),
+            ["Manage Privacy"]
+        );
+        assert!(spotify_activity_items(false, false).is_empty());
+        assert!(matches!(
+            spotify_activity_items(true, true).as_slice(),
+            [
+                Entry::Row(Row {
+                    act: Act::ViewAllActivity,
+                    ..
+                }),
+                Entry::Row(Row {
+                    act: Act::ManageSpotifyPrivacy,
+                    ..
+                })
+            ]
+        ));
     }
 
     #[test]

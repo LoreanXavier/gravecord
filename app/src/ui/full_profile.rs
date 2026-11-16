@@ -2884,7 +2884,13 @@ impl Root {
             Tab::Board => self.full_profile_board(id, me, &palette, cx),
             Tab::Wishlist => wishlist_panel.unwrap_or_else(|| div().into_any_element()),
             Tab::Activity => {
-                let current = self.live_activity_cards(id, true, strong, subtle, cx);
+                let current = self.live_activity_cards(
+                    id,
+                    super::live_activity::Surface::Modal,
+                    strong,
+                    subtle,
+                    cx,
+                );
                 let cards: Vec<AnyElement> = self
                     .fetched
                     .get(&format!("outbox:{id}"))

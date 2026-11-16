@@ -9,6 +9,13 @@ use gpui::{
 use serde_json::Value;
 use std::time::Duration;
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum Surface {
+    Popout,
+    Sidebar,
+    Modal,
+}
+
 fn component(value: &str) -> String {
     use std::fmt::Write;
     let mut encoded = String::new();
@@ -348,11 +355,12 @@ impl Root {
     pub(super) fn live_activity_cards(
         &self,
         user: Id,
-        large: bool,
+        surface: Surface,
         strong: Hsla,
         subtle: Hsla,
         cx: &mut Context<Self>,
     ) -> Vec<AnyElement> {
+        let large = surface == Surface::Modal;
         if self.is_blocked(user) || self.stores.is_ignored(user) {
             return Vec::new();
         }
@@ -394,7 +402,13 @@ impl Root {
                     .and_then(|url| self.images.get(&url))
                     .cloned();
                 let kind = activity["type"].as_u64().unwrap_or(0);
-                let spotify = kind == 2 && activity["name"] == "Spotify";
+                let spotify = dc_state::now_playing::is_spotify(activity);
+                let own = self.stores.current_user.as_ref().is_some_and(|me| me.id == user);
+                let more = !bot && if spotify {
+                    own || surface == Surface::Popout
+                } else {
+                    !large
+                };
                 let title = if kind == 0 {
                     field(activity, "name")
                 } else {
@@ -694,38 +708,56 @@ impl Root {
                             .gap(px(4.))
                             .child(
                                 div()
-                                    .text_size(px(if large { 12. } else { 14. }))
-                                    .line_height(px(if large { 16. } else { 18. }))
+                                    .text_size(px(if surface == Surface::Sidebar { 14. } else { 12. }))
+                                    .line_height(px(if surface == Surface::Sidebar { 18. } else { 16. }))
                                     .font_weight(FontWeight(500.))
                                     .text_color(strong)
                                     .child(heading(activity)),
                             )
-                            .when(!large && !bot, |this| {
-                                // `headerContextMenu_Bu4Al8` 20 x 18 holding the 16px `contextMenu_Bu4Al8` button. Its
-                                // menu (285909) offers "View All Activity" in the profile popout; the click opens that.
+                            .when(more, |this| {
+                                let key = SharedString::from(format!("activity-more-{user}-{index}-{large}"));
+                                let clicked = key.clone();
+                                let right_clicked = key.clone();
+                                let keyboard = key.clone();
+                                let focus = self.stop(key.as_ref(), cx).tab_index(0).tab_stop(true);
+                                let ringed = self.keyboard_mode() && self.keys.stops.has_focus(&focus);
+                                let key_focus = focus.clone();
+                                let popout = surface == Surface::Popout;
                                 this.child(
                                     div()
-                                        .id(SharedString::from(format!("activity-more-{user}")))
                                         .w(px(20.))
-                                        .h(px(18.))
+                                        .h(px(if surface == Surface::Sidebar { 18. } else { 16. }))
                                         .flex_none()
                                         .flex()
-                                        .items_center()
-                                        .justify_end()
-                                        .cursor_pointer()
-                                        .on_click(cx.listener(move |this, _, window, cx| {
-                                            this.profile = None;
-                                            this.open_full_profile_tab(
-                                                user,
-                                                super::full_profile::Tab::Activity,
-                                                window,
-                                                cx,
-                                            );
-                                        }))
-                                        .child(icon(
-                                            "more_horizontal",
-                                            16.,
-                                            "--interactive-text-default",
+                                        .items_start()
+                                        .justify_start()
+                                        .child(self.with_tip(
+                                            key,
+                                            super::tooltip::Tip::text(dc_intl::tr("More"), super::tooltip::Side::Top),
+                                            div()
+                                                .id(SharedString::from(format!("activity-menu-button-{user}-{index}-{large}")))
+                                                .size(px(16.))
+                                                .relative()
+                                                .track_focus(&focus)
+                                                .tab_index(0)
+                                                .when(ringed, |button| button.child(super::keyboard::hollow_ring(4.)))
+                                                .cursor_pointer()
+                                                .on_click(cx.listener(move |this, _, window, cx| {
+                                                    cx.stop_propagation();
+                                                    this.open_live_activity_menu(user, spotify, popout, &clicked, window, cx);
+                                                }))
+                                                .on_mouse_up(gpui::MouseButton::Right, cx.listener(move |this, _, window, cx| {
+                                                    cx.stop_propagation();
+                                                    this.open_live_activity_menu(user, spotify, popout, &right_clicked, window, cx);
+                                                }))
+                                                .on_key_down(cx.listener(move |this, event: &gpui::KeyDownEvent, window, cx| {
+                                                    if key_focus.is_focused(window) && matches!(event.keystroke.key.as_str(), "enter" | "space") {
+                                                        cx.stop_propagation();
+                                                        this.open_live_activity_menu(user, spotify, popout, &keyboard, window, cx);
+                                                    }
+                                                }))
+                                                .child(icon("more_horizontal", 16., "--interactive-text-default")),
+                                            cx,
                                         )),
                                 )
                             }),

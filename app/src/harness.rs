@@ -373,6 +373,11 @@ pub async fn run(
                     let _ = writeln!(output, "mobile member profile: no visible mobile member");
                 }
             }
+            ["context-spotify", who, surface] => {
+                let note =
+                    root.update(cx, |root, cx| root.script_spotify_context(who, surface, cx));
+                let _ = writeln!(output, "{note}");
+            }
             ["context-user"] | ["context-dm"] | ["context-self"] => {
                 let kind = if step.ends_with("dm") {
                     "dm"
