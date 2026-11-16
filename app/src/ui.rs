@@ -307,6 +307,8 @@ struct Prepared {
     badge_waiting: bool,
     /// The channel whose messages own the media playing now (`None` inside: no channel open).
     media_channel: Option<Option<Id>>,
+    /// The favourite GIFs (key and picture address) whose pictures were last asked for.
+    gif_favorites: Option<Vec<(String, String)>>,
 }
 
 /// Whether a step keyed by `now` has anything new to read since it last ran at `last`.
@@ -9146,6 +9148,7 @@ impl Render for Root {
         }
         self.prepared.media_channel = Some(media_channel);
         self.prepare_videos(window, cx);
+        self.prepare_gif_favorites();
         self.prepare_gif_tiles(window, cx);
         self.prepare_live_avatars();
         self.prepare_guild_guide();

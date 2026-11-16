@@ -1713,9 +1713,34 @@ pub async fn run(
                 });
                 let _ = writeln!(output, "avatar goto {nth}: row={row:?}");
             }
+            ["gif", "favorites"] => {
+                let report = root.read_with(cx, |root, _| root.gif_favorites_report());
+                let _ = writeln!(output, "gif favorites: {report}");
+            }
             ["gif", "state"] => {
                 let report = root.read_with(cx, |root, _| root.gif_report());
                 let _ = writeln!(output, "gif state: {report}");
+            }
+            ["gif", "seed", url, src, format, width, height] => {
+                if let (Ok(format), Ok(width), Ok(height)) =
+                    (format.parse(), width.parse(), height.parse())
+                {
+                    root.update(cx, |root, cx| {
+                        root.seed_gif_favorite_as(url, src, format, (width, height), true, cx)
+                    });
+                    let _ = writeln!(output, "gif favourite added in memory");
+                }
+            }
+            // As `gif seed`, but nothing is requested: the list changes as a late settings arrival would.
+            ["gif", "seed-late", url, src, format, width, height] => {
+                if let (Ok(format), Ok(width), Ok(height)) =
+                    (format.parse(), width.parse(), height.parse())
+                {
+                    root.update(cx, |root, cx| {
+                        root.seed_gif_favorite_as(url, src, format, (width, height), false, cx)
+                    });
+                    let _ = writeln!(output, "gif favourite added late in memory");
+                }
             }
             ["gif", "seed-url", url, width, height] => {
                 if let (Ok(width), Ok(height)) = (width.parse(), height.parse()) {

@@ -35,7 +35,38 @@ pub(crate) enum GifView {
 pub(crate) struct Gifs {
     pub view: GifView,
     pub search: Entity<Editor>,
+    /// "Search Favorites" in the Favorites header (module 649529 `renderHeaderContent`, shown while any are kept).
+    pub favorites_search: Entity<Editor>,
     _events: Subscription,
+    _favorites_events: Subscription,
+}
+
+/// The filter of module 649529 for the Favorites view: the query lower-cased without `-`, `_` and spaces, found in
+/// the favourite's address lower-cased without `-` and `_`.
+pub(crate) fn favorites_matching(
+    favorites: Vec<dc_proto::frecency::FavoriteGif>,
+    query: &str,
+) -> Vec<dc_proto::frecency::FavoriteGif> {
+    if query.is_empty() {
+        return favorites;
+    }
+    let wanted: String = query
+        .to_lowercase()
+        .chars()
+        .filter(|c| !matches!(c, '-' | '_' | ' '))
+        .collect();
+    favorites
+        .into_iter()
+        .filter(|favorite| {
+            let url: String = favorite
+                .url
+                .to_lowercase()
+                .chars()
+                .filter(|c| !matches!(c, '-' | '_'))
+                .collect();
+            url.contains(&wanted)
+        })
+        .collect()
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -163,10 +194,31 @@ impl Root {
                 }
                 cx.notify();
             });
+            let favorites_search = cx.new(|cx| {
+                let mut editor = Editor::new(editor_style(), cx);
+                editor.set_placeholder("Search Favorites".to_owned());
+                editor
+            });
+            let favorites_events = cx.subscribe(
+                &favorites_search,
+                |this, editor, event: &EditorEvent, cx| {
+                    match event {
+                        EditorEvent::Submit(text) => {
+                            editor.update(cx, |editor, _| editor.set_text(text));
+                        }
+                        // `backToFrontPage`: Escape leaves a result view for the front page.
+                        EditorEvent::Cancel => this.show_gif_view(GifView::Categories, cx),
+                        EditorEvent::Edited => {}
+                    }
+                    cx.notify();
+                },
+            );
             self.gifs = Some(Gifs {
                 view: GifView::Categories,
                 search,
+                favorites_search,
                 _events: events,
+                _favorites_events: favorites_events,
             });
         }
         if !self.fetched.contains_key(TRENDING_KEY) {
@@ -210,17 +262,59 @@ impl Root {
         height: u32,
         cx: &mut Context<Self>,
     ) {
+        self.seed_gif_favorite_as(url, url, 1, (width, height), true, cx);
+    }
+
+    /// A favourite as the account would store it: the page or file `url` it is keyed by, the `src` drawn, and the
+    /// format (1 picture, 2 video), `size` its width and height. Memory only.
+    #[cfg(feature = "capture")]
+    pub(crate) fn seed_gif_favorite_as(
+        &mut self,
+        url: &str,
+        src: &str,
+        format: u32,
+        (width, height): (u32, u32),
+        request: bool,
+        cx: &mut Context<Self>,
+    ) {
         let list = self.favorite_gifs.get_or_insert_with(Vec::new);
         list.push(dc_proto::frecency::FavoriteGif {
             url: url.to_owned(),
-            src: url.to_owned(),
-            format: 1,
+            src: src.to_owned(),
+            format,
             width,
             height,
             order: list.len() as u32,
         });
-        self.request_image(format!("gif:{url}"), runtime_gif_url(url));
+        // `request` false: the list changed the way the account's settings arriving would, with nothing asked.
+        if request {
+            self.request_image(format!("gif:{url}"), runtime_gif_url(src));
+        }
         cx.notify();
+    }
+
+    /// Each frame: when the favourites list differs from the one last seen (the account's settings arrived after
+    /// the picker opened, another device changed them, the cache's list was replaced), the pictures it needs are
+    /// asked for. Before, they were asked only when the Favorites view opened, so a list that arrived later stayed
+    /// blank until something else requested them.
+    pub(super) fn prepare_gif_favorites(&mut self) {
+        if self.gifs.is_none() {
+            return;
+        }
+        let list = self.favorite_gif_list();
+        let stamp: Vec<(String, String)> = list
+            .iter()
+            .map(|favorite| (favorite.url.clone(), favorite.src.clone()))
+            .collect();
+        if !super::changed(&mut self.prepared.gif_favorites, stamp) {
+            return;
+        }
+        for favorite in &list {
+            self.request_image(
+                format!("gif:{}", favorite.url),
+                runtime_gif_url(&favorite.src),
+            );
+        }
     }
 
     /// Whether the account's frecency settings (favourite GIFs and stickers) have arrived. Their writers send a
@@ -230,6 +324,24 @@ impl Root {
         self.fetched
             .get(super::actions::FRECENCY_KEY)
             .is_some_and(|body| body["settings"].is_string())
+    }
+
+    /// The Favorites view's tiles: the favourites that match "Search Favorites".
+    fn favorites_shown(&self, cx: &gpui::App) -> Vec<Gif> {
+        let query = self
+            .gifs
+            .as_ref()
+            .map(|gifs| gifs.favorites_search.read(cx).text().to_owned())
+            .unwrap_or_default();
+        let kept: std::collections::HashSet<String> =
+            favorites_matching(self.favorite_gif_list(), &query)
+                .into_iter()
+                .map(|favorite| favorite.url)
+                .collect();
+        self.favorites_as_gifs()
+            .into_iter()
+            .filter(|gif| kept.contains(&gif.url))
+            .collect()
     }
 
     fn favorites_as_gifs(&self) -> Vec<Gif> {
@@ -336,6 +448,50 @@ impl Root {
         }
     }
 
+    /// Capture only: how each favourite of the account is stored and whether its picture arrived (hosts and file
+    /// kinds only, no full addresses).
+    #[cfg(feature = "capture")]
+    pub(crate) fn gif_favorites_report(&self) -> String {
+        let shape = |url: &str| {
+            let parsed = reqwest::Url::parse(url).ok();
+            let host = parsed
+                .as_ref()
+                .and_then(|url| url.host_str().map(str::to_owned))
+                .unwrap_or_else(|| "?".to_owned());
+            let ext = parsed
+                .as_ref()
+                .and_then(|url| url.path().rsplit('.').next().map(str::to_owned))
+                .unwrap_or_default();
+            format!("{host} .{ext}")
+        };
+        let arrived = self.frecency_arrived();
+        let list = self.favorite_gif_list();
+        let rows: Vec<String> = list
+            .iter()
+            .enumerate()
+            .map(|(index, favorite)| {
+                let picture = self
+                    .images
+                    .get(&format!("gif:{}", favorite.url))
+                    .map(|image| format!("{:?} {} bytes", image.format, image.bytes().len()))
+                    .unwrap_or_else(|| "no picture".to_owned());
+                format!(
+                    "#{index} format {} {}x{} src {} url {} -> {picture}",
+                    favorite.format,
+                    favorite.width,
+                    favorite.height,
+                    shape(&favorite.src),
+                    shape(&favorite.url)
+                )
+            })
+            .collect();
+        format!(
+            "frecency arrived {arrived}; {} favourites | {}",
+            list.len(),
+            rows.join(" | ")
+        )
+    }
+
     /// What the GIF answers and pictures are, for the capture log: the media each entry names, and for every picture
     /// held its format, size and whether it carries animation.
     #[cfg(feature = "capture")]
@@ -437,9 +593,9 @@ impl Root {
         cx.notify();
     }
 
-    fn current_gifs(&self) -> (String, Vec<Gif>) {
+    fn current_gifs(&self, cx: &gpui::App) -> (String, Vec<Gif>) {
         match self.gifs.as_ref().map(|gifs| gifs.view.clone()) {
-            Some(GifView::Favorites) => (String::new(), self.favorites_as_gifs()),
+            Some(GifView::Favorites) => (String::new(), self.favorites_shown(cx)),
             Some(GifView::Trending) => (
                 String::new(),
                 self.fetched
@@ -573,7 +729,15 @@ impl Root {
                 window,
                 cx,
             )
-            .on_click(cx.listener(|this, _, _, cx| this.show_gif_view(GifView::Favorites, cx)))
+            .on_click(cx.listener(|this, _, window, cx| {
+                this.show_gif_view(GifView::Favorites, cx);
+                // `autoFocus` on "Search Favorites", empty each time the view opens.
+                if let Some(gifs) = this.gifs.as_ref() {
+                    let search = gifs.favorites_search.clone();
+                    search.update(cx, |editor, _| editor.set_text(""));
+                    window.focus(&gpui::Focusable::focus_handle(search.read(cx), cx), cx);
+                }
+            }))
             .into_any_element(),
         );
         tiles.push(
@@ -674,14 +838,14 @@ impl Root {
     }
 
     fn gif_results(&self, window: &Window, cx: &mut Context<Self>) -> AnyElement {
-        let (query, list) = self.current_gifs();
+        let (query, list) = self.current_gifs(cx);
         let placed = masonry(&list);
         let favorites = self.favorite_gif_list();
         let height = placed
             .iter()
             .map(|(_, top, height)| top + height)
             .fold(0f32, f32::max);
-        if list.is_empty()
+        if favorites.is_empty()
             && matches!(
                 self.gifs.as_ref().map(|gifs| &gifs.view),
                 Some(GifView::Favorites)
@@ -721,16 +885,22 @@ impl Root {
                     .cursor_pointer()
                     .bg(color("--background-mod-subtle"))
                     .children(art)
-                    .child(
-                        // `favButton_H8nOze`: 32 square, 5 radius, 4 from the top and right, shown on hover.
+                    .child({
+                        // `gifFavoriteButton_cT9zhv` (module 439401/47299): `--background-base-low`, 5 radius, 6
+                        // padding round the 20 star; the star is `--icon-strong`, and `--yellow-300` when the GIF
+                        // is a favourite (`selected`) or the button is hovered. 4 from the top and right, shown on
+                        // the tile's hover.
+                        let button_group =
+                            SharedString::from(format!("gif-favorite-group-{}", gif.id));
                         div()
                             .id(SharedString::from(format!("gif-favorite-{}", gif.id)))
+                            .group(button_group.clone())
                             .absolute()
                             .top(px(4.))
                             .right(px(4.))
                             .size(px(32.))
                             .rounded(px(5.))
-                            .bg(color("--background-surface-higher"))
+                            .bg(color("--background-base-low"))
                             .flex()
                             .items_center()
                             .justify_center()
@@ -739,20 +909,29 @@ impl Root {
                                 this.opacity(0.)
                                     .group_hover(group, |style| style.opacity(1.))
                             })
-                            .child(icon(
-                                if favorite {
-                                    "gif_favorite_filled"
-                                } else {
-                                    "gif_favorite"
-                                },
-                                20.,
-                                "--text-strong",
-                            ))
+                            .child(
+                                icon(
+                                    if favorite {
+                                        "gif_favorite_filled"
+                                    } else {
+                                        "gif_favorite"
+                                    },
+                                    20.,
+                                    if favorite {
+                                        "--yellow-300"
+                                    } else {
+                                        "--icon-strong"
+                                    },
+                                )
+                                .group_hover(button_group, |style| {
+                                    style.text_color(color("--yellow-300"))
+                                }),
+                            )
                             .on_click(cx.listener(move |this, _, _, cx| {
                                 this.toggle_favorite_gif(&starred, cx);
                                 cx.stop_propagation();
-                            })),
-                    )
+                            }))
+                    })
                     .on_click(cx.listener(move |this, _, _, cx| this.send_gif(&chosen, &query, cx)))
                     .into_any_element()
             })
@@ -779,17 +958,45 @@ impl Root {
         };
         let view = gifs.view.clone();
         let search = gifs.search.clone();
-        let header =
-            match &view {
-                GifView::Trending | GifView::Favorites => div()
-                    .h(px(41.))
+        let favorites_search = gifs.favorites_search.clone();
+        // The search bar (`h.I`, module 683438) of the front page and of the Favorites header.
+        let search_bar = |editor: Entity<Editor>, probe: &'static str| {
+            div()
+                .parity_with_border(probe, 1.)
+                .h(px(40.))
+                .pl(px(4.))
+                .rounded(px(8.))
+                .border_1()
+                .border_color(color("--input-border-active"))
+                .bg(color("--input-background-default"))
+                .flex()
+                .items_center()
+                .gap(px(4.))
+                .child(
+                    div()
+                        .size(px(30.))
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .child(icon("gif_search", 18., "--icon-default")),
+                )
+                .child(div().flex_1().min_w(px(0.)).pr(px(12.)).child(editor))
+        };
+        let has_favorites = !self.favorite_gif_list().is_empty();
+        let header = match &view {
+            GifView::Trending | GifView::Favorites => {
+                let with_search = view == GifView::Favorites && has_favorites;
+                div()
+                    .when(!with_search, |this| this.h(px(41.)))
                     .px(px(16.))
                     .pb(px(12.))
                     .flex()
                     .items_center()
                     .child(
+                        // `backButton_rfDq2B`: 28 high, `--text-muted` (hovered `--text-default`).
                         div()
                             .id("gif-back")
+                            .group("gif-back")
                             .w(px(24.))
                             .h(px(28.))
                             .cursor_pointer()
@@ -798,48 +1005,51 @@ impl Root {
                             .on_click(cx.listener(|this, _, _, cx| {
                                 this.show_gif_view(GifView::Categories, cx)
                             }))
-                            .child(icon("gif_back", 24., "--interactive-text-default")),
+                            .child(
+                                icon("gif_back", 24., "--text-muted")
+                                    .group_hover("gif-back", |style| {
+                                        style.text_color(color("--text-default"))
+                                    }),
+                            ),
                     )
                     .child(
+                        // `favoritesHeader_rfDq2B`: the title and, while any are kept, "Search Favorites", 24
+                        // apart, filling the row.
                         div()
-                            .ml(px(16.))
-                            .line_height(px(20.))
-                            .font_weight(FontWeight(600.))
-                            .text_color(color("--text-strong"))
-                            .child(if view == GifView::Favorites {
-                                "Favorites"
-                            } else {
-                                "Trending GIFs"
-                            }),
-                    )
-                    .into_any_element(),
-                _ => div()
-                    .px(px(16.))
-                    .pb(px(12.))
-                    .child(
-                        div()
-                            .parity_with_border("gif-search", 1.)
-                            .h(px(40.))
-                            .pl(px(4.))
-                            .rounded(px(8.))
-                            .border_1()
-                            .border_color(color("--input-border-active"))
-                            .bg(color("--input-background-default"))
+                            .flex_1()
+                            .min_w(px(0.))
                             .flex()
                             .items_center()
-                            .gap(px(4.))
+                            .gap(px(24.))
                             .child(
                                 div()
-                                    .size(px(30.))
-                                    .flex()
-                                    .items_center()
-                                    .justify_center()
-                                    .child(icon("gif_search", 18., "--icon-default")),
+                                    .ml(px(16.))
+                                    .flex_none()
+                                    .line_height(px(20.))
+                                    .font_weight(FontWeight(600.))
+                                    .text_color(color("--text-strong"))
+                                    .child(if view == GifView::Favorites {
+                                        "Favorites"
+                                    } else {
+                                        "Trending GIFs"
+                                    }),
                             )
-                            .child(div().flex_1().min_w(px(0.)).pr(px(12.)).child(search)),
+                            .when(with_search, |this| {
+                                this.child(
+                                    search_bar(favorites_search, "gif-favorites-search")
+                                        .flex_1()
+                                        .min_w(px(0.)),
+                                )
+                            }),
                     )
-                    .into_any_element(),
-            };
+                    .into_any_element()
+            }
+            _ => div()
+                .px(px(16.))
+                .pb(px(12.))
+                .child(search_bar(search, "gif-search"))
+                .into_any_element(),
+        };
         let content = match view {
             GifView::Categories => self.gif_categories(window, cx),
             _ => self.gif_results(window, cx),
@@ -865,6 +1075,34 @@ impl Root {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Module 649529: the query loses `-`, `_` and spaces, the address `-` and `_`, both lower-cased.
+    #[test]
+    fn favorites_search_matches_the_address_loosely() {
+        let favorite = |url: &str| dc_proto::frecency::FavoriteGif {
+            url: url.to_owned(),
+            src: String::new(),
+            format: 1,
+            width: 1,
+            height: 1,
+            order: 0,
+        };
+        let list = vec![
+            favorite("https://media1.tenor.com/m/a/meme.gif"),
+            favorite("https://media1.tenor.com/m/b/ishowspeed-ishowspeed-phone.gif"),
+        ];
+        let urls = |query: &str| -> Vec<String> {
+            favorites_matching(list.clone(), query)
+                .into_iter()
+                .map(|favorite| favorite.url)
+                .collect()
+        };
+        assert_eq!(urls("").len(), 2);
+        assert_eq!(urls("Speed"), [list[1].url.clone()]);
+        assert_eq!(urls("speed phone"), [list[1].url.clone()]);
+        assert_eq!(urls("show_speed"), [list[1].url.clone()]);
+        assert!(urls("cat").is_empty());
+    }
 
     #[test]
     fn masonry_fills_the_shorter_column() {
