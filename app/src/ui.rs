@@ -309,6 +309,8 @@ struct Prepared {
     media_channel: Option<Option<Id>>,
     /// The favourite GIFs (key and picture address) whose pictures were last asked for.
     gif_favorites: Option<Vec<(String, String)>>,
+    /// Whether the pointer was over the window at the last frame.
+    window_hovered: Option<bool>,
 }
 
 /// Whether a step keyed by `now` has anything new to read since it last ran at `last`.
@@ -9149,6 +9151,17 @@ impl Render for Root {
         self.prepared.media_channel = Some(media_channel);
         self.prepare_videos(window, cx);
         self.prepare_gif_favorites();
+        // The pointer left the window: the browser's `mouseleave` on the open menu closes a hover-opened submenu.
+        // Windows reports only the window's hover change (no last move outside it), so the menus would keep the last
+        // point inside them.
+        let hovered = window.is_window_hovered();
+        // A submenu the keyboard opened has no pointer to lose.
+        if changed(&mut self.prepared.window_hovered, hovered)
+            && !hovered
+            && !self.keys.keyboard_mode_is_on()
+        {
+            self.menu_pointer_left(cx);
+        }
         self.prepare_gif_tiles(window, cx);
         self.prepare_live_avatars();
         self.prepare_guild_guide();

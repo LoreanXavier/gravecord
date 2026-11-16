@@ -306,6 +306,61 @@ pub(super) async fn move_pointer(
         .await
 }
 
+/// Sends `WM_MOUSELEAVE` to the window, as Windows does when the tracked pointer leaves its client area.
+#[cfg(windows)]
+pub(super) async fn leave(window: AnyWindowHandle, cx: &mut AsyncApp) -> String {
+    use raw_window_handle::{HasWindowHandle, RawWindowHandle};
+    use windows::Win32::{
+        Foundation::{HWND, LPARAM, WPARAM},
+        UI::{
+            Controls::WM_MOUSELEAVE,
+            WindowsAndMessaging::{SMTO_ABORTIFHUNG, SendMessageTimeoutW},
+        },
+    };
+    let handle = cx.update(|cx| {
+        window
+            .update(cx, |_, window, _| {
+                let RawWindowHandle::Win32(handle) =
+                    HasWindowHandle::window_handle(window).ok()?.as_raw()
+                else {
+                    return None;
+                };
+                Some(handle.hwnd.get() as usize)
+            })
+            .ok()
+            .flatten()
+    });
+    let Some(handle) = handle else {
+        return "window unavailable".into();
+    };
+    cx.background_executor()
+        .spawn(async move {
+            let mut result = 0;
+            let sent = unsafe {
+                SendMessageTimeoutW(
+                    HWND(handle as *mut _),
+                    WM_MOUSELEAVE,
+                    WPARAM(0),
+                    LPARAM(0),
+                    SMTO_ABORTIFHUNG,
+                    2000,
+                    Some(&mut result),
+                )
+            };
+            if sent.0 != 0 {
+                "WM_MOUSELEAVE".to_owned()
+            } else {
+                "WM_MOUSELEAVE failed or timed out".to_owned()
+            }
+        })
+        .await
+}
+
+#[cfg(not(windows))]
+pub(super) async fn leave(_: AnyWindowHandle, _: &mut AsyncApp) -> String {
+    "Win32 input is unavailable".into()
+}
+
 #[cfg(not(windows))]
 pub(super) async fn move_pointer(_: AnyWindowHandle, _: Point<Pixels>, _: &mut AsyncApp) -> String {
     "Win32 input is unavailable".into()

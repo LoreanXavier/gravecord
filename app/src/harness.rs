@@ -193,6 +193,10 @@ pub async fn run(
                     let _ = writeln!(output, "native move: {result}");
                 }
             }
+            ["native", "leave"] => {
+                let result = native::leave(window, cx).await;
+                let _ = writeln!(output, "native leave: {result}");
+            }
             ["native", "state"] => {
                 let _ = writeln!(output, "native state: {}", native::state(window, cx));
             }

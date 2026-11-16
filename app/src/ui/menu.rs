@@ -547,6 +547,11 @@ pub(super) struct ReactionOp {
 }
 
 impl Root {
+    /// The pointer left the window: every hover-opened submenu closes, as when it leaves the menu.
+    pub(super) fn menu_pointer_left(&mut self, cx: &mut Context<Self>) {
+        self.menu_pointer_moved(gpui::point(px(-100_000.), px(-100_000.)), cx);
+    }
+
     /// Port the menu container's mouse-leave behavior across separately painted submenu layers.
     pub(super) fn menu_pointer_moved(&mut self, point: Point<Pixels>, cx: &mut Context<Self>) {
         let profile_sub = self.profile_menu.as_ref().is_some_and(|menu| menu.invite);
