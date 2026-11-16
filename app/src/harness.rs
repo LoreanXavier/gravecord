@@ -1085,6 +1085,13 @@ pub async fn run(
                 let tier = tier.parse::<u64>().ok().filter(|tier| *tier > 0);
                 root.update(cx, |root, cx| root.script_premium(tier, cx));
             }
+            ["spotify", "premium"] => {
+                root.update(cx, |root, cx| root.script_spotify_premium(cx));
+            }
+            ["spotify", "state"] => {
+                let state = root.read_with(cx, |root, _| root.script_spotify_state());
+                let _ = writeln!(output, "spotify: {state}");
+            }
             // Capture only: the body the subscriptions read would return, for one Nitro plan (a plan id, or `none`)
             // and a state (`ok`, `past_due`, `trial`, `pending`); nothing is sent.
             ["subscription", plan, state] => {

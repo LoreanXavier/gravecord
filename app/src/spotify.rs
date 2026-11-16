@@ -16,6 +16,35 @@ use tokio::{
 pub enum Command {
     Accounts(Vec<LinkedAccount>),
     Refresh,
+    Perform { request: u64, operation: Operation },
+}
+
+pub enum Operation {
+    Play(dc_state::spotify::Play),
+    Premium(String),
+    Pause(String),
+}
+
+impl Operation {
+    fn account(&self) -> &str {
+        match self {
+            Self::Play(plan) => &plan.account_id,
+            Self::Premium(account) | Self::Pause(account) => account,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Reply {
+    Played,
+    Premium(bool),
+    Paused,
+    Failed,
+    Refused,
+}
+
+fn reply(updates: &mpsc::UnboundedSender<Update>, request: u64, reply: Reply) {
+    let _ = updates.send(Update::SpotifyReply { request, reply });
 }
 
 struct OwnedTask(JoinHandle<()>);
@@ -111,14 +140,21 @@ async fn run(
     updates: mpsc::UnboundedSender<Update>,
     mut commands: mpsc::UnboundedReceiver<Command>,
 ) {
-    let mut sessions: HashMap<String, OwnedTask> = HashMap::new();
+    dispatch(
+        &updates,
+        "SPOTIFY_SET_PROTOCOL_REGISTERED",
+        json!({"isRegistered": protocol_registered()}),
+    );
+    let mut sessions: HashMap<String, Session> = HashMap::new();
     let mut retry_at = None;
     loop {
         let command = tokio::select! {
             command = commands.recv() => match command { Some(command) => command, None => break },
             _ = async { if let Some(at) = retry_at { tokio::time::sleep_until(at).await; } else { std::future::pending::<()>().await; } } => Command::Refresh,
         };
-        retry_at = None;
+        if !matches!(&command, Command::Perform { .. }) {
+            retry_at = None;
+        }
         let accounts = match command {
             Command::Accounts(accounts) => accounts,
             Command::Refresh => match dc_http::spotify::connected_accounts(&client).await {
@@ -129,6 +165,16 @@ async fn run(
                 }
                 Err(_) => continue,
             },
+            Command::Perform { request, operation } => {
+                if let Some(session) = sessions.get(operation.account())
+                    && !session.task.0.is_finished()
+                    && session.commands.send((request, operation)).is_ok()
+                {
+                    continue;
+                }
+                reply(&updates, request, Reply::Failed);
+                continue;
+            }
         };
         let metadata: Vec<Value> = accounts
             .iter()
@@ -143,16 +189,139 @@ async fn run(
             json!({"local":true,"accounts":metadata}),
         );
         sessions.retain(|id, task| {
-            accounts.iter().any(|account| account.id == *id) && !task.0.is_finished()
+            accounts.iter().any(|account| account.id == *id) && !task.task.0.is_finished()
         });
         for account in accounts {
             if let std::collections::hash_map::Entry::Vacant(entry) =
                 sessions.entry(account.id.clone())
+                && let Some(session) = Session::start(client.clone(), updates.clone(), account.id)
             {
-                let task =
-                    tokio::spawn(session(client.clone(), updates.clone(), account.id.clone()));
-                entry.insert(OwnedTask(task));
+                entry.insert(session);
             }
+        }
+    }
+}
+
+#[cfg(windows)]
+fn protocol_registered() -> bool {
+    use windows::{
+        Win32::UI::Shell::{
+            ASSOCF_IS_PROTOCOL, ASSOCF_NOFIXUPS, ASSOCSTR_EXECUTABLE, AssocQueryStringW,
+        },
+        core::{PWSTR, w},
+    };
+    let mut length = 0;
+    // The first query sizes the UTF-16 output; the second resolves the registered protocol handler.
+    unsafe {
+        let _ = AssocQueryStringW(
+            ASSOCF_IS_PROTOCOL | ASSOCF_NOFIXUPS,
+            ASSOCSTR_EXECUTABLE,
+            w!("spotify"),
+            w!("open"),
+            None,
+            &mut length,
+        );
+        if !(2..=32768).contains(&length) {
+            return false;
+        }
+        let mut buffer = vec![0u16; length as usize];
+        AssocQueryStringW(
+            ASSOCF_IS_PROTOCOL | ASSOCF_NOFIXUPS,
+            ASSOCSTR_EXECUTABLE,
+            w!("spotify"),
+            w!("open"),
+            Some(PWSTR(buffer.as_mut_ptr())),
+            &mut length,
+        )
+        .is_ok()
+    }
+}
+
+#[cfg(not(windows))]
+fn protocol_registered() -> bool {
+    false
+}
+
+struct Session {
+    commands: mpsc::UnboundedSender<(u64, Operation)>,
+    task: OwnedTask,
+}
+
+impl Session {
+    fn start(
+        client: Arc<Client>,
+        updates: mpsc::UnboundedSender<Update>,
+        account: String,
+    ) -> Option<Self> {
+        let notices = updates.clone();
+        let linked_account = account.clone();
+        let api = Spotify::new(client, account.clone())
+            .ok()?
+            .on_credential(move || {
+                dispatch(
+                    &notices,
+                    "SPOTIFY_ACCOUNT_ACCESS_TOKEN",
+                    json!({"accountId":linked_account}),
+                );
+            });
+        let api = Arc::new(Mutex::new(api));
+        let (commands, receiver) = mpsc::unbounded_channel();
+        let task = OwnedTask(tokio::spawn(async move {
+            tokio::select! {
+                _ = session(api.clone(), updates.clone(), account.clone()) => {},
+                _ = perform(api, updates, account, receiver) => {},
+            }
+        }));
+        Some(Self { commands, task })
+    }
+}
+
+async fn perform(
+    api: Arc<Mutex<Spotify>>,
+    updates: mpsc::UnboundedSender<Update>,
+    account: String,
+    mut receiver: mpsc::UnboundedReceiver<(u64, Operation)>,
+) {
+    while let Some((request, operation)) = receiver.recv().await {
+        let mut api = api.lock().await;
+        let result = match operation {
+            Operation::Play(plan) => api
+                .play(&plan.device_id, &plan.body(), plan.repeat)
+                .await
+                .map(|()| {
+                    dispatch(
+                        &updates,
+                        "SPOTIFY_PLAYER_PLAY",
+                        json!({"id":plan.track_id,"position":plan.position_ms}),
+                    );
+                    Reply::Played
+                }),
+            Operation::Premium(_) => api.profile().await.map(|body| {
+                let premium = body["product"] == "premium";
+                dispatch(
+                    &updates,
+                    "SPOTIFY_PROFILE_UPDATE",
+                    json!({"accountId":account,"isPremium":premium}),
+                );
+                Reply::Premium(premium)
+            }),
+            Operation::Pause(_) => api.pause().await.map(|()| {
+                dispatch(&updates, "SPOTIFY_PLAYER_PAUSE", json!({}));
+                Reply::Paused
+            }),
+        };
+        reply(
+            &updates,
+            request,
+            result.as_ref().copied().unwrap_or(Reply::Failed),
+        );
+        if result == Err(Error::Revoked) {
+            dispatch(
+                &updates,
+                "SPOTIFY_ACCOUNT_ACCESS_TOKEN_REVOKE",
+                json!({"accountId":account}),
+            );
+            return;
         }
     }
 }
@@ -162,20 +331,11 @@ fn next_delay(current: Duration, jitter: f64) -> Duration {
     Duration::from_secs_f64((current.as_secs_f64() * (1. + 2. * jitter)).min(60.))
 }
 
-async fn session(client: Arc<Client>, updates: mpsc::UnboundedSender<Update>, account: String) {
-    let Ok(api) = Spotify::new(client, account.clone()) else {
-        return;
-    };
-    let notices = updates.clone();
-    let linked_account = account.clone();
-    let api = api.on_credential(move || {
-        dispatch(
-            &notices,
-            "SPOTIFY_ACCOUNT_ACCESS_TOKEN",
-            json!({"accountId":linked_account}),
-        );
-    });
-    let api = Arc::new(Mutex::new(api));
+async fn session(
+    api: Arc<Mutex<Spotify>>,
+    updates: mpsc::UnboundedSender<Update>,
+    account: String,
+) {
     let mut delay = Duration::from_millis(500);
     loop {
         let result = connection(api.clone(), &updates, &account, &mut delay).await;
@@ -400,5 +560,38 @@ mod tests {
         );
         let (updates, _) = mpsc::unbounded_channel();
         assert!(Worker::start(client, updates).is_none());
+    }
+
+    #[tokio::test]
+    async fn removing_a_session_cancels_its_in_flight_work() {
+        struct Finished(Option<tokio::sync::oneshot::Sender<()>>);
+        impl Drop for Finished {
+            fn drop(&mut self) {
+                let _ = self.0.take().unwrap().send(());
+            }
+        }
+        let (ready, started) = tokio::sync::oneshot::channel();
+        let (finished, done) = tokio::sync::oneshot::channel();
+        let (commands, mut receiver) = mpsc::unbounded_channel::<(u64, Operation)>();
+        let task = OwnedTask(tokio::spawn(async move {
+            let _finished = Finished(Some(finished));
+            let _ = ready.send(());
+            let _ = receiver.recv().await;
+        }));
+        let session = Session {
+            commands: commands.clone(),
+            task,
+        };
+        started.await.unwrap();
+        drop(session);
+        tokio::time::timeout(Duration::from_secs(1), done)
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(
+            commands
+                .send((1, Operation::Pause("fixture".into())))
+                .is_err()
+        );
     }
 }

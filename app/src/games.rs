@@ -38,6 +38,7 @@ pub const BLOCKLIST_ROUTE: &str = "/games/detectable/exclusions";
 /// What one scan found.
 #[derive(Clone, Debug, Default)]
 pub struct GameScan {
+    pub spotify_running: bool,
     pub games: Vec<Detected>,
     pub candidates: Vec<Candidate>,
     pub foreground: Option<u32>,
@@ -586,9 +587,11 @@ fn scan_with(lists: &Detectables, index: &dc_detect::Index) -> GameScan {
         })
         .count();
     let mut games = scan.games;
+    let spotify_running = scan.observed.iter().any(|(app, _)| app.name == "Spotify");
     // Prefer real game executables over launchers in visible-game selection.
     games.sort_by_key(|game| game.is_launcher);
     GameScan {
+        spotify_running,
         streamer_tools,
         games,
         candidates,

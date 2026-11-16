@@ -532,7 +532,7 @@ impl Root {
         self.follow_link(&url, &name, cx);
     }
 
-    fn connection_authorize(&mut self, kind: &'static str, cx: &mut Context<Self>) {
+    pub(in crate::ui) fn connection_authorize(&mut self, kind: &'static str, cx: &mut Context<Self>) {
         let route = format!("/connections/{kind}/authorize");
         if crate::storage::is_capture_run() {
             // The route creates an authorization state at the server; a harness run never starts one.

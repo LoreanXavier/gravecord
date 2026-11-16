@@ -27,6 +27,7 @@ const ADD_SELECT: &str = "games_add_select";
 const NAME_LIMIT: usize = 128;
 
 pub(super) struct Games {
+    pub(super) spotify_running: bool,
     runtime: games::Runtime,
     pub(super) store: RunningGames,
     /// The activities the last presence update carried.
@@ -66,6 +67,7 @@ impl Games {
         let runtime = games::Runtime::new(updates);
         runtime.set_overrides(overrides(&store));
         Self {
+            spotify_running: false,
             runtime,
             saved: store.to_json(),
             store,
@@ -186,6 +188,7 @@ impl Root {
 
     /// One scan: the running games change (`RUNNING_GAMES_CHANGE`), and the activity follows.
     pub(super) fn detect_scanned(&mut self, scan: GameScan, cx: &mut Context<Self>) {
+        self.detect.spotify_running = scan.spotify_running;
         self.streamer_scanned(scan.streamer_tools);
         let now = now_ms();
         let games: Vec<Game> = scan

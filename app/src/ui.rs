@@ -110,6 +110,7 @@ mod last_channel;
 mod lightbox;
 mod links;
 mod live_activity;
+mod spotify_activity;
 pub mod login;
 mod logout;
 mod lottie_icon;
@@ -504,6 +505,7 @@ pub struct Root {
     /// Retry state of the pictures asked for through `request_image`.
     image_retries: image_retry::Retries,
     badge_modal: Option<badge_modal::BadgeModal>,
+    spotify_actions: spotify_activity::Actions,
     /// Animated avatar files a frame found missing, asked for by `prepare_live_avatars`.
     avatar_wants: std::cell::RefCell<Vec<(String, String)>>,
     /// The window's pixel ratio as the last frame had it, for builders that have no window at hand.
@@ -931,6 +933,7 @@ impl Root {
             requested: HashSet::new(),
             image_retries: image_retry::Retries::default(),
             badge_modal: None,
+            spotify_actions: spotify_activity::Actions::default(),
             avatar_wants: std::cell::RefCell::new(Vec::new()),
             ui_scale: std::cell::Cell::new(1.),
             avatar_over: None,
@@ -1264,8 +1267,10 @@ impl Root {
             Update::Updater => cx.notify(),
             Update::SpotifySocket { account, connected } => {
                 self.stores.spotify.set_socket_connected(&account, connected);
+                self.spotify_devices_changed(cx);
                 cx.notify();
             }
+            Update::SpotifyReply { request, reply } => self.spotify_reply(request, reply, cx),
             Update::Slowmode {
                 channel,
                 kind,
@@ -1323,6 +1328,8 @@ impl Root {
                     self.send_echo(&data);
                 }
                 self.stores.dispatch(&name, &data);
+                self.spotify_devices_changed(cx);
+                self.spotify_loading_changed();
                 if name == "VOICE_STATE_UPDATE" {
                     self.voice_state_of_other_session(&data, cx);
                 }
@@ -1589,6 +1596,7 @@ impl Root {
                 }
             }
             Update::Fetched { key, body } => {
+                if self.spotify_metadata_fetched(&key, &body, cx) { return; }
                 self.active_now_fetched(&key, &body);
                 if key.starts_with(message_requests::KEY_PREFIX) {
                     self.message_requests_fetched(&key, &body, cx);
@@ -9335,6 +9343,12 @@ impl Render for Root {
                     cx.stop_propagation();
                     return;
                 }
+                if keys.key == "escape" && this.spotify_actions.premium_dialog {
+                    this.spotify_actions.premium_dialog = false;
+                    cx.stop_propagation();
+                    cx.notify();
+                    return;
+                }
                 if this.video_key(&event.keystroke, window, cx) {
                     cx.stop_propagation();
                     return;
@@ -10356,6 +10370,7 @@ impl Render for Root {
             .children(self.poll_modal(cx))
             .children(self.schedule_modal_layer(window, cx))
             .children(self.badge_modal_layer(cx))
+            .children(self.spotify_premium_layer(cx))
             .children(self.lightbox_layer(cx))
             .children(self.video_fullscreen_layer(window, cx))
             .children(self.clips_modal(window, cx))

@@ -260,6 +260,7 @@ impl Root {
     }
 
     pub(super) fn prepare_live_activities(&mut self, cx: &mut Context<Self>) {
+        self.spotify_render_lifecycle();
         let activities: Vec<Value> = self
             .live_users()
             .into_iter()
@@ -268,6 +269,10 @@ impl Root {
             .flat_map(|presence| presence.visible_activities().into_iter().cloned())
             .collect();
         if activities.iter().any(dc_state::now_playing::is_spotify) {
+            self.request_image(
+                super::spotify_activity::ICON_KEY.into(),
+                format!("{}/assets/168e10535f129f11.js", dc_proto::pin::WEBAPP_ORIGIN),
+            );
             self.request_image(
                 SPOTIFY_PLATFORM_ICON.into(),
                 format!(
@@ -701,6 +706,9 @@ impl Root {
                         );
                     }
                     actions = Some(stack.into_any_element());
+                }
+                if spotify && !own && activity["flags"].as_u64().unwrap_or_default() & 48 != 0 {
+                    actions = Some(self.spotify_buttons(user, activity, surface, &palette, cx));
                 }
                 actions = actions.map(|actions| div().mt(px(4.)).child(actions).into_any_element());
                 if large {

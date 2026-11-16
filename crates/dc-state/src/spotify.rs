@@ -237,6 +237,13 @@ impl SpotifyStore {
         self.players.first()
     }
 
+    pub fn current_track_id(&self) -> Option<&str> {
+        self.player()
+            .map(|player| player.track_id.as_str())
+            .or_else(|| self.syncing.as_ref().map(|sync| sync.track_id.as_str()))
+            .or(self.last_played_track.as_deref())
+    }
+
     pub fn active_device(&self) -> Option<(&str, &Device)> {
         self.sockets
             .iter()
@@ -284,11 +291,7 @@ impl SpotifyStore {
     }
 
     pub fn controls(&self, me: Id, user: Id, activity: &Value) -> Controls {
-        let track = self
-            .player()
-            .map(|player| player.track_id.as_str())
-            .or_else(|| self.syncing.as_ref().map(|sync| sync.track_id.as_str()))
-            .or(self.last_played_track.as_deref());
+        let track = self.current_track_id();
         let current_party = self
             .syncing
             .as_ref()
@@ -507,7 +510,11 @@ impl SpotifyStore {
     }
 
     pub fn start_sync(&mut self, user: Id, activity: &Value, now_ms: i64) -> Option<Play> {
-        let start_time = activity["timestamps"]["start"].as_i64().unwrap_or(now_ms);
+        let start = &activity["timestamps"]["start"];
+        let start_time = start
+            .as_i64()
+            .or_else(|| start.as_str()?.parse().ok())
+            .unwrap_or(now_ms);
         let mut play = self.plan(
             activity,
             &activity["metadata"],
@@ -722,6 +729,15 @@ mod tests {
         let play = store.start_sync(2, &a, 14000).unwrap();
         assert_eq!(play.position_ms, 4000);
         assert_eq!(play.repeat, Some(false));
+        let mut string_clock = a.clone();
+        string_clock["timestamps"]["start"] = json!("10000");
+        assert_eq!(
+            store
+                .start_sync(2, &string_clock, 14000)
+                .unwrap()
+                .position_ms,
+            4000
+        );
         player(&mut store, "track", 4000, 14000);
         assert_eq!(store.start_sync(2, &a, 9000).unwrap().position_ms, 0);
         assert_eq!(store.start_sync(2, &a, 14000).unwrap().repeat, None);

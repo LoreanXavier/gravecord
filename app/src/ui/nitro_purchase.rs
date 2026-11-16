@@ -64,7 +64,7 @@ fn gifts_away(remaining: u64, tier: &str) -> String {
 
 /// How far into its dip a pulsing dot is at `phase` of a cycle: 0 at the keyframes 0% and 100%, 1 at 50% (the
 /// keyframes of `spinner-pulsing-ellipsis`, each half eased by the animation's `ease-in-out`).
-fn pulse_wave(phase: f32) -> f32 {
+pub(super) fn pulse_wave(phase: f32) -> f32 {
     use super::motion::Ease;
     let phase = phase.rem_euclid(1.);
     let half = Ease::EaseInOut.apply(f64::from((phase * 2.).fract())) as f32;

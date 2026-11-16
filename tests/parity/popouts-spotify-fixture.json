@@ -1,0 +1,7 @@
+{
+  "live-activity-card": { "class": "card_Bu4Al8" },
+  "live-spotify-platform": { "class": "platformIcon_Bu4Al8" },
+  "live-spotify-art-fallback": { "class": "contentImage_1AI0dL" },
+  "live-spotify-play": { "class": "button_F7qvhY", "tag": "BUTTON", "ancestor": "primaryButton_Bu4Al8" },
+  "live-spotify-sync": { "class": "button_F7qvhY", "tag": "BUTTON", "attribute": "aria-label", "value": "Listen Along", "ancestor": "actions_Bu4Al8" }
+}

@@ -90,6 +90,13 @@ mod tests {
         assert_eq!(method(reqwest::Method::DELETE).inert(), Inert::Deny);
         let cases = [
             (
+                Request::Spotify(crate::spotify::Command::Perform {
+                    request: 1,
+                    operation: crate::spotify::Operation::Premium("fixture".into()),
+                }),
+                Inert::Deny,
+            ),
+            (
                 Request::Spotify(crate::spotify::Command::Refresh),
                 Inert::Deny,
             ),

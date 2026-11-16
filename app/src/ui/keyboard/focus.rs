@@ -331,6 +331,7 @@ impl Root {
                 self.modify_attachment.is_some(),
                 self.view_reactions.is_some(),
                 self.badge_modal.is_some(),
+                self.spotify_actions.premium_dialog,
                 self.polls.modal_open(),
                 // Send a Gift and Select Plan: the page behind is out of the tab order.
                 self.nitro.purchase.is_some(),

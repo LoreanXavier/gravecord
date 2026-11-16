@@ -12,6 +12,7 @@ use tokio::sync::mpsc;
 use tracing::warn;
 
 pub enum Update {
+    SpotifyReply { request: u64, reply: crate::spotify::Reply },
     GatewayConnected(bool),
     /// The local RPC server: a game connected, set or cleared its activity, or left (`dc-rpc`).
     Rpc(dc_rpc::Event),
@@ -810,6 +811,9 @@ pub(crate) fn inert_refuses(request: &Request, updates: &mpsc::UnboundedSender<U
         let body = json!({"ok": false, "status": 0, "body": null, "refused": true});
         let _ = updates.send(Update::Fetched { key, body });
     }
+    if let Request::Spotify(crate::spotify::Command::Perform { request, .. }) = request {
+        let _ = updates.send(Update::SpotifyReply { request: *request, reply: crate::spotify::Reply::Refused });
+    }
     // A send the view shows as a row ends as a failed message, as one whose request never got an answer does.
     if let Request::SendLocal { nonce, channel, .. } = request {
         let _ = updates.send(Update::SendResult {
@@ -1435,6 +1439,8 @@ pub async fn run(token: Token, updates: mpsc::UnboundedSender<Update>, requests:
             Request::Spotify(command) => {
                 if let Some(worker) = &spotify {
                     worker.request(command);
+                } else if let crate::spotify::Command::Perform { request, .. } = command {
+                    let _ = updates.send(Update::SpotifyReply { request, reply: crate::spotify::Reply::Refused });
                 }
             }
             Request::LoadMessages { channel } => {
