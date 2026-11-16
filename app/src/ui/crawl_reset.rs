@@ -51,6 +51,8 @@ impl Root {
             custom_status,
             custom_reminder,
             modify_attachment,
+            report_issue,
+            game_profile,
             search,
             search_filters,
             new_thread,

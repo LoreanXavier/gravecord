@@ -552,6 +552,12 @@ impl Root {
                     });
                 }
             }
+            // 322789: a game card's title opens the game's profile when its record allows it.
+            if entry.kind == 1
+                && let Some(app) = entry.extra["application_id"].as_str()
+            {
+                self.request_game_record(app);
+            }
             if let Some(url) = entry.extra["media"]["image_url"].as_str() {
                 self.request_image(url.to_owned(), url.to_owned());
             }
@@ -791,8 +797,15 @@ impl Root {
                             )),
                     ),
             )
-            .child(
+            .child({
+                // 322789: the title opens the game's profile when its record allows it (`h.A`), else it is text.
+                let profile = (entry.kind == 1)
+                    .then(|| entry.extra["application_id"].as_str())
+                    .flatten()
+                    .filter(|app| self.game_profile_available(app))
+                    .map(str::to_owned);
                 div()
+                    .id(SharedString::from(format!("inventory-title-{}", entry.id)))
                     .when(first, |d| d.parity("inventory-title"))
                     .h(px(18.))
                     .text_ellipsis()
@@ -800,8 +813,16 @@ impl Root {
                     .line_height(px(18.))
                     .font_weight(FontWeight(500.))
                     .text_color(color("--text-default"))
-                    .child(title.to_owned()),
-            )
+                    .child(title.to_owned())
+                    .when_some(profile, |this, app| {
+                        this.cursor_pointer()
+                            .hover(|style| style.underline())
+                            .on_click(cx.listener(move |this, _, _, cx| {
+                                cx.stop_propagation();
+                                this.open_game_profile(app.clone(), cx);
+                            }))
+                    })
+            })
             .child(
                 div()
                     .h(px(16.))

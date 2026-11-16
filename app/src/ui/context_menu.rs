@@ -61,6 +61,7 @@ pub(super) enum Act {
     ViewAllActivity,
     ManageSpotifyPrivacy,
     ReportGameIssue,
+    ViewGameProfile,
     ReportApp,
     MarkRead,
     Invite,
@@ -169,7 +170,7 @@ impl Act {
     /// Every row kind once (`Correction` with its first index). `ordinal` is an exhaustive match, so adding a variant
     /// without listing it here fails the build or the `act_list_is_complete` test.
     #[cfg(test)]
-    pub(super) const ALL: [Act; 89] = [
+    pub(super) const ALL: [Act; 90] = [
         Act::InventoryAbout,
         Act::InventoryHide,
         Act::ReportApp,
@@ -259,6 +260,7 @@ impl Act {
         Act::ReportGameIssue,
         Act::Suggestions,
         Act::SubmitButton,
+        Act::ViewGameProfile,
     ];
 
     #[cfg(test)]
@@ -353,6 +355,7 @@ impl Act {
             Act::ReportGameIssue => 86,
             Act::Suggestions => 87,
             Act::SubmitButton => 88,
+            Act::ViewGameProfile => 89,
         }
     }
 }
@@ -376,6 +379,7 @@ pub(super) fn status(act: Act) -> Status {
         | Act::ViewAllActivity
         | Act::ManageSpotifyPrivacy
         | Act::ReportGameIssue
+        | Act::ViewGameProfile
         | Act::ReportApp
         | Act::MarkRead
         | Act::Invite
@@ -628,14 +632,25 @@ pub(super) fn spotify_activity_items(own: bool, popout: bool) -> Vec<Entry> {
 
 /// Module 285909 for a live `PLAYING` activity: View All Activity in a popout (`pD1L1u`), Report Issue
 /// (`game-detection-report-issue` of module 534465), then Manage Privacy on our own card when the game is not an
-/// embedded activity (module 939075, Activity Privacy on desktop). View Game Profile (534465 `Ay`) needs the game
-/// profile, which this client does not have yet.
-pub(super) fn game_activity_items(own: bool, popout: bool, embedded: bool) -> Vec<Entry> {
+/// embedded activity (module 939075, Activity Privacy on desktop). View Game Profile (534465 `Ay`) comes after View
+/// All Activity when the game's record says its profile opens.
+pub(super) fn game_activity_items(
+    own: bool,
+    popout: bool,
+    embedded: bool,
+    profile: bool,
+) -> Vec<Entry> {
     let mut items = Vec::new();
     if popout {
         items.push(Entry::Row(Row::new(
             Act::ViewAllActivity,
             dc_intl::tr("View All Activity"),
+        )));
+    }
+    if profile {
+        items.push(Entry::Row(Row::new(
+            Act::ViewGameProfile,
+            dc_intl::tr("View Game Profile"),
         )));
     }
     items.push(Entry::Row(Row::new(
@@ -2143,6 +2158,11 @@ impl Root {
                     .is_some_and(|me| me.id == user),
                 popout,
                 embedded,
+                self.context
+                    .game_activity
+                    .as_ref()
+                    .and_then(|game| game.application_id.as_deref())
+                    .is_some_and(|app| self.game_profile_available(app)),
             ),
             Target::InventoryAuthor { .. } => {
                 let mut items = vec![Entry::Row(Row::new(Act::Profile, dc_intl::tr("Profile")))];
@@ -2572,8 +2592,12 @@ impl Root {
         let embedded = game.as_ref().is_some_and(|(_, embedded)| *embedded);
         let items = if spotify {
             spotify_activity_items(own, popout)
-        } else if game.is_some() {
-            game_activity_items(own, popout, embedded)
+        } else if let Some((detected, _)) = game.as_ref() {
+            let profile = detected
+                .application_id
+                .as_deref()
+                .is_some_and(|app| self.game_profile_available(app));
+            game_activity_items(own, popout, embedded, profile)
         } else {
             // Another kind of activity: only View All Activity, in a popout.
             spotify_activity_items(false, popout)
@@ -2642,6 +2666,16 @@ impl Root {
                         dc_intl::tr("Connections"),
                         cx,
                     );
+                }
+            }
+            (Act::ViewGameProfile, Target::GameActivity { .. }) => {
+                if let Some(app) = self
+                    .context
+                    .game_activity
+                    .take()
+                    .and_then(|game| game.application_id)
+                {
+                    self.open_game_profile(app, cx);
                 }
             }
             (Act::ReportGameIssue, Target::GameActivity { .. }) => {
@@ -4548,19 +4582,19 @@ mod tests {
     #[test]
     fn a_game_card_menu_reports_an_issue_and_manages_our_own_privacy() {
         assert_eq!(
-            labels(&game_activity_items(false, false, false)),
+            labels(&game_activity_items(false, false, false, false)),
             ["Report Issue"]
         );
         assert_eq!(
-            labels(&game_activity_items(false, true, false)),
-            ["View All Activity", "Report Issue"]
+            labels(&game_activity_items(false, true, false, true)),
+            ["View All Activity", "View Game Profile", "Report Issue"]
         );
         assert_eq!(
-            labels(&game_activity_items(true, false, false)),
+            labels(&game_activity_items(true, false, false, false)),
             ["Report Issue", "Manage Privacy"]
         );
         assert_eq!(
-            labels(&game_activity_items(true, false, true)),
+            labels(&game_activity_items(true, false, true, false)),
             ["Report Issue"]
         );
     }

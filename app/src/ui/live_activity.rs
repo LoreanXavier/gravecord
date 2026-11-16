@@ -269,6 +269,12 @@ impl Root {
             .filter_map(|user| self.stores.presence.get(user, self.guild))
             .flat_map(|presence| presence.visible_activities().into_iter().cloned())
             .collect();
+        // A game's record tells whether its card's menu offers View Game Profile.
+        for activity in activities.iter().filter(|activity| activity["type"] == 0) {
+            if let Some(app) = activity["application_id"].as_str() {
+                self.request_game_record(app);
+            }
+        }
         if activities.iter().any(dc_state::now_playing::is_spotify) {
             self.request_image(
                 super::spotify_activity::ICON_KEY.into(),

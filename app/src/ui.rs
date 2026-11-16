@@ -213,6 +213,8 @@ mod remediation;
 mod reminder_modal;
 mod report;
 mod report_issue;
+mod game_genres;
+mod game_profile;
 mod launcher_home;
 mod running_game_panel;
 mod running_games;
@@ -681,6 +683,8 @@ pub struct Root {
     modify_attachment: Option<attachment_modal::ModifyAttachment>,
     /// Report Issue for a detected game (module 651930).
     report_issue: Option<report_issue::ReportIssue>,
+    /// The game profile (module 581745).
+    game_profile: Option<game_profile::GameProfile>,
     /// When the text launcher's collections last arrived (module 503406 asks again after ten minutes).
     launcher_collections_at: Option<i64>,
     /// The dialog of a refused upload (too large, too many, empty).
@@ -1071,6 +1075,7 @@ impl Root {
             schedule: Default::default(),
             modify_attachment: None,
             report_issue: None,
+            game_profile: None,
             launcher_collections_at: None,
             upload_error: None,
             sent_edit: None,
@@ -1765,6 +1770,10 @@ impl Root {
                 }
                 if key.starts_with(activity_launch::ACTIVITY_PREFIX) {
                     self.activity_fetched(&key, &body, cx);
+                    return;
+                }
+                if key.starts_with("game-profile:") {
+                    self.game_profile_fetched(&key, body, cx);
                     return;
                 }
                 if key.starts_with(launcher_home::APP_INDEX_PREFIX) {
@@ -9588,6 +9597,12 @@ impl Render for Root {
                     cx.stop_propagation();
                     return;
                 }
+                if keys.key == "escape" && this.game_profile.is_some() {
+                    this.game_profile = None;
+                    cx.notify();
+                    cx.stop_propagation();
+                    return;
+                }
                 if keys.key == "escape" && this.report_issue.is_some() {
                     this.report_issue = None;
                     cx.notify();
@@ -10423,6 +10438,7 @@ impl Render for Root {
             .children(self.settings_dialogs(cx))
             .children(self.modify_attachment_modal(cx))
             .children(self.report_issue_modal(cx))
+            .children(self.game_profile_layer(cx))
             .children(self.upload_error_modal(cx))
             .children(self.sent_edit_modal(cx))
             .children(self.snooze_layer(cx))
