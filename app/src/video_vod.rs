@@ -22,6 +22,9 @@ pub(crate) const RING_CAPACITY: usize = 6;
 pub(crate) const MAX_VIDEO_BYTES: usize = 100 * 1024 * 1024;
 const DEFAULT_FRAME_SECS: f64 = 1.0 / 30.0;
 const SEEK_END_EPSILON: f64 = 0.02;
+/// How long a Play waits for the audio engine to apply it before its status is believed anyway (a stuck engine). The
+/// first sound of a session opens the output device, which takes a few hundred milliseconds on some machines.
+const ENGINE_ACK_GRACE: Duration = Duration::from_secs(5);
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum LoadStatus {
@@ -116,6 +119,11 @@ pub(crate) struct VodPlayer {
     muted: bool,
     clock_anchor: Option<Instant>,
     clock_base_secs: f64,
+    /// The number and time of the last play this video asked of the shared audio engine, until the engine's status
+    /// shows it applied ([`voice_player::Status::play_seq`]). The status is published after the engine's next
+    /// render, which can take long when the output device opens for the first sound; until then it describes what
+    /// came before (another clip, or this one ended) and must not undo the Play click.
+    engine_asked: Option<(u64, Instant)>,
     active_seek_generation: u64,
     current_frame: Option<DecodedFrame>,
     worker: Option<std::thread::JoinHandle<()>>,
@@ -146,6 +154,7 @@ impl VodPlayer {
             muted: false,
             clock_anchor: None,
             clock_base_secs: 0.0,
+            engine_asked: None,
             active_seek_generation: 0,
             current_frame: None,
             worker: None,
@@ -167,7 +176,8 @@ impl VodPlayer {
         engine.set_speed(1.0);
         engine.set_volume(volume);
         engine.set_muted(muted);
-        engine.play(&key, clip, from);
+        let seq = engine.play(&key, clip, from);
+        self.engine_asked = Some((seq, Instant::now()));
     }
 
     fn audio_engine(&self) -> &voice_player::Engine {
@@ -292,6 +302,8 @@ impl VodPlayer {
         self.sync_clock_before_stop();
         self.playing = false;
         self.clock_anchor = None;
+        // A play the engine has not applied yet is ours to cancel even though its status still names another clip.
+        let pending = self.engine_asked.take().is_some();
         let has_audio = self
             .sync
             .shared
@@ -299,7 +311,7 @@ impl VodPlayer {
             .is_ok_and(|shared| shared.audio.is_some());
         if has_audio {
             let engine = self.audio_engine();
-            if engine.status().key.as_deref() == Some(&self.key) {
+            if pending || engine.status().key.as_deref() == Some(&self.key) {
                 engine.pause();
             }
         }
@@ -322,6 +334,7 @@ impl VodPlayer {
         let active_key = self.audio_engine().status().key;
         if active_key.as_deref() == Some(key.as_str())
             || (self.playing && active_key.is_none())
+            || (self.playing && self.engine_asked.is_some())
         {
             let engine = self.audio_engine();
             engine.set_volume(vol);
@@ -354,6 +367,10 @@ impl VodPlayer {
         if self.ended && self.playing {
             self.playing = false;
             self.clock_anchor = None;
+            // A play the engine has not applied yet would start the sound under the ended picture.
+            if self.engine_asked.take().is_some() {
+                self.audio_engine().pause();
+            }
         }
         if let Ok(mut shared) = self.sync.shared.lock() {
             shared.seek_generation = shared.seek_generation.wrapping_add(1);
@@ -366,7 +383,10 @@ impl VodPlayer {
         }
         if let Some(clip) = audio {
             let status = self.audio_engine().status();
-            if status.key.as_deref() == Some(&self.key) {
+            if self.playing && self.engine_asked.is_some() {
+                // The play has not reached the engine yet: it is asked again from the new position.
+                self.start_audio_clip(clip, clamped);
+            } else if status.key.as_deref() == Some(&self.key) {
                 if self.playing {
                     if status.ended {
                         self.start_audio_clip(clip, clamped);
@@ -481,7 +501,19 @@ impl VodPlayer {
         // Start delayed audio playback once the worker finishes loading while waiting in playing state.
         if self.playing && has_audio {
             let engine_status = self.audio_engine().status();
-            if engine_status.key.as_deref() == Some(&self.key) {
+            let waiting_for_engine = match self.engine_asked {
+                Some((seq, _)) if engine_status.play_seq >= seq => {
+                    self.engine_asked = None;
+                    false
+                }
+                Some((_, asked)) => asked.elapsed() < ENGINE_ACK_GRACE,
+                None => false,
+            };
+            if waiting_for_engine {
+                // The sound has not started yet: the picture waits with it (a browser's `play()` before data).
+                self.clock_base_secs = self.position_secs;
+                self.clock_anchor = Some(Instant::now());
+            } else if engine_status.key.as_deref() == Some(&self.key) {
                 if !engine_status.playing && !engine_status.ended {
                     if engine_status.error.is_some() {
                         if let Some(anchor) = self.clock_anchor {
@@ -521,7 +553,12 @@ impl VodPlayer {
                 self.start_audio_clip(clip, self.position_secs);
             }
         } else if self.playing {
-            if let Some(anchor) = self.clock_anchor {
+            if !matches!(status, LoadStatus::Ready) {
+                // Still loading: whether there is sound is not known yet, and nothing plays, so time stands still
+                // until the media is ready instead of skipping its start.
+                self.clock_base_secs = self.position_secs;
+                self.clock_anchor = Some(Instant::now());
+            } else if let Some(anchor) = self.clock_anchor {
                 self.position_secs = self.clock_base_secs + anchor.elapsed().as_secs_f64();
             } else {
                 self.clock_anchor = Some(Instant::now());
@@ -1226,6 +1263,70 @@ mod tests {
         let after_seek = player.tick();
         assert!((after_seek.position - 1.5).abs() < 0.01);
         player.audio_engine().stop();
+        let _ = player.take_all_images();
+    }
+
+    /// The first Play click must survive the engine publishing its status late: while it still reports the previous
+    /// clip (or this one, not yet playing) the video stays playing and its clock does not run ahead of the sound.
+    #[test]
+    fn a_play_click_waits_for_the_engine_to_report_it() {
+        let palette = [[200, 40, 40], [40, 200, 40], [40, 40, 200], [200, 200, 40]];
+        let mp4 = Arc::new(synthetic_mp4(64, 48, 2, &palette, 2).unwrap());
+        let mut player = VodPlayer::new(
+            "video:test-first-click",
+            "https://example.invalid/first.mp4",
+            Some(mp4),
+        );
+        let (engine, reported) = voice_player::Engine::stalled(voice_player::Status {
+            key: Some("audio:previous".into()),
+            playing: true,
+            ..Default::default()
+        });
+        player.test_engine = Some(Arc::new(engine));
+        player.start_load();
+        let _ = wait_ready(&mut player);
+        player.attach_audio_for_test(Arc::new(Clip::from_samples(vec![0.1; 48_000 * 3])));
+
+        player.play(1.0, false);
+        std::thread::sleep(Duration::from_millis(40));
+        let tick = player.tick();
+        assert!(tick.playing, "a stale status of the previous clip does not undo the click");
+        assert!(tick.position < 0.01, "the picture waits for the sound: {}", tick.position);
+
+        // A stale status of this very video having ended (a replay) does not undo it either.
+        *reported.lock().unwrap() = voice_player::Status {
+            key: Some("video:test-first-click".into()),
+            ended: true,
+            position: 2.0,
+            ..Default::default()
+        };
+        assert!(player.tick().playing);
+
+        // A seek before the engine applied the play asks for the play again, from the new place.
+        player.seek(0.5);
+        assert_eq!(player.engine_asked.map(|(seq, _)| seq), Some(2));
+
+        // The engine applied the second play: from now on its status is the clock.
+        *reported.lock().unwrap() = voice_player::Status {
+            key: Some("video:test-first-click".into()),
+            playing: true,
+            position: 0.75,
+            play_seq: 2,
+            ..Default::default()
+        };
+        let tick = player.tick();
+        assert!(tick.playing);
+        assert!((tick.position - 0.75).abs() < 0.01);
+        assert!(player.engine_asked.is_none());
+
+        // Another clip takes the engine after the click was applied: this video stops, as before.
+        *reported.lock().unwrap() = voice_player::Status {
+            key: Some("audio:other".into()),
+            playing: true,
+            play_seq: 3,
+            ..Default::default()
+        };
+        assert!(!player.tick().playing);
         let _ = player.take_all_images();
     }
 

@@ -226,6 +226,13 @@ impl Hub {
         }
     }
 
+    /// No Play waits for its download any more (the channel it was clicked in closed).
+    pub(super) fn drop_play_intents(&mut self) {
+        for pill in self.pills.values_mut() {
+            pill.want_play = false;
+        }
+    }
+
     /// The play or pause button.
     pub(super) fn toggle(&mut self, key: &str, url: &str, duration: f64) {
         self.sync_stored_volume();

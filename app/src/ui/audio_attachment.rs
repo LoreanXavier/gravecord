@@ -879,11 +879,22 @@ impl Root {
                 }
                 None => format!("au: no audio attachment named {name}"),
             },
+            // The shared sound engine and any Play still waiting for a download, whichever channel is open.
+            ["engine"] => {
+                let status = voice_player::engine().status();
+                let waiting = hub.borrow().pills.values().filter(|pill| pill.want_play).count();
+                format!(
+                    "au: engine key {} playing {} position {:.3}; plays waiting {waiting}",
+                    status.key.as_deref().unwrap_or("none"),
+                    status.playing,
+                    status.position
+                )
+            }
             ["mute"] => {
                 hub.borrow_mut().toggle_mute();
                 format!("au: muted {}", hub.borrow().muted)
             }
-            _ => "au: usage `au play|pause <name> | seek <s> <name> | state <name> | mute`"
+            _ => "au: usage `au play|pause <name> | seek <s> <name> | state <name> | engine | mute`"
                 .to_owned(),
         };
         cx.notify();

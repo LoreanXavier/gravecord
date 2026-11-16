@@ -440,6 +440,25 @@ impl VideoHub {
         (retired, next_deadline)
     }
 
+    /// Pauses the players of messages in the chat: not the lightbox's (`lb:`) nor the one shown full screen, which
+    /// stay on screen whatever channel is open.
+    pub(super) fn pause_inline(&mut self) {
+        let fullscreen = self.fullscreen.as_ref().map(|fs| fs.key.clone());
+        for (key, entry) in &mut self.entries {
+            if !key.starts_with("lb:") && fullscreen.as_ref() != Some(key) && entry.player.playing() {
+                entry.player.pause();
+            }
+        }
+    }
+
+    /// Whether a lightbox or full-screen video plays (its sound is the shared engine's).
+    pub(super) fn fullscreen_or_lightbox_playing(&self) -> bool {
+        let fullscreen = self.fullscreen.as_ref().map(|fs| fs.key.as_str());
+        self.entries.iter().any(|(key, entry)| {
+            (key.starts_with("lb:") || fullscreen == Some(key.as_str())) && entry.player.playing()
+        })
+    }
+
     pub(super) fn pause_all(&mut self) {
         for entry in self.entries.values_mut() {
             if entry.player.playing() {
@@ -531,6 +550,27 @@ impl Root {
                 });
             })
             .detach();
+        }
+    }
+
+    /// Another channel opened: its message list is no longer drawn, so its media stop as an unmounted `<video>` or
+    /// `<audio>` element does in the official client (modules 153440, 527388 and 989161 pause nothing themselves; the
+    /// element leaving the page does). Inline videos and the shared sound engine pause, keeping their positions, and a
+    /// Play still waiting for its download is dropped rather than starting later in a channel no longer shown.
+    pub(super) fn media_left_channel(&mut self) {
+        self.video_hub.borrow_mut().pause_inline();
+        self.voice_hub.borrow_mut().drop_play_intents();
+        // Sent whatever the status says: it lags, and a play clicked just before leaving may not show in it yet. The
+        // clip editor's preview is not a message's media and keeps playing.
+        let engine = dc_voice::voice_player::engine();
+        let lightbox = self.video_hub.borrow().fullscreen_or_lightbox_playing();
+        if !lightbox
+            && !engine
+                .status()
+                .key
+                .is_some_and(|key| key.starts_with("clip-editor:"))
+        {
+            engine.pause();
         }
     }
 

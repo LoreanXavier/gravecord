@@ -16,7 +16,7 @@ use crate::{audio::output_config, ogg_opus};
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use std::sync::{
     Arc, Mutex, OnceLock,
-    atomic::{AtomicBool, Ordering},
+    atomic::{AtomicBool, AtomicU64, Ordering},
     mpsc,
 };
 use std::time::{Duration, Instant};
@@ -85,6 +85,9 @@ pub struct Status {
     pub rendered: u64,
     /// Why it could not play.
     pub error: Option<String>,
+    /// The number of the last [`Engine::play`] applied: a player compares it with the number its own play returned to
+    /// know whether this status already answers that play.
+    pub play_seq: u64,
 }
 
 enum Command {
@@ -92,6 +95,7 @@ enum Command {
         key: String,
         clip: Arc<Clip>,
         from: f64,
+        seq: u64,
     },
     Pause,
     Seek(f64),
@@ -104,6 +108,7 @@ enum Command {
 pub struct Engine {
     commands: mpsc::Sender<Command>,
     status: Arc<Mutex<Status>>,
+    plays: AtomicU64,
 }
 
 static SILENT: AtomicBool = AtomicBool::new(false);
@@ -128,16 +133,42 @@ impl Engine {
         let _ = std::thread::Builder::new()
             .name("dc-voice-message".into())
             .spawn(move || Worker::new(silent, shared).run(&receive));
-        Self { commands, status }
+        Self {
+            commands,
+            status,
+            plays: AtomicU64::new(0),
+        }
     }
 
-    /// Starts `clip` (the message `key`) at `from` seconds; whatever played before stops.
-    pub fn play(&self, key: &str, clip: Arc<Clip>, from: f64) {
+    /// An engine that reports `status` and never applies a command, for tests of players that must not trust the
+    /// status before the engine has caught up with their last command. The returned handle sets what it reports.
+    #[doc(hidden)]
+    pub fn stalled(status: Status) -> (Self, Arc<Mutex<Status>>) {
+        let (commands, receive) = mpsc::channel();
+        // Commands are kept, unread, for as long as the engine lives.
+        std::mem::forget(receive);
+        let status = Arc::new(Mutex::new(status));
+        (
+            Self {
+                commands,
+                status: status.clone(),
+                plays: AtomicU64::new(0),
+            },
+            status,
+        )
+    }
+
+    /// Starts `clip` (the message `key`) at `from` seconds; whatever played before stops. Returns the number this play
+    /// will carry in [`Status::play_seq`] once applied.
+    pub fn play(&self, key: &str, clip: Arc<Clip>, from: f64) -> u64 {
+        let seq = self.plays.fetch_add(1, Ordering::Relaxed) + 1;
         let _ = self.commands.send(Command::Play {
             key: key.to_owned(),
             clip,
             from,
+            seq,
         });
+        seq
     }
 
     pub fn pause(&self) {
@@ -273,6 +304,8 @@ impl Stretch {
 struct Worker {
     silent: bool,
     status: Arc<Mutex<Status>>,
+    /// The number of the last play applied.
+    play_seq: u64,
     key: Option<String>,
     clip: Option<Arc<Clip>>,
     stretch: Stretch,
@@ -300,6 +333,7 @@ impl Worker {
         Self {
             silent,
             status,
+            play_seq: 0,
             key: None,
             clip: None,
             stretch: Stretch::default(),
@@ -336,7 +370,13 @@ impl Worker {
 
     fn apply(&mut self, command: Command) {
         match command {
-            Command::Play { key, clip, from } => {
+            Command::Play {
+                key,
+                clip,
+                from,
+                seq,
+            } => {
+                self.play_seq = seq;
                 let same = self.key.as_deref() == Some(key.as_str());
                 if !same || self.clip.is_none() {
                     self.rendered = 0;
@@ -473,6 +513,7 @@ impl Worker {
                 position,
                 rendered: self.rendered,
                 error: self.error.clone(),
+                play_seq: self.play_seq,
             };
         }
     }

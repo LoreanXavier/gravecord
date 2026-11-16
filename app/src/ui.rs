@@ -305,6 +305,8 @@ struct Prepared {
     /// When the unread badge was last refreshed, and whether a refresh is waiting for its turn.
     badge_at: Option<Instant>,
     badge_waiting: bool,
+    /// The channel whose messages own the media playing now (`None` inside: no channel open).
+    media_channel: Option<Option<Id>>,
 }
 
 /// Whether a step keyed by `now` has anything new to read since it last ran at `last`.
@@ -9137,6 +9139,11 @@ impl Render for Root {
             self.prepare_member_avatars(window, cx);
         }
         self.prepare_inline_videos(window, cx);
+        let media_channel = self.channel;
+        if self.prepared.media_channel.is_some_and(|last| last != media_channel) {
+            self.media_left_channel();
+        }
+        self.prepared.media_channel = Some(media_channel);
         self.prepare_videos(window, cx);
         self.prepare_gif_tiles(window, cx);
         self.prepare_live_avatars();
