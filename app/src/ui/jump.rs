@@ -532,6 +532,35 @@ impl Root {
             return "jump: no channel".to_owned();
         };
         match rest {
+            // A message by id: jumped to as a link to it would (loading the history around it), or looked up.
+            ["to", id] => match id.parse::<Id>() {
+                Ok(id) => {
+                    self.jump_to_message_id(channel, id, true, None);
+                    format!("jump: to {id}")
+                }
+                Err(_) => "jump: to wants a message id".to_owned(),
+            },
+            ["has", id] => {
+                let id = id.parse::<Id>().unwrap_or_default();
+                let found = self
+                    .stores
+                    .messages
+                    .get(&channel)
+                    .and_then(|list| list.iter().find(|message| message.id == id));
+                match found {
+                    Some(message) => format!(
+                        "jump: has {id}: type {} flags {} attachments {:?}",
+                        message.kind,
+                        message.flags,
+                        message
+                            .attachments
+                            .iter()
+                            .map(|attachment| attachment.filename.as_str())
+                            .collect::<Vec<_>>()
+                    ),
+                    None => format!("jump: {id} is not loaded"),
+                }
+            }
             ["present"] => {
                 let page = self.page();
                 self.jump_to_present_with(page);

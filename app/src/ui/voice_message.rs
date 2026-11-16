@@ -564,6 +564,7 @@ impl Root {
             let (hub, key, url) = (hub.clone(), key.clone(), url.clone());
             let base = div()
                 .id(("voice-play", salt))
+                .parity("voice-play")
                 .flex()
                 .flex_none()
                 .items_center()
@@ -664,6 +665,7 @@ impl Root {
             let label = voice_wave::speed_label(speed);
             div()
                 .id(("voice-speed", salt))
+                .parity("voice-speed")
                 .py(px(4.))
                 .cursor_pointer()
                 .on_click(move |_, window, _| {
@@ -916,6 +918,7 @@ impl Root {
         let click_hub = hub;
         let button = div()
             .id(("voice-volume", salt))
+            .parity("voice-volume")
             .flex_none()
             .cursor_pointer()
             .on_click(move |_, window, _| {

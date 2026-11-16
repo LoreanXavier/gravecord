@@ -1,0 +1,6 @@
+{
+  "voice-pill": { "class": "container_seLrDE" },
+  "voice-play": { "class": "playButtonContainer_seLrDE" },
+  "voice-speed": { "class": "playbackRateContainer_seLrDE" },
+  "voice-volume": { "class": "volumeButtonIcon_seLrDE" }
+}

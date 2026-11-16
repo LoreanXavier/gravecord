@@ -1,0 +1,19 @@
+{
+  "audio-card": {
+    "class": "wrapperAudio_FJ99sr"
+  },
+  "audio-controls": {
+    "class": "audioControls_FJ99sr"
+  },
+  "audio-play": {
+    "class": "controlIcon_FJ99sr",
+    "ancestor": "audioControls_FJ99sr"
+  },
+  "audio-time": {
+    "class": "durationTimeWrapper_FJ99sr"
+  },
+  "audio-bar": {
+    "class": "mediaBarInteraction_s1cr3c",
+    "ancestor": "audioControls_FJ99sr"
+  }
+}

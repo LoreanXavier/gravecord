@@ -224,6 +224,7 @@ impl Root {
             let (hub, key, url) = (hub.clone(), key.to_owned(), url.to_owned());
             div()
                 .id(("audio-play", salt))
+                .parity("audio-play")
                 .flex_none()
                 .size(px(32.))
                 .flex()
@@ -254,6 +255,7 @@ impl Root {
                 .into_any_element()
         };
         let time = div()
+            .parity("audio-time")
             .flex()
             .flex_none()
             .m(px(4.))
@@ -299,6 +301,7 @@ impl Root {
             };
             div()
                 .id(("audio-volume", salt))
+                .parity("audio-volume")
                 .flex_none()
                 .size(px(32.))
                 .flex()
@@ -337,6 +340,7 @@ impl Root {
         }
 
         let controls = div()
+            .parity("audio-controls")
             .flex()
             .items_center()
             .w_full()
@@ -559,7 +563,7 @@ impl Root {
         let (over_hub, over_key, over_url) = (hub.clone(), key.clone(), url);
         div()
             .id(("audio-card", salt))
-            .parity("audio-card")
+            .parity_with_border("audio-card", 1.)
             .group(group)
             .relative()
             .flex()
@@ -733,6 +737,7 @@ impl Root {
         let (paint_hub, paint_key) = (hub, key.to_owned());
         div()
             .id(("audio-bar", salt))
+            .parity("audio-bar")
             .flex()
             .flex_1()
             .min_w(px(0.))
