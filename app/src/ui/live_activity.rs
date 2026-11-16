@@ -4,10 +4,12 @@ use crate::{net::Request, parity::Parity};
 use dc_state::Id;
 use gpui::{
     AnyElement, Context, FontWeight, Hsla, IntoElement, SharedString, div, img, prelude::*, px,
-    relative,
+    relative, svg,
 };
 use serde_json::Value;
 use std::time::Duration;
+
+const SPOTIFY_PLATFORM_ICON: &str = "live-platform:spotify";
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum Surface {
@@ -265,6 +267,15 @@ impl Root {
             .filter_map(|user| self.stores.presence.get(user, self.guild))
             .flat_map(|presence| presence.visible_activities().into_iter().cloned())
             .collect();
+        if activities.iter().any(dc_state::now_playing::is_spotify) {
+            self.request_image(
+                SPOTIFY_PLATFORM_ICON.into(),
+                format!(
+                    "{}/assets/f6833ce4dd20c1fb.svg",
+                    dc_proto::pin::WEBAPP_ORIGIN
+                ),
+            );
+        }
         for activity in &activities {
             for key in ["large_image", "small_image"] {
                 if let Some(url) = asset_url(activity, key) {
@@ -368,6 +379,11 @@ impl Root {
             return Vec::new();
         };
         let bot = self.stores.users.get(&user).is_some_and(|u| u.bot);
+        let palette = self.profile_palette(user, self.guild, surface == Surface::Sidebar);
+        let profile_theme = palette
+            .theme
+            .as_ref()
+            .map_or_else(super::theme, |theme| theme.tokens);
         let card_background = if self.dm_palette(user).themed {
             color("--background-mod-normal")
         } else {
@@ -403,6 +419,7 @@ impl Root {
                     .cloned();
                 let kind = activity["type"].as_u64().unwrap_or(0);
                 let spotify = dc_state::now_playing::is_spotify(activity);
+                let missing_spotify_art = spotify && asset_url(activity, "large_image").is_none();
                 let own = self.stores.current_user.as_ref().is_some_and(|me| me.id == user);
                 let more = !bot && if spotify {
                     own || surface == Surface::Popout
@@ -453,7 +470,7 @@ impl Root {
                         .text_ellipsis()
                         .text_size(px(12.))
                         .line_height(px(16.))
-                        .text_color(subtle)
+                        .text_color(if spotify { palette.text } else { subtle })
                         .child(text)
                 };
                 let mut details = div()
@@ -472,7 +489,7 @@ impl Root {
                                     .text_size(px(14.))
                                     .line_height(px(18.))
                                     .font_weight(FontWeight(600.))
-                                    .text_color(strong)
+                                    .text_color(if spotify { palette.text } else { strong })
                                     .child(title.to_owned()),
                             )
                             .children(subtitle.map(text_line))
@@ -708,11 +725,26 @@ impl Root {
                             .gap(px(4.))
                             .child(
                                 div()
+                                    .flex()
+                                    .items_center()
+                                    .gap(px(4.))
+                                    .overflow_hidden()
                                     .text_size(px(if surface == Surface::Sidebar { 14. } else { 12. }))
                                     .line_height(px(if surface == Surface::Sidebar { 18. } else { 16. }))
                                     .font_weight(FontWeight(500.))
                                     .text_color(strong)
-                                    .child(heading(activity)),
+                                    .child(heading(activity))
+                                    .when(spotify, |header| {
+                                        header.child(
+                                            div()
+                                                .parity("live-spotify-platform")
+                                                .size(px(12.))
+                                                .flex_none()
+                                                .children(self.images.get(SPOTIFY_PLATFORM_ICON).map(|picture| {
+                                                    svg().data(&picture.bytes).size_full().text_color(palette.token("--icon-muted"))
+                                                })),
+                                        )
+                                    }),
                             )
                             .when(more, |this| {
                                 let key = SharedString::from(format!("activity-more-{user}-{index}-{large}"));
@@ -775,6 +807,11 @@ impl Root {
                                         .flex_none()
                                         .rounded(px(8.))
                                         .overflow_hidden()
+                                        .when(missing_spotify_art, |image| {
+                                            image.parity("live-spotify-art-fallback").child(
+                                                icon("inventory_unknown_game", image_size, if profile_theme == dc_tokens::Theme::Light { "--black" } else { "--white" }),
+                                            )
+                                        })
                                         .children(art.map(|picture| {
                                             img(picture).size(px(image_size)).rounded(px(8.))
                                         }))
