@@ -56,10 +56,10 @@ impl Arrow {
 
     fn asset(self) -> &'static str {
         match self {
-            Arrow::Left => "icons/ddr_left.svg",
-            Arrow::Down => "icons/ddr_down.svg",
-            Arrow::Up => "icons/ddr_up.svg",
-            Arrow::Right => "icons/ddr_right.svg",
+            Arrow::Left => "574907598f87a615.svg",
+            Arrow::Down => "0a9fe5975bf11d56.svg",
+            Arrow::Up => "1930678cb18a10c6.svg",
+            Arrow::Right => "600de8edafaf94b2.svg",
         }
     }
 }
@@ -349,7 +349,7 @@ fn item_extent(window: &mut Window, item: &Item) -> f32 {
     widest + 24.
 }
 
-fn key_cap(cap: &Cap) -> AnyElement {
+fn key_cap(cap: &Cap) -> gpui::Div {
     let base = div()
         .flex_none()
         .h(px(23.))
@@ -375,7 +375,7 @@ fn key_cap(cap: &Cap) -> AnyElement {
             inset: true,
         }]);
     match cap {
-        Cap::Text(text) => base.child(text.to_uppercase()).into_any_element(),
+        Cap::Text(text) => base.child(text.to_uppercase()),
         Cap::Arrow(arrow) => {
             let turn: f32 = match arrow {
                 Arrow::Down => 0.,
@@ -393,7 +393,6 @@ fn key_cap(cap: &Cap) -> AnyElement {
                         turn.to_radians(),
                     ))),
             )
-            .into_any_element()
         }
     }
 }
@@ -405,6 +404,18 @@ pub(in crate::ui) fn combo(bind: &str) -> gpui::Div {
         .h(px(23.))
         .gap(px(3.))
         .children(caps(bind).iter().map(key_cap))
+}
+
+fn measured_combo(window: &mut Window, bind: &str) -> gpui::Div {
+    div()
+        .flex()
+        .h(px(23.))
+        .gap(px(3.))
+        .children(caps(bind).iter().map(|cap| {
+            key_cap(cap)
+                .w(px(cap_width(window, cap)))
+                .whitespace_nowrap()
+        }))
 }
 
 impl Root {
@@ -467,6 +478,12 @@ impl Root {
         let help = self.keys.help.as_ref()?;
         let scroll = help.scroll.clone();
         let lit: Vec<bool> = ARROWS.iter().map(|arrow| help.is_lit(*arrow)).collect();
+        for arrow in ARROWS {
+            self.request_image(
+                arrow.name().to_owned(),
+                format!("{}/assets/{}", dc_proto::pin::WEBAPP_ORIGIN, arrow.asset()),
+            );
+        }
         let view = window.viewport_size();
         // `width: 80vw; max-width: 950px; min-width: 800px; max-height: 80vh`.
         let width = (f32::from(view.width) * 0.8).clamp(MIN_WIDTH, 950.);
@@ -510,11 +527,12 @@ impl Root {
                     .overflow_hidden()
                     .cursor_pointer()
                     // The sprite has the resting arrow at the top and the lit one 100px down.
-                    .child(img(arrow.asset()).w(px(50.)).h(px(150.)).mt(px(if lit[at] {
-                        -100.
-                    } else {
-                        0.
-                    })))
+                    .children(self.images.get(arrow.name()).cloned().map(|picture| {
+                        img(picture)
+                            .w(px(50.))
+                            .h(px(150.))
+                            .mt(px(if lit[at] { -100. } else { 0. }))
+                    }))
                     .on_click(cx.listener(move |this, _, _, cx| {
                         if let Some(help) = this.keys.help.as_mut() {
                             help.press(arrow);
@@ -525,6 +543,8 @@ impl Root {
                     }))
             }));
 
+        let title = "Keyboard Combos";
+        let title_width = measure(window, title, 26., 400.);
         let modal = div()
             .parity("keyboard-help-modal")
             .relative()
@@ -548,8 +568,14 @@ impl Root {
                     .text_size(px(26.))
                     .line_height(px(34.))
                     .text_color(color("--text-strong"))
-                    .child(div().mr(px(20.)).child("Keyboard Combos"))
-                    .child(combo("mod+/").parity("keyboard-help-combo")),
+                    .child(
+                        div()
+                            .w(px(title_width))
+                            .whitespace_nowrap()
+                            .mr(px(20.))
+                            .child(title),
+                    )
+                    .child(measured_combo(window, "mod+/").parity("keyboard-help-combo")),
             )
             .child(
                 div()
@@ -655,46 +681,52 @@ impl Root {
             })
             .collect();
         let widths = tracks(&limits, list_width);
-        let rows: Vec<AnyElement> =
-            section
-                .items
-                .chunks(count)
-                .enumerate()
-                .map(|(at, row)| {
-                    div()
-                        .flex()
-                        .gap(px(GAP))
-                        .children(row.iter().enumerate().map(|(column, entry)| {
-                            div()
-                                .when(first && at == 0 && column == 0, |this| {
-                                    this.parity("keyboard-help-item")
-                                })
-                                .flex_none()
-                                .w(px(widths[column]))
-                                .p(px(12.))
-                                .flex()
-                                .flex_col()
-                                .gap(px(8.))
-                                .rounded(px(8.))
-                                .bg(color("--background-mod-muted"))
-                                .child(
-                                    div()
-                                        // A hair of slack: the track is the text's own width, and a rounding difference must not wrap it.
-                                        .w(px(widths[column] - 24. + 1.))
-                                        .text_size(px(14.))
-                                        .line_height(px(18.))
-                                        .text_color(color("--text-default"))
-                                        .child(entry.description),
-                                )
-                                .child(div().children(
-                                    entry.binds.iter().map(|bind| combo(bind).mb(px(8.))),
-                                ))
-                        }))
-                        .into_any_element()
-                })
-                .collect();
+        let rows: Vec<AnyElement> = section
+            .items
+            .chunks(count)
+            .enumerate()
+            .map(|(at, row)| {
+                div()
+                    .flex()
+                    .gap(px(GAP))
+                    .children(row.iter().enumerate().map(|(column, entry)| {
+                        div()
+                            .when(first && at == 0 && column == 0, |this| {
+                                this.parity("keyboard-help-item")
+                            })
+                            .flex_none()
+                            .w(px(widths[column]))
+                            .p(px(12.))
+                            .flex()
+                            .flex_col()
+                            .gap(px(8.))
+                            .rounded(px(8.))
+                            .bg(color("--background-mod-muted"))
+                            .child(
+                                div()
+                                    // A hair of slack: the track is the text's own width, and a rounding difference must not wrap it.
+                                    .w(px(widths[column] - 24. + 1.))
+                                    .text_size(px(14.))
+                                    .line_height(px(18.))
+                                    .text_color(color("--text-default"))
+                                    .child(entry.description),
+                            )
+                            .child(
+                                div().children(
+                                    entry
+                                        .binds
+                                        .iter()
+                                        .map(|bind| measured_combo(window, bind).mb(px(8.))),
+                                ),
+                            )
+                    }))
+                    .into_any_element()
+            })
+            .collect();
         div()
-            .when(first, |this| this.parity("keyboard-help-section"))
+            .when(first, |this| {
+                this.parity_below("keyboard-help-section", if last { 0. } else { 1. })
+            })
             .ml(px(16.))
             .py(px(24.))
             .px(px(8.))
