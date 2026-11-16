@@ -373,11 +373,7 @@ fn fetch(url: &str) -> Result<Vec<u8>, String> {
     }
     // Largest voice message file the desktop app reads (`0x1900000`).
     const MAX: usize = 25 * 1024 * 1024;
-    let bytes = crate::sounds::fetch_url(url)?;
-    if bytes.len() > MAX {
-        return Err("file too large".to_owned());
-    }
-    Ok(bytes)
+    crate::sounds::fetch_url_limited(url, MAX)
 }
 
 pub(super) fn tnum() -> FontFeatures {
@@ -2190,6 +2186,114 @@ impl Root {
 
 #[cfg(test)]
 mod tests {
+    fn audio_response(
+        body: Vec<u8>,
+        declared_size: Option<usize>,
+    ) -> (String, std::thread::JoinHandle<()>) {
+        use std::io::{Read, Write};
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let url = format!("http://{}/audio.wav", listener.local_addr().unwrap());
+        let server = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            stream
+                .set_read_timeout(Some(std::time::Duration::from_secs(5)))
+                .unwrap();
+            stream
+                .set_write_timeout(Some(std::time::Duration::from_secs(5)))
+                .unwrap();
+            let mut request = Vec::new();
+            while !request.ends_with(b"\r\n\r\n") {
+                let mut byte = [0];
+                stream.read_exact(&mut byte).unwrap();
+                request.push(byte[0]);
+                assert!(request.len() < 16_384);
+            }
+            let length = declared_size
+                .map_or_else(String::new, |size| format!("Content-Length: {size}\r\n"));
+            write!(
+                stream,
+                "HTTP/1.1 200 OK\r\nConnection: close\r\n{length}\r\n"
+            )
+            .unwrap();
+            // A rejected header or body limit closes the connection before all bytes are written.
+            let _ = stream.write_all(&body);
+        });
+        (url, server)
+    }
+
+    #[test]
+    fn attachment_audio_over_two_mib_downloads_and_decodes_without_the_ui_sound_limit() {
+        let data_size = 3 * 1024 * 1024u32;
+        let mut wav = Vec::new();
+        wav.extend_from_slice(b"RIFF");
+        wav.extend_from_slice(&(36 + data_size).to_le_bytes());
+        wav.extend_from_slice(b"WAVEfmt ");
+        wav.extend_from_slice(&16u32.to_le_bytes());
+        wav.extend_from_slice(&1u16.to_le_bytes());
+        wav.extend_from_slice(&1u16.to_le_bytes());
+        wav.extend_from_slice(&48_000u32.to_le_bytes());
+        wav.extend_from_slice(&96_000u32.to_le_bytes());
+        wav.extend_from_slice(&2u16.to_le_bytes());
+        wav.extend_from_slice(&16u16.to_le_bytes());
+        wav.extend_from_slice(b"data");
+        wav.extend_from_slice(&data_size.to_le_bytes());
+        wav.resize(44 + data_size as usize, 0);
+        let length = wav.len();
+        let (url, server) = audio_response(wav.clone(), Some(length));
+        assert_eq!(
+            crate::sounds::fetch_url(&url).unwrap_err(),
+            "file too large"
+        );
+        server.join().unwrap();
+
+        let (url, server) = audio_response(wav, Some(length));
+        let bytes = fetch(&url).expect("attachment HTTP path accepts more than 2 MiB");
+        server.join().unwrap();
+        assert_eq!(bytes.len(), length);
+        let clip = Clip::from_file(bytes)
+            .expect("the downloaded WAV decodes without opening audio hardware");
+        assert!((clip.seconds() - f64::from(data_size) / 96_000.).abs() < 0.001);
+    }
+
+    #[test]
+    fn attachment_audio_checks_declared_and_streamed_download_limits() {
+        let (url, server) = audio_response(Vec::new(), Some(25 * 1024 * 1024 + 1));
+        assert_eq!(fetch(&url).unwrap_err(), "file too large");
+        server.join().unwrap();
+        for (length, accepted) in [(8, true), (9, false)] {
+            let (url, server) = audio_response(vec![7; length], None);
+            let result = crate::sounds::fetch_url_limited(&url, 8);
+            server.join().unwrap();
+            if accepted {
+                assert_eq!(result.unwrap(), vec![7; length]);
+            } else {
+                assert_eq!(result.unwrap_err(), "file too large");
+            }
+        }
+    }
+
+    #[test]
+    fn attachment_audio_m4a_over_two_mib_reaches_the_aac_decoder() {
+        // Synthetic 0.25s mono silence, generated with FFmpeg's anullsrc at 48kHz,
+        // AAC 64k, faststart and bitexact flags. No captured microphone or other user media.
+        let fixture = include_bytes!("../../../tests/fixtures/audio_silence.m4a");
+        let expected = Clip::from_file(fixture.to_vec()).expect("synthetic AAC fixture");
+        let mut bytes = fixture.to_vec();
+        // A valid ISO BMFF free box exercises the HTTP limit without a large checked-in fixture.
+        let padding = 3 * 1024 * 1024u32;
+        bytes.extend_from_slice(&(padding + 8).to_be_bytes());
+        bytes.extend_from_slice(b"free");
+        bytes.resize(bytes.len() + padding as usize, 0);
+        let length = bytes.len();
+        let (url, server) = audio_response(bytes, Some(length));
+        let downloaded = fetch(&url).expect("large M4A HTTP body");
+        server.join().unwrap();
+        assert_eq!(downloaded.len(), length);
+        let clip = Clip::from_file(downloaded).expect("AAC decoder after HTTP fetch");
+        assert_eq!(clip.len(), expected.len());
+        assert!(!clip.is_empty());
+    }
+
     #[test]
     fn the_stored_volume_reads_as_the_official_store_does() {
         use super::volume_of;

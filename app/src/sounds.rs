@@ -605,6 +605,11 @@ fn fetch(file: &str) -> Result<Vec<u8>, String> {
 
 /// A sound file from a CDN URL, on a small runtime of its own (the caller is a plain thread).
 pub(crate) fn fetch_url(url: &str) -> Result<Vec<u8>, String> {
+    fetch_url_limited(url, MAX_BYTES)
+}
+
+/// Attachment audio has its own budget; it must not inherit the short UI sounds' limit.
+pub(crate) fn fetch_url_limited(url: &str, max_bytes: usize) -> Result<Vec<u8>, String> {
     static RUNTIME: OnceLock<Option<tokio::runtime::Runtime>> = OnceLock::new();
     static CLIENT: OnceLock<Result<reqwest::Client, String>> = OnceLock::new();
     let runtime = RUNTIME
@@ -628,7 +633,7 @@ pub(crate) fn fetch_url(url: &str) -> Result<Vec<u8>, String> {
         .clone()?;
     let url = url.to_owned();
     runtime.block_on(async move {
-        let response = client
+        let mut response = client
             .get(&url)
             .send()
             .await
@@ -636,11 +641,20 @@ pub(crate) fn fetch_url(url: &str) -> Result<Vec<u8>, String> {
         if !response.status().is_success() {
             return Err(format!("status {}", response.status()));
         }
-        let bytes = response.bytes().await.map_err(|error| error.to_string())?;
-        if bytes.len() > MAX_BYTES {
+        if response
+            .content_length()
+            .is_some_and(|size| size > max_bytes as u64)
+        {
             return Err("file too large".to_owned());
         }
-        Ok(bytes.to_vec())
+        let mut bytes = Vec::new();
+        while let Some(chunk) = response.chunk().await.map_err(|error| error.to_string())? {
+            if chunk.len() > max_bytes - bytes.len() {
+                return Err("file too large".to_owned());
+            }
+            bytes.extend_from_slice(&chunk);
+        }
+        Ok(bytes)
     })
 }
 
