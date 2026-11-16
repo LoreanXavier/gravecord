@@ -9139,6 +9139,7 @@ impl Render for Root {
             self.prepare_member_avatars(window, cx);
         }
         self.prepare_inline_videos(window, cx);
+        media_image::set_pixel_ratio(window.scale_factor());
         let media_channel = self.channel;
         if self.prepared.media_channel.is_some_and(|last| last != media_channel) {
             self.media_left_channel();

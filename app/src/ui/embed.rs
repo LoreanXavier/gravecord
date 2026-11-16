@@ -286,7 +286,7 @@ pub(super) fn image_key(message: Id, index: usize, part: &str) -> String {
 
 /// The media proxy URL for a picture drawn at `width` by `height`, with the query the image component adds.
 pub(super) fn media_url(media: &EmbedMedia, width: f64, height: f64) -> String {
-    super::media_image::image_url(
+    super::media_image::scaled_image_url(
         media.src(),
         media.is_animated(),
         width.round().max(1.) as u32,
@@ -360,7 +360,7 @@ pub(super) fn wanted(message: &Message, animate: bool) -> Vec<(String, String)> 
         {
             out.push((
                 image_key(message.id, index, "thumbnail"),
-                super::media_image::image_url(
+                super::media_image::scaled_image_url(
                     proxy,
                     false,
                     width.round().max(1.) as u32,

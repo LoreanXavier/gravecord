@@ -33,7 +33,7 @@ pub(super) fn wanted(
             attachment_url(attachment, width, height)
         } else if attachment.is_video() {
             if reqwest::Url::parse(&attachment.proxy_url).is_ok() {
-                image_url(&attachment.proxy_url, false, width, height)
+                scaled_image_url(&attachment.proxy_url, false, width, height)
             } else {
                 attachment
                     .video_poster_url()
@@ -184,7 +184,7 @@ pub(super) fn attachment_obscure_kind(
 }
 
 pub(super) fn attachment_url(attachment: &Attachment, width: u32, height: u32) -> String {
-    image_url(
+    scaled_image_url(
         &attachment.proxy_url,
         attachment.is_animated(),
         width,
@@ -192,6 +192,42 @@ pub(super) fn attachment_url(attachment: &Attachment, width: u32, height: u32) -
     )
 }
 
+/// `window.devicePixelRatio` (module 835517) as the main window last drew: f32 bits, 1.0 until the first frame.
+static PIXEL_RATIO: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0x3f80_0000);
+
+/// Records the main window's scale factor; pictures asked for afterwards are sized for it.
+pub(super) fn set_pixel_ratio(ratio: f32) {
+    if ratio.is_finite() && ratio > 0. {
+        PIXEL_RATIO.store(ratio.to_bits(), std::sync::atomic::Ordering::Relaxed);
+    }
+}
+
+fn pixel_ratio() -> f32 {
+    f32::from_bits(PIXEL_RATIO.load(std::sync::atomic::Ordering::Relaxed))
+}
+
+/// `AE` of module 776231: a picture drawn at `width` by `height` points is asked for at that size times the device
+/// pixel ratio, fitted inside 4096 by 4096; a `cdn.discordapp.com` address is used as it is.
+pub(super) fn scaled_image_url(base: &str, animated: bool, width: u32, height: u32) -> String {
+    scaled_image_url_at(base, animated, width, height, pixel_ratio())
+}
+
+fn scaled_image_url_at(base: &str, animated: bool, width: u32, height: u32, ratio: f32) -> String {
+    if reqwest::Url::parse(base).is_ok_and(|url| url.host_str() == Some("cdn.discordapp.com")) {
+        return base.to_owned();
+    }
+    let (mut target_w, mut target_h) = (
+        f64::from(width) * f64::from(ratio),
+        f64::from(height) * f64::from(ratio),
+    );
+    // `Uj` with 4096: both sides shrink by the same factor until each fits.
+    let fit = (4096. / target_w).min(4096. / target_h).min(1.);
+    target_w *= fit;
+    target_h *= fit;
+    image_url(base, animated, target_w as u32, target_h as u32)
+}
+
+/// The proxy address with exactly these pixel dimensions (the viewer asks for the original size).
 pub(super) fn image_url(base: &str, animated: bool, width: u32, height: u32) -> String {
     let Ok(mut url) = reqwest::Url::parse(base) else {
         return base.to_owned();
@@ -833,6 +869,31 @@ mod tests {
                 .iter()
                 .any(|(key, url)| { key == "custom:104" && !url.contains("animated=true") })
         );
+    }
+
+    /// Module 776231 `AE`: the drawn size times the device pixel ratio, fitted in 4096, and the CDN left alone.
+    #[test]
+    fn thumbnails_are_asked_for_at_the_screen_pixel_size() {
+        let proxy = "https://media.discordapp.net/attachments/1/2/a.png?ex=1";
+        let at = |ratio: f32, w: u32, h: u32| {
+            let url = reqwest::Url::parse(&scaled_image_url_at(proxy, false, w, h, ratio)).unwrap();
+            let get = |name: &str| {
+                url.query_pairs()
+                    .find(|(key, _)| key == name)
+                    .map(|(_, value)| value.parse::<u32>().unwrap())
+            };
+            (get("width").unwrap(), get("height").unwrap())
+        };
+        assert_eq!(at(1.0, 400, 300), (400, 300));
+        assert_eq!(at(1.25, 400, 300), (500, 375));
+        assert_eq!(at(2.0, 550, 350), (1100, 700));
+        assert_eq!(
+            at(2.0, 3000, 1500),
+            (4096, 2048),
+            "fitted inside 4096 with the same ratio"
+        );
+        let cdn = "https://cdn.discordapp.com/attachments/1/2/a.png";
+        assert_eq!(scaled_image_url_at(cdn, false, 400, 300, 2.0), cdn);
     }
 
     #[test]
