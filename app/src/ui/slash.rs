@@ -581,6 +581,8 @@ pub(super) struct List {
 
 pub(super) struct Launcher {
     pub search: Entity<Editor>,
+    /// The pages opened over the home (`pushHistory` of module 621377): the back button pops one.
+    pub pages: Vec<super::launcher_home::LauncherPage>,
 }
 
 #[derive(Default)]
@@ -1265,7 +1267,7 @@ impl Root {
         window.focus(&self.composer.read(cx).focus_handle(cx), cx);
     }
 
-    fn command_index_body(&self) -> Option<Value> {
+    pub(super) fn command_index_body(&self) -> Option<Value> {
         self.command_index_value().cloned()
     }
 
@@ -1303,7 +1305,10 @@ impl Root {
         })
         .detach();
         window.focus(&search.read(cx).focus_handle(cx), cx);
-        self.slash.launcher = Some(Launcher { search });
+        self.slash.launcher = Some(Launcher {
+            search,
+            pages: Vec::new(),
+        });
         cx.notify();
     }
 }
@@ -1633,6 +1638,9 @@ impl Root {
     /// The Apps button's launcher: a search field, the apps used lately, and the apps with commands here.
     pub(super) fn launcher_popup(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
         let launcher = self.slash.launcher.as_ref()?;
+        if let Some(page) = launcher.pages.last() {
+            return Some(self.launcher_layer(self.launcher_page(page, cx), cx));
+        }
         let query = launcher.search.read(cx).text().to_owned();
         let commands = matching(&self.all_commands(), &query);
         let mut body: Vec<AnyElement> = Vec::new();
@@ -1651,7 +1659,7 @@ impl Root {
                 .launcher_recent_activities(8usize.saturating_sub(self.slash.recents.len()), cx);
             if !self.slash.recents.is_empty() || !recent_activities.is_empty() {
                 // `frecentList_OfZRPz`: 48px icons 12px apart, under the section header like every collection.
-                body.push(self.launcher_header("Recents".to_owned(), false));
+                body.push(self.launcher_header("Recents".to_owned(), None, cx));
                 body.push(
                     div()
                         .mt(px(8.))
@@ -1798,75 +1806,81 @@ impl Root {
                 );
             }
         }
-        // `layer_VVADeK`: the launcher is a layer above the app, the title bar included.
-        Some(
-            gpui::deferred(
-                div()
-                    .id("launcher")
-                    .absolute()
-                    // The 1px ring is drawn outside the box: the box itself starts one pixel further in.
-                    .right(px(12.))
-                    .bottom(px(31.))
-                    .w(px(500.))
-                    .h(px(680.))
-                    .occlude()
-                    .rounded(px(8.))
-                    .bg(color("--background-base-lower"))
-                    // `contentWrapper_Z0Mo0M`: a 1px ring of white at 8% outside the box (a shadow, no border), over the
-                    // 0 12px 24px shadow of the layers.
-                    .shadow(vec![
-                        gpui::BoxShadow {
-                            color: gpui::hsla(0., 0., 1., 0.08),
-                            offset: gpui::point(px(0.), px(0.)),
-                            blur_radius: px(0.),
-                            spread_radius: px(1.),
-                            inset: false,
-                        },
-                        gpui::BoxShadow {
-                            color: gpui::hsla(0., 0., 0., 0.24),
-                            offset: gpui::point(px(0.), px(12.)),
-                            blur_radius: px(24.),
-                            spread_radius: px(0.),
-                            inset: false,
-                        },
-                    ])
-                    .flex()
-                    .flex_col()
-                    .on_mouse_down_out(cx.listener(|this, _, _, cx| {
-                        this.slash.launcher = None;
-                        cx.notify();
-                    }))
-                    .child(
-                        div().p(px(16.)).child(
-                            div()
-                                .h(px(40.))
-                                .px(px(12.))
-                                .rounded(px(8.))
-                                .bg(gpui::hsla(0., 0., 0., 0.12))
-                                .border_1()
-                                .border_color(color("--border-focus"))
-                                .flex()
-                                .items_center()
-                                .gap(px(8.))
-                                .child(icon("search", 16., "--interactive-text-default"))
-                                .child(div().flex_1().child(launcher.search.clone())),
-                        ),
-                    )
-                    .child(
-                        div()
-                            .id("launcher-scroll")
-                            .flex_1()
-                            .overflow_y_scroll()
-                            // `scrollbarGutterStable`: the 460px content keeps 8px for the scrollbar beside the 16px pad.
-                            .pl(px(16.))
-                            .pr(px(24.))
-                            .pb(px(16.))
-                            .children(body),
-                    ),
+        let home = div()
+            .size_full()
+            .flex()
+            .flex_col()
+            .child(
+                div().p(px(16.)).child(
+                    div()
+                        .h(px(40.))
+                        .px(px(12.))
+                        .rounded(px(8.))
+                        .bg(gpui::hsla(0., 0., 0., 0.12))
+                        .border_1()
+                        .border_color(color("--border-focus"))
+                        .flex()
+                        .items_center()
+                        .gap(px(8.))
+                        .child(icon("search", 16., "--interactive-text-default"))
+                        .child(div().flex_1().child(launcher.search.clone())),
+                ),
             )
-            .with_priority(1)
-            .into_any_element(),
+            .child(
+                div()
+                    .id("launcher-scroll")
+                    .flex_1()
+                    .overflow_y_scroll()
+                    // `scrollbarGutterStable`: the 460px content keeps 8px for the scrollbar beside the 16px pad.
+                    .pl(px(16.))
+                    .pr(px(24.))
+                    .pb(px(16.))
+                    .children(body),
+            )
+            .into_any_element();
+        Some(self.launcher_layer(home, cx))
+    }
+
+    /// `layer_VVADeK`: the launcher is a layer above the app, the title bar included, that a press outside closes.
+    fn launcher_layer(&self, content: AnyElement, cx: &mut Context<Self>) -> AnyElement {
+        gpui::deferred(
+            div()
+                .id("launcher")
+                .absolute()
+                // The 1px ring is drawn outside the box: the box itself starts one pixel further in.
+                .right(px(12.))
+                .bottom(px(31.))
+                .w(px(500.))
+                .h(px(680.))
+                .occlude()
+                .rounded(px(8.))
+                .bg(color("--background-base-lower"))
+                // `contentWrapper_Z0Mo0M`: a 1px ring of white at 8% outside the box (a shadow, no border), over the
+                // 0 12px 24px shadow of the layers.
+                .shadow(vec![
+                    gpui::BoxShadow {
+                        color: gpui::hsla(0., 0., 1., 0.08),
+                        offset: gpui::point(px(0.), px(0.)),
+                        blur_radius: px(0.),
+                        spread_radius: px(1.),
+                        inset: false,
+                    },
+                    gpui::BoxShadow {
+                        color: gpui::hsla(0., 0., 0., 0.24),
+                        offset: gpui::point(px(0.), px(12.)),
+                        blur_radius: px(24.),
+                        spread_radius: px(0.),
+                        inset: false,
+                    },
+                ])
+                .on_mouse_down_out(cx.listener(|this, _, _, cx| {
+                    this.slash.launcher = None;
+                    cx.notify();
+                }))
+                .child(content),
         )
+        .with_priority(1)
+        .into_any_element()
     }
 }
 

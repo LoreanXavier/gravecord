@@ -331,10 +331,12 @@ impl Root {
         true
     }
 
+    /// `opens_page`: the text launcher's card opens the app's page; the voice shelf's starts the activity.
     pub(super) fn shelf_card(
         &self,
         card: &ShelfCard,
         id: SharedString,
+        opens_page: bool,
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let banner = self
@@ -357,7 +359,11 @@ impl Root {
             .hover(|style| style.bg(color("--interactive-background-hover")))
             .active(|style| style.bg(color("--interactive-background-active")))
             .on_click(cx.listener(move |this, _, _, cx| {
-                this.activity_card_clicked(&app_id, cx);
+                if opens_page {
+                    this.open_launcher_app(app_id.clone(), cx);
+                } else {
+                    this.activity_card_clicked(&app_id, cx);
+                }
             }))
             .flex()
             .flex_col()
@@ -686,7 +692,12 @@ impl Root {
             .flex_wrap()
             .gap(px(12.))
             .children(cards.iter().enumerate().map(|(index, card)| {
-                self.shelf_card(card, SharedString::from(format!("{prefix}-{index}")), cx)
+                self.shelf_card(
+                    card,
+                    SharedString::from(format!("{prefix}-{index}")),
+                    false,
+                    cx,
+                )
             }))
             .into_any_element()
     }

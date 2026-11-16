@@ -1767,6 +1767,11 @@ impl Root {
                     self.activity_fetched(&key, &body, cx);
                     return;
                 }
+                if key.starts_with(launcher_home::APP_INDEX_PREFIX) {
+                    self.fetched.insert(key, body);
+                    cx.notify();
+                    return;
+                }
                 if key == launcher_home::COLLECTIONS_KEY {
                     self.launcher_collections_fetched(body, cx);
                     return;
