@@ -89,6 +89,19 @@ mod tests {
         assert_eq!(method(reqwest::Method::POST).inert(), Inert::Deny);
         assert_eq!(method(reqwest::Method::DELETE).inert(), Inert::Deny);
         let cases = [
+            (
+                Request::Spotify(crate::spotify::Command::Refresh),
+                Inert::Deny,
+            ),
+            (
+                Request::Spotify(crate::spotify::Command::Accounts(vec![
+                    dc_http::spotify::LinkedAccount {
+                        id: "fixture".into(),
+                        show_activity: true,
+                    },
+                ])),
+                Inert::Deny,
+            ),
             (Request::Typing { channel: 1 }, Inert::Deny),
             (
                 Request::Delete {

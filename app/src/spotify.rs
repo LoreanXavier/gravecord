@@ -13,7 +13,7 @@ use tokio::{
     time::Instant,
 };
 
-enum Command {
+pub enum Command {
     Accounts(Vec<LinkedAccount>),
     Refresh,
 }
@@ -50,6 +50,10 @@ impl Worker {
     pub fn observer(&self) -> Observer {
         Observer(self.commands.clone())
     }
+
+    pub fn request(&self, command: Command) {
+        let _ = self.commands.send(command);
+    }
 }
 
 #[derive(Clone)]
@@ -57,23 +61,27 @@ pub struct Observer(mpsc::UnboundedSender<Command>);
 
 fn observed(name: &str, data: &Value) -> Option<Command> {
     match name {
-        "READY" => Some(Command::Accounts(
-            data["connected_accounts"]
-                .as_array()
-                .into_iter()
-                .flatten()
-                .filter(|account| account["type"] == "spotify")
-                .filter_map(|account| {
-                    Some(LinkedAccount {
-                        id: account["id"].as_str()?.into(),
-                        show_activity: account["show_activity"].as_bool().unwrap_or(false),
-                    })
-                })
-                .collect(),
-        )),
+        "READY" => Some(Command::Accounts(linked_accounts(
+            &data["connected_accounts"],
+        ))),
         "USER_CONNECTIONS_UPDATE" => Some(Command::Refresh),
         _ => None,
     }
+}
+
+pub fn linked_accounts(accounts: &Value) -> Vec<LinkedAccount> {
+    accounts
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter(|account| account["type"] == "spotify")
+        .filter_map(|account| {
+            Some(LinkedAccount {
+                id: account["id"].as_str()?.into(),
+                show_activity: account["show_activity"].as_bool().unwrap_or(false),
+            })
+        })
+        .collect()
 }
 
 impl Observer {
@@ -349,6 +357,15 @@ mod tests {
             Some(Command::Refresh)
         ));
         assert!(observed("PRESENCE_UPDATE", &Value::Null).is_none());
+        assert_eq!(
+            linked_accounts(&json!([
+                {"id":"a","type":"spotify","show_activity":true,"unrelated":"ignored"},
+                {"type":"spotify"},
+                {"id":"b","type":"twitch"}
+            ])),
+            accounts
+        );
+        assert!(linked_accounts(&json!([])).is_empty());
     }
 
     #[test]

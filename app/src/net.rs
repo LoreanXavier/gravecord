@@ -138,6 +138,7 @@ pub enum Update {
 }
 
 pub enum Request {
+    Spotify(crate::spotify::Command),
     /// Op 3 `PRESENCE_UPDATE` with the account's status and activities (`presenceUpdate` in module 868). Refused in
     /// a harness run (`games::presence_refused`).
     Presence {
@@ -643,6 +644,7 @@ impl Request {
     /// The variant's name, for the inert log line.
     pub(crate) fn variant(&self) -> &'static str {
         match self {
+            Request::Spotify(_) => "Spotify",
             Request::Presence { .. } => "Presence",
             Request::VoiceState { .. } => "VoiceState",
             Request::StreamOp { .. } => "StreamOp",
@@ -712,7 +714,8 @@ impl Request {
                     Inert::Deny
                 }
             }
-            Request::Presence { .. }
+            Request::Spotify(_)
+            | Request::Presence { .. }
             | Request::VoiceState { .. }
             | Request::StreamOp { .. }
             | Request::StreamConnect { .. }
@@ -1429,6 +1432,11 @@ pub async fn run(token: Token, updates: mpsc::UnboundedSender<Update>, requests:
         let client = client.clone();
         let updates = updates.clone();
         match request {
+            Request::Spotify(command) => {
+                if let Some(worker) = &spotify {
+                    worker.request(command);
+                }
+            }
             Request::LoadMessages { channel } => {
                 tokio::spawn(async move {
                     let started_ms = std::time::SystemTime::now()

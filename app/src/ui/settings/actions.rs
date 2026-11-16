@@ -423,6 +423,9 @@ impl Root {
             }
             super::connections::CONNECTIONS_KEY => {
                 if body.is_array() {
+                    let _ = self.requests.send(Request::Spotify(crate::spotify::Command::Accounts(
+                        crate::spotify::linked_accounts(body),
+                    )));
                     self.stores.spotify.dispatch(
                         "USER_CONNECTIONS_UPDATE",
                         &serde_json::json!({"local": true, "accounts": body}),
