@@ -1555,9 +1555,10 @@ impl Root {
             )
             .when(outside && stream_tile, |this| {
                 // `handleSelectParticipant` on a stream from outside the call: join it and watch.
+                let (guild, channel) = self.vv.shown_call;
                 this.cursor_pointer()
                     .on_click(cx.listener(move |this, _, _, cx| {
-                        this.watch_stream_joining(user_id, cx);
+                        this.watch_stream_joining(guild, channel, user_id, cx);
                     }))
             })
             .when(stream_tile && is_focus && video && !outside, |this| {
@@ -1823,6 +1824,8 @@ impl Root {
 
     /// `Watch Stream` over a stream nobody here watches yet (module 555148: a secondary button; `Watch` under 175px).
     fn watch_overlay(&self, owner: u64, width: f32, cx: &mut Context<Self>) -> AnyElement {
+        // The call being drawn (`call_view` sets it first), so the popped-out window watches in its own call.
+        let (guild, channel) = self.vv.shown_call;
         div()
             .absolute()
             .inset_0()
@@ -1848,7 +1851,7 @@ impl Root {
                     .text_color(mid("--control-secondary-text-default"))
                     .on_click(cx.listener(move |this, _, _, cx| {
                         cx.stop_propagation();
-                        this.watch_stream_joining(owner, cx);
+                        this.watch_stream_joining(guild, channel, owner, cx);
                     }))
                     .child(if width < 175. {
                         "Watch"

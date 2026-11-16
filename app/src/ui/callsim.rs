@@ -240,7 +240,8 @@ impl Root {
             ["watch-joining", name] => match user_of(name) {
                 Some(owner) => {
                     sim.my_board().arm(owner, "stream");
-                    self.watch_stream_joining(owner, cx);
+                    let (guild, channel) = (setup.guild, setup.channel);
+                    self.watch_stream_joining(guild, channel, owner, cx);
                     format!("Watch Stream of {name} from outside the call")
                 }
                 None => format!("no participant {name}"),

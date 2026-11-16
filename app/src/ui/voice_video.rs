@@ -1096,18 +1096,23 @@ impl Root {
         self.stream_watch(key, cx);
     }
 
-    /// Watch Stream from a call this account has not joined (`handleSelectParticipant` of module 540462:
-    /// `selectVoiceChannel`, then `watchStream`).
-    pub(super) fn watch_stream_joining(&mut self, owner: u64, cx: &mut Context<Self>) {
-        if self.guild.is_none()
-            && !self.dm_call_in(self.channel)
-            && let Some(channel) = self.channel
-        {
-            self.join_dm_call(channel, false, cx);
-        } else if let (Some(guild), Some(channel)) = (self.guild, self.channel)
-            && self.call.as_ref().map(|c| (c.guild, c.channel)) != Some((guild, channel))
-        {
-            self.join_voice(guild, channel, cx);
+    /// Watch Stream on a tile of the call `(guild, channel)` (`handleSelectParticipant` of module 540462:
+    /// `selectVoiceChannel` of the tile's own call when this account is not in it, then `watchStream`). The call is
+    /// the one the tile belongs to, not the channel open in the main window: the popped-out or full-screen call shows
+    /// tiles while the main window may show another conversation.
+    pub(super) fn watch_stream_joining(
+        &mut self,
+        guild: u64,
+        channel: u64,
+        owner: u64,
+        cx: &mut Context<Self>,
+    ) {
+        if self.call.as_ref().map(|c| (c.guild, c.channel)) != Some((guild, channel)) {
+            if guild == 0 {
+                self.join_dm_call(channel, false, cx);
+            } else {
+                self.join_voice(guild, channel, cx);
+            }
         }
         self.watch_stream_of(owner, cx);
     }

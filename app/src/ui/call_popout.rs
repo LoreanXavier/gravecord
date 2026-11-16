@@ -270,3 +270,11 @@ impl Root {
 
 /// The handle `Root` keeps of the window.
 pub(crate) type Handle = WindowHandle<Popout>;
+
+#[cfg(feature = "capture")]
+impl Root {
+    /// The popped-out call window, for the harness's `popout click` and `popout shot`.
+    pub(crate) fn call_popout_window(&self) -> Option<gpui::AnyWindowHandle> {
+        self.vv.popout.map(Into::into)
+    }
+}

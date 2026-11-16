@@ -1160,6 +1160,35 @@ pub async fn run(
                 let active = window.update(cx, |_, window, _| window.is_window_active());
                 let _ = writeln!(output, "window: {state}, active={active:?}");
             }
+            // Capture only: `popout click <x> <y>` clicks in the popped-out call window, `popout shot <png>` saves it.
+            ["popout", "click", x, y] => {
+                let handle = root.read_with(cx, |root, _| root.call_popout_window());
+                let line = match (handle, at(x, y)) {
+                    (Some(handle), Some(position)) => {
+                        cx.update(|cx| {
+                            dispatch(cx, handle, moved(position, None));
+                            dispatch(cx, handle, down(position));
+                            dispatch(cx, handle, up(position));
+                        });
+                        format!("popout click {x} {y}")
+                    }
+                    (None, _) => "popout click: no popout window".to_owned(),
+                    (_, None) => "popout click: expected <x> <y>".to_owned(),
+                };
+                let _ = writeln!(output, "{line}");
+            }
+            ["popout", "shot", path] => {
+                let path = PathBuf::from(path);
+                let handle = root.read_with(cx, |root, _| root.call_popout_window());
+                let line = match handle {
+                    Some(handle) => {
+                        cx.update(|cx| crate::write_capture(cx, handle, &path));
+                        format!("popout shot: {}", path.display())
+                    }
+                    None => "popout shot: no popout window".to_owned(),
+                };
+                let _ = writeln!(output, "{line}");
+            }
             ["call-window", action] => {
                 let state = window.update(cx, |_, window, cx| {
                     root.update(cx, |root, cx| root.script_call_window(action, window, cx))
