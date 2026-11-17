@@ -341,7 +341,10 @@ impl Root {
             Route::Gift(_) => Outcome::NotBuilt("gift modal"),
             Route::Template(_) => Outcome::NotBuilt("server template modal"),
             Route::PickGuildSettings { .. } => Outcome::NotBuilt("server settings picker"),
-            Route::Library => Outcome::NotBuilt("library"),
+            Route::Library => {
+                self.open_library(super::library::Tab::Games, cx);
+                Outcome::Opened("library")
+            }
             Route::MessageRequests => {
                 self.open_message_requests(cx);
                 Outcome::Opened("message requests")

@@ -494,7 +494,10 @@ mod tests {
         // The colour theme is set by the Appearance page's colour tiles (`client_theme.rs`), which have no row key.
         // "Enable Family Center tab" is drawn by the Family Center panel's Settings tab (`account_nested.rs`).
         // Slash command suggestions are switched from the composer menu's Suggestions submenu (module 194400).
+        // The shortcut switches are rows of the Library's Settings tab (`library.rs`, module 813662 `ez`).
         const TILES: &[&str] = &[
+            "library_install_shortcut_desktop",
+            "library_install_shortcut_start_menu",
             "appearance_client_theme_preset",
             "family_center_enabled",
             "show_command_suggestions",

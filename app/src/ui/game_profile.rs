@@ -351,7 +351,7 @@ fn genres(game: &Value) -> String {
         .join(", ")
 }
 
-fn asset(game: &str, value: &Value, size: u32) -> Option<String> {
+pub(super) fn asset(game: &str, value: &Value, size: u32) -> Option<String> {
     let hash = value["value"].as_str().filter(|hash| !hash.is_empty())?;
     match value["type"].as_str()? {
         "hash" => Some(format!(
@@ -535,6 +535,8 @@ impl Root {
         self.game_announcements_fetch(&game);
         self.game_add_to_profile_wanted();
         self.game_announcements_scroll = 0.;
+        self.game_similar_fetch(&game);
+        self.game_similar_scroll = 0.;
         self.game_profile = Some(GameProfile {
             game,
             tab: Tab::Overview,
@@ -578,6 +580,10 @@ impl Root {
                 .and_then(open_critic_tier)
             {
                 wanted.push(badge.to_owned());
+            }
+            // A similar game's cover (`ik`) at 256.
+            if let Some(url) = asset(id, &media["cover"], 256) {
+                wanted.push(url);
             }
             for url in wanted {
                 self.request_image(url.clone(), url);
@@ -975,7 +981,8 @@ impl Root {
                         .child(description.clone()),
                 )
             })
-            .children(self.game_announcements_section(&id, cx));
+            .children(self.game_announcements_section(&id, cx))
+            .children(self.game_similar_section(&id, cx));
         let section_title = |text: &'static str| {
             div()
                 .px(px(8.))

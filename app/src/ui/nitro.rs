@@ -564,6 +564,7 @@ impl Root {
                 quests: false,
                 shop: false,
                 message_requests: false,
+                library: false,
             },
         );
         self.favorites_view = false;

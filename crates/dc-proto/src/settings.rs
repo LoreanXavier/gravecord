@@ -240,6 +240,10 @@ pub const PROTO_PREFS: &[ProtoPref] = &[
     // animate_emoji 14, animate_stickers 15, enable_tts_command 16, message_display_compact 17,
     // convert_emoticons 21, use_legacy_chat_input 24, include_stickers_in_autocomplete 28.
     pref("chat_text_box_previews", &[6, 2], 1),
+    // game_library 10: install_shortcut_desktop 1 (off unless set), install_shortcut_start_menu 2 (on unless set),
+    // the Library's Settings switches (module 813662 `ez`).
+    pref("library_install_shortcut_desktop", &[10, 1], 1),
+    pref("library_install_shortcut_start_menu", &[10, 2], 1),
     // show_command_suggestions 8 (`showCommandSuggestions`, on unless set): the composer menu's Suggestions >
     // Slash Commands (module 194400).
     pref("show_command_suggestions", &[6, 8], 1),

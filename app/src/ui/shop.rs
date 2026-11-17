@@ -164,6 +164,7 @@ impl Root {
                 quests: false,
                 shop: true,
                 message_requests: false,
+                library: false,
             },
         );
         self.set_shop_open(cx);

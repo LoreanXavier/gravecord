@@ -255,6 +255,7 @@ impl Root {
                 quests: true,
                 shop: false,
                 message_requests: false,
+                library: false,
             },
         );
         self.set_quests_open(cx);

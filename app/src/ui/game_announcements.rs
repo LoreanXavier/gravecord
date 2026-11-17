@@ -329,71 +329,13 @@ fn time_left(expiry: &str, now: chrono::DateTime<chrono::Utc>) -> Option<String>
     })
 }
 
-/// `y` of module 151869: the first (`left`) or last (`right`) card that shows past the 16px margins, and whether it
-/// is cut.
-fn visible_card(left: bool, scroll: f32, count: usize) -> (usize, bool) {
-    let from = scroll + GAP;
-    let to = scroll + CLIENT - GAP;
-    let bounds = |index: usize| {
-        let start = index as f32 * (CARD + GAP);
-        (start, start + CARD)
-    };
-    if left {
-        for index in 0..count {
-            let (start, end) = bounds(index);
-            if end > from && start < to {
-                return (index, start < from - 1.);
-            }
-        }
-        (0, false)
-    } else {
-        for index in (0..count).rev() {
-            let (start, end) = bounds(index);
-            if end > from && start < to {
-                return (index, end > to + 1.);
-            }
-        }
-        (count.saturating_sub(1), false)
-    }
-}
-
-fn max_scroll(count: usize) -> f32 {
-    let width = count as f32 * CARD + count.saturating_sub(1) as f32 * GAP;
-    (width - CLIENT).max(0.)
-}
-
-/// `F` with `scrollStep: "page"`: the next page to the left ends at the first visible card, to the right starts at
-/// the last one (16px clear), or one card further when that is already where the scroller is.
-fn page_step(left: bool, scroll: f32, count: usize) -> f32 {
-    if count == 0 {
-        return 0.;
-    }
-    let direction: isize = if left { -1 } else { 1 };
-    let (index, cut) = visible_card(left, scroll, count);
-    let clamp = |index: isize| index.clamp(0, count as isize - 1) as usize;
-    let target = if cut {
-        index
-    } else {
-        clamp(index as isize + direction)
-    };
-    let position = |index: usize| {
-        let start = index as f32 * (CARD + GAP);
-        let value = if left {
-            start + CARD - CLIENT + GAP
-        } else {
-            start - GAP
-        };
-        value.clamp(0., max_scroll(count))
-    };
-    let first = position(target);
-    if (first - scroll).abs() > 0.5 {
-        return first;
-    }
-    let next = clamp(target as isize + direction);
-    if next == target {
-        scroll
-    } else {
-        position(next)
+/// The cards in module 151869's scroller.
+fn row(count: usize) -> super::carousel::Row {
+    super::carousel::Row {
+        card: CARD,
+        gap: GAP,
+        client: CLIENT,
+        count,
     }
 }
 
@@ -840,7 +782,7 @@ impl Root {
                     .on_click(cx.listener(move |this, _, _, cx| {
                         cx.stop_propagation();
                         this.game_announcements_scroll =
-                            page_step(left, this.game_announcements_scroll, count);
+                            row(count).page_step(left, this.game_announcements_scroll);
                         cx.notify();
                     }))
             })
@@ -869,10 +811,12 @@ impl Root {
             return None;
         }
         let count = messages.len();
-        let scroll = self.game_announcements_scroll.clamp(0., max_scroll(count));
+        let scroll = self
+            .game_announcements_scroll
+            .clamp(0., row(count).max_scroll());
         let can_left = scroll > 0.;
-        let can_right = scroll < max_scroll(count) - 1.;
-        let shows_actions = max_scroll(count) > 0.;
+        let can_right = scroll < row(count).max_scroll() - 1.;
+        let shows_actions = row(count).max_scroll() > 0.;
         let cards: Vec<AnyElement> = messages
             .iter()
             .map(|message| {
@@ -959,7 +903,7 @@ impl Root {
                                             this.game_announcements_scroll = (this
                                                 .game_announcements_scroll
                                                 - f32::from(sideways))
-                                            .clamp(0., max_scroll(count));
+                                            .clamp(0., row(count).max_scroll());
                                             cx.stop_propagation();
                                             cx.notify();
                                         }
@@ -1037,17 +981,6 @@ mod tests {
             plain.source.is_none(),
             "a message with its own text shows no embed source"
         );
-    }
-
-    #[test]
-    fn page_steps_move_to_the_cut_card_and_stop_at_the_ends() {
-        assert_eq!(page_step(true, 0., 8), 0.);
-        let first = page_step(false, 0., 8);
-        // The third card is cut at the right edge: the next page starts 16px before it.
-        assert!((first - (2. * (CARD + GAP) - GAP)).abs() < 0.01, "{first}");
-        let end = max_scroll(8);
-        assert!((page_step(false, end, 8) - end).abs() < 0.01);
-        assert!(page_step(true, first, 8) < first);
     }
 
     #[test]

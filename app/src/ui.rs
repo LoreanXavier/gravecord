@@ -135,6 +135,9 @@ mod top_emoji;
 mod game_communities;
 mod game_announcements;
 mod game_add_to_profile;
+mod library;
+mod carousel;
+mod game_similar;
 pub(crate) mod channel_notice;
 mod stream_zoom;
 mod timestamps;
@@ -695,6 +698,8 @@ pub struct Root {
     game_profile: Option<game_profile::GameProfile>,
     game_communities_layout: game_communities::Layout,
     game_announcements_scroll: f32,
+    library: library::Library,
+    game_similar_scroll: f32,
     game_communities_filter: game_communities::Filter,
     /// When the text launcher's collections last arrived (module 503406 asks again after ten minutes).
     launcher_collections_at: Option<i64>,
@@ -1090,6 +1095,8 @@ impl Root {
             game_profile: None,
             game_communities_layout: Default::default(),
             game_announcements_scroll: 0.,
+            library: Default::default(),
+            game_similar_scroll: 0.,
             game_communities_filter: Default::default(),
             launcher_collections_at: None,
             upload_error: None,
@@ -1649,6 +1656,11 @@ impl Root {
                     return;
                 }
                 if self.top_emoji_fetched(&key, &body, cx) {
+                    return;
+                }
+                if key.starts_with(game_similar::KEY_PREFIX) {
+                    self.game_similar_fetched(&key, body);
+                    cx.notify();
                     return;
                 }
                 if key.starts_with(game_announcements::KEY_PREFIX) {
@@ -2504,6 +2516,7 @@ impl Root {
                 quests: false,
                 shop: false,
                 message_requests: false,
+                library: false,
             },
         );
         self.favorites_view = false;
@@ -3950,6 +3963,8 @@ impl Root {
             (None, None) if self.shop_active() => dc_intl::tr("Shop").to_owned(),
             // The title bar of /message-requests carries no title (golden message-requests/requests-empty).
             (None, None) if self.message_requests_active() => String::new(),
+            // As /library's title bar in the capture (library/empty): no title.
+            (None, None) if self.library_active() => String::new(),
             (None, None) => dc_intl::tr("Friends").to_owned(),
             // A DM's window title is the section, not the person (`title_LnjVAX` in the DM capture).
             (None, Some(_)) => dc_intl::tr("Direct Messages").to_owned(),
@@ -4005,7 +4020,7 @@ impl Root {
                         icon("home_quests", 18., "--text-default").into_any_element()
                     } else if self.shop_active() {
                         icon("home_shop", 18., "--text-default").into_any_element()
-                    } else if self.message_requests_active() {
+                    } else if self.message_requests_active() || self.library_active() {
                         div().into_any_element()
                     } else {
                         icon("home_friends", 16., "--text-default").into_any_element()
@@ -10286,6 +10301,8 @@ impl Render for Root {
                     self.shop_page(window, cx)
                 } else if self.message_requests_active() {
                     self.message_requests_page(window, cx)
+                } else if self.library_active() {
+                    self.library_view(window, cx)
                 } else if self.guild.is_none() && self.channel.is_none() {
                     self.friends_panel(window, cx).into_any_element()
                 } else if self
@@ -10469,6 +10486,7 @@ impl Render for Root {
             .children(self.remove_friend_modal(cx))
             .children(self.not_friend_modal(cx))
             .children(self.favorites_full_modal(cx))
+            .children(self.library_remove_modal(cx))
             .children(self.friend_nickname_layer(window, cx))
             .children(self.group_edit_layer(window, cx))
             .children(self.group_leave_layer(cx))

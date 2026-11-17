@@ -70,6 +70,7 @@ impl Root {
                 quests: false,
                 shop: false,
                 message_requests: false,
+                library: false,
             },
         );
         self.favorites_view = false;
@@ -77,6 +78,7 @@ impl Root {
         self.shop.open = false;
         self.quests.open = false;
         self.message_requests.open = false;
+        self.library.open = false;
         self.nitro_open = false;
         self.guild_guide_open = false;
         self.channel_browser_open = false;
@@ -298,7 +300,8 @@ impl Root {
             && !self.nitro_open
             && !self.shop_active()
             && !self.quests_active()
-            && !self.message_requests_active();
+            && !self.message_requests_active()
+            && !self.library_active();
         let hovered = self.hovered_dm == Some(id);
         let context_menu_open = self
             .context
@@ -605,7 +608,8 @@ impl Root {
             && !self.nitro_open
             && !shop_selected
             && !quests_selected
-            && !requests_selected;
+            && !requests_selected
+            && !self.library_active();
         let nitro_selected = self.guild.is_none() && self.channel.is_none() && self.nitro_open;
         // 645959: a message request or spam channel is in neither sorted list; pinned conversations (`FAVORITE`, the
         // "@me" override flag) come first, each group newest first.

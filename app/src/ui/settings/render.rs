@@ -1674,6 +1674,27 @@ impl Root {
             .into_any_element()
     }
 
+    /// A 660px switch row with a plain description, for pages outside the settings layer (the Library's Settings).
+    pub(in crate::ui) fn switch_row_for(
+        &self,
+        key: &'static str,
+        label: &'static str,
+        description: &'static str,
+        on: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> gpui::Div {
+        let runs: Runs = match key {
+            "library_install_shortcut_desktop" => &[("When installing games from the Discord Store.", false)],
+            _ => &[(
+                "When installing games from the Discord Store. Also makes your games discoverable via windows search.",
+                false,
+            )],
+        };
+        debug_assert_eq!(runs[0].0, description);
+        self.switch_row(key, label, false, runs, on, false, 660., window, cx)
+    }
+
     /// A switch row (`container_VhFsFg`): the label and description in their grid track, the switch at the end.
     /// Disabled, the label and switch are at half opacity and the switch takes no clicks.
     #[allow(clippy::too_many_arguments)]

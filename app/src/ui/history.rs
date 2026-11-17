@@ -25,6 +25,8 @@ pub(crate) struct Route {
     pub shop: bool,
     /// The Message Requests page on Home (`/message-requests`).
     pub message_requests: bool,
+    /// The Library (`/library`).
+    pub library: bool,
 }
 
 #[derive(Default)]
@@ -71,6 +73,7 @@ impl Root {
             quests: self.quests_active(),
             shop: self.shop_active(),
             message_requests: self.message_requests_active(),
+            library: self.library_active(),
         }
     }
 
@@ -92,6 +95,7 @@ impl Root {
             None if route.quests => self.set_quests_open(cx),
             None if route.shop => self.set_shop_open(cx),
             None if route.message_requests => self.set_message_requests_open(cx),
+            None if route.library => self.set_library_open(self.library.tab, cx),
             None => {
                 self.select_home(route.channel);
                 self.favorites_view = route.favorites && self.favorites_guild_enabled();
@@ -248,6 +252,7 @@ mod tests {
             quests: false,
             shop: false,
             message_requests: false,
+            library: false,
         };
         history.visit(a, b);
         assert!(history.can_go_back() && !history.can_go_forward());
