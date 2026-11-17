@@ -663,6 +663,14 @@ impl Root {
         let status = Status::parse(status, self.stores.presence.is_mobile_online(user));
         let tint = color(status.token());
         let tint = [tint.r, tint.g, tint.b, tint.a].map(|value| (value * 255.).round() as u8);
+        // Not in the pinned client: ColorSighted keeps the colour and draws every status as the plain disk
+        // (`plugin_hooks.rs`); the phone of a mobile user stays.
+        let status = match status {
+            Status::Idle | Status::Dnd | Status::Offline if super::plugin_hooks::color_sighted() => {
+                Status::Online
+            }
+            status => status,
+        };
         let geometry = size.geometry();
         // Playing: every frame of the animated file goes through the same composition as the still one (status
         // ring, decoration) before it is drawn.

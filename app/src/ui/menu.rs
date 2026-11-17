@@ -96,6 +96,8 @@ pub(super) enum Action {
     /// A picture of the message (module 115184).
     CopyImage,
     SaveImage,
+    /// Not in the pinned client: ReverseImageSearch's "Search Image" submenu (`plugin_hooks.rs`).
+    SearchImage,
     /// "Save File" of a voice message (module 761304 `save-voice-message-audio`): its audio file is downloaded.
     SaveVoiceFile,
     /// "Favorite Emoji" / "Unfavorite Emoji" of the emoji under the pointer (module 253925).
@@ -146,6 +148,8 @@ pub(super) struct SavedState {
     pub link: LinkKind,
     /// The pointer was on a picture the app can copy and save.
     pub image: bool,
+    /// Not in the pinned client: ReverseImageSearch offers "Search Image" for the picture under the pointer.
+    pub search_image: bool,
     /// A voice message with its audio file: Save File joins the picture rows' group.
     pub voice_file: bool,
     /// The pointer was on a video: "Stats for Nerds" ends the picture rows' group.
@@ -264,6 +268,8 @@ pub(super) enum SubmenuKind {
     Apps,
     /// The emoji of the message, one row each (`remove-emoji-reactions`).
     RemoveReactions,
+    /// Not in the pinned client: ReverseImageSearch's engines (`plugin_hooks.rs`).
+    SearchImage,
 }
 
 /// The submenu hanging off a menu row.
@@ -588,6 +594,10 @@ pub(super) fn message_items_saved(own: bool, saved: SavedState) -> Vec<Item> {
     if let Some(open) = open {
         media.push(Item::Entry(open, "open_external", Action::OpenUrl, false));
     }
+    // Not in the pinned client: ReverseImageSearch, at the end of the link group (`findGroupChildrenByChildId`).
+    if saved.search_image {
+        media.push(Item::Entry("Search Image", "settings_search", Action::SearchImage, true));
+    }
     push_menu_group(&mut items, media);
 
     if saved.developer {
@@ -740,6 +750,8 @@ impl Root {
             no_thread: self.guild.is_none(),
             failed: self.send_state_of(message) == Some(super::send_state::SendState::Failed),
             image: matches!(&self.menu_extra.hit, Some(Hit::Media { key, .. }) if self.images.contains_key(key)),
+            search_image: matches!(&self.menu_extra.hit, Some(Hit::Media { .. }))
+                && super::plugin_hooks::reverse_image_search(),
             voice_file: found
                 .is_some_and(|known| known.is_voice_message() && !known.attachments.is_empty()),
             video: matches!(&self.menu_extra.hit, Some(Hit::Video { .. })),
@@ -957,6 +969,53 @@ impl Root {
 
     /// The submenu of Remove Reactions: one row per distinct emoji, named `:name:` (`b3` of module 815807). A row asks
     /// first, as `eH.A.show` does; shift removes at once.
+    /// ReverseImageSearch's submenu (Vencord `src/plugins/reverseImageSearch`): one row per engine, then All.
+    fn search_image_rows(&self, cx: &mut Context<Self>) -> Vec<(AnyElement, f32)> {
+        let Some(Hit::Media { url, .. }) = self.menu_extra.hit.clone() else {
+            return Vec::new();
+        };
+        let mut rows = Vec::new();
+        let engines = super::plugin_hooks::IMAGE_SEARCH_ENGINES;
+        for (index, (name, _)) in engines.iter().enumerate() {
+            let url = url.clone();
+            rows.push((
+                self.submenu_item(
+                    SharedString::from(format!("search-image-{index}")),
+                    None,
+                    (*name).to_owned(),
+                    36.,
+                )
+                .on_click(cx.listener(move |this, _, _, cx| {
+                    this.submenu = None;
+                    this.menu = None;
+                    cx.open_url(&super::plugin_hooks::image_search_url(index, &url));
+                    cx.notify();
+                }))
+                .into_any_element(),
+                36.,
+            ));
+        }
+        rows.push((
+            self.submenu_item(
+                SharedString::from("search-image-all"),
+                None,
+                super::plugin_hooks::IMAGE_SEARCH_ALL.to_owned(),
+                36.,
+            )
+            .on_click(cx.listener(move |this, _, _, cx| {
+                this.submenu = None;
+                this.menu = None;
+                for index in 0..engines.len() {
+                    cx.open_url(&super::plugin_hooks::image_search_url(index, &url));
+                }
+                cx.notify();
+            }))
+            .into_any_element(),
+            36.,
+        ));
+        rows
+    }
+
     fn remove_reaction_rows(
         &self,
         channel: Id,
@@ -1185,6 +1244,7 @@ impl Root {
                 Action::Reminder => Some(SubmenuKind::Reminder),
                 Action::Apps => Some(SubmenuKind::Apps),
                 Action::RemoveReactions => Some(SubmenuKind::RemoveReactions),
+                Action::SearchImage => Some(SubmenuKind::SearchImage),
                 _ => None,
             };
             if kind == Some(SubmenuKind::Apps) {
@@ -1227,7 +1287,10 @@ impl Root {
                     }
                     if matches!(
                         run,
-                        Action::Reminder | Action::Apps | Action::RemoveReactions
+                        Action::Reminder
+                            | Action::Apps
+                            | Action::RemoveReactions
+                            | Action::SearchImage
                     ) {
                         // These rows open their submenus, on a click as on a hover.
                         let kind = if run == Action::Apps {
@@ -1235,6 +1298,8 @@ impl Root {
                             SubmenuKind::Apps
                         } else if run == Action::RemoveReactions {
                             SubmenuKind::RemoveReactions
+                        } else if run == Action::SearchImage {
+                            SubmenuKind::SearchImage
                         } else {
                             SubmenuKind::Reminder
                         };
@@ -1485,6 +1550,7 @@ impl Root {
             SubmenuKind::Reaction => self.reaction_rows(channel, submenu.message, cx),
             SubmenuKind::Apps => self.app_rows(channel, submenu.message, cx),
             SubmenuKind::RemoveReactions => self.remove_reaction_rows(channel, submenu.message, cx),
+            SubmenuKind::SearchImage => self.search_image_rows(cx),
         };
         Some(self.submenu_frame(rows, submenu.row, window))
     }

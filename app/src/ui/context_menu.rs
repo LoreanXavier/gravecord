@@ -2655,6 +2655,13 @@ impl Root {
             }
         };
         let items = self.adjust_menu_rows(target, items);
+        // Not in the pinned client: CopyUserURLs' row (`plugin_hooks.rs`).
+        let user_url = match target {
+            Target::User { user, .. } => Some(user),
+            Target::Dm(channel) => self.dm_user(channel),
+            _ => None,
+        };
+        let items = super::plugin_hooks::with_user_url_row(items, user_url);
         self.close_all_context_menus();
         self.menu_scroll.set_offset(gpui::point(px(0.), px(0.)));
         let at = flip_above(at, menu_height(&items), self.viewport.1);
@@ -3040,6 +3047,13 @@ impl Root {
                 if let Some(guild) = self.guild_of_channel(channel) {
                     self.select(guild, None);
                     self.open_create_channel(false, window, cx);
+                }
+            }
+            // Not in the pinned client: CopyUserURLs' "Copy User URL" (`plugin_hooks.rs`).
+            (Act::CopyLink, Target::User { user, .. }) => super::plugin_hooks::copy_user_url(user, cx),
+            (Act::CopyLink, Target::Dm(channel)) => {
+                if let Some(user) = self.dm_user(channel) {
+                    super::plugin_hooks::copy_user_url(user, cx);
                 }
             }
             (Act::CopyLink, Target::Channel(channel) | Target::Thread(channel)) => {

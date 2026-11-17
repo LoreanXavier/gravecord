@@ -8384,6 +8384,16 @@ impl Root {
                         }
                     })))
                 }
+                // Not in the pinned client: QuickMention puts `<@author> ` in the composer (`plugin_hooks.rs`).
+                Button::QuickMention => {
+                    let author = message.author.id;
+                    bar.child(tipped(cx).on_click(cx.listener(move |this, _, _, cx| {
+                        this.tip = None;
+                        let text = plugin_hooks::mention_text(author);
+                        this.composer.update(cx, |composer, cx| composer.insert(&text, cx));
+                        cx.notify();
+                    })))
+                }
                 Button::More => {
                     bar.child(tipped(cx).on_click(cx.listener(move |this, _, _, cx| {
                         let anchor = this.tip_anchors.borrow().get("toolbar-msg_more").copied();
@@ -8800,9 +8810,23 @@ impl Root {
                                     .on_mouse_down(MouseButton::Left, |_, window, _| {
                                         window.prevent_default();
                                     })
-                                    .child(tool("attach", cx).on_click(
-                                        cx.listener(|this, _, _, cx| this.toggle_plus_menu(cx)),
-                                    )),
+                                    // Not in the pinned client: BetterUploadButton uploads on a click and opens the
+                                    // menu on a right click (`plugin_hooks.rs`).
+                                    .when(plugin_hooks::better_upload_button(), |this| {
+                                        this.on_mouse_up(
+                                            MouseButton::Right,
+                                            cx.listener(|this, _: &gpui::MouseUpEvent, _, cx| {
+                                                this.toggle_plus_menu(cx)
+                                            }),
+                                        )
+                                    })
+                                    .child(tool("attach", cx).on_click(cx.listener(|this, _, _, cx| {
+                                        if plugin_hooks::better_upload_button() {
+                                            this.pick_files(cx);
+                                        } else {
+                                            this.toggle_plus_menu(cx);
+                                        }
+                                    }))),
                             )
                             .child(
                                 div()
@@ -10789,6 +10813,12 @@ fn status_dot_inner(status: &str, ring: &str, dot: f32) -> gpui::Div {
         "invisible" | "offline" => "--icon-status-offline",
         _ => "--icon-status-online",
     };
+    // Not in the pinned client: ColorSighted keeps the colour without the shapes cut in it (`plugin_hooks.rs`).
+    let status = if plugin_hooks::color_sighted() {
+        "online"
+    } else {
+        status
+    };
     div()
         .size(px(dot))
         .rounded_full()
@@ -10897,7 +10927,7 @@ fn status_dot_large(status: &str, ring: &str) -> impl IntoElement {
         .flex()
         .items_center()
         .justify_center()
-        .child(if status == "dnd" {
+        .child(if status == "dnd" && !plugin_hooks::color_sighted() {
             div()
                 .size(px(16.))
                 .rounded_full()

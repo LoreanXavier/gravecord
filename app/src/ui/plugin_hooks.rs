@@ -94,6 +94,102 @@ pub(super) fn trust_every_link() -> bool {
     !crate::plugins::bypassed() && crate::plugins::with(trust_every_link_in)
 }
 
+/// CopyUserURLs (Vencord `src/plugins/copyUserURLs`): "Copy User URL" at the end of a user's context menu.
+pub(super) fn with_user_url_row(
+    mut items: Vec<super::context_menu::Entry>,
+    user: Option<Id>,
+) -> Vec<super::context_menu::Entry> {
+    if user.is_some() && !crate::plugins::bypassed() && crate::plugin_on!("CopyUserURLs") {
+        items.push(super::context_menu::Entry::Separator);
+        items.push(super::context_menu::Entry::Row(
+            super::context_menu::Row::new(
+                super::context_menu::Act::CopyLink,
+                "Copy User URL".to_owned(),
+            )
+            .icon("menu_copy_message_link"),
+        ));
+    }
+    items
+}
+
+/// The URL as the original copies it: in angle brackets, so a pasted link shows no embed.
+pub(super) fn user_url(user: Id) -> String {
+    format!("<https://discord.com/users/{user}>")
+}
+
+pub(super) fn copy_user_url(user: Id, cx: &mut gpui::App) {
+    cx.write_to_clipboard(gpui::ClipboardItem::new_string(user_url(user)));
+}
+
+/// QuickMention (Vencord `src/plugins/quickMention`): its hover bar button shows where you may write (any DM, a server
+/// channel with Send Messages).
+pub(super) fn quick_mention(can_send: bool) -> bool {
+    can_send && !crate::plugins::bypassed() && crate::plugin_on!("QuickMention")
+}
+
+/// `insertTextIntoChatInputBox(`<@${msg.author.id}> `)`.
+pub(super) fn mention_text(user: Id) -> String {
+    format!("<@{user}> ")
+}
+
+/// BetterUploadButton (Vencord `src/plugins/betterUploadButton`): the composer's plus uploads on a click and opens its
+/// menu on a right click.
+pub(super) fn better_upload_button() -> bool {
+    !crate::plugins::bypassed() && crate::plugin_on!("BetterUploadButton")
+}
+
+/// ColorSighted (Vencord `src/plugins/colorSighted`): status dots keep their colour but lose the shapes cut into them
+/// for colour blindness (`Masks.STATUS_ONLINE` for idle, Do Not Disturb, streaming and offline).
+pub(super) fn color_sighted() -> bool {
+    !crate::plugins::bypassed() && crate::plugin_on!("ColorSighted")
+}
+
+/// ReverseImageSearch (Vencord `src/plugins/reverseImageSearch`): its engines, in its order, and the address each
+/// opens for a picture (`engine + encodeURIComponent(src)`).
+pub(super) const IMAGE_SEARCH_ENGINES: &[(&str, &str)] = &[
+    ("Google", "https://lens.google.com/uploadbyurl?url="),
+    (
+        "Yandex",
+        "https://yandex.com/images/search?rpt=imageview&url=",
+    ),
+    ("SauceNAO", "https://saucenao.com/search.php?url="),
+    ("IQDB", "https://iqdb.org/?url="),
+    (
+        "Bing",
+        "https://www.bing.com/images/search?view=detailv2&iss=sbi&q=imgurl:",
+    ),
+    ("TinEye", "https://www.tineye.com/search?url="),
+    ("ImgOps", "https://imgops.com/start?url="),
+];
+
+/// The last row of the submenu, which opens every engine.
+pub(super) const IMAGE_SEARCH_ALL: &str = "All";
+
+pub(super) fn reverse_image_search() -> bool {
+    !crate::plugins::bypassed() && crate::plugin_on!("ReverseImageSearch")
+}
+
+pub(super) fn image_search_url(engine: usize, src: &str) -> String {
+    format!(
+        "{}{}",
+        IMAGE_SEARCH_ENGINES[engine].1,
+        encode_uri_component(src)
+    )
+}
+
+/// JavaScript's `encodeURIComponent`: everything but `A-Z a-z 0-9 - _ . ! ~ * ' ( )` as UTF-8 percent escapes.
+fn encode_uri_component(text: &str) -> String {
+    let mut out = String::new();
+    for byte in text.bytes() {
+        if byte.is_ascii_alphanumeric() || b"-_.!~*'()".contains(&byte) {
+            out.push(byte as char);
+        } else {
+            out.push_str(&format!("%{byte:02X}"));
+        }
+    }
+    out
+}
+
 /// AlwaysTrust's `noDeleteSafety` and `confirmModal`: how a server is deleted.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum DeleteSafety {
@@ -446,5 +542,56 @@ mod tests {
         assert_eq!(server_delete_safety_in(&state), DeleteSafety::Skip);
         state.set_value("AlwaysTrust", "noDeleteSafety", &json!(false));
         assert_eq!(server_delete_safety_in(&state), DeleteSafety::Official);
+    }
+
+    #[test]
+    fn copy_user_urls_and_quick_mention_write_what_the_originals_write() {
+        assert_eq!(user_url(42), "<https://discord.com/users/42>");
+        assert_eq!(mention_text(42), "<@42> ");
+        // Off (the unit tests' state), the menu is untouched and there is no button.
+        let items = vec![super::super::context_menu::Entry::Separator];
+        assert_eq!(with_user_url_row(items.clone(), Some(42)), items);
+        assert!(!quick_mention(true));
+        assert!(!better_upload_button());
+        assert!(!color_sighted());
+    }
+
+    /// The QuickMention button sits where Vencord's popover buttons go: after the quick reactions, before Add
+    /// Reaction, and it is there without the reaction buttons too.
+    #[test]
+    fn quick_mention_sits_before_add_reaction() {
+        use super::super::hover_bar::{Button, Caps, buttons};
+        let caps = Caps {
+            can_react: true,
+            can_reply: true,
+            quick_mention: true,
+            ..Caps::default()
+        };
+        assert_eq!(
+            &buttons(caps)[..3],
+            [Button::Quick, Button::QuickMention, Button::AddReaction]
+        );
+        let caps = Caps {
+            can_reply: true,
+            quick_mention: true,
+            ..Caps::default()
+        };
+        assert_eq!(buttons(caps)[0], Button::QuickMention);
+        let off = Caps {
+            can_react: true,
+            ..Caps::default()
+        };
+        assert!(!buttons(off).contains(&Button::QuickMention));
+    }
+
+    #[test]
+    fn image_search_opens_each_engine_with_the_encoded_address() {
+        assert_eq!(IMAGE_SEARCH_ENGINES.len(), 7);
+        assert_eq!(
+            image_search_url(0, "https://cdn.discordapp.com/a b.png?x=1&y=2"),
+            "https://lens.google.com/uploadbyurl?url=https%3A%2F%2Fcdn.discordapp.com%2Fa%20b.png%3Fx%3D1%26y%3D2"
+        );
+        assert_eq!(encode_uri_component("a-_.!~*'()é"), "a-_.!~*'()%C3%A9");
+        assert!(!reverse_image_search());
     }
 }

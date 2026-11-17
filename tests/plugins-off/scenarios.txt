@@ -20,3 +20,6 @@ settings-appearance | window size 1600 1000; wait 4000; settings appearance; wai
 server-delete | wait 4000; server-settings profile; wait 1500; scroll 200 500 3000; wait 800; click 177 643; wait 1000
 voice-profile | wait 4000; callsim start guild; wait 1500; callsim join; wait 3000; callsim peer add bob; wait 8000; go dm 0; wait 2000
 backspace-click | wait 5000; key backspace; click 520 368; keyup backspace; wait 1000
+plus-click | wait 5000; click 410 683; wait 1000
+user-menu | wait 5000; rightclick 410 233; wait 800
+image-menu | window size 1600 1000; wait 4000; go dm 0; wait 1500; gw MESSAGE_CREATE {"id":"1600000000000000001","channel_id":"1568693333864480939","type":0,"content":"","author":{"id":"1137833003905724474","username":"onugeccen","discriminator":"0"},"attachments":[{"id":"1600000000000000002","filename":"0.png","url":"https://cdn.discordapp.com/embed/avatars/0.png","proxy_url":"https://media.discordapp.net/embed/avatars/0.png","content_type":"image/png","width":256,"height":256,"size":1000}],"embeds":[],"mentions":[],"timestamp":"2026-11-18T01:00:00.000000+00:00"}; wait 3000; rightclick 575 700; wait 800

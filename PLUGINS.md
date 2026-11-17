@@ -12,7 +12,7 @@ every setting changed), and with every plugin off, and fails on one differing pi
 The list is the plugins enabled in the owner's Equicord backup of 2026-09-21 (156). Sources were read in the local
 Equicord checkout of 2026-11-14 (`src/plugins` is Vencord's, `src/equicordplugins` Equicord's).
 
-Totals: 11 ported, 3 native, 97 planned, 45 not applicable.
+Totals: 16 ported, 3 native, 92 planned, 45 not applicable.
 
 Status: **ported** works and has its proof; **native** is what gravecord already does without a plugin;
 **planned** is not built yet (an import keeps its settings for when it is); **not applicable** has nothing to
@@ -40,7 +40,7 @@ port in a native client, or was removed upstream.
 | BetterRoleContext | planned | plugins/betterRoleContext/index.tsx | Adds options to copy role color / edit role / view role icon when right clicking roles in the user profile or in the member list | role context menu rows (copy colour, edit role, view icon). |  |
 | BetterRoleDot | planned | plugins/betterRoleDot/index.ts | Copy role colour on RoleDot (accessibility setting) click. Also allows using both RoleDot and coloured names simultaneously | copy a role colour on its dot; dots and coloured names together. |  |
 | BetterSettings | not applicable | plugins/betterSettings/index.tsx | Enhances your settings-menu-opening experience | settings are native here: no crossfade or lazy loading to remove. |  |
-| BetterUploadButton | planned | plugins/betterUploadButton/index.ts | Upload with a single click, open menu with right click | left click uploads, right click opens the menu, on the composer's plus button. |  |
+| BetterUploadButton | ported | plugins/betterUploadButton/index.ts | Upload with a single click, open menu with right click | ui.rs: the composer plus opens the file picker on a click and its menu on a right click. | `copy_user_urls_and_quick_mention_write_what_the_originals_write` (off); frame bub-on; plugins-off plus-click |
 | BiggerStreamPreview | planned | plugins/biggerStreamPreview/index.tsx | This plugin allows you to enlarge stream previews | a larger stream preview popout. |  |
 | BypassStatus | planned | equicordplugins/bypassStatus/index.tsx | Still get notifications from specific sources when in do not disturb mode. Right-click on users/channels/guilds to set them to bypass do not disturb mode. | notification and sound rules that pass Do Not Disturb for chosen users, channels and servers. |  |
 | CallTimer | planned | plugins/callTimer/index.tsx | Add call timers for all users in voice channels and in the connection status. | a timer per user in voice channels and in the connection panel. |  |
@@ -49,12 +49,12 @@ port in a native client, or was removed upstream.
 | ClearURLs | ported | plugins/clearURLs/index.ts | Automatically removes tracking elements from URLs you send | plugins/clear_urls.rs: the ClearURLs rules, bundled; messages sent and edited. | `plugins::clear_urls::tests` (6); frames clearurls-off/on; plugins-off send-link |
 | ClipsEnhancements | planned | equicordplugins/clipsEnhancements.discordDesktop/index.tsx | Add more Clip FPS and duration options, custom clip length, RPC tagging and more | more clip FPS and duration options in the clips settings. |  |
 | ClipUpload | planned | equicordplugins/clipUpload.desktop/index.tsx | Adds a button to upload a local video file as a Discord clip. | a button to upload a local video as a clip. |  |
-| ColorSighted | planned | plugins/colorSighted/index.ts | Removes the colorblind-friendly icons from statuses, just like 2015-2017 Discord | status dots without the colour-blind shapes (member_avatars.rs masks). |  |
+| ColorSighted | ported | plugins/colorSighted/index.ts | Removes the colorblind-friendly icons from statuses, just like 2015-2017 Discord | member_avatars.rs, ui.rs status dots, status_menu.rs: idle, Do Not Disturb and offline keep their colour but draw the plain disk; the mobile phone stays (the original leaves it too). | frames cs-on/cs-off; plugins-off dm-list, chat |
 | CommandsAPI | not applicable | plugins/_api/commands.ts | Api required by anything that uses commands | client-mod plumbing (an API for other plugins), nothing to port. |  |
 | ConcatenatedComponentExtractor | not applicable | plugins/_core/concatenatedComponentExtractor.tsx | Extract components that have been concatenated by the bundler | client-mod plumbing (an API for other plugins), nothing to port. |  |
 | ConcatenatedModules | not applicable | equicordplugins/_core/concatenatedModules.tsx | Extract modules that have been concatenated by the bundler | client-mod plumbing (an API for other plugins), nothing to port. |  |
 | ContextMenuAPI | not applicable | plugins/_api/contextMenu.ts | API for adding/removing items to/from context menus. | client-mod plumbing (an API for other plugins), nothing to port. |  |
-| CopyUserURLs | planned | plugins/copyUserURLs/index.tsx | Adds a 'Copy User URL' option to the user context menu. | "Copy User URL" in the user context menu. |  |
+| CopyUserURLs | ported | plugins/copyUserURLs/index.tsx | Adds a 'Copy User URL' option to the user context menu. | context_menu.rs: "Copy User URL" at the end of user and DM menus; copies `<https://discord.com/users/ID>` (angle brackets, as the original). | `copy_user_urls_and_quick_mention_write_what_the_originals_write`; frame url-on; plugins-off user-menu |
 | CrashHandler | not applicable | plugins/crashHandler/index.ts | Utility plugin for handling and possibly recovering from crashes without a restart | recovers React render crashes; there is no React here. |  |
 | CustomRPC | planned | plugins/customRPC/index.tsx | Add a fully customisable Rich Presence (Game status) to your Discord profile | a custom rich presence editor and its activity. |  |
 | Decor | planned | plugins/decor/index.tsx | Create and use your own custom avatar decorations, or pick your favorite from the presets. | its third-party avatar decorations service (decor-auth in the backup's data store is not copied). |  |
@@ -121,13 +121,13 @@ port in a native client, or was removed upstream.
 | PlatformIndicators | planned | plugins/platformIndicators/index.tsx | Adds platform indicators (Desktop, Mobile, Web...) to users | desktop, mobile and web icons by names. |  |
 | PreviewMessage | planned | plugins/previewMessage/index.tsx | Lets you preview your message before sending it. | a preview of the message before sending. |  |
 | ProfileSectionsAPI | not applicable | equicordplugins/_api/profileSections.ts | API to add sections near the 'Member Since' area of user profile panels. | client-mod plumbing (an API for other plugins), nothing to port. |  |
-| QuickMention | planned | plugins/quickMention/index.tsx | Adds a quick mention button to the message actions bar | a mention button in the message hover bar. |  |
+| QuickMention | ported | plugins/quickMention/index.tsx | Adds a quick mention button to the message actions bar | hover_bar.rs: an @ button after the quick reactions and before Add Reaction, where you may write; inserts `<@ID> ` in the composer (shown as text: the composer draws no mention pill for typed syntax). | `quick_mention_sits_before_add_reaction`; frames qm-on, qm-click; plugins-off hover-bar |
 | Quoter | planned | equicordplugins/quoter/index.tsx | Adds the ability to create an inspirational quote image from a message. | a quote image made from a message. |  |
 | ReactErrorDecoder | not applicable | plugins/reactErrorDecoder/index.ts |  | decodes minified React errors; there is no React here. |  |
 | ReadAllNotificationsButton | planned | plugins/readAllNotificationsButton/index.tsx | Read all server notifications with a single button click! | a button that marks every server read. |  |
 | RelationshipNotifier | planned | plugins/relationshipNotifier/index.ts | Notifies you when a friend, group chat, or server removes you. | notices when a friend, group or server removes you (its data store lists are not copied). |  |
 | RevealAllSpoilers | ported | plugins/revealAllSpoilers/index.ts | Reveal all spoilers in a message by Ctrl-clicking a spoiler, or in the chat with Ctrl+Shift-click | ui.rs: Ctrl-click a hidden spoiler opens every text spoiler of its message, Ctrl+Shift-click those of every message the chat holds now (later ones stay hidden). | `ctrl_reveals_the_message_and_ctrl_shift_every_loaded_message`; frames spoilers-off/on |
-| ReverseImageSearch | planned | plugins/reverseImageSearch/index.tsx | Adds ImageSearch to image context menus | image search rows in the image context menu. |  |
+| ReverseImageSearch | ported | plugins/reverseImageSearch/index.tsx | Adds ImageSearch to image context menus | menu.rs: "Search Image" at the end of the link group when a picture is right-clicked; a submenu of its seven engines and All, opened in the browser. The engine favicons (fetched from DuckDuckGo by the original) are not drawn: plugin code fetches nothing. | `image_search_opens_each_engine_with_the_encoded_address`; frame ris-on; plugins-off image-menu |
 | RoleColorEverywhere | planned | plugins/roleColorEverywhere/index.tsx | Adds the top role color anywhere possible | role colours in mentions, lists, voice and reactions. |  |
 | SearchFix | planned | equicordplugins/searchFix/index.tsx |  | its search request fix. |  |
 | SedEnhanced | planned | equicordplugins/sedEnhanced/index.ts | Expands on Discord's rudimentary `sed` support. | `s/a/b/` editing the last message, in the send path. |  |
@@ -137,7 +137,7 @@ port in a native client, or was removed upstream.
 | Settings | not applicable | plugins/_core/settings.tsx | Adds Settings UI and debug info | its settings UI is the Gravecord settings group itself; `settingsLocation` not ported (the group sits before Developer). |  |
 | ShowConnections | planned | plugins/showConnections/index.tsx | Show connected accounts in user popouts and the DM sidebar | connected accounts in user popouts and the DM sidebar. |  |
 | ShowHiddenThings | planned | plugins/showHiddenThings/index.ts | Displays various hidden & moderator-only things regardless of permissions. | hidden and moderator-only things shown. |  |
-| SilentMessageToggle | planned | plugins/silentMessageToggle/index.tsx | Adds a button to the chat bar to toggle sending a silent message. | a composer button that sends messages silently (`@silent` flag). |  |
+| SilentMessageToggle | planned | plugins/silentMessageToggle/index.tsx | Adds a button to the chat bar to toggle sending a silent message. | the pinned client's `@silent` prefix first: its send path strips it and sets SUPPRESS_NOTIFICATIONS (the `silentPrefix` rule and the sends of modules 857069 and 92961); the app sends the text as typed, so the plugin's prefix would reach people as words. |  |
 | SpotifyCrack | planned | plugins/spotifyCrack/index.ts | Free listen along, no auto-pausing in voice chat, and allows activity to continue playing when idling | listen along without Premium and no Spotify pause on voice. |  |
 | SpotifyShareCommands | planned | plugins/spotifyShareCommands/index.ts | Share your current Spotify track, album or artist via slash command (/track, /album, /artist) | its /track, /album, /artist commands. |  |
 | SteamStatusSync | planned | equicordplugins/steamStatusSync/index.tsx | Sync your status to Steam! (Online, Away, Invisible, or Offline.) | status sync with the Steam client. |  |

@@ -124,6 +124,17 @@ idle = {(a, b): why.replace('\\"', '"') for a, b, why in re.findall(
 
 # How each ported plugin is built here, and its proof.
 PORTED = {
+    'ReverseImageSearch': 'menu.rs: "Search Image" at the end of the link group when a picture is right-clicked; a '
+                          'submenu of its seven engines and All, opened in the browser. The engine favicons (fetched '
+                          'from DuckDuckGo by the original) are not drawn: plugin code fetches nothing.',
+    'BetterUploadButton': 'ui.rs: the composer plus opens the file picker on a click and its menu on a right click.',
+    'ColorSighted': 'member_avatars.rs, ui.rs status dots, status_menu.rs: idle, Do Not Disturb and offline keep their '
+                    'colour but draw the plain disk; the mobile phone stays (the original leaves it too).',
+    'CopyUserURLs': 'context_menu.rs: "Copy User URL" at the end of user and DM menus; copies '
+                    '`<https://discord.com/users/ID>` (angle brackets, as the original).',
+    'QuickMention': 'hover_bar.rs: an @ button after the quick reactions and before Add Reaction, where you may write; '
+                    'inserts `<@ID> ` in the composer (shown as text: the composer draws no mention pill for typed '
+                    'syntax).',
     'AlwaysTrust': 'links.rs: any link opens without "Leaving Discord" (`domain`); server_settings.rs: Delete Server '
                    'without the typed name, behind the plugin\'s own "Delete server?" (`noDeleteSafety`, `confirmModal`).',
     'ClearURLs': 'plugins/clear_urls.rs: the ClearURLs rules, bundled; messages sent and edited.',
@@ -149,6 +160,12 @@ PORTED = {
                      'so the original\'s 200% cap on the sync has nothing to cap.',
 }
 TESTS = {
+    'ReverseImageSearch': '`image_search_opens_each_engine_with_the_encoded_address`; frame ris-on; plugins-off image-menu',
+    'BetterUploadButton': '`copy_user_urls_and_quick_mention_write_what_the_originals_write` (off); frame bub-on; '
+                          'plugins-off plus-click',
+    'ColorSighted': 'frames cs-on/cs-off; plugins-off dm-list, chat',
+    'CopyUserURLs': '`copy_user_urls_and_quick_mention_write_what_the_originals_write`; frame url-on; plugins-off user-menu',
+    'QuickMention': '`quick_mention_sits_before_add_reaction`; frames qm-on, qm-click; plugins-off hover-bar',
     'AlwaysTrust': '`always_trust_needs_its_domain_setting`, `always_trust_deletes_servers_by_its_two_settings`; '
                    'frames trust-off/on, trust-settings',
     'ClearURLs': '`plugins::clear_urls::tests` (6); frames clearurls-off/on; plugins-off send-link',
@@ -212,15 +229,12 @@ PLANNED = {
     'BetterPlusReacts': '"+:emoji:" reacting to the Nth message above, in the composer\'s send path.',
     'BetterRoleContext': 'role context menu rows (copy colour, edit role, view icon).',
     'BetterRoleDot': 'copy a role colour on its dot; dots and coloured names together.',
-    'BetterUploadButton': 'left click uploads, right click opens the menu, on the composer\'s plus button.',
     'BiggerStreamPreview': 'a larger stream preview popout.',
     'BypassStatus': 'notification and sound rules that pass Do Not Disturb for chosen users, channels and servers.',
     'CallTimer': 'a timer per user in voice channels and in the connection panel.',
     'CancelFriendRequest': 'a cancel button for outgoing friend requests in profiles.',
     'ClipsEnhancements': 'more clip FPS and duration options in the clips settings.',
     'ClipUpload': 'a button to upload a local video as a clip.',
-    'ColorSighted': 'status dots without the colour-blind shapes (member_avatars.rs masks).',
-    'CopyUserURLs': '"Copy User URL" in the user context menu.',
     'CustomRPC': 'a custom rich presence editor and its activity.',
     'Decor': 'its third-party avatar decorations service (decor-auth in the backup\'s data store is not copied).',
     'DownloadAllAttachments': 'a hover-bar button that saves every attachment of a message.',
@@ -254,11 +268,9 @@ PLANNED = {
     'PinDMs': 'pinned DM categories in the DM list.',
     'PlatformIndicators': 'desktop, mobile and web icons by names.',
     'PreviewMessage': 'a preview of the message before sending.',
-    'QuickMention': 'a mention button in the message hover bar.',
     'Quoter': 'a quote image made from a message.',
     'ReadAllNotificationsButton': 'a button that marks every server read.',
     'RelationshipNotifier': 'notices when a friend, group or server removes you (its data store lists are not copied).',
-    'ReverseImageSearch': 'image search rows in the image context menu.',
     'RoleColorEverywhere': 'role colours in mentions, lists, voice and reactions.',
     'SearchFix': 'its search request fix.',
     'SedEnhanced': '`s/a/b/` editing the last message, in the send path.',
@@ -266,7 +278,7 @@ PLANNED = {
     'ServerListIndicators': 'online friend and server counts by the server list.',
     'ShowConnections': 'connected accounts in user popouts and the DM sidebar.',
     'ShowHiddenThings': 'hidden and moderator-only things shown.',
-    'SilentMessageToggle': 'a composer button that sends messages silently (`@silent` flag).',
+    'SilentMessageToggle': "the pinned client's `@silent` prefix first: its send path strips it and sets SUPPRESS_NOTIFICATIONS (the `silentPrefix` rule and the sends of modules 857069 and 92961); the app sends the text as typed, so the plugin's prefix would reach people as words.",
     'SpotifyCrack': 'listen along without Premium and no Spotify pause on voice.',
     'SpotifyShareCommands': 'its /track, /album, /artist commands.',
     'SteamStatusSync': 'status sync with the Steam client.',
