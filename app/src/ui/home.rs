@@ -266,7 +266,7 @@ impl Root {
                     .when(
                         id == "message-requests"
                             && self.stores.message_requests_count() > 0
-                            && !super::plugin_hooks::hide_count("hideMessageRequestsCount"),
+                            && !super::plugin_hooks::hide_message_request_count(),
                         |row| {
                             row.child(
                                 super::unread_badges::number(

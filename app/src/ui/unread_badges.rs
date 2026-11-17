@@ -66,7 +66,7 @@ pub(super) fn rail_number(count: u64, low_importance: bool, probe: Option<&'stat
 impl Root {
     pub(super) fn friend_request_count(&self) -> u64 {
         // Not in the pinned client: NoPendingCount (Vencord `src/plugins/noPendingCount`) makes `getPendingCount` 0.
-        if super::plugin_hooks::hide_count("hideFriendRequestsCount") {
+        if super::plugin_hooks::hide_friend_request_count() {
             return 0;
         }
         #[cfg(feature = "capture")]

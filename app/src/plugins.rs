@@ -17,9 +17,11 @@ mod registry;
 mod state;
 
 pub(crate) use backup::{Report, export, import};
-pub(crate) use registry::{DEFS, Def, Kind, Setting, def};
+pub(crate) use registry::{DEFS, Def, IDLE_SETTINGS, Kind, SHOWN_WHEN, Setting, def};
 pub(crate) use state::State;
 
+use std::cell::RefCell;
+use std::collections::BTreeMap;
 use std::sync::{OnceLock, RwLock};
 
 /// The `storage.json` key that holds [`State`].
@@ -38,6 +40,55 @@ fn cell() -> &'static RwLock<State> {
     })
 }
 
+/// The reference mode of the plugins-off check (`cargo xtask plugins-off`): with `GRAVECORD_PLUGINS_BYPASS=1` a
+/// capture build takes the pinned client's path at every hook site without reading the plugin state at all, so its
+/// frames show what the app draws with the plugin code skipped. Always false outside capture builds.
+pub(crate) fn bypassed() -> bool {
+    #[cfg(feature = "capture")]
+    {
+        static BYPASS: OnceLock<bool> = OnceLock::new();
+        *BYPASS.get_or_init(|| {
+            std::env::var("GRAVECORD_PLUGINS_BYPASS").is_ok_and(|value| value == "1")
+        })
+    }
+    #[cfg(not(feature = "capture"))]
+    false
+}
+
+thread_local! {
+    /// What the plugins did on this thread: one count per plugin whose gate let it act (`State::is_on` answered yes)
+    /// and per write to the plugins' storage. All of it is zero while the plugins are off; the tests and the
+    /// `plugin effects` harness verb read it.
+    static EFFECTS: RefCell<BTreeMap<String, u64>> = const { RefCell::new(BTreeMap::new()) };
+}
+
+/// Counts one effect (see [`EFFECTS`]).
+/// Counted in tests and capture builds only; the shipped app has nothing to prove it to.
+pub(crate) fn note(what: &str) {
+    if cfg!(any(test, feature = "capture")) {
+        EFFECTS.with(|effects| {
+            let mut effects = effects.borrow_mut();
+            match effects.get_mut(what) {
+                Some(count) => *count += 1,
+                None => {
+                    effects.insert(what.to_owned(), 1);
+                }
+            }
+        });
+    }
+}
+
+/// The effects counted on this thread since the last [`reset_effects`].
+#[cfg_attr(not(any(test, feature = "capture")), allow(dead_code))]
+pub(crate) fn effects() -> BTreeMap<String, u64> {
+    EFFECTS.with(|effects| effects.borrow().clone())
+}
+
+#[cfg_attr(not(any(test, feature = "capture")), allow(dead_code))]
+pub(crate) fn reset_effects() {
+    EFFECTS.with(|effects| effects.borrow_mut().clear());
+}
+
 /// A copy of the current state, for the settings pages.
 pub(crate) fn snapshot() -> State {
     cell().read().map(|state| state.clone()).unwrap_or_default()
@@ -53,7 +104,7 @@ pub(crate) fn with<R>(read: impl FnOnce(&State) -> R) -> R {
 
 /// The plugin is turned on and the master switch is on.
 pub(crate) fn on(id: &str) -> bool {
-    cell().read().is_ok_and(|state| state.is_on(id))
+    !bypassed() && cell().read().is_ok_and(|state| state.is_on(id))
 }
 
 /// Changes the state and writes it through to `storage.json` (a harness run keeps it in memory, see `storage`).
@@ -62,6 +113,7 @@ pub(crate) fn update(change: impl FnOnce(&mut State)) {
         return;
     };
     change(&mut state);
+    note("storage:plugins");
     if !cfg!(test) {
         crate::storage::set(STORAGE_KEY, state.to_value());
     }
@@ -107,7 +159,7 @@ const fn const_eq(left: &str, right: &str) -> bool {
 /// `onBeforeMessageEdit` in Vencord's MessageEvents API).
 pub(crate) fn outgoing(content: &str) -> String {
     let mut content = content.to_owned();
-    if on("ClearURLs") {
+    if !bypassed() && on("ClearURLs") {
         content = clear_urls::clean_message(&content);
     }
     content

@@ -3632,15 +3632,17 @@ impl Root {
 
     /// Applies a person's volume and mute to the call's mixer, and remembers them for the menu.
     pub(super) fn set_user_mix(&mut self, user: Id, volume: f32, muted: bool) {
-        // Up to 200%, or what the VolumeBooster plugin allows now.
-        let volume = volume.min(super::plugin_hooks::user_volume_max_factor());
+        // VolumeBooster on: up to its slider top. Off: as the pinned client, the voice engine stops at 2.
+        let cap = super::plugin_hooks::user_volume_cap();
+        let volume = cap.map_or(volume, |cap| volume.min(cap));
         if volume == 1. && !muted {
             self.context.mix.remove(&user);
         } else {
             self.context.mix.insert(user, (volume, muted));
         }
         if let Some(call) = &self.call {
-            call.controls.set_user_mix(user, volume, muted);
+            call.controls
+                .set_user_mix(user, volume.min(cap.unwrap_or(2.)), muted);
         }
     }
 

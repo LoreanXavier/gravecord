@@ -1,0 +1,22 @@
+# Scenarios of `cargo xtask plugins-off` (xtask/src/plugins_off.rs): `name | harness script`, one per line.
+# Each covers a place a built-in plugin changes. The check adds the plugin state itself; a scenario never says `plugin`.
+# Runs are headless and inert (GRAVECORD_INERT=1): nothing typed here leaves the machine.
+chat | wait 5000
+hover-bar | wait 5000; move 520 368; wait 800
+message-menu | wait 5000; rightclick 520 368; wait 800
+double-click | wait 5000; dblclick 520 368; wait 1200
+send-link | wait 5000; type see https://example.com/page?id=7&utm_source=news&fbclid=abc ; key enter; wait 1500
+masked-link | wait 5000; type see [click here](https://example.com/page) ; key enter; wait 1200; click 485 617; wait 1200
+spoilers | wait 5000; type spoilers ||one|| and ||two|| and ||three|| ; key enter; wait 1200; click-with ctrl 516 617; wait 800
+requests | wait 4000; badge requests 3; go home; wait 1200
+dm-list | wait 4000; go dm 0; wait 1500
+typing | wait 4000; go dm 0; wait 1500; gw TYPING_START {"channel_id":"1568693333864480939","user_id":"903573240566399026","timestamp":4102444800}; wait 900
+profile-popout | wait 5000; click 410 233; wait 1500
+accounts | wait 4000; accounts fake 11 alpha; accounts fake 12 bravo; accounts fake 13 charlie; accounts fake 14 delta; accounts fake 15 echo; accounts fake 16 foxtrot; accounts manage; wait 1000
+user-volume | wait 4000; callsim start guild; wait 1500; callsim join; wait 3000; callsim peer add bob; wait 3000; tilemenu open user other 700 200; wait 800
+gif-picker | wait 5000; click 1122 682; wait 2500; click 1120 337; wait 3500; click 877 337; wait 1500
+settings-voice | window size 1600 1000; wait 4000; settings voice_video; wait 1500
+settings-appearance | window size 1600 1000; wait 4000; settings appearance; wait 1500
+server-delete | wait 4000; server-settings profile; wait 1500; scroll 200 500 3000; wait 800; click 177 643; wait 1000
+voice-profile | wait 4000; callsim start guild; wait 1500; callsim join; wait 3000; callsim peer add bob; wait 8000; go dm 0; wait 2000
+backspace-click | wait 5000; key backspace; click 520 368; keyup backspace; wait 1000

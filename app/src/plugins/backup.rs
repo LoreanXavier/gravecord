@@ -13,6 +13,9 @@ use serde_json::{Map, Value, json};
 const FORMAT: &str = "gravecord-plugins";
 const VERSION: u64 = 1;
 
+/// The one data store key an import reads (VoiceStats' `storageKey`).
+const VOICE_TOTALS_KEY: &str = "VoiceStats_totals";
+
 /// What an import did.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub(crate) struct Report {
@@ -27,6 +30,8 @@ pub(crate) struct Report {
     pub invalid: Vec<String>,
     /// Parts of the file that were not read.
     pub skipped: Vec<&'static str>,
+    /// VoiceStats' totals from the data store (`VoiceStats_totals`, user id to seconds), for the caller to keep.
+    pub voice_totals: Option<Value>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -105,10 +110,28 @@ pub(crate) fn import(state: &mut State, file: &Value) -> Result<Report, ImportEr
     {
         report.skipped.push("Quick CSS and themes");
     }
-    if file.get("dataStore").is_some() {
-        report
-            .skipped
-            .push("plugin data (logs and other services' logins)");
+    if let Some(store) = file.get("dataStore") {
+        // The data store is a list of `[key, value]`. One key is read, by name: VoiceStats' totals (user ids and
+        // seconds). Everything else there (logs, other services' logins) is never copied.
+        report.voice_totals = store.as_array().and_then(|entries| {
+            entries
+                .iter()
+                .find_map(|entry| match entry.as_array()?.as_slice() {
+                    [key, value] if key.as_str() == Some(VOICE_TOTALS_KEY) && value.is_object() => {
+                        Some(value.clone())
+                    }
+                    _ => None,
+                })
+        });
+        if store.as_array().is_some_and(|entries| {
+            entries
+                .iter()
+                .any(|entry| entry[0].as_str() != Some(VOICE_TOTALS_KEY))
+        }) {
+            report
+                .skipped
+                .push("plugin data (logs and other services' logins)");
+        }
     }
     report.ported.sort_unstable();
     report.kept.sort_unstable();
@@ -206,7 +229,7 @@ mod tests {
                     "MessageClickActions": {
                         "enabled": true,
                         "doubleClickAction": "REPLY",
-                        "doubleClickOthersAction": "DELETE",
+                        "doubleClickOthersAction": "SPIN",
                         "clickTimeout": 300,
                         "disableInDms": true
                     },
@@ -215,7 +238,7 @@ mod tests {
                 }
             },
             "quickCss": "",
-            "dataStore": [["some-auth", { "token": "secret" }]]
+            "dataStore": [["some-auth", { "token": "secret" }], ["VoiceStats_totals", { "7": 30 }]]
         })
     }
 
@@ -229,7 +252,7 @@ mod tests {
         );
         assert_eq!(report.turned_on, 2);
         assert_eq!(report.kept, vec!["BadgeAPI", "SomethingNew"]);
-        // DELETE is not an action of this port: the setting keeps its value and the import says so.
+        // SPIN is not an action of the original: the setting keeps its value and the import says so.
         assert_eq!(
             report.invalid,
             vec!["MessageClickActions.doubleClickOthersAction"]
@@ -238,6 +261,8 @@ mod tests {
             report.skipped,
             vec!["plugin data (logs and other services' logins)"]
         );
+        // Only VoiceStats' totals come from the data store, and never the login next to them.
+        assert_eq!(report.voice_totals, Some(json!({ "7": 30 })));
         assert!(state.is_on("ClearURLs"));
         assert!(!state.is_on("AlwaysTrust"));
         assert_eq!(

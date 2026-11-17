@@ -1015,7 +1015,7 @@ pub async fn run(
             // Built-in plugins (`ui/settings/mods.rs`): state, switches, settings, an unfolded card, an import.
             ["plugin", rest @ ..] => {
                 let line = root.update(cx, |root, cx| {
-                    let line = root.script_plugin(rest);
+                    let line = root.script_plugin(rest, cx);
                     cx.notify();
                     line
                 });

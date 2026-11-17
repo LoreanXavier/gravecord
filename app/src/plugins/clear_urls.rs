@@ -46,8 +46,15 @@ fn list(provider: &serde_json::Value, field: &str, anchored: bool) -> Vec<Regex>
         .unwrap_or_default()
 }
 
+static PROVIDERS: OnceLock<Vec<Provider>> = OnceLock::new();
+
+/// The rules were read and compiled (only a message sent with ClearURLs on does that).
+#[cfg_attr(not(feature = "capture"), allow(dead_code))]
+pub(crate) fn rules_loaded() -> bool {
+    PROVIDERS.get().is_some()
+}
+
 fn providers() -> &'static [Provider] {
-    static PROVIDERS: OnceLock<Vec<Provider>> = OnceLock::new();
     PROVIDERS.get_or_init(|| {
         let Ok(data) = serde_json::from_str::<serde_json::Value>(RULES_JSON) else {
             return Vec::new();

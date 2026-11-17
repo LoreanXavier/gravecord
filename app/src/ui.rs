@@ -1384,6 +1384,8 @@ impl Root {
                 self.spotify_loading_changed();
                 if name == "VOICE_STATE_UPDATE" {
                     self.voice_state_of_other_session(&data, cx);
+                    // Not in the pinned client: the VoiceStats plugin (`plugin_hooks/voice_stats.rs`).
+                    self.voice_stats_observe(cx);
                 }
                 self.official_messages.dispatch(&name, &data);
                 self.gateway_screens_dispatch(&name, &data, cx);
@@ -6675,7 +6677,7 @@ impl Root {
         let open = spoiler_start.is_some_and(|start| {
             self.spoilers_shown()
                 || self.revealed.contains(&(key.0, key.1, start))
-                || plugin_hooks::all_spoilers_revealed(&self.revealed, key.0, self.channel)
+                || plugin_hooks::all_spoilers_revealed(&self.revealed, key.0)
         });
         let mut piece = self.piece(span, base, size, weight, emoji_size);
         if open {
@@ -6809,8 +6811,12 @@ impl Root {
                         && this.revealed.insert((key.0, key.1, start))
                     {
                         // Not in the pinned client: RevealAllSpoilers opens the others too (`plugin_hooks.rs`).
-                        let channel = this.channel;
-                        plugin_hooks::reveal_all_spoilers(&mut this.revealed, key.0, channel, modifiers);
+                        let loaded: Vec<Id> = this
+                            .channel
+                            .and_then(|channel| this.stores.messages.get(&channel))
+                            .map(|messages| messages.iter().map(|known| known.id).collect())
+                            .unwrap_or_default();
+                        plugin_hooks::reveal_all_spoilers(&mut this.revealed, key.0, &loaded, modifiers);
                         cx.notify();
                         return;
                     }
@@ -7705,16 +7711,11 @@ impl Root {
                             }),
                         )
                     })
-                    // Not in the pinned client: the MessageClickActions plugin's double-click (`plugin_hooks.rs`).
-                    .when(!is_starter && editing.is_none(), |this| {
-                        this.on_mouse_down(
-                            MouseButton::Left,
-                            cx.listener(move |this, event: &gpui::MouseDownEvent, window, cx| {
-                                if event.click_count == 2 {
-                                    this.message_double_clicked(id, event.modifiers, window, cx);
-                                }
-                            }),
-                        )
+                    // Not in the pinned client: the MessageClickActions plugin's clicks (`plugin_hooks/message_clicks.rs`).
+                    .when(!is_starter && editing.is_none() && !crate::plugins::bypassed(), |this| {
+                        this.on_click(cx.listener(move |this, event: &gpui::ClickEvent, window, cx| {
+                            this.message_clicked(id, event, window, cx);
+                        }))
                     })
                     .when(hovered, |this| this.child(hover_bar::probe(id, false)))
                     .when(hovered && editing.is_none() && !is_starter, |this| {
@@ -9280,6 +9281,8 @@ impl Render for Root {
         ));
         self.selection.borrow_mut().begin_frame();
         motion::set_window_active(window.is_window_active());
+        // Not in the pinned client: VoiceStats follows its own switch (`plugin_hooks/voice_stats.rs`).
+        self.voice_stats_observe(cx);
         self.streamer_apply(window);
         motion::begin_view(cx.entity_id());
         self.regions.ensure(&cx.entity(), cx);
@@ -9478,6 +9481,10 @@ impl Render for Root {
         let element = div()
             .id("root")
             .track_focus(&self.focus)
+            // Not in the pinned client: MessageClickActions follows held keys and presses (`plugin_hooks.rs`).
+            .when(!crate::plugins::bypassed(), |root| {
+                plugin_hooks::follow_message_clicks(root, window.is_window_active())
+            })
             .on_key_down(cx.listener(Self::on_key))
             // Escape closes settings before the focused field, which would take it for itself, sees it.
             // Push to talk and the keybind recorder see every key in the window first.

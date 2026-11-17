@@ -1,75 +1,15 @@
 //! Where the built-in plugins (`crate::plugins`) act on the chat. Not part of the pinned client.
 
-use super::Root;
-use super::menu::{Action, Item};
+mod message_clicks;
+mod voice_stats;
+
+pub(super) use message_clicks::follow as follow_message_clicks;
+pub(in crate::ui) use voice_stats::import_totals as import_voice_totals;
+
 use crate::plugins::State;
 use dc_state::Id;
-use gpui::{ClipboardItem, Context, Modifiers, Window};
+use gpui::Modifiers;
 use serde_json::Value;
-
-/// What a double-click on a message does under MessageClickActions (Vencord `src/plugins/messageClickActions`).
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(super) enum ClickAction {
-    None,
-    Edit,
-    Reply,
-    CopyContent,
-    CopyLink,
-    CopyId,
-    CopyUserId,
-}
-
-impl ClickAction {
-    fn parse(value: &str) -> Self {
-        match value {
-            "EDIT" => Self::Edit,
-            "REPLY" => Self::Reply,
-            "COPY_CONTENT" => Self::CopyContent,
-            "COPY_LINK" => Self::CopyLink,
-            "COPY_ID" => Self::CopyId,
-            "COPY_USER_ID" => Self::CopyUserId,
-            _ => Self::None,
-        }
-    }
-}
-
-/// `isModifierPressed`: "NONE" wants no modifier held, the others want theirs.
-fn modifier_held(wanted: &str, modifiers: Modifiers) -> bool {
-    match wanted {
-        "SHIFT" => modifiers.shift,
-        "CTRL" => modifiers.control,
-        "ALT" => modifiers.alt,
-        _ => !(modifiers.shift || modifiers.control || modifiers.alt || modifiers.platform),
-    }
-}
-
-/// The action a double-click runs, or `None`. `own`: the message is the account's; `dm`: the open channel is a DM or
-/// group DM. Whether the message can be edited or answered is the message menu's call (`message_double_clicked`).
-fn double_click_action_in(state: &State, own: bool, dm: bool, modifiers: Modifiers) -> ClickAction {
-    const ID: &str = "MessageClickActions";
-    if !state.is_on(ID) || (dm && state.value(ID, "disableInDms") == Value::Bool(true)) {
-        return ClickAction::None;
-    }
-    if !modifier_held(
-        state
-            .value(ID, "doubleClickModifier")
-            .as_str()
-            .unwrap_or(""),
-        modifiers,
-    ) {
-        return ClickAction::None;
-    }
-    let key = if own {
-        "doubleClickAction"
-    } else {
-        "doubleClickOthersAction"
-    };
-    match ClickAction::parse(state.value(ID, key).as_str().unwrap_or("")) {
-        // The original edits only your own messages, whatever the setting says.
-        ClickAction::Edit if !own => ClickAction::None,
-        other => other,
-    }
-}
 
 /// VolumeBooster (Vencord `src/plugins/volumeBooster`): the top of the User Volume slider in percent, 200 (the
 /// official `maxValue` on desktop) times the multiplier.
@@ -81,12 +21,25 @@ fn user_volume_max_in(state: &State) -> u32 {
 }
 
 pub(super) fn user_volume_max() -> u32 {
+    if crate::plugins::bypassed() {
+        return 200;
+    }
     crate::plugins::with(user_volume_max_in)
 }
 
-/// The loudest factor one person may have now: the slider's top on the slider's curve (2 at 200%).
-pub(super) fn user_volume_max_factor() -> f32 {
-    super::menu_slider::perceptual_to_amplitude_raw(user_volume_max() as f32)
+/// The loudest factor one person may have while VolumeBooster is on: the slider's top on the slider's curve. `None`
+/// while it is off, where the volume is the pinned client's (the voice engine's own limit, 2).
+pub(super) fn user_volume_cap() -> Option<f32> {
+    if crate::plugins::bypassed() {
+        return None;
+    }
+    crate::plugins::with(user_volume_cap_in)
+}
+
+fn user_volume_cap_in(state: &State) -> Option<f32> {
+    state
+        .is_on("VolumeBooster")
+        .then(|| super::menu_slider::perceptual_to_amplitude_raw(user_volume_max_in(state) as f32))
 }
 
 /// NoPendingCount (Vencord `src/plugins/noPendingCount`): whether a request count badge is hidden, by its setting.
@@ -94,8 +47,18 @@ fn hide_count_in(state: &State, setting: &str) -> bool {
     state.is_on("NoPendingCount") && state.value("NoPendingCount", setting) == Value::Bool(true)
 }
 
-pub(super) fn hide_count(setting: &str) -> bool {
-    crate::plugins::with(|state| hide_count_in(state, setting))
+/// NoPendingCount's `hideFriendRequestsCount`: `getPendingCount` answers 0.
+pub(super) fn hide_friend_request_count() -> bool {
+    hide_count("hideFriendRequestsCount")
+}
+
+/// NoPendingCount's `hideMessageRequestsCount`: the Message Requests badge is hidden, the row stays.
+pub(super) fn hide_message_request_count() -> bool {
+    hide_count("hideMessageRequestsCount")
+}
+
+fn hide_count(setting: &str) -> bool {
+    !crate::plugins::bypassed() && crate::plugins::with(|state| hide_count_in(state, setting))
 }
 
 /// UnlimitedAccounts (Equicord `src/equicordplugins/unlimitedAccounts`): how many accounts the switcher keeps,
@@ -115,6 +78,9 @@ fn max_accounts_in(state: &State) -> usize {
 }
 
 pub(super) fn max_accounts() -> usize {
+    if crate::plugins::bypassed() {
+        return super::account_switcher::MAX_ACCOUNTS;
+    }
     crate::plugins::with(max_accounts_in)
 }
 
@@ -125,115 +91,80 @@ fn trust_every_link_in(state: &State) -> bool {
 }
 
 pub(super) fn trust_every_link() -> bool {
-    crate::plugins::with(trust_every_link_in)
+    !crate::plugins::bypassed() && crate::plugins::with(trust_every_link_in)
+}
+
+/// AlwaysTrust's `noDeleteSafety` and `confirmModal`: how a server is deleted.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum DeleteSafety {
+    /// The pinned client's dialog: the server's name typed back.
+    Official,
+    /// The plugin's "Delete server?" question, no name to type.
+    Confirm,
+    /// Deleted at once.
+    Skip,
+}
+
+fn server_delete_safety_in(state: &State) -> DeleteSafety {
+    const ID: &str = "AlwaysTrust";
+    if !state.is_on(ID) || state.value(ID, "noDeleteSafety") != Value::Bool(true) {
+        DeleteSafety::Official
+    } else if state.value(ID, "confirmModal") == Value::Bool(true) {
+        DeleteSafety::Confirm
+    } else {
+        DeleteSafety::Skip
+    }
+}
+
+pub(super) fn server_delete_safety() -> DeleteSafety {
+    if crate::plugins::bypassed() {
+        return DeleteSafety::Official;
+    }
+    crate::plugins::with(server_delete_safety_in)
 }
 
 /// RevealAllSpoilers (Vencord `src/plugins/revealAllSpoilers`): a key in `Root::revealed` that opens every spoiler of a
-/// message (`(message, u32::MAX, 0)`) or of a channel (`(channel, u32::MAX, 1)`), next to the per-spoiler keys
-/// `(message, block, start)`.
+/// message (`(message, u32::MAX, 0)`), next to the per-spoiler keys `(message, block, start)`.
 const ALL_OF_MESSAGE: (u32, usize) = (u32::MAX, 0);
-const ALL_OF_CHANNEL: (u32, usize) = (u32::MAX, 1);
 
-/// The key a press on a spoiler adds besides its own: with Ctrl the message's, with Ctrl+Shift the channel's (the
-/// original's `ctrlKey`/`metaKey` and `shiftKey`).
-fn reveal_all_key_in(
-    state: &State,
-    message: Id,
-    channel: Option<Id>,
-    modifiers: Modifiers,
-) -> Option<(Id, u32, usize)> {
-    if !state.is_on("RevealAllSpoilers") || !(modifiers.control || modifiers.platform) {
-        return None;
+/// The messages whose spoilers a press on a hidden spoiler of `message` opens too: with Ctrl its own message's (the
+/// spoiler's parent), with Ctrl+Shift every message the chat holds now (`messagesWrapper`; later messages stay
+/// hidden). Ctrl is `metaKey` on a Mac (`IS_MAC`).
+fn reveal_all_in(state: &State, message: Id, loaded: &[Id], modifiers: Modifiers) -> Vec<Id> {
+    let held = if cfg!(target_os = "macos") {
+        modifiers.platform
+    } else {
+        modifiers.control
+    };
+    if !held || !state.is_on("RevealAllSpoilers") {
+        return Vec::new();
     }
-    Some(match (modifiers.shift, channel) {
-        (true, Some(channel)) => (channel, ALL_OF_CHANNEL.0, ALL_OF_CHANNEL.1),
-        _ => (message, ALL_OF_MESSAGE.0, ALL_OF_MESSAGE.1),
-    })
+    if modifiers.shift {
+        loaded.to_vec()
+    } else {
+        vec![message]
+    }
 }
 
 pub(super) fn reveal_all_spoilers(
     revealed: &mut std::collections::HashSet<(Id, u32, usize)>,
     message: Id,
-    channel: Option<Id>,
+    loaded: &[Id],
     modifiers: Modifiers,
 ) {
-    if let Some(key) =
-        crate::plugins::with(|state| reveal_all_key_in(state, message, channel, modifiers))
-    {
-        revealed.insert(key);
+    if crate::plugins::bypassed() {
+        return;
+    }
+    for message in crate::plugins::with(|state| reveal_all_in(state, message, loaded, modifiers)) {
+        revealed.insert((message, ALL_OF_MESSAGE.0, ALL_OF_MESSAGE.1));
     }
 }
 
 pub(super) fn all_spoilers_revealed(
     revealed: &std::collections::HashSet<(Id, u32, usize)>,
     message: Id,
-    channel: Option<Id>,
 ) -> bool {
-    revealed.contains(&(message, ALL_OF_MESSAGE.0, ALL_OF_MESSAGE.1))
-        || channel.is_some_and(|channel| {
-            revealed.contains(&(channel, ALL_OF_CHANNEL.0, ALL_OF_CHANNEL.1))
-        })
-}
-
-impl Root {
-    /// A double press on a message of the open channel.
-    pub(super) fn message_double_clicked(
-        &mut self,
-        message: Id,
-        modifiers: Modifiers,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        let Some(found) = self
-            .channel
-            .and_then(|channel| self.stores.messages.get(&channel))
-            .and_then(|messages| messages.iter().find(|known| known.id == message))
-            .cloned()
-        else {
-            return;
-        };
-        // A message still sending, or seen only by you (an ephemeral notice), takes no click action.
-        if self.send_state_of(message).is_some()
-            || found.flags & dc_state::components::FLAG_EPHEMERAL != 0
-        {
-            return;
-        }
-        let own = self
-            .stores
-            .current_user
-            .as_ref()
-            .is_some_and(|user| user.id == found.author.id);
-        let dm = self.guild.is_none();
-        let action =
-            crate::plugins::with(|state| double_click_action_in(state, own, dm, modifiers));
-        // Edit and Reply run only where the message menu offers them (a text message of yours, a channel you can
-        // write in, not a poll or a failed send).
-        let offered = |wanted: Action| {
-            super::menu::message_items_saved(own, self.saved_flags(message))
-                .iter()
-                .any(|item| matches!(item, Item::Entry(_, _, action, _) if *action == wanted))
-        };
-        let editable = matches!(found.kind, 0 | 19);
-        match action {
-            ClickAction::Edit if !(editable && offered(Action::Edit)) => return,
-            ClickAction::Reply if !offered(Action::Reply) => return,
-            _ => {}
-        }
-        match action {
-            ClickAction::None => return,
-            ClickAction::Edit => self.run_action(Action::Edit, message, window, cx),
-            ClickAction::Reply => self.run_action(Action::Reply, message, window, cx),
-            ClickAction::CopyContent => self.run_action(Action::CopyText, message, window, cx),
-            ClickAction::CopyLink => self.run_action(Action::CopyLink, message, window, cx),
-            ClickAction::CopyId => self.run_action(Action::CopyId, message, window, cx),
-            ClickAction::CopyUserId => {
-                cx.write_to_clipboard(ClipboardItem::new_string(found.author.id.to_string()));
-            }
-        }
-        // The double press also selected a word under the pointer; the action replaces that.
-        cx.stop_propagation();
-        cx.notify();
-    }
+    !crate::plugins::bypassed() && revealed.contains(&(message, ALL_OF_MESSAGE.0, ALL_OF_MESSAGE.1))
 }
 
 #[cfg(test)]
@@ -255,78 +186,171 @@ mod tests {
         }
     }
 
-    #[test]
-    fn actions_parse_from_the_original_values() {
-        assert_eq!(ClickAction::parse("EDIT"), ClickAction::Edit);
-        assert_eq!(ClickAction::parse("COPY_USER_ID"), ClickAction::CopyUserId);
-        // Actions of the original that are not ported do nothing.
-        assert_eq!(ClickAction::parse("DELETE"), ClickAction::None);
+    fn alt() -> Modifiers {
+        Modifiers {
+            alt: true,
+            ..Modifiers::default()
+        }
     }
 
-    #[test]
-    fn the_modifier_setting_wants_exactly_its_key() {
-        assert!(modifier_held("NONE", keys(false, false)));
-        assert!(!modifier_held("NONE", keys(false, true)));
-        assert!(modifier_held("SHIFT", keys(false, true)));
-        assert!(!modifier_held("CTRL", keys(false, true)));
+    /// The two ways the plugins are off: the master switch off with every plugin on and every setting changed from
+    /// its default, and the master on with every plugin turned off.
+    fn off_states() -> [State; 2] {
+        let mut everything = State::default();
+        for def in crate::plugins::DEFS {
+            everything.set_enabled(def.id, true);
+            for setting in def.settings {
+                assert!(
+                    everything.set_value(def.id, setting.key, &setting.scrambled()),
+                    "{}.{} takes its scrambled value",
+                    def.id,
+                    setting.key
+                );
+            }
+        }
+        everything.master = false;
+        let mut each_off = State::default();
+        for def in crate::plugins::DEFS {
+            each_off.set_enabled(def.id, false);
+        }
+        [everything, each_off]
     }
 
-    /// Defaults (the plugin is on by default): your message is edited, someone else's is answered.
+    /// While the plugins are off every hook gives the pinned client's answer, and none of them counts an effect.
     #[test]
-    fn double_click_follows_its_settings() {
-        let none = keys(false, false);
-        let mut state = State::default();
-        assert_eq!(
-            double_click_action_in(&state, true, false, none),
-            ClickAction::Edit
+    fn every_hook_answers_as_the_pinned_client_while_the_plugins_are_off() {
+        for state in off_states() {
+            crate::plugins::reset_effects();
+            let held = [
+                keys(false, false),
+                keys(true, false),
+                keys(false, true),
+                keys(true, true),
+                alt(),
+            ];
+            // MessageClickActions reads no setting and so follows no key or press.
+            assert!(message_clicks::Settings::read(&state).is_none());
+            for modifiers in held {
+                assert!(reveal_all_in(&state, 7, &[5, 7], modifiers).is_empty());
+            }
+            assert_eq!(user_volume_max_in(&state), 200);
+            assert_eq!(user_volume_cap_in(&state), None);
+            assert_eq!(
+                max_accounts_in(&state),
+                super::super::account_switcher::MAX_ACCOUNTS
+            );
+            assert!(!trust_every_link_in(&state));
+            assert_eq!(server_delete_safety_in(&state), DeleteSafety::Official);
+            assert!(!hide_count_in(&state, "hideFriendRequestsCount"));
+            assert!(!hide_count_in(&state, "hideMessageRequestsCount"));
+            for def in crate::plugins::DEFS {
+                assert!(!state.is_on(def.id), "{} is off", def.id);
+            }
+            assert!(
+                crate::plugins::effects().is_empty(),
+                "{:?}",
+                crate::plugins::effects()
+            );
+        }
+    }
+
+    /// The counter does see a plugin that acts, so the test above can fail.
+    #[test]
+    fn an_acting_plugin_is_counted() {
+        crate::plugins::reset_effects();
+        let state = with_on("VolumeBooster");
+        assert_eq!(user_volume_max_in(&state), 400);
+        assert_eq!(crate::plugins::effects().get("VolumeBooster"), Some(&1));
+    }
+
+    /// The source files of the app, for the static checks below.
+    fn sources() -> Vec<(String, String)> {
+        fn walk(dir: &std::path::Path, out: &mut Vec<(String, String)>) {
+            for entry in std::fs::read_dir(dir).unwrap().flatten() {
+                let path = entry.path();
+                if path.is_dir() {
+                    walk(&path, out);
+                } else if path.extension().is_some_and(|ext| ext == "rs") {
+                    let name = path.to_string_lossy().replace('\\', "/");
+                    out.push((name, std::fs::read_to_string(&path).unwrap()));
+                }
+            }
+        }
+        let mut out = Vec::new();
+        walk(
+            &std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src"),
+            &mut out,
         );
-        assert_eq!(
-            double_click_action_in(&state, false, false, none),
-            ClickAction::Reply
-        );
-        assert_eq!(
-            double_click_action_in(&state, true, false, keys(true, false)),
-            ClickAction::None
-        );
-        state.set_value("MessageClickActions", "doubleClickModifier", &json!("CTRL"));
-        assert_eq!(
-            double_click_action_in(&state, true, false, none),
-            ClickAction::None
-        );
-        assert_eq!(
-            double_click_action_in(&state, true, false, keys(true, false)),
-            ClickAction::Edit
-        );
-        state.set_value("MessageClickActions", "doubleClickModifier", &json!("NONE"));
-        state.set_value("MessageClickActions", "disableInDms", &json!(true));
-        assert_eq!(
-            double_click_action_in(&state, true, true, none),
-            ClickAction::None
-        );
-        assert_eq!(
-            double_click_action_in(&state, true, false, none),
-            ClickAction::Edit
-        );
-        state.set_value(
-            "MessageClickActions",
-            "doubleClickAction",
-            &json!("COPY_LINK"),
-        );
-        assert_eq!(
-            double_click_action_in(&state, true, false, none),
-            ClickAction::CopyLink
-        );
-        state.set_enabled("MessageClickActions", false);
-        assert_eq!(
-            double_click_action_in(&state, true, false, none),
-            ClickAction::None
-        );
-        state.set_enabled("MessageClickActions", true);
-        state.master = false;
-        assert_eq!(
-            double_click_action_in(&state, true, false, none),
-            ClickAction::None
-        );
+        assert!(out.len() > 50);
+        out
+    }
+
+    /// The plugin code never sends a request or touches the network: a hook only reads the plugin state and changes
+    /// what the app does locally. A port that needs the network has to change this test on purpose.
+    #[test]
+    fn plugin_code_sends_no_requests() {
+        for (name, text) in sources() {
+            if !(name.contains("/src/plugins") || name.ends_with("/plugin_hooks.rs")) {
+                continue;
+            }
+            let code = text.split("#[cfg(test)]").next().unwrap_or("");
+            for banned in [
+                "Request::",
+                "requests.send",
+                "reqwest",
+                "dc_http",
+                "http_client",
+                "std::net",
+            ] {
+                assert!(!code.contains(banned), "{name} uses {banned}");
+            }
+        }
+    }
+
+    /// Every plugin is read by the code outside its definition, and so is every setting, unless `IDLE_SETTINGS`
+    /// says why it has nothing to act on yet; a listed setting must really be unread, so the list cannot go stale.
+    #[test]
+    fn every_plugin_and_setting_is_read_outside_the_registry() {
+        let code: String = sources()
+            .into_iter()
+            .filter(|(name, _)| !name.ends_with("/plugins/registry.rs"))
+            .map(|(_, text)| text.split("#[cfg(test)]").next().unwrap_or("").to_owned())
+            .collect();
+        // Settings are read in the hooks only (`plugin_hooks.rs` and its modules), where a key's name cannot be
+        // some other string of the app.
+        let hooks: String = sources()
+            .into_iter()
+            .filter(|(name, _)| name.contains("/plugin_hooks"))
+            .map(|(_, text)| text.split("#[cfg(test)]").next().unwrap_or("").to_owned())
+            .collect();
+        for def in crate::plugins::DEFS {
+            assert!(
+                code.contains(&format!("\"{}\"", def.id)),
+                "nothing reads {}",
+                def.id
+            );
+            for setting in def.settings {
+                let read = hooks.contains(&format!("\"{}\"", setting.key));
+                let idle = crate::plugins::IDLE_SETTINGS
+                    .iter()
+                    .any(|(id, key, _)| *id == def.id && *key == setting.key);
+                assert!(
+                    read != idle,
+                    "{}.{}: read {read}, listed idle {idle}",
+                    def.id,
+                    setting.key
+                );
+            }
+        }
+        for (id, key, why) in crate::plugins::IDLE_SETTINGS {
+            assert!(
+                crate::plugins::def(id)
+                    .and_then(|def| def.setting(key))
+                    .is_some(),
+                "{id}.{key} is not a setting"
+            );
+            assert!(why.len() > 20, "{id}.{key} needs its reason");
+        }
     }
 
     #[test]
@@ -386,31 +410,41 @@ mod tests {
     }
 
     #[test]
-    fn ctrl_reveals_the_message_and_ctrl_shift_the_channel() {
+    fn ctrl_reveals_the_message_and_ctrl_shift_every_loaded_message() {
         let state = with_on("RevealAllSpoilers");
+        let loaded = [5, 6, 7];
+        assert!(reveal_all_in(&state, 7, &loaded, keys(false, false)).is_empty());
+        assert_eq!(reveal_all_in(&state, 7, &loaded, keys(true, false)), [7]);
         assert_eq!(
-            reveal_all_key_in(&state, 7, Some(9), keys(false, false)),
-            None
+            reveal_all_in(&state, 7, &loaded, keys(true, true)),
+            [5, 6, 7]
         );
-        assert_eq!(
-            reveal_all_key_in(&state, 7, Some(9), keys(true, false)),
-            Some((7, ALL_OF_MESSAGE.0, ALL_OF_MESSAGE.1))
-        );
-        assert_eq!(
-            reveal_all_key_in(&state, 7, Some(9), keys(true, true)),
-            Some((9, ALL_OF_CHANNEL.0, ALL_OF_CHANNEL.1))
-        );
-        assert_eq!(
-            reveal_all_key_in(&State::default(), 7, Some(9), keys(true, false)),
-            None
-        );
+        // Shift alone, or the Windows key, is not the original's Ctrl.
+        assert!(reveal_all_in(&state, 7, &loaded, keys(false, true)).is_empty());
+        let win = Modifiers {
+            platform: true,
+            ..Modifiers::default()
+        };
+        assert!(reveal_all_in(&state, 7, &loaded, win).is_empty());
+        assert!(reveal_all_in(&State::default(), 7, &loaded, keys(true, false)).is_empty());
         let mut revealed = std::collections::HashSet::new();
-        assert!(!all_spoilers_revealed(&revealed, 7, Some(9)));
+        assert!(!all_spoilers_revealed(&revealed, 7));
         revealed.insert((7, ALL_OF_MESSAGE.0, ALL_OF_MESSAGE.1));
-        assert!(all_spoilers_revealed(&revealed, 7, Some(9)));
-        assert!(!all_spoilers_revealed(&revealed, 8, Some(9)));
-        revealed.insert((9, ALL_OF_CHANNEL.0, ALL_OF_CHANNEL.1));
-        assert!(all_spoilers_revealed(&revealed, 8, Some(9)));
-        assert!(!all_spoilers_revealed(&revealed, 8, Some(10)));
+        assert!(all_spoilers_revealed(&revealed, 7));
+        assert!(!all_spoilers_revealed(&revealed, 8));
+    }
+
+    #[test]
+    fn always_trust_deletes_servers_by_its_two_settings() {
+        assert_eq!(
+            server_delete_safety_in(&State::default()),
+            DeleteSafety::Official
+        );
+        let mut state = with_on("AlwaysTrust");
+        assert_eq!(server_delete_safety_in(&state), DeleteSafety::Confirm);
+        state.set_value("AlwaysTrust", "confirmModal", &json!(false));
+        assert_eq!(server_delete_safety_in(&state), DeleteSafety::Skip);
+        state.set_value("AlwaysTrust", "noDeleteSafety", &json!(false));
+        assert_eq!(server_delete_safety_in(&state), DeleteSafety::Official);
     }
 }

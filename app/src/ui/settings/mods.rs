@@ -17,6 +17,12 @@ pub(in crate::ui) struct State {
     search_sub: Option<gpui::Subscription>,
     /// Plugins whose settings are unfolded.
     expanded: HashSet<&'static str>,
+    /// The text settings' boxes, by plugin and key, made when their plugin unfolds.
+    fields: std::collections::HashMap<
+        (&'static str, &'static str),
+        gpui::Entity<crate::editor::Editor>,
+    >,
+    field_subs: Vec<gpui::Subscription>,
     /// What the last import did, or why it failed.
     pub(in crate::ui) outcome: Option<Result<Report, String>>,
     /// Where the last export was written.
@@ -122,6 +128,21 @@ fn report_lines(report: &Report) -> Vec<String> {
             report.invalid.join(", ")
         ));
     }
+    if let Some(people) = report
+        .voice_totals
+        .as_ref()
+        .and_then(|totals| totals.as_object())
+    {
+        lines.push(format!(
+            "VoiceStats: voice time with {} {}.",
+            people.len(),
+            if people.len() == 1 {
+                "person"
+            } else {
+                "people"
+            }
+        ));
+    }
     for skipped in &report.skipped {
         lines.push(format!("Not imported: {skipped}."));
     }
@@ -143,6 +164,13 @@ fn import_file(path: &std::path::Path) -> Result<Report, String> {
     plugins::update(|state| {
         outcome = plugins::import(state, &value).map_err(|error| error.to_string());
     });
+    if let Ok(Report {
+        voice_totals: Some(totals),
+        ..
+    }) = &outcome
+    {
+        crate::ui::plugin_hooks::import_voice_totals(totals);
+    }
     outcome
 }
 
@@ -335,6 +363,7 @@ impl Root {
                     let expanded = &mut this.settings_extra.mods.expanded;
                     if !expanded.remove(id) {
                         expanded.insert(id);
+                        this.plugin_fields_ready(def, cx);
                     }
                     cx.notify();
                 }))
@@ -403,6 +432,7 @@ impl Root {
                     .children(
                         def.settings
                             .iter()
+                            .filter(|setting| shown(def, setting, state))
                             .map(|setting| self.plugin_setting(def, setting, state, cx)),
                     )
             })
@@ -419,7 +449,18 @@ impl Root {
         let id = def.id;
         let key = setting.key;
         let value = state.value(id, key);
-        match &setting.kind {
+        // A setting with nothing to act on yet says so under itself (`IDLE_SETTINGS`).
+        let idle = plugins::IDLE_SETTINGS
+            .iter()
+            .find(|(idle_id, idle_key, _)| *idle_id == id && *idle_key == key)
+            .map(|(_, _, why)| {
+                div()
+                    .text_size(px(12.))
+                    .line_height(px(16.))
+                    .text_color(color("--text-feedback-warning"))
+                    .child(format!("Nothing to act on here yet: {why}."))
+            });
+        let control = match &setting.kind {
             Kind::Switch { .. } => row(
                 setting.label,
                 setting.description,
@@ -528,6 +569,70 @@ impl Root {
                     }),
                 ))
                 .into_any_element(),
+            Kind::Text { .. } => {
+                let field = self.settings_extra.mods.fields.get(&(id, key)).cloned();
+                div()
+                    .flex()
+                    .flex_col()
+                    .gap(px(8.))
+                    .child(label(setting.label))
+                    .child(subtle(setting.description))
+                    .children(field.map(|editor| {
+                        div()
+                            .min_h(px(40.))
+                            .px(px(12.))
+                            .py(px(10.))
+                            .rounded(px(8.))
+                            .border_1()
+                            .border_color(color("--input-border-default"))
+                            .bg(color("--input-background-default"))
+                            .child(editor)
+                    }))
+                    .into_any_element()
+            }
+        };
+        match idle {
+            Some(idle) => div()
+                .flex()
+                .flex_col()
+                .gap(px(4.))
+                .child(control)
+                .child(idle)
+                .into_any_element(),
+            None => control,
+        }
+    }
+
+    /// Makes the boxes of a plugin's text settings, filled with their values; typing stores the text.
+    fn plugin_fields_ready(&mut self, def: &'static Def, cx: &mut Context<Self>) {
+        let state = plugins::snapshot();
+        for setting in def.settings {
+            let Kind::Text { .. } = setting.kind else {
+                continue;
+            };
+            let slot = (def.id, setting.key);
+            if self.settings_extra.mods.fields.contains_key(&slot) {
+                continue;
+            }
+            let value = state.value(def.id, setting.key);
+            let editor = cx.new(|cx| {
+                let mut editor = crate::editor::Editor::new(super::search::field_style(), cx);
+                editor.set_text(value.as_str().unwrap_or(""));
+                editor
+            });
+            let (id, key) = slot;
+            let sub = cx.subscribe(
+                &editor,
+                move |_, editor, _: &crate::editor::EditorEvent, cx| {
+                    let text = editor.read(cx).text().to_owned();
+                    plugins::update(|state| {
+                        state.set_value(id, key, &serde_json::Value::from(text));
+                    });
+                    cx.notify();
+                },
+            );
+            self.settings_extra.mods.field_subs.push(sub);
+            self.settings_extra.mods.fields.insert(slot, editor);
         }
     }
 
@@ -644,7 +749,7 @@ impl Root {
     /// The harness's `plugin` step: `state`, `master on|off`, `on <id>`, `off <id>`, `set <id> <key> <json>`,
     /// `import <path>`, `fold <id>`.
     #[cfg(feature = "capture")]
-    pub(crate) fn script_plugin(&mut self, words: &[&str]) -> String {
+    pub(crate) fn script_plugin(&mut self, words: &[&str], cx: &mut Context<Self>) -> String {
         match words {
             ["state"] => plugins::snapshot().to_value().to_string(),
             ["master", switch @ ("on" | "off")] => {
@@ -671,9 +776,40 @@ impl Root {
                     format!("{id}.{key} cannot be {value}")
                 }
             }
+            // `all on|off`: every plugin's own switch, for the plugins-off check's states.
+            ["all", switch @ ("on" | "off")] => {
+                plugins::update(|state| {
+                    for def in plugins::DEFS {
+                        state.set_enabled(def.id, *switch == "on");
+                    }
+                });
+                format!("all {switch}")
+            }
+            // `scramble`: every setting to a value other than its default (the last option, the top of the range,
+            // the other side of a switch), so a check with the master off also has every setting changed.
+            ["scramble"] => {
+                plugins::update(|state| {
+                    for def in plugins::DEFS {
+                        for setting in def.settings {
+                            state.set_value(def.id, setting.key, &setting.scrambled());
+                        }
+                    }
+                });
+                "scrambled".to_owned()
+            }
+            // `effects`: what the plugins did since the last `effects` (`plugins::note`), `{}` when nothing.
+            ["effects"] => {
+                let mut effects = plugins::effects();
+                if plugins::clear_urls::rules_loaded() {
+                    effects.insert("clearurls:rules-loaded".to_owned(), 1);
+                }
+                plugins::reset_effects();
+                format!("effects {}", serde_json::to_string(&effects).unwrap_or_default())
+            }
             ["fold", id] => match plugins::def(id) {
                 Some(def) => {
                     self.settings_extra.mods.expanded.insert(def.id);
+                    self.plugin_fields_ready(def, cx);
                     format!("{} unfolded", def.id)
                 }
                 None => format!("no plugin {id}"),
@@ -687,10 +823,18 @@ impl Root {
                 self.settings_extra.mods.outcome = Some(outcome);
                 line
             }
-            _ => "usage: plugin state | master on|off | on|off <id> | set <id> <key> <json> | fold <id> | import <path>"
+            _ => "usage: plugin state | master on|off | on|off <id> | all on|off | scramble | effects | set <id> <key> <json> | fold <id> | import <path>"
                 .to_owned(),
         }
     }
+}
+
+/// A setting is listed unless the original hides it while a switch of its plugin is off.
+fn shown(def: &Def, setting: &plugins::Setting, state: &plugins::State) -> bool {
+    plugins::SHOWN_WHEN
+        .iter()
+        .find(|(id, key, _)| *id == def.id && *key == setting.key)
+        .is_none_or(|(id, _, switch)| state.value(id, switch) == serde_json::Value::Bool(true))
 }
 
 #[cfg(test)]
@@ -716,12 +860,14 @@ mod tests {
             kept_off: 3,
             invalid: vec![],
             skipped: vec!["Quick CSS and themes"],
+            voice_totals: Some(serde_json::json!({"7": 1, "8": 2})),
         };
         assert_eq!(
             report_lines(&report),
             vec![
                 "Imported 1 plugin (1 turned on).",
                 "2 plugins it turns on are not built in yet. Their settings are kept and apply once they are built in.",
+                "VoiceStats: voice time with 2 people.",
                 "Not imported: Quick CSS and themes.",
             ]
         );
