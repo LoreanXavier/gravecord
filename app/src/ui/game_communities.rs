@@ -33,6 +33,8 @@ struct Community {
     presence: Option<u64>,
     members: Option<u64>,
     locale: Option<String>,
+    /// The server as the service answered, for its badge (`tr.A`).
+    raw: Value,
 }
 
 /// `tl` (session only): the languages left out of one game's list, and whether the menu is open.
@@ -105,6 +107,14 @@ fn communities_of(answer: &Value) -> Vec<Community> {
                 presence: guild["approximate_presence_count"].as_u64(),
                 members: guild["approximate_member_count"].as_u64(),
                 locale: guild["preferred_locale"].as_str().map(str::to_owned),
+                // A discovery server lists no channels; the guild reader wants the key.
+                raw: {
+                    let mut raw = guild.clone();
+                    if !raw["channels"].is_array() {
+                        raw["channels"] = serde_json::json!([]);
+                    }
+                    raw
+                },
             })
         })
         .collect()
@@ -227,6 +237,10 @@ impl Root {
             .bg(color("--background-mod-normal"))
             .overflow_hidden()
             .children(icon.map(|icon| img(icon).size_full()));
+        // `guildNameContainer`: the badge at 16, 4px before the name.
+        let badge = dc_state::Guild::from_value(&community.raw)
+            .as_ref()
+            .and_then(|guild| super::tooltip::badge_image_sized(guild, 16));
         let name = div()
             .min_w(px(0.))
             .truncate()
@@ -235,6 +249,13 @@ impl Root {
             .font_weight(FontWeight(600.))
             .text_color(color("--text-default"))
             .child(community.name.clone());
+        let name = div()
+            .min_w(px(0.))
+            .flex()
+            .items_center()
+            .gap(px(4.))
+            .children(badge.map(|badge| img(badge).size(px(16.)).flex_none()))
+            .child(name);
         let description = (!community.description.is_empty()).then(|| {
             div()
                 .line_clamp(2)

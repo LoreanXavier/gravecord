@@ -427,7 +427,12 @@ fn badge_svg(badge: Badge, premium: bool, side: u32) -> Option<String> {
 }
 
 pub(super) fn badge_image(guild: &Guild) -> Option<Arc<Image>> {
-    let svg = badge_svg(guild.badge(), guild.premium(), 18)?;
+    badge_image_sized(guild, 18)
+}
+
+/// The guild badge at `side` pixels (module 714991 `tr.A` takes a size).
+pub(super) fn badge_image_sized(guild: &Guild, side: u32) -> Option<Arc<Image>> {
+    let svg = badge_svg(guild.badge(), guild.premium(), side)?;
     Some(Arc::new(Image::from_bytes(
         ImageFormat::Svg,
         svg.into_bytes(),

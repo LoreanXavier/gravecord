@@ -798,7 +798,7 @@ impl Guild {
     }
 
     /// READY nests name and icon under `properties`; GUILD_CREATE may not.
-    fn from_value(value: &Value) -> Option<Self> {
+    pub fn from_value(value: &Value) -> Option<Self> {
         let properties = if value["properties"].is_object() {
             &value["properties"]
         } else {
