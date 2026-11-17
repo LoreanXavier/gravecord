@@ -4,13 +4,14 @@
 //! then every hour (`setInterval(checkForUpdates, HOUR)`); an error (`UPDATE_ERROR`) shows nothing. The title bar's
 //! button is in `ui.rs`; its click is `AUTO_UPDATER_QUIT_AND_INSTALL`.
 //!
-//! gravecord has no Squirrel, so the feed is a small JSON file (`update.json`: version, setup file, size, SHA-256)
-//! next to the setup file of a GitHub release: the latest release for the Stable channel, the rolling `nightly` release
-//! for the Nightly channel that tester builds (`cargo xtask package --channel nightly`) follow. The repository is the
-//! workspace's unless the build names another (`GRAVECORD_UPDATE_REPOSITORY`; testers cannot read a private one).
-//! Settings > Updates shows the state, progress, failures and the channel (`ui/settings/tester.rs`). The setup
-//! file is downloaded into the app's data folder, verified against the feed's size and hash, and run silently with the
-//! installer's own arguments (`docs/installer.md`).
+//! gravecord has no Squirrel and puts no file of its own in a release. As P.T.'s updater does, it asks GitHub's REST API
+//! for the release (`/repos/{owner}/{repo}/releases/latest`; the Nightly channel that tester builds follow reads the
+//! rolling `nightly` pre-release at `/releases/tags/nightly`) and takes its `gravecord-setup.exe` asset with GitHub's
+//! upload digest. The repository is the workspace's unless the build names another (`GRAVECORD_UPDATE_REPOSITORY`;
+//! testers cannot read a private one). The setup is downloaded into the app's data folder, checked against the digest
+//! and then against the Ed25519-signed update manifest `cargo xtask package` appends to it (`verify_signed`,
+//! `dc_release`, key in `release_key.rs`), and run silently with the installer's own arguments (`docs/installer.md`).
+//! Settings > Updates shows the state, progress, failures and the channel (`ui/settings/tester.rs`).
 //!
 //! Safety rules, each with a test: HTTPS only; the setup URL and every redirect stay on the feed's host (a GitHub feed
 //! may also use GitHub's download host); the hash is mandatory; a version that is not newer is ignored (after a
@@ -33,14 +34,14 @@ use tokio::sync::mpsc::UnboundedSender;
 /// The stable channel's feed for the workspace's repository, as [`Channel::feed`] builds it: `update.json` of the
 /// latest release. `GRAVECORD_UPDATE_FEED` or the `update.feed` storage key replace the channel's feed.
 #[cfg(test)]
-pub const DEFAULT_FEED: &str = concat!(
-    env!("CARGO_PKG_REPOSITORY"),
-    "/releases/latest/download/update.json"
-);
+pub const DEFAULT_FEED: &str =
+    "https://api.github.com/repos/LoreanXavier/gravecord/releases/latest";
 /// The renderer checks again every hour (`HOUR` in module 578152).
 pub const CHECK_INTERVAL: Duration = Duration::from_secs(60 * 60);
-/// A feed larger than this is not read.
-const MAX_FEED_BYTES: usize = 64 * 1024;
+/// A release answer larger than this is not read (release notes and assets make it some kilobytes).
+const MAX_FEED_BYTES: usize = 1024 * 1024;
+/// The last release answer with its ETag, for a conditional request next time.
+static LAST_FEED: Mutex<Option<(Url, String, Vec<u8>)>> = Mutex::new(None);
 /// A setup file larger than this is refused whatever the feed says.
 pub const MAX_SETUP_BYTES: u64 = 1 << 30;
 const MAX_REDIRECTS: usize = 5;
@@ -81,13 +82,18 @@ impl Channel {
         }
     }
 
-    /// The feed of this channel in `repository`. GitHub's `latest` never resolves to a pre-release, so the nightly feed
-    /// names its fixed tag.
+    /// The release of this channel in `repository` (`https://github.com/<owner>/<repo>`), asked of GitHub's REST API as
+    /// P.T.'s updater does: no file of our own sits in the release. `latest` never resolves to a pre-release, so the
+    /// nightly channel names its fixed tag.
     pub fn feed(self, repository: &str) -> String {
         let repository = repository.trim_end_matches('/');
+        let api = repository.strip_prefix("https://github.com/").map_or_else(
+            || repository.to_owned(),
+            |path| format!("https://api.github.com/repos/{path}"),
+        );
         match self {
-            Self::Stable => format!("{repository}/releases/latest/download/update.json"),
-            Self::Nightly => format!("{repository}/releases/download/nightly/update.json"),
+            Self::Stable => format!("{api}/releases/latest"),
+            Self::Nightly => format!("{api}/releases/tags/nightly"),
         }
     }
 }
@@ -255,14 +261,16 @@ impl Policy {
     }
 }
 
-/// Whether `candidate` is the feed's own host, or (for a feed on github.com) a GitHub download host.
+/// Whether `candidate` is the feed's own host, or for a feed on GitHub (the REST API at api.github.com, or github.com)
+/// one of GitHub's: release files are served from github.com and redirected to its download hosts.
 fn host_allowed(feed_host: &str, candidate: &str) -> bool {
     let (feed_host, candidate) = (
         feed_host.to_ascii_lowercase(),
         candidate.to_ascii_lowercase(),
     );
+    let github = feed_host == "github.com" || feed_host == "api.github.com";
     candidate == feed_host
-        || (feed_host == "github.com" && candidate.ends_with(".githubusercontent.com"))
+        || (github && (candidate == "github.com" || candidate.ends_with(".githubusercontent.com")))
 }
 
 fn redirect_allowed(feed: &Url, target: &Url, policy: Policy) -> bool {
@@ -276,13 +284,19 @@ fn redirect_allowed(feed: &Url, target: &Url, policy: Policy) -> bool {
 
 // ---- the feed ----
 
-/// An update the feed offers.
+/// The release asset that is the setup file.
+pub const SETUP_ASSET: &str = "gravecord-setup.exe";
+
+/// An update the feed offers: a GitHub release as the REST API describes it (`GET /repos/{owner}/{repo}/releases/latest`
+/// or `/releases/tags/nightly`), reduced to its version and its setup asset.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Manifest {
     pub version: Version,
     pub url: Url,
     pub size: u64,
+    /// The asset's `digest` as GitHub computed it on upload: the whole signed setup file.
     pub sha256: [u8; 32],
+    pub prerelease: bool,
 }
 
 fn decode_hash(text: &str) -> Result<[u8; 32]> {
@@ -299,38 +313,68 @@ fn decode_hash(text: &str) -> Result<[u8; 32]> {
 }
 
 impl Manifest {
-    /// Parses the feed. `feed` is where it came from: a relative `url` resolves against it, and the setup file must
-    /// be on the same host and port.
+    /// Parses a release. `feed` is where it came from: a relative address resolves against it, and the setup file must
+    /// be on the feed's host (GitHub's file host for the API). The version is the tag (`v0.2.0`), or the release's name
+    /// for the rolling `nightly` tag. A draft is refused; nothing here is trusted beyond choosing what to download: the
+    /// file is checked against its digest and then against the signature it carries (`verify_signed`).
     pub fn parse(bytes: &[u8], feed: &Url, policy: Policy) -> Result<Self> {
         let raw: serde_json::Value =
-            serde_json::from_slice(bytes).context("the update feed is not valid")?;
+            serde_json::from_slice(bytes).context("the release answer is not valid")?;
+        if !raw.is_object() {
+            bail!("the release answer is not an object");
+        }
+        if raw["draft"].as_bool() == Some(true) {
+            bail!("the release is a draft");
+        }
+        let prerelease = raw["prerelease"].as_bool().unwrap_or(false);
+        let version = raw["tag_name"]
+            .as_str()
+            .and_then(|tag| Version::parse(tag).ok())
+            .or_else(|| {
+                raw["name"]
+                    .as_str()
+                    .and_then(|name| Version::parse(name).ok())
+            })
+            .context("the release names no version")?;
+        let asset = raw["assets"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .find(|asset| asset["name"].as_str() == Some(SETUP_ASSET))
+            .context("the release has no setup file")?;
         let text = |key: &str| {
-            raw.get(key)
+            asset
+                .get(key)
                 .and_then(serde_json::Value::as_str)
-                .with_context(|| format!("the update feed has no {key}"))
+                .with_context(|| format!("the setup file has no {key}"))
         };
-        let version = Version::parse(text("version")?)?;
-        let size = raw
+        let size = asset
             .get("size")
             .and_then(serde_json::Value::as_u64)
-            .context("the update feed has no size")?;
+            .context("the setup file has no size")?;
         if size == 0 || size > MAX_SETUP_BYTES {
-            bail!("the feed's size is out of range");
+            bail!("the setup file's size is out of range");
         }
-        let sha256 = decode_hash(text("sha256")?)?;
+        let sha256 = decode_hash(
+            text("digest")?
+                .strip_prefix("sha256:")
+                .context("the setup file's digest is not SHA-256")?,
+        )?;
         let url = feed
-            .join(text("url")?.trim())
-            .context("the feed's setup address is not a URL")?;
+            .join(text("browser_download_url")?.trim())
+            .context("the setup address is not a URL")?;
         if !policy.scheme_allowed(&url) {
             bail!("the setup file must be fetched over https");
         }
         if !url.username().is_empty() || url.password().is_some() {
             bail!("the setup address is not allowed");
         }
-        if url.host_str().map(str::to_ascii_lowercase)
-            != feed.host_str().map(str::to_ascii_lowercase)
-            || url.port_or_known_default() != feed.port_or_known_default()
-        {
+        let feed_host = feed.host_str().unwrap_or_default().to_ascii_lowercase();
+        let host = url.host_str().unwrap_or_default().to_ascii_lowercase();
+        let on_feed =
+            host == feed_host && url.port_or_known_default() == feed.port_or_known_default();
+        let on_github = feed_host == "api.github.com" && host == "github.com";
+        if !(on_feed || on_github) {
             bail!("the setup file is not on the feed's host");
         }
         Ok(Self {
@@ -338,6 +382,7 @@ impl Manifest {
             url,
             size,
             sha256,
+            prerelease,
         })
     }
 }
@@ -416,15 +461,44 @@ pub async fn check_offer(
     policy: Policy,
     accept: &(dyn Fn(&Version) -> bool + Sync),
 ) -> Result<Check> {
-    let response = client.get(feed.clone()).send().await?;
+    // GitHub answers an unchanged release with 304, which does not count against the 60 requests an hour an address
+    // may make without signing in.
+    let cached = LAST_FEED
+        .lock()
+        .ok()
+        .and_then(|last| last.clone())
+        .filter(|(url, _, _)| url == feed);
+    let mut request = client
+        .get(feed.clone())
+        .header("Accept", "application/vnd.github+json")
+        .header("X-GitHub-Api-Version", "2022-11-28");
+    if let Some((_, etag, _)) = &cached {
+        request = request.header("If-None-Match", etag.as_str());
+    }
+    let response = request.send().await?;
     let status = response.status();
     if status == reqwest::StatusCode::NOT_FOUND || status == reqwest::StatusCode::GONE {
         return Ok(Check::NoUpdate);
     }
-    if !status.is_success() {
-        bail!("the update feed answered {status}");
-    }
-    let body = read_limited(response, MAX_FEED_BYTES).await?;
+    let body = if status == reqwest::StatusCode::NOT_MODIFIED
+        && let Some((_, _, body)) = cached
+    {
+        body
+    } else {
+        if !status.is_success() {
+            bail!("the update feed answered {status}");
+        }
+        let etag = response
+            .headers()
+            .get(reqwest::header::ETAG)
+            .and_then(|value| value.to_str().ok())
+            .map(str::to_owned);
+        let body = read_limited(response, MAX_FEED_BYTES).await?;
+        if let (Some(etag), Ok(mut last)) = (etag, LAST_FEED.lock()) {
+            *last = Some((feed.clone(), etag, body.clone()));
+        }
+        body
+    };
     let manifest = Manifest::parse(&body, feed, policy)?;
     Ok(if accept(&manifest.version) {
         Check::Available(manifest)
@@ -906,6 +980,13 @@ async fn cycle() -> Result<()> {
         },
         "update check"
     );
+    let found = match found {
+        // The stable channel takes releases only, whatever the address answers.
+        Check::Available(manifest) if channel == Channel::Stable && manifest.prerelease => {
+            Check::NoUpdate
+        }
+        found => found,
+    };
     let Check::Available(manifest) = found else {
         sweep(&dir, &[]);
         return Ok(());
@@ -925,10 +1006,53 @@ async fn cycle() -> Result<()> {
         }
     })
     .await?;
+    // The digest came from the same answer as the address; the signature did not. A setup whose signed manifest does
+    // not name this version and these bytes is deleted and never run.
+    if let Err(error) = verify_signed(&path, &manifest.version, &crate::release_key::PUBLIC_KEY) {
+        let _ = std::fs::remove_file(&path);
+        return Err(error);
+    }
     if let Ok(mut ready) = READY.lock() {
         *ready = Some(Ready { manifest, path });
     }
     set_state(State::Ready { version });
+    Ok(())
+}
+
+/// Checks the update manifest a setup carries after its payload (`dc_release`), written and signed by
+/// `cargo xtask package` with the release key: the Ed25519 signature against `public_key`, then that the manifest
+/// names `version` and the SHA-256 and size of the bytes before it. As P.T.'s updater does, the release itself carries
+/// no file of ours; a release swapped for another build, or one an outsider uploads, fails here.
+pub fn verify_signed(path: &Path, version: &Version, public_key: &[u8; 32]) -> Result<()> {
+    use ed25519_dalek::{Signature, Verifier, VerifyingKey};
+    let file = std::fs::read(path).context("could not read the downloaded file")?;
+    let (body, manifest, signature) =
+        dc_release::split(&file).context("the setup carries no signed update manifest")?;
+    let key = VerifyingKey::from_bytes(public_key).context("the release key is not valid")?;
+    key.verify(manifest, &Signature::from_bytes(signature))
+        .map_err(|_| {
+            anyhow::anyhow!("the setup's update manifest is not signed with the release key")
+        })?;
+    let manifest: serde_json::Value =
+        serde_json::from_slice(manifest).context("the signed update manifest is not valid")?;
+    if manifest["format"].as_u64() != Some(1) {
+        bail!("the signed update manifest has an unknown format");
+    }
+    let named = manifest["version"]
+        .as_str()
+        .and_then(|text| Version::parse(text).ok())
+        .context("the signed update manifest names no version")?;
+    if &named != version {
+        bail!("the setup is version {named}, not the {version} the release names");
+    }
+    let package = &manifest["package"];
+    if package["size"].as_u64() != Some(body.len() as u64) {
+        bail!("the setup is not the size its signed manifest names");
+    }
+    let sha256 = decode_hash(package["sha256"].as_str().unwrap_or_default())?;
+    if Sha256::digest(body).as_slice() != sha256 {
+        bail!("the setup does not match its signed manifest");
+    }
     Ok(())
 }
 

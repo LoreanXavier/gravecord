@@ -118,14 +118,16 @@ The tray's Check For Updates action wakes the same worker used by automatic chec
 download or ready state are ignored; capture runs log the action without checking or downloading. The worker and
 menu routing are unit tested; an actual tray-triggered update remains unverified.
 
-The app checks `update.json` (see `DECISIONS.md`, "Open on startup, window behaviour and automatic updates") at launch and
-every hour. `cargo xtask package` writes it beside the setup: `version` (from `app/Cargo.toml`), `url` (the setup's
-name, relative to the feed), `size` and `sha256` of the setup file just written. Publishing a release is attaching
-`gravecord-setup.exe` and `update.json` to the GitHub release of `LoreanXavier/gravecord`; the default feed is
-`https://github.com/LoreanXavier/gravecord/releases/latest/download/update.json`. A missing feed (no release yet) is a
-normal "no update". Override with `GRAVECORD_UPDATE_FEED` (https only).
+The app asks GitHub's REST API for the release at launch and every hour (see `DECISIONS.md`, "Tester builds, the
+Nightly update channel and Report a Bug"): `https://api.github.com/repos/LoreanXavier/gravecord/releases/latest`, or
+`/releases/tags/nightly` on the Nightly channel. The release carries `gravecord-setup.exe` and nothing else of ours:
+`cargo xtask package` appends an Ed25519-signed update manifest (version, size and SHA-256 of the setup before it) to
+the setup, which the app checks against `app/src/release_key.rs` after the download. Publishing a stable release is
+attaching the setup to a release tagged `v<version>`; a nightly replaces the setup of the `nightly` pre-release and
+renames it to the stamped version. A missing release is a normal "no update". Override with `GRAVECORD_UPDATE_FEED`
+(https only, an API-shaped release answer).
 
-An update downloads into `%LOCALAPPDATA%\gravecord\update\`, is checked against the feed's size and SHA-256, and waits
+An update downloads into `%LOCALAPPDATA%\gravecord\update\`, is checked against GitHub's digest and its signed manifest, and waits
 behind the title bar's green download button. The click runs it as `gravecord-setup-<version>.exe --silent --launch --dir
 <install folder>` and quits the app. That is the installer's own silent update above: it closes the running app, stages
 and swaps with rollback, and starts the new version (`--launch`). A hash mismatch, a wrong size, another host, a

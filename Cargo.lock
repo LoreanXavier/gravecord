@@ -1827,6 +1827,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "dc-release"
+version = "0.0.0"
+dependencies = [
+ "anyhow",
+]
+
+[[package]]
 name = "dc-rpc"
 version = "0.0.0"
 dependencies = [
@@ -1840,6 +1847,7 @@ name = "dc-setup"
 version = "0.0.0"
 dependencies = [
  "anyhow",
+ "dc-release",
  "dc-tokens",
  "embed-resource",
  "image",
@@ -3433,12 +3441,14 @@ dependencies = [
  "dc-media",
  "dc-overlay",
  "dc-proto",
+ "dc-release",
  "dc-rpc",
  "dc-state",
  "dc-tokens",
  "dc-voice",
  "dc-webauthn",
  "dc-webhost",
+ "ed25519-dalek",
  "embed-resource",
  "gpui",
  "gpui_platform",
@@ -10738,8 +10748,11 @@ name = "xtask"
 version = "0.0.0"
 dependencies = [
  "anyhow",
+ "dc-release",
  "dc-setup",
+ "ed25519-dalek",
  "image",
+ "rand 0.9.5",
  "serde_json",
  "sha2",
  "windows-sys 0.61.2",

@@ -5,8 +5,11 @@
 //! instead of `gravecord-dist`, and `GRAVECORD_PACKAGE_SKIP_BUILD=1` reuses the release build already in
 //! `target/dist`.
 //!
-//! Next to the setup it writes `update.json`, the feed the app's updater reads (`app/src/updater.rs`): version, setup
-//! file name, size and SHA-256 of the exact file just written. Publishing a release is copying those two files.
+//! The setup is signed as P.T.'s are: an update manifest (version, size and SHA-256 of the setup before it) and its
+//! Ed25519 signature are appended after the payload (`dc_release`). The app updater reads the release from GitHub's
+//! REST API and checks that signature against the public key built into it (`app/src/release_key.rs`); the release
+//! carries no file but the setup. The private key is a seed in `%USERPROFILE%\gravecord-release-keys` (or
+//! `GRAVECORD_RELEASE_KEYS`), outside every repository; it is made once, never printed and never replaced.
 //!
 //! The release build uses the static C runtime, so neither exe imports VCRUNTIME140. It goes to its own target folder
 //! so the flag change never invalidates the normal release cache.
@@ -75,34 +78,110 @@ fn write_replacing(path: &Path, data: &[u8]) -> std::io::Result<()> {
     })
 }
 
-/// The update feed for `setup`: the version from the app's manifest, the size and SHA-256 of the file's bytes. The setup
-/// address is relative, so it resolves next to the feed wherever the two files are published.
-fn update_feed(version: &str, setup_name: &str, setup: &[u8]) -> String {
-    use sha2::{Digest, Sha256};
-    let hash: String = Sha256::digest(setup)
-        .iter()
-        .map(|byte| format!("{byte:02x}"))
-        .collect();
-    let feed = serde_json::json!({
-        "version": version,
-        "url": setup_name,
-        "size": setup.len(),
-        "sha256": hash,
-    });
-    serde_json::to_string_pretty(&feed).expect("a feed is valid JSON")
-        + "
-"
+const SEED_NAME: &str = "gravecord-release-ed25519.seed";
+const PUBLIC_NAME: &str = "gravecord-release-ed25519.pub";
+const KEY_SOURCE: &str = "app/src/release_key.rs";
+
+fn keys_dir() -> Result<PathBuf> {
+    if let Some(dir) = std::env::var_os("GRAVECORD_RELEASE_KEYS") {
+        return Ok(PathBuf::from(dir));
+    }
+    let home = std::env::var_os("USERPROFILE").context("no USERPROFILE for the release keys")?;
+    Ok(PathBuf::from(home).join("gravecord-release-keys"))
 }
 
-/// Writes the feed next to the setup, through a temporary file like the setup itself.
-fn write_update_feed(dist: &Path, version: &str, setup: &[u8]) -> Result<PathBuf> {
-    let path = dist.join("update.json");
-    let temp = dist.join("update.json.tmp");
-    std::fs::write(&temp, update_feed(version, "gravecord-setup.exe", setup))?;
-    std::fs::rename(&temp, &path).inspect_err(|_| {
-        let _ = std::fs::remove_file(&temp);
-    })?;
-    Ok(path)
+fn hex(bytes: &[u8]) -> String {
+    bytes.iter().map(|byte| format!("{byte:02x}")).collect()
+}
+
+fn unhex(text: &str) -> Option<[u8; 32]> {
+    let text = text.trim();
+    if text.len() != 64 {
+        return None;
+    }
+    let mut out = [0u8; 32];
+    for (index, byte) in out.iter_mut().enumerate() {
+        *byte = u8::from_str_radix(text.get(index * 2..index * 2 + 2)?, 16).ok()?;
+    }
+    Some(out)
+}
+
+/// The release signing key: read from `dir`, or made there once. An existing seed is never replaced, and the seed is
+/// never printed.
+fn signing_key(dir: &Path) -> Result<ed25519_dalek::SigningKey> {
+    let seed_path = dir.join(SEED_NAME);
+    if seed_path.exists() {
+        let seed = unhex(&std::fs::read_to_string(&seed_path)?)
+            .context("the release seed is not 64 hex digits")?;
+        return Ok(ed25519_dalek::SigningKey::from_bytes(&seed));
+    }
+    std::fs::create_dir_all(dir)?;
+    let mut seed = [0u8; 32];
+    rand::Fill::fill(&mut seed, &mut rand::rng());
+    let key = ed25519_dalek::SigningKey::from_bytes(&seed);
+    std::fs::write(&seed_path, hex(&seed))?;
+    std::fs::write(dir.join(PUBLIC_NAME), hex(key.verifying_key().as_bytes()))?;
+    println!(
+        "release key made in {} (public key in {KEY_SOURCE})",
+        dir.display()
+    );
+    Ok(key)
+}
+
+/// The Rust source holding the public key the app checks setups against.
+fn key_source(public: &[u8; 32]) -> String {
+    let bytes: Vec<String> = public.iter().map(|byte| format!("0x{byte:02x}")).collect();
+    let rows: Vec<String> = bytes
+        .chunks(8)
+        .map(|row| format!("    {},", row.join(", ")))
+        .collect();
+    format!(
+        "//! The release public key: the Ed25519 key `cargo xtask package` signs every setup with (`xtask/src/package.rs`).\n\
+         //! Written by that command from the key in `%USERPROFILE%\\gravecord-release-keys`; the updater refuses any setup\n\
+         //! whose signed update manifest this key does not verify (`updater::verify_signed`).\n\n\
+         pub const PUBLIC_KEY: [u8; 32] = [\n{}\n];\n",
+        rows.join("\n")
+    )
+}
+
+/// Makes sure the app is built with this key's public half: rewrites the key source when it differs (a first key).
+fn ensure_key_source(repo: &Path, key: &ed25519_dalek::SigningKey) -> Result<()> {
+    let path = repo.join(KEY_SOURCE);
+    let wanted = key_source(key.verifying_key().as_bytes());
+    if std::fs::read_to_string(&path).ok().as_deref() != Some(wanted.as_str()) {
+        std::fs::write(&path, wanted)?;
+        println!("{KEY_SOURCE} written: commit it with this build");
+    }
+    Ok(())
+}
+
+/// The update manifest for a setup body, as the app reads it (`updater::verify_signed`).
+fn update_manifest(version: &str, channel: &str, body: &[u8]) -> Vec<u8> {
+    use sha2::{Digest, Sha256};
+    let manifest = serde_json::json!({
+        "format": 1,
+        "version": version,
+        "channel": channel,
+        "package": {
+            "name": "gravecord-setup.exe",
+            "size": body.len(),
+            "sha256": hex(&Sha256::digest(body)),
+        },
+    });
+    serde_json::to_vec(&manifest).expect("a manifest is valid JSON")
+}
+
+/// `body` with its update manifest and the manifest's signature after it.
+fn sign(
+    body: &[u8],
+    version: &str,
+    channel: &str,
+    key: &ed25519_dalek::SigningKey,
+) -> Result<Vec<u8>> {
+    use ed25519_dalek::Signer;
+    let manifest = update_manifest(version, channel, body);
+    let signature = key.sign(&manifest).to_bytes();
+    dc_release::append(body, &manifest, &signature)
 }
 
 /// Makes `to` hold exactly the files of `from`.
@@ -201,6 +280,8 @@ pub fn run(repo: &Path, nightly: bool) -> Result<()> {
     } else {
         base
     };
+    let key = signing_key(&keys_dir()?)?;
+    ensure_key_source(repo, &key)?;
     if std::env::var_os("GRAVECORD_PACKAGE_SKIP_BUILD").is_none() {
         build(repo, nightly.then_some(version.as_str()))?;
     }
@@ -221,6 +302,12 @@ pub fn run(repo: &Path, nightly: bool) -> Result<()> {
         entries: payload::collect(&app_exe, &assets)?,
     };
     let image = payload::append(&std::fs::read(&stub_path)?, &archive)?;
+    let image = sign(
+        &image,
+        &version,
+        if nightly { "nightly" } else { "stable" },
+        &key,
+    )?;
     let setup = dist.join("gravecord-setup.exe");
     write_replacing(&setup, &image)
         .with_context(|| format!("could not write {}", setup.display()))?;
@@ -232,11 +319,14 @@ pub fn run(repo: &Path, nightly: bool) -> Result<()> {
         std::fs::metadata(&stub_path)?.len() as f64 / 1048576.0,
     );
 
-    let feed = write_update_feed(&dist, &version, &image)?;
-    println!(
-        "update feed: {} (publish it with the setup)",
-        feed.display()
-    );
+    if nightly {
+        println!(
+            "publish: the `nightly` pre-release of the update repository, its name `{version}`, gravecord-setup.exe as \
+             its only file"
+        );
+    } else {
+        println!("publish: a release tagged v{version} with gravecord-setup.exe as its only file");
+    }
 
     // The portable folder. The exe may be locked because the owner has it open; the setup is written either way.
     match refresh_portable(&dist, &app_exe, &assets)? {
@@ -283,29 +373,30 @@ mod tests {
     }
 
     #[test]
-    fn the_update_feed_describes_the_exact_setup_bytes() {
-        use sha2::{Digest, Sha256};
-        let base = scratch("feed");
-        let setup = b"setup image bytes";
-        let path = write_update_feed(&base, "1.2.3", setup).unwrap();
-        assert_eq!(path, base.join("update.json"));
-        let feed: serde_json::Value =
-            serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
-        assert_eq!(feed["version"], "1.2.3");
-        assert_eq!(feed["url"], "gravecord-setup.exe");
-        assert_eq!(feed["size"], setup.len());
-        let expected: String = Sha256::digest(setup)
-            .iter()
-            .map(|byte| format!("{byte:02x}"))
-            .collect();
-        assert_eq!(feed["sha256"], expected.as_str());
-        assert_eq!(feed["sha256"].as_str().unwrap().len(), 64);
-        assert!(!base.join("update.json.tmp").exists());
-        // A second write replaces the first.
-        write_update_feed(&base, "1.2.4", b"other").unwrap();
-        let feed: serde_json::Value =
-            serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
-        assert_eq!(feed["version"], "1.2.4");
+    fn a_setup_is_signed_with_a_manifest_of_its_own_bytes_and_the_key_is_kept() {
+        use ed25519_dalek::{Signature, Verifier};
+        let base = scratch("sign");
+        let key = signing_key(&base.join("keys")).unwrap();
+        // The same seed comes back; it is never replaced.
+        let again = signing_key(&base.join("keys")).unwrap();
+        assert_eq!(key.to_bytes(), again.to_bytes());
+        let body = b"stub and payload".to_vec();
+        let signed = sign(&body, "0.0.0-nightly.202611171830", "nightly", &key).unwrap();
+        let (b, manifest, signature) = dc_release::split(&signed).unwrap();
+        assert_eq!(b, body.as_slice());
+        key.verifying_key()
+            .verify(manifest, &Signature::from_bytes(signature))
+            .unwrap();
+        let manifest: serde_json::Value = serde_json::from_slice(manifest).unwrap();
+        assert_eq!(manifest["format"], 1);
+        assert_eq!(manifest["version"], "0.0.0-nightly.202611171830");
+        assert_eq!(manifest["package"]["size"], body.len());
+        assert_eq!(manifest["package"]["sha256"].as_str().unwrap().len(), 64);
+        // The key source holds the public half, byte for byte.
+        let source = key_source(key.verifying_key().as_bytes());
+        let first = format!("0x{:02x}", key.verifying_key().as_bytes()[0]);
+        assert!(source.contains("pub const PUBLIC_KEY: [u8; 32] = ["));
+        assert!(source.contains(&first));
         let _ = std::fs::remove_dir_all(&base);
     }
 

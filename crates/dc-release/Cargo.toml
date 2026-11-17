@@ -1,0 +1,11 @@
+[package]
+name = "dc-release"
+version = "0.0.0"
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+# The signed update manifest after a setup's payload: its byte format only, shared by the installer (which reads past
+# it), `cargo xtask package` (which signs and appends it) and the app updater (which verifies it). No dependencies.
+
+[dependencies]
+anyhow.workspace = true

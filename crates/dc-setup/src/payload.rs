@@ -73,7 +73,16 @@ fn parse_tail(last: &[u8], total: u64) -> Result<Tail> {
     Ok(Tail::Current { start, end, hash })
 }
 
+/// The exe without a signed update manifest after it (`trailer`): what the payload format describes.
+fn unsigned(exe: &[u8]) -> &[u8] {
+    match dc_release::parse(exe, exe.len() as u64) {
+        Some(footer) => &exe[..footer.body_len() as usize],
+        None => exe,
+    }
+}
+
 fn tail_of(exe: &[u8]) -> Result<Tail> {
+    let exe = unsigned(exe);
     let from = exe.len().saturating_sub(TAIL_LEN);
     parse_tail(&exe[from..], exe.len() as u64)
 }
@@ -178,6 +187,7 @@ fn decode(packed: &[u8], hash: &[u8; HASH_LEN]) -> Result<Archive> {
 
 /// Decodes the payload of an exe image. `Ok(None)` when the image has no payload.
 pub fn read(exe: &[u8]) -> Result<Option<Archive>> {
+    let exe = unsigned(exe);
     match tail_of(exe)? {
         Tail::None => Ok(None),
         Tail::Legacy => bail!(OLD_FORMAT),
@@ -196,16 +206,23 @@ pub struct Loaded {
 /// Reads and verifies the payload of the exe at `path`, reading each byte once: the stub, then the archive.
 pub fn load(path: &Path) -> Result<Loaded> {
     let mut file = std::fs::File::open(path)?;
-    let total = file.metadata()?.len();
+    let mut total = file.metadata()?.len();
+    // A signed setup (`trailer`): the payload ends where the update manifest starts.
+    let mut footer = vec![0u8; dc_release::FOOTER_LEN.min(total as usize)];
+    file.seek(SeekFrom::Start(total - footer.len() as u64))?;
+    file.read_exact(&mut footer)?;
+    if let Some(signed) = dc_release::parse(&footer, total) {
+        total = signed.body_len();
+    }
     let from = total.saturating_sub(TAIL_LEN as u64);
     file.seek(SeekFrom::Start(from))?;
-    let mut last = Vec::new();
-    file.read_to_end(&mut last)?;
+    let mut last = vec![0u8; (total - from) as usize];
+    file.read_exact(&mut last)?;
     match parse_tail(&last, total)? {
         Tail::None => {
-            let mut stub = Vec::with_capacity(total as usize);
+            let mut stub = vec![0u8; total as usize];
             file.seek(SeekFrom::Start(0))?;
-            file.read_to_end(&mut stub)?;
+            file.read_exact(&mut stub)?;
             Ok(Loaded {
                 archive: None,
                 stub,
@@ -397,5 +414,29 @@ mod tests {
             };
             assert!(append(b"MZ", &archive).is_err(), "{bad}");
         }
+    }
+
+    /// A setup signed by `cargo xtask package` (`dc_release`): the installer reads its payload as before.
+    #[test]
+    fn the_installer_reads_its_payload_through_a_signature() {
+        let archive = Archive {
+            version: "0.0.0-nightly.202611171830".into(),
+            entries: vec![Entry {
+                path: "gravecord.exe".into(),
+                data: b"app".to_vec(),
+            }],
+        };
+        let image = append(b"MZ stub", &archive).unwrap();
+        let signed = dc_release::append(&image, b"{\"format\":1}", &[1; 64]).unwrap();
+        assert_eq!(read(&signed).unwrap(), Some(archive.clone()));
+        assert_eq!(stub_len(&signed), 7);
+        let dir = std::env::temp_dir().join(format!("gc-signed-setup-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("gravecord-setup.exe");
+        std::fs::write(&path, &signed).unwrap();
+        let loaded = load(&path).unwrap();
+        assert_eq!(loaded.archive, Some(archive));
+        assert_eq!(loaded.stub, b"MZ stub");
+        let _ = std::fs::remove_dir_all(dir);
     }
 }

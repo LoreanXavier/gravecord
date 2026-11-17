@@ -59,12 +59,16 @@ fn hex(hash: &[u8; 32]) -> String {
     hash.iter().map(|byte| format!("{byte:02x}")).collect()
 }
 
-fn feed_json(version: &str, url: &str, data: &[u8]) -> String {
+/// A release as GitHub's REST API answers it: the version as its tag, the setup as its one asset with the digest GitHub
+/// computes on upload.
+fn release_json(version: &str, url: &str, size: &str, hash: &str) -> String {
     format!(
-        r#"{{"version":"{version}","url":"{url}","size":{},"sha256":"{}"}}"#,
-        data.len(),
-        hex(&digest(data))
+        r#"{{"tag_name":"v{version}","name":"{version}","draft":false,"prerelease":false,"assets":[{{"name":"notes.txt","browser_download_url":"https://example.com/n","size":1,"digest":"sha256:{hash}"}},{{"name":"gravecord-setup.exe","browser_download_url":"{url}","size":{size},"digest":"sha256:{hash}"}}]}}"#
     )
+}
+
+fn feed_json(version: &str, url: &str, data: &[u8]) -> String {
+    release_json(version, url, &data.len().to_string(), &hex(&digest(data)))
 }
 
 /// A scratch folder, deleted when dropped.
@@ -130,8 +134,8 @@ fn only_a_newer_version_is_an_update_and_a_downgrade_is_refused() {
 fn this_build_has_a_version_and_the_default_feed_names_the_repository() {
     let _ = current_version();
     assert_eq!(
-        DEFAULT_FEED,
-        "https://github.com/LoreanXavier/gravecord/releases/latest/download/update.json"
+        Channel::Stable.feed(env!("CARGO_PKG_REPOSITORY")),
+        DEFAULT_FEED
     );
     assert!(Policy::STRICT.feed_url(DEFAULT_FEED).is_ok());
 }
@@ -171,7 +175,7 @@ fn redirects_stay_on_the_feed_host_and_github_may_use_its_download_host() {
     let github = Url::parse(DEFAULT_FEED).unwrap();
     assert!(go(
         &github,
-        "https://github.com/LoreanXavier/gravecord/releases/download/v1/update.json"
+        "https://github.com/LoreanXavier/gravecord/releases/download/v1/gravecord-setup.exe"
     ));
     assert!(go(
         &github,
@@ -207,16 +211,52 @@ fn a_good_feed_parses_and_a_relative_setup_address_resolves_against_the_feed() {
 fn bad_feeds_are_rejected() {
     let good_hash = hex(&digest(b"x"));
     let parse = |json: &str| Manifest::parse(json.as_bytes(), &feed(), Policy::STRICT);
-    let with = |version: &str, url: &str, size: &str, hash: &str| {
-        format!(r#"{{"version":"{version}","url":"{url}","size":{size},"sha256":"{hash}"}}"#)
-    };
+    let with = release_json;
     assert!(parse(&with("1.0.0", "setup.exe", "10", &good_hash)).is_ok());
-    // Not JSON, wrong shapes, missing fields (the hash is mandatory).
+    // Not JSON, wrong shapes, missing fields (the digest is mandatory), a draft, no setup asset.
     assert!(parse("").is_err());
     assert!(parse("not json").is_err());
     assert!(parse("[]").is_err());
-    assert!(parse(r#"{"version":"1.0.0","url":"setup.exe","size":10}"#).is_err());
-    assert!(parse(r#"{"version":"1.0.0","url":"setup.exe","sha256":"00"}"#).is_err());
+    let asset = |fields: &str| {
+        format!(r#"{{"tag_name":"v1.0.0","assets":[{{"name":"gravecord-setup.exe",{fields}}}]}}"#)
+    };
+    assert!(parse(&asset(r#""browser_download_url":"setup.exe","size":10"#)).is_err());
+    assert!(
+        parse(&asset(
+            r#""browser_download_url":"setup.exe","digest":"sha256:00""#
+        ))
+        .is_err()
+    );
+    assert!(
+        parse(&asset(&format!(
+            r#""browser_download_url":"setup.exe","size":10,"digest":"md5:{good_hash}""#
+        )))
+        .is_err()
+    );
+    assert!(
+        parse(
+            &with("1.0.0", "setup.exe", "10", &good_hash)
+                .replace("\"draft\":false", "\"draft\":true")
+        )
+        .is_err()
+    );
+    assert!(
+        parse(
+            &with("1.0.0", "setup.exe", "10", &good_hash)
+                .replace("gravecord-setup.exe", "other.exe")
+        )
+        .is_err()
+    );
+    // The rolling nightly tag carries its version in the release's name.
+    let nightly = with("0.0.0-nightly.202611171830", "setup.exe", "10", &good_hash)
+        .replace(
+            "\"tag_name\":\"v0.0.0-nightly.202611171830\"",
+            "\"tag_name\":\"nightly\"",
+        )
+        .replace("\"prerelease\":false", "\"prerelease\":true");
+    let manifest = parse(&nightly).unwrap();
+    assert_eq!(manifest.version, version("0.0.0-nightly.202611171830"));
+    assert!(manifest.prerelease);
     // Bad versions, sizes and hashes.
     assert!(parse(&with("one", "setup.exe", "10", &good_hash)).is_err());
     assert!(parse(&with("1.0.0", "setup.exe", "0", &good_hash)).is_err());
@@ -302,6 +342,7 @@ fn ready_in(dir: &Path, data: &[u8]) -> Ready {
             url: Url::parse("https://example.com/setup.exe").unwrap(),
             size: data.len() as u64,
             sha256: digest(data),
+            prerelease: false,
         },
         path,
     }
@@ -824,7 +865,7 @@ fn each_channel_has_a_feed_on_github_and_its_downloads_are_allowed() {
     let nightly = Channel::Nightly.feed(&format!("{repository}/"));
     assert_eq!(
         nightly,
-        "https://github.com/LoreanXavier/gravecord/releases/download/nightly/update.json"
+        "https://api.github.com/repos/LoreanXavier/gravecord/releases/tags/nightly"
     );
     let feed = Policy::STRICT.feed_url(&nightly).unwrap();
     let go = |to: &str| redirect_allowed(&feed, &Url::parse(to).unwrap(), Policy::STRICT);
@@ -834,13 +875,18 @@ fn each_channel_has_a_feed_on_github_and_its_downloads_are_allowed() {
     assert!(go("https://release-assets.githubusercontent.com/x"));
     assert!(go("https://objects.githubusercontent.com/x"));
     assert!(!go("https://example.com/x"));
-    // The relative setup name of `cargo xtask package` resolves next to the nightly feed.
-    let json = feed_json("0.0.0-nightly.202611171830", "gravecord-setup.exe", b"x");
+    // The API names the file on github.com, which the API's answer may point at; another host may not.
+    let at =
+        "https://github.com/LoreanXavier/gravecord/releases/download/nightly/gravecord-setup.exe";
+    let json = feed_json("0.0.0-nightly.202611171830", at, b"x");
     let manifest = Manifest::parse(json.as_bytes(), &feed, Policy::STRICT).unwrap();
-    assert_eq!(
-        manifest.url.as_str(),
-        "https://github.com/LoreanXavier/gravecord/releases/download/nightly/gravecord-setup.exe"
+    assert_eq!(manifest.url.as_str(), at);
+    let elsewhere = feed_json(
+        "0.0.0-nightly.202611171830",
+        "https://example.com/setup.exe",
+        b"x",
     );
+    assert!(Manifest::parse(elsewhere.as_bytes(), &feed, Policy::STRICT).is_err());
 }
 
 #[tokio::test]
@@ -883,4 +929,59 @@ async fn a_nightly_feed_is_offered_and_downloaded_end_to_end() {
             .unwrap(),
         Check::NoUpdate
     );
+}
+
+// ---- the signature ----
+
+fn test_key() -> ed25519_dalek::SigningKey {
+    ed25519_dalek::SigningKey::from_bytes(&[42; 32])
+}
+
+fn signed_setup(body: &[u8], version: &str, key: &ed25519_dalek::SigningKey) -> Vec<u8> {
+    use ed25519_dalek::Signer;
+    let manifest = serde_json::to_vec(&serde_json::json!({
+        "format": 1,
+        "version": version,
+        "channel": "nightly",
+        "package": {"name": "gravecord-setup.exe", "size": body.len(), "sha256": hex(&digest(body))},
+    }))
+    .unwrap();
+    let signature = key.sign(&manifest).to_bytes();
+    dc_release::append(body, &manifest, &signature).unwrap()
+}
+
+#[test]
+fn only_a_setup_signed_with_the_release_key_for_the_offered_version_passes() {
+    let dir = Scratch::new("signed");
+    let path = dir.0.join("setup.exe");
+    let key = test_key();
+    let public = key.verifying_key().to_bytes();
+    let offered = version("0.0.0-nightly.202611172045");
+    let body = b"stub and payload".to_vec();
+    let check = |bytes: &[u8], key: &[u8; 32]| {
+        std::fs::write(&path, bytes).unwrap();
+        verify_signed(&path, &offered, key)
+    };
+    let good = signed_setup(&body, "0.0.0-nightly.202611172045", &key);
+    assert!(check(&good, &public).is_ok());
+    // Another key, another version, an unsigned file, a changed body, a changed manifest.
+    let other = ed25519_dalek::SigningKey::from_bytes(&[7; 32]);
+    assert!(check(&good, &other.verifying_key().to_bytes()).is_err());
+    assert!(
+        check(
+            &signed_setup(&body, "0.0.0-nightly.202611171830", &key),
+            &public
+        )
+        .is_err()
+    );
+    assert!(check(&body, &public).is_err());
+    let mut changed = good.clone();
+    changed[0] ^= 1;
+    assert!(check(&changed, &public).is_err());
+    let at = body.len() + 12;
+    let mut forged = good.clone();
+    forged[at] ^= 1;
+    assert!(check(&forged, &public).is_err());
+    // The release key built into the app is a valid Ed25519 key.
+    assert!(ed25519_dalek::VerifyingKey::from_bytes(&crate::release_key::PUBLIC_KEY).is_ok());
 }

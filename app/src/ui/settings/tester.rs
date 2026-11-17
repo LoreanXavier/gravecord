@@ -13,6 +13,11 @@ use crate::updater::{self, Channel, State};
 use gpui::{AnyElement, ClipboardItem, Context, FontWeight, SharedString, div, prelude::*, px};
 use std::path::{Path, PathBuf};
 
+/// Where testers open an issue: the update repository's new-issue page (`updater::repository`).
+pub(crate) fn issues_url() -> String {
+    format!("{}/issues/new", updater::repository().trim_end_matches('/'))
+}
+
 /// Who testers send their logs to.
 pub(crate) const CONTACT: &str = "loreanxavier";
 
@@ -238,15 +243,10 @@ impl Root {
                     }))
                     .into_any_element()
             };
-        let feed = updater::configured_feed()
-            .map(|url| {
-                format!(
-                    "Updates come from {}{}.",
-                    url.host_str().unwrap_or(""),
-                    url.path()
-                )
-            })
-            .unwrap_or_default();
+        let feed = format!(
+            "Updates come from the releases of {}, and only a setup signed with the release key is installed.",
+            updater::repository().trim_start_matches("https://")
+        );
         vec![
             heading("Updates"),
             div()
@@ -290,18 +290,33 @@ impl Root {
             .gap(px(8.))
             .child(label("Something went wrong?"))
             .child(subtle(format!(
-                "Send the files below to {CONTACT} on Discord, with what you did and what happened. A screenshot or video \
-                 helps too. The logs say what the app did; they hold no password or token."
+                "Open an issue on GitHub Issues (a free GitHub account is enough) and attach the files below, or send \
+                 them to {CONTACT} on Discord. Say what you did and what happened; a screenshot or video helps too. The \
+                 logs say what the app did; they hold no password or token."
             )))
             .child(
-                div().flex().pt(px(4.)).child(
-                    pressable("report-copy-contact", "Copy Username", ButtonKind::Secondary).on_click(cx.listener(
-                        |this, _, _, cx| {
-                            cx.write_to_clipboard(ClipboardItem::new_string(CONTACT.to_owned()));
-                            this.put_app_toast("Copied!".to_owned(), true, cx);
-                        },
-                    )),
-                ),
+                div()
+                    .flex()
+                    .gap(px(8.))
+                    .pt(px(4.))
+                    .child(
+                        pressable("report-open-issues", "Open GitHub Issues", ButtonKind::Primary).on_click(
+                            cx.listener(|_, _, _, cx| {
+                                if crate::storage::is_capture_run() {
+                                    tracing::info!("report a bug: issues (capture no-op)");
+                                } else {
+                                    cx.open_url(&issues_url());
+                                }
+                            }),
+                        ),
+                    )
+                    .child(
+                        pressable("report-copy-contact", "Copy Discord Username", ButtonKind::Secondary)
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                cx.write_to_clipboard(ClipboardItem::new_string(CONTACT.to_owned()));
+                                this.put_app_toast("Copied!".to_owned(), true, cx);
+                            })),
+                    ),
             )
             .into_any_element();
         let files: Vec<AnyElement> = report_files()

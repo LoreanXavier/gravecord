@@ -29,6 +29,8 @@ dc-http.workspace = true
 dc-markdown.workspace = true
 dc-overlay.workspace = true
 dc-media.workspace = true
+dc-release = { path = "../crates/dc-release" }
+ed25519-dalek = "2.2"
 dc-proto.workspace = true
 dc-rpc.workspace = true
 dc-detect.workspace = true
