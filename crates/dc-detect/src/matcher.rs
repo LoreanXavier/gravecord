@@ -202,6 +202,15 @@ pub struct Detected {
     pub is_launcher: bool,
 }
 
+/// Keeps the detected games that draw a window, and launchers. A detectable entry names an executable by a path
+/// suffix, and some suffixes are also the names of console tools: "Mark of the Ninja: Remastered" is `bin/ninja.exe`,
+/// which every `<toolchain>/bin/ninja.exe` of a CMake build matches for the seconds it runs, and showed as a game
+/// (owner report, 2026-11-17). The official client's running games carry the `windowHandle` the native side found for
+/// them; a process with no visible top-level window is not a game being played.
+pub fn keep_windowed(games: &mut Vec<Detected>, windows: &HashSet<u32>) {
+    games.retain(|game| game.is_launcher || windows.contains(&game.pid));
+}
+
 /// A running window that is not a known game: what "Add it!" offers.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Candidate {
@@ -520,6 +529,24 @@ impl Index {
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn a_console_tool_with_a_games_executable_name_is_not_a_game() {
+        let detected = |pid: u32, launcher: bool| Detected {
+            pid,
+            exe_path: "c:/winlibs/mingw64/bin/ninja.exe".into(),
+            exe_name: "ninja.exe".into(),
+            id: Some("1124353358434684998".into()),
+            name: "Mark of the Ninja: Remastered".into(),
+            is_launcher: launcher,
+        };
+        let mut games = vec![detected(10, false), detected(11, false), detected(12, true)];
+        keep_windowed(&mut games, &HashSet::from([11]));
+        assert_eq!(
+            games.iter().map(|game| game.pid).collect::<Vec<_>>(),
+            [11, 12]
+        );
+    }
     use super::*;
     use serde_json::json;
 
@@ -741,13 +768,22 @@ mod tests {
             })),
         };
         assert_eq!(list.games[0].executables[0].name, "hytaleclient.exe");
-        assert_eq!(list.games[0].executables[1].name, "win64/hytalelauncher.exe");
+        assert_eq!(
+            list.games[0].executables[1].name,
+            "win64/hytalelauncher.exe"
+        );
 
         // Full path, subdirectory with backslash normalized, and bare szExeFile fallback when OpenProcess failed.
         let scan = list.scan(
             &[
-                process(10, r"C:\Program Files\Hypixel Studios\Hytale\Client\HytaleClient.exe"),
-                process(11, r"C:\Program Files\Hypixel Studios\Hytale\win64\HytaleLauncher.exe"),
+                process(
+                    10,
+                    r"C:\Program Files\Hypixel Studios\Hytale\Client\HytaleClient.exe",
+                ),
+                process(
+                    11,
+                    r"C:\Program Files\Hypixel Studios\Hytale\win64\HytaleLauncher.exe",
+                ),
                 Process {
                     pid: 12,
                     name: "HytaleLauncher.exe".to_owned(),

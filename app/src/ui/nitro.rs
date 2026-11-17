@@ -17,7 +17,7 @@ use serde_json::Value;
 use std::cell::Cell;
 use std::rc::Rc;
 
-mod home;
+pub(in crate::ui) mod home;
 mod perk_card;
 mod tenure;
 mod trinkets;

@@ -18,7 +18,7 @@ const GRAD_PLAIN: Id = 900_105;
 impl Root {
     pub(crate) fn script_content(&mut self, words: &[&str], cx: &mut Context<Self>) -> String {
         let [verb, set] = words else {
-            return "content: usage `content demo <roles|code|header|files|embeds|reply>`"
+            return "content: usage `content demo <roles|code|header|files|embeds|spotify|reply>`"
                 .to_owned();
         };
         if *verb != "demo" {
@@ -207,6 +207,17 @@ impl Root {
                         "color": 5793266,
                         "fields": [{"name": "Field one", "value": "[a field link](https://example.com/field)", "inline": true}],
                         "footer": {"text": "Footer"}
+                    }]}),
+                );
+            }
+            // A Spotify album link: Spotify's own player in a 352px frame (`web_frames.rs`).
+            "spotify" => {
+                push(
+                    person(900, "ada"),
+                    "https://open.spotify.com/album/5WrpCQmbTUZuzNxGCPUFSV",
+                    json!({"embeds": [{
+                        "type": "link", "url": "https://open.spotify.com/album/5WrpCQmbTUZuzNxGCPUFSV",
+                        "title": "Alfredo 2", "provider": {"name": "Spotify", "url": "https://spotify.com/"}
                     }]}),
                 );
             }

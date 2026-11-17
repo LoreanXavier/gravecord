@@ -587,6 +587,7 @@ fn scan_with(lists: &Detectables, index: &dc_detect::Index) -> GameScan {
         })
         .count();
     let mut games = scan.games;
+    dc_detect::matcher::keep_windowed(&mut games, &windows);
     let spotify_running = scan.observed.iter().any(|(app, _)| app.name == "Spotify");
     // Prefer real game executables over launchers in visible-game selection.
     games.sort_by_key(|game| game.is_launcher);
@@ -998,7 +999,9 @@ mod tests {
         // After a day, games is due again with its saved ETag.
         let due_day_later = runtime.due_fetches_all(now + LIST_TTL_MS);
         assert_eq!(
-            due_day_later.iter().find(|d| matches!(d, DueFetch::Cdn { key, .. } if *key == GAMES_KEY)),
+            due_day_later
+                .iter()
+                .find(|d| matches!(d, DueFetch::Cdn { key, .. } if *key == GAMES_KEY)),
             Some(&DueFetch::Cdn {
                 key: GAMES_KEY,
                 url: GAMES_CDN_URL,

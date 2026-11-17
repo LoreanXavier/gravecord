@@ -32,7 +32,7 @@ const GIFT_BANNER_URL: &str = "https://cdn.discordapp.com/assets/content/577cd1f
 const BOTTOM_KEY: &str = "nitro-home:bottom";
 /// `sq`: the bottom illustration, 112 x 85 (a bundled asset).
 const BOTTOM_URL: &str = "https://discord.com/assets/cd2be35d285d4675.svg";
-const BACKGROUND_KEY: &str = "nitro-home:background";
+pub(in crate::ui) const BACKGROUND_KEY: &str = "nitro-home:background";
 /// `sz`: the page's top gradient for a dark theme (`/assets/2ee0f277372e56e4.svg` for a light one).
 const BACKGROUND_URL: &str = "https://discord.com/assets/3ebfa123a3805f56.svg";
 /// `PROGRAM_REWARDS` (module 961250).
@@ -47,6 +47,37 @@ const GRID_GAP: f32 = 24.;
 /// `cardContainer_cpKOhU`: the favorites' slot width, and their row's gap.
 const FAVORITE_WIDTH: f32 = 280.;
 const FAVORITE_GAP: f32 = 20.;
+
+/// The width the gradient is drawn at. `sz` is 1597x984 with Gaussian blurs of 72 to 132px; the image element drew it
+/// at full size on the UI thread the first time the page showed, and the gradient came seconds after the page. A
+/// quarter of the width is far below what the blur leaves to see, so the stretched picture looks the same.
+const BACKGROUND_WIDTH: u32 = 400;
+
+/// Where the drawn gradient is kept between runs, named after the asset so a new one is drawn again.
+fn background_cache_path() -> Option<std::path::PathBuf> {
+    let name = BACKGROUND_URL
+        .rsplit('/')
+        .next()
+        .unwrap_or("background.svg")
+        .replace(".svg", &format!("-{BACKGROUND_WIDTH}.png"));
+    crate::storage::data_dir().map(|dir| dir.join("img-cache").join(format!("nitro-home-{name}")))
+}
+
+/// Draws the gradient's SVG `BACKGROUND_WIDTH` wide, keeping its aspect ratio, as a PNG.
+pub(in crate::ui) fn rasterize_background(svg: &[u8]) -> Option<Vec<u8>> {
+    use resvg::{tiny_skia, usvg};
+    let tree = usvg::Tree::from_data(svg, &usvg::Options::default()).ok()?;
+    let size = tree.size();
+    let scale = BACKGROUND_WIDTH as f32 / size.width();
+    let height = (size.height() * scale).round().max(1.) as u32;
+    let mut pixmap = tiny_skia::Pixmap::new(BACKGROUND_WIDTH, height)?;
+    resvg::render(
+        &tree,
+        tiny_skia::Transform::from_scale(scale, scale),
+        &mut pixmap.as_mut(),
+    );
+    pixmap.encode_png().ok()
+}
 
 /// `Wvc/I+`, `d+0STx`, `CqsxKI` by the local hour: morning is 5 to 12, afternoon 12 to 17, else evening (`tm`).
 pub(super) fn greeting(hour: u32) -> &'static str {
@@ -734,6 +765,8 @@ impl Root {
 
     /// Pre-requests Nitro subscriber home art and profile data on startup when cached.
     pub(super) fn warm_subscriber_home(&mut self) {
+        // The gradient's picture from an earlier run: on screen with the page's first frame.
+        self.load_nitro_background();
         if !crate::ui::start_cache::enabled() {
             return;
         }
@@ -742,6 +775,52 @@ impl Root {
             self.request_subscriber_data();
             self.request_subscriber_card_art();
         }
+    }
+
+    /// The gradient's picture saved by an earlier run, when there is one and it is not shown yet.
+    fn load_nitro_background(&mut self) {
+        if self.images.contains_key(BACKGROUND_KEY) {
+            return;
+        }
+        if let Some(png) = background_cache_path().and_then(|path| std::fs::read(path).ok()) {
+            self.images.insert(
+                BACKGROUND_KEY.to_owned(),
+                std::sync::Arc::new(gpui::Image::from_bytes(gpui::ImageFormat::Png, png)),
+            );
+        }
+    }
+
+    /// The gradient's SVG arrived: drawn once off the UI thread at a quarter of its size (`rasterize_background`),
+    /// shown, and saved for the next run.
+    pub(in crate::ui) fn nitro_background_fetched(&mut self, svg: Vec<u8>, cx: &mut Context<Self>) {
+        cx.spawn(async move |this, cx| {
+            let png = cx
+                .background_executor()
+                .spawn(async move {
+                    let png = rasterize_background(&svg)?;
+                    if let Some(path) = background_cache_path() {
+                        if let Some(dir) = path.parent() {
+                            let _ = std::fs::create_dir_all(dir);
+                        }
+                        let temp = path.with_extension("png.tmp");
+                        if std::fs::write(&temp, &png).is_ok() {
+                            let _ = std::fs::rename(&temp, &path);
+                        }
+                    }
+                    Some(png)
+                })
+                .await;
+            let _ = this.update(cx, |this, cx| {
+                if let Some(png) = png {
+                    this.images.insert(
+                        BACKGROUND_KEY.to_owned(),
+                        std::sync::Arc::new(gpui::Image::from_bytes(gpui::ImageFormat::Png, png)),
+                    );
+                    cx.notify();
+                }
+            });
+        })
+        .detach();
     }
 
     /// Decodes the Wumpus clip off the UI thread once its file is here (once per run of the app).
@@ -1364,7 +1443,10 @@ impl Root {
                                         .h(px(984.))
                                         .overflow_hidden()
                                         .child(
-                                            img(image).w_full().h(px(984.)).object_fit(ObjectFit::Fill),
+                                            img(image)
+                                                .w_full()
+                                                .h(px(984.))
+                                                .object_fit(ObjectFit::Fill),
                                         )
                                         .child(
                                             div()
@@ -1380,19 +1462,15 @@ impl Root {
                                                 )),
                                         ),
                                 ),
-                                None if crate::ui::start_cache::enabled() => Some(
-                                    div()
-                                        .absolute()
-                                        .top_0()
-                                        .left_0()
-                                        .w_full()
-                                        .h(px(984.))
-                                        .bg(linear_gradient(
+                                None if crate::ui::start_cache::enabled() => {
+                                    Some(div().absolute().top_0().left_0().w_full().h(px(984.)).bg(
+                                        linear_gradient(
                                             180.,
                                             linear_color_stop(gpui::rgba(0x2c1f5eff), 0.),
                                             linear_color_stop(page_color, 1.),
-                                        )),
-                                ),
+                                        ),
+                                    ))
+                                }
                                 None => None,
                             })
                             .child(
@@ -1447,6 +1525,25 @@ impl Root {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The gradient is drawn a quarter wide with its blur, fast enough to leave the UI thread untouched.
+    #[test]
+    fn the_gradient_is_drawn_small_with_its_blur() {
+        let svg = br##"<svg width="1597" height="984" viewBox="0 0 1597 984" xmlns="http://www.w3.org/2000/svg">
+            <rect width="1597" height="984" fill="#121214"/>
+            <g filter="url(#f)"><circle cx="800" cy="300" r="300" fill="#19175C"/></g>
+            <defs><filter id="f" x="-1000" y="-1000" width="4000" height="4000" filterUnits="userSpaceOnUse">
+            <feGaussianBlur stdDeviation="132.415"/></filter></defs></svg>"##;
+        let started = std::time::Instant::now();
+        let png = rasterize_background(svg).unwrap();
+        let picture = image::load_from_memory(&png).unwrap().to_rgba8();
+        assert_eq!(picture.dimensions(), (400, 246));
+        // The blurred circle reaches the middle as a soft colour between the page and the circle's.
+        let middle = picture.get_pixel(200, 75);
+        assert!(middle[2] > 0x14 && middle[2] < 0x5c, "{middle:?}");
+        assert!(started.elapsed() < std::time::Duration::from_secs(5));
+        assert!(rasterize_background(b"not svg").is_none());
+    }
 
     #[test]
     fn the_greeting_follows_the_local_hour() {

@@ -3460,6 +3460,7 @@ dependencies = [
  "rasterlottie",
  "raw-window-handle",
  "reqwest",
+ "resvg",
  "serde",
  "serde_json",
  "sha2",

@@ -1236,6 +1236,10 @@ impl Root {
         cx: &mut Context<Self>,
     ) -> Option<AnyElement> {
         let message_id = message.id;
+        // 265705: a Spotify link is Spotify's own player, not a card.
+        if let Some((url, height)) = super::web_frames::spotify_frame(embed) {
+            return Some(self.web_frame_box(format!("{message_id}:{index}"), url, height));
+        }
         let hide_media = self.embed_media_hidden();
         let reason = self.embed_obscure_reason(message, embed);
         if embed_layout::is_inline(embed, hide_media) {

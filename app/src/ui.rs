@@ -129,6 +129,7 @@ mod message_requests;
 mod message_tips;
 mod presence;
 mod provider_player;
+mod web_frames;
 mod role_dot;
 pub(crate) mod role_gradient;
 mod role_popout;
@@ -702,6 +703,7 @@ pub struct Root {
     game_announcements_scroll: f32,
     library: library::Library,
     provider_player: Option<provider_player::ProviderPlayer>,
+    web_frames: web_frames::WebFrames,
     composer_ai: composer_ai::ComposerAi,
     game_similar_scroll: f32,
     game_communities_filter: game_communities::Filter,
@@ -1101,6 +1103,7 @@ impl Root {
             game_announcements_scroll: 0.,
             library: Default::default(),
             provider_player: None,
+            web_frames: web_frames::WebFrames::default(),
             composer_ai: Default::default(),
             game_similar_scroll: 0.,
             game_communities_filter: Default::default(),
@@ -2247,6 +2250,10 @@ impl Root {
             }
             Update::Image { key, bytes } if key.starts_with(inline_video::PREFIX) => {
                 self.inline_video_fetched(&key, bytes);
+            }
+            Update::Image { key, bytes } if key == nitro::home::BACKGROUND_KEY => {
+                self.image_retries.arrived(&key);
+                self.nitro_background_fetched(bytes, cx);
             }
             Update::Image { key, bytes } if key == quests::HERO_VIDEO_KEY => {
                 self.quests_hero_video_fetched(bytes, cx);
@@ -9371,6 +9378,7 @@ impl Render for Root {
         self.onboarding_note_focus(window, cx);
         self.activity_host_frame(window, cx);
         self.provider_player_frame(window, cx);
+        self.web_frames_frame(window, cx);
         self.sync_voice_page(cx);
         let feed = (self.data_revision, self.guild, self.ready);
         let feed_changed = changed(&mut self.prepared.inventory, feed);
