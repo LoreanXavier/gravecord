@@ -62,6 +62,7 @@ pub(crate) mod channel_notice;
 mod channel_settings;
 mod channel_settings_pages;
 mod channel_status;
+mod chat_notices;
 mod clips;
 mod code_copy;
 mod command_feedback;
@@ -129,7 +130,6 @@ mod message_requests;
 mod message_tips;
 mod presence;
 mod provider_player;
-mod web_frames;
 mod role_dot;
 pub(crate) mod role_gradient;
 mod role_popout;
@@ -150,6 +150,7 @@ mod unread_badges;
 mod unread_dms;
 mod update_button;
 mod voice_message;
+mod web_frames;
 pub use logout::RootEvent;
 mod account_switcher;
 #[cfg(feature = "capture")]
@@ -205,8 +206,8 @@ mod perf;
 mod permission_spec;
 mod picker;
 mod pins;
-mod plugin_hooks;
 mod plaintext_extensions;
+mod plugin_hooks;
 mod poll;
 mod popout_roles;
 mod profile;
@@ -521,6 +522,8 @@ pub struct Root {
     channel_drag: channel_drag::State,
     /// A message over the length limit, held while the "too long" dialog asks what to do.
     too_long: Option<String>,
+    /// Small chat dialogs and chained thread requests (`chat_notices`).
+    chat_extra: chat_notices::State,
     focus: FocusHandle,
     /// Focus bookkeeping and keyboard modality (`keyboard`).
     keys: keyboard::State,
@@ -967,6 +970,7 @@ impl Root {
             context: context_menu::State::default(),
             channel_drag: channel_drag::State::default(),
             too_long: None,
+            chat_extra: chat_notices::State::default(),
             focus: cx.focus_handle(),
             keys: Default::default(),
             images: HashMap::new(),
@@ -1673,6 +1677,10 @@ impl Root {
                     return;
                 }
                 self.active_now_fetched(&key, &body);
+                if key.starts_with(chat_notices::KEY_PREFIX) {
+                    self.thread_step_fetched(&key, &body);
+                    return;
+                }
                 if key.starts_with(message_requests::KEY_PREFIX) {
                     self.message_requests_fetched(&key, &body, cx);
                     return;
@@ -5752,7 +5760,8 @@ impl Root {
             .current_dm()
             .filter(|channel| channel.kind == 3)
             .cloned();
-        let muted = self.channel_muted_now();
+        // Module 187360: the bell is slashed while the channel is muted or its resolved level is not All Messages.
+        let muted = self.channel_bell_slashed();
         // Module 586944: "Search in DMs" (`m7OrlR`) in the every-DM context, else "Search {name}" (`LDZtFO`) with the
         // server's or the conversation's name (the key is the same for both; its Turkish reads "{name} sunucusunu ara").
         let search = if self.search_all_dms() {
@@ -6281,12 +6290,19 @@ impl Root {
                                 cx,
                             )
                             .cursor_pointer()
-                            .on_click(cx.listener(|this, _, _, cx| {
-                                this.tip = None;
-                                this.notify_open = !this.notify_open;
-                                this.notify_submenu = None;
-                                cx.notify();
-                            })),
+                            .on_click(cx.listener(
+                                |this, event: &gpui::ClickEvent, _, cx| {
+                                    this.tip = None;
+                                    // Module 187360: a shift-click mutes or unmutes at once, without the menu.
+                                    if event.modifiers().shift {
+                                        this.toggle_channel_mute_now();
+                                    } else {
+                                        this.notify_open = !this.notify_open;
+                                        this.notify_submenu = None;
+                                    }
+                                    cx.notify();
+                                },
+                            )),
                         )
                         .child(
                             self.header_stop(
@@ -6772,10 +6788,28 @@ impl Root {
             });
         }
         let links = link_runs(spans);
-        if links.iter().any(Option::is_some) || emoji_keys.iter().any(Option::is_some) {
+        let channels: Vec<Option<u64>> = spans
+            .iter()
+            .map(|span| match span.kind {
+                Kind::Channel(id) => Some(id),
+                _ => None,
+            })
+            .collect();
+        if links.iter().any(Option::is_some)
+            || emoji_keys.iter().any(Option::is_some)
+            || channels.iter().any(Option::is_some)
+        {
             let root = self.weak.clone();
             let runs = links.clone();
+            let mentions = channels.clone();
             element = element.on_piece_context(move |piece, at, _, cx| {
+                // A channel mention opens its own menu (module 223998) instead of the message's.
+                if let Some(Some(channel)) = mentions.get(piece).copied() {
+                    let _ = root.update(cx, |this, _| {
+                        this.chat_extra.mention_hit = Some((at, channel))
+                    });
+                    return;
+                }
                 let hit = if let Some(Some((url, label))) = runs.get(piece).cloned() {
                     Some(menu::Hit::Link { url, label })
                 } else if let Some(Some(key)) = emoji_keys.get(piece).cloned() {
@@ -6788,13 +6822,6 @@ impl Root {
                 }
             });
         }
-        let channels: Vec<Option<u64>> = spans
-            .iter()
-            .map(|span| match span.kind {
-                Kind::Channel(id) => Some(id),
-                _ => None,
-            })
-            .collect();
         if spoilers.iter().any(Option::is_some)
             || links.iter().any(Option::is_some)
             || channels.iter().any(Option::is_some)
@@ -6810,7 +6837,12 @@ impl Root {
                     {
                         // Not in the pinned client: RevealAllSpoilers opens the others too (`plugin_hooks.rs`).
                         let channel = this.channel;
-                        plugin_hooks::reveal_all_spoilers(&mut this.revealed, key.0, channel, modifiers);
+                        plugin_hooks::reveal_all_spoilers(
+                            &mut this.revealed,
+                            key.0,
+                            channel,
+                            modifiers,
+                        );
                         cx.notify();
                         return;
                     }
@@ -10028,7 +10060,9 @@ impl Render for Root {
                     this.forward = None;
                     cx.notify();
                     cx.stop_propagation();
-                } else if event.keystroke.key == "escape" && this.interaction_modal_escape() {
+                } else if event.keystroke.key == "escape"
+                    && (this.interaction_modal_escape() || this.chat_alert_escape())
+                {
                     cx.notify();
                     cx.stop_propagation();
                 } else if event.keystroke.key == "escape" && this.custom_reminder.is_some() {
@@ -10554,6 +10588,7 @@ impl Render for Root {
             .children(self.remove_friend_modal(cx))
             .children(self.not_friend_modal(cx))
             .children(self.favorites_full_modal(cx))
+            .children(self.chat_alert_modal(cx))
             .children(self.library_remove_modal(cx))
             .children(self.composer_ai_modal(cx))
             .children(self.friend_nickname_layer(window, cx))

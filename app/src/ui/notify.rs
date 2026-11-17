@@ -121,6 +121,25 @@ impl Root {
             })
     }
 
+    /// Module 187360's icon: `BellSlashIcon` when `isChannelMuted` or `resolvedMessageNotifications` is not
+    /// ALL_MESSAGES.
+    pub(super) fn channel_bell_slashed(&self) -> bool {
+        self.channel_settings_target()
+            .is_some_and(|(guild, channel, category)| {
+                let settings = &self.stores.guild_settings;
+                settings.channel_muted(guild, channel, chrono::Utc::now())
+                    || settings.resolved(guild, channel, category) != ALL_MESSAGES
+            })
+    }
+
+    /// Module 187360's shift-click: `updateChannelOverrideSettings({muted: !muted})`.
+    pub(super) fn toggle_channel_mute_now(&mut self) {
+        if let Some((guild, channel, _)) = self.channel_settings_target() {
+            let muted = self.channel_muted_now();
+            self.patch_channel_override(guild, channel, json!({"muted": !muted}));
+        }
+    }
+
     fn notify_row(
         &self,
         id: &'static str,

@@ -40,6 +40,8 @@ pub(super) enum Target {
     Category(Id),
     Thread(Id),
     Dm(Id),
+    /// A `#channel` mention in a message (`channel-mention-context`, module 223998).
+    ChannelMention(Id),
     User {
         user: Id,
         guild: Option<Id>,
@@ -104,7 +106,14 @@ pub(super) enum Act {
     /// "Clear Channel Status" (module 671483 `clear-status`): `updateVoiceChannelStatus(id, "")`.
     ClearStatus,
     CloseThread,
+    /// "Open Thread" / "Open Post" of an archived thread (module 182061 `unarchiveThread`).
+    OpenThread,
     LockThread,
+    /// "Unlock Thread" / "Unlock post" (module 707792 `unlockThread`).
+    UnlockThread,
+    /// "Pin Post" / "Unpin Post" of a forum post (module 41402).
+    PinPost,
+    UnpinPost,
     LeaveThread,
     /// "Join Thread" (module 660273): `joinThread`, shown for a thread the account has not joined.
     JoinThread,
@@ -197,7 +206,7 @@ impl Act {
     /// Every row kind once (`Correction` with its first index). `ordinal` is an exhaustive match, so adding a variant
     /// without listing it here fails the build or the `act_list_is_complete` test.
     #[cfg(test)]
-    pub(super) const ALL: [Act; 98] = [
+    pub(super) const ALL: [Act; 102] = [
         Act::InventoryAbout,
         Act::InventoryHide,
         Act::ReportApp,
@@ -296,6 +305,10 @@ impl Act {
         Act::AiTranslate,
         Act::AiTransforms,
         Act::ReportWidget,
+        Act::OpenThread,
+        Act::UnlockThread,
+        Act::PinPost,
+        Act::UnpinPost,
     ];
 
     #[cfg(test)]
@@ -399,6 +412,10 @@ impl Act {
             Act::AiTranslate => 95,
             Act::AiTransforms => 96,
             Act::ReportWidget => 97,
+            Act::OpenThread => 98,
+            Act::UnlockThread => 99,
+            Act::PinPost => 100,
+            Act::UnpinPost => 101,
         }
     }
 }
@@ -452,7 +469,11 @@ pub(super) fn status(act: Act) -> Status {
         | Act::CollapseAll
         | Act::OpenChat
         | Act::CloseThread
+        | Act::OpenThread
         | Act::LockThread
+        | Act::UnlockThread
+        | Act::PinPost
+        | Act::UnpinPost
         | Act::LeaveThread
         | Act::JoinThread
         | Act::Profile
@@ -1050,6 +1071,20 @@ pub(super) fn channel_items(facts: ChannelFacts, level: &str) -> Vec<Entry> {
 }
 
 /// The menu of the Favorites star (frame menus2/favorites-rail-menu).
+/// `channel-mention-context` (module 223998): Copy Link with the link icon, then the developer Copy Channel ID.
+pub(super) fn channel_mention_items(developer: bool) -> Vec<Entry> {
+    let mut out = vec![Entry::Row(
+        Row::new(Act::CopyLink, dc_intl::tr("Copy Link")).icon("menu_copy_message_link"),
+    )];
+    if developer {
+        group(
+            &mut out,
+            vec![Row::new(Act::CopyId, dc_intl::tr("Copy Channel ID")).icon("menu_id")],
+        );
+    }
+    tidy(out)
+}
+
 pub(super) fn favorites_items() -> Vec<Entry> {
     let mut out = vec![Entry::Row(
         Row::new(Act::FavoritesSettings, dc_intl::tr("Thread Settings")).icon("menu_create_thread"),
@@ -1146,14 +1181,37 @@ pub(super) fn category_items(
     tidy(out)
 }
 
-pub(super) fn thread_items(
-    unread: bool,
-    manage: bool,
-    owner: bool,
-    joined: bool,
-    developer: bool,
-    level: &str,
-) -> Vec<Entry> {
+/// What the thread menu (`thread-context`, module 949488) depends on.
+#[derive(Clone, Copy, Debug, Default)]
+pub(super) struct ThreadFacts {
+    pub unread: bool,
+    /// MANAGE_THREADS in the parent.
+    pub manage: bool,
+    pub owner: bool,
+    pub joined: bool,
+    pub developer: bool,
+    pub archived: bool,
+    pub locked: bool,
+    /// The parent is a forum or media channel (`isForumPost`): the rows say "Post" instead of "Thread".
+    pub forum_post: bool,
+    /// The post carries the PINNED flag (`1 << 1`).
+    pub pinned: bool,
+}
+
+/// `label` for a thread, or `post` for a forum post (`isForumPost()` of the thread menu's rows).
+fn post_or(facts: ThreadFacts, post: &str, thread: &str) -> String {
+    if facts.forum_post { post } else { thread }.to_owned()
+}
+
+pub(super) fn thread_items(facts: ThreadFacts, level: &str) -> Vec<Entry> {
+    let ThreadFacts {
+        unread,
+        manage,
+        owner,
+        joined,
+        developer,
+        ..
+    } = facts;
     let mut out = vec![Entry::Row(
         Row::new(Act::MarkRead, dc_intl::tr("Mark As Read")).disabled(!unread),
     )];
@@ -1163,43 +1221,111 @@ pub(super) fn thread_items(
     );
     let mut own = Vec::new();
     if !joined {
-        own.push(Row::new(Act::JoinThread, dc_intl::tr("Join Thread")));
+        // Module 660273: "Follow Post" for a forum post.
+        own.push(Row::new(
+            Act::JoinThread,
+            post_or(
+                facts,
+                dc_intl::tr("Follow Post"),
+                dc_intl::tr("Join Thread"),
+            ),
+        ));
     }
     if manage || owner {
-        own.push(Row::new(Act::CloseThread, dc_intl::tr("Close Thread")));
+        // Module 182061: an archived thread opens again (`unarchiveThread`), an active one closes (`archiveThread`).
+        own.push(if facts.archived {
+            Row::new(
+                Act::OpenThread,
+                post_or(facts, dc_intl::tr("Open Post"), dc_intl::tr("Open Thread")),
+            )
+        } else {
+            Row::new(
+                Act::CloseThread,
+                post_or(
+                    facts,
+                    dc_intl::tr("Close Post"),
+                    dc_intl::tr("Close Thread"),
+                ),
+            )
+        });
     }
     if manage {
-        own.push(Row::new(Act::LockThread, dc_intl::tr("Lock Thread")));
+        // Module 707792: Lock or Unlock by `isLockedThread()`.
+        own.push(if facts.locked {
+            Row::new(
+                Act::UnlockThread,
+                post_or(
+                    facts,
+                    dc_intl::tr("Unlock post"),
+                    dc_intl::tr("Unlock Thread"),
+                ),
+            )
+        } else {
+            Row::new(
+                Act::LockThread,
+                post_or(facts, dc_intl::tr("Lock Post"), dc_intl::tr("Lock Thread")),
+            )
+        });
     }
     if manage || owner {
-        own.push(Row::new(Act::EditChannel, dc_intl::tr("Edit Thread")));
+        // Module 200273.
+        own.push(Row::new(
+            Act::EditChannel,
+            post_or(facts, dc_intl::tr("Edit Post"), dc_intl::tr("Edit Thread")),
+        ));
     }
     own.push(Row::new(Act::CopyLink, dc_intl::tr("Copy Link")));
     group(&mut out, own);
+    let mute = post_or(facts, dc_intl::tr("Mute Post"), dc_intl::tr("Mute Thread"));
     group(
         &mut out,
         vec![
             // `mute-disabled` (module 57907) until the account has joined the thread.
             if joined {
-                Row::new(Act::Mute, dc_intl::tr("Mute Thread")).caret()
+                Row::new(Act::Mute, mute).caret()
             } else {
-                Row::new(Act::Mute, dc_intl::tr("Mute Thread")).disabled(true)
+                Row::new(Act::Mute, mute).disabled(true)
             },
             Row::new(Act::Notifications, dc_intl::tr("Notification Settings"))
                 .sub(level)
                 .caret(),
         ],
     );
+    // `admin-actions`: Pin Post (module 41402: a post of a forum, with MANAGE_THREADS), then Delete (307623).
+    let mut admin = Vec::new();
+    if facts.forum_post && manage {
+        admin.push(if facts.pinned {
+            Row::new(Act::UnpinPost, dc_intl::tr("Unpin Post"))
+        } else {
+            Row::new(Act::PinPost, dc_intl::tr("Pin Post"))
+        });
+    }
     if manage || owner {
-        group(
-            &mut out,
-            vec![Row::new(Act::DeleteChannel, dc_intl::tr("Delete Thread")).danger()],
+        admin.push(
+            Row::new(
+                Act::DeleteChannel,
+                post_or(
+                    facts,
+                    dc_intl::tr("Delete Post"),
+                    dc_intl::tr("Delete Thread"),
+                ),
+            )
+            .danger(),
         );
     }
+    group(&mut out, admin);
     if joined {
+        // Module 804006: "Unfollow Post" for a forum post.
         group(
             &mut out,
-            vec![Row::new(Act::LeaveThread, dc_intl::tr("Leave Thread"))],
+            vec![Row::new(
+                Act::LeaveThread,
+                post_or(
+                    facts,
+                    dc_intl::tr("Unfollow Post"),
+                    dc_intl::tr("Leave Thread"),
+                ),
+            )],
         );
     }
     if developer {
@@ -2386,6 +2512,7 @@ impl Root {
             Target::GameAddToProfile(game) => self.game_widget_items(game),
             Target::ProfileWidget { .. } => profile_widget_items(),
             Target::Favorites => favorites_items(),
+            Target::ChannelMention(_) => channel_mention_items(developer),
             Target::PickerSticker(sticker) => {
                 picker_sticker_items(self.sticker_favorited(sticker), developer)
             }
@@ -2503,11 +2630,17 @@ impl Root {
                 let owner = thread.owner_id.is_some()
                     && thread.owner_id == self.stores.current_user.as_ref().map(|me| me.id);
                 thread_items(
-                    self.has_unread_or_mentions(id),
-                    manage,
-                    owner,
-                    thread.joined,
-                    developer,
+                    ThreadFacts {
+                        unread: self.has_unread_or_mentions(id),
+                        manage,
+                        owner,
+                        joined: thread.joined,
+                        developer,
+                        archived: thread.archived,
+                        locked: thread.locked,
+                        forum_post: parent.as_ref().is_some_and(Channel::is_forum),
+                        pinned: thread.pinned(),
+                    },
                     level_label(
                         THREAD_LEVELS
                             .iter()
@@ -3042,6 +3175,12 @@ impl Root {
                     self.open_create_channel(false, window, cx);
                 }
             }
+            (Act::CopyLink, Target::ChannelMention(channel)) => {
+                let guild = self.guild_of_channel(channel);
+                cx.write_to_clipboard(ClipboardItem::new_string(
+                    super::chat_notices::channel_link(guild, channel, None),
+                ));
+            }
             (Act::CopyLink, Target::Channel(channel) | Target::Thread(channel)) => {
                 let guild = self.guild_of_channel(channel).unwrap_or_default();
                 cx.write_to_clipboard(ClipboardItem::new_string(format!(
@@ -3054,7 +3193,8 @@ impl Root {
                     | Target::Channel(id)
                     | Target::Category(id)
                     | Target::Thread(id)
-                    | Target::Dm(id) => id,
+                    | Target::Dm(id)
+                    | Target::ChannelMention(id) => id,
                     Target::User { user, .. }
                     | Target::InventoryAuthor { user }
                     | Target::SpotifyActivity { user, .. }
@@ -3165,19 +3305,26 @@ impl Root {
                     self.select(guild, Some(channel));
                 }
             }
-            (Act::CloseThread | Act::LockThread, Target::Thread(thread)) => {
-                let field = if act == Act::CloseThread {
-                    "archived"
-                } else {
-                    "locked"
+            // Modules 182061 (close / open), 707792 (lock / unlock) and 41402 (pin / unpin), as module 7909 sends them.
+            (
+                Act::CloseThread
+                | Act::OpenThread
+                | Act::LockThread
+                | Act::UnlockThread
+                | Act::UnpinPost,
+                Target::Thread(thread),
+            ) => {
+                use super::chat_notices::ThreadStep;
+                let step = match act {
+                    Act::CloseThread => ThreadStep::Close,
+                    Act::OpenThread => ThreadStep::Open,
+                    Act::LockThread => ThreadStep::Lock,
+                    Act::UnlockThread => ThreadStep::Unlock,
+                    _ => ThreadStep::Unpin,
                 };
-                let _ = self.requests.send(Request::Rest {
-                    key: None,
-                    method: reqwest::Method::PATCH,
-                    route: format!("/channels/{thread}"),
-                    body: Some(json!({ field: true })),
-                });
+                self.run_thread_step(thread, step);
             }
+            (Act::PinPost, Target::Thread(thread)) => self.pin_post(thread),
             // `joinThread` (module 7909): `POST /channels/:id/thread-members/@me?location=Context Menu`; the gateway's
             // THREAD_MEMBER_UPDATE puts the account into the joined-threads store.
             (Act::JoinThread, Target::Thread(thread)) => {
@@ -5189,10 +5336,16 @@ mod tests {
 
     #[test]
     fn a_thread_offers_join_or_leave_by_the_joined_store() {
-        let joined = labels(&thread_items(false, false, false, true, false, "x"));
+        let joined = labels(&thread_items(
+            ThreadFacts {
+                joined: true,
+                ..ThreadFacts::default()
+            },
+            "x",
+        ));
         assert!(joined.contains(&"Leave Thread".to_owned()));
         assert!(!joined.contains(&"Join Thread".to_owned()));
-        let apart = labels(&thread_items(false, false, false, false, false, "x"));
+        let apart = labels(&thread_items(ThreadFacts::default(), "x"));
         assert!(apart.contains(&"Join Thread".to_owned()));
         assert!(!apart.contains(&"Leave Thread".to_owned()));
     }
@@ -5201,13 +5354,19 @@ mod tests {
     fn mute_thread_waits_for_the_account_to_join() {
         // `mute-disabled` of module 57907: no durations until the thread is joined.
         let mute_row = |joined: bool| {
-            thread_items(false, false, false, joined, false, "x")
-                .into_iter()
-                .find_map(|entry| match entry {
-                    Entry::Row(row) if row.act == Act::Mute => Some(row),
-                    _ => None,
-                })
-                .unwrap()
+            thread_items(
+                ThreadFacts {
+                    joined,
+                    ..ThreadFacts::default()
+                },
+                "x",
+            )
+            .into_iter()
+            .find_map(|entry| match entry {
+                Entry::Row(row) if row.act == Act::Mute => Some(row),
+                _ => None,
+            })
+            .unwrap()
         };
         let apart = mute_row(false);
         assert!(apart.disabled && !apart.caret);
@@ -5217,12 +5376,69 @@ mod tests {
 
     #[test]
     fn a_thread_owner_without_manage_threads_can_still_close_and_edit_it() {
-        let items = thread_items(false, false, true, true, false, "x");
+        let items = thread_items(
+            ThreadFacts {
+                owner: true,
+                joined: true,
+                ..ThreadFacts::default()
+            },
+            "x",
+        );
         let shown = labels(&items);
         assert!(shown.contains(&"Close Thread".to_owned()));
         assert!(shown.contains(&"Edit Thread".to_owned()));
         assert!(!shown.contains(&"Lock Thread".to_owned()));
         assert!(shown.contains(&"Leave Thread".to_owned()));
+        assert!(!shown.contains(&"Pin Post".to_owned()));
+    }
+
+    #[test]
+    fn a_forum_post_says_post_and_can_be_pinned_by_a_moderator() {
+        // Modules 182061, 200273, 41402, 707792, 307623, 804006, 57907 name a forum post a post.
+        let facts = ThreadFacts {
+            manage: true,
+            joined: true,
+            forum_post: true,
+            ..ThreadFacts::default()
+        };
+        let shown = labels(&thread_items(facts, "x"));
+        for label in [
+            "Close Post",
+            "Lock Post",
+            "Edit Post",
+            "Mute Post",
+            "Pin Post",
+            "Delete Post",
+            "Unfollow Post",
+        ] {
+            assert!(shown.contains(&label.to_owned()), "{label} in {shown:?}");
+        }
+        // Pin Post sits with Delete in `admin-actions`, just before it.
+        let pin = shown.iter().position(|label| label == "Pin Post").unwrap();
+        assert_eq!(shown[pin + 1], "Delete Post");
+        let shown = labels(&thread_items(
+            ThreadFacts {
+                archived: true,
+                locked: true,
+                pinned: true,
+                ..facts
+            },
+            "x",
+        ));
+        assert!(shown.contains(&"Open Post".to_owned()));
+        assert!(shown.contains(&"Unlock post".to_owned()));
+        assert!(shown.contains(&"Unpin Post".to_owned()));
+        let shown = labels(&thread_items(
+            ThreadFacts {
+                archived: true,
+                manage: true,
+                ..ThreadFacts::default()
+            },
+            "x",
+        ));
+        assert!(shown.contains(&"Open Thread".to_owned()));
+        assert!(shown.contains(&"Join Thread".to_owned()));
+        assert!(!shown.contains(&"Pin Post".to_owned()));
     }
 
     #[test]

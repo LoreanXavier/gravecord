@@ -1765,6 +1765,14 @@ impl Root {
         own: bool,
         cx: &mut Context<Self>,
     ) {
+        // A right press on a channel mention opens the mention's menu (module 223998) in place of the message's.
+        if let Some((at, channel)) = self.chat_extra.mention_hit.take()
+            && matches!(anchor, Anchor::Pointer(pointer) if pointer == at)
+        {
+            self.menu_hit = None;
+            self.open_context_menu(super::context_menu::Target::ChannelMention(channel), at, cx);
+            return;
+        }
         // The element under a right press recorded what it was before this handler ran; only for the same press.
         let hit = self.menu_hit.take().and_then(|(at, hit)| {
             matches!(anchor, Anchor::Pointer(pointer) if pointer == at).then_some(hit)
