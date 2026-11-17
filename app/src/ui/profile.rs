@@ -294,6 +294,7 @@ impl Root {
         if has_badges {
             self.request_badge_catalog(user);
         }
+        self.request_profile_frame(user);
         self.request_profile_cards(user);
     }
 

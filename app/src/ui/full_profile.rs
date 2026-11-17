@@ -134,6 +134,31 @@ pub(super) fn mutual_empty_text(servers: bool, user: Id) -> (&'static str, &'sta
     }
 }
 
+/// `sr` of module 927071: the empty Activity tab's heading for `name` and one of its sixteen lines (`se`, sampled once
+/// per opening; here chosen by the person's id so a reopening keeps it).
+pub(super) fn activity_empty_text(name: &str, user: Id) -> (String, String) {
+    let pick = (user % 16) as usize;
+    let line = match pick {
+        0 => dc_intl::t!("AyMGXA").to_owned(),
+        1 => dc_intl::t!("aAFW7V").to_owned(),
+        2 => dc_intl::t!("h2g0cM", name = name),
+        3 => dc_intl::t!("rrYh58").to_owned(),
+        4 => dc_intl::t!("HX3K+F").to_owned(),
+        5 => dc_intl::t!("/yW3aY").to_owned(),
+        6 => dc_intl::t!("PmL/v0").to_owned(),
+        7 => dc_intl::t!("IALa3h").to_owned(),
+        8 => dc_intl::t!("HRcTFL").to_owned(),
+        9 => dc_intl::t!("NuCqPt").to_owned(),
+        10 => dc_intl::t!("M1tw+4").to_owned(),
+        11 => dc_intl::t!("UBm1y2").to_owned(),
+        12 => dc_intl::t!("Cu95PQ").to_owned(),
+        13 => dc_intl::t!("R/wFuh").to_owned(),
+        14 => dc_intl::t!("HQPAVT").to_owned(),
+        _ => dc_intl::t!("YolGh4").to_owned(),
+    };
+    (dc_intl::t!("sjSitP", name = name), line)
+}
+
 pub(super) struct FullProfile {
     pub user: Id,
     pub(super) guild: Option<Id>,
@@ -201,15 +226,18 @@ fn profile_route(user: Id, guild: Option<Id>) -> String {
     route
 }
 
-/// 370480.An formats the server's ISO date in the current local timezone.
+/// 370480.An formats the server's ISO date in the current local timezone. A date without an offset (connections'
+/// `metadata.created_at`, `2013-01-06T10:00:00`) is local time, as `new Date()` reads it.
 fn profile_date(value: &str) -> Option<String> {
-    chrono::DateTime::parse_from_rfc3339(value)
+    let local = chrono::DateTime::parse_from_rfc3339(value)
         .ok()
-        .map(|date| {
-            date.with_timezone(&chrono::Local)
-                .format("%b %-d, %Y")
-                .to_string()
-        })
+        .map(|date| date.with_timezone(&chrono::Local).date_naive())
+        .or_else(|| {
+            chrono::NaiveDateTime::parse_from_str(value, "%Y-%m-%dT%H:%M:%S%.f")
+                .ok()
+                .map(|date| date.date())
+        })?;
+    Some(local.format("%b %-d, %Y").to_string())
 }
 
 /// Whether `body["guild_member"]` belongs to `open_guild` and should be merged into `MemberStore`.
@@ -999,6 +1027,7 @@ impl Root {
         guild: Option<Id>,
         me: bool,
         palette: &super::dm_profile::Palette,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Option<AnyElement> {
         let light_theme = palette.theme.is_some_and(|t| t.light());
@@ -1133,30 +1162,60 @@ impl Root {
                     .border_color(bubble_border)
                     .map(|d| {
                         if emoji_only {
-                            d.p(px(8.))
+                            d.px(px(12.))
+                                .py(px(8.))
                                 .flex()
                                 .items_center()
                                 .justify_center()
                                 .children(emoji_el)
                         } else {
                             let text = status.text.clone().unwrap_or_default();
+                            let line = || {
+                                div()
+                                    .text_size(px(14.))
+                                    .line_height(px(18.))
+                                    .text_color(default)
+                            };
+                            let has_emoji = emoji_el.is_some();
+                            let (first, rest) = if has_emoji {
+                                super::profile_board::float_first_line(&text, 155. - 20., |part| {
+                                    super::threads::measure_text(window, part, 14., 400.)
+                                })
+                            } else {
+                                (String::new(), text)
+                            };
                             d.px(px(12.))
                                 .py(px(8.))
                                 .flex()
-                                .items_start()
-                                .when_some(emoji_el, |row, art| {
-                                    row.child(div().mr(px(4.)).mt(px(1.)).flex_none().child(art))
+                                .flex_col()
+                                .when(has_emoji, |column| {
+                                    column.child(
+                                        div()
+                                            .flex()
+                                            .items_start()
+                                            .when_some(emoji_el, |row, art| {
+                                                row.child(
+                                                    div()
+                                                        .mr(px(4.))
+                                                        .mt(px(1.))
+                                                        .flex_none()
+                                                        .child(art),
+                                                )
+                                            })
+                                            .when(!first.is_empty(), |row| {
+                                                row.child(line().whitespace_nowrap().child(first))
+                                            }),
+                                    )
                                 })
-                                .child(
-                                    div()
-                                        .min_w(px(0.))
-                                        .line_clamp(2)
-                                        .text_ellipsis()
-                                        .text_size(px(14.))
-                                        .line_height(px(18.))
-                                        .text_color(default)
-                                        .child(text),
-                                )
+                                .when(!rest.is_empty(), |column| {
+                                    column.child(
+                                        line()
+                                            .max_w(px(155.))
+                                            .line_clamp(if has_emoji { 1 } else { 2 })
+                                            .text_ellipsis()
+                                            .child(rest),
+                                    )
+                                })
                         }
                     })
                     .when(me, |d| {
@@ -1555,6 +1614,8 @@ impl Root {
                 let title = widget_data_title(&widget.data);
                 let key = widget.data.unique_key();
                 let open = expanded.contains(&key);
+                // An application widget with its config and identity read draws edge to edge in its card.
+                let mut embedded = false;
                 let content: AnyElement = match &widget.data {
                     // `ns` / `na` of module 720060: game detail cards, Games in Rotation cut to two.
                     WidgetData::FavoriteGames { games } | WidgetData::CurrentGames { games } => {
@@ -1637,47 +1698,59 @@ impl Root {
                                     .get(&format!("profile-game:{application_id}"))
                                     .cloned()
                             });
-                        div()
-                            .flex()
-                            .items_center()
-                            .gap(px(12.))
-                            .child(
-                                div()
-                                    .size(px(48.))
-                                    .flex_none()
-                                    .rounded(px(8.))
-                                    .overflow_hidden()
-                                    .bg(tile_bg)
-                                    .children(picture.map(|picture| {
-                                        img(picture)
-                                            .size(px(48.))
-                                            .object_fit(gpui::ObjectFit::Cover)
-                                    })),
-                            )
-                            .child(
-                                div()
-                                    .flex_1()
-                                    .min_w(px(0.))
-                                    .flex()
-                                    .flex_col()
-                                    .gap(px(2.))
-                                    .child(
-                                        div()
-                                            .text_size(px(16.))
-                                            .line_height(px(20.))
-                                            .font_weight(FontWeight(600.))
-                                            .text_color(strong)
-                                            .child(app_name),
-                                    )
-                                    .child(
-                                        div()
-                                            .text_size(px(12.))
-                                            .line_height(px(16.))
-                                            .text_color(subtle)
-                                            .child(dc_intl::t!("EKR8Ps")),
-                                    ),
-                            )
-                            .into_any_element()
+                        if let Some(laid_out) = self.app_widget_body(
+                            user,
+                            application_id,
+                            &app_name,
+                            picture.clone(),
+                            content_width + 32.,
+                            palette,
+                        ) {
+                            embedded = true;
+                            laid_out
+                        } else {
+                            div()
+                                .flex()
+                                .items_center()
+                                .gap(px(12.))
+                                .child(
+                                    div()
+                                        .size(px(48.))
+                                        .flex_none()
+                                        .rounded(px(8.))
+                                        .overflow_hidden()
+                                        .bg(tile_bg)
+                                        .children(picture.map(|picture| {
+                                            img(picture)
+                                                .size(px(48.))
+                                                .object_fit(gpui::ObjectFit::Cover)
+                                        })),
+                                )
+                                .child(
+                                    div()
+                                        .flex_1()
+                                        .min_w(px(0.))
+                                        .flex()
+                                        .flex_col()
+                                        .gap(px(2.))
+                                        .child(
+                                            div()
+                                                .text_size(px(16.))
+                                                .line_height(px(20.))
+                                                .font_weight(FontWeight(600.))
+                                                .text_color(strong)
+                                                .child(app_name),
+                                        )
+                                        .child(
+                                            div()
+                                                .text_size(px(12.))
+                                                .line_height(px(16.))
+                                                .text_color(subtle)
+                                                .child(dc_intl::t!("EKR8Ps")),
+                                        ),
+                                )
+                                .into_any_element()
+                        }
                     }
                     WidgetData::Personal { sections, .. } => {
                         let rendered: Vec<AnyElement> = sections
@@ -1778,8 +1851,9 @@ impl Root {
                     user,
                     index,
                     widget.id.as_deref(),
-                    title,
+                    if embedded { "".into() } else { title },
                     visitor,
+                    embedded,
                     content,
                     palette,
                     cx,
@@ -2358,6 +2432,7 @@ impl Root {
             .and_then(|member| member.nick.as_deref())
             .filter(|nick| !nick.is_empty())
             .map_or_else(|| user.display_name().to_owned(), str::to_owned);
+        let activity_name = display_name.clone();
         // `p?.private` (module 927071): the notice of module 501193 under the names.
         let private_profile = !me && body.is_some_and(|body| body["private"] == true);
         let private_name = display_name.clone();
@@ -2405,7 +2480,8 @@ impl Root {
             })
             .flatten();
         let banner_img = self.profile_banner_image_in(id, open_guild);
-        let status_bubble = self.full_profile_status_bubble(id, open_guild, me, &palette, cx);
+        let status_bubble =
+            self.full_profile_status_bubble(id, open_guild, me, &palette, window, cx);
         let connections = self.full_profile_connections(id, body, &palette, cx);
         let viewport = window.viewport_size();
         let geo =
@@ -2848,11 +2924,13 @@ impl Root {
                 this.child(tab_item(Tab::Servers, mutual_servers_label(server_count)))
             });
         // `sn`: the empty tab's heading (`heading-sm/medium` `text-strong`) over one line (`body-sm/normal`), centred,
-        // at most 320px wide (`empty_7q_A1n`, `textContainer_7q_A1n`).
+        // at most 320px wide (`empty_7q_A1n`, `textContainer_7q_A1n`), in the panel scroller's 20px top padding
+        // (`tabPanelScroller_y4ZEM5`) like every other tab.
         let mutual_empty = |servers: bool| {
             let (heading, line) = mutual_empty_text(servers, id);
             div()
                 .size_full()
+                .pt(px(20.))
                 .min_h(px(240.))
                 .flex()
                 .flex_col()
@@ -2908,20 +2986,98 @@ impl Root {
                     .flatten()
                     .filter_map(|entry| self.activity_card(entry, now_ms, &palette, strong, subtle))
                     .collect();
-                div()
-                    .pt(px(20.))
-                    .flex()
-                    .flex_col()
-                    .gap(px(8.))
-                    .when(!current.is_empty(), |this| {
-                        this.child(Self::section_heading(dc_intl::t!("J6STd9"), subtle))
-                            .child(div().flex().flex_col().gap(px(8.)).children(current))
-                    })
-                    .when(!cards.is_empty(), |this| {
-                        this.child(Self::section_heading(dc_intl::t!("jzgEoL"), subtle))
-                            .child(div().flex().flex_col().gap(px(8.)).children(cards))
-                    })
-                    .into_any_element()
+                let outbox_read = self.fetched.contains_key(&format!("outbox:{id}"));
+                if !me && outbox_read && current.is_empty() && cards.is_empty() {
+                    // `sr` of module 927071: "<name> doesn't have any activity to share here", one of its sixteen
+                    // lines (sampled once per opening; here by the person's id) and a Message button.
+                    let (heading, line) = activity_empty_text(&activity_name, id);
+                    let message_bg = palette.token("--control-secondary-background-default");
+                    let message_hover = palette.token("--control-secondary-background-hover");
+                    let message_fg = palette.token("--control-secondary-text-default");
+                    div()
+                        // `empty_7q_A1n` sits in the tab panel itself (no scroller), 448px wide from the panel's
+                        // 32px inset: its centre is 8px right of the scroller's.
+                        .size_full()
+                        .pt(px(20.))
+                        .relative()
+                        .left(px(8.))
+                        .flex()
+                        .flex_col()
+                        .items_center()
+                        .justify_center()
+                        .gap(px(24.))
+                        .child(
+                            div()
+                                .max_w(px(320.))
+                                .flex()
+                                .flex_col()
+                                .gap(px(8.))
+                                .text_center()
+                                .child(
+                                    div()
+                                        .text_size(px(16.))
+                                        .line_height(px(20.))
+                                        .font_weight(FontWeight(500.))
+                                        .text_color(strong)
+                                        .child(heading),
+                                )
+                                .child(
+                                    div()
+                                        .text_size(px(14.))
+                                        .line_height(px(18.))
+                                        .text_color(default)
+                                        .child(line),
+                                ),
+                        )
+                        .child(
+                            // `button_F7qvhY` small secondary: 32px, 12px sides, the 16px chat glyph 4px before it.
+                            div()
+                                .id("full-profile-activity-message")
+                                .h(px(32.))
+                                .px(px(12.))
+                                .rounded(px(8.))
+                                .bg(message_bg)
+                                .hover(move |style| style.bg(message_hover))
+                                .cursor_pointer()
+                                .flex()
+                                .items_center()
+                                .gap(px(4.))
+                                .child(
+                                    svg()
+                                        .path("icons/chat_bubble.svg")
+                                        .size(px(16.))
+                                        .text_color(message_fg),
+                                )
+                                .child(
+                                    div()
+                                        .text_size(px(14.))
+                                        .line_height(px(18.))
+                                        .font_weight(FontWeight(500.))
+                                        .text_color(message_fg)
+                                        .child(dc_intl::t!("g33r/P")),
+                                )
+                                .on_click(cx.listener(move |this, _, _, cx| {
+                                    this.full_profile = None;
+                                    this.open_dm_with(id, cx);
+                                })),
+                        )
+                        .into_any_element()
+                } else {
+                    div()
+                        .pt(px(20.))
+                        .flex()
+                        .flex_col()
+                        .gap(px(8.))
+                        .when(!current.is_empty(), |this| {
+                            this.child(Self::section_heading(dc_intl::t!("J6STd9"), subtle))
+                                .child(div().flex().flex_col().gap(px(8.)).children(current))
+                        })
+                        .when(!cards.is_empty(), |this| {
+                            this.child(Self::section_heading(dc_intl::t!("jzgEoL"), subtle))
+                                .child(div().flex().flex_col().gap(px(8.)).children(cards))
+                        })
+                        .into_any_element()
+                }
             }
             Tab::Friends if friend_count == Some(0) => mutual_empty(false),
             Tab::Servers if server_count == Some(0) => mutual_empty(true),
@@ -3086,6 +3242,14 @@ impl Root {
         let top_band = geo
             .sys_pad
             .max(if private_profile { PRIVATE_BANNER } else { 0. });
+        // The frame of module 744808 over the whole modal (`profileContentOuter`), hidden in windows up to 785px tall.
+        let (frame_back, frame_front) = self.profile_frame_layers(
+            id,
+            geo.width,
+            Some(geo.height),
+            super::profile_frames::FrameSurface::Modal,
+            f32::from(viewport.height),
+        );
         let modal = div()
             .parity("full-profile")
             .id("full-profile")
@@ -3108,6 +3272,7 @@ impl Root {
             .bg(modal_bg)
             .children(palette.modal_backdrop())
             .children(top_banner_backdrop)
+            .children(frame_back)
             .on_click(|_, _, cx| cx.stop_propagation())
             // anner_B_p0HC in the modal (module 312381): a 48px band across the top, the lock (xs) and Private
             // Profile in ody-sm/semibold, 4px apart; the content and the close button move below it
@@ -3120,7 +3285,19 @@ impl Root {
                         .left_0()
                         .right_0()
                         .h(px(PRIVATE_BANNER))
-                        .bg(palette.token("--background-surface-higher"))
+                        // `.custom-user-profile-theme.user-profile-modal-v2 .banner_B_p0HC`: on a themed profile the
+                        // band is the overlay mixed into the primary colour, 65% at the top to 60% at the bottom.
+                        .map(|band| match palette.theme.as_ref() {
+                            Some(theme) => {
+                                let (top, bottom) = theme.private_band_stops();
+                                band.bg(gpui::linear_gradient(
+                                    180.,
+                                    gpui::linear_color_stop(top, 0.),
+                                    gpui::linear_color_stop(bottom, 1.),
+                                ))
+                            }
+                            None => band.bg(palette.token("--background-surface-higher")),
+                        })
                         .flex()
                         .items_center()
                         .justify_center()
@@ -3177,7 +3354,8 @@ impl Root {
                             .text_color(secondary_fg),
                     )
                     .on_click(cx.listener(|this, _, _, cx| this.close_full_profile(cx))),
-            );
+            )
+            .children(frame_front);
         // The legacy modal root (`root__KoJTP` in the capture, `EO` in module 935462).
         let pose =
             crate::ui::motion::legacy_modal_pose("full-profile", "full-profile-layer", false);
@@ -3248,11 +3426,11 @@ fn full_profile_modal_geometry(vw: f32, vh: f32) -> ModalGeometry {
 #[cfg(test)]
 mod tests {
     use super::{
-        ConnectionMeta, STEAM_DOTA2_ICON, STEAM_TF2_ICON, Tab, connection_metadata,
-        full_profile_modal_geometry, initial_tab, mutual_counts, mutual_empty_text,
-        mutual_friends_label, mutual_servers_label, parse_connected_accounts, parse_custom_status,
-        profile_date, profile_route, profile_tabs, should_apply_guild_member, time_ago,
-        wishlist_is_private,
+        ConnectionMeta, STEAM_DOTA2_ICON, STEAM_TF2_ICON, Tab, activity_empty_text,
+        connection_metadata, full_profile_modal_geometry, initial_tab, mutual_counts,
+        mutual_empty_text, mutual_friends_label, mutual_servers_label, parse_connected_accounts,
+        parse_custom_status, profile_date, profile_route, profile_tabs, should_apply_guild_member,
+        time_ago, wishlist_is_private,
     };
     use serde_json::json;
 
@@ -3320,6 +3498,12 @@ mod tests {
             "widgets": [{"id": "1", "data": {"type": "favorite_games", "games": [{"game_id": "1"}]}}]
         });
         assert_eq!(initial_tab(Some(&board), true), Tab::Board);
+        let (heading, line) = activity_empty_text("Ann", 2);
+        assert_eq!(heading, "Ann doesn't have any activity to share here");
+        assert_eq!(
+            line,
+            "Ann keeps their profile simple - ask what they're into"
+        );
         let (heading, line) = mutual_empty_text(true, 7);
         assert!(!heading.is_empty() && !line.is_empty());
         assert_eq!(mutual_empty_text(false, 7), mutual_empty_text(false, 12));
@@ -3487,6 +3671,10 @@ mod tests {
             Some("Oct 29, 2021")
         );
         assert_eq!(profile_date("not a date"), None);
+        assert_eq!(
+            profile_date("2013-01-06T10:00:00").as_deref(),
+            Some("Jan 6, 2013")
+        );
     }
 
     #[test]

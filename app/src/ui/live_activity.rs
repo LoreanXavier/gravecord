@@ -72,6 +72,24 @@ fn elapsed(activity: &Value, now: i64) -> Option<String> {
     };
     Some(duration_text(span.max(0) / 1000, false))
 }
+/// `gF` of module 583846: the party chip's text, the state with "(n of max)" (or "(n)") after it.
+fn party_text(state: Option<&str>, party: &Value) -> Option<String> {
+    let size = &party["size"];
+    let (count, max) = (size[0].as_i64(), size[1].as_i64());
+    let count_text = match (count, max) {
+        (Some(count), Some(max)) if count > 0 && max > 0 => {
+            Some(dc_intl::t!("wmUSiy", count = count, max = max))
+        }
+        (Some(count), _) if count > 0 => Some(dc_intl::t!("UTYMsa", count = count)),
+        _ => None,
+    };
+    match (state, count_text) {
+        (Some(state), Some(count)) => Some(format!("{state} ({count})")),
+        (Some(state), None) => Some(state.to_owned()),
+        (None, count) => count,
+    }
+}
+
 pub(super) fn asset_url(activity: &Value, key: &str) -> Option<String> {
     let asset = field(&activity["assets"], key)?;
     if let Some(hash) = asset.strip_prefix("spotify:") {
@@ -438,11 +456,12 @@ impl Root {
                 let own = self.stores.current_user.as_ref().is_some_and(|me| me.id == user);
                 // Module 285909 draws the button when its menu has rows: a game always has Report Issue; another
                 // activity only View All Activity, in a popout.
+                // In the full profile the official card draws it for a game too (`headerContextMenu_Bu4Al8`).
                 let more = !bot
                     && if spotify {
                         own || surface == Surface::Popout
                     } else if kind == 0 {
-                        !large
+                        true
                     } else {
                         !large && surface == Surface::Popout
                     };
@@ -474,8 +493,11 @@ impl Root {
                         s.to_owned()
                     }
                 });
+                // `te` of module 802880: a game's state line only when it has no party; with one, the state goes
+                // into the party chip (`cy` of module 78871).
+                let has_party = activity["party"].is_object();
                 let extra = if kind == 0 {
-                    field(activity, "state")
+                    field(activity, "state").filter(|_| !has_party)
                 } else if matches!(kind, 2 | 3) {
                     None
                 } else {
@@ -552,17 +574,43 @@ impl Root {
                                 .child("New Player"),
                         )
                 });
-                if duration.is_none()
-                    && let Some(badge) = new_player_badge.take()
-                {
-                    details = details.child(badge);
+                // `cy` of module 78871 (282197 `A` puts it first for a game): the party's size behind the group glyph.
+                let mut party_chip = (kind == 0 && !bot && has_party)
+                    .then(|| party_text(field(activity, "state"), &activity["party"]))
+                    .flatten()
+                    .map(|text| {
+                        div()
+                            .flex()
+                            .items_center()
+                            .gap(px(4.))
+                            .child(icon("activity_party", 12., "--text-subtle"))
+                            .child(
+                                div()
+                                    .text_size(px(12.))
+                                    .line_height(px(16.))
+                                    .text_color(color("--text-subtle"))
+                                    .child(text),
+                            )
+                    });
+                if duration.is_none() && (party_chip.is_some() || new_player_badge.is_some()) {
+                    details = details.child(
+                        div()
+                            .flex()
+                            .flex_wrap()
+                            .items_center()
+                            .gap_x(px(8.))
+                            .children(party_chip.take())
+                            .children(new_player_badge.take()),
+                    );
                 }
                 if let Some(duration) = duration {
                     details = details.child(
                         div()
                             .flex()
+                            .flex_wrap()
                             .items_center()
-                            .gap(px(8.))
+                            .gap_x(px(8.))
+                            .children(party_chip)
                             .child(
                                 div()
                                     .flex()
@@ -907,6 +955,24 @@ impl Root {
 mod tests {
     use super::*;
     use serde_json::json;
+    #[test]
+    fn a_party_chip_reads_the_state_and_the_party_size() {
+        let party = json!({"id": "p", "size": [3, 4]});
+        assert_eq!(
+            party_text(Some("3 Squad"), &party).as_deref(),
+            Some("3 Squad (3 of 4)")
+        );
+        assert_eq!(party_text(None, &party).as_deref(), Some("3 of 4"));
+        assert_eq!(
+            party_text(None, &json!({"size": [2, 0]})).as_deref(),
+            Some("2")
+        );
+        assert_eq!(
+            party_text(Some("Lobby"), &json!({"id": "p"})).as_deref(),
+            Some("Lobby")
+        );
+        assert_eq!(party_text(None, &json!({})), None);
+    }
     #[test]
     fn clocks_accept_wire_strings_cap_at_end_and_switch_after_countdown() {
         let mut a = json!({"timestamps":{"start":"1000","end":"3662000"}});
