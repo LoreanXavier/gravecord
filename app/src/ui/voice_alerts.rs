@@ -113,7 +113,7 @@ pub(super) fn last_speaking_moderator(
 /// "{a} and {b} are here", "... and 1 other person is here", "... and {n} other people are here". `names` are the
 /// first two people's names (`getName`) and `count` how many there are; each name is its own run, tagged with its
 /// hook, for the `body-md/semibold` inline name (`username_OObHCR`).
-// Its callers, the warnings of modules 525828, 552258 and 876717, are rows of their own still to port.
+// Its callers, the blocked-people warnings before joining or leaving a call and leaving a group, are still to port.
 #[allow(dead_code)]
 pub(super) fn here_runs(names: &[String], count: usize) -> Vec<(String, Option<Box<str>>)> {
     let first = names.first().cloned().unwrap_or_default();
@@ -264,6 +264,24 @@ impl Root {
         }
     }
 
+    /// The voice panel's and the call bar's Disconnect (`Ta` of module 596339, the tray of module 717965): a Stage
+    /// asks first when leaving would leave it without a speaking moderator.
+    pub(super) fn disconnect_from_call(&mut self, cx: &mut Context<Self>) {
+        let stage = self.call.as_ref().and_then(|call| {
+            let channel = self
+                .stores
+                .guild(call.guild)?
+                .channels
+                .iter()
+                .find(|known| known.id == call.channel)?;
+            (channel.kind == STAGE).then_some((call.guild, call.channel))
+        });
+        match stage {
+            Some((guild, channel)) => self.leave_stage_or_ask(guild, channel, cx),
+            None => self.leave_voice(cx),
+        }
+    }
+
     /// `handleStreamDelete` of module 505293 with `reason: stream_full`: the alert, once per stream.
     pub(super) fn stream_was_full(&mut self, key: String, cx: &mut Context<Self>) {
         if self.stream_full_seen.insert(key) {
@@ -395,7 +413,15 @@ impl Root {
                             modal::Tone::Primary,
                             move |this, _, cx| {
                                 this.voice_alert = None;
-                                this.join_voice_now(guild, channel, cx);
+                                // `onAccept` selects the channel, whose select still checks for a full Stage.
+                                if this.stage_is_full(guild, channel) {
+                                    this.open_voice_alert(
+                                        VoiceAlert::StageFull { guild, channel },
+                                        cx,
+                                    );
+                                } else {
+                                    this.join_voice_now(guild, channel, cx);
+                                }
                             },
                         ),
                     ],

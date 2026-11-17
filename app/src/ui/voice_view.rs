@@ -2377,10 +2377,19 @@ impl Root {
                                     .bg(color("--background-surface-high"))
                                     .flex()
                                     .flex_col()
-                                    .on_mouse_down_out(cx.listener(|this, _, _, cx| {
-                                        this.vv.participants_open = false;
-                                        cx.notify();
-                                    }))
+                                    .on_mouse_down_out(cx.listener(
+                                        |this, event: &gpui::MouseDownEvent, _, cx| {
+                                            // A press on the button itself is its own toggle.
+                                            let on_button =
+                                                this.tip_anchors.borrow().get(KEY).is_some_and(
+                                                    |bounds| bounds.contains(&event.position),
+                                                );
+                                            if !on_button {
+                                                this.vv.participants_open = false;
+                                                cx.notify();
+                                            }
+                                        },
+                                    ))
                                     .child(
                                         div()
                                             .p(px(16.))
@@ -2891,7 +2900,7 @@ impl Root {
                                 this.unwatch_stream_of(owner, cx);
                             }
                         } else {
-                            this.leave_voice(cx);
+                            this.disconnect_from_call(cx);
                         }
                     }))
                     // Stop Watching is 958449 with `streamActive` (`useScreenshareLottie("disable")`), Disconnect

@@ -1124,7 +1124,7 @@ impl Root {
                     color("--text-subtle"),
                 ))
                 .on_hover(lottie_hover(disconnect_id.clone(), cx))
-                .on_click(cx.listener(|this, _, _, cx| this.leave_voice(cx))),
+                .on_click(cx.listener(|this, _, _, cx| this.disconnect_from_call(cx))),
             cx,
         );
         let camera = self.with_tip(
