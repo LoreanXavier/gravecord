@@ -83,6 +83,12 @@ def main():
     texts = messages()
     index = chunks()
     cited = citations()
+    triage = {}
+    path = os.path.join(REPO, "coverage", "ledger-triage.tsv")
+    if os.path.exists(path):
+        with open(path, encoding="utf8") as handle:
+            for row in csv.DictReader(handle, delimiter="	"):
+                triage[row["module"]] = (row["class"], row["where"])
     rows = []
     for name in sorted(os.listdir(MODULES)):
         if not name.endswith(".js"):
@@ -101,22 +107,28 @@ def main():
             continue
         files = sorted(cited.get(module, ()))
         chunk, size = index.get(module, ("", str(len(source))))
+        status = "ported" if files else triage.get(module, ("untriaged", ""))[0]
+        if not files and status == "ported":
+            files = [triage[module][1]]
         sample = " | ".join(texts.get(key, key).replace("\t", " ").replace("\n", " ")[:60] for key in keys[:4])
-        rows.append((module, chunk, size, len(keys), "ported" if files else "unported", ",".join(files[:4]), sample))
-    rows.sort(key=lambda row: (row[4] != "unported", -row[3]))
+        rows.append((module, chunk, size, len(keys), status, ",".join(files[:4]), sample))
+    order = {"untriaged": 0, "missing": 1, "partial": 2, "ported": 3, "not-applicable": 4}
+    rows.sort(key=lambda row: (order.get(row[4], 0), -row[3]))
     with open(OUT, "w", encoding="utf8", newline="") as handle:
         writer = csv.writer(handle, delimiter="\t", lineterminator="\n")
         writer.writerow(("module", "chunk", "bytes", "messages", "status", "ported_in", "sample"))
         writer.writerows(rows)
+    counts = collections.Counter(row[4] for row in rows)
+    print("by status: " + ", ".join(f"{name} {count}" for name, count in sorted(counts.items())))
     ported = sum(1 for row in rows if row[4] == "ported")
     shown = sum(row[3] for row in rows)
     shown_ported = sum(row[3] for row in rows if row[4] == "ported")
-    print(f"UI modules: {len(rows)}, ported (cited): {ported} ({100 * ported / max(1, len(rows)):.1f}%)")
+    print(f"UI modules: {len(rows)}, ported (cited or triaged ported): {ported} ({100 * ported / max(1, len(rows)):.1f}%)")
     print(f"messages they show: {shown}, in ported modules: {shown_ported} ({100 * shown_ported / max(1, shown):.1f}%)")
     print(f"written: {os.path.relpath(OUT, REPO)}")
     if "--missing" in sys.argv:
         for row in rows:
-            if row[4] == "unported":
+            if row[4] in ("missing", "partial", "untriaged"):
                 print(f"{row[0]}\t{row[3]}\t{row[6]}")
 
 

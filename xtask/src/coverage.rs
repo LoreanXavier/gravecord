@@ -142,7 +142,9 @@ pub fn errors(repo: &Path, update: bool) -> Result<Vec<String>> {
     if folder.exists() {
         for entry in fs::read_dir(&folder)? {
             let path = entry?.path();
-            if path.extension().is_some_and(|ext| ext == "tsv") {
+            if path.extension().is_some_and(|ext| ext == "tsv")
+                && !path.ends_with("ledger-triage.tsv")
+            {
                 let name = path
                     .file_name()
                     .map(|n| n.to_string_lossy().into_owned())
@@ -188,8 +190,110 @@ pub fn errors(repo: &Path, update: bool) -> Result<Vec<String>> {
             println!("ledger: {new} newly cited modules (record them with --update-ledger)");
         }
         println!("ledger: {} official modules cited", ui.len());
+        let triage = fs::read_to_string(folder.join("ledger-triage.tsv")).unwrap_or_default();
+        let (triage_errors, backlog) = triage_errors(repo, &modules, &ui, &triage)?;
+        errors.extend(triage_errors);
+        println!(
+            "ledger: backlog {} missing, {} partial (coverage/ledger-triage.tsv)",
+            backlog.0, backlog.1
+        );
     }
     Ok(errors)
+}
+
+/// Whether a module renders elements and shows a message: one row of the ledger (`tools/ledger.py`).
+fn is_ui_module(source: &str) -> bool {
+    if !source.contains(".jsx") {
+        return false;
+    }
+    let bytes = source.as_bytes();
+    let key = |at: usize| {
+        bytes.get(at..at + 6).is_some_and(|key| {
+            key.iter()
+                .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'+' | b'/' | b'='))
+        })
+    };
+    source
+        .match_indices(".t[\"")
+        .any(|(at, _)| key(at + 4) && bytes.get(at + 10) == Some(&b'"'))
+        || source.match_indices(".t.").any(|(at, _)| {
+            key(at + 3)
+                && bytes[at + 3..at + 9].iter().all(u8::is_ascii_alphanumeric)
+                && !bytes.get(at + 9).is_some_and(u8::is_ascii_alphanumeric)
+        })
+}
+
+/// Every UI module of the pinned build is cited by the code or has a row in the triage table: `ported` (with the
+/// files that port it, which must exist), `partial` or `missing` (the backlog), or `not-applicable` (with its reason).
+/// A UI module in neither fails, so nothing the official client can draw is left unlooked at. Returns the failures and
+/// the backlog's (missing, partial) counts.
+fn triage_errors(
+    repo: &Path,
+    modules: &Path,
+    cited: &BTreeSet<String>,
+    triage: &str,
+) -> Result<(Vec<String>, (usize, usize))> {
+    let mut errors = Vec::new();
+    let mut rows = std::collections::BTreeMap::new();
+    for line in triage.lines().skip(1) {
+        let mut cells = line.split('\t');
+        let (Some(module), Some(class)) = (cells.next(), cells.next()) else {
+            continue;
+        };
+        let place = cells.next().unwrap_or("").trim();
+        let note = cells.next().unwrap_or("").trim();
+        match class {
+            "ported" => {
+                for file in place
+                    .split([',', ';', ' '])
+                    .map(str::trim)
+                    .filter(|f| f.ends_with(".rs"))
+                {
+                    if !repo.join(file).exists() {
+                        errors.push(format!(
+                            "ledger-triage: {module} names {file}, which does not exist"
+                        ));
+                    }
+                }
+            }
+            "not-applicable" if note.is_empty() => errors.push(format!(
+                "ledger-triage: {module} is not-applicable without a reason"
+            )),
+            "partial" | "missing" | "not-applicable" => {}
+            other => errors.push(format!(
+                "ledger-triage: {module} has an unknown class `{other}`"
+            )),
+        }
+        rows.insert(module.to_owned(), class.to_owned());
+    }
+    let mut backlog = (0, 0);
+    for entry in fs::read_dir(modules)? {
+        let path = entry?.path();
+        let Some(id) = path
+            .file_stem()
+            .and_then(|stem| stem.to_str())
+            .map(str::to_owned)
+        else {
+            continue;
+        };
+        if cited.contains(&id) {
+            continue;
+        }
+        match rows.get(&id).map(String::as_str) {
+            Some("missing") => backlog.0 += 1,
+            Some("partial") => backlog.1 += 1,
+            Some(_) => {}
+            None => {
+                let source = fs::read_to_string(&path).unwrap_or_default();
+                if is_ui_module(&source) {
+                    errors.push(format!(
+                        "ledger: UI module {id} is neither cited nor triaged"
+                    ));
+                }
+            }
+        }
+    }
+    Ok((errors, backlog))
 }
 
 #[cfg(test)]
@@ -212,6 +316,18 @@ mod tests {
         assert!(errors[0].contains("accent_color"));
         assert!(errors[1].contains("updated_at"));
         assert!(errors[2].contains("total_karma"));
+    }
+
+    #[test]
+    fn ui_modules_render_elements_and_show_messages() {
+        assert!(is_ui_module(
+            r#"(0,r.jsx)("div",{children:o.intl.string(o.t["0ZB/XE"])})"#
+        ));
+        assert!(is_ui_module(
+            r#"(0,r.jsx)(A,{title:s.intl.string(s.t.P2JAEc)})"#
+        ));
+        assert!(!is_ui_module(r#"(0,r.jsx)("div",{})"#));
+        assert!(!is_ui_module(r#"let x=s.t["0ZB/XE"]"#));
     }
 
     #[test]
