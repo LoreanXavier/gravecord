@@ -485,6 +485,12 @@ pub async fn run(
                 cx.update(|cx| root.update(cx, |root, cx| root.open_game_profile(game, cx)));
                 let _ = writeln!(output, "game-profile: opened");
             }
+            // `channel-notice skip-invite`: the invite notice counts as dismissed, so the next candidate shows.
+            ["channel-notice", "skip-invite"] => {
+                crate::ui::channel_notice::SKIP_INVITE
+                    .store(true, std::sync::atomic::Ordering::Relaxed);
+                let _ = writeln!(output, "channel-notice: invite skipped");
+            }
             ["gw", name, json @ ..] => {
                 let text = json.join(" ");
                 let note = match serde_json::from_str(&text) {
