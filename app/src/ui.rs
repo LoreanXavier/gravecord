@@ -131,6 +131,8 @@ mod sticker_player;
 mod sticker_popout;
 mod stickers;
 mod stream_previews;
+mod top_emoji;
+mod channel_notice;
 mod stream_zoom;
 mod timestamps;
 mod tray;
@@ -1637,6 +1639,9 @@ impl Root {
                     self.stream_preview_fetched(&key, &body, cx);
                     return;
                 }
+                if self.top_emoji_fetched(&key, &body, cx) {
+                    return;
+                }
                 if key.starts_with(boost_apply::KEY_PREFIX) {
                     self.boost_apply_fetched(&key, &body, cx);
                     return;
@@ -2490,6 +2495,7 @@ impl Root {
         self.voice_record_stop_leaving(channel);
         self.guild = Some(guild);
         self.channel = channel;
+        self.channel_notice_wanted();
         // A message menu and the delete question act on the channel that was open when they were asked.
         self.menu = None;
         self.submenu = None;
@@ -5040,6 +5046,7 @@ impl Root {
                             ),
                     ),
             )
+            .children(self.channel_notice(cx))
             .children(self.live_now_card(cx))
             .child(div().flex_none().h(px(12.)))
             .children(self.guild_guide_rows(cx))
@@ -10438,6 +10445,7 @@ impl Render for Root {
             .children(self.friend_menu_layer(cx))
             .children(self.remove_friend_modal(cx))
             .children(self.not_friend_modal(cx))
+            .children(self.favorites_full_modal(cx))
             .children(self.friend_nickname_layer(window, cx))
             .children(self.group_edit_layer(window, cx))
             .children(self.group_leave_layer(cx))

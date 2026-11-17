@@ -479,6 +479,12 @@ pub async fn run(
                 let _ = writeln!(output, "{note}");
             }
             // Capture only: `gw <NAME> <json>` hands the root a gateway dispatch, as the socket would.
+            // `game-profile <application id>`: opens that game's profile, as View Game Profile does.
+            ["game-profile", game] => {
+                let game = (*game).to_owned();
+                cx.update(|cx| root.update(cx, |root, cx| root.open_game_profile(game, cx)));
+                let _ = writeln!(output, "game-profile: opened");
+            }
             ["gw", name, json @ ..] => {
                 let text = json.join(" ");
                 let note = match serde_json::from_str(&text) {

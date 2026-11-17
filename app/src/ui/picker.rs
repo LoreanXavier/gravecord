@@ -135,6 +135,12 @@ pub(super) fn toned(
         .map_or(emoji, |child| &EMOJIS[usize::from(*child)])
 }
 
+/// The most favourite emoji an account keeps (`V4` of module 554375).
+const FAVORITES_MAX: usize = 250;
+
+/// The "Oh no!" alert of a 251st favourite is open.
+static FAVORITES_FULL: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
 /// The skin tone kept between sessions (`emoji.skin_tone` in storage.json).
 pub(super) fn stored_tone() -> u8 {
     crate::storage::get("emoji.skin_tone")
@@ -230,6 +236,8 @@ fn category_label(category: &str) -> &'static str {
 fn category_icon(category: &str) -> &'static str {
     match category {
         "recent" => "picker_cat_recent",
+        // `TrophyIcon`.
+        "top_guild_emoji" => "inventory_trophy",
         // `StarIcon`.
         "favorites" => "clips_star",
         "people" => "picker_cat_people",
@@ -391,9 +399,11 @@ impl Root {
             .collect();
         if let Some(at) = list.iter().position(|known| known == key) {
             list.remove(at);
-        } else if list.len() < 250 {
+        } else if list.len() < FAVORITES_MAX {
             list.push(key.to_owned());
         } else {
+            // `V4`: at 250 the alert of module 579872 says so and nothing changes.
+            FAVORITES_FULL.store(true, std::sync::atomic::Ordering::Relaxed);
             return;
         }
         if !crate::storage::settings_writes_blocked() {
@@ -536,6 +546,28 @@ impl Root {
         // `EmojiStore.categories`: Favorites (when there are any), then Frequently Used, the servers, the unicode
         // categories.
         let mut sections = Vec::new();
+        // `TOP_GUILD_EMOJI` comes first (module 121681's category order), for a picker that belongs to a server and
+        // not for reactions (module 316884).
+        if !matches!(target, Target::Reaction { .. })
+            && let Some(guild) = self.guild
+        {
+            let items = self.top_guild_emoji(guild);
+            if !items.is_empty() {
+                let name = self
+                    .stores
+                    .guilds
+                    .iter()
+                    .find(|g| g.id == guild)
+                    .map(|g| g.name.clone())
+                    .unwrap_or_default();
+                sections.push(Section {
+                    key: "top_guild_emoji".to_owned(),
+                    label: format!("Top Emoji in {name}"),
+                    icon: SectionIcon::Category("top_guild_emoji"),
+                    items,
+                });
+            }
+        }
         let favorites = self.favorite_emoji_items();
         if !favorites.is_empty() {
             sections.push(Section {
@@ -603,6 +635,13 @@ impl Root {
         }
         if self.requested.insert("emoji-sheet".to_owned()) {
             let _ = self.requests.send(Request::EmojiSheet);
+        }
+        // Module 347209 asks when the pointer enters the emoji button; the picker opening is the moment this client
+        // knows of for every target.
+        if !matches!(target, Target::Reaction { .. })
+            && let Some(guild) = self.guild
+        {
+            self.top_emoji_fetch(guild);
         }
         let search = cx.new(|cx| {
             let mut editor = Editor::new(editor_style(), cx);
@@ -2091,6 +2130,38 @@ const COMPOSER_TOOLS_WIDTH: f32 = 5. * 32.;
 /// Whether a press lands on the composer's button strip.
 fn on_composer_tools(composer: Bounds<Pixels>, position: Point<Pixels>) -> bool {
     composer.contains(&position) && position.x >= composer.right() - px(COMPOSER_TOOLS_WIDTH + 8.)
+}
+
+impl Root {
+    /// Module 579872 `show` as `V4` calls it: a small modal, title "Oh no!", the limit as its subtitle, one primary
+    /// "Okay".
+    pub(super) fn favorites_full_modal(&self, cx: &mut Context<Self>) -> Option<gpui::AnyElement> {
+        use gpui::{IntoElement, ParentElement, div};
+        if !FAVORITES_FULL.load(std::sync::atomic::Ordering::Relaxed) {
+            return None;
+        }
+        let close = |_: &mut Root, _: &mut Window, _: &mut Context<Root>| {
+            FAVORITES_FULL.store(false, std::sync::atomic::Ordering::Relaxed);
+        };
+        let spec = super::modal::Spec {
+            id: "favorites-full-alert",
+            title: dc_intl::tr("Oh no!").into(),
+            subtitle: Some(
+                div()
+                    .child(format!("You cannot have more than {FAVORITES_MAX} favorites."))
+                    .into_any_element(),
+            ),
+            body: None,
+            buttons: vec![super::modal::button(
+                "favorites-full-okay",
+                dc_intl::tr("Okay"),
+                super::modal::Tone::Primary,
+                close,
+            )],
+            close: Box::new(close),
+        };
+        Some(super::modal::render_small(spec, cx))
+    }
 }
 
 #[cfg(test)]

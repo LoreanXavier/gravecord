@@ -32,6 +32,73 @@ pub(super) struct GameProfile {
     pub game: String,
     pub tab: Tab,
     scroll: ScrollHandle,
+    /// The media item shown in the trailer frame (`n` of `lJ`), an index into [`media_items`].
+    media: usize,
+}
+
+/// One item of the trailer frame (`f` of `lJ` in module 581745): the trailers first, then the screenshots.
+#[derive(Clone, Debug, PartialEq)]
+enum Media {
+    Video {
+        url: String,
+        poster: String,
+        width: u32,
+        height: u32,
+    },
+    Image(String),
+}
+
+/// `kr` of module 776231: the CDN size ladder, the first step at least `size`.
+fn cdn_size(size: u32) -> u32 {
+    const LADDER: [u32; 31] = [
+        16, 20, 22, 24, 28, 32, 40, 44, 48, 56, 60, 64, 80, 96, 100, 128, 160, 240, 256, 300, 320,
+        480, 512, 600, 640, 1024, 1280, 1536, 2048, 3072, 4096,
+    ];
+    LADDER
+        .iter()
+        .copied()
+        .find(|step| size <= *step)
+        .unwrap_or(4096)
+}
+
+/// `YE` of module 371794: `https://{CDN}/app-assets/{application}/store/{asset}.{ext}?size={kr(width)}`.
+fn store_asset(application: &str, asset: &str, width: Option<u32>, ext: &str) -> String {
+    let mut url =
+        format!("https://cdn.discordapp.com/app-assets/{application}/store/{asset}.{ext}");
+    if let Some(width) = width {
+        url.push_str(&format!("?size={}", cdn_size(width)));
+    }
+    url
+}
+
+/// The trailer frame's items: each trailer as an MP4 with its WebP poster, then each screenshot.
+fn media_items(game_id: &str, game: &Value) -> Vec<Media> {
+    let trailers = game["trailers"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|trailer| {
+            let id = trailer["id"].as_str()?;
+            let application = trailer["application_id"].as_str().unwrap_or(game_id);
+            let width = trailer["width"].as_u64().map(|w| w as u32);
+            Some(Media::Video {
+                url: store_asset(application, id, width, "mp4"),
+                poster: store_asset(application, id, width, "webp"),
+                width: width.unwrap_or(1920),
+                height: trailer["height"].as_u64().map_or(1080, |h| h as u32),
+            })
+        });
+    let shots = game["screenshot_urls"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|url| url.as_str().map(|url| Media::Image(url.to_owned())));
+    trailers.chain(shots).collect()
+}
+
+/// `lz` at `size: 900`: a screenshot as the frame asks for it.
+fn frame_picture(url: &str) -> String {
+    format!("{url}?width=900&height=900&keep_aspect_ratio=true&format=webp")
 }
 
 /// `iV`: the store button of a website category, its label and its icon.
@@ -448,7 +515,7 @@ impl Root {
     }
 
     /// `openGameProfileModal`: asks for the game's record and opens the profile.
-    pub(super) fn open_game_profile(&mut self, game: String, cx: &mut Context<Self>) {
+    pub(crate) fn open_game_profile(&mut self, game: String, cx: &mut Context<Self>) {
         let key = format!("{KEY_PREFIX}{game}");
         if !self.fetched.contains_key(&key) && self.requested.insert(key.clone()) {
             let _ = self.requests.send(Request::Fetch {
@@ -461,6 +528,7 @@ impl Root {
             game,
             tab: Tab::Overview,
             scroll: ScrollHandle::new(),
+            media: 0,
         });
         cx.notify();
     }
@@ -488,6 +556,12 @@ impl Root {
                 wanted.push(url);
             }
             wanted.extend(thumbnails(id, game));
+            // The first item's picture: a trailer's poster or the first screenshot at the frame's size.
+            match media_items(id, game).first() {
+                Some(Media::Video { poster, .. }) => wanted.push(poster.clone()),
+                Some(Media::Image(url)) => wanted.push(frame_picture(url)),
+                None => {}
+            }
             if let Some((badge, _)) = game["reviews"]["opencritic"]["tier"]
                 .as_u64()
                 .and_then(open_critic_tier)
@@ -561,6 +635,12 @@ impl Root {
         let open = self.game_profile.as_ref()?;
         let id = open.game.clone();
         let tab = open.tab;
+        let media_list = self
+            .game_record(&id)
+            .map(|game| media_items(&id, &game))
+            .unwrap_or_default();
+        // `j = Math.min(n, f.length - 1)`.
+        let shown = open.media.min(media_list.len().saturating_sub(1));
         let game = self.game_record(&id);
         let name = game
             .as_ref()
@@ -768,9 +848,14 @@ impl Root {
                     .flex_col()
                     .gap(px(12.))
                     .child(
-                        div()
-                            .pt(px(16.))
-                            .child(div().h(px(431.23)).rounded(px(16.)).bg(rgb(0x000000))),
+                        div().pt(px(16.)).child(
+                            div()
+                                .h(px(431.23))
+                                .rounded(px(16.))
+                                .overflow_hidden()
+                                .bg(rgb(0x000000))
+                                .children(self.game_media_frame(&id, media_list.get(shown), cx)),
+                        ),
                     )
                     // `children_s64Ydp`: 106 by 60 thumbnails 8px apart; the shown one is ringed 2px in
                     // `--border-strong` with its picture 4px in.
@@ -782,8 +867,18 @@ impl Root {
                             .gap(px(8.))
                             .overflow_x_scroll()
                             .children(thumbs.into_iter().enumerate().map(|(index, picture)| {
-                                let selected = index == 0;
+                                let selected = index == shown;
                                 div()
+                                    .id(("game-profile-thumb", index))
+                                    .cursor_pointer()
+                                    // `I`: choosing a thumbnail shows its item.
+                                    .on_click(cx.listener(move |this, _, _, cx| {
+                                        if let Some(open) = this.game_profile.as_mut() {
+                                            open.media = index;
+                                        }
+                                        this.game_media_wanted();
+                                        cx.notify();
+                                    }))
                                     .flex_none()
                                     .w(px(106.))
                                     .h(px(60.))
@@ -1136,11 +1231,70 @@ impl Root {
     }
 }
 
+impl Root {
+    /// `lJ`'s frame: a trailer plays in the media player (`l$`, `autoPlay: !reducedMotion && !obscured`, muted at
+    /// first), a screenshot is drawn to cover the frame.
+    fn game_media_frame(
+        &self,
+        game: &str,
+        item: Option<&Media>,
+        cx: &mut Context<Self>,
+    ) -> Option<AnyElement> {
+        match item? {
+            Media::Video {
+                url,
+                poster,
+                width,
+                height,
+            } => Some(self.render_media_player(
+                super::video_player::PlayerSpec {
+                    key: format!("game-trailer:{game}:{url}"),
+                    src: url.clone(),
+                    width: 766.66,
+                    height: 431.23,
+                    aspect_size: ((*width).max(1), (*height).max(1)),
+                    radius: 16.0,
+                    poster_key: Some(poster.clone()),
+                    auto_play: true,
+                    allow_fullscreen: true,
+                    is_fullscreen_view: false,
+                    actions: None,
+                },
+                cx,
+            )),
+            Media::Image(url) => {
+                let picture = self.images.get(&frame_picture(url)).cloned()?;
+                Some(cover_fit(picture, 766.66, 431.23))
+            }
+        }
+    }
+
+    /// The shown item's picture, asked for once it is chosen.
+    fn game_media_wanted(&mut self) {
+        let Some(open) = self.game_profile.as_ref() else {
+            return;
+        };
+        let id = open.game.clone();
+        let index = open.media;
+        let Some(item) = self
+            .game_record(&id)
+            .and_then(|game| media_items(&id, &game).into_iter().nth(index))
+        else {
+            return;
+        };
+        let url = match item {
+            Media::Video { poster, .. } => poster,
+            Media::Image(url) => frame_picture(&url),
+        };
+        self.request_image(url.clone(), url);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
-        detail_rows, genres, link_glyphs, mobile_reviews, platform_glyphs, rating_texts,
-        store_website,
+        Media, cdn_size, detail_rows, genres, link_glyphs, media_items, mobile_reviews,
+        platform_glyphs, rating_texts, store_website,
     };
     use serde_json::Value;
 
@@ -1157,6 +1311,29 @@ mod tests {
                 "google_play": {"rating": 4.599999904632568, "rating_count": 552025}
             }
         })
+    }
+
+    #[test]
+    fn trailers_come_first_as_mp4_with_a_webp_poster_then_the_screenshots() {
+        let game = serde_json::json!({
+            "trailers": [{"id": "5", "application_id": "9", "width": 1280, "height": 720}],
+            "screenshot_urls": ["https://cdn.example/shot.png"],
+        });
+        let items = media_items("1", &game);
+        assert_eq!(
+            items[0],
+            Media::Video {
+                url: "https://cdn.discordapp.com/app-assets/9/store/5.mp4?size=1280".to_owned(),
+                poster: "https://cdn.discordapp.com/app-assets/9/store/5.webp?size=1280".to_owned(),
+                width: 1280,
+                height: 720,
+            }
+        );
+        assert_eq!(
+            items[1],
+            Media::Image("https://cdn.example/shot.png".to_owned())
+        );
+        assert_eq!(cdn_size(1000), 1024);
     }
 
     #[test]
