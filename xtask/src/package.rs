@@ -132,7 +132,7 @@ fn signing_key(dir: &Path) -> Result<ed25519_dalek::SigningKey> {
 fn key_source(public: &[u8; 32]) -> String {
     let bytes: Vec<String> = public.iter().map(|byte| format!("0x{byte:02x}")).collect();
     let rows: Vec<String> = bytes
-        .chunks(8)
+        .chunks(16)
         .map(|row| format!("    {},", row.join(", ")))
         .collect();
     format!(
@@ -148,7 +148,9 @@ fn key_source(public: &[u8; 32]) -> String {
 fn ensure_key_source(repo: &Path, key: &ed25519_dalek::SigningKey) -> Result<()> {
     let path = repo.join(KEY_SOURCE);
     let wanted = key_source(key.verifying_key().as_bytes());
-    if std::fs::read_to_string(&path).ok().as_deref() != Some(wanted.as_str()) {
+    // Compared without line ending differences: a checkout may turn the file into CRLF.
+    let current = std::fs::read_to_string(&path).map(|text| text.replace("\r\n", "\n"));
+    if current.ok().as_deref() != Some(wanted.as_str()) {
         std::fs::write(&path, wanted)?;
         println!("{KEY_SOURCE} written: commit it with this build");
     }
@@ -398,6 +400,24 @@ mod tests {
         assert!(source.contains("pub const PUBLIC_KEY: [u8; 32] = ["));
         assert!(source.contains(&first));
         let _ = std::fs::remove_dir_all(&base);
+    }
+
+    /// The committed key source is exactly what `cargo xtask package` writes for its key, so a package run never
+    /// rewrites it (and rustfmt leaves it as it is).
+    #[test]
+    fn the_committed_key_source_is_the_generated_one() {
+        let text = include_str!("../../app/src/release_key.rs").replace("\r\n", "\n");
+        let bytes: Vec<u8> = text
+            .split("PUBLIC_KEY")
+            .nth(1)
+            .unwrap()
+            .split("0x")
+            .skip(1)
+            .map(|hex| u8::from_str_radix(&hex[..2], 16).unwrap())
+            .collect();
+        let key: [u8; 32] = bytes.try_into().unwrap();
+        assert_eq!(key_source(&key), text);
+        assert!(ed25519_dalek::VerifyingKey::from_bytes(&key).is_ok());
     }
 
     #[test]
