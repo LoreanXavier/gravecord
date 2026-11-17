@@ -643,6 +643,7 @@ impl Root {
 
     /// The harness's `plugin` step: `state`, `master on|off`, `on <id>`, `off <id>`, `set <id> <key> <json>`,
     /// `import <path>`, `fold <id>`.
+    #[cfg(feature = "capture")]
     pub(crate) fn script_plugin(&mut self, words: &[&str]) -> String {
         match words {
             ["state"] => plugins::snapshot().to_value().to_string(),

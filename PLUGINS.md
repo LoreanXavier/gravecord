@@ -2,15 +2,17 @@
 
 Built-in equivalents of the Vencord/Equicord plugins the owner keeps on. Not part of the pinned client and not
 `FEATURES.md` rows. Framework: `app/src/plugins.rs` (registry, state, Backup & Restore) and the Gravecord settings
-group (`app/src/ui/settings/mods.rs`). Decisions: `DECISIONS.md`, "Built-in plugins".
+group (`app/src/ui/settings/mods.rs`). Decisions: `DECISIONS.md`, "Built-in plugins". Written by
+`tools/gen-plugins-md.py`.
 
 The list is the plugins enabled in the owner's Equicord backup of 2026-09-21 (156). Sources were read in the local
 Equicord checkout of 2026-11-14 (`src/plugins` is Vencord's, `src/equicordplugins` Equicord's).
 
-Totals: 6 ported, 112 planned, 38 not applicable.
+Totals: 10 ported, 3 native, 106 planned, 37 not applicable.
 
-Status: **ported** works and has its proof; **planned** is not built yet (an import keeps its settings for when it
-is); **not applicable** has nothing to port in a native client.
+Status: **ported** works and has its proof; **native** is what gravecord already does without a plugin;
+**planned** is not built yet (an import keeps its settings for when it is); **not applicable** has nothing to
+port in a native client.
 
 | plugin | status | source | what it does (original) | here / what it needs | proof |
 | - | - | - | - | - | - |
@@ -52,7 +54,7 @@ is); **not applicable** has nothing to port in a native client.
 | CrashHandler | not applicable | plugins/crashHandler/index.ts | Utility plugin for handling and possibly recovering from crashes without a restart | recovers React render crashes; there is no React here. |  |
 | CustomRPC | planned | plugins/customRPC/index.tsx | Add a fully customisable Rich Presence (Game status) to your Discord profile | custom rich presence (needs the RPC/activity editor). |  |
 | Decor | planned | plugins/decor/index.tsx | Create and use your own custom avatar decorations, or pick your favorite from the presets. | third-party avatar decorations service. |  |
-| DisableCallIdle | planned | plugins/disableCallIdle/index.ts | Disables automatically getting kicked from a DM voice call after 3 minutes and being moved to an AFK voice channel. | no idle kick from DM calls. |  |
+| DisableCallIdle | ported | plugins/disableCallIdle/index.ts | Disables automatically getting kicked from a DM voice call after 3 minutes and being moved to an AFK voice channel. | dm_call.rs: no leave after 3 minutes alone in a DM call. | frames idle-off/idle-on (195 s alone in a simulated DM call) |
 | DisableDeepLinks | not applicable | plugins/noDeepLinks.web/index.ts | Disables Discord's stupid deep linking feature which tries to force you to use their Desktop App | web build only. |  |
 | DownloadAllAttachments | planned | equicordplugins/downloadAllAttachments/index.tsx | Adds a popover button to download all attachments in a message at once. |  |  |
 | DynamicImageModalAPI | not applicable | plugins/_api/dynamicImageModalApi.ts | Allows you to omit either width or height when opening an image modal | client-mod plumbing (an API for other plugins), nothing to port. |  |
@@ -64,14 +66,14 @@ is); **not applicable** has nothing to port in a native client.
 | FavoriteGifSearch | planned | (not in the 2026-11-14 checkout) |  |  |  |
 | FixImagesQuality | planned | plugins/fixImagesQuality/index.tsx | Improves quality of images by loading them at their original resolution |  |  |
 | FixYoutubeEmbeds | planned | plugins/fixYoutubeEmbeds.desktop/index.tsx | Bypasses youtube videos being blocked from display on Discord (for example by UMG) |  |  |
-| ForceOwnerCrown | planned | plugins/forceOwnerCrown/index.ts | Force the owner crown next to usernames even if the server is large. | owner crown for large servers. |  |
+| ForceOwnerCrown | native | plugins/forceOwnerCrown/index.ts | Force the owner crown next to usernames even if the server is large. | the member list shows the owner crown at any server size. |  |
 | FriendInvites | planned | plugins/friendInvites/index.ts | Create and manage friend invite links via slash commands (/create friend invite, /view friend invites, /revoke friend invites). |  |  |
 | FriendsSince | planned | (not in the 2026-11-14 checkout) |  |  |  |
 | FullSearchContext | planned | plugins/fullSearchContext/index.tsx | Makes the message context menu in message search results have all options you'd expect |  |  |
 | FullVCPFP | planned | equicordplugins/fullVcPfp/index.tsx | Makes avatars take up the entire vc tile |  |  |
 | GameActivityToggle | planned | plugins/gameActivityToggle/index.tsx | Adds a button next to the mic and deafen button to toggle game activity. Right click it to toggle Spotify activity. |  |  |
 | GifMaker | planned | equicordplugins/gifMaker/index.tsx | Create and caption GIFs from any media in chat or the GIF picker. |  |  |
-| GifPaste | planned | plugins/gifPaste/index.ts | Makes picking a gif in the gif picker insert a link into the chatbox instead of instantly sending it | GIF picker inserts the link. |  |
+| GifPaste | ported | plugins/gifPaste/index.ts | Makes picking a gif in the gif picker insert a link into the chatbox instead of instantly sending it | gifs.rs: picking a GIF inserts its link and a space in the composer. | frames gifpaste-off/gifpaste-on |
 | GlobalBadges | planned | equicordplugins/globalBadges/index.tsx | Adds global badges from other client mods | third-party badge service. |  |
 | GreetStickerPicker | planned | plugins/greetStickerPicker/index.tsx | Allows you to use any greet sticker instead of only the random one by right-clicking the 'Wave to say hi!' button |  |  |
 | HeaderBarAPI | not applicable | equicordplugins/_api/headerBar.ts | API to add buttons to the header bar and channel toolbar. | client-mod plumbing (an API for other plugins), nothing to port. |  |
@@ -99,11 +101,11 @@ is); **not applicable** has nothing to port in a native client.
 | NicknameIconsAPI | not applicable | plugins/_api/nicknameIcons.ts | API to add icons to the nickname, in profiles | client-mod plumbing (an API for other plugins), nothing to port. |  |
 | NoDevtoolsWarning | not applicable | plugins/noDevtoolsWarning/index.ts | Disables the 'HOLD UP' banner in the console. As a side effect, also prevents Discord from hiding your token, which prevents random logouts. | no web console in a native client. |  |
 | NoNitroUpsell | planned | equicordplugins/noNitroUpsell/index.ts | Removes all of Discord's nitro upsells by tricking the client into thinking you have nitro. |  |  |
-| NoPendingCount | planned | plugins/noPendingCount/index.ts | Removes the ping count of incoming friend requests, message requests, and nitro offers. | friend/message request badges. |  |
+| NoPendingCount | ported | plugins/noPendingCount/index.ts | Removes the ping count of incoming friend requests, message requests, and nitro offers. | friend request count 0 (`hideFriendRequestsCount`), no Message Requests badge (`hideMessageRequestsCount`); no Nitro offer badge exists here. | frames pending-off/pending-on |
 | NoPushToTalk | planned | equicordplugins/noPushToTalk/index.ts | Bypasses the push-to-talk requirement for voice activity in channels that enforce it. |  |  |
-| NormalizeMessageLinks | not applicable | equicordplugins/normalizeMessageLinks/index.ts | Strip canary/ptb from message links | Copy Message Link already writes discord.com links. |  |
+| NormalizeMessageLinks | native | equicordplugins/normalizeMessageLinks/index.ts | Strip canary/ptb from message links | Copy Message Link already writes discord.com links. |  |
 | NoticesAPI | not applicable | plugins/_api/notices.ts | Fixes notices being automatically dismissed | client-mod plumbing (an API for other plugins), nothing to port. |  |
-| NoTrack | planned | plugins/_core/noTrack.ts | Disable Discord's tracking (analytics/'science'), metrics and Sentry crash reporting | gate `POST /science` (overlay events) in net.rs. |  |
+| NoTrack | native | plugins/_core/noTrack.ts | Disable Discord's tracking (analytics/'science'), metrics and Sentry crash reporting | gravecord sends no analytics, metrics or Sentry reports; its only `/science` post is the overlay problem report the user submits. |  |
 | NoTypingAnimation | ported | plugins/noTypingAnimation/index.ts | Disables the CPU-intensive typing dots animation | typing_avatar.rs: still dots, no animation frames. | none yet (headless frame not taken) |
 | NoUnblockToJump | planned | plugins/noUnblockToJump/index.ts | Allows you to jump to messages of blocked or ignored users and likely spammers without unblocking them | jump to blocked users' messages. |  |
 | NSFWGateBypass | planned | (not in the 2026-11-14 checkout) |  |  |  |
@@ -120,7 +122,7 @@ is); **not applicable** has nothing to port in a native client.
 | ReactErrorDecoder | not applicable | plugins/reactErrorDecoder/index.ts |  | decodes minified React errors; there is no React here. |  |
 | ReadAllNotificationsButton | planned | plugins/readAllNotificationsButton/index.tsx | Read all server notifications with a single button click! |  |  |
 | RelationshipNotifier | planned | plugins/relationshipNotifier/index.ts | Notifies you when a friend, group chat, or server removes you. |  |  |
-| RevealAllSpoilers | planned | plugins/revealAllSpoilers/index.ts | Reveal all spoilers in a message by Ctrl-clicking a spoiler, or in the chat with Ctrl+Shift-click | Ctrl-click reveals all spoilers. |  |
+| RevealAllSpoilers | ported | plugins/revealAllSpoilers/index.ts | Reveal all spoilers in a message by Ctrl-clicking a spoiler, or in the chat with Ctrl+Shift-click | Ctrl-click opens every text spoiler of the message, Ctrl+Shift-click of the channel. | `ui::plugin_hooks::tests`; frames spoilers-off/spoilers-on |
 | ReverseImageSearch | planned | plugins/reverseImageSearch/index.tsx | Adds ImageSearch to image context menus |  |  |
 | RoleColorEverywhere | planned | plugins/roleColorEverywhere/index.tsx | Adds the top role color anywhere possible | role colours in mentions, lists, voice. |  |
 | SearchFix | planned | equicordplugins/searchFix/index.tsx |  |  |  |

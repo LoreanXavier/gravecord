@@ -566,6 +566,34 @@ pub async fn run(
                     });
                 }
             }
+            // `click-with ctrl|shift|alt|ctrl+shift x y`: a click whose press and release carry those keys, as a click
+            // with the keys held does (window.modifiers() reads the last event's).
+            ["click-with", held, x, y] => {
+                if let Some(position) = at(x, y) {
+                    let modifiers = Modifiers {
+                        shift: held.contains("shift"),
+                        control: held.contains("ctrl"),
+                        alt: held.contains("alt"),
+                        ..Modifiers::default()
+                    };
+                    let with = |input: PlatformInput| match input {
+                        PlatformInput::MouseDown(mut event) => {
+                            event.modifiers = modifiers;
+                            PlatformInput::MouseDown(event)
+                        }
+                        PlatformInput::MouseUp(mut event) => {
+                            event.modifiers = modifiers;
+                            PlatformInput::MouseUp(event)
+                        }
+                        other => other,
+                    };
+                    cx.update(|cx| {
+                        dispatch(cx, window, moved(position, None));
+                        dispatch(cx, window, with(down(position)));
+                        dispatch(cx, window, with(up(position)));
+                    });
+                }
+            }
             ["click", x, y] => {
                 if let Some(position) = at(x, y) {
                     cx.update(|cx| {

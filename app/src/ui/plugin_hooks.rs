@@ -83,6 +83,11 @@ pub(super) fn user_volume_max() -> u32 {
     }
 }
 
+/// NoPendingCount (Vencord `src/plugins/noPendingCount`): whether a request count badge is hidden, by its setting.
+pub(super) fn hide_count(setting: &str) -> bool {
+    crate::plugin_on!("NoPendingCount") && crate::plugins::flag("NoPendingCount", setting)
+}
+
 /// UnlimitedAccounts (Equicord `src/equicordplugins/unlimitedAccounts`): how many accounts the switcher keeps,
 /// `getMaxAccounts` (0 is no limit), or the official five.
 pub(super) fn max_accounts() -> usize {
@@ -93,6 +98,44 @@ pub(super) fn max_accounts() -> usize {
         0 => usize::MAX,
         most => most,
     }
+}
+
+/// RevealAllSpoilers (Vencord `src/plugins/revealAllSpoilers`): a key in `Root::revealed` that opens every spoiler of a
+/// message (`(message, u32::MAX, 0)`) or of a channel (`(channel, u32::MAX, 1)`), next to the per-spoiler keys
+/// `(message, block, start)`.
+const ALL_OF_MESSAGE: (u32, usize) = (u32::MAX, 0);
+const ALL_OF_CHANNEL: (u32, usize) = (u32::MAX, 1);
+
+/// A spoiler was opened by a press: with Ctrl, every spoiler of its message opens, with Ctrl+Shift every one in the
+/// channel (the original's `ctrlKey`/`metaKey` and `shiftKey`).
+pub(super) fn reveal_all_spoilers(
+    revealed: &mut std::collections::HashSet<(Id, u32, usize)>,
+    message: Id,
+    channel: Option<Id>,
+    modifiers: Modifiers,
+) {
+    if !crate::plugin_on!("RevealAllSpoilers") || !(modifiers.control || modifiers.platform) {
+        return;
+    }
+    match (modifiers.shift, channel) {
+        (true, Some(channel)) => {
+            revealed.insert((channel, ALL_OF_CHANNEL.0, ALL_OF_CHANNEL.1));
+        }
+        _ => {
+            revealed.insert((message, ALL_OF_MESSAGE.0, ALL_OF_MESSAGE.1));
+        }
+    }
+}
+
+pub(super) fn all_spoilers_revealed(
+    revealed: &std::collections::HashSet<(Id, u32, usize)>,
+    message: Id,
+    channel: Option<Id>,
+) -> bool {
+    revealed.contains(&(message, ALL_OF_MESSAGE.0, ALL_OF_MESSAGE.1))
+        || channel.is_some_and(|channel| {
+            revealed.contains(&(channel, ALL_OF_CHANNEL.0, ALL_OF_CHANNEL.1))
+        })
 }
 
 impl Root {
@@ -139,6 +182,26 @@ impl Root {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn whole_message_and_whole_channel_keys_open_spoilers() {
+        let mut revealed = std::collections::HashSet::new();
+        assert!(!all_spoilers_revealed(&revealed, 7, Some(9)));
+        revealed.insert((7, ALL_OF_MESSAGE.0, ALL_OF_MESSAGE.1));
+        assert!(all_spoilers_revealed(&revealed, 7, Some(9)));
+        assert!(!all_spoilers_revealed(&revealed, 8, Some(9)));
+        revealed.insert((9, ALL_OF_CHANNEL.0, ALL_OF_CHANNEL.1));
+        assert!(all_spoilers_revealed(&revealed, 8, Some(9)));
+        assert!(!all_spoilers_revealed(&revealed, 8, Some(10)));
+        // Off by default: a Ctrl press reveals nothing more.
+        let mut untouched = std::collections::HashSet::new();
+        let ctrl = Modifiers {
+            control: true,
+            ..Modifiers::default()
+        };
+        reveal_all_spoilers(&mut untouched, 7, Some(9), ctrl);
+        assert!(untouched.is_empty());
+    }
 
     #[test]
     fn actions_parse_from_the_original_values() {
