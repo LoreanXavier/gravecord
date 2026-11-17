@@ -692,6 +692,7 @@ pub struct Root {
     /// The game profile (module 581745).
     game_profile: Option<game_profile::GameProfile>,
     game_communities_layout: game_communities::Layout,
+    game_communities_filter: game_communities::Filter,
     /// When the text launcher's collections last arrived (module 503406 asks again after ten minutes).
     launcher_collections_at: Option<i64>,
     /// The dialog of a refused upload (too large, too many, empty).
@@ -1085,6 +1086,7 @@ impl Root {
             report_issue: None,
             game_profile: None,
             game_communities_layout: Default::default(),
+            game_communities_filter: Default::default(),
             launcher_collections_at: None,
             upload_error: None,
             sent_edit: None,

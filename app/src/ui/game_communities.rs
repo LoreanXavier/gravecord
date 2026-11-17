@@ -32,6 +32,62 @@ struct Community {
     description: String,
     presence: Option<u64>,
     members: Option<u64>,
+    locale: Option<String>,
+}
+
+/// `tl` (session only): the languages left out of one game's list, and whether the menu is open.
+#[derive(Default)]
+pub(super) struct Filter {
+    game: String,
+    excluded: std::collections::HashSet<String>,
+    pub open: bool,
+}
+
+/// `tw`'s options: each language of the list by its label (`en-US` is "English"), sorted by label; a checked one is
+/// disabled when it is the only one left.
+fn locale_options(
+    locales: &[String],
+    excluded: &std::collections::HashSet<String>,
+) -> Vec<(String, String, bool, bool)> {
+    let mut options: Vec<(String, String)> = locales
+        .iter()
+        .map(|code| {
+            let label = if code == "en-US" {
+                dc_intl::tr("English").to_string()
+            } else {
+                let name = dc_intl::localized_locale_name(code);
+                if name.is_empty() {
+                    code.clone()
+                } else {
+                    name.to_owned()
+                }
+            };
+            (code.clone(), label)
+        })
+        .collect();
+    options.sort_by(|a, b| a.1.cmp(&b.1));
+    let checked = locales
+        .iter()
+        .filter(|code| !excluded.contains(*code))
+        .count();
+    options
+        .into_iter()
+        .map(|(code, label)| {
+            let on = !excluded.contains(&code);
+            (code, label, on, on && checked == 1)
+        })
+        .collect()
+}
+
+/// The distinct preferred locales of the list, in first-seen order (`eX().uniq`).
+fn locales_of(communities: &[Community]) -> Vec<String> {
+    let mut seen = Vec::new();
+    for locale in communities.iter().filter_map(|c| c.locale.clone()) {
+        if !seen.contains(&locale) {
+            seen.push(locale);
+        }
+    }
+    seen
 }
 
 /// A REST answer arrives as `{ok, status, body}`; the guilds are in `body`.
@@ -48,6 +104,7 @@ fn communities_of(answer: &Value) -> Vec<Community> {
                 description: guild["description"].as_str().unwrap_or_default().to_owned(),
                 presence: guild["approximate_presence_count"].as_u64(),
                 members: guild["approximate_member_count"].as_u64(),
+                locale: guild["preferred_locale"].as_str().map(str::to_owned),
             })
         })
         .collect()
@@ -396,15 +453,27 @@ impl Root {
         let layout = self.game_communities_layout;
         let ids = self.community_ids(game);
         let answer = self.fetched.get(&format!("{KEY_PREFIX}{game}"));
-        let cards: Vec<AnyElement> = match answer {
+        let all = answer.map(|body| in_game_order(&ids, communities_of(body)));
+        let locales = all.as_deref().map(locales_of).unwrap_or_default();
+        let empty = std::collections::HashSet::new();
+        let excluded = if self.game_communities_filter.game == game {
+            &self.game_communities_filter.excluded
+        } else {
+            &empty
+        };
+        let cards: Vec<AnyElement> = match &all {
             None => (0..8)
                 .map(|_| Self::game_community_skeleton(layout))
                 .collect(),
-            Some(body) => in_game_order(&ids, communities_of(body))
+            Some(all) => all
                 .iter()
+                .filter(|c| c.locale.as_ref().is_none_or(|l| !excluded.contains(l)))
                 .map(|community| self.game_community_card(community, layout, cx))
                 .collect(),
         };
+        // `tP`: shown with two or more languages.
+        let filter = (locales.len() >= 2)
+            .then(|| self.game_communities_languages(game, &locales, excluded, cx));
         let header = div()
             .flex()
             .items_center()
@@ -422,14 +491,21 @@ impl Root {
             .child(
                 div()
                     .flex()
-                    .gap(px(4.))
-                    .p(px(4.))
-                    .rounded(px(8.))
-                    .border_1()
-                    .border_color(color("--border-subtle"))
-                    .bg(color("--background-base-lowest"))
-                    .child(self.game_communities_layout_button(Layout::Grid, layout, cx))
-                    .child(self.game_communities_layout_button(Layout::List, layout, cx)),
+                    .items_center()
+                    .gap(px(8.))
+                    .children(filter)
+                    .child(
+                        div()
+                            .flex()
+                            .gap(px(4.))
+                            .p(px(4.))
+                            .rounded(px(8.))
+                            .border_1()
+                            .border_color(color("--border-subtle"))
+                            .bg(color("--background-base-lowest"))
+                            .child(self.game_communities_layout_button(Layout::Grid, layout, cx))
+                            .child(self.game_communities_layout_button(Layout::List, layout, cx)),
+                    ),
             );
         let inner = width - 32.;
         let body = match layout {
@@ -477,6 +553,131 @@ impl Root {
     }
 }
 
+impl Root {
+    /// `tP`: the Languages button and, open, `tw`'s menu of checkboxes under it, right-aligned.
+    fn game_communities_languages(
+        &self,
+        game: &str,
+        locales: &[String],
+        excluded: &std::collections::HashSet<String>,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let open = self.game_communities_filter.open && self.game_communities_filter.game == game;
+        let game_id = game.to_owned();
+        let button = div()
+            .id("game-communities-languages")
+            .size(px(32.))
+            .rounded(px(8.))
+            .flex()
+            .items_center()
+            .justify_center()
+            .cursor_pointer()
+            .hover(|style| style.bg(color("--background-mod-normal")))
+            .on_click(cx.listener(move |this, _, _, cx| {
+                let filter = &mut this.game_communities_filter;
+                if filter.game != game_id {
+                    *filter = Filter {
+                        game: game_id.clone(),
+                        ..Filter::default()
+                    };
+                }
+                filter.open = !filter.open;
+                cx.notify();
+            }))
+            .child(
+                gpui::svg()
+                    .path("icons/language.svg")
+                    .size(px(18.))
+                    .text_color(color("--interactive-icon-default")),
+            );
+        let rows: Vec<AnyElement> = locale_options(locales, excluded)
+            .into_iter()
+            .map(|(code, label, on, disabled)| {
+                div()
+                    .id(gpui::SharedString::from(format!(
+                        "game-communities-locale-{code}"
+                    )))
+                    .h(px(32.))
+                    .px(px(8.))
+                    .rounded(px(4.))
+                    .flex()
+                    .items_center()
+                    .when(disabled, |this| this.opacity(0.5))
+                    .when(!disabled, |this| {
+                        this.cursor_pointer()
+                            .hover(|style| style.bg(color("--background-mod-subtle")))
+                            .on_click(cx.listener(move |this, _, _, cx| {
+                                let filter = &mut this.game_communities_filter;
+                                if !filter.excluded.remove(&code) {
+                                    filter.excluded.insert(code.clone());
+                                }
+                                cx.notify();
+                            }))
+                    })
+                    .child(
+                        div()
+                            .flex_1()
+                            .text_size(px(14.))
+                            .line_height(px(18.))
+                            .font_weight(FontWeight(500.))
+                            .text_color(color("--text-strong"))
+                            .child(label),
+                    )
+                    .child(
+                        div()
+                            .size(px(20.))
+                            .rounded(px(4.))
+                            .border_1()
+                            .border_color(if on {
+                                color("--checkbox-border-selected-default")
+                            } else {
+                                color("--checkbox-border-default")
+                            })
+                            .bg(if on {
+                                color("--checkbox-background-selected-default")
+                            } else {
+                                color("--checkbox-background-default")
+                            })
+                            .flex()
+                            .items_center()
+                            .justify_center()
+                            .when(on, |this| {
+                                this.child(super::icon("checkbox_check", 18., "--white"))
+                            }),
+                    )
+                    .into_any_element()
+            })
+            .collect();
+        div()
+            .relative()
+            .child(button)
+            .when(open, |this| {
+                this.child(
+                    gpui::deferred(
+                        div()
+                            .absolute()
+                            .top(px(40.))
+                            .right_0()
+                            .w(px(220.))
+                            .p(px(8.))
+                            .rounded(px(8.))
+                            .border_1()
+                            .border_color(color("--border-subtle"))
+                            .bg(color("--background-surface-higher"))
+                            .occlude()
+                            .on_mouse_down_out(cx.listener(|this, _, _, cx| {
+                                this.game_communities_filter.open = false;
+                                cx.notify();
+                            }))
+                            .children(rows),
+                    )
+                    .with_priority(3),
+                )
+            })
+            .into_any_element()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -497,6 +698,21 @@ mod tests {
             Some("https://cdn.discordapp.com/icons/2/a_x.gif?size=48")
         );
         assert_eq!(icon_url(&found[0]), None);
+    }
+
+    #[test]
+    fn the_languages_menu_sorts_by_label_and_keeps_one_checked() {
+        let locales = vec!["fr".to_owned(), "en-US".to_owned()];
+        let mut excluded = std::collections::HashSet::new();
+        let options = locale_options(&locales, &excluded);
+        assert!(options.iter().all(|(_, _, on, disabled)| *on && !*disabled));
+        excluded.insert("fr".to_owned());
+        let options = locale_options(&locales, &excluded);
+        let english = options.iter().find(|o| o.0 == "en-US").unwrap();
+        assert!(
+            english.2 && english.3,
+            "the last checked language cannot be unchecked"
+        );
     }
 
     #[test]
