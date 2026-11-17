@@ -360,6 +360,10 @@ impl Root {
                 None => format!("no participant {name}"),
             },
             // Our stream connections are dropped with this close code, and nothing follows on the gateway.
+            ["stream", "full", name] => match user_of(name) {
+                Some(owner) => sim.stream_full(owner),
+                None => format!("no participant {name}"),
+            },
             ["stream", "drop", code] => match code.parse() {
                 Ok(code) => sim.stream_drop(code),
                 Err(_) => "usage: callsim stream drop <close code>".to_owned(),

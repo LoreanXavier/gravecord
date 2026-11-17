@@ -813,9 +813,9 @@ impl Root {
                                     .flex()
                                     .items_center()
                                     .justify_center()
-                                    .on_click(cx.listener(|this, _, _, cx| {
+                                    .on_click(cx.listener(move |this, _, _, cx| {
                                         this.stage_leave_menu = false;
-                                        this.leave_voice(cx);
+                                        this.leave_stage_or_ask(guild, target, cx);
                                         cx.notify();
                                     }))
                                     .child(icon("voice_disconnect", 20., "--white")),

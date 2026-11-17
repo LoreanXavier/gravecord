@@ -174,6 +174,21 @@ impl Root {
     }
 
     pub(super) fn join_voice(&mut self, guild: Id, channel: Id, cx: &mut Context<Self>) {
+        // A Stage with blocked or ignored people, or full of video seats, asks first (module 129095, 597798).
+        if self
+            .call
+            .as_ref()
+            .is_none_or(|call| call.channel != channel)
+            && let Some(alert) = self.stage_join_alert(guild, channel)
+        {
+            self.open_voice_alert(alert, cx);
+            return;
+        }
+        self.join_voice_now(guild, channel, cx);
+    }
+
+    /// Joins without the Stage questions: what "Got it, thanks" of the blocked warning does.
+    pub(super) fn join_voice_now(&mut self, guild: Id, channel: Id, cx: &mut Context<Self>) {
         if let Some(call) = &self.call {
             if call.channel == channel {
                 // The row of the call this client is in opens its view.
@@ -1513,6 +1528,23 @@ impl Root {
         channel: Id,
         cx: &mut Context<Self>,
     ) -> Vec<AnyElement> {
+        self.voice_members_in(guild, channel, false, cx)
+    }
+
+    /// The voice user list of module 588224, under the sidebar row or (`popout`) in the call header's Participants
+    /// popout (module 195007), where the scroller's own padding replaces the row's indent.
+    pub(super) fn voice_members_in(
+        &self,
+        guild: Id,
+        channel: Id,
+        popout: bool,
+        cx: &mut Context<Self>,
+    ) -> Vec<AnyElement> {
+        let prefix = if popout {
+            "voice-popout-member"
+        } else {
+            "voice-member"
+        };
         self.stores
             .voice_members(guild, channel)
             .into_iter()
@@ -1535,7 +1567,7 @@ impl Root {
                     || self.soundboard.user_playing(state.user_id);
                 let member = state.user_id;
                 div()
-                    .id(gpui::SharedString::from(format!("voice-member-{member}")))
+                    .id(gpui::SharedString::from(format!("{prefix}-{member}")))
                     .on_mouse_up(
                         gpui::MouseButton::Right,
                         cx.listener(move |this, event: &gpui::MouseUpEvent, _, cx| {
@@ -1557,7 +1589,7 @@ impl Root {
                         let anchor = this
                             .tip_anchors
                             .borrow()
-                            .get(&gpui::SharedString::from(format!("voice-member-{member}")))
+                            .get(&gpui::SharedString::from(format!("{prefix}-{member}")))
                             .copied();
                         if let Some(anchor) = anchor {
                             this.open_profile(member, anchor, false, cx);
@@ -1567,7 +1599,7 @@ impl Root {
                     .relative()
                     .child({
                         let anchors = self.tip_anchors.clone();
-                        let key = gpui::SharedString::from(format!("voice-member-{member}"));
+                        let key = gpui::SharedString::from(format!("{prefix}-{member}"));
                         gpui::canvas(
                             move |bounds, _, _| {
                                 anchors.borrow_mut().insert(key.clone(), bounds);
@@ -1583,8 +1615,8 @@ impl Root {
                     })
                     .flex_none()
                     .h(px(32.))
-                    .pl(px(44.))
-                    .pr(px(17.))
+                    .pl(px(if popout { 0. } else { 44. }))
+                    .pr(px(if popout { 0. } else { 17. }))
                     .flex()
                     .items_center()
                     .gap(px(8.))

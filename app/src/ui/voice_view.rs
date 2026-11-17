@@ -161,6 +161,8 @@ pub(super) struct State {
     pub fullscreen: bool,
     /// "Hide Members" of the focus mode (`participantsOpen` is false).
     pub members_hidden: bool,
+    /// The call header's Participants popout (module 195007) is open.
+    pub participants_open: bool,
     /// The window the call was popped out to (`call_popout.rs`).
     pub popout: Option<super::call_popout::Handle>,
     /// The call view is being built for that window now.
@@ -207,6 +209,7 @@ impl Default for State {
             focus: Default::default(),
             fullscreen: false,
             members_hidden: false,
+            participants_open: false,
             popout: None,
             popout_render: false,
             popout_on_top: false,
@@ -1343,7 +1346,9 @@ impl Root {
                     .child(fade(false)),
             )
             .when(guild != 0, |this| {
-                this.child(self.call_header(channel, shown, focus_head, cx))
+                // `q` of module 416528: with the non-video participants hidden, the header counts the users.
+                let members = (!show_non_video).then_some(user_count);
+                this.child(self.call_header(channel, shown, focus_head, members, cx))
             })
             .children(activity_stage.then(|| self.activity_leave_button(cx)))
             .child(self.call_bar(guild, channel, shown, cx))
@@ -2069,6 +2074,7 @@ impl Root {
         channel: Id,
         shown: bool,
         focus: Option<FocusCrumb>,
+        members: Option<usize>,
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let name = self
@@ -2138,6 +2144,7 @@ impl Root {
             )
             // Module 416528: the clips indicator, then the focused stream's quality and LIVE.
             .children(self.clips_enabled_badge(cx))
+            .children(members.map(|count| self.call_participants_button(count, cx)))
             .children(
                 focus
                     .filter(|crumb| crumb.stream)
@@ -2151,6 +2158,120 @@ impl Root {
                     cx,
                 ))
             })
+            .into_any_element()
+    }
+
+    /// The header's Participants button (module 772475: the 24px group icon and the count, `body-md/normal` 4px after
+    /// it, 24 high) and, while it is open, its popout (module 195007, `root_2NnKyB`: 240 wide, at most 260 high, on
+    /// `--background-surface-high` with 4px corners; the `Participants — N` header in 14px medium
+    /// `--interactive-text-default`, 16px around and 9 under; the voice user list in a scroller padded 16 with 8 at the
+    /// start and none on top). The popout opens under the button (`position: bottom`, 8px away), centred on it.
+    fn call_participants_button(&self, count: usize, cx: &mut Context<Self>) -> AnyElement {
+        const KEY: &str = "call-participants";
+        let open = self.vv.participants_open;
+        let button = div()
+            .id("call-participants-button")
+            .h(px(24.))
+            .flex()
+            .flex_row()
+            .items_center()
+            .cursor_pointer()
+            .text_color(mid(if open {
+                "--interactive-icon-active"
+            } else {
+                "--interactive-icon-default"
+            }))
+            .on_click(cx.listener(|this, _, _, cx| {
+                this.vv.participants_open = !this.vv.participants_open;
+                cx.notify();
+            }))
+            .child(icon(
+                "members",
+                24.,
+                if open {
+                    "--interactive-icon-active"
+                } else {
+                    "--interactive-icon-default"
+                },
+            ))
+            .child(
+                div()
+                    .ml(px(4.))
+                    .text_size(px(16.))
+                    .line_height(px(24.))
+                    .child(count.to_string()),
+            );
+        let tip = self.with_tip(
+            KEY,
+            Tip::text(dc_intl::t("jNqDh/"), Side::Bottom),
+            button,
+            cx,
+        );
+        let popout = open.then(|| {
+            let (guild, channel) = self.vv.shown_call;
+            let rows = self.voice_members_in(guild, channel, true, cx);
+            let total = self.stores.voice_members(guild, channel).len();
+            // A point under the button's centre, 8px below it; the popout hangs from it, kept inside the window.
+            div()
+                .absolute()
+                .top(px(32.))
+                .left(gpui::relative(0.5))
+                .size_0()
+                .child(
+                    deferred(
+                        gpui::anchored()
+                            .position_mode(gpui::AnchoredPositionMode::Local)
+                            .anchor(gpui::Anchor::TopCenter)
+                            .snap_to_window_with_margin(px(8.))
+                            .child(
+                                div()
+                                    .id("call-participants-popout")
+                                    .occlude()
+                                    .w(px(240.))
+                                    .max_h(px(260.))
+                                    .rounded(px(4.))
+                                    .bg(color("--background-surface-high"))
+                                    .flex()
+                                    .flex_col()
+                                    .on_mouse_down_out(cx.listener(|this, _, _, cx| {
+                                        this.vv.participants_open = false;
+                                        cx.notify();
+                                    }))
+                                    .child(
+                                        div()
+                                            .p(px(16.))
+                                            .pb(px(9.))
+                                            .text_size(px(14.))
+                                            .font_weight(FontWeight(500.))
+                                            .text_color(color("--interactive-text-default"))
+                                            .child(dc_intl::format(
+                                                "e95u3C",
+                                                &[("count", (total as i64).into())],
+                                            )),
+                                    )
+                                    .child(
+                                        div()
+                                            .id("call-participants-scroller")
+                                            .overflow_y_scroll()
+                                            .pt(px(0.))
+                                            .pr(px(16.))
+                                            .pb(px(16.))
+                                            .pl(px(8.))
+                                            .flex()
+                                            .flex_col()
+                                            .children(rows),
+                                    ),
+                            ),
+                    )
+                    .with_priority(2),
+                )
+        });
+        div()
+            .relative()
+            .flex_none()
+            .mr(px(16.))
+            .child(tip)
+            .children(popout)
             .into_any_element()
     }
 
@@ -3412,7 +3533,7 @@ impl Root {
                     .inset_0()
                     .size_full(),
             )
-            .child(self.call_header(channel, true, None, cx))
+            .child(self.call_header(channel, true, None, None, cx))
             .child(
                 div()
                     .absolute()

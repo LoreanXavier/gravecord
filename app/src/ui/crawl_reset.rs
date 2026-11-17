@@ -84,6 +84,7 @@ impl Root {
             start_stage,
             stage_welcome,
             stage_end_confirm,
+            voice_alert,
             publish_confirm,
             menu,
             submenu,

@@ -46,6 +46,8 @@ struct StreamRecord {
     rtc: u64,
     viewers: Vec<u64>,
     paused: bool,
+    /// The stream has as many viewers as it may: a new watch of ours ends with `STREAM_DELETE` `stream_full`.
+    full: bool,
 }
 
 /// One headless participant.
@@ -298,6 +300,22 @@ impl Sim {
 
     /// The stream of `owner` that our client watches or sends is named again by `STREAM_SERVER_UPDATE` with a new
     /// token, and the stream server drops our old connection to it (a stream server reassignment).
+    /// The stream of `owner` has no seat left: our next watch of it is refused with `stream_full`.
+    pub fn stream_full(&self, owner: u64) -> String {
+        let mut world = self.inner.lock();
+        match world
+            .streams
+            .values_mut()
+            .find(|stream| stream.owner == owner)
+        {
+            Some(stream) => {
+                stream.full = true;
+                "the stream is full".to_owned()
+            }
+            None => "no such stream".to_owned(),
+        }
+    }
+
     pub fn stream_move(&self, owner: u64) -> String {
         self.inner.stream_move(owner)
     }
@@ -712,6 +730,7 @@ impl Inner {
                             rtc,
                             viewers: Vec::new(),
                             paused: false,
+                            full: false,
                         },
                     );
                     rtc
@@ -741,6 +760,19 @@ impl Inner {
                 };
                 self.note(format!("op 20: watch {key}"));
                 let session = self.lock().setup.my_session.clone();
+                let full = self
+                    .lock()
+                    .streams
+                    .get(&key)
+                    .is_some_and(|stream| stream.full && !stream.viewers.contains(&me));
+                if full {
+                    self.emit(
+                        Duration::from_millis(40),
+                        "STREAM_DELETE",
+                        json!({"stream_key": key.to_string(), "reason": "stream_full", "unavailable": false}),
+                    );
+                    return;
+                }
                 let found = {
                     let mut world = self.lock();
                     world.streams.get_mut(&key).map(|stream| {
@@ -1174,6 +1206,7 @@ impl Inner {
                     rtc,
                     viewers: Vec::new(),
                     paused: false,
+                    full: false,
                 },
             );
             rtc
