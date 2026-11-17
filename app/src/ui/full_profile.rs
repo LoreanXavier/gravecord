@@ -2837,6 +2837,8 @@ impl Root {
                                     ),
                                 ),
                             )
+                            // Not in the pinned client: VoiceStats' "Voice Time" (`plugin_hooks/voice_stats.rs`).
+                            .children(self.voice_time_section(id, false, strong, default))
                             .when_some(friend_since, |d, date| {
                                 d.child(
                                     section(Some(dc_intl::t!("wlTO8v"))).child(

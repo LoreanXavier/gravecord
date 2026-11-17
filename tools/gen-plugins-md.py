@@ -1,17 +1,94 @@
-"""Writes PLUGINS.md: the status of every plugin an Equicord backup enables.
+"""Writes PLUGINS.md: the status of every plugin an Equicord backup enables, and for each ported plugin its settings
+compared with the original's, setting by setting.
 
 Usage: python tools/gen-plugins-md.py <equicord-backup.json> <Equicord checkout> PLUGINS.md
 
-Reads the backup only for plugin names and enabled flags (never setting values or the data store), and the Equicord
-checkout for each plugin's source path and description. The tables below are kept by hand as plugins are ported.
+Reads the backup only for plugin names and enabled flags (never setting values or the data store), the Equicord
+checkout for each plugin's source, description and settings (`definePluginSettings`), and `app/src/plugins/registry.rs`
+for the ported settings. It fails (exit 1) when a ported plugin misses an original setting without a reason below,
+has a setting the original does not, or when a plugin that is not ported has no reason of its own.
 """
 import json, os, re, sys
 
 BACKUP, CHECKOUT, OUT = sys.argv[1:4]
 ROOT = os.path.join(CHECKOUT, 'src')
+REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 backup = json.load(open(BACKUP, encoding='utf-8'))
 enabled = sorted((k for k, v in backup['settings']['plugins'].items() if v.get('enabled')), key=str.lower)
+
+# Plugins renamed upstream since the backup (Equicord's `migratePluginSettings`): the backup's name, the new name.
+RENAMED = {
+    'BetterQuickReact': 'MoreQuickReactions',
+    'ExpressionCloner': 'ExpressionManager',
+    'IloveSpam': 'ILoveSpam',
+    'LimitMiddleClickPaste': 'MiddleClickTweaks',
+    'MessageTags': 'CustomCommands',
+    'TenorGifSearch': 'GifProviderSwitcher',
+}
+# Plugins removed upstream since the backup, with the commit that says why.
+REMOVED = {
+    'BetterNotesBox': 'removed from Equicord (last seen in dbca8ef2); the private note box is the client\'s own here.',
+    'FavoriteGifSearch': 'removed from Equicord in 0001bab8: "now a default Discord feature".',
+    'FriendsSince': 'removed from Equicord in 36c7a837: "now a stock Discord feature"; gravecord shows Friends Since '
+                    'in profiles.',
+    'MoreKaomoji': 'removed from Equicord in d7e6fcd3.',
+    'NSFWGateBypass': 'removed from Equicord in 9a3c66ab.',
+    'StreamerModeOnStream': 'no longer in the Equicord checkout of 2026-11-14 (added in 9e0aa4b2, since dropped).',
+    'Summaries': 'removed from Equicord in 452241cf: "Discord killed this feature".',
+    'TimeBarAllActivities': 'removed from Equicord in bcfef05a: "now a stock feature".',
+}
+
+
+def balanced(text, start):
+    """The text of the bracketed block that opens at `start` (`{` or `(`), strings and comments skipped."""
+    pairs = {'{': '}', '(': ')', '[': ']'}
+    stack, i, quote = [], start, None
+    while i < len(text):
+        c = text[i]
+        if quote:
+            if c == '\\':
+                i += 2
+                continue
+            if c == quote:
+                quote = None
+        elif c in '"\'`':
+            quote = c
+        elif text.startswith('//', i):
+            i = text.find('\n', i)
+            continue
+        elif c in pairs:
+            stack.append(pairs[c])
+        elif stack and c == stack[-1]:
+            stack.pop()
+            if not stack:
+                return text[start:i + 1]
+        i += 1
+    return text[start:]
+
+
+def top_level_entries(block):
+    """`key: { ... }` entries at the top of an object literal."""
+    inner, depth, i, out = block[1:-1], 0, 0, []
+    while i < len(inner):
+        c = inner[i]
+        if c in '{([':
+            if depth == 0 and c == '{':
+                m = re.search(r'(\w+)\s*:\s*$', inner[:i])
+                if m:
+                    body = balanced(inner, i)
+                    out.append((m.group(1), body))
+                    i += len(body)
+                    continue
+            depth += 1
+        elif c in '})]':
+            depth -= 1
+        elif c in '"\'`':
+            end = inner.find(c, i + 1)
+            i = end if end > 0 else i
+        i += 1
+    return out
+
 
 sources = {}
 for dp, dn, fn in os.walk(ROOT):
@@ -20,45 +97,79 @@ for dp, dn, fn in os.walk(ROOT):
             continue
         path = os.path.join(dp, f)
         text = open(path, encoding='utf-8', errors='replace').read()
-        for m in re.finditer(r'definePlugin\(\{\s*name:\s*"([^"]+)"', text):
+        for m in re.finditer(r'definePlugin\(\{', text):
+            block = balanced(text, m.end() - 1)
+            name = re.search(r'\n\s{4}name:\s*"([^"]+)"', block)
+            if not name:
+                continue
             rel = os.path.relpath(path, ROOT).replace(os.sep, '/')
-            desc = re.search(r'description:\s*"([^"]*)"', text[m.end():m.end() + 1500])
-            sources.setdefault(m.group(1), (rel, desc.group(1) if desc else ''))
+            desc = re.search(r'\n\s{4}description:\s*"([^"]*)"', block)
+            settings = []
+            s = re.search(r'definePluginSettings\(\{', text)
+            if s:
+                for key, body in top_level_entries(balanced(text, s.end() - 1)):
+                    kind = re.search(r'type:\s*OptionType\.(\w+)', body)
+                    default = re.search(r'\bdefault:\s*([^,\n]+)', body)
+                    settings.append((key, kind.group(1) if kind else '?', default.group(1).strip() if default else ''))
+            sources.setdefault(name.group(1), (rel, desc.group(1) if desc else '', settings))
 
+# The ported plugins and their settings, from the registry.
+registry = open(os.path.join(REPO, 'app/src/plugins/registry.rs'), encoding='utf-8').read()
+ours = {}
+for m in re.finditer(r'\n    Def \{\n        id: "([^"]+)"', registry):
+    block = balanced(registry, m.start() + len('\n    Def '))
+    ours[m.group(1)] = re.findall(r'key: "([^"]+)"', block)
+idle = {(a, b): why.replace('\\"', '"') for a, b, why in re.findall(
+    r'\(\s*"([^"]+)",\s*"([^"]+)",\s*"((?:[^"\\]|\\.)*)",\s*\)', registry.split('IDLE_SETTINGS')[1].split('];')[0])}
+
+# How each ported plugin is built here, and its proof.
 PORTED = {
-    'AlwaysTrust': 'links.rs: masked links open without "Leaving Discord" (`domain`).',
-    'ClearURLs': 'plugins/clear_urls.rs: ClearURLs rules bundled; send and edit.',
-    'MessageClickActions': 'plugin_hooks.rs: double-click edit/reply/copy (`doubleClickAction`, `doubleClickOthersAction`, '
-                           '`doubleClickModifier`, `disableInDms`), only where the message menu offers the row; '
-                           'not on sending or ephemeral messages. On by default. Not ported: single/triple click, '
-                           'Delete, Pin, React, Quote, `disableInSystemDms`.',
-    'NoTypingAnimation': 'typing_avatar.rs: still dots, no animation frames.',
-    'UnlimitedAccounts': 'account_switcher.rs: `maxAccounts` (0 = no limit).',
-    'NoPendingCount': 'friend request count 0 (`hideFriendRequestsCount`), no Message Requests badge (`hideMessageRequestsCount`); '
-                      'no Nitro offer badge exists here.',
-    'RevealAllSpoilers': 'Ctrl-click opens every text spoiler of the message, Ctrl+Shift-click of the channel.',
-    'DisableCallIdle': 'dm_call.rs: no leave after 3 minutes alone in a DM call.',
-    'GifPaste': 'gifs.rs: picking a GIF inserts its link and a space in the composer.',
-    'VolumeBooster': 'User Volume slider to 200% x `multiplier` (context menu, call tile menu); dc-voice gain cap raised; '
-                     'a factor set while on is capped again on the next change once off. Stream volume not boosted.',
+    'AlwaysTrust': 'links.rs: any link opens without "Leaving Discord" (`domain`); server_settings.rs: Delete Server '
+                   'without the typed name, behind the plugin\'s own "Delete server?" (`noDeleteSafety`, `confirmModal`).',
+    'ClearURLs': 'plugins/clear_urls.rs: the ClearURLs rules, bundled; messages sent and edited.',
+    'DisableCallIdle': 'dm_call.rs: no leave after 3 minutes alone in a DM call. The pinned client\'s other idle rule '
+                       '(`handleIdleUpdate`: leave voice after 5 h idle, move to the AFK channel) is not in the app '
+                       'yet, so there is nothing more to disable.',
+    'GifPaste': 'gifs.rs: picking a GIF inserts its link and a space in the composer and closes the picker.',
+    'MessageClickActions': 'plugin_hooks/message_clicks.rs: the original\'s click state machine (single, double, '
+                           'triple click; keys held incl. Backspace and Delete; the three timeouts) and all 13 '
+                           'actions with the app\'s own Edit, Reply, Delete and Pin (without their dialogs, as the '
+                           'original), reactions, thread, quote. On by default (the owner\'s double-click to edit). '
+                           'System DMs are the Discord system account\'s DM (the app keeps no `system` flag).',
+    'NoPendingCount': 'unread_badges.rs and home.rs: friend request count 0, no Message Requests badge (the row stays).',
+    'NoTypingAnimation': 'typing_avatar.rs: every typing indicator draws still dots and asks for no animation frames.',
+    'RevealAllSpoilers': 'ui.rs: Ctrl-click a hidden spoiler opens every text spoiler of its message, Ctrl+Shift-click '
+                         'those of every message the chat holds now (later ones stay hidden).',
+    'UnlimitedAccounts': 'account_switcher.rs: `maxAccounts` (0 = no limit) for the list and the Add button.',
+    'VoiceStats': 'plugin_hooks/voice_stats.rs: seconds with each person in your voice channel, saved every 30 s; '
+                  '"Voice Time" after Member Since in the DM sidebar and the full profile. An Equicord backup brings '
+                  'its totals (`VoiceStats_totals`, the one data store key read).',
+    'VolumeBooster': 'User Volume (context menu, call tile menu, call tray) and Stream Volume sliders to their top x '
+                     '`multiplier`; the voice engine takes the higher gain. The app syncs no volumes to the account, '
+                     'so the original\'s 200% cap on the sync has nothing to cap.',
 }
 TESTS = {
-    'AlwaysTrust': '`plugin_hooks::tests::always_trust_needs_its_domain_setting`; frames trust-off/trust-on',
-    'ClearURLs': '`plugins::clear_urls::tests` (6); frames clearurls-off/on',
-    'DisableCallIdle': '`plugin_hooks::tests::switch_only_plugins_follow_their_switch_and_the_master`; frames idle-off/idle-on '
-                       '(195 s alone in a simulated DM call)',
-    'GifPaste': '`plugin_hooks::tests::switch_only_plugins_follow_their_switch_and_the_master`; frames gifpaste-off/on',
-    'MessageClickActions': '`plugin_hooks::tests::double_click_follows_its_settings` and two more; frames mca-off/on',
-    'NoPendingCount': '`plugin_hooks::tests::no_pending_count_hides_each_badge_by_its_setting`; frames pending-off/on',
-    'NoTypingAnimation': '`plugin_hooks::tests::switch_only_plugins_follow_their_switch_and_the_master`; no frame',
-    'RevealAllSpoilers': '`plugin_hooks::tests::ctrl_reveals_the_message_and_ctrl_shift_the_channel`; frames spoilers-off/on',
-    'UnlimitedAccounts': '`plugin_hooks::tests::unlimited_accounts_lifts_the_five_account_limit`; frames ua-off/ua-on',
-    'VolumeBooster': '`plugin_hooks::tests::volume_booster_raises_the_slider_top_by_its_multiplier`; frames vb-off/vb-on',
+    'AlwaysTrust': '`always_trust_needs_its_domain_setting`, `always_trust_deletes_servers_by_its_two_settings`; '
+                   'frames trust-off/on, trust-settings',
+    'ClearURLs': '`plugins::clear_urls::tests` (6); frames clearurls-off/on; plugins-off send-link',
+    'DisableCallIdle': '`switch_only_plugins_follow_their_switch_and_the_master`; frames idle-off/on (195 s alone)',
+    'GifPaste': '`switch_only_plugins_follow_their_switch_and_the_master`; frames gifpaste-off/on; plugins-off gif-picker',
+    'MessageClickActions': '`plugin_hooks::message_clicks::tests` (11); frames mca-backspace (Delete sent), '
+                           'mca-plain-click (nothing), mca-on/off, mca-settings; plugins-off double-click and its control',
+    'NoPendingCount': '`no_pending_count_hides_each_badge_by_its_setting`; frames pending-off/on; plugins-off requests',
+    'NoTypingAnimation': '`switch_only_plugins_follow_their_switch_and_the_master`; plugins-off typing',
+    'RevealAllSpoilers': '`ctrl_reveals_the_message_and_ctrl_shift_every_loaded_message`; frames spoilers-off/on',
+    'UnlimitedAccounts': '`unlimited_accounts_lifts_the_five_account_limit`; frames ua-off/ua-on; plugins-off accounts',
+    'VoiceStats': '`plugin_hooks::voice_stats::tests` (5), backup import test; frames vs-dm-on/off, vs-full-on',
+    'VolumeBooster': '`volume_booster_raises_the_slider_top_by_its_multiplier`; frames vb-off/vb-on; plugins-off user-volume',
 }
+# Original settings a port does not have, with why (none today).
+SKIPPED_SETTINGS = {}
 
 # Already what gravecord does without a plugin.
 NATIVE = {
-    'NoTrack': 'gravecord sends no analytics, metrics or Sentry reports; its only `/science` post is the overlay problem report the user submits.',
+    'NoTrack': 'gravecord sends no analytics, metrics or Sentry reports; its only `/science` post is the overlay problem '
+               'report the user submits.',
     'ForceOwnerCrown': 'the member list shows the owner crown at any server size.',
     'NormalizeMessageLinks': 'Copy Message Link already writes discord.com links.',
 }
@@ -74,7 +185,8 @@ NOT_APPLICABLE = {
     'WebScreenShareFixes': 'web build only (Chromium bitrate cap).',
     'DisableDeepLinks': 'web build only.',
     'BetterSettings': 'settings are native here: no crossfade or lazy loading to remove.',
-    'Settings': 'its settings UI is the Gravecord settings group itself; `settingsLocation` not ported (the group sits before Developer).',
+    'Settings': 'its settings UI is the Gravecord settings group itself; `settingsLocation` not ported (the group sits '
+                'before Developer).',
     'YoutubeAdblock': 'needs an ad filter inside the YouTube web view of embeds; deferred with the web host.',
     'VCSupport': 'Equicord support-server helper.',
     'NoDevtoolsWarning': 'no web console in a native client.',
@@ -84,62 +196,145 @@ NOT_APPLICABLE = {
     'EquicordHelper': 'workarounds for Discord web crashes in the mod.',
     'SupportHelper': 'support-channel helper of the mod.',
 }
-PLANNED_NOTES = {
-    'ColorSighted': 'status masks in member_avatars.rs.',
-    'OnePingPerDM': 'notification sound per DM.',
-    'SilentMessageToggle': 'composer button, @silent flag.',
-    'CallTimer': 'timer in the voice panel.',
-    'MemberCount': 'member list header counts.',
-    'TypingTweaks': 'typing line avatars and role colours.',
-    'TypingIndicator': 'typing dots in the channel list.',
-    'PinDMs': 'pinned DM categories.',
-    'BetterFolders': 'folder sidebar.',
-    'MessageLogger': 'deleted/edited message log (needs a store of deletes).',
-    'PermissionsViewer': 'permission breakdown in profiles.',
-    'PlatformIndicators': 'client status icons.',
-    'ShowConnections': 'connections in profiles.',
-    'RoleColorEverywhere': 'role colours in mentions, lists, voice.',
-    'WhoReacted': 'reactor avatars on reactions.',
-    'ViewIcons': 'open avatars/icons full size.',
-    'ImageZoom': 'lens on image viewer.',
-    'BetterUploadButton': 'left click uploads, right click menu.',
-    'SedEnhanced': 's/a/b/ edits your last message.',
-    'ValidReply': 'fetch missing replied messages.',
-    'ValidUser': 'fetch unknown mentioned users.',
-    'NoUnblockToJump': 'jump to blocked users\' messages.',
-    'CustomRPC': 'custom rich presence (needs the RPC/activity editor).',
-    'LimitlessScreenshare': 'resolution/fps sliders past the tier limits (owner: later, FakeNitro-style).',
-    'StreamingCodecDisabler': 'codec choice in dc-media.',
-    'IgnoreActivities': 'hide listed activities.',
-    'NewGuildSettings': 'notification defaults on join.',
-    'SpotifyCrack': 'no auto-pause of Spotify on voice.',
-    'VoiceDownload': 'download button on voice messages.',
-    'VoiceMessages': 'record voice messages on desktop.',
+# Not built yet: what each needs in this app.
+PLANNED = {
+    'AccountPanelServerProfile': 'a right-click menu on the account panel that opens the server profile popout.',
+    'AltKrispSwitch': 'Krisp, which is blocked here (its signature check); without it there is nothing to switch to.',
+    'AlwaysAnimate': 'a switch in the image pipeline to play animated avatars, banners and emoji without hover.',
+    'AnonymiseFileNames': 'a rename of attachments in the upload path (random names, kept extension).',
+    'BetterActivities': 'activity icons in member list rows and every activity in the profile popout.',
+    'BetterAudioPlayer': 'a spectrograph and oscilloscope in the audio attachment player (needs the decoded samples).',
+    'BetterBlockedUsers': 'search in the blocked list, selectable names, no blocked-profile prompt, grouped blocked messages.',
+    'BetterCommands': 'changes to the slash command UI.',
+    'BetterFolders': 'a second server sidebar for folders.',
+    'BetterForwards': 'forward dialog tweaks.',
+    'BetterGifAltText': 'GIF alt text from the tags or file name.',
+    'BetterPlusReacts': '"+:emoji:" reacting to the Nth message above, in the composer\'s send path.',
+    'BetterRoleContext': 'role context menu rows (copy colour, edit role, view icon).',
+    'BetterRoleDot': 'copy a role colour on its dot; dots and coloured names together.',
+    'BetterUploadButton': 'left click uploads, right click opens the menu, on the composer\'s plus button.',
+    'BiggerStreamPreview': 'a larger stream preview popout.',
+    'BypassStatus': 'notification and sound rules that pass Do Not Disturb for chosen users, channels and servers.',
+    'CallTimer': 'a timer per user in voice channels and in the connection panel.',
+    'CancelFriendRequest': 'a cancel button for outgoing friend requests in profiles.',
+    'ClipsEnhancements': 'more clip FPS and duration options in the clips settings.',
+    'ClipUpload': 'a button to upload a local video as a clip.',
+    'ColorSighted': 'status dots without the colour-blind shapes (member_avatars.rs masks).',
+    'CopyUserURLs': '"Copy User URL" in the user context menu.',
+    'CustomRPC': 'a custom rich presence editor and its activity.',
+    'Decor': 'its third-party avatar decorations service (decor-auth in the backup\'s data store is not copied).',
+    'DownloadAllAttachments': 'a hover-bar button that saves every attachment of a message.',
+    'Experiments': 'the experiments and developer pages.',
+    'FavoriteEmojiFirst': 'favourite emoji first in the emoji autocomplete.',
+    'FixImagesQuality': 'original-resolution image requests in the image pipeline.',
+    'FixYoutubeEmbeds': 'the YouTube embed workaround inside the web host.',
+    'FriendInvites': 'slash commands for friend invite links.',
+    'FullSearchContext': 'the full message menu on search results.',
+    'FullVCPFP': 'avatars filling voice call tiles.',
+    'GameActivityToggle': 'a panel button that turns game activity on and off.',
+    'GifMaker': 'a GIF encoder and its editor.',
+    'GlobalBadges': 'its third-party badge service.',
+    'GreetStickerPicker': 'a sticker choice for the "Wave to say hi!" button.',
+    'IgnoreActivities': 'a list of activities kept off your status.',
+    'ImageZoom': 'a zoom lens in the image viewer.',
+    'LimitlessScreenshare': 'resolution and FPS sliders past the tier limits (owner: later, FakeNitro-style).',
+    'MemberCount': 'online and total counts in the member list header and server tooltip.',
+    'MessageLogger': 'a store of deleted and edited messages and their red/edited display.',
+    'MessagePeek': 'the last message and its time under each DM in the list.',
+    'MoreCommands': 'its slash commands.',
+    'MuteChannelMentions': 'mention badges hidden for chosen channels.',
+    'NewGuildSettings': 'notification defaults applied when joining a server.',
+    'NoNitroUpsell': 'every Nitro upsell hidden (the app draws them from the pinned client).',
+    'NoPushToTalk': 'voice activity allowed where push to talk is required.',
+    'NoUnblockToJump': 'jumping to blocked users\' messages without unblocking.',
+    'OnePingPerDM': 'one notification sound per DM until it is read.',
+    'OpenInApp': 'Spotify, Steam and other links opened in their apps.',
+    'PermissionFreeWill': 'no client-side limits in channel permission editing.',
+    'PermissionsViewer': 'a permission breakdown in profiles and menus.',
+    'PinDMs': 'pinned DM categories in the DM list.',
+    'PlatformIndicators': 'desktop, mobile and web icons by names.',
+    'PreviewMessage': 'a preview of the message before sending.',
+    'QuickMention': 'a mention button in the message hover bar.',
+    'Quoter': 'a quote image made from a message.',
+    'ReadAllNotificationsButton': 'a button that marks every server read.',
+    'RelationshipNotifier': 'notices when a friend, group or server removes you (its data store lists are not copied).',
+    'ReverseImageSearch': 'image search rows in the image context menu.',
+    'RoleColorEverywhere': 'role colours in mentions, lists, voice and reactions.',
+    'SearchFix': 'its search request fix.',
+    'SedEnhanced': '`s/a/b/` editing the last message, in the send path.',
+    'ServerInfo': 'a server information dialog.',
+    'ServerListIndicators': 'online friend and server counts by the server list.',
+    'ShowConnections': 'connected accounts in user popouts and the DM sidebar.',
+    'ShowHiddenThings': 'hidden and moderator-only things shown.',
+    'SilentMessageToggle': 'a composer button that sends messages silently (`@silent` flag).',
+    'SpotifyCrack': 'listen along without Premium and no Spotify pause on voice.',
+    'SpotifyShareCommands': 'its /track, /album, /artist commands.',
+    'SteamStatusSync': 'status sync with the Steam client.',
+    'StopAutoUnread': 'no automatic unread marking.',
+    'Streaks': 'DM streak counts (its service login in the data store is not copied).',
+    'StreamingCodecDisabler': 'a codec choice for streams and cameras in dc-media.',
+    'SuperReactionTweaks': 'super reaction limits and default.',
     'Translate+': 'message translation (needs a translation service).',
-    'VoiceMessageTranscriber': 'on-device Whisper (needs a model runner).',
-    'Decor': 'third-party avatar decorations service.',
-    'USRBG': 'third-party banners service.',
-    'UserPFP': 'third-party avatars service.',
-    'GlobalBadges': 'third-party badge service.',
+    'TypingIndicator': 'typing dots by channels in the channel list.',
+    'TypingTweaks': 'avatars and role colours in the typing line.',
+    'UnlockedAvatarZoom': 'a wider zoom in the avatar crop tool.',
+    'UserMessagesPronouns': 'pronouns by names in chat.',
+    'UserPFP': 'its third-party avatar service.',
+    'USRBG': 'its third-party banner service.',
+    'ValidReply': 'replied messages fetched when missing.',
+    'ValidUser': 'unknown mentioned users fetched.',
+    'ViewIcons': 'avatars, banners and icons opened full size, with menu rows.',
+    'VoiceDownload': 'a download button on voice messages.',
+    'VoiceMessages': 'recording voice messages on desktop.',
+    'VoiceMessageTranscriber': 'an on-device Whisper model runner.',
+    'WhoReacted': 'reactor avatars on reactions.',
+    'ZipPreview': 'a ZIP listing in file attachments.',
+    'BetterQuickReact': 'more quick reaction buttons in the message context menu.',
+    'ExpressionCloner': 'menu rows that clone, edit and delete emoji and stickers into your servers.',
+    'IloveSpam': 'messages of users flagged as likely spammers shown as any other.',
+    'LimitMiddleClickPaste': 'middle-click paste only into a focused text box, and middle-click link opening.',
+    'MessageTags': 'saved tags sent as custom slash commands.',
+    'TenorGifSearch': 'Tenor or Giphy as the GIF search instead of the default provider.',
 }
 
-rows = []
+errors = []
+rows, setting_rows = [], []
 counts = {'ported': 0, 'native': 0, 'not applicable': 0, 'planned': 0}
 for name in enabled:
-    src, desc = sources.get(name, ('', ''))
-    if name in PORTED:
-        status, note = 'ported', PORTED[name]
-        test = TESTS[name]
+    upstream = RENAMED.get(name, name)
+    src, desc, original = sources.get(upstream, ('', '', []))
+    if name in ours:
+        if name not in PORTED:
+            errors.append(f'{name} is in the registry but has no PORTED note')
+            continue
+        status, note, test = 'ported', PORTED[name], TESTS[name]
+        here = set(ours[name])
+        for key, kind, default in original:
+            if key in here:
+                why = idle.get((name, key))
+                state = f'nothing to act on yet: {why}' if why else 'ported'
+            elif key in SKIPPED_SETTINGS.get(name, {}):
+                state = 'not ported: ' + SKIPPED_SETTINGS[name][key]
+            else:
+                errors.append(f'{name}.{key} of the original is missing and has no reason')
+                state = 'MISSING'
+            setting_rows.append(f'| {name} | `{key}` | {kind} | `{default}` | {state} |')
+        for key in sorted(here - {key for key, _, _ in original}):
+            errors.append(f'{name}.{key} is not a setting of the original')
     elif name in NATIVE:
         status, note, test = 'native', NATIVE[name], ''
     elif name in API or name in NOT_APPLICABLE:
-        status = 'not applicable'
+        status, test = 'not applicable', ''
         note = NOT_APPLICABLE.get(name, 'client-mod plumbing (an API for other plugins), nothing to port.')
-        test = ''
+    elif name in REMOVED:
+        status, note, test = 'not applicable', REMOVED[name], ''
     else:
-        status = 'planned'
-        note = PLANNED_NOTES.get(name, '')
-        test = ''
+        status, test = 'planned', ''
+        note = PLANNED.get(name, '')
+        if not note:
+            errors.append(f'{name} is planned without a reason')
+        if upstream != name:
+            note = f'now {upstream} upstream. ' + note
     counts[status] += 1
     if not src:
         src = '(not in the 2026-11-14 checkout)'
@@ -151,15 +346,25 @@ with open(OUT, 'w', encoding='utf-8', newline='\n') as out:
     out.write('Built-in equivalents of the Vencord/Equicord plugins the owner keeps on. Not part of the pinned client and not\n')
     out.write('`FEATURES.md` rows. Framework: `app/src/plugins.rs` (registry, state, Backup & Restore) and the Gravecord settings\n')
     out.write('group (`app/src/ui/settings/mods.rs`). Decisions: `DECISIONS.md`, "Built-in plugins". Written by\n')
-    out.write('`tools/gen-plugins-md.py`.\n\n')
+    out.write('`tools/gen-plugins-md.py`, which fails on a missing setting or a plugin without a reason.\n\n')
+    out.write('Plugins off is the pinned client: `cargo xtask plugins-off` captures every scenario of\n')
+    out.write('`tests/plugins-off/scenarios.txt` with the plugin code skipped, with the master switch off (every plugin on and\n')
+    out.write('every setting changed), and with every plugin off, and fails on one differing pixel or on any plugin effect.\n\n')
     out.write('The list is the plugins enabled in the owner\'s Equicord backup of 2026-09-21 (156). Sources were read in the local\n')
     out.write('Equicord checkout of 2026-11-14 (`src/plugins` is Vencord\'s, `src/equicordplugins` Equicord\'s).\n\n')
     out.write(f'Totals: {counts["ported"]} ported, {counts["native"]} native, {counts["planned"]} planned, '
               f'{counts["not applicable"]} not applicable.\n\n')
     out.write('Status: **ported** works and has its proof; **native** is what gravecord already does without a plugin;\n')
     out.write('**planned** is not built yet (an import keeps its settings for when it is); **not applicable** has nothing to\n')
-    out.write('port in a native client.\n\n')
+    out.write('port in a native client, or was removed upstream.\n\n')
     out.write('| plugin | status | source | what it does (original) | here / what it needs | proof |\n')
     out.write('| - | - | - | - | - | - |\n')
-    out.write('\n'.join(rows) + '\n')
+    out.write('\n'.join(rows) + '\n\n')
+    out.write('## Settings of the ported plugins\n\n')
+    out.write('Every setting of each original (`definePluginSettings`), its type and default there, and what it does here.\n\n')
+    out.write('| plugin | setting | type | default (original) | here |\n| - | - | - | - | - |\n')
+    out.write('\n'.join(setting_rows) + '\n')
 print(counts)
+if errors:
+    print('\n'.join('error: ' + e for e in errors))
+    sys.exit(1)

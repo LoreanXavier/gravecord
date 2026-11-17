@@ -2066,9 +2066,18 @@ pub(crate) async fn step(
             "motion clock: running".to_owned()
         }
         ["clock", ms] => {
-            let Ok(ms) = ms.parse::<f64>() else {
+            // `+N@R`: N ms after now, up to the next multiple of R ms, so looping animations stand in the same phase in
+            // every run (the plugins-off check lets every transition end, `xtask/src/plugins_off.rs`).
+            let (text, align) = match ms.split_once('@') {
+                Some((text, align)) => (text, align.parse::<f64>().ok().filter(|r| *r > 0.)),
+                None => (*ms, None),
+            };
+            let ahead = text.strip_prefix('+');
+            let Ok(ms) = ahead.unwrap_or(text).parse::<f64>() else {
                 return format!("motion clock: not a number: {ms}");
             };
+            let ms = if ahead.is_some() { now() + ms } else { ms };
+            let ms = align.map_or(ms, |align| (ms / align).ceil() * align);
             // What the last input started begins at the old time, then the clock moves in 16 ms frames, as a window
             // draws them (a spring takes at most 64 ms of one frame, as the official one does).
             draw(cx, window);

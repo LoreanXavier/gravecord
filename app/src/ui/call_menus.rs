@@ -1118,7 +1118,7 @@ impl Root {
         let (factor, local_mute) = self.context.mix.get(&user).copied().unwrap_or((1., false));
         let percent = factor * 100.;
         let fraction = (super::audio_menu::volume_to_slider(percent)
-            / super::stream_volume::MAX_PERCENT)
+            / super::plugin_hooks::user_volume_max() as f32)
             .clamp(0., 1.);
         let (guild, channel) = self.vv.shown_call;
         let has_video = self
@@ -1180,7 +1180,7 @@ impl Root {
                 })
             });
         let volume = (super::audio_menu::volume_to_slider(super::stream_volume::percent(owner))
-            / super::stream_volume::MAX_PERCENT)
+            / super::plugin_hooks::user_volume_max() as f32)
             .clamp(0., 1.);
         StreamFacts {
             owner,
@@ -1827,11 +1827,15 @@ impl Root {
                 let top = super::plugin_hooks::user_volume_max();
                 (0, top, amplitude_to_perceptual(factor, top))
             }
-            Slide::StreamVolume(owner) => (
-                0,
-                200,
-                amplitude_to_perceptual(super::stream_volume::percent(owner) / 100., 200),
-            ),
+            // 200, or more with the VolumeBooster plugin.
+            Slide::StreamVolume(owner) => {
+                let top = super::plugin_hooks::user_volume_max();
+                (
+                    0,
+                    top,
+                    amplitude_to_perceptual(super::stream_volume::percent(owner) / 100., top),
+                )
+            }
             Slide::AttenuationStrength => (
                 1,
                 100,
@@ -1855,7 +1859,7 @@ impl Root {
                             this.set_user_mix(user, amp, muted);
                         }
                         Slide::StreamVolume(owner) => {
-                            let vol_pct = perceptual_to_amplitude(value, 200) * 100.;
+                            let vol_pct = perceptual_to_amplitude(value, max) * 100.;
                             super::stream_volume::set_percent(owner, vol_pct);
                             this.apply_stream_volume(owner);
                         }

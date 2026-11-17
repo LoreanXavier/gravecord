@@ -44,8 +44,14 @@ impl State {
             .unwrap_or(def.default_on)
     }
 
+    /// The plugin may act now: it is turned on and so is the master switch. Every yes is counted as an effect
+    /// ([`super::note`]), so a run with the plugins off can prove that none of them acted.
     pub(crate) fn is_on(&self, id: &str) -> bool {
-        self.master && self.enabled(id)
+        let on = self.master && self.enabled(id);
+        if on {
+            super::note(id);
+        }
+        on
     }
 
     pub(crate) fn set_enabled(&mut self, id: &str, on: bool) {
@@ -155,7 +161,7 @@ mod tests {
         let mut state = State::default();
         let id = "MessageClickActions";
         assert_eq!(state.value(id, "doubleClickAction"), json!("EDIT"));
-        assert!(!state.set_value(id, "doubleClickAction", &json!("DELETE")));
+        assert!(!state.set_value(id, "doubleClickAction", &json!("SPIN")));
         assert!(state.set_value(id, "doubleClickAction", &json!("REPLY")));
         assert_eq!(state.value(id, "doubleClickAction"), json!("REPLY"));
         state

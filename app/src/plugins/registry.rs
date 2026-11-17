@@ -40,6 +40,11 @@ pub(crate) enum Kind {
         options: &'static [(&'static str, Lit)],
         default: usize,
     },
+    /// Free text of at most `max_len` characters.
+    Text {
+        default: &'static str,
+        max_len: usize,
+    },
 }
 
 #[derive(Debug)]
@@ -57,6 +62,28 @@ impl Setting {
             Kind::Switch { default } => Value::Bool(*default),
             Kind::Number { default, .. } => number_value(*default),
             Kind::Select { options, default } => options[*default].1.to_value(),
+            Kind::Text { default, .. } => Value::from(*default),
+        }
+    }
+
+    /// A valid value that is not the default (the other side of a switch, the far end of a range, another option):
+    /// the plugins-off check turns every setting to it.
+    #[cfg_attr(not(any(test, feature = "capture")), allow(dead_code))]
+    pub(crate) fn scrambled(&self) -> Value {
+        match &self.kind {
+            Kind::Switch { default } => Value::Bool(!*default),
+            Kind::Number {
+                default, min, max, ..
+            } => number_value(if *default == *max { *min } else { *max }),
+            Kind::Select { options, default } => {
+                let other = if *default + 1 < options.len() {
+                    options.len() - 1
+                } else {
+                    0
+                };
+                options[other].1.to_value()
+            }
+            Kind::Text { default, .. } => Value::from(format!("{default}x")),
         }
     }
 
@@ -78,6 +105,9 @@ impl Setting {
                 .iter()
                 .find(|(_, lit)| lit.matches(value))
                 .map(|(_, lit)| lit.to_value()),
+            Kind::Text { max_len, .. } => value
+                .as_str()
+                .map(|text| Value::from(text.chars().take(*max_len).collect::<String>())),
         }
     }
 }
@@ -130,25 +160,51 @@ pub(crate) fn def(id: &str) -> Option<&'static Def> {
     DEFS.iter().find(|def| def.id == id)
 }
 
-const MESSAGE_ACTIONS_OWN: &[(&str, Lit)] = &[
+/// `actions` of the original: single and triple clicks.
+const CLICK_ACTIONS: &[(&str, Lit)] = &[
     ("None", Lit::Str("NONE")),
+    ("Delete", Lit::Str("DELETE")),
+    ("Copy Link", Lit::Str("COPY_LINK")),
+    ("Copy ID", Lit::Str("COPY_ID")),
+    ("Copy Content", Lit::Str("COPY_CONTENT")),
+    ("Copy User ID", Lit::Str("COPY_USER_ID")),
     ("Edit", Lit::Str("EDIT")),
     ("Reply", Lit::Str("REPLY")),
-    ("Copy Text", Lit::Str("COPY_CONTENT")),
-    ("Copy Message Link", Lit::Str("COPY_LINK")),
-    ("Copy Message ID", Lit::Str("COPY_ID")),
-    ("Copy User ID", Lit::Str("COPY_USER_ID")),
+    ("React", Lit::Str("REACT")),
+    ("Open Thread", Lit::Str("OPEN_THREAD")),
+    ("Open Tab", Lit::Str("OPEN_TAB")),
 ];
 
-const MESSAGE_ACTIONS_OTHERS: &[(&str, Lit)] = &[
+/// `doubleClickOwnActions`.
+const DOUBLE_CLICK_OWN_ACTIONS: &[(&str, Lit)] = &[
     ("None", Lit::Str("NONE")),
+    ("Delete", Lit::Str("DELETE")),
     ("Reply", Lit::Str("REPLY")),
-    ("Copy Text", Lit::Str("COPY_CONTENT")),
-    ("Copy Message Link", Lit::Str("COPY_LINK")),
-    ("Copy Message ID", Lit::Str("COPY_ID")),
+    ("Edit", Lit::Str("EDIT")),
+    ("Quote", Lit::Str("QUOTE")),
+    ("Copy Content", Lit::Str("COPY_CONTENT")),
+    ("Copy Link", Lit::Str("COPY_LINK")),
+    ("Copy ID", Lit::Str("COPY_ID")),
     ("Copy User ID", Lit::Str("COPY_USER_ID")),
+    ("React", Lit::Str("REACT")),
+    ("Pin", Lit::Str("PIN")),
 ];
 
+/// `doubleClickOthersActions`.
+const DOUBLE_CLICK_OTHERS_ACTIONS: &[(&str, Lit)] = &[
+    ("None", Lit::Str("NONE")),
+    ("Delete", Lit::Str("DELETE")),
+    ("Reply", Lit::Str("REPLY")),
+    ("Quote", Lit::Str("QUOTE")),
+    ("Copy Content", Lit::Str("COPY_CONTENT")),
+    ("Copy Link", Lit::Str("COPY_LINK")),
+    ("Copy ID", Lit::Str("COPY_ID")),
+    ("Copy User ID", Lit::Str("COPY_USER_ID")),
+    ("React", Lit::Str("REACT")),
+    ("Pin", Lit::Str("PIN")),
+];
+
+/// `modifiers`.
 const MODIFIERS: &[(&str, Lit)] = &[
     ("None", Lit::Str("NONE")),
     ("Shift", Lit::Str("SHIFT")),
@@ -156,21 +212,83 @@ const MODIFIERS: &[(&str, Lit)] = &[
     ("Alt", Lit::Str("ALT")),
 ];
 
+/// `singleClickModifiers`: Backspace and Delete first.
+const SINGLE_CLICK_MODIFIERS: &[(&str, Lit)] = &[
+    ("Backspace", Lit::Str("BACKSPACE")),
+    ("Delete", Lit::Str("DELETE")),
+    ("None", Lit::Str("NONE")),
+    ("Shift", Lit::Str("SHIFT")),
+    ("Ctrl", Lit::Str("CTRL")),
+    ("Alt", Lit::Str("ALT")),
+];
+
+/// A time in milliseconds. The original types it into a box (`OptionType.NUMBER`); here it moves in 50 ms steps.
+const fn millis(default: f64) -> Kind {
+    Kind::Number {
+        default,
+        min: 0.,
+        max: 5000.,
+        step: 50.,
+    }
+}
+
+/// Settings of the originals that have nothing to act on in the app yet, with why. Every other setting must be read
+/// by the code (a test checks both ways), so a setting can never sit in the page doing nothing unnoticed.
+pub(crate) const IDLE_SETTINGS: &[(&str, &str, &str)] = &[
+    (
+        "AlwaysTrust",
+        "file",
+        "the app does not show the pinned client's \"Potentially Dangerous Download\" dialog yet (module 432518, opened from module 889558), so there is no dialog to remove",
+    ),
+    (
+        "NoPendingCount",
+        "hidePremiumOffersCount",
+        "the app's Home badge does not count unseen Nitro offers yet (`getUnacknowledgedOffers`), so there is no count to hide",
+    ),
+];
+
+/// Settings shown only while a switch of the same plugin is on (`hidden` in the original).
+pub(crate) const SHOWN_WHEN: &[(&str, &str, &str)] = &[(
+    "MessageClickActions",
+    "additionalReactEmojis",
+    "addAdditionalReacts",
+)];
+
 /// Every plugin, in the order the Plugins page lists them (by name).
 pub(crate) const DEFS: &[Def] = &[
     Def {
         id: "AlwaysTrust",
         name: "AlwaysTrust",
-        description: "Opens links without the \"Leaving Discord\" question.",
+        description: "Removes the annoying untrusted domain and suspicious file popup.",
         origin: Origin::Vencord,
-        source: "src/plugins/alwaysTrust/index.ts",
+        source: "src/plugins/alwaysTrust/index.tsx",
         default_on: false,
-        settings: &[Setting {
-            key: "domain",
-            label: "Trust every link",
-            description: "Skip the question for any web address.",
-            kind: Kind::Switch { default: true },
-        }],
+        settings: &[
+            Setting {
+                key: "domain",
+                label: "Trust every link",
+                description: "Remove the untrusted domain popup when opening links.",
+                kind: Kind::Switch { default: true },
+            },
+            Setting {
+                key: "file",
+                label: "Trust every download",
+                description: "Remove the \"Potentially Dangerous Download\" popup when opening links.",
+                kind: Kind::Switch { default: true },
+            },
+            Setting {
+                key: "noDeleteSafety",
+                label: "No server name to delete",
+                description: "Removes the enter server name requirement when deleting a server.",
+                kind: Kind::Switch { default: true },
+            },
+            Setting {
+                key: "confirmModal",
+                label: "Ask before deleting",
+                description: "Show an \"are you sure\" dialog before deleting a server (with the setting above).",
+                kind: Kind::Switch { default: true },
+            },
+        ],
     },
     Def {
         id: "ClearURLs",
@@ -202,43 +320,163 @@ pub(crate) const DEFS: &[Def] = &[
     Def {
         id: "MessageClickActions",
         name: "MessageClickActions",
-        description: "Double-click a message to edit it, reply to it, or copy it.",
+        description: "Customize click actions on messages: hold Backspace and click to delete, double-click to edit or reply, and more.",
         origin: Origin::Vencord,
         source: "src/plugins/messageClickActions/index.ts",
         // Double-click to edit was always on before plugins existed; it stays on until turned off.
         default_on: true,
         settings: &[
             Setting {
-                key: "doubleClickAction",
-                label: "Double-click on your messages",
-                description: "What a double-click on one of your own messages does.",
+                key: "singleClickAction",
+                label: "Single click (your messages)",
+                description: "Action on single click on your own messages.",
                 kind: Kind::Select {
-                    options: MESSAGE_ACTIONS_OWN,
+                    options: CLICK_ACTIONS,
                     default: 1,
+                },
+            },
+            Setting {
+                key: "singleClickModifier",
+                label: "Key for single click (your messages)",
+                description: "Key that must be held for the single click action on your messages.",
+                kind: Kind::Select {
+                    options: SINGLE_CLICK_MODIFIERS,
+                    default: 0,
+                },
+            },
+            Setting {
+                key: "singleClickOthersAction",
+                label: "Single click (others' messages)",
+                description: "Action on single click on other people's messages.",
+                kind: Kind::Select {
+                    options: CLICK_ACTIONS,
+                    default: 1,
+                },
+            },
+            Setting {
+                key: "singleClickOthersModifier",
+                label: "Key for single click (others' messages)",
+                description: "Key that must be held for the single click action on other people's messages.",
+                kind: Kind::Select {
+                    options: SINGLE_CLICK_MODIFIERS,
+                    default: 0,
+                },
+            },
+            Setting {
+                key: "doubleClickAction",
+                label: "Double-click (your messages)",
+                description: "Action on double-click on your own messages.",
+                kind: Kind::Select {
+                    options: DOUBLE_CLICK_OWN_ACTIONS,
+                    default: 3,
                 },
             },
             Setting {
                 key: "doubleClickOthersAction",
-                label: "Double-click on other people's messages",
-                description: "What a double-click on someone else's message does.",
+                label: "Double-click (others' messages)",
+                description: "Action on double-click on other people's messages.",
                 kind: Kind::Select {
-                    options: MESSAGE_ACTIONS_OTHERS,
-                    default: 1,
+                    options: DOUBLE_CLICK_OTHERS_ACTIONS,
+                    default: 2,
                 },
             },
             Setting {
                 key: "doubleClickModifier",
-                label: "Key to hold",
-                description: "The double-click only acts while this key is held.",
+                label: "Key for double-click",
+                description: "Key that must be held for the double-click action.",
                 kind: Kind::Select {
                     options: MODIFIERS,
                     default: 0,
                 },
             },
             Setting {
+                key: "tripleClickAction",
+                label: "Triple-click",
+                description: "Action on triple-click (needs \"Delay double-click\" below).",
+                kind: Kind::Select {
+                    options: CLICK_ACTIONS,
+                    default: 8,
+                },
+            },
+            Setting {
+                key: "tripleClickModifier",
+                label: "Key for triple-click",
+                description: "Key that must be held for the triple-click action.",
+                kind: Kind::Select {
+                    options: MODIFIERS,
+                    default: 0,
+                },
+            },
+            Setting {
+                key: "reactEmoji",
+                label: "Reaction emoji",
+                description: "Emoji the React action adds: an emoji, or a custom one as name:id.",
+                kind: Kind::Text {
+                    default: "\u{1f480}",
+                    max_len: 200,
+                },
+            },
+            Setting {
+                key: "addAdditionalReacts",
+                label: "More reactions",
+                description: "Also add the extra reaction emojis below.",
+                kind: Kind::Switch { default: false },
+            },
+            Setting {
+                key: "additionalReactEmojis",
+                label: "Extra reaction emojis",
+                description: "Up to 8 more emojis, separated by commas or new lines.",
+                kind: Kind::Text {
+                    default: "",
+                    max_len: 2000,
+                },
+            },
+            Setting {
                 key: "disableInDms",
                 label: "Off in direct messages",
-                description: "Double-clicks do nothing in DMs and group DMs.",
+                description: "Disable all click actions in direct messages.",
+                kind: Kind::Switch { default: false },
+            },
+            Setting {
+                key: "disableInSystemDms",
+                label: "Off in system DMs",
+                description: "Disable all click actions in direct messages from Discord itself.",
+                kind: Kind::Switch { default: true },
+            },
+            Setting {
+                key: "clickTimeout",
+                label: "Click timeout (ms)",
+                description: "Time that tells double and triple clicks apart from single ones.",
+                kind: millis(300.),
+            },
+            Setting {
+                key: "doubleClickHoldThreshold",
+                label: "Double-click hold limit (ms)",
+                description: "Longest hold of a double-click; holding longer selects text instead.",
+                kind: millis(150.),
+            },
+            Setting {
+                key: "deferDoubleClickForTriple",
+                label: "Delay double-click",
+                description: "Wait to allow triple-click actions (triple-click is off without this).",
+                kind: Kind::Switch { default: false },
+            },
+            Setting {
+                key: "selectionHoldTimeout",
+                label: "Selection hold (ms)",
+                description: "A press held longer than this selects text and runs no action.",
+                kind: millis(300.),
+            },
+            Setting {
+                key: "quoteWithReply",
+                label: "Quote replies",
+                description: "When quoting, also reply to the message.",
+                kind: Kind::Switch { default: true },
+            },
+            Setting {
+                key: "useSelectionForQuote",
+                label: "Quote the selection",
+                description: "When quoting, use the selected text if there is one.",
                 kind: Kind::Switch { default: false },
             },
         ],
@@ -246,7 +484,7 @@ pub(crate) const DEFS: &[Def] = &[
     Def {
         id: "NoPendingCount",
         name: "NoPendingCount",
-        description: "Hides the count badges of friend requests and message requests.",
+        description: "Removes the ping count of incoming friend requests, message requests, and Nitro offers.",
         origin: Origin::Vencord,
         source: "src/plugins/noPendingCount/index.ts",
         default_on: false,
@@ -261,6 +499,12 @@ pub(crate) const DEFS: &[Def] = &[
                 key: "hideMessageRequestsCount",
                 label: "Hide message request count",
                 description: "No number on Message Requests; the row stays.",
+                kind: Kind::Switch { default: true },
+            },
+            Setting {
+                key: "hidePremiumOffersCount",
+                label: "Hide Nitro offers count",
+                description: "No number for unseen Nitro trials and discounts.",
                 kind: Kind::Switch { default: true },
             },
         ],
@@ -303,16 +547,25 @@ pub(crate) const DEFS: &[Def] = &[
         }],
     },
     Def {
+        id: "VoiceStats",
+        name: "VoiceStats",
+        description: "Shows how long you've spent in voice with each user in their profile.",
+        origin: Origin::Equicord,
+        source: "src/equicordplugins/voiceStats/index.tsx",
+        default_on: false,
+        settings: &[],
+    },
+    Def {
         id: "VolumeBooster",
         name: "VolumeBooster",
-        description: "Lets a person's volume go past 200%.",
+        description: "Allows you to set the user and stream volume above the default maximum.",
         origin: Origin::Vencord,
         source: "src/plugins/volumeBooster/index.ts",
         default_on: false,
         settings: &[Setting {
             key: "multiplier",
             label: "Volume multiplier",
-            description: "The User Volume slider goes up to 200% times this.",
+            description: "The User Volume and Stream Volume sliders reach their usual top times this.",
             kind: Kind::Number {
                 default: 2.,
                 min: 1.,
@@ -325,6 +578,18 @@ pub(crate) const DEFS: &[Def] = &[
 
 #[cfg(test)]
 mod tests {
+    /// A fresh install has the plugins' master switch on and exactly one plugin on: MessageClickActions, which
+    /// the owner asked for (double-click to edit). Everything else starts as the pinned client.
+    #[test]
+    fn only_message_click_actions_is_on_by_default() {
+        let on: Vec<&str> = DEFS
+            .iter()
+            .filter(|def| def.default_on)
+            .map(|def| def.id)
+            .collect();
+        assert_eq!(on, ["MessageClickActions"]);
+    }
+
     use super::*;
 
     #[test]
@@ -376,6 +641,6 @@ mod tests {
             select.normalize(&Value::from("REPLY")),
             Some(Value::from("REPLY"))
         );
-        assert_eq!(select.normalize(&Value::from("DELETE")), None);
+        assert_eq!(select.normalize(&Value::from("SPIN")), None);
     }
 }

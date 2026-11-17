@@ -563,6 +563,17 @@ impl Root {
     }
 
     fn open_delete_server(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        // Not in the pinned client: AlwaysTrust's `noDeleteSafety` without its question deletes at once
+        // (`plugin_hooks.rs`).
+        if super::plugin_hooks::server_delete_safety() == super::plugin_hooks::DeleteSafety::Skip
+            && let Some(guild) = self.server_settings.as_ref().map(|open| open.guild)
+        {
+            let _ = self.requests.send(delete_guild_request(guild));
+            self.server_settings = None;
+            self.select_home(None);
+            cx.notify();
+            return;
+        }
         let field = cx.new(|cx| Editor::new(super::editor_style(), cx));
         let events = cx.subscribe(&field, |this, _, event: &EditorEvent, cx| {
             if let Some(open) = this.server_settings.as_mut() {
@@ -1660,6 +1671,10 @@ impl Root {
             .find(|known| known.id == guild)?
             .name
             .clone();
+        // Not in the pinned client: AlwaysTrust's `noDeleteSafety` asks its own question, with no name to type.
+        if super::plugin_hooks::server_delete_safety() == super::plugin_hooks::DeleteSafety::Confirm {
+            return Some(Self::plugin_delete_server_modal(guild, cx));
+        }
         let wrong = open.delete_wrong;
         let body = div()
             .flex()
@@ -1751,6 +1766,47 @@ impl Root {
             },
             cx,
         ))
+    }
+}
+
+impl Root {
+    /// AlwaysTrust's `HandleGuildDeleteModal` with `confirmModal` (Vencord `src/plugins/alwaysTrust`): "Delete server?",
+    /// then the same delete as the pinned dialog.
+    fn plugin_delete_server_modal(guild: Id, cx: &mut Context<Self>) -> AnyElement {
+        let close = |this: &mut Root| {
+            if let Some(open) = this.server_settings.as_mut() {
+                open.delete_name = None;
+                open.delete_wrong = false;
+            }
+        };
+        super::modal::render(
+            super::modal::Spec {
+                id: "delete-server-plugin-modal",
+                title: "Delete server?".into(),
+                subtitle: Some(div().child("It's permanent, if that wasn't obvious.").into_any_element()),
+                body: None,
+                buttons: vec![
+                    super::modal::button(
+                        "delete-server-plugin-cancel",
+                        "Cancel",
+                        super::modal::Tone::Secondary,
+                        move |this, _, _| close(this),
+                    ),
+                    super::modal::button(
+                        "delete-server-plugin-confirm",
+                        "Delete",
+                        super::modal::Tone::Critical,
+                        move |this, _, _| {
+                            let _ = this.requests.send(delete_guild_request(guild));
+                            this.server_settings = None;
+                            this.select_home(None);
+                        },
+                    ),
+                ],
+                close: Box::new(move |this, _, _| close(this)),
+            },
+            cx,
+        )
     }
 }
 

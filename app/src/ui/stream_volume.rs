@@ -8,14 +8,17 @@ use serde_json::{Value, json};
 
 const VOLUMES: &str = "audio.stream_volumes";
 const MUTED: &str = "audio.stream_muted";
-/// The slider's top, as `maxValue` is 200 on the desktop client (module 972432).
-pub(super) const MAX_PERCENT: f32 = 200.;
+/// The loudest stored level: 200, as `maxValue` is 200 on the desktop client (module 972432); with the VolumeBooster
+/// plugin, the level at the top of its longer slider (`plugin_hooks.rs`).
+fn max_percent() -> f32 {
+    super::plugin_hooks::user_volume_cap().map_or(200., |factor| (factor * 100.).max(200.))
+}
 
 /// The stored percent of `owner`; unity when none was chosen.
 pub(super) fn percent_in(store: &Value, owner: u64) -> f32 {
     store[owner.to_string()]
         .as_f64()
-        .map_or(100., |percent| (percent as f32).clamp(0., MAX_PERCENT))
+        .map_or(100., |percent| (percent as f32).clamp(0., max_percent()))
 }
 
 pub(super) fn muted_in(store: &Value, owner: u64) -> bool {
@@ -54,7 +57,7 @@ pub(super) fn set_percent(owner: u64, percent: f32) {
     if !store.is_object() {
         store = json!({});
     }
-    store[owner.to_string()] = json!(percent.clamp(0., MAX_PERCENT));
+    store[owner.to_string()] = json!(percent.clamp(0., max_percent()));
     storage::set(VOLUMES, store);
 }
 

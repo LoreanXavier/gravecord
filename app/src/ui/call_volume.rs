@@ -18,8 +18,10 @@ use gpui::{
 use std::cell::Cell;
 use std::rc::Rc;
 
-/// `maxValue` on the desktop client.
-const MAX: f32 = 200.;
+/// `maxValue` on the desktop client (200), or more with the VolumeBooster plugin (`plugin_hooks.rs`).
+fn max() -> f32 {
+    super::plugin_hooks::user_volume_max() as f32
+}
 
 #[derive(Default)]
 pub(super) struct State {
@@ -115,7 +117,7 @@ impl Root {
             return;
         };
         let position = position_of(y, self.call_volume.track.get());
-        let percent = slider_to_volume(position * MAX);
+        let percent = slider_to_volume(position * max());
         let (_, muted) = self.call_volume_level(user, stream);
         self.call_volume_set(user, stream, percent, muted && percent <= 0.);
         cx.notify();
@@ -128,7 +130,7 @@ impl Root {
         let position = if muted {
             0.
         } else {
-            (volume_to_slider(percent) / MAX).clamp(0., 1.)
+            (volume_to_slider(percent) / max()).clamp(0., 1.)
         };
         let state = &self.call_volume;
         let open =
@@ -281,7 +283,7 @@ mod tests {
 
     #[test]
     fn unity_sits_at_half_of_a_bar_that_runs_to_200_percent() {
-        assert!((volume_to_slider(100.) / MAX - 0.5).abs() < 1e-4);
-        assert!((slider_to_volume(0.5 * MAX) - 100.).abs() < 1e-2);
+        assert!((volume_to_slider(100.) / max() - 0.5).abs() < 1e-4);
+        assert!((slider_to_volume(0.5 * max()) - 100.).abs() < 1e-2);
     }
 }

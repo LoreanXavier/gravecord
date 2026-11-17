@@ -8,6 +8,7 @@ mod layout;
 mod package;
 mod parity;
 mod perf;
+mod plugins_off;
 mod report;
 mod snapshot;
 
@@ -37,6 +38,7 @@ fn main() -> Result<()> {
         ["package", "--channel", "nightly"] => package::run(&repo_root(), true),
         ["perf", rest @ ..] => perf::run(&repo_root(), rest),
         ["headless", rest @ ..] => headless::run(&repo_root(), rest),
+        ["plugins-off", rest @ ..] => plugins_off::run(&repo_root(), rest),
         [] => bail!("usage: cargo xtask <command>"),
         other => bail!("not implemented yet: {}", other.join(" ")),
     }

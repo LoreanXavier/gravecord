@@ -1354,6 +1354,13 @@ impl Root {
                     .child(member_since(user_id)),
             )
             .into_any_element();
+        // Not in the pinned client: the VoiceStats plugin's "Voice Time" (`plugin_hooks/voice_stats.rs`).
+        let voice_time = self.voice_time_section(
+            user_id,
+            true,
+            palette.token("--text-strong").into(),
+            palette.token("--text-default").into(),
+        );
         let games = self.game_collection("dm-profile", user_id, palette, cx);
         let activity = self.live_activity_cards(
             user_id,
@@ -1369,6 +1376,7 @@ impl Root {
             private,
             bio,
             member_since,
+            voice_time,
             games,
             activity,
             wishlist,
@@ -1458,6 +1466,7 @@ impl Root {
             .children(parts.private)
             .children(parts.bio)
             .child(parts.member_since)
+            .children(parts.voice_time)
             .when(has_cards, |this| {
                 this.child(
                     div()
@@ -1667,7 +1676,8 @@ impl Root {
                     )
                     .child(bio)
             }))
-            .child(parts.member_since);
+            .child(parts.member_since)
+            .children(parts.voice_time);
         let body = div()
             .mx(px(16.))
             .flex()
@@ -1781,6 +1791,7 @@ struct SidebarParts {
     private: Option<AnyElement>,
     bio: Option<AnyElement>,
     member_since: AnyElement,
+    voice_time: Option<AnyElement>,
     games: Option<AnyElement>,
     activity: Vec<AnyElement>,
     wishlist: Option<AnyElement>,
