@@ -107,12 +107,35 @@ pub fn coverage_errors(tables: &[(String, String)], keys: &BTreeSet<String>) -> 
     errors
 }
 
+/// Phrases that name a module as missing, not as ported: a line with one does not cite. `GAP:` is the convention for
+/// writing down a known gap next to the code it concerns (`// GAP: the dialog of module 432518 is not ported`).
+pub const GAP_MARKERS: [&str; 5] = [
+    "GAP:",
+    "does not show",
+    "not ported",
+    "not in the app",
+    "isn't in the app",
+];
+
+/// The sources without the lines that name a module as missing.
+fn without_gaps(sources: &str) -> String {
+    sources
+        .lines()
+        .filter(|line| !GAP_MARKERS.iter().any(|marker| line.contains(marker)))
+        .collect::<Vec<_>>()
+        .join(
+            "
+",
+        )
+}
+
 /// Module ids the code cites: 4 to 6 digit numbers standing alone in the sources.
 fn cited_modules(repo: &Path) -> Result<BTreeSet<String>> {
-    let mut sources = String::new();
+    let mut all = String::new();
     for base in ["app", "crates", "xtask"] {
-        collect(&repo.join(base), &mut sources)?;
+        collect(&repo.join(base), &mut all)?;
     }
+    let sources = without_gaps(&all);
     let mut cited = BTreeSet::new();
     let bytes = sources.as_bytes();
     let mut index = 0;
@@ -316,6 +339,17 @@ mod tests {
         assert!(errors[0].contains("accent_color"));
         assert!(errors[1].contains("updated_at"));
         assert!(errors[2].contains("total_karma"));
+    }
+
+    #[test]
+    fn a_line_that_names_a_module_as_missing_does_not_cite_it() {
+        let text = "// The alert (module 361698).
+\"the app does not show the dialog yet (module 432518)\"
+// GAP: 889558
+";
+        let kept = without_gaps(text);
+        assert!(kept.contains("361698"));
+        assert!(!kept.contains("432518") && !kept.contains("889558"));
     }
 
     #[test]

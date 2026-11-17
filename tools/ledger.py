@@ -26,6 +26,8 @@ INDEX = os.path.join(REPO, "design", "snapshot", "MODULE_INDEX.tsv")
 STRINGS = os.path.join(REPO, "design", "snapshot", "dumps", "STRINGS", "en-US.json")
 OUT = os.path.join(REPO, "LEDGER.tsv")
 KEY = re.compile(r'\.t\["([A-Za-z0-9+/=]{6})"\]|\.t\.([A-Za-z0-9]{6})\b')
+# Lines that name a module as missing do not cite it (xtask/src/coverage.rs GAP_MARKERS).
+GAP_MARKERS = ("GAP:", "does not show", "not ported", "not in the app", "isn't in the app")
 CITE = re.compile(r"(?<![0-9A-Za-z])([0-9]{4,6})(?![0-9A-Za-z])")
 
 
@@ -72,7 +74,10 @@ def citations():
                     continue
                 path = os.path.join(folder, name)
                 with open(path, encoding="utf8", errors="ignore") as handle:
-                    text = handle.read()
+                    text = "
+".join(
+                        line for line in handle.read().splitlines() if not any(marker in line for marker in GAP_MARKERS)
+                    )
                 relative = os.path.relpath(path, REPO).replace(os.sep, "/")
                 for module in set(CITE.findall(text)):
                     cited[module].add(relative)
