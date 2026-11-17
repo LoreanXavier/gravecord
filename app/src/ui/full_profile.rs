@@ -57,6 +57,14 @@ pub(super) fn profile_tabs(body: Option<&Value>, other: bool) -> Vec<Tab> {
     tabs
 }
 
+/// The tab `o7` mounts on: the first of the tabs the profile has at that moment.
+fn initial_tab(body: Option<&Value>, other: bool) -> Tab {
+    profile_tabs(body, other)
+        .first()
+        .copied()
+        .unwrap_or(Tab::Activity)
+}
+
 /// Module 776879: a profile with nothing to show (empty bio and pronouns, no banner or accent colour key, no badges,
 /// and private flags equal to the public ones) gets no mutual tabs.
 fn stub_profile(body: &Value) -> bool {
@@ -782,11 +790,15 @@ impl Root {
             }
             cx.notify();
         });
+        // `o7`: the tab is chosen once, as the modal mounts, from the tabs the profile then has (`useState`). A profile
+        // not read yet has no Board, so the modal opens on Activity and stays there when the Board arrives.
+        let other = self.stores.current_user.as_ref().map(|me| me.id) != Some(user);
+        let first = initial_tab(self.fetched.get(&format!("profile:{user}")), other);
         self.full_profile = Some(FullProfile {
             user,
             guild: self.guild,
-            tab: Tab::Activity,
-            explicit: false,
+            tab: first,
+            explicit: true,
             note,
             saved_note: String::new(),
             board_expanded: std::collections::HashSet::new(),
@@ -897,7 +909,7 @@ impl Root {
             }
             self.request_profile_images(user);
             self.request_profile_cards(user);
-        } else if key == format!("profile-games:{user}")
+        } else if super::dm_profile::is_profile_games_key(key, user)
             || key == format!("profile-wishlist:{user}")
         {
             self.request_profile_cards(user);
@@ -1625,11 +1637,12 @@ impl Root {
         let default: Hsla = palette.token("--text-default").into();
         let subtle: Hsla = palette.token("--text-subtle").into();
         let body = self.fetched.get(&format!("profile:{user}"));
-        let answer = self.fetched.get(&format!("profile-games:{user}"));
+        let records = self.profile_game_records(user);
         let game = |id: &str| {
-            answer
-                .and_then(Value::as_array)
-                .and_then(|games| games.iter().find(|game| game["id"].as_str() == Some(id)))
+            records
+                .iter()
+                .copied()
+                .find(|game| game["id"].as_str() == Some(id))
         };
         let tile_bg = palette.tile_background(false);
         let visitor = !me;
@@ -3358,9 +3371,10 @@ fn full_profile_modal_geometry(vw: f32, vh: f32) -> ModalGeometry {
 #[cfg(test)]
 mod tests {
     use super::{
-        Tab, full_profile_modal_geometry, mutual_counts, mutual_empty_text, mutual_friends_label,
-        mutual_servers_label, parse_connected_accounts, parse_custom_status, profile_date,
-        profile_route, profile_tabs, should_apply_guild_member, time_ago, wishlist_is_private,
+        Tab, full_profile_modal_geometry, initial_tab, mutual_counts, mutual_empty_text,
+        mutual_friends_label, mutual_servers_label, parse_connected_accounts, parse_custom_status,
+        profile_date, profile_route, profile_tabs, should_apply_guild_member, time_ago,
+        wishlist_is_private,
     };
     use serde_json::json;
 
@@ -3420,6 +3434,14 @@ mod tests {
         // No banner or accent colour key at all, nothing else either: module 776879's empty profile.
         let stub = json!({"user": {"flags": 0, "public_flags": 0}, "user_profile": {"bio": "", "pronouns": ""}});
         assert!(!profile_tabs(Some(&stub), true).contains(&Tab::Friends));
+        // The modal mounts on the first tab it has then: Activity before the profile is read, the Board after.
+        assert_eq!(initial_tab(None, true), Tab::Activity);
+        assert_eq!(initial_tab(None, false), Tab::Board);
+        let board = json!({
+            "user_profile": {"bio": "", "banner": null},
+            "widgets": [{"id": "1", "data": {"type": "favorite_games", "games": [{"game_id": "1"}]}}]
+        });
+        assert_eq!(initial_tab(Some(&board), true), Tab::Board);
         let (heading, line) = mutual_empty_text(true, 7);
         assert!(!heading.is_empty() && !line.is_empty());
         assert_eq!(mutual_empty_text(false, 7), mutual_empty_text(false, 12));

@@ -190,6 +190,35 @@ pub(super) fn widget_games(body: &Value) -> Vec<String> {
     games
 }
 
+/// `GET /games` takes at most twenty ids (module 920495).
+pub(super) const GAMES_PER_FETCH: usize = 20;
+
+/// The fetch key of one twenty-id batch of a profile's widget games; the first keeps the plain key.
+pub(super) fn profile_games_key(user: Id, chunk: usize) -> String {
+    if chunk == 0 {
+        format!("profile-games:{user}")
+    } else {
+        format!("profile-games:{user}:{chunk}")
+    }
+}
+
+/// Whether a fetch key is one of that profile's game batches.
+pub(super) fn is_profile_games_key(key: &str, user: Id) -> bool {
+    let base = format!("profile-games:{user}");
+    key == base
+        || key
+            .strip_prefix(base.as_str())
+            .is_some_and(|rest| rest.starts_with(':'))
+}
+
+fn games_route(ids: &[String]) -> String {
+    let mut url = reqwest::Url::parse("https://discord.com/api/v9/games").expect("constant URL");
+    for id in ids {
+        url.query_pairs_mut().append_pair("game_ids", id);
+    }
+    format!("/games?{}", url.query().unwrap_or_default())
+}
+
 /// A `GET /games` record's icon hash: `media.icon` of type `hash` (module 997013 `getIconURL`), else the record's
 /// `icon_hash`. The records carry no top-level `icon`; the capture demo's synthetic records still do.
 pub(super) fn game_icon_hash(game: &Value) -> Option<&str> {
@@ -777,18 +806,30 @@ impl Root {
         )
     }
 
+    /// Every `/games` record that has arrived for a profile's widget games, over all its batches.
+    pub(super) fn profile_game_records(&self, user: Id) -> Vec<&Value> {
+        let count = self
+            .fetched
+            .get(&format!("profile:{user}"))
+            .map_or(0, |body| widget_games(body).len());
+        (0..count.div_ceil(GAMES_PER_FETCH).max(1))
+            .filter_map(|chunk| self.fetched.get(&profile_games_key(user, chunk)))
+            .filter_map(Value::as_array)
+            .flatten()
+            .collect()
+    }
+
     /// The games of the collection breadcrumb, once their answer is in: `(id, name, image key)`.
     fn breadcrumb_games(&self, user: Id) -> (Vec<(String, String, String)>, usize) {
         let Some(body) = self.fetched.get(&format!("profile:{user}")) else {
             return (Vec::new(), 0);
         };
         let ids = widget_games(body);
-        let answer = self.fetched.get(&format!("profile-games:{user}"));
+        let records = self.profile_game_records(user);
         let games: Vec<(String, String, String)> = ids
             .iter()
             .filter_map(|id| {
-                let game = answer?
-                    .as_array()?
+                let game = records
                     .iter()
                     .find(|game| game["id"].as_str() == Some(id))?;
                 game_icon_hash(game)?;
@@ -809,25 +850,19 @@ impl Root {
             return;
         };
         let games = widget_games(&body);
-        let games_key = format!("profile-games:{user}");
-        if !games.is_empty() && self.requested.insert(games_key.clone()) {
-            // 920495 batches at most twenty game IDs.
-            let mut url =
-                reqwest::Url::parse("https://discord.com/api/v9/games").expect("constant URL");
-            for id in games.iter().take(20) {
-                url.query_pairs_mut().append_pair("game_ids", id);
+        // 920495 asks for every id, twenty at a time.
+        for (chunk, ids) in games.chunks(GAMES_PER_FETCH).enumerate() {
+            let key = profile_games_key(user, chunk);
+            if self.requested.insert(key.clone()) {
+                let _ = self.requests.send(Request::Fetch {
+                    key,
+                    route: games_route(ids),
+                });
             }
-            let _ = self.requests.send(Request::Fetch {
-                key: games_key.clone(),
-                route: format!("/games?{}", url.query().unwrap_or_default()),
-            });
         }
         let pictures: Vec<(String, String)> = self
-            .fetched
-            .get(&games_key)
-            .and_then(Value::as_array)
+            .profile_game_records(user)
             .into_iter()
-            .flatten()
             .flat_map(|game| {
                 let id = game["id"].as_str().unwrap_or_default();
                 let icon = game_icon_hash(game).map(|icon| {
@@ -1907,6 +1942,46 @@ impl Root {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn a_games_record_names_its_icon_in_media_not_at_the_top() {
+        // The shape `GET /games` answers with: `icon_hash` and `media.icon`, no top-level `icon`.
+        let record = json!({
+            "id": "5", "name": "Game", "icon_hash": "abc",
+            "media": {"icon": {"type": "hash", "value": "def"},
+                      "cover": {"type": "url", "value": "https://images-ext-1.discordapp.net/external/x/https/images.igdb.com/c.jpg"}}
+        });
+        assert_eq!(game_icon_hash(&record), Some("def"));
+        assert_eq!(
+            game_icon_hash(&json!({"id": "5", "icon_hash": "abc"})),
+            Some("abc")
+        );
+        assert_eq!(
+            game_icon_hash(&json!({"id": "5", "media": {"icon": {"type": "url", "value": "x"}}})),
+            None
+        );
+        assert_eq!(game_icon_hash(&json!({"id": "5"})), None);
+        let cover = crate::ui::inventory_popout::game_cover_url(&record).expect("a cover");
+        assert!(
+            cover.ends_with("keep_aspect_ratio=true&format=webp"),
+            "{cover}"
+        );
+    }
+
+    #[test]
+    fn widget_games_are_fetched_twenty_at_a_time() {
+        let ids: Vec<String> = (0..45).map(|n| (1000 + n).to_string()).collect();
+        let routes: Vec<String> = ids.chunks(GAMES_PER_FETCH).map(games_route).collect();
+        assert_eq!(routes.len(), 3);
+        assert_eq!(routes[0].matches("game_ids=").count(), 20);
+        assert_eq!(routes[2].matches("game_ids=").count(), 5);
+        assert!(routes[1].starts_with("/games?game_ids=1020&"));
+        assert_eq!(profile_games_key(7, 0), "profile-games:7");
+        assert_eq!(profile_games_key(7, 2), "profile-games:7:2");
+        assert!(is_profile_games_key("profile-games:7", 7));
+        assert!(is_profile_games_key("profile-games:7:1", 7));
+        assert!(!is_profile_games_key("profile-games:70", 7));
+    }
 
     #[test]
     fn member_since_reads_the_snowflake() {

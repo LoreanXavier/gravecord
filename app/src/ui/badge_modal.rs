@@ -107,6 +107,46 @@ const STAFF: u64 = 22;
 
 /// The catalog id of a profile badge id (`w0`, module 731309): the legacy names map to numbers, and the rest are the
 /// enum's names in lower case.
+/// Module 851767 as it stores a profile: the Nitro badge reads `8zbGNR` and a tenure badge (`VD` of module 682901,
+/// `premium_tenure_*_month_v2`) `Hu4jfi` with `premium_since`; a booster badge reads `IWkAq7` with
+/// `premium_guild_since`; each date in the `medium` style. Any other badge keeps the text the server sent.
+pub(super) fn badge_description(body: &Value, id: &str, description: &str) -> String {
+    let date = |key: &str| {
+        body[key]
+            .as_str()
+            .and_then(|value| chrono::DateTime::parse_from_rfc3339(value).ok())
+            .map(|date| {
+                date.with_timezone(&chrono::Local)
+                    .format("%b %-d, %Y")
+                    .to_string()
+            })
+    };
+    let with_date = |key: &'static str, date: String| {
+        dc_intl::format(
+            key,
+            &[(
+                "date",
+                dc_intl::Arg::When {
+                    date: date.into(),
+                    time: String::new().into(),
+                },
+            )],
+        )
+    };
+    let tenure = id.starts_with("premium_tenure_") && id.ends_with("_month_v2");
+    if (id == "premium" || tenure)
+        && let Some(since) = date("premium_since")
+    {
+        return with_date(if tenure { "Hu4jfi" } else { "8zbGNR" }, since);
+    }
+    if id.starts_with("guild_booster_lvl")
+        && let Some(since) = date("premium_guild_since")
+    {
+        return with_date("IWkAq7", since);
+    }
+    description.to_owned()
+}
+
 pub(super) fn catalog_id(profile_id: &str) -> Option<u64> {
     let legacy = match profile_id {
         "staff" | "staff_hidden" | "staff_personal" => Some(22),
@@ -376,7 +416,8 @@ impl Root {
             .filter_map(|(index, badge)| {
                 let icon_hash = badge["icon"].as_str()?;
                 let id = badge["id"].as_str().unwrap_or_default().to_owned();
-                let description = badge["description"].as_str().unwrap_or_default().to_owned();
+                let description =
+                    badge_description(body, &id, badge["description"].as_str().unwrap_or_default());
                 let picture = self.images.get(&format!("badge:{icon_hash}")).cloned();
                 let tip = Tip::body(self.badge_tip(user, &id, &description), Side::Top).after(300);
                 let username = name.clone();
@@ -1366,6 +1407,33 @@ impl Root {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn nitro_and_booster_badges_read_their_dates_as_the_client_writes_them() {
+        let body = json!({
+            "premium_since": "2021-03-05T12:00:00.000000+00:00",
+            "premium_guild_since": "2024-11-20T12:00:00.000000+00:00"
+        });
+        let nitro = badge_description(&body, "premium", "Subscriber since 3/5/21");
+        assert!(nitro.contains("Mar 5, 2021"), "{nitro}");
+        assert!(!nitro.contains("3/5/21"), "{nitro}");
+        let tenure = badge_description(&body, "premium_tenure_12_month_v2", "x");
+        assert!(tenure.contains("Mar 5, 2021"), "{tenure}");
+        let boost = badge_description(
+            &body,
+            "guild_booster_lvl3",
+            "Server boosting since 11/20/24",
+        );
+        assert!(boost.contains("Nov 20, 2024"), "{boost}");
+        assert_eq!(
+            badge_description(&body, "hypesquad_house_1", "HypeSquad"),
+            "HypeSquad"
+        );
+        assert_eq!(
+            badge_description(&json!({}), "premium", "Subscriber since 3/5/21"),
+            "Subscriber since 3/5/21"
+        );
+    }
 
     #[test]
     fn profile_ids_map_to_catalog_ids() {
