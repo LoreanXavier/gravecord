@@ -276,6 +276,7 @@ mod upload_error;
 mod upload_progress;
 mod uploads;
 mod video_player;
+mod video_stats;
 mod video_tiles;
 mod voice;
 mod voice_panel;

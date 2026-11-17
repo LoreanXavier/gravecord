@@ -34,6 +34,13 @@ pub(crate) enum LoadStatus {
     Failed(String),
 }
 
+/// The file facts module 338659 `getStats` reports: the codec information and the file's size.
+#[derive(Debug)]
+pub(crate) struct MediaInfo {
+    pub codec: crate::mp4_info::CodecInfo,
+    pub file_size: usize,
+}
+
 #[derive(Clone)]
 pub(crate) struct DecodedFrame {
     pub pts_secs: f64,
@@ -62,6 +69,10 @@ struct WorkerShared {
     dimensions: Option<(u32, u32)>,
     duration_secs: Option<f64>,
     audio: Option<Arc<Clip>>,
+    /// What "Stats for Nerds" shows of the file, read once its bytes are in.
+    media: Option<Arc<MediaInfo>>,
+    /// Frames decoded into the ring (`getVideoPlaybackQuality().totalVideoFrames`).
+    decoded_frames: u64,
     loaded_at: Option<Instant>,
     ring: VecDeque<DecodedFrame>,
     retired: Vec<Arc<RenderImage>>,
@@ -81,6 +92,8 @@ impl WorkerShared {
             dimensions: None,
             duration_secs: None,
             audio: None,
+            media: None,
+            decoded_frames: 0,
             loaded_at: None,
             ring: VecDeque::with_capacity(RING_CAPACITY),
             retired: Vec::new(),
@@ -252,6 +265,23 @@ impl VodPlayer {
             self.clock_base_secs = secs;
             self.clock_anchor = Some(Instant::now());
         }
+    }
+
+    /// The file facts of "Stats for Nerds", once the file is read.
+    pub(crate) fn media_info(&self) -> Option<Arc<MediaInfo>> {
+        self.sync
+            .shared
+            .lock()
+            .ok()
+            .and_then(|shared| shared.media.clone())
+    }
+
+    /// The frames decoded so far.
+    pub(crate) fn decoded_frames(&self) -> u64 {
+        self.sync
+            .shared
+            .lock()
+            .map_or(0, |shared| shared.decoded_frames)
     }
 
     pub(crate) fn playing(&self) -> bool {
@@ -710,8 +740,14 @@ fn worker_main(key: String, url: String, sync: Arc<SyncState>) {
             return;
         }
     };
-    if sync.shared.lock().is_ok_and(|shared| shared.shutdown) {
-        return;
+    if let Ok(mut shared) = sync.shared.lock() {
+        shared.media = Some(Arc::new(MediaInfo {
+            codec: crate::mp4_info::read(&bytes),
+            file_size: bytes.len(),
+        }));
+        if shared.shutdown {
+            return;
+        }
     }
     let track = match H264Track::read(&bytes) {
         Ok(track) => track,
@@ -901,9 +937,11 @@ fn worker_main(key: String, url: String, sync: Arc<SyncState>) {
                     }
                     if let Some(frame) = pre_target {
                         shared.ring.push_back(frame);
+                        shared.decoded_frames += 1;
                     }
                     for frame in lookahead {
                         shared.ring.push_back(frame);
+                        shared.decoded_frames += 1;
                     }
                     if decode_idx > samples.len() {
                         shared.eof_decoded = true;
@@ -966,6 +1004,7 @@ fn worker_main(key: String, url: String, sync: Arc<SyncState>) {
             }
             for frame in converted {
                 shared.ring.push_back(frame);
+                shared.decoded_frames += 1;
             }
             if decode_idx > samples.len() {
                 shared.eof_decoded = true;
@@ -1290,8 +1329,15 @@ mod tests {
         player.play(1.0, false);
         std::thread::sleep(Duration::from_millis(40));
         let tick = player.tick();
-        assert!(tick.playing, "a stale status of the previous clip does not undo the click");
-        assert!(tick.position < 0.01, "the picture waits for the sound: {}", tick.position);
+        assert!(
+            tick.playing,
+            "a stale status of the previous clip does not undo the click"
+        );
+        assert!(
+            tick.position < 0.01,
+            "the picture waits for the sound: {}",
+            tick.position
+        );
 
         // A stale status of this very video having ended (a replay) does not undo it either.
         *reported.lock().unwrap() = voice_player::Status {

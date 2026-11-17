@@ -42,6 +42,7 @@ mod ui;
 mod updater;
 mod upload_flow;
 mod video_clip;
+mod mp4_info;
 mod video_vod;
 mod webauthn;
 #[cfg(feature = "capture")]

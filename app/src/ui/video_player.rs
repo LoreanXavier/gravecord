@@ -33,6 +33,10 @@ const INLINE_HIDE_SECS: f64 = 3.0;
 const FULLSCREEN_HIDE_SECS: f64 = 1.0;
 const CENTER_POP_MS: f64 = 400.0;
 const MAX_CACHED_PLAYERS: usize = 16;
+/// Module 953584: the store forgets the oldest source past ten.
+const STATS_LIMIT: usize = 10;
+/// Module 410694: "Copied!" shows for two seconds.
+pub(super) const STATS_COPIED: Duration = Duration::from_secs(2);
 
 fn midnight(name: &str) -> gpui::Rgba {
     rgba(Theme::Midnight.color(name))
@@ -157,6 +161,10 @@ pub(super) struct VideoHub {
     epoch: u64,
     timer_generation: u64,
     timer_deadline: Option<Instant>,
+    /// `VideoStatsStore` (module 953584): the sources whose "Stats for Nerds" is on, oldest first, at most ten.
+    stats: Vec<String>,
+    /// The source whose stats were just copied, and when: "Copied!" for two seconds.
+    stats_copied: Option<(String, Instant)>,
     #[cfg(any(test, feature = "capture"))]
     forced_volume_open: Option<String>,
 }
@@ -176,8 +184,99 @@ impl VideoHub {
             epoch: 0,
             timer_generation: 0,
             timer_deadline: None,
+            stats: Vec::new(),
+            stats_copied: None,
             #[cfg(any(test, feature = "capture"))]
             forced_volume_open: None,
+        }
+    }
+
+    /// `isVideoStatsEnabled`.
+    pub(super) fn stats_on(&self, src: &str) -> bool {
+        self.stats.iter().any(|known| known == src)
+    }
+
+    pub(super) fn set_stats_copied(&mut self, src: &str) {
+        self.stats_copied = Some((src.to_owned(), Instant::now()));
+    }
+
+    fn stats_copied(&self, src: &str, now: Instant) -> bool {
+        self.stats_copied
+            .as_ref()
+            .is_some_and(|(known, at)| known == src && now.duration_since(*at) < STATS_COPIED)
+    }
+
+    /// Module 338659 `getStats` of the player under `key`, when its stats are on.
+    fn stats_of(
+        &self,
+        key: &str,
+        src: &str,
+        viewport: (f32, f32),
+        file_size: Option<u64>,
+    ) -> Option<super::video_stats::VideoStats> {
+        if !self.stats_on(src) {
+            return None;
+        }
+        let entry = self.entries.get(key)?;
+        let media = entry.player.media_info();
+        let codec = media.as_ref().map(|media| media.codec.clone());
+        let (video_width, video_height, resolution) = match codec
+            .as_ref()
+            .and_then(|codec| Some((codec.video_width?, codec.video_height?)))
+        {
+            Some((width, height)) => (width, height, format!("{width}x{height}")),
+            None => match entry.tick.dimensions {
+                Some((width, height)) if width > 0 && height > 0 => {
+                    (width, height, format!("{width}x{height}"))
+                }
+                _ => (0, 0, "Unknown".to_owned()),
+            },
+        };
+        let duration = entry.effective_duration();
+        // The whole file is fetched before it plays, so everything after the playhead is buffered once it is read.
+        let buffered_seconds = match (&entry.tick.status, duration) {
+            (LoadStatus::Ready, Some(duration)) => (duration - entry.tick.position).max(0.0),
+            _ => 0.0,
+        };
+        // `MediaError` codes: 2 network, 3 decode, 4 source not supported.
+        let error = match &entry.tick.status {
+            LoadStatus::Failed(reason) => {
+                let code = if reason.starts_with("decoder") {
+                    3
+                } else if reason.starts_with("MP4") || reason.starts_with("timing") {
+                    4
+                } else {
+                    2
+                };
+                Some((code, reason.clone()))
+            }
+            _ => None,
+        };
+        Some(super::video_stats::VideoStats {
+            resolution,
+            video_width,
+            video_height,
+            viewport: (viewport.0.round() as u32, viewport.1.round() as u32),
+            current_time: entry.tick.position,
+            duration,
+            buffered_seconds,
+            dropped_frames: 0,
+            total_frames: entry.player.decoded_frames(),
+            frame_rate: codec.as_ref().and_then(|codec| codec.frame_rate),
+            file_size: file_size.or(media.map(|media| media.file_size as u64)),
+            codec,
+            error,
+        })
+    }
+
+    /// `toggleVideoStats`: on moves the source to the newest place and keeps the ten newest.
+    pub(super) fn toggle_stats(&mut self, src: &str) {
+        let was = self.stats_on(src);
+        self.stats.retain(|known| known != src);
+        if !was {
+            self.stats.push(src.to_owned());
+            let extra = self.stats.len().saturating_sub(STATS_LIMIT);
+            self.stats.drain(..extra);
         }
     }
 
@@ -445,7 +544,8 @@ impl VideoHub {
     pub(super) fn pause_inline(&mut self) {
         let fullscreen = self.fullscreen.as_ref().map(|fs| fs.key.clone());
         for (key, entry) in &mut self.entries {
-            if !key.starts_with("lb:") && fullscreen.as_ref() != Some(key) && entry.player.playing() {
+            if !key.starts_with("lb:") && fullscreen.as_ref() != Some(key) && entry.player.playing()
+            {
                 entry.player.pause();
             }
         }
@@ -949,6 +1049,15 @@ impl Root {
                 fs_active,
             )
         };
+
+        let stats_overlay = {
+            let hub_ref = hub.borrow();
+            let size = spec.actions.as_ref().map(|actions| actions.attachment.size);
+            hub_ref
+                .stats_of(&key, &spec.src, (spec.width, spec.height), size)
+                .map(|stats| (stats, hub_ref.stats_copied(&spec.src, now)))
+        }
+        .map(|(stats, copied)| self.video_stats_overlay(&spec.src, &stats, copied, cx));
 
         let poster = spec
             .poster_key
@@ -1665,7 +1774,7 @@ impl Root {
         let menu_url = spec
             .actions
             .as_ref()
-            .map(|actions| actions.attachment.url.clone());
+            .map(|actions| (actions.attachment.url.clone(), spec.src.clone()));
 
         div()
             .id(("video-player", key_hash))
@@ -1674,15 +1783,15 @@ impl Root {
             .w(px(spec.width))
             .h(px(spec.height))
             .flex_none()
-            .when_some(menu_url, |this, url| {
+            .when_some(menu_url, |this, (url, src)| {
                 this.on_mouse_up(
                     MouseButton::Right,
                     cx.listener(move |this, event: &gpui::MouseUpEvent, _, _| {
                         this.menu_hit = Some((
                             event.position,
-                            super::menu::Hit::Link {
+                            super::menu::Hit::Video {
                                 url: url.clone(),
-                                label: String::new(),
+                                src: src.clone(),
                             },
                         ));
                     }),
@@ -1727,6 +1836,7 @@ impl Root {
                     .children(center_overlay)
                     .children(bottom_bar),
             )
+            .children(stats_overlay)
             .children(actions_bar)
             .children(volume_popout)
             .into_any_element()
@@ -1942,7 +2052,12 @@ mod tests {
 
         voice.toggle_mute();
         assert!(voice.muted);
-        video.ensure_entry("sync-test", "https://example.test/sync.mp4", (320, 180), false);
+        video.ensure_entry(
+            "sync-test",
+            "https://example.test/sync.mp4",
+            (320, 180),
+            false,
+        );
         assert!(video.muted);
 
         video.set_slider_volume(0.0);
@@ -1950,7 +2065,12 @@ mod tests {
         voice.toggle_mute();
         assert!(!voice.muted);
         assert!((voice.volume - expected).abs() < 1e-5);
-        video.ensure_entry("sync-test", "https://example.test/sync.mp4", (320, 180), false);
+        video.ensure_entry(
+            "sync-test",
+            "https://example.test/sync.mp4",
+            (320, 180),
+            false,
+        );
         assert!(!video.muted);
         assert!((video.volume - expected).abs() < 1e-5);
     }

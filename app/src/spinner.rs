@@ -137,21 +137,21 @@ pub async fn load(client: &dc_http::Client) -> Option<Clip> {
 // ---- MP4 ----
 
 /// One box: its four-character type and its payload.
-struct BoxRef<'a> {
-    kind: [u8; 4],
-    payload: &'a [u8],
+pub(crate) struct BoxRef<'a> {
+    pub(crate) kind: [u8; 4],
+    pub(crate) payload: &'a [u8],
 }
 
-fn be32(bytes: &[u8]) -> Option<u32> {
+pub(crate) fn be32(bytes: &[u8]) -> Option<u32> {
     Some(u32::from_be_bytes(bytes.get(..4)?.try_into().ok()?))
 }
 
-fn be64(bytes: &[u8]) -> Option<u64> {
+pub(crate) fn be64(bytes: &[u8]) -> Option<u64> {
     Some(u64::from_be_bytes(bytes.get(..8)?.try_into().ok()?))
 }
 
 /// The boxes laid one after another in `data`. A box that claims more than is there ends the walk.
-fn boxes(mut data: &[u8]) -> Vec<BoxRef<'_>> {
+pub(crate) fn boxes(mut data: &[u8]) -> Vec<BoxRef<'_>> {
     let mut out = Vec::new();
     while data.len() >= 8 {
         let size = be32(data).unwrap_or(0) as usize;
@@ -176,14 +176,14 @@ fn boxes(mut data: &[u8]) -> Vec<BoxRef<'_>> {
     out
 }
 
-fn child<'a>(data: &'a [u8], kind: &[u8; 4]) -> Option<&'a [u8]> {
+pub(crate) fn child<'a>(data: &'a [u8], kind: &[u8; 4]) -> Option<&'a [u8]> {
     boxes(data)
         .into_iter()
         .find(|entry| &entry.kind == kind)
         .map(|entry| entry.payload)
 }
 
-fn path<'a>(mut data: &'a [u8], kinds: &[&[u8; 4]]) -> Option<&'a [u8]> {
+pub(crate) fn path<'a>(mut data: &'a [u8], kinds: &[&[u8; 4]]) -> Option<&'a [u8]> {
     for kind in kinds {
         data = child(data, kind)?;
     }

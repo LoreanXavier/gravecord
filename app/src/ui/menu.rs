@@ -98,6 +98,8 @@ pub(super) enum Action {
     SaveImage,
     /// "Save File" of a voice message (module 761304 `save-voice-message-audio`): its audio file is downloaded.
     SaveVoiceFile,
+    /// "Stats for Nerds" of a video (module 761304 `video-stats-for-nerds`): a check box for its stats overlay.
+    VideoStats,
     /// "Report Message" (module 847342): other people's messages, a danger row at the bottom.
     Report,
     /// "Remove Reactions" (a submenu of one row per emoji, `tT`) and "Remove All Reactions" (`tG`) of module 761304:
@@ -142,6 +144,8 @@ pub(super) struct SavedState {
     pub image: bool,
     /// A voice message with its audio file: Save File joins the picture rows' group.
     pub voice_file: bool,
+    /// The pointer was on a video: "Stats for Nerds" ends the picture rows' group.
+    pub video: bool,
     /// A direct message: threads grow only in server channels.
     pub no_thread: bool,
     /// The message failed to send (`state === SEND_FAILED`): no Edit, Reply, Forward or Pin, and Resend message.
@@ -206,6 +210,11 @@ pub(super) enum Hit {
     Link {
         url: String,
         label: String,
+    },
+    /// A video player: the attachment's address, and the source the player plays (`VideoStatsStore`'s key).
+    Video {
+        url: String,
+        src: String,
     },
     /// A picture of the message: its address, and the key its pixels are cached under.
     Media {
@@ -460,11 +469,35 @@ pub(super) fn message_items_saved(own: bool, saved: SavedState) -> Vec<Item> {
     // `tz`: the picture rows (`tP`), then Save File of a voice message (`tB`).
     let mut pictures = Vec::new();
     if saved.image {
-        pictures.push(Item::Entry("Copy Image", "clips_image", Action::CopyImage, false));
-        pictures.push(Item::Entry("Save Image", "clips_image", Action::SaveImage, false));
+        pictures.push(Item::Entry(
+            "Copy Image",
+            "clips_image",
+            Action::CopyImage,
+            false,
+        ));
+        pictures.push(Item::Entry(
+            "Save Image",
+            "clips_image",
+            Action::SaveImage,
+            false,
+        ));
     }
     if saved.voice_file {
-        pictures.push(Item::Entry("Save File", "clips_download", Action::SaveVoiceFile, false));
+        pictures.push(Item::Entry(
+            "Save File",
+            "clips_download",
+            Action::SaveVoiceFile,
+            false,
+        ));
+    }
+    // `tF`: a check box with the circled information icon.
+    if saved.video {
+        pictures.push(Item::Entry(
+            "Stats for Nerds",
+            "circle_info",
+            Action::VideoStats,
+            false,
+        ));
     }
     push_menu_group(&mut items, pictures);
     let mut media = Vec::new();
@@ -602,6 +635,21 @@ impl Root {
         }
     }
 
+    /// The source of the video the open message menu was opened on.
+    pub(super) fn menu_video_src(&self) -> Option<String> {
+        match &self.menu_extra.hit {
+            Some(Hit::Video { src, .. }) => Some(src.clone()),
+            _ => None,
+        }
+    }
+
+    /// `toggleVideoStats` of the video under the menu.
+    pub(super) fn toggle_menu_video_stats(&mut self) {
+        if let Some(src) = self.menu_video_src() {
+            self.video_hub.borrow_mut().toggle_stats(&src);
+        }
+    }
+
     pub(super) fn saved_flags(&self, message: Id) -> SavedState {
         let state = self
             .channel
@@ -636,13 +684,17 @@ impl Root {
             poll: found.is_some_and(|known| known.extra.poll.is_some()),
             selection: !self.menu_extra.selection.is_empty(),
             link: match &self.menu_extra.hit {
-                Some(Hit::Link { url, .. } | Hit::Media { url, .. }) => LinkKind::of(url),
+                Some(Hit::Link { url, .. } | Hit::Media { url, .. } | Hit::Video { url, .. }) => {
+                    LinkKind::of(url)
+                }
                 None => LinkKind::None,
             },
             no_thread: self.guild.is_none(),
             failed: self.send_state_of(message) == Some(super::send_state::SendState::Failed),
             image: matches!(&self.menu_extra.hit, Some(Hit::Media { key, .. }) if self.images.contains_key(key)),
-            voice_file: found.is_some_and(|known| known.is_voice_message() && !known.attachments.is_empty()),
+            voice_file: found
+                .is_some_and(|known| known.is_voice_message() && !known.attachments.is_empty()),
+            video: matches!(&self.menu_extra.hit, Some(Hit::Video { .. })),
             no_react: !self.pref_on("chat_emoji_render_reactions", true)
                 || channel.is_some_and(|channel| {
                     !self.can_in_channel(channel, dc_state::permissions::ADD_REACTIONS)
@@ -1111,6 +1163,12 @@ impl Root {
                 {
                     this.run_unconfirmed(run, target, cx);
                 } else {
+                    if run == Action::VideoStats {
+                        // A check box: it flips and the menu stays open.
+                        this.toggle_menu_video_stats();
+                        cx.notify();
+                        return;
+                    }
                     if matches!(
                         run,
                         Action::Reminder | Action::Apps | Action::RemoveReactions
@@ -1175,6 +1233,12 @@ impl Root {
                     }),
             )
         })
+        .when(run == Action::VideoStats, |this| {
+            let on = self
+                .menu_video_src()
+                .is_some_and(|src| self.video_hub.borrow().stats_on(&src));
+            this.child(super::context_menu::menu_check_box(on))
+        })
         .when(caret, |this| {
             this.child(
                 svg()
@@ -1236,10 +1300,7 @@ impl Root {
         if !saved.no_react && self.menu_extra.selection.is_empty() {
             rows.extend(self.quick_row(open.message, cx));
         }
-        for (index, item) in message_items_saved(open.own, saved)
-            .into_iter()
-            .enumerate()
-        {
+        for (index, item) in message_items_saved(open.own, saved).into_iter().enumerate() {
             rows.push(match item {
                 Item::Separator => div()
                     .my(px(8.))
@@ -1855,6 +1916,21 @@ mod tests {
             ..Default::default()
         };
         assert_eq!(tail(video, 3), ["-", "Copy Media Link", "Open Media Link"]);
+        // On the player itself, "Stats for Nerds" closes the group before the links (module 761304 `tF`).
+        let player = super::SavedState {
+            video: true,
+            ..video
+        };
+        assert_eq!(
+            tail(player, 5),
+            [
+                "-",
+                "Stats for Nerds",
+                "-",
+                "Copy Media Link",
+                "Open Media Link"
+            ]
+        );
         let audio = super::SavedState {
             link: super::LinkKind::of("https://cdn.discordapp.com/attachments/1/2/song.mp3"),
             ..Default::default()
@@ -1927,7 +2003,13 @@ mod tests {
         assert!(text_labels.contains(&"Delete Message"));
         assert_eq!(text_labels.last(), Some(&"Copy Message ID"));
 
-        assert_eq!(super::parse_reaction_route("wave:12345"), ("wave", Some(12345)));
-        assert_eq!(super::parse_reaction_route("\u{1f44d}"), ("\u{1f44d}", None));
+        assert_eq!(
+            super::parse_reaction_route("wave:12345"),
+            ("wave", Some(12345))
+        );
+        assert_eq!(
+            super::parse_reaction_route("\u{1f44d}"),
+            ("\u{1f44d}", None)
+        );
     }
 }

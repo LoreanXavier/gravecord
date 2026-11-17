@@ -234,6 +234,10 @@ impl Root {
                     self.follow_link(&url, &label, cx);
                 }
             }
+            Action::VideoStats => {
+                self.toggle_menu_video_stats();
+                cx.notify();
+            }
             Action::CopyImage => {
                 if let Some(image) = self.menu_image() {
                     log_effect("Copy Image", "clipboard image", image.bytes().len());
@@ -278,18 +282,22 @@ impl Root {
     /// The address of what the open menu was opened on.
     fn menu_url(&self) -> Option<String> {
         match self.menu_extra.hit.as_ref()? {
-            super::menu::Hit::Link { url, .. } | super::menu::Hit::Media { url, .. } => {
-                Some(url.clone())
-            }
+            super::menu::Hit::Link { url, .. }
+            | super::menu::Hit::Media { url, .. }
+            | super::menu::Hit::Video { url, .. } => Some(url.clone()),
         }
     }
 
     /// Module 115184 `copyImage`: the picture goes on the clipboard as a bitmap and as PNG (`clipboard_image`), then
     /// "Image Copied!" or, when it cannot be decoded or the clipboard refuses it, "Unable to copy image".
-    pub(super) fn copy_picture(&mut self, picture: std::sync::Arc<gpui::Image>, cx: &mut Context<Self>) {
-        let decode = cx.background_executor().spawn(async move {
-            crate::clipboard_image::decode(picture.bytes())
-        });
+    pub(super) fn copy_picture(
+        &mut self,
+        picture: std::sync::Arc<gpui::Image>,
+        cx: &mut Context<Self>,
+    ) {
+        let decode = cx
+            .background_executor()
+            .spawn(async move { crate::clipboard_image::decode(picture.bytes()) });
         cx.spawn(async move |this, cx| {
             let decoded = decode.await;
             let _ = this.update(cx, |this, cx| {
@@ -311,7 +319,7 @@ impl Root {
     fn menu_image(&self) -> Option<std::sync::Arc<gpui::Image>> {
         match self.menu_extra.hit.as_ref()? {
             super::menu::Hit::Media { key, .. } => self.images.get(key).cloned(),
-            super::menu::Hit::Link { .. } => None,
+            super::menu::Hit::Link { .. } | super::menu::Hit::Video { .. } => None,
         }
     }
 

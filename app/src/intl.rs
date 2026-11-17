@@ -509,6 +509,12 @@ mod guard {
             "Display the game you're playing on Discord",
             "props table",
         ),
+        // Module 338659 `getStats` writes the unknown resolution in English.
+        (
+            "ui/video_player.rs",
+            "Unknown",
+            "the official stats text is untranslated",
+        ),
     ];
 
     /// Functions whose literals are lookup keys (sidebar labels the navigation matches) or are translated where they

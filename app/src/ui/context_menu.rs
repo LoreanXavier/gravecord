@@ -4521,33 +4521,7 @@ impl Root {
                 .text_color(tint)
                 .child(keys)
         }))
-        .children(row.check.map(|on| {
-            // An 8px gap between the label and the box in every captured menu (menus2/guild-icon: "Hide Muted
-            // Channels" ends 8px before the box, the menu is 192 wide).
-            div()
-                .ml(px(8.))
-                .size(px(20.))
-                .rounded(px(4.))
-                .border_1()
-                // The same tokens as the role check box above; the golden's ticked box is rgb(88, 101, 242) and
-                // its empty box rgb(37, 37, 41) inside (voice-user-menu/self-menu).
-                .border_color(if on {
-                    color("--checkbox-border-selected-default")
-                } else {
-                    color("--checkbox-border-default")
-                })
-                .bg(if on {
-                    color("--checkbox-background-selected-default")
-                } else {
-                    color("--checkbox-background-default")
-                })
-                .flex()
-                .items_center()
-                .justify_center()
-                .when(on, |this| {
-                    this.child(icon("checkbox_check", 16., "--white"))
-                })
-        }))
+        .children(row.check.map(menu_check_box))
         .when(row.caret, |this| {
             this.child(div().ml(px(10.)).child(icon(
                 "menu_caret",
@@ -4557,6 +4531,35 @@ impl Root {
         })
         .into_any_element()
     }
+}
+
+/// A menu row's check box. An 8px gap between the label and the box in every captured menu (menus2/guild-icon:
+/// "Hide Muted Channels" ends 8px before the box, the menu is 192 wide).
+pub(super) fn menu_check_box(on: bool) -> gpui::Div {
+    div()
+        .ml(px(8.))
+        .size(px(20.))
+        .flex_none()
+        .rounded(px(4.))
+        .border_1()
+        // The same tokens as the role check box; the golden's ticked box is rgb(88, 101, 242) and its empty box
+        // rgb(37, 37, 41) inside (voice-user-menu/self-menu).
+        .border_color(if on {
+            color("--checkbox-border-selected-default")
+        } else {
+            color("--checkbox-border-default")
+        })
+        .bg(if on {
+            color("--checkbox-background-selected-default")
+        } else {
+            color("--checkbox-background-default")
+        })
+        .flex()
+        .items_center()
+        .justify_center()
+        .when(on, |this| {
+            this.child(icon("checkbox_check", 16., "--white"))
+        })
 }
 
 #[cfg(test)]
