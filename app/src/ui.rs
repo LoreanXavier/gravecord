@@ -3188,6 +3188,8 @@ impl Root {
                     .flex_col()
                     .overflow_y_scroll()
                     .track_scroll(&self.member_window.scroll)
+                    // Not in the pinned client: MemberCount's counts (`plugin_hooks/member_count.rs`).
+                    .children(self.member_count_list(cx))
                     .children(self.inventory_section(cx))
                     .when(above > 0., |this| {
                         this.child(div().flex_none().h(px(above)))

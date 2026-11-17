@@ -414,6 +414,34 @@ pub(crate) const DEFS: &[Def] = &[
         settings: &[],
     },
     Def {
+        id: "MemberCount",
+        name: "MemberCount",
+        description: "Shows the number of online members, total members, and users in voice channels on the server - in the member list and tooltip.",
+        origin: Origin::Vencord,
+        source: "src/plugins/memberCount/index.tsx",
+        default_on: false,
+        settings: &[
+            Setting {
+                key: "toolTip",
+                label: "In the server tooltip",
+                description: "Show member count on the server tooltip.",
+                kind: Kind::Switch { default: true },
+            },
+            Setting {
+                key: "memberList",
+                label: "In the member list",
+                description: "Show member count in the member list.",
+                kind: Kind::Switch { default: true },
+            },
+            Setting {
+                key: "voiceActivity",
+                label: "Voice activity",
+                description: "Show voice activity with member count in the member list.",
+                kind: Kind::Switch { default: true },
+            },
+        ],
+    },
+    Def {
         id: "MessageClickActions",
         name: "MessageClickActions",
         description: "Customize click actions on messages: hold Backspace and click to delete, double-click to edit or reply, and more.",

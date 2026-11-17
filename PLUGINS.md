@@ -12,7 +12,7 @@ every setting changed), and with every plugin off, and fails on one differing pi
 The list is the plugins enabled in the owner's Equicord backup of 2026-09-21 (156). Sources were read in the local
 Equicord checkout of 2026-11-14 (`src/plugins` is Vencord's, `src/equicordplugins` Equicord's).
 
-Totals: 17 ported, 3 native, 91 planned, 45 not applicable.
+Totals: 18 ported, 3 native, 90 planned, 45 not applicable.
 
 Status: **ported** works and has its proof; **native** is what gravecord already does without a plugin;
 **planned** is not built yet (an import keeps its settings for when it is); **not applicable** has nothing to
@@ -86,7 +86,7 @@ port in a native client, or was removed upstream.
 | ImageZoom | planned | plugins/imageZoom/index.tsx | Lets you zoom in to images and gifs. Use scroll wheel to zoom in and shift + scroll wheel to increase lens radius / size | a zoom lens in the image viewer. |  |
 | LimitlessScreenshare | planned | (not in the 2026-11-14 checkout) |  | resolution and FPS sliders past the tier limits (owner: later, FakeNitro-style). |  |
 | LimitMiddleClickPaste | planned | equicordplugins/middleClickTweaks/index.ts | Various middle click tweaks, such as with pasting and link opening. | now MiddleClickTweaks upstream. middle-click paste only into a focused text box, and middle-click link opening. |  |
-| MemberCount | planned | plugins/memberCount/index.tsx | Shows the number of online members, total members, and users in voice channels on the server - in the member list and tooltip. | online and total counts in the member list header and server tooltip. |  |
+| MemberCount | ported | plugins/memberCount/index.tsx | Shows the number of online members, total members, and users in voice channels on the server - in the member list and tooltip. | plugin_hooks/member_count.rs: online, total and in-voice counts with their tooltips at the top of the member list, online and total in the server tooltip. Not ported: the original's gateway requests (`preload` of a server's online count, member list subscriptions while the list is hidden); plugin code sends nothing, so an unopened server shows '?' online until its count arrives. | `plugin_hooks::member_count::tests` (2); frames mc-on/mc-off; plugins-off member-list |
 | MemberListDecoratorsAPI | not applicable | plugins/_api/memberListDecorators/index.tsx | API to add decorators to member list (both in servers and DMs) | client-mod plumbing (an API for other plugins), nothing to port. |  |
 | MenuItemDemanglerAPI | not applicable | (not in the 2026-11-14 checkout) |  | client-mod plumbing (an API for other plugins), nothing to port. |  |
 | MessageAccessoriesAPI | not applicable | plugins/_api/messageAccessories.ts | API to add message accessories. | client-mod plumbing (an API for other plugins), nothing to port. |  |
@@ -193,6 +193,9 @@ Every setting of each original (`definePluginSettings`), its type and default th
 | AnonymiseFileNames | `randomisedLength` | NUMBER | `7` | ported |
 | AnonymiseFileNames | `consistent` | STRING | `"image"` | ported |
 | AnonymiseFileNames | `dateFormat` | STRING | `"YYYY-MM-DD_HH-mm-ss-SSS"` | ported |
+| MemberCount | `toolTip` | BOOLEAN | `true` | ported |
+| MemberCount | `memberList` | BOOLEAN | `true` | ported |
+| MemberCount | `voiceActivity` | BOOLEAN | `true` | ported |
 | MessageClickActions | `singleClickAction` | SELECT | `"DELETE"` | ported |
 | MessageClickActions | `singleClickModifier` | SELECT | `"BACKSPACE"` | ported |
 | MessageClickActions | `singleClickOthersAction` | SELECT | `"DELETE"` | ported |
