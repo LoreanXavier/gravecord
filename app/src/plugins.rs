@@ -20,7 +20,6 @@ pub(crate) use backup::{Report, export, import};
 pub(crate) use registry::{DEFS, Def, Kind, Setting, def};
 pub(crate) use state::State;
 
-use serde_json::Value;
 use std::sync::{OnceLock, RwLock};
 
 /// The `storage.json` key that holds [`State`].
@@ -44,32 +43,17 @@ pub(crate) fn snapshot() -> State {
     cell().read().map(|state| state.clone()).unwrap_or_default()
 }
 
-/// The plugin is turned on and the master switch is on.
-pub(crate) fn on(id: &str) -> bool {
-    cell().read().is_ok_and(|state| state.is_on(id))
-}
-
-/// A setting of a plugin: the stored value when it is valid for the setting, else its default.
-pub(crate) fn value(id: &str, key: &str) -> Value {
-    cell()
-        .read()
-        .map(|state| state.value(id, key))
-        .unwrap_or(Value::Null)
-}
-
-pub(crate) fn text(id: &str, key: &str) -> String {
-    match value(id, key) {
-        Value::String(text) => text,
-        _ => String::new(),
+/// Reads the state without copying it (the settings pages copy it with [`snapshot`]).
+pub(crate) fn with<R>(read: impl FnOnce(&State) -> R) -> R {
+    match cell().read() {
+        Ok(state) => read(&state),
+        Err(_) => read(&State::default()),
     }
 }
 
-pub(crate) fn flag(id: &str, key: &str) -> bool {
-    value(id, key).as_bool().unwrap_or(false)
-}
-
-pub(crate) fn number(id: &str, key: &str) -> f64 {
-    value(id, key).as_f64().unwrap_or(0.)
+/// The plugin is turned on and the master switch is on.
+pub(crate) fn on(id: &str) -> bool {
+    cell().read().is_ok_and(|state| state.is_on(id))
 }
 
 /// Changes the state and writes it through to `storage.json` (a harness run keeps it in memory, see `storage`).

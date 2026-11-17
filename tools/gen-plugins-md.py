@@ -29,7 +29,9 @@ PORTED = {
     'AlwaysTrust': 'links.rs: masked links open without "Leaving Discord" (`domain`).',
     'ClearURLs': 'plugins/clear_urls.rs: ClearURLs rules bundled; send and edit.',
     'MessageClickActions': 'plugin_hooks.rs: double-click edit/reply/copy (`doubleClickAction`, `doubleClickOthersAction`, '
-                           '`doubleClickModifier`, `disableInDms`). On by default.',
+                           '`doubleClickModifier`, `disableInDms`), only where the message menu offers the row; '
+                           'not on sending or ephemeral messages. On by default. Not ported: single/triple click, '
+                           'Delete, Pin, React, Quote, `disableInSystemDms`.',
     'NoTypingAnimation': 'typing_avatar.rs: still dots, no animation frames.',
     'UnlimitedAccounts': 'account_switcher.rs: `maxAccounts` (0 = no limit).',
     'NoPendingCount': 'friend request count 0 (`hideFriendRequestsCount`), no Message Requests badge (`hideMessageRequestsCount`); '
@@ -37,19 +39,21 @@ PORTED = {
     'RevealAllSpoilers': 'Ctrl-click opens every text spoiler of the message, Ctrl+Shift-click of the channel.',
     'DisableCallIdle': 'dm_call.rs: no leave after 3 minutes alone in a DM call.',
     'GifPaste': 'gifs.rs: picking a GIF inserts its link and a space in the composer.',
-    'VolumeBooster': 'User Volume slider to 200% x `multiplier` (context menu, call tile menu); dc-voice gain cap raised.',
+    'VolumeBooster': 'User Volume slider to 200% x `multiplier` (context menu, call tile menu); dc-voice gain cap raised; '
+                     'a factor set while on is capped again on the next change once off. Stream volume not boosted.',
 }
 TESTS = {
-    'NoPendingCount': 'frames pending-off/pending-on',
-    'RevealAllSpoilers': '`ui::plugin_hooks::tests`; frames spoilers-off/spoilers-on',
-    'DisableCallIdle': 'frames idle-off/idle-on (195 s alone in a simulated DM call)',
-    'GifPaste': 'frames gifpaste-off/gifpaste-on',
-    'AlwaysTrust': 'frames trust-off/trust-on',
+    'AlwaysTrust': '`plugin_hooks::tests::always_trust_needs_its_domain_setting`; frames trust-off/trust-on',
     'ClearURLs': '`plugins::clear_urls::tests` (6); frames clearurls-off/on',
-    'MessageClickActions': '`ui::plugin_hooks::tests` (3); frames mca-off/on',
-    'NoTypingAnimation': 'none yet (headless frame not taken)',
-    'UnlimitedAccounts': 'frames ua-off/ua-on (5 vs 7 listed)',
-    'VolumeBooster': 'frames vb-off/vb-on (100% at 1/2 vs 1/4 of the track)',
+    'DisableCallIdle': '`plugin_hooks::tests::switch_only_plugins_follow_their_switch_and_the_master`; frames idle-off/idle-on '
+                       '(195 s alone in a simulated DM call)',
+    'GifPaste': '`plugin_hooks::tests::switch_only_plugins_follow_their_switch_and_the_master`; frames gifpaste-off/on',
+    'MessageClickActions': '`plugin_hooks::tests::double_click_follows_its_settings` and two more; frames mca-off/on',
+    'NoPendingCount': '`plugin_hooks::tests::no_pending_count_hides_each_badge_by_its_setting`; frames pending-off/on',
+    'NoTypingAnimation': '`plugin_hooks::tests::switch_only_plugins_follow_their_switch_and_the_master`; no frame',
+    'RevealAllSpoilers': '`plugin_hooks::tests::ctrl_reveals_the_message_and_ctrl_shift_the_channel`; frames spoilers-off/on',
+    'UnlimitedAccounts': '`plugin_hooks::tests::unlimited_accounts_lifts_the_five_account_limit`; frames ua-off/ua-on',
+    'VolumeBooster': '`plugin_hooks::tests::volume_booster_raises_the_slider_top_by_its_multiplier`; frames vb-off/vb-on',
 }
 
 # Already what gravecord does without a plugin.

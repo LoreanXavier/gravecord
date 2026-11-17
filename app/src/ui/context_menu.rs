@@ -3609,6 +3609,8 @@ impl Root {
 
     /// Applies a person's volume and mute to the call's mixer, and remembers them for the menu.
     pub(super) fn set_user_mix(&mut self, user: Id, volume: f32, muted: bool) {
+        // Up to 200%, or what the VolumeBooster plugin allows now.
+        let volume = volume.min(super::plugin_hooks::user_volume_max_factor());
         if volume == 1. && !muted {
             self.context.mix.remove(&user);
         } else {

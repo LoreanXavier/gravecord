@@ -129,6 +129,15 @@ fn import_ours(state: &mut State, file: &Value) -> Report {
     report
 }
 
+/// A setting whose name says it holds a credential. `storage.json` never holds tokens, so such a setting is not read
+/// from a backup, whatever plugin it belongs to.
+fn credential_name(key: &str) -> bool {
+    let key = key.to_ascii_lowercase();
+    ["token", "password", "secret", "apikey", "api_key", "cookie"]
+        .iter()
+        .any(|word| key.contains(word))
+}
+
 fn apply(
     state: &mut State,
     report: &mut Report,
@@ -136,6 +145,10 @@ fn apply(
     enabled: Option<bool>,
     settings: Map<String, Value>,
 ) {
+    let settings: Map<String, Value> = settings
+        .into_iter()
+        .filter(|(key, _)| !credential_name(key))
+        .collect();
     let Some(def) = def(id) else {
         // Not ported: kept as the file has it.
         if enabled == Some(true) {
@@ -198,7 +211,7 @@ mod tests {
                         "disableInDms": true
                     },
                     "BadgeAPI": { "enabled": true },
-                    "SomethingNew": { "enabled": true, "level": 3 }
+                    "SomethingNew": { "enabled": true, "level": 3, "authToken": "secret2", "apiKey": "secret3" }
                 }
             },
             "quickCss": "",
@@ -250,8 +263,13 @@ mod tests {
                 .get("clickTimeout"),
             Some(&json!(300))
         );
-        // Nothing of the data store is kept anywhere.
+        // Nothing of the data store is kept anywhere, nor a setting named like a credential.
         assert!(!state.to_value().to_string().contains("secret"));
+        assert!(
+            !state.plugins["SomethingNew"]
+                .settings
+                .contains_key("authToken")
+        );
     }
 
     #[test]

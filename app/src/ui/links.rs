@@ -126,12 +126,6 @@ fn remember(field: &str, entry: String) {
     );
 }
 
-/// Not in the pinned client: the AlwaysTrust plugin (Vencord `src/plugins/alwaysTrust`, its `domain` setting) makes
-/// `isTrustedDomain` answer yes for every web address. Other protocols still ask.
-fn always_trust_links() -> bool {
-    crate::plugin_on!("AlwaysTrust") && crate::plugins::flag("AlwaysTrust", "domain")
-}
-
 /// `G` in module 889558: Discord's own hosts and those the user trusted.
 pub(crate) fn is_trusted_domain(url: &str) -> bool {
     let host = hostname(url);
@@ -190,7 +184,7 @@ impl Root {
         let open = if protocol {
             is_trusted_protocol(url)
         } else {
-            trusted || is_trusted_domain(url) || always_trust_links()
+            trusted || is_trusted_domain(url) || super::plugin_hooks::trust_every_link()
         };
         if open {
             cx.open_url(url);

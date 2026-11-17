@@ -19,7 +19,7 @@ port in a native client.
 | AccountPanelServerProfile | planned | plugins/accountPanelServerProfile/index.tsx | Right click your account panel in the bottom left to view your profile in the current server |  |  |
 | AltKrispSwitch | planned | equicordplugins/altKrispSwitch/index.tsx | Makes the Noise Suppression Popout switch between None and Krisp instead of Krisp and Standard |  |  |
 | AlwaysAnimate | planned | plugins/alwaysAnimate/index.ts | Animates anything that can be animated |  |  |
-| AlwaysTrust | ported | plugins/alwaysTrust/index.tsx | Removes the annoying untrusted domain and suspicious file popup | links.rs: masked links open without "Leaving Discord" (`domain`). | frames trust-off/trust-on |
+| AlwaysTrust | ported | plugins/alwaysTrust/index.tsx | Removes the annoying untrusted domain and suspicious file popup | links.rs: masked links open without "Leaving Discord" (`domain`). | `plugin_hooks::tests::always_trust_needs_its_domain_setting`; frames trust-off/trust-on |
 | AnonymiseFileNames | planned | plugins/anonymiseFileNames/index.tsx | Anonymise uploaded file names |  |  |
 | AudioPlayerAPI | not applicable | equicordplugins/_api/audioPlayer.ts | API to play internal Discord audio files or external audio links. | client-mod plumbing (an API for other plugins), nothing to port. |  |
 | BadgeAPI | not applicable | plugins/_api/badges/index.tsx | API to add badges to users | client-mod plumbing (an API for other plugins), nothing to port. |  |
@@ -54,7 +54,7 @@ port in a native client.
 | CrashHandler | not applicable | plugins/crashHandler/index.ts | Utility plugin for handling and possibly recovering from crashes without a restart | recovers React render crashes; there is no React here. |  |
 | CustomRPC | planned | plugins/customRPC/index.tsx | Add a fully customisable Rich Presence (Game status) to your Discord profile | custom rich presence (needs the RPC/activity editor). |  |
 | Decor | planned | plugins/decor/index.tsx | Create and use your own custom avatar decorations, or pick your favorite from the presets. | third-party avatar decorations service. |  |
-| DisableCallIdle | ported | plugins/disableCallIdle/index.ts | Disables automatically getting kicked from a DM voice call after 3 minutes and being moved to an AFK voice channel. | dm_call.rs: no leave after 3 minutes alone in a DM call. | frames idle-off/idle-on (195 s alone in a simulated DM call) |
+| DisableCallIdle | ported | plugins/disableCallIdle/index.ts | Disables automatically getting kicked from a DM voice call after 3 minutes and being moved to an AFK voice channel. | dm_call.rs: no leave after 3 minutes alone in a DM call. | `plugin_hooks::tests::switch_only_plugins_follow_their_switch_and_the_master`; frames idle-off/idle-on (195 s alone in a simulated DM call) |
 | DisableDeepLinks | not applicable | plugins/noDeepLinks.web/index.ts | Disables Discord's stupid deep linking feature which tries to force you to use their Desktop App | web build only. |  |
 | DownloadAllAttachments | planned | equicordplugins/downloadAllAttachments/index.tsx | Adds a popover button to download all attachments in a message at once. |  |  |
 | DynamicImageModalAPI | not applicable | plugins/_api/dynamicImageModalApi.ts | Allows you to omit either width or height when opening an image modal | client-mod plumbing (an API for other plugins), nothing to port. |  |
@@ -73,7 +73,7 @@ port in a native client.
 | FullVCPFP | planned | equicordplugins/fullVcPfp/index.tsx | Makes avatars take up the entire vc tile |  |  |
 | GameActivityToggle | planned | plugins/gameActivityToggle/index.tsx | Adds a button next to the mic and deafen button to toggle game activity. Right click it to toggle Spotify activity. |  |  |
 | GifMaker | planned | equicordplugins/gifMaker/index.tsx | Create and caption GIFs from any media in chat or the GIF picker. |  |  |
-| GifPaste | ported | plugins/gifPaste/index.ts | Makes picking a gif in the gif picker insert a link into the chatbox instead of instantly sending it | gifs.rs: picking a GIF inserts its link and a space in the composer. | frames gifpaste-off/gifpaste-on |
+| GifPaste | ported | plugins/gifPaste/index.ts | Makes picking a gif in the gif picker insert a link into the chatbox instead of instantly sending it | gifs.rs: picking a GIF inserts its link and a space in the composer. | `plugin_hooks::tests::switch_only_plugins_follow_their_switch_and_the_master`; frames gifpaste-off/on |
 | GlobalBadges | planned | equicordplugins/globalBadges/index.tsx | Adds global badges from other client mods | third-party badge service. |  |
 | GreetStickerPicker | planned | plugins/greetStickerPicker/index.tsx | Allows you to use any greet sticker instead of only the random one by right-clicking the 'Wave to say hi!' button |  |  |
 | HeaderBarAPI | not applicable | equicordplugins/_api/headerBar.ts | API to add buttons to the header bar and channel toolbar. | client-mod plumbing (an API for other plugins), nothing to port. |  |
@@ -86,7 +86,7 @@ port in a native client.
 | MemberListDecoratorsAPI | not applicable | plugins/_api/memberListDecorators/index.tsx | API to add decorators to member list (both in servers and DMs) | client-mod plumbing (an API for other plugins), nothing to port. |  |
 | MenuItemDemanglerAPI | not applicable | (not in the 2026-11-14 checkout) |  | client-mod plumbing (an API for other plugins), nothing to port. |  |
 | MessageAccessoriesAPI | not applicable | plugins/_api/messageAccessories.ts | API to add message accessories. | client-mod plumbing (an API for other plugins), nothing to port. |  |
-| MessageClickActions | ported | plugins/messageClickActions/index.ts | Customize click actions on messages. | plugin_hooks.rs: double-click edit/reply/copy (`doubleClickAction`, `doubleClickOthersAction`, `doubleClickModifier`, `disableInDms`). On by default. | `ui::plugin_hooks::tests` (3); frames mca-off/on |
+| MessageClickActions | ported | plugins/messageClickActions/index.ts | Customize click actions on messages. | plugin_hooks.rs: double-click edit/reply/copy (`doubleClickAction`, `doubleClickOthersAction`, `doubleClickModifier`, `disableInDms`), only where the message menu offers the row; not on sending or ephemeral messages. On by default. Not ported: single/triple click, Delete, Pin, React, Quote, `disableInSystemDms`. | `plugin_hooks::tests::double_click_follows_its_settings` and two more; frames mca-off/on |
 | MessageDecorationsAPI | not applicable | plugins/_api/messageDecorations/index.tsx | API to add decorations to messages | client-mod plumbing (an API for other plugins), nothing to port. |  |
 | MessageEventsAPI | not applicable | plugins/_api/messageEvents.ts | Api required by anything using message events. | client-mod plumbing (an API for other plugins), nothing to port. |  |
 | MessageLogger | planned | plugins/messageLogger/index.tsx | Temporarily logs deleted and edited messages. | deleted/edited message log (needs a store of deletes). |  |
@@ -101,12 +101,12 @@ port in a native client.
 | NicknameIconsAPI | not applicable | plugins/_api/nicknameIcons.ts | API to add icons to the nickname, in profiles | client-mod plumbing (an API for other plugins), nothing to port. |  |
 | NoDevtoolsWarning | not applicable | plugins/noDevtoolsWarning/index.ts | Disables the 'HOLD UP' banner in the console. As a side effect, also prevents Discord from hiding your token, which prevents random logouts. | no web console in a native client. |  |
 | NoNitroUpsell | planned | equicordplugins/noNitroUpsell/index.ts | Removes all of Discord's nitro upsells by tricking the client into thinking you have nitro. |  |  |
-| NoPendingCount | ported | plugins/noPendingCount/index.ts | Removes the ping count of incoming friend requests, message requests, and nitro offers. | friend request count 0 (`hideFriendRequestsCount`), no Message Requests badge (`hideMessageRequestsCount`); no Nitro offer badge exists here. | frames pending-off/pending-on |
+| NoPendingCount | ported | plugins/noPendingCount/index.ts | Removes the ping count of incoming friend requests, message requests, and nitro offers. | friend request count 0 (`hideFriendRequestsCount`), no Message Requests badge (`hideMessageRequestsCount`); no Nitro offer badge exists here. | `plugin_hooks::tests::no_pending_count_hides_each_badge_by_its_setting`; frames pending-off/on |
 | NoPushToTalk | planned | equicordplugins/noPushToTalk/index.ts | Bypasses the push-to-talk requirement for voice activity in channels that enforce it. |  |  |
 | NormalizeMessageLinks | native | equicordplugins/normalizeMessageLinks/index.ts | Strip canary/ptb from message links | Copy Message Link already writes discord.com links. |  |
 | NoticesAPI | not applicable | plugins/_api/notices.ts | Fixes notices being automatically dismissed | client-mod plumbing (an API for other plugins), nothing to port. |  |
 | NoTrack | native | plugins/_core/noTrack.ts | Disable Discord's tracking (analytics/'science'), metrics and Sentry crash reporting | gravecord sends no analytics, metrics or Sentry reports; its only `/science` post is the overlay problem report the user submits. |  |
-| NoTypingAnimation | ported | plugins/noTypingAnimation/index.ts | Disables the CPU-intensive typing dots animation | typing_avatar.rs: still dots, no animation frames. | none yet (headless frame not taken) |
+| NoTypingAnimation | ported | plugins/noTypingAnimation/index.ts | Disables the CPU-intensive typing dots animation | typing_avatar.rs: still dots, no animation frames. | `plugin_hooks::tests::switch_only_plugins_follow_their_switch_and_the_master`; no frame |
 | NoUnblockToJump | planned | plugins/noUnblockToJump/index.ts | Allows you to jump to messages of blocked or ignored users and likely spammers without unblocking them | jump to blocked users' messages. |  |
 | NSFWGateBypass | planned | (not in the 2026-11-14 checkout) |  |  |  |
 | OnePingPerDM | planned | plugins/onePingPerDM/index.ts | If unread messages are sent by a user in DMs multiple times, you'll only receive one audio ping. Read the messages to reset the limit | notification sound per DM. |  |
@@ -122,7 +122,7 @@ port in a native client.
 | ReactErrorDecoder | not applicable | plugins/reactErrorDecoder/index.ts |  | decodes minified React errors; there is no React here. |  |
 | ReadAllNotificationsButton | planned | plugins/readAllNotificationsButton/index.tsx | Read all server notifications with a single button click! |  |  |
 | RelationshipNotifier | planned | plugins/relationshipNotifier/index.ts | Notifies you when a friend, group chat, or server removes you. |  |  |
-| RevealAllSpoilers | ported | plugins/revealAllSpoilers/index.ts | Reveal all spoilers in a message by Ctrl-clicking a spoiler, or in the chat with Ctrl+Shift-click | Ctrl-click opens every text spoiler of the message, Ctrl+Shift-click of the channel. | `ui::plugin_hooks::tests`; frames spoilers-off/spoilers-on |
+| RevealAllSpoilers | ported | plugins/revealAllSpoilers/index.ts | Reveal all spoilers in a message by Ctrl-clicking a spoiler, or in the chat with Ctrl+Shift-click | Ctrl-click opens every text spoiler of the message, Ctrl+Shift-click of the channel. | `plugin_hooks::tests::ctrl_reveals_the_message_and_ctrl_shift_the_channel`; frames spoilers-off/on |
 | ReverseImageSearch | planned | plugins/reverseImageSearch/index.tsx | Adds ImageSearch to image context menus |  |  |
 | RoleColorEverywhere | planned | plugins/roleColorEverywhere/index.tsx | Adds the top role color anywhere possible | role colours in mentions, lists, voice. |  |
 | SearchFix | planned | equicordplugins/searchFix/index.tsx |  |  |  |
@@ -150,7 +150,7 @@ port in a native client.
 | Translate+ | planned | equicordplugins/translatePlus/index.tsx | Vencord's translate plugin but with support for artistic languages! | message translation (needs a translation service). |  |
 | TypingIndicator | planned | plugins/typingIndicator/index.tsx | Adds an indicator if someone is typing on a channel. | typing dots in the channel list. |  |
 | TypingTweaks | planned | plugins/typingTweaks/index.tsx | Show avatars and role colours in the typing indicator | typing line avatars and role colours. |  |
-| UnlimitedAccounts | ported | equicordplugins/unlimitedAccounts/index.ts | Increases the amount of accounts you can add. | account_switcher.rs: `maxAccounts` (0 = no limit). | frames ua-off/ua-on (5 vs 7 listed) |
+| UnlimitedAccounts | ported | equicordplugins/unlimitedAccounts/index.ts | Increases the amount of accounts you can add. | account_switcher.rs: `maxAccounts` (0 = no limit). | `plugin_hooks::tests::unlimited_accounts_lifts_the_five_account_limit`; frames ua-off/ua-on |
 | UnlockedAvatarZoom | planned | plugins/unlockedAvatarZoom/index.ts | Allows you to zoom in further in the image crop tool when changing your avatar |  |  |
 | UserAreaAPI | not applicable | equicordplugins/_api/userArea.ts | API to add buttons to the user area panel. | client-mod plumbing (an API for other plugins), nothing to port. |  |
 | UserMessagesPronouns | planned | plugins/userMessagesPronouns/index.ts | Adds pronouns to chat user messages |  |  |
@@ -165,7 +165,7 @@ port in a native client.
 | VoiceMessages | planned | plugins/voiceMessages/index.tsx | Allows you to send voice messages like on mobile. To do so, right click the upload button and click Send Voice Message | record voice messages on desktop. |  |
 | VoiceMessageTranscriber | planned | equicordplugins/voiceMessageTranscriber.desktop/index.tsx | On-device transcriptions for voice messages powered by Whisper | on-device Whisper (needs a model runner). |  |
 | VoiceStats | planned | equicordplugins/voiceStats/index.tsx | Shows how long you've spent in voice with each user in their profile |  |  |
-| VolumeBooster | ported | plugins/volumeBooster/index.ts | Allows you to set the user and stream volume above the default maximum | User Volume slider to 200% x `multiplier` (context menu, call tile menu); dc-voice gain cap raised. | frames vb-off/vb-on (100% at 1/2 vs 1/4 of the track) |
+| VolumeBooster | ported | plugins/volumeBooster/index.ts | Allows you to set the user and stream volume above the default maximum | User Volume slider to 200% x `multiplier` (context menu, call tile menu); dc-voice gain cap raised; a factor set while on is capped again on the next change once off. Stream volume not boosted. | `plugin_hooks::tests::volume_booster_raises_the_slider_top_by_its_multiplier`; frames vb-off/vb-on |
 | WebContextMenus | not applicable | plugins/webContextMenus.web/index.ts | Re-adds context menus missing in the web version of Discord: Links & Images (Copy/Open Link/Image), Text Area (Copy, Cut, Paste, SpellCheck) | web build only (the desktop app has these menus). |  |
 | WebKeybinds | not applicable | plugins/webKeybinds.web/index.ts | Re-adds keybinds missing in the web version of Discord. Only works fully on Vesktop/Equibop/Legcord, not inside your browser | web build only. |  |
 | WebScreenShareFixes | not applicable | plugins/webScreenShareFixes.web/index.ts | Removes 2500kbps bitrate cap on chromium and vesktop clients and fixes CPU usage growing endlessly while screensharing. | web build only (Chromium bitrate cap). |  |
