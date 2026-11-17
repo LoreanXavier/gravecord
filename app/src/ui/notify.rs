@@ -41,6 +41,15 @@ pub(crate) fn muted_until(end: chrono::DateTime<chrono::Utc>) -> String {
 impl Root {
     fn channel_settings_target(&self) -> Option<(Id, Id, Option<Id>)> {
         let guild = self.guild?;
+        // A forum post open beside its forum: the header (and its bell, module 187360) is still the forum's.
+        if let Some(forum) = self.open_post_forum() {
+            let forum = self
+                .current_guild()?
+                .channels
+                .iter()
+                .find(|known| known.id == forum)?;
+            return Some((guild, forum.id, forum.parent_id));
+        }
         let channel = self.current_channel()?;
         Some((guild, channel.id, channel.parent_id))
     }
@@ -197,13 +206,16 @@ impl Root {
         if !self.notify_open {
             return None;
         }
-        let thread = self.channel.and_then(|channel| {
-            self.current_guild()?
-                .threads
-                .iter()
-                .find(|known| known.id == channel)
-                .cloned()
-        });
+        let thread = self
+            .channel
+            .filter(|_| self.open_post_forum().is_none())
+            .and_then(|channel| {
+                self.current_guild()?
+                    .threads
+                    .iter()
+                    .find(|known| known.id == channel)
+                    .cloned()
+            });
         if let Some(thread) = thread {
             return self.thread_notify_menu(&thread, window, cx);
         }

@@ -1376,7 +1376,11 @@ impl Root {
                 .then_some((self.guild, self.channel));
                 let rebuild_messages = matches!(
                     name.as_str(),
-                    "MESSAGE_CREATE" | "MESSAGE_DELETE" | "MESSAGE_UPDATE" | "MESSAGE_ACK"
+                    "MESSAGE_CREATE"
+                        | "MESSAGE_DELETE"
+                        | "MESSAGE_UPDATE"
+                        | "MESSAGE_ACK"
+                        | "AUTO_MODERATION_CONTENT_DELETED"
                 );
                 // Capture before dispatch changes the message indices that the current rows refer to.
                 let message_anchor = rebuild_messages.then(|| self.scroll_anchor()).flatten();
@@ -9996,6 +10000,10 @@ impl Render for Root {
                     cx.stop_propagation();
                     return;
                 }
+                // Module 113367's listener only records the time (the overdue notice ends); the key goes on.
+                if event.keystroke.key == "escape" && this.overdue_notice_escape() {
+                    cx.notify();
+                }
                 if event.keystroke.key == "escape" && this.voice_dialog_close(cx) {
                     cx.stop_propagation();
                     return;
@@ -10062,9 +10070,7 @@ impl Render for Root {
                     cx.notify();
                     cx.stop_propagation();
                 } else if event.keystroke.key == "escape"
-                    && (this.interaction_modal_escape()
-                        || this.chat_alert_escape()
-                        || this.overdue_notice_escape())
+                    && (this.interaction_modal_escape() || this.chat_alert_escape())
                 {
                     cx.notify();
                     cx.stop_propagation();

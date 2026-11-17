@@ -1196,6 +1196,21 @@ pub(super) struct ThreadFacts {
     pub forum_post: bool,
     /// The post carries the PINNED flag (`1 << 1`).
     pub pinned: bool,
+    /// SEND_MESSAGES and SEND_MESSAGES_IN_THREADS in the thread and its parent (`L` of module 406704).
+    pub can_send: bool,
+    /// A post of a media channel (`isMediaThread`): it never offers Open.
+    pub media: bool,
+}
+
+/// `lK` of module 406704 (`R(thread, canSend, manage)`): an archived thread may be opened again by whoever can send in
+/// it, a locked one only with MANAGE_THREADS; never a media post.
+fn can_unarchive(facts: ThreadFacts) -> bool {
+    !facts.media
+        && if facts.locked {
+            facts.manage
+        } else {
+            facts.can_send
+        }
 }
 
 /// `label` for a thread, or `post` for a forum post (`isForumPost()` of the thread menu's rows).
@@ -1231,23 +1246,22 @@ pub(super) fn thread_items(facts: ThreadFacts, level: &str) -> Vec<Entry> {
             ),
         ));
     }
-    if manage || owner {
-        // Module 182061: an archived thread opens again (`unarchiveThread`), an active one closes (`archiveThread`).
-        own.push(if facts.archived {
-            Row::new(
-                Act::OpenThread,
-                post_or(facts, dc_intl::tr("Open Post"), dc_intl::tr("Open Thread")),
-            )
-        } else {
-            Row::new(
-                Act::CloseThread,
-                post_or(
-                    facts,
-                    dc_intl::tr("Close Post"),
-                    dc_intl::tr("Close Thread"),
-                ),
-            )
-        });
+    // Module 182061: an archived thread opens again (`unarchiveThread`, gated by `lK`), an active one closes
+    // (`archiveThread`, gated by `NI`: Manage Threads or the thread's owner).
+    if facts.archived && can_unarchive(facts) {
+        own.push(Row::new(
+            Act::OpenThread,
+            post_or(facts, dc_intl::tr("Open Post"), dc_intl::tr("Open Thread")),
+        ));
+    } else if !facts.archived && (manage || owner) {
+        own.push(Row::new(
+            Act::CloseThread,
+            post_or(
+                facts,
+                dc_intl::tr("Close Post"),
+                dc_intl::tr("Close Thread"),
+            ),
+        ));
     }
     if manage {
         // Module 707792: Lock or Unlock by `isLockedThread()`.
@@ -2640,6 +2654,15 @@ impl Root {
                         locked: thread.locked,
                         forum_post: parent.as_ref().is_some_and(Channel::is_forum),
                         pinned: thread.pinned(),
+                        can_send: parent.as_ref().is_some_and(|parent| {
+                            self.my_permission(guild, Some(parent), permissions::SEND_MESSAGES)
+                                && self.my_permission(
+                                    guild,
+                                    Some(parent),
+                                    permissions::SEND_MESSAGES_IN_THREADS,
+                                )
+                        }),
+                        media: parent.as_ref().is_some_and(Channel::is_media),
                     },
                     level_label(
                         THREAD_LEVELS
@@ -2698,6 +2721,8 @@ impl Root {
                 }
             }
             Target::User { user, guild } => {
+                // The Apps submenu lists the user commands of the channel's index (module 173500).
+                self.request_command_index();
                 let Some(known) = self
                     .stores
                     .users
@@ -3882,12 +3907,25 @@ impl Root {
                 } => self.role_sub_rows(guild, user),
                 _ => Vec::new(),
             },
-            // The apps' commands are not listed yet: every person shows the official empty state.
-            Act::Apps => vec![SubRow {
-                label: dc_intl::tr("No Commands Available").to_owned(),
-                disabled: true,
-                ..SubRow::default()
-            }],
+            // Module 173500 for a person: the user commands of the loaded index, else "No Commands Available".
+            Act::Apps => {
+                let commands = self.user_commands();
+                if commands.is_empty() {
+                    vec![SubRow {
+                        label: dc_intl::tr("No Commands Available").to_owned(),
+                        disabled: true,
+                        ..SubRow::default()
+                    }]
+                } else {
+                    commands
+                        .into_iter()
+                        .map(|(command, _)| SubRow {
+                            label: command["name"].as_str().unwrap_or_default().to_owned(),
+                            ..SubRow::default()
+                        })
+                        .collect()
+                }
+            }
             Act::MoveMember => match target {
                 Target::User {
                     user,
@@ -4229,6 +4267,14 @@ impl Root {
                         "channel_id",
                         json!(row.id.to_string()),
                     ));
+                }
+                return;
+            }
+            Act::Apps => {
+                if let (Some(_), Target::User { user, .. }) = (row, target)
+                    && let Some((command, _)) = self.user_commands().into_iter().nth(index)
+                {
+                    self.run_user_command(&command, user);
                 }
                 return;
             }
@@ -5425,9 +5471,42 @@ mod tests {
             },
             "x",
         ));
+        // Locked: only Manage Threads opens it again.
         assert!(shown.contains(&"Open Post".to_owned()));
         assert!(shown.contains(&"Unlock post".to_owned()));
         assert!(shown.contains(&"Unpin Post".to_owned()));
+        // An archived thread that is not locked opens for whoever can send in it, manager or not.
+        let shown = labels(&thread_items(
+            ThreadFacts {
+                archived: true,
+                can_send: true,
+                ..ThreadFacts::default()
+            },
+            "x",
+        ));
+        assert!(shown.contains(&"Open Thread".to_owned()));
+        let locked_member = labels(&thread_items(
+            ThreadFacts {
+                archived: true,
+                locked: true,
+                can_send: true,
+                ..ThreadFacts::default()
+            },
+            "x",
+        ));
+        assert!(!locked_member.contains(&"Open Thread".to_owned()));
+        let media = labels(&thread_items(
+            ThreadFacts {
+                archived: true,
+                can_send: true,
+                manage: true,
+                media: true,
+                forum_post: true,
+                ..ThreadFacts::default()
+            },
+            "x",
+        ));
+        assert!(!media.contains(&"Open Post".to_owned()));
         let shown = labels(&thread_items(
             ThreadFacts {
                 archived: true,
@@ -5436,7 +5515,6 @@ mod tests {
             },
             "x",
         ));
-        assert!(shown.contains(&"Open Thread".to_owned()));
         assert!(shown.contains(&"Join Thread".to_owned()));
         assert!(!shown.contains(&"Pin Post".to_owned()));
     }

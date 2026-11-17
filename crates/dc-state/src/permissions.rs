@@ -15,6 +15,8 @@ pub const MANAGE_GUILD: u64 = 1 << 5;
 pub const MANAGE_WEBHOOKS: u64 = 1 << 29;
 pub const VIEW_CHANNEL: u64 = 1 << 10;
 pub const SEND_MESSAGES: u64 = 1 << 11;
+/// `SEND_MESSAGES_IN_THREADS` (module 818348).
+pub const SEND_MESSAGES_IN_THREADS: u64 = 1 << 38;
 /// `ATTACH_FILES` (module constants `xBc`, 32768).
 pub const ATTACH_FILES: u64 = 1 << 15;
 pub const MANAGE_MESSAGES: u64 = 1 << 13;

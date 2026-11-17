@@ -610,9 +610,18 @@ impl Root {
     /// `MESSAGE_SEND_FAILED` and what the failure asks besides (module 138399).
     fn send_failed(&mut self, channel: Id, id: Id, failure: &Failure, cx: &mut Context<Self>) {
         let mut failed = vec![id];
-        failed.extend(self.send_ui.cancel_waiting(channel));
+        let waiting = self.send_ui.cancel_waiting(channel);
+        // A forward that waited behind this one fails with it: the forward modal's batch hears of it (module 181622).
+        let waiting_nonces: Vec<String> = waiting
+            .iter()
+            .filter_map(|id| self.send_ui.sends.get(id).map(|send| send.nonce.clone()))
+            .collect();
+        failed.extend(waiting);
         for id in failed {
             self.mark_failed(channel, id);
+        }
+        for nonce in waiting_nonces {
+            self.forward_send_ended(&nonce, false, cx);
         }
         // Polls, forwards and inventory sends never get a notice; the composer sends none of them.
         match send_policy::followup(failure, false) {

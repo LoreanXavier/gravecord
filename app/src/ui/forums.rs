@@ -1982,7 +1982,12 @@ impl Root {
                 div()
                     .flex()
                     .gap(px(8.))
-                    .child(glyph("bell"))
+                    // Module 187360: slashed while the forum is muted or its level is not All Messages.
+                    .child(glyph(if self.channel_bell_slashed() {
+                        "bell_muted"
+                    } else {
+                        "bell"
+                    }))
                     .child(glyph("members"))
                     .child(
                         div()

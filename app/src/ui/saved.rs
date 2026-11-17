@@ -307,9 +307,10 @@ impl Root {
         overdue_notice_shown(count, latest, opened).then(|| dc_intl::t!("yBmFPA", count = count))
     }
 
-    /// Escape while the overdue notice shows dismisses it.
+    /// Escape while reminders are overdue records the time (the notice ends); true when it did. The key is not
+    /// consumed: whatever else Escape closes still closes.
     pub(super) fn overdue_notice_escape(&mut self) -> bool {
-        if self.toast.is_none() && self.overdue_notice().is_some() {
+        if self.overdue_notice().is_some() {
             self.mark_inbox_opened();
             return true;
         }
