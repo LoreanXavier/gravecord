@@ -2065,6 +2065,7 @@ mod tests {
             label: label.to_owned(),
             sub: None,
             icon: None,
+            trailing: None,
             caret: false,
             check: None,
             danger: false,

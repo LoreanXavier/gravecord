@@ -136,6 +136,8 @@ mod game_communities;
 mod game_announcements;
 mod game_add_to_profile;
 mod library;
+mod provider_player;
+pub(crate) mod composer_ai;
 mod carousel;
 mod game_similar;
 pub(crate) mod channel_notice;
@@ -699,6 +701,8 @@ pub struct Root {
     game_communities_layout: game_communities::Layout,
     game_announcements_scroll: f32,
     library: library::Library,
+    provider_player: Option<provider_player::ProviderPlayer>,
+    composer_ai: composer_ai::ComposerAi,
     game_similar_scroll: f32,
     game_communities_filter: game_communities::Filter,
     /// When the text launcher's collections last arrived (module 503406 asks again after ten minutes).
@@ -1096,6 +1100,8 @@ impl Root {
             game_communities_layout: Default::default(),
             game_announcements_scroll: 0.,
             library: Default::default(),
+            provider_player: None,
+            composer_ai: Default::default(),
             game_similar_scroll: 0.,
             game_communities_filter: Default::default(),
             launcher_collections_at: None,
@@ -1416,6 +1422,21 @@ impl Root {
                 if name == "QUESTS_CAPTURE_CURRENT" {
                     self.quests.store.apply_current(&data);
                 }
+                // Capture only: `gw LIBRARY_CAPTURE [entries]` stands for the library answer.
+                #[cfg(feature = "capture")]
+                if name == "LIBRARY_CAPTURE" {
+                    let answer = serde_json::json!({"ok": true, "status": 200, "body": data, "capture": true});
+                    self.library_fetched("library:applications", &answer);
+                }
+                // ... and `gw QUESTS_CAPTURE_CLAIMED <body>` for the claimed list's.
+                #[cfg(feature = "capture")]
+                if name == "QUESTS_CAPTURE_CLAIMED" {
+                    quests::CLAIMED_INJECTED.store(true, std::sync::atomic::Ordering::Relaxed);
+                    let mut data = data.clone();
+                    data["capture"] = serde_json::Value::Bool(true);
+                    self.fetched.insert("quests:claimed".to_owned(), data);
+                    self.quests_fetched("quests:claimed", cx);
+                }
                 if name == "QUESTS_USER_COMPLETION_UPDATE" {
                     self.quests.store.apply_completion_update(&data);
                 }
@@ -1428,6 +1449,7 @@ impl Root {
                 }
                 if name == "PRESENCE_UPDATE" {
                     self.request_presence_image_of(&data);
+                    self.listen_along_presence(&data, cx);
                 }
                 if matches!(
                     name.as_str(),
@@ -1656,6 +1678,14 @@ impl Root {
                     return;
                 }
                 if self.top_emoji_fetched(&key, &body, cx) {
+                    return;
+                }
+                if self.library_fetched(&key, &body) {
+                    cx.notify();
+                    return;
+                }
+                if key.starts_with(composer_ai::KEY_PREFIX) {
+                    self.composer_ai_answer(&body, cx);
                     return;
                 }
                 if key.starts_with(game_similar::KEY_PREFIX) {
@@ -9336,6 +9366,7 @@ impl Render for Root {
         );
         self.onboarding_note_focus(window, cx);
         self.activity_host_frame(window, cx);
+        self.provider_player_frame(window, cx);
         self.sync_voice_page(cx);
         let feed = (self.data_revision, self.guild, self.ready);
         let feed_changed = changed(&mut self.prepared.inventory, feed);
@@ -10487,6 +10518,7 @@ impl Render for Root {
             .children(self.not_friend_modal(cx))
             .children(self.favorites_full_modal(cx))
             .children(self.library_remove_modal(cx))
+            .children(self.composer_ai_modal(cx))
             .children(self.friend_nickname_layer(window, cx))
             .children(self.group_edit_layer(window, cx))
             .children(self.group_leave_layer(cx))

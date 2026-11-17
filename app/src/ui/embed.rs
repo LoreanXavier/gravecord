@@ -872,6 +872,27 @@ impl Root {
         };
         let page = embed.url.clone();
         let group = SharedString::from(format!("embed-video-{}-{index}", message.id));
+        // `ee`: Play put the provider's player in this box; the web view sits over the anchor drawn here.
+        let player_key = format!("embed:{}:{index}", message.id);
+        if !proxied && self.provider_playing(&player_key) {
+            return Some(
+                div()
+                    .id(SharedString::from(format!("{group}-player")))
+                    .flex_none()
+                    .relative()
+                    .w(width)
+                    .h(height)
+                    .rounded(px(4.))
+                    .overflow_hidden()
+                    .bg(color("--black"))
+                    .child(self.anchor_probe(super::provider_player::ANCHOR))
+                    .into_any_element(),
+            );
+        }
+        let player_src = super::provider_player::player_url(
+            &video.url,
+            embed.provider.as_deref().unwrap_or_default(),
+        );
         let play_icon = || {
             gpui::svg()
                 .path("icons/clips_play.svg")
@@ -909,7 +930,8 @@ impl Root {
                 )
                 .into_any_element()
         } else {
-            let (play, open) = (target.clone(), page.clone());
+            let (play, open) = (player_src.clone(), page.clone());
+            let play_key = player_key.clone();
             div()
                 .absolute()
                 .inset_0()
@@ -933,7 +955,7 @@ impl Root {
                                     this.cursor_pointer()
                                         .hover(|style| style.opacity(1.))
                                         .on_click(cx.listener(move |this, _, _, cx| {
-                                            this.follow_link(&play, &play, cx);
+                                            this.provider_play(play_key.clone(), play.clone(), cx);
                                         }))
                                 })
                                 .child(play_icon()),

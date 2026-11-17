@@ -377,6 +377,30 @@ impl Spotify {
         Ok(())
     }
 
+    /// `PUT /me/player`: playback moves to `device` and plays there (Spotify Connect's transfer).
+    pub async fn transfer(&mut self, device: &str) -> Result<(), Error> {
+        self.request(
+            Method::PUT,
+            "/me/player",
+            &[],
+            Some(&serde_json::json!({ "device_ids": [device], "play": true })),
+            false,
+        )
+        .await
+        .map(|_| ())
+    }
+
+    /// `PUT /me/player/seek`: the playing track jumps to `position_ms`.
+    pub async fn seek(&mut self, position_ms: i64, device: Option<&str>) -> Result<(), Error> {
+        let mut query = vec![("position_ms", position_ms.max(0).to_string())];
+        if let Some(device) = device {
+            query.push(("device_id", device.to_owned()));
+        }
+        self.request(Method::PUT, "/me/player/seek", &query, None, false)
+            .await
+            .map(|_| ())
+    }
+
     pub async fn pause(&mut self) -> Result<(), Error> {
         self.request(Method::PUT, "/me/player/pause", &[], None, false)
             .await

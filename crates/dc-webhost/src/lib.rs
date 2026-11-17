@@ -112,6 +112,16 @@ pub fn captcha_event(event: &HostEvent) -> Option<CaptchaEvent> {
     data.get("error").map(|_| CaptchaEvent::Failed)
 }
 
+/// What the surface shows first: a page of its own, or a web address loaded as the top page (a provider's player),
+/// with the `Referer` the official client's frame would send.
+enum Page {
+    Html(String),
+    Url {
+        url: String,
+        referer: Option<String>,
+    },
+}
+
 /// What the surface reports.
 #[derive(Debug, Clone, PartialEq)]
 pub enum HostEvent {
@@ -278,7 +288,7 @@ fn run(
     parent: Parent,
     data_dir: PathBuf,
     bounds: (f32, f32, f32, f32),
-    html: String,
+    page: Page,
     commands: Receiver<Command>,
     sender: Sender<HostEvent>,
 ) {
@@ -302,11 +312,21 @@ fn run(
     popup.place(bounds, visible);
     let mut context = WebContext::new(Some(data_dir));
     let ipc = sender.clone();
-    let view: WebView = match WebViewBuilder::new_with_web_context(&mut context)
+    let builder = WebViewBuilder::new_with_web_context(&mut context)
         .with_bounds(rect(0., 0., bounds.2, bounds.3))
         .with_transparent(true)
-        .with_autoplay(true)
-        .with_html(html)
+        .with_autoplay(true);
+    let builder = match page {
+        Page::Html(html) => builder.with_html(html),
+        Page::Url { url, referer } => {
+            let mut headers = wry::http::HeaderMap::new();
+            if let Some(value) = referer.and_then(|r| wry::http::HeaderValue::from_str(&r).ok()) {
+                headers.insert(wry::http::header::REFERER, value);
+            }
+            builder.with_url(url).with_headers(headers)
+        }
+    };
+    let view: WebView = match builder
         .with_initialization_script(RELAY_SCRIPT)
         .with_ipc_handler(move |request| {
             let Ok(message) = serde_json::from_str::<Value>(request.body()) else {
@@ -394,11 +414,40 @@ impl WebHost {
         Self::with_page(window, data_dir, bounds, captcha_page(sitekey, rqdata))
     }
 
+    /// A surface loading `url` as its top page, for a provider's embedded player (YouTube, TikTok, Twitch, Spotify).
+    /// `referer` is sent with the first request, as the page that frames the player in the official client would.
+    pub fn player(
+        window: &impl HasWindowHandle,
+        data_dir: PathBuf,
+        bounds: (f32, f32, f32, f32),
+        url: &str,
+        referer: Option<&str>,
+    ) -> Result<Self, Error> {
+        Self::with_page_kind(
+            window,
+            data_dir,
+            bounds,
+            Page::Url {
+                url: url.to_owned(),
+                referer: referer.map(str::to_owned),
+            },
+        )
+    }
+
     fn with_page(
         window: &impl HasWindowHandle,
         data_dir: PathBuf,
         bounds: (f32, f32, f32, f32),
         html: String,
+    ) -> Result<Self, Error> {
+        Self::with_page_kind(window, data_dir, bounds, Page::Html(html))
+    }
+
+    fn with_page_kind(
+        window: &impl HasWindowHandle,
+        data_dir: PathBuf,
+        bounds: (f32, f32, f32, f32),
+        page: Page,
     ) -> Result<Self, Error> {
         let RawWindowHandle::Win32(handle) = window
             .window_handle()
@@ -417,7 +466,7 @@ impl WebHost {
                     parent,
                     data_dir,
                     bounds,
-                    html,
+                    page,
                     command_receiver,
                     event_sender,
                 )
@@ -464,8 +513,16 @@ impl WebHost {
 impl Drop for WebHost {
     fn drop(&mut self) {
         let _ = self.commands.send(Command::Shutdown);
+        // The surface's thread ends on its next turn; one stuck in the web view's start (a window that never gets a
+        // message pump) must not hold the app open, so the wait is bounded and the thread is left to the process.
         if let Some(thread) = self.thread.take() {
-            let _ = thread.join();
+            let deadline = std::time::Instant::now() + Duration::from_secs(2);
+            while !thread.is_finished() && std::time::Instant::now() < deadline {
+                std::thread::sleep(Duration::from_millis(20));
+            }
+            if thread.is_finished() {
+                let _ = thread.join();
+            }
         }
     }
 }

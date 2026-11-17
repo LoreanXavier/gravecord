@@ -323,9 +323,21 @@ pub struct ClaimedQuest {
     /// `config.rewards[].type` and `.name`, in order.
     pub rewards: Vec<(u64, String)>,
     pub user_status: Option<UserStatus>,
+    /// The quest as the service sent it, for the assets of its card (`s$`).
+    pub raw: Value,
 }
 
 impl ClaimedQuest {
+    /// `sn`: the reward of the claimed tier.
+    pub fn claimed_reward(&self) -> &Value {
+        let tier = self
+            .user_status
+            .as_ref()
+            .and_then(|s| s.claimed_tier)
+            .unwrap_or(0) as usize;
+        &self.raw["config"]["rewards"][tier]
+    }
+
     pub fn from_value(value: &Value) -> Option<ClaimedQuest> {
         Some(ClaimedQuest {
             id: value["id"].as_str()?.to_owned(),
@@ -350,6 +362,7 @@ impl ClaimedQuest {
             user_status: value["user_status"]
                 .is_object()
                 .then(|| UserStatus::from_value(&value["user_status"])),
+            raw: value.clone(),
         })
     }
 }

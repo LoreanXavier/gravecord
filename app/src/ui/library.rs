@@ -24,6 +24,8 @@ use serde_json::{Value, json};
 /// `persistKey` of module 775228.
 const STORE_KEY: &str = "InstallationManagerStore";
 const LIBRARY_KEY: &str = "library:applications";
+#[cfg(feature = "capture")]
+static CAPTURED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 /// The empty-state picture (`emptyWumpus_-JvGQh` in a dark theme), 404 by 202.
 const WUMPUS: &str = "https://discord.com/assets/b584f76d3ff86700.svg";
 /// `Math.ceil(2 * Math.PI * 20)`: the ring's dash length.
@@ -53,6 +55,16 @@ pub(super) struct Library {
     editing: Option<Editing>,
     /// The location whose "Remove Location" question is up.
     removing: Option<String>,
+}
+
+/// A library entry's 64px icon (`getIconURL`).
+fn library_icon(entry: &Value) -> Option<String> {
+    let app = &entry["application"];
+    let id = app["id"].as_str()?;
+    let icon = app["icon"].as_str()?;
+    Some(format!(
+        "https://cdn.discordapp.com/app-icons/{id}/{icon}.webp?size=64"
+    ))
 }
 
 /// `u`: the default location.
@@ -308,6 +320,29 @@ impl Root {
             && !self.shop.open
             && !self.quests.open
             && !self.message_requests.open
+    }
+
+    /// The library answer: its games' icons are asked for.
+    pub(super) fn library_fetched(&mut self, key: &str, body: &Value) -> bool {
+        if key != LIBRARY_KEY {
+            return false;
+        }
+        // Capture only: a run's own list stays over the account's answer.
+        #[cfg(feature = "capture")]
+        {
+            if body["capture"] == true {
+                CAPTURED.store(true, std::sync::atomic::Ordering::Relaxed);
+            } else if CAPTURED.load(std::sync::atomic::Ordering::Relaxed) {
+                return true;
+            }
+        }
+        self.fetched.insert(key.to_owned(), body.clone());
+        for url in self.library_entries().iter().filter_map(library_icon) {
+            if !self.images.contains_key(&url) {
+                self.request_image(url.clone(), url);
+            }
+        }
+        true
     }
 
     /// The account's library entries (`GET /users/@me/library`), empty until the answer is in.
@@ -1016,6 +1051,130 @@ impl Root {
             .into_any_element()
     }
 
+    /// `tS` with the columns of `tT`: Name (the game's icon and name), Platform (`gG4` of the distributor, "N/A"
+    /// without one), Last Played ("never played": this client keeps no play statistics yet). UNCONFIRMED: the captured
+    /// account owns no games, so the table was never compared with a frame; the sizes are the CSS's (`header_-JvGQh`,
+    /// `row_-JvGQh` at `--custom-game-list-row-min-height` 62px, the 30/20/20/30 columns) and the icon size is
+    /// assumed. Not drawn: the actions column (privacy, overlay and cloud-sync marks, Play/Install with its dropdown),
+    /// sorting, the hover state and the context menu.
+    fn library_table(&self, entries: &[Value]) -> AnyElement {
+        let header_cell = |label: &'static str, share: f32, first: bool| {
+            div()
+                .w(gpui::relative(share))
+                .when(!first, |this| {
+                    this.px(px(12.))
+                        .border_l_1()
+                        .border_color(color("--border-subtle"))
+                })
+                .child(dc_intl::tr(label))
+        };
+        let rows: Vec<AnyElement> = entries
+            .iter()
+            .enumerate()
+            .map(|(index, entry)| {
+                let app = &entry["application"];
+                let name = app["name"].as_str().unwrap_or_default().to_owned();
+                let picture = library_icon(entry).and_then(|url| self.images.get(&url).cloned());
+                let platform = match entry["sku"]["distributor"]
+                    .as_str()
+                    .or_else(|| entry["distributor"].as_str())
+                {
+                    Some("steam") => "Steam".to_owned(),
+                    Some("battlenet") => "Battle.net".to_owned(),
+                    Some("epic") => "Epic".to_owned(),
+                    Some("gog") => "GOG".to_owned(),
+                    Some("origin") => "Origin".to_owned(),
+                    Some("uplay") => "Uplay".to_owned(),
+                    Some("twitch") => "Twitch".to_owned(),
+                    Some("discord") => "Discord".to_owned(),
+                    None if entry["sku"].is_object() => "Discord".to_owned(),
+                    _ => dc_intl::tr("N/A").to_string(),
+                };
+                let cell = |share: f32| {
+                    div()
+                        .w(gpui::relative(share))
+                        .py(px(8.))
+                        .pl(px(15.))
+                        .pr(px(8.))
+                        .text_color(color("--text-muted"))
+                };
+                div()
+                    .mx(px(18.))
+                    .rounded(px(8.))
+                    .child(
+                        div()
+                            .mx(px(8.))
+                            .min_h(px(62.))
+                            .flex()
+                            .items_center()
+                            .text_color(color("--text-default"))
+                            .when(index > 0, |this| {
+                                this.border_t_1().border_color(color("--border-subtle"))
+                            })
+                            .child(
+                                div()
+                                    .w(gpui::relative(0.3))
+                                    .pl(px(8.))
+                                    .flex()
+                                    .items_center()
+                                    .child(
+                                        div()
+                                            .flex_none()
+                                            .size(px(32.))
+                                            .mr(px(20.))
+                                            .rounded(px(8.))
+                                            .overflow_hidden()
+                                            .bg(color("--background-mod-muted"))
+                                            .children(
+                                                picture.map(|picture| img(picture).size_full()),
+                                            ),
+                                    )
+                                    .child(
+                                        div()
+                                            .min_w(px(0.))
+                                            .overflow_hidden()
+                                            .whitespace_nowrap()
+                                            .text_ellipsis()
+                                            .font_weight(FontWeight(600.))
+                                            .text_color(color("--text-strong"))
+                                            .child(name),
+                                    ),
+                            )
+                            .child(cell(0.2).child(platform))
+                            .child(cell(0.2).child(dc_intl::tr("never played")))
+                            .child(div().w(gpui::relative(0.3))),
+                    )
+                    .into_any_element()
+            })
+            .collect();
+        div()
+            .id("library-games")
+            .flex_1()
+            .min_h(px(0.))
+            .overflow_y_scroll()
+            .text_size(px(14.))
+            .line_height(px(18.))
+            .child(
+                div()
+                    .pt(px(20.))
+                    .px(px(24.))
+                    .pb(px(8.))
+                    .border_b_1()
+                    .border_color(color("--border-subtle"))
+                    .flex()
+                    .text_size(px(12.))
+                    .line_height(px(16.))
+                    .font_weight(FontWeight(600.))
+                    .text_color(color("--text-muted"))
+                    .child(header_cell("Name", 0.3, true))
+                    .child(header_cell("Platform", 0.2, false))
+                    .child(header_cell("Last Played", 0.2, false))
+                    .child(div().w(gpui::relative(0.3))),
+            )
+            .children(rows)
+            .into_any_element()
+    }
+
     /// The Remove Location question (`eC.A`).
     pub(super) fn library_remove_modal(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
         let path = self.library.removing.clone()?;
@@ -1069,26 +1228,19 @@ impl Root {
             Tab::Games => {
                 let entries = self.library_entries();
                 let query = self.library.query.to_lowercase();
-                let shown = entries
-                    .iter()
+                let shown: Vec<Value> = entries
+                    .into_iter()
                     .filter(|entry| {
                         query.is_empty()
                             || entry["application"]["name"]
                                 .as_str()
                                 .is_some_and(|name| name.to_lowercase().contains(&query))
                     })
-                    .count();
-                if shown == 0 {
+                    .collect();
+                if shown.is_empty() {
                     self.library_empty()
                 } else {
-                    // The games table is not built yet (see the module notes): say how many there are rather than
-                    // drawing rows nobody has captured.
-                    div()
-                        .flex_1()
-                        .p(px(24.))
-                        .text_color(color("--text-muted"))
-                        .child(format!("{shown} games"))
-                        .into_any_element()
+                    self.library_table(&shown)
                 }
             }
         };

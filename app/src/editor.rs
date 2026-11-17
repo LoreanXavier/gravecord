@@ -593,6 +593,11 @@ impl Editor {
         self.buffer.text()
     }
 
+    /// The selected text, empty without a selection.
+    pub fn selected_text(&self) -> &str {
+        self.buffer.selected_text()
+    }
+
     /// Types `text` at the caret, replacing any selection, as a paste would.
     pub fn insert(&mut self, text: &str, cx: &mut Context<Self>) {
         self.vertical = None;

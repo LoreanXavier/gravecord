@@ -276,6 +276,77 @@ impl Session {
     }
 }
 
+/// The item a `GET /me/player` answer plays: its own id, or the id it was relinked from.
+fn playing_item(state: &Value) -> Option<String> {
+    let item = &state["item"];
+    item["linked_from"]["id"]
+        .as_str()
+        .or_else(|| item["id"].as_str())
+        .map(str::to_owned)
+}
+
+/// Whether the account's player now plays `track`.
+async fn plays(api: &mut Spotify, track: &str) -> bool {
+    for wait in [1500u64, 1500, 2000] {
+        tokio::time::sleep(Duration::from_millis(wait)).await;
+        if let Ok(state) = api.player().await
+            && state["is_playing"] == true
+            && playing_item(&state).as_deref() == Some(track)
+        {
+            return true;
+        }
+    }
+    false
+}
+
+/// The official client sends one `PUT /me/player/play` and trusts it; recent Spotify desktop builds accept that call
+/// and play nothing, so listening along only works with the web player. This client checks the player afterwards and
+/// falls back: first Spotify Connect's transfer to the same device, then, when that device is this computer's Spotify
+/// app, the track's `spotify:` address opened in the app itself, followed by a seek to where the host is by then.
+async fn play_verified(api: &mut Spotify, plan: &dc_state::spotify::Play) -> Result<(), Error> {
+    let started = Instant::now();
+    api.play(&plan.device_id, &plan.body(), plan.repeat).await?;
+    if plan.resource != dc_state::spotify::Resource::Track || plays(api, &plan.track_id).await {
+        return Ok(());
+    }
+    tracing::info!("Spotify play request did not take; transferring playback");
+    let position = |started: Instant| plan.position_ms + started.elapsed().as_millis() as i64;
+    if api.transfer(&plan.device_id).await.is_ok() {
+        let mut retry = plan.clone();
+        retry.position_ms = position(started);
+        if api.play(&plan.device_id, &retry.body(), None).await.is_ok()
+            && plays(api, &plan.track_id).await
+        {
+            return Ok(());
+        }
+    }
+    let desktop = api.devices().await.ok().is_some_and(|devices| {
+        devices["devices"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .any(|device| {
+                device["id"].as_str() == Some(plan.device_id.as_str())
+                    && device["type"] == "Computer"
+            })
+    });
+    // The id comes from another person's presence: only a Spotify base-62 id is handed to the system.
+    let base62 = !plan.track_id.is_empty()
+        && plan.track_id.len() <= 32
+        && plan.track_id.chars().all(|c| c.is_ascii_alphanumeric());
+    if !desktop || !base62 {
+        return Ok(());
+    }
+    tracing::info!("Spotify desktop app ignored the request; opening the track in the app");
+    let uri = format!("spotify:track:{}", plan.track_id);
+    #[cfg(windows)]
+    let _ = std::process::Command::new("explorer").arg(&uri).spawn();
+    if plays(api, &plan.track_id).await {
+        let _ = api.seek(position(started), Some(&plan.device_id)).await;
+    }
+    Ok(())
+}
+
 async fn perform(
     api: Arc<Mutex<Spotify>>,
     updates: mpsc::UnboundedSender<Update>,
@@ -285,17 +356,14 @@ async fn perform(
     while let Some((request, operation)) = receiver.recv().await {
         let mut api = api.lock().await;
         let result = match operation {
-            Operation::Play(plan) => api
-                .play(&plan.device_id, &plan.body(), plan.repeat)
-                .await
-                .map(|()| {
-                    dispatch(
-                        &updates,
-                        "SPOTIFY_PLAYER_PLAY",
-                        json!({"id":plan.track_id,"position":plan.position_ms}),
-                    );
-                    Reply::Played
-                }),
+            Operation::Play(plan) => play_verified(&mut api, &plan).await.map(|()| {
+                dispatch(
+                    &updates,
+                    "SPOTIFY_PLAYER_PLAY",
+                    json!({"id":plan.track_id,"position":plan.position_ms}),
+                );
+                Reply::Played
+            }),
             Operation::Premium(_) => api.profile().await.map(|body| {
                 let premium = body["product"] == "premium";
                 dispatch(

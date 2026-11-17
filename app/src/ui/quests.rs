@@ -5,7 +5,8 @@
 //!
 //! The captured account has no quests, so no quest card was ever captured. The grid card (`n6` of module 635668) is
 //! drawn from the bundle alone and marked unconfirmed ([`quest_tile`], reached in captures with
-//! `gw QUESTS_CAPTURE_CURRENT <body>`); the claimed list's cards (`s$`) are not drawn. Enrolling in, progressing and claiming a quest are account writes; `dc_state::quests` describes the requests
+//! `gw QUESTS_CAPTURE_CURRENT <body>`); the claimed list's cards (`s$`, [`Root::claimed_card`]) are drawn from the
+//! bundle too and equally unconfirmed. Enrolling in, progressing and claiming a quest are account writes; `dc_state::quests` describes the requests
 //! and nothing here sends them.
 //!
 //! Layout is measured in `design/dom/home/quests-*-darker-cozy.json`. Pieces followed from the bundle: `lP` (the
@@ -25,6 +26,10 @@ use gpui::{
 };
 
 pub(super) const FETCH_PREFIX: &str = "quests:";
+/// Capture only: the claimed list came from `gw QUESTS_CAPTURE_CLAIMED`.
+#[cfg(feature = "capture")]
+pub(super) static CLAIMED_INJECTED: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
 const CURRENT_KEY: &str = "quests:current";
 const CLAIMED_KEY: &str = "quests:claimed";
 const BALANCE_KEY: &str = "quests:balance";
@@ -79,6 +84,8 @@ pub(super) struct State {
     /// The hero video was asked for, and the size of its first frame once decoded.
     pub hero_requested: bool,
     pub hero_size: Option<(u32, u32)>,
+    /// The claimed card under the pointer (`hovered_HjAsMI`).
+    pub claimed_hover: Option<String>,
 }
 
 impl Default for State {
@@ -94,6 +101,7 @@ impl Default for State {
             currency: VirtualCurrencyStore::default(),
             hero_requested: false,
             hero_size: None,
+            claimed_hover: None,
         }
     }
 }
@@ -307,13 +315,40 @@ impl Root {
     }
 
     pub(super) fn quests_fetched(&mut self, key: &str, cx: &mut Context<Self>) {
+        // Capture only: once a run has put its own claimed list in, the account's answer does not replace it.
+        #[cfg(feature = "capture")]
+        if key == CLAIMED_KEY
+            && CLAIMED_INJECTED.load(std::sync::atomic::Ordering::Relaxed)
+            && !self
+                .fetched
+                .get(key)
+                .is_some_and(|body| body["capture"] == true)
+        {
+            return;
+        }
         let body = self.fetched.get(key).cloned().unwrap_or_default();
         let failed = crate::net::is_fetch_failure(&body);
         match key {
             CURRENT_KEY if failed => self.quests.store.fail_current(),
             CURRENT_KEY => self.quests.store.apply_current(&body),
             CLAIMED_KEY if failed => self.quests.store.fail_claimed(),
-            CLAIMED_KEY => self.quests.store.apply_claimed(&body),
+            CLAIMED_KEY => {
+                self.quests.store.apply_claimed(&body);
+                // The cards' reward pictures and logotypes.
+                let wanted: Vec<String> = self
+                    .quests
+                    .store
+                    .claimed_by_date()
+                    .iter()
+                    .flat_map(|quest| [claimed_picture(quest), claimed_logo(quest)])
+                    .flatten()
+                    .collect();
+                for url in wanted {
+                    if !self.images.contains_key(&url) {
+                        self.request_image(url.clone(), url);
+                    }
+                }
+            }
             BALANCE_KEY if failed => self.quests.currency.fail(),
             BALANCE_KEY => self.quests.currency.succeed(&body),
             _ => {}
@@ -1101,12 +1136,149 @@ impl Root {
         .into_any_element()
     }
 
+    /// `s$`: a square card of the reward's picture under a gradient, the quest's logotype 20px from the bottom; on hover
+    /// the gradient rises 80px, the picture dims and "{quest} Quest" / "{reward} claimed on {date}" slide up 20px from
+    /// the bottom with the logotype above them (`container_HjAsMI` and the rest of 6aed4ae4 CSS).
+    fn claimed_card(
+        &self,
+        quest: &dc_state::quests::ClaimedQuest,
+        side: f32,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let group: SharedString = format!("claimed-{}", quest.id).into();
+        let hovered = self.quests.claimed_hover.as_deref() == Some(quest.id.as_str());
+        let hover_id = quest.id.clone();
+        let picture = claimed_picture(quest).and_then(|url| self.images.get(&url).cloned());
+        let logo = claimed_logo(quest).and_then(|url| self.images.get(&url).cloned());
+        let reward = quest.claimed_reward();
+        // `I`: an Orbs reward reads "{n} Orbs", others their name.
+        let reward_name = match (
+            reward["type"].as_u64(),
+            quest
+                .user_status
+                .as_ref()
+                .and_then(|s| s.orb_quantity_claimed),
+        ) {
+            (Some(4), Some(orbs)) => format!("{orbs} Orbs"),
+            _ => reward["messages"]["name"]
+                .as_str()
+                .or_else(|| reward["name"].as_str())
+                .unwrap_or_default()
+                .to_owned(),
+        };
+        let date = quest
+            .user_status
+            .as_ref()
+            .and_then(|s| s.claimed_at.as_deref())
+            .and_then(|at| chrono::DateTime::parse_from_rfc3339(at).ok())
+            .map(|at| {
+                let at = at.with_timezone(&chrono::Local);
+                format!(
+                    "{}/{}",
+                    chrono::Datelike::month(&at),
+                    chrono::Datelike::day(&at)
+                )
+            })
+            .unwrap_or_default();
+        let overlay_top = side / 2.;
+        div()
+            .id(group)
+            .on_hover(cx.listener(move |this, over: &bool, _, cx| {
+                if *over {
+                    this.quests.claimed_hover = Some(hover_id.clone());
+                } else if this.quests.claimed_hover.as_deref() == Some(hover_id.as_str()) {
+                    this.quests.claimed_hover = None;
+                }
+                cx.notify();
+            }))
+            .relative()
+            .w(px(side))
+            .h(px(side))
+            .rounded(px(16.))
+            .overflow_hidden()
+            .bg(color("--background-base-lowest"))
+            .children(picture.map(|picture| {
+                div()
+                    .absolute()
+                    .inset_0()
+                    .when(hovered, |this| this.opacity(0.8))
+                    .child(img(picture).size_full().object_fit(gpui::ObjectFit::Cover))
+            }))
+            // `overlay_HjAsMI` with `darkThemeGradient`: `--primary-660` at the bottom, half at the middle, clear on top.
+            .child(
+                div()
+                    .absolute()
+                    .left_0()
+                    .right_0()
+                    .top(px(if hovered {
+                        overlay_top - 80.
+                    } else {
+                        overlay_top
+                    }))
+                    .h(px(side))
+                    .bg(linear_gradient(
+                        0.,
+                        linear_color_stop(color("--primary-660"), 0.),
+                        linear_color_stop(color("--primary-660").opacity(0.), 1.),
+                    )),
+            )
+            .children(logo.map(|logo| {
+                div()
+                    .absolute()
+                    .left_0()
+                    .right_0()
+                    .bottom(px(if hovered { 84. } else { 20. }))
+                    .flex()
+                    .justify_center()
+                    .child(img(logo).max_h(px(45.)).max_w(px(140.)))
+            }))
+            .child(
+                div()
+                    .absolute()
+                    .left_0()
+                    .right_0()
+                    .bottom(px(if hovered { 20. } else { -60. }))
+                    .px(px(16.))
+                    .flex()
+                    .flex_col()
+                    .items_center()
+                    .text_center()
+                    .child(
+                        div()
+                            .mb(px(4.))
+                            .text_size(px(16.))
+                            .line_height(px(20.))
+                            .font_weight(gpui::FontWeight(600.))
+                            .text_color(color("--text-overlay-light"))
+                            .child(format!("{} Quest", quest.quest_name)),
+                    )
+                    .child(
+                        div()
+                            .opacity(0.75)
+                            .text_size(px(14.))
+                            .line_height(px(18.))
+                            .font_weight(gpui::FontWeight(500.))
+                            .text_color(color("--text-overlay-light"))
+                            .child(format!("{reward_name} claimed on {date}")),
+                    ),
+            )
+            .into_any_element()
+    }
+
     /// `sZ`: the claimed quests, or the spinner while they load, or the note with its art.
     fn quests_claimed_body(&mut self, cx: &mut Context<Self>) -> AnyElement {
         let claimed = self.quests.store.claimed_by_date();
         let loading = self.quests.store.is_fetching_claimed_quests && claimed.is_empty();
         let empty = claimed.is_empty() && !loading;
         let art = self.images.get(CLAIMED_IMAGE).cloned();
+        // `gridContainer_5UwkbV`: columns of at least 230px, 24px apart, filling the page; a card is square up to 330.
+        let width = (self.viewport.0 - self.combined_sidebar_width() - 40.).max(230.);
+        let columns = ((width + 24.) / (230. + 24.)).floor().max(1.);
+        let side = ((width - (columns - 1.) * 24.) / columns).min(330.);
+        let cards: Vec<AnyElement> = claimed
+            .iter()
+            .map(|quest| self.claimed_card(quest, side, cx))
+            .collect();
         div()
             .w_full()
             .px(px(20.))
@@ -1114,6 +1286,16 @@ impl Root {
             .flex()
             .flex_col()
             .items_center()
+            .when(!cards.is_empty(), |this| {
+                this.child(
+                    div()
+                        .w_full()
+                        .flex()
+                        .flex_wrap()
+                        .gap(px(24.))
+                        .children(cards),
+                )
+            })
             .when(empty, |this| {
                 // `sX` (module 396478): a 440px column, the 415 by 200 art, 40px, then the note 8px down.
                 this.child(
@@ -1159,6 +1341,34 @@ impl Root {
     }
 }
 
+/// A quest asset's address (`N` of module 760914): a path as it is, a bare name under the quest's folder.
+fn quest_asset(quest: &str, asset: &str) -> String {
+    if asset.starts_with("http://") || asset.starts_with("https://") {
+        asset.to_owned()
+    } else if asset.contains('/') {
+        format!("https://cdn.discordapp.com/{asset}")
+    } else {
+        format!("https://cdn.discordapp.com/quests/{quest}/{asset}")
+    }
+}
+
+/// The claimed reward's still picture (`reward`: the video when there is one; this client shows the picture).
+fn claimed_picture(quest: &dc_state::quests::ClaimedQuest) -> Option<String> {
+    let reward = quest.claimed_reward();
+    reward["asset"]
+        .as_str()
+        .map(|asset| quest_asset(&quest.id, asset))
+}
+
+/// `logo_type` in the dark theme: `logotype_dark`, else `logotype`.
+fn claimed_logo(quest: &dc_state::quests::ClaimedQuest) -> Option<String> {
+    let assets = &quest.raw["config"]["assets"];
+    assets["logotype_dark"]
+        .as_str()
+        .or_else(|| assets["logotype"].as_str())
+        .map(|asset| quest_asset(&quest.id, asset))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1174,6 +1384,18 @@ mod tests {
         let (left, top, width, height) = cover_at((100, 100), (200., 100.), (0.75, 0.5));
         assert_eq!((left, width, height), (0., 200., 200.));
         assert!((top + 50.).abs() < 0.01);
+    }
+
+    #[test]
+    fn quest_assets_live_under_the_quest_or_at_their_path() {
+        assert_eq!(
+            quest_asset("12", "reward.png"),
+            "https://cdn.discordapp.com/quests/12/reward.png"
+        );
+        assert_eq!(
+            quest_asset("12", "assets/x/y.png"),
+            "https://cdn.discordapp.com/assets/x/y.png"
+        );
     }
 
     #[test]

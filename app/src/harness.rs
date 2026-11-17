@@ -491,6 +491,11 @@ pub async fn run(
                     .store(true, std::sync::atomic::Ordering::Relaxed);
                 let _ = writeln!(output, "channel-notice: invite skipped");
             }
+            // `composer-ai staff`: the composer menu's AI rows show as for a staff account.
+            ["composer-ai", "staff"] => {
+                crate::ui::composer_ai::AS_STAFF.store(true, std::sync::atomic::Ordering::Relaxed);
+                let _ = writeln!(output, "composer-ai: staff");
+            }
             ["gw", name, json @ ..] => {
                 let text = json.join(" ");
                 let note = match serde_json::from_str(&text) {

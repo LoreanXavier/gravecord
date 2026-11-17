@@ -181,13 +181,17 @@ pub(super) enum Act {
     CopyExpressionLink,
     /// A game widget row of Add to Profile, by its place in the menu.
     GameWidget(u8),
+    /// The composer's AI rows (staff only).
+    AiFixGrammar,
+    AiTranslate,
+    AiTransforms,
 }
 
 impl Act {
     /// Every row kind once (`Correction` with its first index). `ordinal` is an exhaustive match, so adding a variant
     /// without listing it here fails the build or the `act_list_is_complete` test.
     #[cfg(test)]
-    pub(super) const ALL: [Act; 94] = [
+    pub(super) const ALL: [Act; 97] = [
         Act::InventoryAbout,
         Act::InventoryHide,
         Act::ReportApp,
@@ -282,6 +286,9 @@ impl Act {
         Act::CopyEmoji,
         Act::CopyExpressionLink,
         Act::GameWidget(0),
+        Act::AiFixGrammar,
+        Act::AiTranslate,
+        Act::AiTransforms,
     ];
 
     #[cfg(test)]
@@ -381,6 +388,9 @@ impl Act {
             Act::CopyEmoji => 91,
             Act::CopyExpressionLink => 92,
             Act::GameWidget(_) => 93,
+            Act::AiFixGrammar => 94,
+            Act::AiTranslate => 95,
+            Act::AiTransforms => 96,
         }
     }
 }
@@ -409,6 +419,9 @@ pub(super) fn status(act: Act) -> Status {
         | Act::CopyEmoji
         | Act::CopyExpressionLink
         | Act::GameWidget(_)
+        | Act::AiFixGrammar
+        | Act::AiTranslate
+        | Act::AiTransforms
         | Act::ReportApp
         | Act::MarkRead
         | Act::Invite
@@ -515,6 +528,8 @@ pub(super) struct Row {
     /// A second line under the label (Notification Settings shows the level).
     pub sub: Option<String>,
     pub icon: Option<&'static str>,
+    /// An icon after the label (the `icon` of a menu item; `leadingAccessory` is the one before it).
+    pub trailing: Option<&'static str>,
     pub caret: bool,
     pub check: Option<bool>,
     pub danger: bool,
@@ -530,6 +545,7 @@ impl Row {
             label: label.into(),
             sub: None,
             icon: None,
+            trailing: None,
             caret: false,
             check: None,
             danger: false,
@@ -570,6 +586,11 @@ impl Row {
 
     pub(super) fn icon(mut self, name: &'static str) -> Self {
         self.icon = Some(name);
+        self
+    }
+
+    pub(super) fn trailing(mut self, name: &'static str) -> Self {
+        self.trailing = Some(name);
         self
     }
 
@@ -710,6 +731,9 @@ pub(super) struct ComposerMenu {
     pub enabled: bool,
     /// The send button shows in the composer (`isSubmitButtonEnabled`).
     pub send_button: bool,
+    /// A staff account with text selected: the AI rows (module 194400 `F`), and what is in flight.
+    pub ai: bool,
+    pub ai_busy: Option<super::composer_ai::Busy>,
 }
 
 /// `textarea-context` (module 194400) with the spelling section of module 413756: the corrections, then Add to
@@ -874,6 +898,39 @@ pub(super) fn composer_items(menu: &ComposerMenu) -> Vec<Entry> {
     spelling.push(Row::new(Act::Spellcheck, dc_intl::tr("Spellcheck")).check(menu.enabled));
     if menu.enabled {
         spelling.push(Row::new(Act::SpellLanguages, dc_intl::tr("Languages")));
+    }
+    if menu.ai {
+        use super::composer_ai::Busy;
+        let busy = menu.ai_busy.is_some();
+        spelling.push(
+            Row::new(
+                Act::AiFixGrammar,
+                dc_intl::tr(if menu.ai_busy == Some(Busy::Grammar) {
+                    "Fixing Grammar"
+                } else {
+                    "Fix Grammar"
+                }),
+            )
+            .trailing("magic_wand")
+            .disabled(busy),
+        );
+        spelling.push(
+            Row::new(
+                Act::AiTranslate,
+                dc_intl::tr(if matches!(menu.ai_busy, Some(Busy::Translate(_))) {
+                    "Translating..."
+                } else {
+                    "Translate"
+                }),
+            )
+            .caret()
+            .disabled(busy),
+        );
+        spelling.push(
+            Row::new(Act::AiTransforms, dc_intl::tr("Transforms"))
+                .trailing("magic_wand")
+                .caret(),
+        );
     }
     group(&mut out, spelling);
     let mut clipboard = Vec::new();
@@ -2616,6 +2673,8 @@ impl Root {
             selection: !click.selected.is_empty(),
             enabled,
             send_button: self.pref_on("enable_send_button_outside_experiment", false),
+            ai: self.composer_ai_allowed() && !click.selected.trim().is_empty(),
+            ai_busy: self.composer_ai.busy.clone(),
         };
         let Some((_, word)) = menu.word.clone() else {
             self.context.composer = Some(menu);
@@ -3414,6 +3473,9 @@ impl Root {
                 self.refresh_spelling(cx);
             }
             (Act::SpellLanguages, Target::Composer) => cx.open_url(SPELLCHECK_HELP),
+            (Act::AiFixGrammar, Target::Composer) => self.composer_fix_grammar(cx),
+            (Act::AiTranslate, Target::Composer) => self.composer_translate(None, cx),
+            (Act::AiTransforms, Target::Composer) => {}
             (Act::Cut, Target::Composer) => self
                 .composer
                 .update(cx, |composer, cx| composer.cut_selection(cx)),
@@ -3607,6 +3669,36 @@ impl Root {
         };
         match act {
             // `command-suggestions` of module 194400: Slash Commands, checked by the account's setting.
+            // `translate-{locale}`: every language the client has, disabled while a request is out.
+            Act::AiTranslate => super::composer_ai::languages()
+                .into_iter()
+                .map(|(_, name)| SubRow {
+                    label: name,
+                    disabled: self.composer_ai.busy.is_some(),
+                    ..SubRow::default()
+                })
+                .collect(),
+            // `text-transform-{id}` then Manage.
+            Act::AiTransforms => {
+                let busy = match &self.composer_ai.busy {
+                    Some(super::composer_ai::Busy::Transform(name)) => Some(name.clone()),
+                    _ => None,
+                };
+                let mut rows: Vec<SubRow> = super::composer_ai::transforms()
+                    .into_iter()
+                    .map(|t| SubRow {
+                        label: if busy.as_deref() == Some(t.name.as_str()) {
+                            format!("Applying {}", t.name)
+                        } else {
+                            t.name
+                        },
+                        disabled: self.composer_ai.busy.is_some(),
+                        ..SubRow::default()
+                    })
+                    .collect();
+                rows.push(plain(dc_intl::tr("Manage"), false));
+                rows
+            }
             Act::Suggestions => vec![plain(
                 dc_intl::tr("Slash Commands"),
                 self.pref_on("show_command_suggestions", true),
@@ -3897,6 +3989,19 @@ impl Root {
     ) {
         let row = self.context_sub_rows(act, target).into_iter().nth(index);
         match act {
+            Act::AiTranslate => {
+                if let Some((code, name)) = super::composer_ai::languages().into_iter().nth(index) {
+                    self.composer_translate(Some((code, name)), cx);
+                }
+            }
+            Act::AiTransforms => {
+                if index < super::composer_ai::transforms().len() {
+                    self.composer_transform(index, cx);
+                } else {
+                    self.composer_ai.manage_open = true;
+                    cx.notify();
+                }
+            }
             Act::Suggestions => {
                 if row.is_some() {
                     self.toggle_pref("show_command_suggestions", true);
@@ -4676,6 +4781,11 @@ impl Root {
                 .child(keys)
         }))
         .children(row.check.map(menu_check_box))
+        .children(row.trailing.filter(|_| !row.caret).map(|name| {
+            div()
+                .ml(px(8.))
+                .child(icon(name, 18., "--interactive-text-default"))
+        }))
         .when(row.caret, |this| {
             this.child(div().ml(px(10.)).child(icon(
                 "menu_caret",
@@ -5420,6 +5530,8 @@ mod tests {
             selection: true,
             enabled: true,
             send_button: false,
+            ai: false,
+            ai_busy: None,
         };
         assert_eq!(
             labels(&composer_items(&menu)),

@@ -23,6 +23,12 @@ pub(super) struct Actions {
     next: u64,
     pending: HashMap<u64, Pending>,
     pub premium_dialog: bool,
+    /// When the listened-to host's Spotify activity went away (`j`, the five-minute grace of module 655116).
+    host_gone_at: Option<std::time::Instant>,
+    /// Since when the account has been speaking in a voice channel with Spotify playing (`V`), and the count of
+    /// speaking changes, so a stale timer knows it is stale.
+    speaking_since: Option<std::time::Instant>,
+    speaking_turn: u64,
 }
 
 struct Pending {
@@ -131,6 +137,102 @@ impl Root {
     pub(crate) fn script_spotify_premium(&mut self, cx: &mut Context<Self>) {
         self.spotify_actions.premium_dialog = true;
         cx.notify();
+    }
+
+    /// The listened-to host's presence (`syncWith(PresenceStore)` of module 655116): a new track or start plays
+    /// from the host's position; no activity starts the five-minute grace, after which the listen-along stops and the
+    /// shared track pauses (`ACTIVITY_SYNC_STOP`, `es`).
+    pub(super) fn listen_along_presence(&mut self, event: &Value, cx: &mut Context<Self>) {
+        use dc_state::spotify::SyncStep;
+        match self
+            .stores
+            .spotify
+            .presence_step(event, chrono::Utc::now().timestamp_millis())
+        {
+            SyncStep::Nothing => {}
+            SyncStep::HostBack => self.spotify_actions.host_gone_at = None,
+            SyncStep::Replay(plan) => {
+                self.spotify_actions.host_gone_at = None;
+                self.spotify_perform(0, Operation::Play(plan));
+                cx.notify();
+            }
+            SyncStep::HostGone => {
+                if self.spotify_actions.host_gone_at.is_some() {
+                    return;
+                }
+                let since = std::time::Instant::now();
+                self.spotify_actions.host_gone_at = Some(since);
+                cx.spawn(async move |this, cx| {
+                    cx.background_executor()
+                        .timer(std::time::Duration::from_millis(
+                            dc_state::spotify::LISTEN_ALONG_GRACE_MS,
+                        ))
+                        .await;
+                    let _ = this.update(cx, |this, cx| {
+                        if this.spotify_actions.host_gone_at == Some(since) {
+                            this.spotify_actions.host_gone_at = None;
+                            if let Some(account) = this.stores.spotify.stop_sync() {
+                                this.spotify_perform(0, Operation::Pause(account));
+                            }
+                            cx.notify();
+                        }
+                    });
+                })
+                .detach();
+            }
+        }
+    }
+
+    /// `ed` of module 655116, on the account's own `SPEAKING`: speaking in a voice channel while a Spotify track is
+    /// playing starts a 30-second timer (`U`) that pauses it (`eo`, "Playback auto paused"); 100ms of silence (`H`)
+    /// stops the timer.
+    pub(super) fn spotify_speaking(&mut self, speaking: bool, cx: &mut Context<Self>) {
+        self.spotify_actions.speaking_turn += 1;
+        let turn = self.spotify_actions.speaking_turn;
+        let playing = self.call.is_some() && self.stores.spotify.player().is_some();
+        if speaking && playing {
+            if self.spotify_actions.speaking_since.is_some() {
+                return;
+            }
+            let since = std::time::Instant::now();
+            self.spotify_actions.speaking_since = Some(since);
+            cx.spawn(async move |this, cx| {
+                cx.background_executor()
+                    .timer(std::time::Duration::from_millis(
+                        dc_state::spotify::AUTO_PAUSE_MS,
+                    ))
+                    .await;
+                let _ = this.update(cx, |this, cx| {
+                    if this.spotify_actions.speaking_since != Some(since) {
+                        return;
+                    }
+                    this.spotify_actions.speaking_since = None;
+                    let account = this
+                        .stores
+                        .spotify
+                        .active_device()
+                        .map(|(account, _)| account.to_owned());
+                    if let Some(account) = account {
+                        tracing::info!("Spotify playback auto paused");
+                        this.spotify_perform(0, Operation::Pause(account));
+                    }
+                    cx.notify();
+                });
+            })
+            .detach();
+            return;
+        }
+        cx.spawn(async move |this, cx| {
+            cx.background_executor()
+                .timer(std::time::Duration::from_millis(100))
+                .await;
+            let _ = this.update(cx, |this, _| {
+                if this.spotify_actions.speaking_turn == turn {
+                    this.spotify_actions.speaking_since = None;
+                }
+            });
+        })
+        .detach();
     }
 
     fn spotify_perform(&self, request: u64, operation: Operation) {

@@ -144,6 +144,24 @@ pub struct SyncingWith {
     pub start_time: i64,
 }
 
+/// What the host's presence asks of a listen-along (`syncWith(PresenceStore)` of module 655116).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum SyncStep {
+    /// Not the host, or nothing changed.
+    Nothing,
+    /// The host's track or its start moved: play it at the host's position (`ea(…, false)`, "presence change").
+    Replay(Play),
+    /// The host has no Spotify activity: the sync ends unless it comes back within the grace (`w`, five minutes).
+    HostGone,
+    /// The host's activity is there again: the grace timer stops.
+    HostBack,
+}
+
+/// `w` of module 655116: how long a listen-along waits for the host's activity to come back.
+pub const LISTEN_ALONG_GRACE_MS: u64 = 5 * 60 * 1000;
+/// `U` of module 655116: speaking this long in a voice channel while Spotify plays pauses it.
+pub const AUTO_PAUSE_MS: u64 = 30 * 1000;
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Play {
     pub account_id: String,
@@ -546,6 +564,38 @@ impl SpotifyStore {
             .then(|| account.to_owned())
     }
 
+    /// A `PRESENCE_UPDATE` while listening along.
+    pub fn presence_step(&mut self, event: &Value, now_ms: i64) -> SyncStep {
+        let Some(sync) = self.syncing.clone() else {
+            return SyncStep::Nothing;
+        };
+        if id(&event["user"]["id"]) != Some(sync.user_id) {
+            return SyncStep::Nothing;
+        }
+        let Some((user, activity)) = self.syncing_user_activity(event) else {
+            return SyncStep::HostGone;
+        };
+        let activity = activity.clone();
+        let start = &activity["timestamps"]["start"];
+        let start = start.as_i64().or_else(|| start.as_str()?.parse().ok());
+        let track_moved = activity["sync_id"]
+            .as_str()
+            .is_some_and(|track| track != sync.track_id);
+        let start_moved = start.is_some_and(|start| start != sync.start_time);
+        if track_moved || start_moved {
+            return match self.start_sync(user, &activity, now_ms) {
+                Some(play) => SyncStep::Replay(play),
+                None => SyncStep::HostBack,
+            };
+        }
+        if let (Some(party), Some(sync)) = (activity["party"]["id"].as_str(), self.syncing.as_mut())
+            && party != sync.party_id
+        {
+            sync.party_id = party.to_owned();
+        }
+        SyncStep::HostBack
+    }
+
     pub fn syncing_user_activity<'a>(&self, event: &'a Value) -> Option<(Id, &'a Value)> {
         let sync = self.syncing.as_ref()?;
         let user = id(&event["user"]["id"])?;
@@ -746,6 +796,33 @@ mod tests {
         player(&mut store, "different", 0, 16000);
         assert_eq!(store.stop_sync(), None);
         assert!(store.syncing_with().is_none());
+    }
+
+    #[test]
+    fn the_host_presence_moves_the_listen_along() {
+        let mut store = playable();
+        store.start_sync(2, &activity(), 14000).unwrap();
+        let presence = |activities: Value| json!({"user": {"id": "2"}, "activities": activities});
+        assert_eq!(
+            store.presence_step(&presence(json!([activity()])), 15000),
+            SyncStep::HostBack
+        );
+        let mut next = activity();
+        next["sync_id"] = json!("next");
+        next["timestamps"]["start"] = json!(20000);
+        match store.presence_step(&presence(json!([next])), 21000) {
+            SyncStep::Replay(play) => {
+                assert_eq!(play.track_id, "next");
+                assert_eq!(play.position_ms, 1000);
+            }
+            other => panic!("{other:?}"),
+        }
+        assert_eq!(
+            store.presence_step(&presence(json!([])), 22000),
+            SyncStep::HostGone
+        );
+        let other = json!({"user": {"id": "3"}, "activities": []});
+        assert_eq!(store.presence_step(&other, 22000), SyncStep::Nothing);
     }
 
     #[test]
