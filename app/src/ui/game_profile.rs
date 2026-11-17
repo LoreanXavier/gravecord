@@ -585,6 +585,10 @@ impl Root {
             if let Some(url) = asset(id, &media["cover"], 256) {
                 wanted.push(url);
             }
+            // ... and its icon at 256, the cover's stand-in (459746 `x`).
+            if let Some(url) = asset(id, &media["icon"], 256) {
+                wanted.push(url);
+            }
             for url in wanted {
                 self.request_image(url.clone(), url);
             }

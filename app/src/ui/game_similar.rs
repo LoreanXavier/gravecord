@@ -3,7 +3,8 @@
 //! on module 277450's list), as 3:4 covers eight to a page (`scroller_lfwvtm`, `--custom-similar-games-per-page: 8`,
 //! 16px apart) in the page-step scroller of module 151869. A cover shows the game's name on hover and opens that
 //! game's profile when one opens (`useShouldOpenGameProfile`). Not here yet: the eight skeletons while the answer is
-//! out, the cover's zoom on hover and the drop shadow (`--shadow-low-filter`).
+//! out, the cover's zoom on hover, the drop shadow (`--shadow-low-filter`) and the blurred backdrop behind
+//! an icon that stands in for a missing cover.
 use super::carousel::Row;
 use super::{Root, color};
 use gpui::{AnyElement, Context, FontWeight, IntoElement, div, img, prelude::*, px};
@@ -80,6 +81,61 @@ impl Root {
         super::game_profile::asset(id, &media["cover"], 256)
     }
 
+    /// A similar game's record, once it is in.
+    fn game_similar_record(&self, id: &str) -> Option<Value> {
+        self.fetched
+            .get(&format!("{}{id}", super::game_profile::KEY_PREFIX))?
+            .as_array()?
+            .first()
+            .cloned()
+    }
+
+    /// `x` of module 459746 when there is no cover: the icon (`getIconURL(256)`) at 85% over the low background, or
+    /// with no icon either `j`: the name (three lines of `body-xs/medium`) and the release year (`footnote/normal`) on
+    /// `#423d80`, both in `--text-overlay-light`.
+    fn game_similar_fallback(&self, id: &str, name: &str, width: f32) -> AnyElement {
+        let record = self.game_similar_record(id);
+        let icon = record
+            .as_ref()
+            .and_then(|record| super::game_profile::asset(id, &record["media"]["icon"], 256))
+            .and_then(|url| self.images.get(&url).cloned());
+        if let Some(icon) = icon {
+            return div()
+                .size_full()
+                .bg(color("--background-base-low"))
+                .flex()
+                .items_center()
+                .justify_center()
+                .child(img(icon).size(px(width * 0.85)).rounded(px(8.)))
+                .into_any_element();
+        }
+        let year = record
+            .as_ref()
+            .and_then(|record| record["first_release_date"].as_str().map(str::to_owned))
+            .and_then(|date| date.get(..4).map(|year| format!("({year})")));
+        div()
+            .size_full()
+            .p(px(12.))
+            .bg(gpui::rgb(0x423d80))
+            .flex()
+            .flex_col()
+            .items_center()
+            .text_center()
+            .text_color(color("--text-overlay-light"))
+            .child(div().flex_1())
+            .child(
+                div()
+                    .text_size(px(12.))
+                    .line_height(px(16.))
+                    .font_weight(FontWeight(500.))
+                    .line_clamp(3)
+                    .child(name.to_owned()),
+            )
+            .child(div().flex_1())
+            .children(year.map(|year| div().text_size(px(10.)).line_height(px(12.)).child(year)))
+            .into_any_element()
+    }
+
     /// `ik`: nothing until the answer has games.
     pub(super) fn game_similar_section(
         &self,
@@ -121,7 +177,10 @@ impl Root {
                             this.open_game_profile(open.clone(), cx);
                         }
                     }))
-                    .children(picture.map(|picture| img(picture).size_full()));
+                    .child(match picture {
+                        Some(picture) => img(picture).size_full().into_any_element(),
+                        None => self.game_similar_fallback(id, &name, width),
+                    });
                 // `J.m`: the game's name over the cover.
                 self.with_tip(
                     format!("similar-game-tip-{id}"),
