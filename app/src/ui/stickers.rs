@@ -123,6 +123,30 @@ pub(super) fn art_url(sticker: &Sticker) -> String {
     }
 }
 
+/// Module 378058 `zg` at its defaults (160, not a preview), as Copy Sticker Image Link writes it: the size is the
+/// first of module 776231's that holds 160 times the scale (at most 2).
+pub(super) fn image_link(sticker: &Sticker, scale: f32) -> String {
+    const SIZES: [u32; 31] = [
+        16, 20, 22, 24, 28, 32, 40, 44, 48, 56, 60, 64, 80, 96, 100, 128, 160, 240, 256, 300, 320,
+        480, 512, 600, 640, 1024, 1280, 1536, 2048, 3072, 4096,
+    ];
+    let id = sticker.id;
+    let wanted = 160. * scale.clamp(1., 2.);
+    let size = SIZES
+        .iter()
+        .copied()
+        .find(|size| wanted <= *size as f32)
+        .unwrap_or(4096);
+    match sticker.format() {
+        Some(Format::Lottie) => format!("https://discord.com/stickers/{id}.json"),
+        Some(Format::Apng) => format!("https://media.discordapp.net/stickers/{id}.png?size={size}"),
+        Some(Format::Gif) => format!("https://media.discordapp.net/stickers/{id}.gif?size={size}"),
+        _ => {
+            format!("https://media.discordapp.net/stickers/{id}.webp?size={size}&quality=lossless")
+        }
+    }
+}
+
 /// Module 378058 `zg` for a sticker that animates: the Lottie file, or the media proxy's animated PNG or GIF (no
 /// `passthrough=false`, and a GIF as itself rather than as the still).
 pub(super) fn animated_art_url(id: Id, format: Format) -> String {
@@ -1077,6 +1101,18 @@ impl Root {
                     .on_click(cx.listener(move |this, event: &gpui::ClickEvent, _, cx| {
                         this.choose_sticker(chosen, event.modifiers().alt, cx);
                     }))
+                    // `expression-picker` (module 233503) under a right press.
+                    .on_mouse_up(
+                        gpui::MouseButton::Right,
+                        cx.listener(move |this, event: &gpui::MouseUpEvent, _, cx| {
+                            this.open_context_menu(
+                                super::context_menu::Target::PickerSticker(chosen),
+                                event.position,
+                                cx,
+                            );
+                            cx.stop_propagation();
+                        }),
+                    )
                     .children(picture.map(|picture| {
                         picture
                             .size(px(96.))
