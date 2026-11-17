@@ -295,6 +295,7 @@ mod video_player;
 mod video_stats;
 mod video_tiles;
 mod voice;
+mod voice_alerts;
 mod voice_panel;
 mod voice_sounds;
 mod voice_video;
@@ -601,6 +602,9 @@ pub struct Root {
     /// for that Stage channel.
     stage_leave_menu: bool,
     stage_end_confirm: Option<Id>,
+    /// The open voice, Stage or stream alert (`voice_alerts`), and the streams whose "Stream is Full" was shown.
+    voice_alert: Option<voice_alerts::VoiceAlert>,
+    stream_full_seen: std::collections::HashSet<String>,
     /// The menu over a speaker's or audience member's tile (module 106401 and 237749's rows), where it was opened.
     stage_tile_menu: Option<stage::TileMenu>,
     /// Stage instances whose Live Now card was closed with its X.
@@ -1028,6 +1032,8 @@ impl Root {
             stage_welcome_seen: false,
             stage_leave_menu: false,
             stage_end_confirm: None,
+            voice_alert: None,
+            stream_full_seen: Default::default(),
             stage_tile_menu: None,
             live_now_closed: Vec::new(),
             publish_confirm: None,
@@ -9764,6 +9770,7 @@ impl Render for Root {
                         || this.start_stage.is_some()
                         || this.stage_welcome.is_some()
                         || this.stage_end_confirm.is_some()
+                        || this.voice_alert.is_some()
                         || this.publish_confirm.is_some())
                 {
                     this.guild_notifications = None;
@@ -9772,6 +9779,7 @@ impl Render for Root {
                     this.start_stage = None;
                     this.stage_welcome = None;
                     this.stage_end_confirm = None;
+                    this.voice_alert = None;
                     this.publish_confirm = None;
                     cx.notify();
                     cx.stop_propagation();
@@ -10600,6 +10608,7 @@ impl Render for Root {
             .children(self.start_stage_modal(window, cx))
             .children(self.stage_welcome_modal(cx))
             .children(self.stage_end_modal(cx))
+            .children(self.voice_alert_modal(cx))
             .children(self.publish_modal(cx))
             .children(self.guild_events_layer(window, cx))
             .children(self.guild_menu_layer(cx))

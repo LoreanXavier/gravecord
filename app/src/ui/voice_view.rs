@@ -161,6 +161,8 @@ pub(super) struct State {
     pub fullscreen: bool,
     /// "Hide Members" of the focus mode (`participantsOpen` is false).
     pub members_hidden: bool,
+    /// The call header's Participants popout (module 195007) is open.
+    pub participants_open: bool,
     /// The window the call was popped out to (`call_popout.rs`).
     pub popout: Option<super::call_popout::Handle>,
     /// The call view is being built for that window now.
@@ -207,6 +209,7 @@ impl Default for State {
             focus: Default::default(),
             fullscreen: false,
             members_hidden: false,
+            participants_open: false,
             popout: None,
             popout_render: false,
             popout_on_top: false,
@@ -437,7 +440,12 @@ struct Participant {
     deaf: bool,
     speaking: bool,
     tile: Candidate,
+    /// Our own stream with Show My Screen Share off: `HIDDEN_STREAM` (module 568598), drawn as module 256195.
+    hidden: bool,
 }
+
+/// The art of a hidden stream's tile (module 913516).
+const HIDDEN_STREAM_ART: &str = "https://discord.com/assets/4e2cd55089053b35.svg";
 
 /// The fade of `gradientTop_rTsZa_` / `gradientBottom_rTsZa_`: black down to nothing over 160px.
 const FADE: [(f32, f32); 13] = [
@@ -733,9 +741,10 @@ impl Root {
                     || (!is_me && super::call_menus::video_disabled(state.user_id)),
                 connected: false,
             };
-            // Show My Screen Share off (module 666328): our own stream's tile is hidden from our own view only.
+            // Show My Screen Share off (module 666328): our own stream's tile stays, as the hidden stream of module
+            // 568598 (`isSelfStreamHidden` makes it `HIDDEN_STREAM`).
             let hidden_stream = is_me && super::call_menus::own_stream_hidden(channel);
-            if going_live && !hidden_stream {
+            if going_live {
                 out.push(Participant {
                     user: user.clone(),
                     mute,
@@ -746,6 +755,7 @@ impl Root {
                         connected: stream.is_some(),
                         ..tile.clone()
                     },
+                    hidden: hidden_stream,
                 });
             }
             out.push(Participant {
@@ -754,6 +764,7 @@ impl Root {
                 deaf,
                 speaking,
                 tile,
+                hidden: false,
             });
         }
         out
@@ -1250,6 +1261,9 @@ impl Root {
         if card {
             self.request_image(ART_URL.to_owned(), ART_URL.to_owned());
         }
+        if people.iter().any(|person| person.hidden) {
+            self.request_image(HIDDEN_STREAM_ART.to_owned(), HIDDEN_STREAM_ART.to_owned());
+        }
         let mut tiles: Vec<AnyElement> = people
             .iter()
             .map(|person| self.tile(person, layout, cx))
@@ -1343,7 +1357,9 @@ impl Root {
                     .child(fade(false)),
             )
             .when(guild != 0, |this| {
-                this.child(self.call_header(channel, shown, focus_head, cx))
+                // `q` of module 416528: with the non-video participants hidden, the header counts the users.
+                let members = (!show_non_video).then_some(user_count);
+                this.child(self.call_header(channel, shown, focus_head, members, cx))
             })
             .children(activity_stage.then(|| self.activity_leave_button(cx)))
             .child(self.call_bar(guild, channel, shown, cx))
@@ -1515,7 +1531,7 @@ impl Root {
         let outside = self.vv.outside;
         let media = self.tile_media_for(person);
         let video = matches!(media, TileMedia::Video(_));
-        let waiting = stream_tile && stream.is_none();
+        let waiting = stream_tile && stream.is_none() && !person.hidden;
         let loading = if stream_tile {
             stream.is_some() && !video
         } else {
@@ -1681,8 +1697,13 @@ impl Root {
                     },
                 ))
             })
-            .child(self.tile_media(media, person, layout))
-            .when(loading, |this| this.child(spinner()))
+            .when(!person.hidden, |this| {
+                this.child(self.tile_media(media, person, layout))
+            })
+            .when(person.hidden, |this| {
+                this.child(self.hidden_stream_content(layout, is_focus, cx))
+            })
+            .when(loading && !person.hidden, |this| this.child(spinner()))
             .when(waiting, |this| {
                 let (guild, channel) = self.vv.shown_call;
                 this.children(
@@ -1851,6 +1872,134 @@ impl Root {
                 None => div().into_any_element(),
             },
         }
+    }
+
+    /// Module 256195 over a hidden stream (`content_6DCDRW streamHidden_6DCDRW`: `--primary-700`, a column), through
+    /// module 200749 (4px of padding): the art (`art_3rN_rc`, none under 400 wide, 88 high under 1000, else 134, 16
+    /// under it), "This stream has been hidden." (`body-md/semibold`, white, 4 under it; not under 195 wide), then,
+    /// unless the tile is selected, Watch Stream (`Watch` under 175, `sm` under 195; 8px above it from 195) and, while
+    /// someone else streams, the eye that watches several streams (8px after it). Watch Stream has no handler of its
+    /// own: a press goes to the tile.
+    fn hidden_stream_content(
+        &self,
+        layout: GridLayout,
+        selected: bool,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let width = layout.tile_width;
+        let small = width < 195.;
+        let art_height = if width < 400. {
+            None
+        } else if width < 1000. {
+            Some(88.)
+        } else {
+            Some(134.)
+        };
+        let art = self.images.get(HIDDEN_STREAM_ART).cloned();
+        let me = self.stores.current_user.as_ref().map(|me| me.id);
+        let (guild, channel) = self.vv.shown_call;
+        let others_live = self
+            .stores
+            .voice_members(guild, channel)
+            .iter()
+            .any(|state| state.self_stream && Some(state.user_id) != me);
+        let height = if small { 32. } else { 40. };
+        let button = |id: &'static str| {
+            div()
+                .id(id)
+                .h(px(height))
+                .rounded(px(8.))
+                .border_1()
+                .border_color(mid("--control-secondary-border-default"))
+                .bg(mid("--control-secondary-background-default"))
+                .hover(|style| style.bg(mid("--control-secondary-background-hover")))
+                .flex()
+                .items_center()
+                .justify_center()
+                .cursor_pointer()
+        };
+        div()
+            .absolute()
+            .inset_0()
+            .overflow_hidden()
+            .bg(mid("--primary-700"))
+            .p(px(4.))
+            .flex()
+            .flex_col()
+            .items_center()
+            .justify_center()
+            .children(art_height.map(|art_height| {
+                div()
+                    .w_full()
+                    .h(px(art_height))
+                    .mb(px(16.))
+                    .flex()
+                    .justify_center()
+                    .children(art.map(|art| {
+                        img(art)
+                            .h(px(art_height))
+                            .object_fit(gpui::ObjectFit::Contain)
+                    }))
+            }))
+            .when(!small, |this| {
+                this.child(
+                    div()
+                        .mb(px(4.))
+                        .text_center()
+                        .text_size(px(16.))
+                        .line_height(px(20.))
+                        .font_weight(FontWeight(600.))
+                        .text_color(mid("--white"))
+                        .child(dc_intl::t("epU4Ec")),
+                )
+            })
+            .when(!selected, |this| {
+                this.child(
+                    div()
+                        .when(!small, |this| this.pt(px(8.)))
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .child(
+                            button("hidden-stream-watch")
+                                .px(px(if small { 12. } else { 16. }))
+                                .text_size(px(if small { 14. } else { 16. }))
+                                .line_height(px(if small { 18. } else { 20. }))
+                                .font_weight(FontWeight(500.))
+                                .text_color(mid("--control-secondary-text-default"))
+                                .child(if width < 175. {
+                                    dc_intl::t("I6JG46")
+                                } else {
+                                    dc_intl::t("7Xq/nV")
+                                }),
+                        )
+                        .when(others_live, |this| {
+                            this.child(
+                                div().ml(px(8.)).child(
+                                    self.with_tip(
+                                        "hidden-stream-multiple-tip",
+                                        Tip::text(dc_intl::t("wCrzut"), Side::Top),
+                                        button("hidden-stream-multiple")
+                                            .w(px(height))
+                                            .on_click(cx.listener(move |this, _, _, cx| {
+                                                cx.stop_propagation();
+                                                if let Some(me) = me {
+                                                    this.watch_stream_with(me, true, cx);
+                                                }
+                                            }))
+                                            .child(icon(
+                                                "voice_view_eye_plus",
+                                                20.,
+                                                "--control-secondary-text-default",
+                                            )),
+                                        cx,
+                                    ),
+                                ),
+                            )
+                        }),
+                )
+            })
+            .into_any_element()
     }
 
     /// `Watch Stream` over a stream nobody here watches yet (module 555148: a secondary button; `Watch` under 175px).
@@ -2069,6 +2218,7 @@ impl Root {
         channel: Id,
         shown: bool,
         focus: Option<FocusCrumb>,
+        members: Option<usize>,
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let name = self
@@ -2138,6 +2288,7 @@ impl Root {
             )
             // Module 416528: the clips indicator, then the focused stream's quality and LIVE.
             .children(self.clips_enabled_badge(cx))
+            .children(members.map(|count| self.call_participants_button(count, cx)))
             .children(
                 focus
                     .filter(|crumb| crumb.stream)
@@ -2151,6 +2302,129 @@ impl Root {
                     cx,
                 ))
             })
+            .into_any_element()
+    }
+
+    /// The header's Participants button (module 772475: the 24px group icon and the count, `body-md/normal` 4px after
+    /// it, 24 high) and, while it is open, its popout (module 195007, `root_2NnKyB`: 240 wide, at most 260 high, on
+    /// `--background-surface-high` with 4px corners; the `Participants — N` header in 14px medium
+    /// `--interactive-text-default`, 16px around and 9 under; the voice user list in a scroller padded 16 with 8 at the
+    /// start and none on top). The popout opens under the button (`position: bottom`, 8px away), centred on it.
+    fn call_participants_button(&self, count: usize, cx: &mut Context<Self>) -> AnyElement {
+        const KEY: &str = "call-participants";
+        let open = self.vv.participants_open;
+        let button = div()
+            .id("call-participants-button")
+            .h(px(24.))
+            .flex()
+            .flex_row()
+            .items_center()
+            .cursor_pointer()
+            .text_color(mid(if open {
+                "--interactive-icon-active"
+            } else {
+                "--interactive-icon-default"
+            }))
+            .on_click(cx.listener(|this, _, _, cx| {
+                this.vv.participants_open = !this.vv.participants_open;
+                cx.notify();
+            }))
+            .child(icon(
+                "members",
+                24.,
+                if open {
+                    "--interactive-icon-active"
+                } else {
+                    "--interactive-icon-default"
+                },
+            ))
+            .child(
+                div()
+                    .ml(px(4.))
+                    .text_size(px(16.))
+                    .line_height(px(24.))
+                    .child(count.to_string()),
+            );
+        let tip = self.with_tip(
+            KEY,
+            Tip::text(dc_intl::t("jNqDh/"), Side::Bottom),
+            button,
+            cx,
+        );
+        let popout = open.then(|| {
+            let (guild, channel) = self.vv.shown_call;
+            let rows = self.voice_members_in(guild, channel, true, cx);
+            let total = self.stores.voice_members(guild, channel).len();
+            // A point under the button's centre, 8px below it; the popout hangs from it, kept inside the window.
+            div()
+                .absolute()
+                .top(px(32.))
+                .left(gpui::relative(0.5))
+                .size_0()
+                .child(
+                    deferred(
+                        gpui::anchored()
+                            .position_mode(gpui::AnchoredPositionMode::Local)
+                            .anchor(gpui::Anchor::TopCenter)
+                            .snap_to_window_with_margin(px(8.))
+                            .child(
+                                div()
+                                    .id("call-participants-popout")
+                                    .occlude()
+                                    .w(px(240.))
+                                    .max_h(px(260.))
+                                    .rounded(px(4.))
+                                    .bg(color("--background-surface-high"))
+                                    .flex()
+                                    .flex_col()
+                                    .on_mouse_down_out(cx.listener(
+                                        |this, event: &gpui::MouseDownEvent, _, cx| {
+                                            // A press on the button itself is its own toggle.
+                                            let on_button =
+                                                this.tip_anchors.borrow().get(KEY).is_some_and(
+                                                    |bounds| bounds.contains(&event.position),
+                                                );
+                                            if !on_button {
+                                                this.vv.participants_open = false;
+                                                cx.notify();
+                                            }
+                                        },
+                                    ))
+                                    .child(
+                                        div()
+                                            .p(px(16.))
+                                            .pb(px(9.))
+                                            .text_size(px(14.))
+                                            .font_weight(FontWeight(500.))
+                                            .text_color(color("--interactive-text-default"))
+                                            .child(dc_intl::format(
+                                                "e95u3C",
+                                                &[("count", (total as i64).into())],
+                                            )),
+                                    )
+                                    .child(
+                                        div()
+                                            .id("call-participants-scroller")
+                                            .overflow_y_scroll()
+                                            .pt(px(0.))
+                                            .pr(px(16.))
+                                            .pb(px(16.))
+                                            .pl(px(8.))
+                                            .flex()
+                                            .flex_col()
+                                            .children(rows),
+                                    ),
+                            ),
+                    )
+                    .with_priority(2),
+                )
+        });
+        div()
+            .relative()
+            .flex_none()
+            .mr(px(16.))
+            .child(tip)
+            .children(popout)
             .into_any_element()
     }
 
@@ -2626,7 +2900,7 @@ impl Root {
                                 this.unwatch_stream_of(owner, cx);
                             }
                         } else {
-                            this.leave_voice(cx);
+                            this.disconnect_from_call(cx);
                         }
                     }))
                     // Stop Watching is 958449 with `streamActive` (`useScreenshareLottie("disable")`), Disconnect
@@ -3412,7 +3686,7 @@ impl Root {
                     .inset_0()
                     .size_full(),
             )
-            .child(self.call_header(channel, true, None, cx))
+            .child(self.call_header(channel, true, None, None, cx))
             .child(
                 div()
                     .absolute()

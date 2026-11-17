@@ -3231,6 +3231,11 @@ impl Stores {
         settings::content_dismissed(&self.settings_raw, content)
     }
 
+    /// The account has an entrance sound for this guild, or one for every guild (module 984813 `mz`).
+    pub fn join_sound_set(&self, guild: Id) -> bool {
+        settings::join_sound_set(&self.settings_raw, guild)
+    }
+
     /// Empty until the account's settings have arrived, as `set_pref`.
     pub fn dismiss_content(&mut self, content: u16) -> String {
         if !self.settings_loaded {

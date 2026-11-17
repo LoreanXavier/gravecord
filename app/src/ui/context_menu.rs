@@ -102,6 +102,10 @@ pub(super) enum Act {
     PinChannel,
     Favorite,
     OpenChat,
+    /// "Join Without Entrance Sound" (module 217563 `join-muted-custom-join-sound`).
+    JoinQuiet,
+    /// "Report Stage" (module 304694): a live Stage's report.
+    ReportStage,
     HideNames,
     /// "Clear Channel Status" (module 671483 `clear-status`): `updateVoiceChannelStatus(id, "")`.
     ClearStatus,
@@ -206,7 +210,7 @@ impl Act {
     /// Every row kind once (`Correction` with its first index). `ordinal` is an exhaustive match, so adding a variant
     /// without listing it here fails the build or the `act_list_is_complete` test.
     #[cfg(test)]
-    pub(super) const ALL: [Act; 102] = [
+    pub(super) const ALL: [Act; 104] = [
         Act::InventoryAbout,
         Act::InventoryHide,
         Act::ReportApp,
@@ -232,6 +236,8 @@ impl Act {
         Act::PinChannel,
         Act::Favorite,
         Act::OpenChat,
+        Act::JoinQuiet,
+        Act::ReportStage,
         Act::HideNames,
         Act::ClearStatus,
         Act::CloseThread,
@@ -416,6 +422,8 @@ impl Act {
             Act::UnlockThread => 99,
             Act::PinPost => 100,
             Act::UnpinPost => 101,
+            Act::JoinQuiet => 102,
+            Act::ReportStage => 103,
         }
     }
 }
@@ -432,6 +440,7 @@ pub(super) fn status(act: Act) -> Status {
     use Status::Wired;
     match act {
         Act::PinDm | Act::Favorite | Act::MoveTo | Act::PinChannel | Act::HideNames => Wired,
+        Act::JoinQuiet | Act::ReportStage => Wired,
         Act::Apps => Wired,
         Act::ModView => Wired,
         Act::InventoryAbout
@@ -993,6 +1002,11 @@ pub(super) struct ChannelFacts {
     pub hide_names: bool,
     /// A voice channel with a status that the manager, outside the channel, may clear (module 671483).
     pub clear_status: bool,
+    /// Join Without Entrance Sound (module 217563): a voice or Stage channel the account may connect to and is not in,
+    /// with an entrance sound set for this guild or everywhere.
+    pub join_quiet: bool,
+    /// Report Stage (module 304694): a Stage channel whose Stage is live.
+    pub report_stage: bool,
 }
 
 pub(super) fn channel_items(facts: ChannelFacts, level: &str) -> Vec<Entry> {
@@ -1018,8 +1032,13 @@ pub(super) fn channel_items(facts: ChannelFacts, level: &str) -> Vec<Entry> {
     share.push(Row::new(Act::CopyLink, dc_intl::tr("Copy Link")));
     group(&mut out, share);
     if facts.voice {
-        // The status row sits between Open Chat and Hide Names (`voice-actions` of module 428631).
-        let mut voice = vec![Row::new(Act::OpenChat, dc_intl::tr("Open Chat"))];
+        // `voice-actions` of module 428631: Join Without Entrance Sound, Open Chat, the status row, Hide Names, then
+        // Report Stage.
+        let mut voice = Vec::new();
+        if facts.join_quiet {
+            voice.push(Row::new(Act::JoinQuiet, dc_intl::t("saLMWc")));
+        }
+        voice.push(Row::new(Act::OpenChat, dc_intl::tr("Open Chat")));
         if facts.clear_status {
             voice.push(Row::new(
                 Act::ClearStatus,
@@ -1027,6 +1046,13 @@ pub(super) fn channel_items(facts: ChannelFacts, level: &str) -> Vec<Entry> {
             ));
         }
         voice.push(Row::new(Act::HideNames, dc_intl::tr("Hide Names")).check(facts.hide_names));
+        if facts.report_stage {
+            voice.push(
+                Row::new(Act::ReportStage, dc_intl::t("JGj6Ci"))
+                    .icon("menu_flag")
+                    .danger(),
+            );
+        }
         group(&mut out, voice);
     }
     // A voice channel's menu has no Notification Settings (its capture, `voice-row`).
@@ -1062,6 +1088,48 @@ pub(super) fn channel_items(facts: ChannelFacts, level: &str) -> Vec<Entry> {
         );
     }
     if facts.developer {
+        group(
+            &mut out,
+            vec![Row::new(Act::CopyId, dc_intl::tr("Copy Channel ID"))],
+        );
+    }
+    tidy(out)
+}
+
+/// Module 113255 (`CHANNEL_ACTIVITY_FEED_VOICE_MENU`, "Channel Actions"): a voice channel's menu in Active Now. Edit
+/// Channel; Invite to Voice, Duplicate Channel, Create Voice Channel; Delete Channel; Copy Channel ID (the hooks of
+/// modules 317910, 475777, 533957, 477190, 307623 and 50268, each behind its own permission).
+pub(super) fn activity_voice_items(
+    can_manage: bool,
+    can_invite: bool,
+    developer: bool,
+) -> Vec<Entry> {
+    let mut out = Vec::new();
+    if can_manage {
+        group(
+            &mut out,
+            vec![Row::new(Act::EditChannel, dc_intl::tr("Edit Channel"))],
+        );
+    }
+    let mut actions = Vec::new();
+    if can_invite {
+        actions.push(Row::new(Act::Invite, dc_intl::tr("Invite to Voice")));
+    }
+    if can_manage {
+        actions.push(Row::new(Act::Duplicate, dc_intl::tr("Duplicate Channel")));
+        actions.push(Row::new(
+            Act::CreateChannel,
+            dc_intl::tr("Create Voice Channel"),
+        ));
+    }
+    group(&mut out, actions);
+    if can_manage {
+        group(
+            &mut out,
+            vec![Row::new(Act::DeleteChannel, dc_intl::tr("Delete Channel")).danger()],
+        );
+    }
+    if developer {
         group(
             &mut out,
             vec![Row::new(Act::CopyId, dc_intl::tr("Copy Channel ID"))],
@@ -1819,6 +1887,8 @@ pub(super) struct State {
     pub voice_row: bool,
     /// Module 107632 `showStageChannelItems: true` (Stage speaker or audience tile).
     pub stage_channel_items: bool,
+    /// The next channel menu is Active Now's voice channel menu (module 113255).
+    pub activity_voice: bool,
     /// Module 107632 `showChatItems: false` (Stage audience tile).
     pub omit_mention: bool,
     /// The game of the card whose "..." is open (`detected` of the Report Issue dialog).
@@ -2150,7 +2220,7 @@ impl Root {
     }
 
     /// The guild a channel belongs to.
-    fn guild_of_channel(&self, channel: Id) -> Option<Id> {
+    pub(super) fn guild_of_channel(&self, channel: Id) -> Option<Id> {
         self.stores.guilds.iter().find_map(|guild| {
             (guild.channels.iter().any(|known| known.id == channel)
                 || guild.threads.iter().any(|known| known.id == channel))
@@ -2448,6 +2518,11 @@ impl Root {
         self.context.voice_row = true;
     }
 
+    /// Marks the next `open_context_menu` of a channel as Active Now's (`handleChannelContextMenu`, module 113255).
+    pub(super) fn context_activity_voice(&mut self) {
+        self.context.activity_voice = true;
+    }
+
     /// Marks the next `open_context_menu` as opened for a Stage speaker tile (`showStageChannelItems: true`).
     pub(super) fn context_stage_tile(&mut self) {
         self.context.voice_row = true;
@@ -2472,6 +2547,7 @@ impl Root {
         let from_voice_row = std::mem::take(&mut self.context.voice_row);
         let stage_channel_items = std::mem::take(&mut self.context.stage_channel_items);
         let omit_mention = std::mem::take(&mut self.context.omit_mention);
+        let activity_voice = std::mem::take(&mut self.context.activity_voice);
         let items = match target {
             Target::SpotifyActivity { user, popout } => spotify_activity_items(
                 self.stores
@@ -2592,6 +2668,12 @@ impl Root {
                             })
                     });
                     category_items(unread, collapsed, can_manage, developer, level)
+                } else if activity_voice {
+                    activity_voice_items(
+                        can_manage,
+                        self.my_permission(guild, Some(&known), CREATE_INSTANT_INVITE),
+                        developer,
+                    )
                 } else if self.in_favorites() {
                     favorite_channel_items(self.has_unread_or_mentions(id), level)
                 } else {
@@ -2612,6 +2694,14 @@ impl Root {
                         can_invite: self.my_permission(guild, Some(&known), CREATE_INSTANT_INVITE),
                         developer,
                         hide_names: false,
+                        join_quiet: matches!(
+                            known.kind,
+                            ChannelKind::Voice | ChannelKind::Other(13)
+                        ) && !in_channel
+                            && self.my_permission(guild, Some(&known), permissions::CONNECT)
+                            && self.stores.join_sound_set(guild),
+                        report_stage: known.kind == ChannelKind::Other(13)
+                            && self.stores.stage_instances.get_by_channel(id).is_some(),
                     };
                     channel_items(facts, level)
                 }
@@ -3325,6 +3415,14 @@ impl Root {
                     }
                 }
             }
+            // Module 217563: the entrance sound is skipped (`SOUNDBOARD_MUTE_JOIN_SOUND`) and the channel joined. This
+            // client plays no entrance sounds, so the join is the plain one.
+            (Act::JoinQuiet, Target::Channel(channel)) => {
+                if let Some(guild) = self.guild_of_channel(channel) {
+                    self.join_voice(guild, channel, cx);
+                }
+            }
+            (Act::ReportStage, Target::Channel(channel)) => self.open_report_stage(channel, cx),
             (Act::OpenChat, Target::Channel(channel)) => {
                 if let Some(guild) = self.guild_of_channel(channel) {
                     self.select(guild, Some(channel));
@@ -5189,6 +5287,61 @@ mod tests {
             "All Messages",
         ));
         assert!(!without.iter().any(|label| label == "Clear Channel Status"));
+    }
+
+    #[test]
+    fn the_active_now_voice_menu_is_the_channel_actions_of_module_113255() {
+        assert_eq!(
+            labels(&activity_voice_items(true, true, true)),
+            [
+                "Edit Channel",
+                "-",
+                "Invite to Voice",
+                "Duplicate Channel",
+                "Create Voice Channel",
+                "-",
+                "Delete Channel",
+                "-",
+                "Copy Channel ID"
+            ]
+        );
+        assert_eq!(
+            labels(&activity_voice_items(false, true, false)),
+            ["Invite to Voice"]
+        );
+    }
+
+    #[test]
+    fn join_without_entrance_sound_leads_and_report_stage_ends_the_voice_actions() {
+        let all = labels(&channel_items(
+            ChannelFacts {
+                voice: true,
+                join_quiet: true,
+                report_stage: true,
+                ..ChannelFacts::default()
+            },
+            "All Messages",
+        ));
+        let quiet = all
+            .iter()
+            .position(|label| label == "Join Without Entrance Sound")
+            .unwrap();
+        assert_eq!(all[quiet + 1], "Open Chat");
+        assert_eq!(all[quiet + 2], "Hide Names");
+        assert_eq!(all[quiet + 3], "Report Stage");
+        let plain = labels(&channel_items(
+            ChannelFacts {
+                voice: true,
+                ..ChannelFacts::default()
+            },
+            "All Messages",
+        ));
+        assert!(
+            !plain
+                .iter()
+                .any(|label| label == "Join Without Entrance Sound")
+        );
+        assert!(!plain.iter().any(|label| label == "Report Stage"));
     }
 
     #[test]

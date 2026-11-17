@@ -683,6 +683,19 @@ impl Root {
             let row = div()
                 .id(SharedString::from(format!("active-now-voice-{channel_id}")))
                 .when(first, |row| row.parity("active-now-voice"))
+                // `handleChannelContextMenu` of module 596339: the voice channel's own menu (module 113255).
+                .on_mouse_up(
+                    gpui::MouseButton::Right,
+                    cx.listener(move |root, event: &gpui::MouseUpEvent, _, cx| {
+                        cx.stop_propagation();
+                        root.context_activity_voice();
+                        root.open_context_menu(
+                            super::context_menu::Target::Channel(channel_id),
+                            event.position,
+                            cx,
+                        );
+                    }),
+                )
                 .flex()
                 .items_center()
                 .gap(px(12.))

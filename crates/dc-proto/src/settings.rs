@@ -711,6 +711,23 @@ pub fn content_dismissed(current: &[u8], content: u16) -> bool {
         .is_some_and(|byte| byte & (1 << (content % 8)) != 0)
 }
 
+/// Whether the account has an entrance sound for `guild` (`mz` of module 984813): `guilds` (3) is `AllGuildSettings`,
+/// whose map `guilds` (1) holds entries of a fixed64 guild id (1) and a `GuildSettings` (2); `join_sound` (6) of the
+/// guild's entry, or else of the entry for guild `0` (the sound used everywhere).
+pub fn join_sound_set(current: &[u8], guild: u64) -> bool {
+    let Some((_, all)) = fields(current).find(|(number, _)| *number == 3) else {
+        return false;
+    };
+    let has_sound = |id: u64| {
+        fields(all)
+            .filter(|(number, _)| *number == 1)
+            .filter(|(_, entry)| fixed64_of(entry, 1).unwrap_or(0) == id)
+            .filter_map(|(_, entry)| fields(entry).find(|(number, _)| *number == 2))
+            .any(|(_, settings)| fields(settings).any(|(number, _)| number == 6))
+    };
+    has_sound(guild) || has_sound(0)
+}
+
 /// Carries the entire user_content message, sharing set_pref's whole-message patch construction.
 pub fn dismiss_content(current: &[u8], content: u16) -> (String, Vec<u8>) {
     let message = fields(current)
@@ -1565,6 +1582,37 @@ mod tests {
         assert_eq!(top[0].0, 4);
         assert!(super::fields(top[0].1).any(|(n, p)| n == 42 && p == b"preserve nested field"));
         assert_eq!(super::dismiss_content(&current, 133).1, current);
+    }
+
+    #[test]
+    fn entrance_sound_is_the_guilds_own_or_the_one_for_everywhere() {
+        let entry = |guild: u64, sound: bool| {
+            let mut settings = Vec::new();
+            if sound {
+                super::push_bytes_field(&mut settings, 6, &[]);
+            } else {
+                super::push_bytes_field(&mut settings, 5, &[1]);
+            }
+            let mut entry = Vec::new();
+            super::push_fixed64_field(&mut entry, 1, guild);
+            super::push_bytes_field(&mut entry, 2, &settings);
+            entry
+        };
+        let settings_with = |entries: &[Vec<u8>]| {
+            let mut all = Vec::new();
+            for entry in entries {
+                super::push_bytes_field(&mut all, 1, entry);
+            }
+            let mut current = Vec::new();
+            super::push_bytes_field(&mut current, 3, &all);
+            current
+        };
+        assert!(!super::join_sound_set(&[], 7));
+        let own = settings_with(&[entry(7, true), entry(8, false)]);
+        assert!(super::join_sound_set(&own, 7));
+        assert!(!super::join_sound_set(&own, 8));
+        let everywhere = settings_with(&[entry(0, true), entry(8, false)]);
+        assert!(super::join_sound_set(&everywhere, 8));
     }
     use super::*;
 

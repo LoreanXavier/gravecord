@@ -673,6 +673,81 @@ impl Root {
         const FIXTURE_VOICE: u64 = 1_568_692_565_136_375_901;
         match words {
             ["pending-watch"] => format!("pending watch {:?}; call {:?}",self.video.pending_watch,self.call.as_ref().map(|call|(call.guild,call.channel))),
+            // "Show Non-Video Participants" of the call's More menu, as its row sets it.
+            ["non-video", value @ ("on" | "off")] => {
+                super::voice_view::set_call_setting(super::voice_view::SHOW_NON_VIDEO, *value == "on");
+                cx.notify();
+                format!("show non-video participants={value}")
+            }
+            // A channel joined by id, through the same questions a click on its row asks (a Stage injected with `gw`
+            // in an inert run: the voice state is refused, so the call only exists here).
+            ["join-channel", id] => match id.parse::<u64>().ok().and_then(|id| {
+                self.guild_of_channel(id).map(|guild| (guild, id))
+            }) {
+                Some((guild, channel)) => {
+                    self.join_voice(guild, channel, cx);
+                    format!("join {channel}: alert {:?}", self.voice_alert)
+                }
+                None => "no such channel".to_owned(),
+            },
+            // Our own voice state in a channel, as the gateway would send it after a join (`speaker` or `audience`,
+            // a Stage's `suppress`), fed to the stores only.
+            ["self-in", id, role @ ("speaker" | "audience")] => {
+                let (Some(channel), Some(me)) = (
+                    id.parse::<u64>().ok(),
+                    self.stores.current_user.as_ref().map(|me| me.id),
+                ) else {
+                    return "no channel or user".to_owned();
+                };
+                let Some(guild) = self.guild_of_channel(channel) else {
+                    return "no such channel".to_owned();
+                };
+                let session = self.stores.session_id.clone().unwrap_or_default();
+                self.update(
+                    crate::net::Update::Dispatch {
+                        name: "VOICE_STATE_UPDATE".to_owned(),
+                        data: serde_json::json!({
+                            "guild_id": guild.to_string(),
+                            "channel_id": channel.to_string(),
+                            "user_id": me.to_string(),
+                            "session_id": session,
+                            "suppress": *role == "audience",
+                        }),
+                    },
+                    cx,
+                );
+                format!("in {channel} as {role}")
+            }
+            // The Stage view's leave button.
+            ["leave-stage"] => match self.call.as_ref().map(|call| (call.guild, call.channel)) {
+                Some((guild, channel)) => {
+                    self.leave_stage_or_ask(guild, channel, cx);
+                    format!("leave: alert {:?}", self.voice_alert)
+                }
+                None => "not in a call".to_owned(),
+            },
+            // "Show My Screen Share" of the call's More menu, off or on, for the call's channel.
+            ["own-stream-hidden", value @ ("on" | "off")] => match self.call.as_ref().map(|call| call.channel) {
+                Some(channel) => {
+                    super::call_menus::set_own_stream_hidden(channel, *value == "on");
+                    cx.notify();
+                    format!("own stream hidden={value}")
+                }
+                None => "not in a call".to_owned(),
+            },
+            // Streamer Mode with Hide Personal Information, as their switches set them, on this run's storage.
+            ["streamer", "on"] => {
+                let me = self.stores.current_user.as_ref().map(|me| me.id);
+                crate::notifications::set_switch("streaming_enable_streamer_mode", true, me);
+                crate::notifications::set_switch("streamer_mode_hide_personal_information", true, me);
+                cx.notify();
+                format!("streamer mode on, hides personal information={}", self.streamer_hides_personal())
+            }
+            ["participants", "open"] => {
+                self.vv.participants_open = true;
+                cx.notify();
+                "participants popout open".to_owned()
+            }
             ["ptt-mode", value @ ("on" | "off")] => {
                 if self.kb_push_to_talk() != (*value == "on") {
                     self.kb_toggle_voice_mode();
@@ -1366,6 +1441,9 @@ impl Root {
         info!(status = ?update.status, viewers = update.viewers, "stream status");
         let key = update.key;
         if let StreamStatus::Ended(reason) = update.status {
+            if reason == EndReason::StreamFull {
+                self.stream_was_full(key.to_string(), cx);
+            }
             if let Some(live) = self.video.streams.remove(&key) {
                 live.controls.stop();
                 if tell_gateway && reason != EndReason::StreamFull {
