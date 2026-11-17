@@ -97,9 +97,11 @@ impl Accounts {
             Some(existing) => *existing = entry,
             None => self.users.push(entry),
         }
-        if self.users.len() > MAX_ACCOUNTS {
+        // Five, or what the UnlimitedAccounts plugin allows.
+        let most = super::plugin_hooks::max_accounts();
+        if self.users.len() > most {
             self.users
-                .split_off(MAX_ACCOUNTS)
+                .split_off(most)
                 .into_iter()
                 .map(|account| account.id)
                 .collect()
@@ -396,7 +398,8 @@ impl Root {
             .rounded(px(8.))
             .bg(color("--interactive-background-hover"))
             .children(cards);
-        let full = self.account_switcher.accounts.users.len() >= MAX_ACCOUNTS;
+        let full =
+            self.account_switcher.accounts.users.len() >= super::plugin_hooks::max_accounts();
         let spec = modal::Spec {
             id: "manage-accounts",
             title: "Manage Accounts".into(),
@@ -687,6 +690,11 @@ impl Root {
                     self.account_switcher.accounts.users.len()
                 )
             }
+            ["manage"] => {
+                self.account_switcher.manage = true;
+                cx.notify();
+                "accounts: manage open".into()
+            }
             ["toast", name] => {
                 self.put_app_toast(format!("Switched to {name}"), true, cx);
                 "accounts: toast".into()
@@ -700,7 +708,7 @@ impl Root {
                 }
                 Err(_) => "usage: accounts switch <id>".into(),
             },
-            _ => "usage: accounts fake|toast|switch".into(),
+            _ => "usage: accounts fake|manage|toast|switch".into(),
         }
     }
 }

@@ -146,7 +146,9 @@ fn status_tint(status: &str) -> &'static str {
 /// high), or as module 264701's CSS dots (`2r` discs `2.5 r` apart). `enter` (0..1) is the spring dots'
 /// `dotPosition`: they slide out of the middle while they appear.
 fn dots(r: f32, tint: &str, css: bool, enter: f32) -> AnyElement {
-    let focused = motion::window_active();
+    // Not in the pinned client: the NoTypingAnimation plugin (Vencord `src/plugins/noTypingAnimation`) draws the dots
+    // as an unfocused window does, still and whole, and asks for no animation frames.
+    let focused = motion::window_active() && !crate::plugin_on!("NoTypingAnimation");
     let now = motion::now();
     let middle = (2. * r * 3. + r / 4. * 2.) / 2.;
     let mut row = div()
@@ -185,7 +187,7 @@ fn dots(r: f32, tint: &str, css: bool, enter: f32) -> AnyElement {
 /// `dotRadius` 3.5, themed (`--text-default`).
 pub(super) fn chat_dots(css: bool) -> AnyElement {
     if css {
-        let focused = motion::window_active();
+        let focused = motion::window_active() && !crate::plugin_on!("NoTypingAnimation");
         let dot = |index: usize| {
             let (opacity, scale) = motion::typing_dot(index, focused);
             div()

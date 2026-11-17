@@ -1,0 +1,148 @@
+//! Built-in plugins: Rust ports of the Vencord and Equicord plugins the owner keeps enabled. Not part of the pinned
+//! client. Each one is a switchable feature with its own settings, listed under the settings sidebar's Gravecord
+//! group (`ui/settings/mods.rs`). Every plugin is off until it is turned on, except the ones whose definition says
+//! otherwise, and the master switch on the Gravecord page turns them all off at once.
+//!
+//! The behaviour follows the original plugins, read in `Vendicated/Vencord` (`src/plugins`) and `Equicord/Equicord`
+//! (`src/equicordplugins`), both GPL-3.0-or-later like gravecord. Each definition names the file it was read from.
+//! The code is a native rewrite: there are no webpack patches, so a Discord update cannot break a port the way it
+//! breaks a JS patch, and the plugins ship and update with the app (see `DECISIONS.md`, "Built-in plugins").
+//!
+//! The state is one JSON object in `storage.json` under `plugins`. Code that a plugin changes asks [`on`] at the
+//! place it acts, so a switch takes effect on the next frame without a restart.
+
+mod backup;
+pub(crate) mod clear_urls;
+mod registry;
+mod state;
+
+pub(crate) use backup::{Report, export, import};
+pub(crate) use registry::{DEFS, Def, Kind, Setting, def};
+pub(crate) use state::State;
+
+use serde_json::Value;
+use std::sync::{OnceLock, RwLock};
+
+/// The `storage.json` key that holds [`State`].
+const STORAGE_KEY: &str = "plugins";
+
+fn cell() -> &'static RwLock<State> {
+    static CELL: OnceLock<RwLock<State>> = OnceLock::new();
+    CELL.get_or_init(|| {
+        // Unit tests never read the owner's storage: they start from the defaults.
+        let saved = if cfg!(test) {
+            None
+        } else {
+            crate::storage::get(STORAGE_KEY)
+        };
+        RwLock::new(saved.map_or_else(State::default, |value| State::from_value(&value)))
+    })
+}
+
+/// A copy of the current state, for the settings pages.
+pub(crate) fn snapshot() -> State {
+    cell().read().map(|state| state.clone()).unwrap_or_default()
+}
+
+/// The plugin is turned on and the master switch is on.
+pub(crate) fn on(id: &str) -> bool {
+    cell().read().is_ok_and(|state| state.is_on(id))
+}
+
+/// A setting of a plugin: the stored value when it is valid for the setting, else its default.
+pub(crate) fn value(id: &str, key: &str) -> Value {
+    cell()
+        .read()
+        .map(|state| state.value(id, key))
+        .unwrap_or(Value::Null)
+}
+
+pub(crate) fn text(id: &str, key: &str) -> String {
+    match value(id, key) {
+        Value::String(text) => text,
+        _ => String::new(),
+    }
+}
+
+pub(crate) fn flag(id: &str, key: &str) -> bool {
+    value(id, key).as_bool().unwrap_or(false)
+}
+
+pub(crate) fn number(id: &str, key: &str) -> f64 {
+    value(id, key).as_f64().unwrap_or(0.)
+}
+
+/// Changes the state and writes it through to `storage.json` (a harness run keeps it in memory, see `storage`).
+pub(crate) fn update(change: impl FnOnce(&mut State)) {
+    let Ok(mut state) = cell().write() else {
+        return;
+    };
+    change(&mut state);
+    if !cfg!(test) {
+        crate::storage::set(STORAGE_KEY, state.to_value());
+    }
+}
+
+/// The plugin is on: [`on`] for a plugin known at compile time, named once so a typo cannot pass silently.
+#[macro_export]
+macro_rules! plugin_on {
+    ($id:literal) => {{
+        const _: () = assert!($crate::plugins::registry_has($id), "no such plugin");
+        $crate::plugins::on($id)
+    }};
+}
+
+/// Whether a plugin of this id is defined (usable in constant context).
+pub(crate) const fn registry_has(id: &str) -> bool {
+    let mut index = 0;
+    while index < DEFS.len() {
+        if const_eq(DEFS[index].id, id) {
+            return true;
+        }
+        index += 1;
+    }
+    false
+}
+
+const fn const_eq(left: &str, right: &str) -> bool {
+    let (left, right) = (left.as_bytes(), right.as_bytes());
+    if left.len() != right.len() {
+        return false;
+    }
+    let mut index = 0;
+    while index < left.len() {
+        if left[index] != right[index] {
+            return false;
+        }
+        index += 1;
+    }
+    true
+}
+
+/// The text sent for a message, after the plugins that rewrite outgoing text (`onBeforeMessageSend` and
+/// `onBeforeMessageEdit` in Vencord's MessageEvents API).
+pub(crate) fn outgoing(content: &str) -> String {
+    let mut content = content.to_owned();
+    if on("ClearURLs") {
+        content = clear_urls::clean_message(&content);
+    }
+    content
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_registry_check_finds_known_ids_only() {
+        assert!(registry_has("ClearURLs"));
+        assert!(!registry_has("ClearURL"));
+        assert!(!registry_has(""));
+    }
+
+    #[test]
+    fn outgoing_text_is_unchanged_while_every_plugin_is_off() {
+        let text = "see https://example.com/?utm_source=x";
+        assert_eq!(outgoing(text), text);
+    }
+}

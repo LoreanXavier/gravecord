@@ -46,6 +46,8 @@ sha2 = "0.10"
 # Standard stickers are Lottie JSON (module 148355 draws them with lottie-web); rasterlottie (MIT OR Apache-2.0) draws
 # them on the CPU, as Serein does (DECISIONS.md).
 rasterlottie = { version = "=0.2.2", default-features = false }
+# The ClearURLs plugin runs the ClearURLs project's rules (plugins/clear_urls.rs); both crates are already in the tree.
+regex = "1"
 openh264.workspace = true
 reqwest.workspace = true
 serde.workspace = true
@@ -55,6 +57,7 @@ tokio.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true
 tts = "0.26"
+url.workspace = true
 # Styled display names (Nitro name effects) are drawn from glyph outlines: ttf-parser (MIT OR Apache-2.0, already pulled in by
 # gpui) reads the outlines, tiny-skia (BSD-3-Clause, already pulled in by rasterlottie) fills and strokes them.
 ttf-parser = { version = "=0.25.1", default-features = false, features = ["std"] }

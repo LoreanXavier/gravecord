@@ -1823,7 +1823,9 @@ impl Root {
         let (min, max, value) = match slide {
             Slide::UserVolume(user) => {
                 let factor = self.context.mix.get(&user).map_or(1., |mix| mix.0);
-                (0, 200, amplitude_to_perceptual(factor, 200))
+                // 200, or more with the VolumeBooster plugin.
+                let top = super::plugin_hooks::user_volume_max();
+                (0, top, amplitude_to_perceptual(factor, top))
             }
             Slide::StreamVolume(owner) => (
                 0,
@@ -1848,7 +1850,7 @@ impl Root {
                 on_change: std::rc::Rc::new(move |this, value, cx| {
                     match slide {
                         Slide::UserVolume(user) => {
-                            let amp = perceptual_to_amplitude(value, 200);
+                            let amp = perceptual_to_amplitude(value, max);
                             let muted = this.context.mix.get(&user).is_some_and(|mix| mix.1);
                             this.set_user_mix(user, amp, muted);
                         }

@@ -26,6 +26,7 @@ pub(in crate::ui) mod gift_redeem;
 mod keybinds;
 mod languages;
 mod model;
+mod mods;
 pub(super) mod nitro_page;
 mod notifications_page;
 mod overlay_page;
@@ -94,6 +95,10 @@ pub(super) enum Page {
     ConnectedApps,
     Developer,
     LogOut,
+    /// The Gravecord group (`mods.rs`): built-in plugins, not in the pinned client.
+    Mods,
+    Plugins,
+    Backup,
 }
 
 /// Every page that is drawn from the generated rows.
@@ -212,9 +217,26 @@ const SECTIONS: &[(Option<&str>, &[Entry])] = &[
     ),
 ];
 
+/// The Gravecord group: built-in plugins (`mods.rs`, `crate::plugins`), which the pinned client does not have. It
+/// goes after the official groups and before Developer and Log Out, so the official entries above it keep their
+/// places.
+const MOD_SECTION: (Option<&str>, &[Entry]) = (
+    Some("Gravecord"),
+    &[
+        entry(Page::Mods, "Gravecord", "mods"),
+        entry(Page::Plugins, "Plugins", "plugins"),
+        entry(Page::Backup, "Backup & Restore", "backup"),
+    ],
+);
+
+/// The sidebar's groups: the official ones with the Gravecord group before the last.
+fn sections() -> impl Iterator<Item = &'static (Option<&'static str>, &'static [Entry])> {
+    let (head, tail) = SECTIONS.split_at(SECTIONS.len() - 1);
+    head.iter().chain(std::iter::once(&MOD_SECTION)).chain(tail)
+}
+
 fn label_of(page: Page) -> &'static str {
-    SECTIONS
-        .iter()
+    sections()
         .flat_map(|(_, entries)| entries.iter())
         .find(|entry| entry.page == page)
         .map_or("", |entry| entry.label)
@@ -1024,6 +1046,7 @@ impl Root {
         self.settings = Some(Open::new(Page::Account));
         self.guild_search_ready(cx);
         self.settings_search_ready(cx);
+        self.plugin_search_ready(cx);
         self.gift_field_ready(cx);
         // The settings pages' own pictures go first: the Nitro reads below queue dozens of pictures for the Nitro
         // pages, and the theme card's banner waited behind them for one to three seconds.
@@ -1040,8 +1063,7 @@ impl Root {
     /// Opens settings on the page with this sidebar label ("Data & Privacy", "Server Boost").
     pub(super) fn open_settings_section(&mut self, label: &str, cx: &mut Context<Self>) {
         self.open_settings(cx);
-        let page = SECTIONS
-            .iter()
+        let page = sections()
             .flat_map(|(_, entries)| entries.iter())
             .filter(|entry| entry.page != Page::Clips || self.clips_listed())
             .find(|entry| entry.label == label)
@@ -1060,8 +1082,7 @@ impl Root {
         cx: &mut Context<Self>,
     ) {
         self.open_settings(cx);
-        let entry = SECTIONS
-            .iter()
+        let entry = sections()
             .flat_map(|(_, entries)| entries.iter())
             .filter(|entry| entry.page != Page::Clips || self.clips_listed())
             .find(|entry| entry.label == page_label);
@@ -1084,8 +1105,7 @@ impl Root {
     /// Opens settings on the page whose label, lower case with dashes, is `slug`: "data-privacy", "voice-video".
     pub(crate) fn open_settings_page(&mut self, slug: &str, cx: &mut Context<Self>) {
         self.open_settings(cx);
-        let page = SECTIONS
-            .iter()
+        let page = sections()
             .flat_map(|(_, entries)| entries.iter())
             .filter(|entry| entry.page != Page::Clips || self.clips_listed())
             .find(|entry| page_slug(entry.label) == slug)
@@ -1113,8 +1133,7 @@ impl Root {
             return;
         };
         if open.page == page {
-            let entry = SECTIONS
-                .iter()
+            let entry = sections()
                 .flat_map(|(_, entries)| entries.iter())
                 .find(|entry| entry.page == page);
             let first = entry.and_then(|entry| anchors_of(entry).into_iter().next());
@@ -1771,8 +1790,7 @@ impl Root {
             (entry.page != Page::Clips || self.clips_listed())
                 && search::page_matches(entry.page, entry.label, &query)
         };
-        let visible: Vec<_> = SECTIONS
-            .iter()
+        let visible: Vec<_> = sections()
             .filter(|(_, entries)| entries.iter().any(|entry| kept(&entry)))
             .collect();
         let no_results = visible.is_empty();
@@ -2260,6 +2278,9 @@ impl Root {
                 None => self.account_page(cx),
             },
             Page::Clips => self.clips_page(window, cx),
+            Page::Mods => self.mods_page(cx),
+            Page::Plugins => self.plugins_page(window, cx),
+            Page::Backup => self.backup_page(cx),
             page => pages::nodes(page)
                 .iter()
                 .map(|node| {

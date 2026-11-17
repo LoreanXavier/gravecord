@@ -201,6 +201,7 @@ mod perf;
 mod permission_spec;
 mod picker;
 mod pins;
+mod plugin_hooks;
 mod plaintext_extensions;
 mod poll;
 mod popout_roles;
@@ -3519,7 +3520,8 @@ impl Root {
                         let _ = this.requests.send(Request::Edit {
                             channel,
                             message,
-                            content: content.clone(),
+                            // Built-in plugins that rewrite outgoing text (ClearURLs).
+                            content: crate::plugins::outgoing(content),
                         });
                     }
                     this.end_edit(window, cx);
@@ -3641,6 +3643,8 @@ impl Root {
         if self.screening_pending() {
             return;
         }
+        // Built-in plugins that rewrite outgoing text (ClearURLs).
+        let content = crate::plugins::outgoing(&content);
         let staged = self.sticker_ui.take_staged();
         if content.is_empty() && self.pending_files.is_empty() && staged.is_none() {
             return;
@@ -7683,6 +7687,17 @@ impl Root {
                             MouseButton::Right,
                             cx.listener(move |this, event: &gpui::MouseUpEvent, _, cx| {
                                 this.open_menu(menu::Anchor::Pointer(event.position), id, own, cx);
+                            }),
+                        )
+                    })
+                    // Not in the pinned client: the MessageClickActions plugin's double-click (`plugin_hooks.rs`).
+                    .when(!is_starter && editing.is_none(), |this| {
+                        this.on_mouse_down(
+                            MouseButton::Left,
+                            cx.listener(move |this, event: &gpui::MouseDownEvent, window, cx| {
+                                if event.click_count == 2 {
+                                    this.message_double_clicked(id, event.modifiers, window, cx);
+                                }
                             }),
                         )
                     })

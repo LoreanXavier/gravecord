@@ -26,6 +26,7 @@ mod palette;
 mod parity;
 #[cfg(feature = "capture")]
 mod perf;
+mod plugins;
 mod rive;
 mod rpc;
 mod send_policy;

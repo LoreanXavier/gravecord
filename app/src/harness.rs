@@ -949,6 +949,15 @@ pub async fn run(
                 let page = (*page).to_owned();
                 root.update(cx, |root, cx| root.open_settings_page(&page, cx));
             }
+            // Built-in plugins (`ui/settings/mods.rs`): state, switches, settings, an unfolded card, an import.
+            ["plugin", rest @ ..] => {
+                let line = root.update(cx, |root, cx| {
+                    let line = root.script_plugin(rest);
+                    cx.notify();
+                    line
+                });
+                let _ = writeln!(output, "plugin: {line}");
+            }
             // `settings-url`: the last address a settings link or connection button would have opened.
             ["settings-url"] => {
                 let url = root.update(cx, |root, _| root.settings_last_url());
