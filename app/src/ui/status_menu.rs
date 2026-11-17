@@ -450,8 +450,9 @@ impl Root {
                     .flex()
                     .items_center()
                     .gap(px(9.33))
-                    .child(
-                        div()
+                    .child({
+                        let (shown, concealed) = self.profile_username(&user);
+                        let line = div()
                             .id("status-popout-username")
                             .cursor_pointer()
                             .hover(|style| style.underline())
@@ -462,8 +463,23 @@ impl Root {
                             .text_size(px(14.))
                             .line_height(px(18.))
                             .text_color(color("--text-strong"))
-                            .child(user.username.clone()),
-                    )
+                            .child(shown);
+                        // Module 297413: a concealed name carries "Streamer Mode Enabled".
+                        if concealed {
+                            self.with_tip(
+                                "status-popout-username-streamer",
+                                super::tooltip::Tip::text(
+                                    dc_intl::t("Br1ls3"),
+                                    super::tooltip::Side::Top,
+                                ),
+                                line,
+                                cx,
+                            )
+                            .into_any_element()
+                        } else {
+                            line.into_any_element()
+                        }
+                    })
                     .when(!badges.is_empty(), |this| {
                         this.child(
                             div()

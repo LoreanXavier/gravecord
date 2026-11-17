@@ -1075,6 +1075,48 @@ pub(super) fn channel_items(facts: ChannelFacts, level: &str) -> Vec<Entry> {
     tidy(out)
 }
 
+/// Module 113255 (`CHANNEL_ACTIVITY_FEED_VOICE_MENU`, "Channel Actions"): a voice channel's menu in Active Now. Edit
+/// Channel; Invite to Voice, Duplicate Channel, Create Voice Channel; Delete Channel; Copy Channel ID (the hooks of
+/// modules 317910, 475777, 533957, 477190, 307623 and 50268, each behind its own permission).
+pub(super) fn activity_voice_items(
+    can_manage: bool,
+    can_invite: bool,
+    developer: bool,
+) -> Vec<Entry> {
+    let mut out = Vec::new();
+    if can_manage {
+        group(
+            &mut out,
+            vec![Row::new(Act::EditChannel, dc_intl::tr("Edit Channel"))],
+        );
+    }
+    let mut actions = Vec::new();
+    if can_invite {
+        actions.push(Row::new(Act::Invite, dc_intl::tr("Invite to Voice")));
+    }
+    if can_manage {
+        actions.push(Row::new(Act::Duplicate, dc_intl::tr("Duplicate Channel")));
+        actions.push(Row::new(
+            Act::CreateChannel,
+            dc_intl::tr("Create Voice Channel"),
+        ));
+    }
+    group(&mut out, actions);
+    if can_manage {
+        group(
+            &mut out,
+            vec![Row::new(Act::DeleteChannel, dc_intl::tr("Delete Channel")).danger()],
+        );
+    }
+    if developer {
+        group(
+            &mut out,
+            vec![Row::new(Act::CopyId, dc_intl::tr("Copy Channel ID"))],
+        );
+    }
+    tidy(out)
+}
+
 /// The menu of the Favorites star (frame menus2/favorites-rail-menu).
 pub(super) fn favorites_items() -> Vec<Entry> {
     let mut out = vec![Entry::Row(
@@ -1705,6 +1747,8 @@ pub(super) struct State {
     pub voice_row: bool,
     /// Module 107632 `showStageChannelItems: true` (Stage speaker or audience tile).
     pub stage_channel_items: bool,
+    /// The next channel menu is Active Now's voice channel menu (module 113255).
+    pub activity_voice: bool,
     /// Module 107632 `showChatItems: false` (Stage audience tile).
     pub omit_mention: bool,
     /// The game of the card whose "..." is open (`detected` of the Report Issue dialog).
@@ -2334,6 +2378,11 @@ impl Root {
         self.context.voice_row = true;
     }
 
+    /// Marks the next `open_context_menu` of a channel as Active Now's (`handleChannelContextMenu`, module 113255).
+    pub(super) fn context_activity_voice(&mut self) {
+        self.context.activity_voice = true;
+    }
+
     /// Marks the next `open_context_menu` as opened for a Stage speaker tile (`showStageChannelItems: true`).
     pub(super) fn context_stage_tile(&mut self) {
         self.context.voice_row = true;
@@ -2358,6 +2407,7 @@ impl Root {
         let from_voice_row = std::mem::take(&mut self.context.voice_row);
         let stage_channel_items = std::mem::take(&mut self.context.stage_channel_items);
         let omit_mention = std::mem::take(&mut self.context.omit_mention);
+        let activity_voice = std::mem::take(&mut self.context.activity_voice);
         let items = match target {
             Target::SpotifyActivity { user, popout } => spotify_activity_items(
                 self.stores
@@ -2477,6 +2527,12 @@ impl Root {
                             })
                     });
                     category_items(unread, collapsed, can_manage, developer, level)
+                } else if activity_voice {
+                    activity_voice_items(
+                        can_manage,
+                        self.my_permission(guild, Some(&known), CREATE_INSTANT_INVITE),
+                        developer,
+                    )
                 } else if self.in_favorites() {
                     favorite_channel_items(self.has_unread_or_mentions(id), level)
                 } else {
@@ -5036,6 +5092,28 @@ mod tests {
             "All Messages",
         ));
         assert!(!without.iter().any(|label| label == "Clear Channel Status"));
+    }
+
+    #[test]
+    fn the_active_now_voice_menu_is_the_channel_actions_of_module_113255() {
+        assert_eq!(
+            labels(&activity_voice_items(true, true, true)),
+            [
+                "Edit Channel",
+                "-",
+                "Invite to Voice",
+                "Duplicate Channel",
+                "Create Voice Channel",
+                "-",
+                "Delete Channel",
+                "-",
+                "Copy Channel ID"
+            ]
+        );
+        assert_eq!(
+            labels(&activity_voice_items(false, true, false)),
+            ["Invite to Voice"]
+        );
     }
 
     #[test]

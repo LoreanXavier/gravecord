@@ -19,6 +19,17 @@ pub(in crate::ui) fn applies(enabled: bool, option: bool) -> bool {
     enabled && option
 }
 
+/// `getUserTag` of module 427262 while personal information is hidden: a username without a legacy discriminator shows
+/// its first letter and an ellipsis (`o`), which `isNameConcealed` recognises by its length of two.
+pub(in crate::ui) fn concealed_tag(
+    username: &str,
+    discriminator: &str,
+    hide: bool,
+) -> Option<String> {
+    let first = username.chars().next()?;
+    (hide && (discriminator == "0" || discriminator == "0000")).then(|| format!("{first}\u{2026}"))
+}
+
 impl Root {
     fn streamer_option(&self, key: &str) -> bool {
         let user = self.stores.current_user.as_ref().map(|user| user.id);
@@ -30,6 +41,19 @@ impl Root {
 
     pub(in crate::ui) fn streamer_hides_personal(&self) -> bool {
         self.streamer_option("streamer_mode_hide_personal_information")
+    }
+
+    /// A profile's username line as DiscordTag (module 297413) draws it with `forceUsername`: under Streamer Mode's
+    /// Hide Personal Information it is the concealed tag, and `true` asks for the "Streamer Mode Enabled" tooltip.
+    pub(in crate::ui) fn profile_username(&self, user: &dc_state::User) -> (String, bool) {
+        match concealed_tag(
+            &user.username,
+            &user.discriminator,
+            self.streamer_hides_personal(),
+        ) {
+            Some(tag) => (tag, true),
+            None => (user.username.clone(), false),
+        }
     }
 
     pub(in crate::ui) fn streamer_hides_invites(&self) -> bool {
@@ -105,5 +129,16 @@ mod tests {
         assert_eq!(auto_toggle(true, 1), Some(true));
         assert_eq!(auto_toggle(true, 0), Some(false));
         assert_eq!(auto_toggle(false, 3), None);
+    }
+
+    #[test]
+    fn hidden_personal_information_conceals_a_unique_username() {
+        assert_eq!(
+            concealed_tag("onugeccen", "0", true).as_deref(),
+            Some("o\u{2026}")
+        );
+        assert_eq!(concealed_tag("onugeccen", "0", false), None);
+        // A legacy tag keeps its username (`getUserTag` returns it bare).
+        assert_eq!(concealed_tag("old", "1234", true), None);
     }
 }

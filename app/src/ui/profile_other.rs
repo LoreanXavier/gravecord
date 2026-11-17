@@ -438,8 +438,9 @@ impl Root {
                     .text_size(px(14.))
                     .line_height(px(18.))
                     .text_color(strong)
-                    .child(
-                        div()
+                    .child({
+                        let (shown, concealed) = self.profile_username(&user);
+                        let line = div()
                             .id("popout-username")
                             .cursor_pointer()
                             .hover(|style| style.underline())
@@ -447,8 +448,23 @@ impl Root {
                                 this.profile = None;
                                 this.open_full_profile(id, window, cx);
                             }))
-                            .child(user.username.clone()),
-                    )
+                            .child(shown);
+                        // Module 297413: a concealed name carries "Streamer Mode Enabled".
+                        if concealed {
+                            self.with_tip(
+                                "popout-username-streamer",
+                                super::tooltip::Tip::text(
+                                    dc_intl::t("Br1ls3"),
+                                    super::tooltip::Side::Top,
+                                ),
+                                line,
+                                cx,
+                            )
+                            .into_any_element()
+                        } else {
+                            line.into_any_element()
+                        }
+                    })
                     .when_some(pronouns, |this, pronouns| {
                         this.child(div().size(px(4.)).rounded_full().bg(strong))
                             .child(pronouns)

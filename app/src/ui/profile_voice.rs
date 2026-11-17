@@ -141,7 +141,11 @@ impl Root {
                                                         .font_weight(FontWeight(600.))
                                                         .text_color(strong)
                                                         .child(icon(
-                                                            "channel_type_voice",
+                                                            if stage {
+                                                                "stage_channel"
+                                                            } else {
+                                                                "channel_type_voice"
+                                                            },
                                                             12.,
                                                             "--text-strong",
                                                         ))
@@ -166,33 +170,37 @@ impl Root {
                         )
                         // `actions_Bu4Al8`: the 4px-margin button row (module 70963): Open Voice/Stage for the
                         // channel this client is in, Join Voice/Stage for another; none without Connect.
-                        .when(can_connect, |this| this.child(
-                            div().mt(px(4.)).child(
-                                div()
-                                    .id(SharedString::from(format!("popout-open-voice-{target}")))
-                                    .cursor_pointer()
-                                    .h(px(32.))
-                                    .rounded(px(8.))
-                                    .bg(color("--control-secondary-background-default"))
-                                    .flex()
-                                    .items_center()
-                                    .justify_center()
-                                    .text_size(px(14.))
-                                    .line_height(px(18.))
-                                    .font_weight(FontWeight(500.))
-                                    .text_color(color("--control-secondary-text-default"))
-                                    .child(label)
-                                    .on_click(cx.listener(move |this, _, _, cx| {
-                                        this.profile = None;
-                                        if joined {
-                                            this.select(guild_id, Some(target));
-                                        } else {
-                                            this.join_voice(guild_id, target, cx);
-                                        }
-                                        cx.notify();
-                                    })),
-                            ),
-                        )),
+                        .when(can_connect, |this| {
+                            this.child(
+                                div().mt(px(4.)).child(
+                                    div()
+                                        .id(SharedString::from(format!(
+                                            "popout-open-voice-{target}"
+                                        )))
+                                        .cursor_pointer()
+                                        .h(px(32.))
+                                        .rounded(px(8.))
+                                        .bg(color("--control-secondary-background-default"))
+                                        .flex()
+                                        .items_center()
+                                        .justify_center()
+                                        .text_size(px(14.))
+                                        .line_height(px(18.))
+                                        .font_weight(FontWeight(500.))
+                                        .text_color(color("--control-secondary-text-default"))
+                                        .child(label)
+                                        .on_click(cx.listener(move |this, _, _, cx| {
+                                            this.profile = None;
+                                            if joined {
+                                                this.select(guild_id, Some(target));
+                                            } else {
+                                                this.join_voice(guild_id, target, cx);
+                                            }
+                                            cx.notify();
+                                        })),
+                                ),
+                            )
+                        }),
                 )
                 .into_any_element(),
         )

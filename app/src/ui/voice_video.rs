@@ -726,6 +726,23 @@ impl Root {
                 }
                 None => "not in a call".to_owned(),
             },
+            // "Show My Screen Share" of the call's More menu, off or on, for the call's channel.
+            ["own-stream-hidden", value @ ("on" | "off")] => match self.call.as_ref().map(|call| call.channel) {
+                Some(channel) => {
+                    super::call_menus::set_own_stream_hidden(channel, *value == "on");
+                    cx.notify();
+                    format!("own stream hidden={value}")
+                }
+                None => "not in a call".to_owned(),
+            },
+            // Streamer Mode with Hide Personal Information, as their switches set them, on this run's storage.
+            ["streamer", "on"] => {
+                let me = self.stores.current_user.as_ref().map(|me| me.id);
+                crate::notifications::set_switch("streaming_enable_streamer_mode", true, me);
+                crate::notifications::set_switch("streamer_mode_hide_personal_information", true, me);
+                cx.notify();
+                format!("streamer mode on, hides personal information={}", self.streamer_hides_personal())
+            }
             ["participants", "open"] => {
                 self.vv.participants_open = true;
                 cx.notify();

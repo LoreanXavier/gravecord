@@ -440,7 +440,12 @@ struct Participant {
     deaf: bool,
     speaking: bool,
     tile: Candidate,
+    /// Our own stream with Show My Screen Share off: `HIDDEN_STREAM` (module 568598), drawn as module 256195.
+    hidden: bool,
 }
+
+/// The art of a hidden stream's tile (module 913516).
+const HIDDEN_STREAM_ART: &str = "https://discord.com/assets/4e2cd55089053b35.svg";
 
 /// The fade of `gradientTop_rTsZa_` / `gradientBottom_rTsZa_`: black down to nothing over 160px.
 const FADE: [(f32, f32); 13] = [
@@ -736,9 +741,10 @@ impl Root {
                     || (!is_me && super::call_menus::video_disabled(state.user_id)),
                 connected: false,
             };
-            // Show My Screen Share off (module 666328): our own stream's tile is hidden from our own view only.
+            // Show My Screen Share off (module 666328): our own stream's tile stays, as the hidden stream of module
+            // 568598 (`isSelfStreamHidden` makes it `HIDDEN_STREAM`).
             let hidden_stream = is_me && super::call_menus::own_stream_hidden(channel);
-            if going_live && !hidden_stream {
+            if going_live {
                 out.push(Participant {
                     user: user.clone(),
                     mute,
@@ -749,6 +755,7 @@ impl Root {
                         connected: stream.is_some(),
                         ..tile.clone()
                     },
+                    hidden: hidden_stream,
                 });
             }
             out.push(Participant {
@@ -757,6 +764,7 @@ impl Root {
                 deaf,
                 speaking,
                 tile,
+                hidden: false,
             });
         }
         out
@@ -1253,6 +1261,9 @@ impl Root {
         if card {
             self.request_image(ART_URL.to_owned(), ART_URL.to_owned());
         }
+        if people.iter().any(|person| person.hidden) {
+            self.request_image(HIDDEN_STREAM_ART.to_owned(), HIDDEN_STREAM_ART.to_owned());
+        }
         let mut tiles: Vec<AnyElement> = people
             .iter()
             .map(|person| self.tile(person, layout, cx))
@@ -1520,7 +1531,7 @@ impl Root {
         let outside = self.vv.outside;
         let media = self.tile_media_for(person);
         let video = matches!(media, TileMedia::Video(_));
-        let waiting = stream_tile && stream.is_none();
+        let waiting = stream_tile && stream.is_none() && !person.hidden;
         let loading = if stream_tile {
             stream.is_some() && !video
         } else {
@@ -1686,8 +1697,13 @@ impl Root {
                     },
                 ))
             })
-            .child(self.tile_media(media, person, layout))
-            .when(loading, |this| this.child(spinner()))
+            .when(!person.hidden, |this| {
+                this.child(self.tile_media(media, person, layout))
+            })
+            .when(person.hidden, |this| {
+                this.child(self.hidden_stream_content(layout, is_focus, cx))
+            })
+            .when(loading && !person.hidden, |this| this.child(spinner()))
             .when(waiting, |this| {
                 let (guild, channel) = self.vv.shown_call;
                 this.children(
@@ -1856,6 +1872,134 @@ impl Root {
                 None => div().into_any_element(),
             },
         }
+    }
+
+    /// Module 256195 over a hidden stream (`content_6DCDRW streamHidden_6DCDRW`: `--primary-700`, a column), through
+    /// module 200749 (4px of padding): the art (`art_3rN_rc`, none under 400 wide, 88 high under 1000, else 134, 16
+    /// under it), "This stream has been hidden." (`body-md/semibold`, white, 4 under it; not under 195 wide), then,
+    /// unless the tile is selected, Watch Stream (`Watch` under 175, `sm` under 195; 8px above it from 195) and, while
+    /// someone else streams, the eye that watches several streams (8px after it). Watch Stream has no handler of its
+    /// own: a press goes to the tile.
+    fn hidden_stream_content(
+        &self,
+        layout: GridLayout,
+        selected: bool,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let width = layout.tile_width;
+        let small = width < 195.;
+        let art_height = if width < 400. {
+            None
+        } else if width < 1000. {
+            Some(88.)
+        } else {
+            Some(134.)
+        };
+        let art = self.images.get(HIDDEN_STREAM_ART).cloned();
+        let me = self.stores.current_user.as_ref().map(|me| me.id);
+        let (guild, channel) = self.vv.shown_call;
+        let others_live = self
+            .stores
+            .voice_members(guild, channel)
+            .iter()
+            .any(|state| state.self_stream && Some(state.user_id) != me);
+        let height = if small { 32. } else { 40. };
+        let button = |id: &'static str| {
+            div()
+                .id(id)
+                .h(px(height))
+                .rounded(px(8.))
+                .border_1()
+                .border_color(mid("--control-secondary-border-default"))
+                .bg(mid("--control-secondary-background-default"))
+                .hover(|style| style.bg(mid("--control-secondary-background-hover")))
+                .flex()
+                .items_center()
+                .justify_center()
+                .cursor_pointer()
+        };
+        div()
+            .absolute()
+            .inset_0()
+            .overflow_hidden()
+            .bg(mid("--primary-700"))
+            .p(px(4.))
+            .flex()
+            .flex_col()
+            .items_center()
+            .justify_center()
+            .children(art_height.map(|art_height| {
+                div()
+                    .w_full()
+                    .h(px(art_height))
+                    .mb(px(16.))
+                    .flex()
+                    .justify_center()
+                    .children(art.map(|art| {
+                        img(art)
+                            .h(px(art_height))
+                            .object_fit(gpui::ObjectFit::Contain)
+                    }))
+            }))
+            .when(!small, |this| {
+                this.child(
+                    div()
+                        .mb(px(4.))
+                        .text_center()
+                        .text_size(px(16.))
+                        .line_height(px(20.))
+                        .font_weight(FontWeight(600.))
+                        .text_color(mid("--white"))
+                        .child(dc_intl::t("epU4Ec")),
+                )
+            })
+            .when(!selected, |this| {
+                this.child(
+                    div()
+                        .when(!small, |this| this.pt(px(8.)))
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .child(
+                            button("hidden-stream-watch")
+                                .px(px(if small { 12. } else { 16. }))
+                                .text_size(px(if small { 14. } else { 16. }))
+                                .line_height(px(if small { 18. } else { 20. }))
+                                .font_weight(FontWeight(500.))
+                                .text_color(mid("--control-secondary-text-default"))
+                                .child(if width < 175. {
+                                    dc_intl::t("I6JG46")
+                                } else {
+                                    dc_intl::t("7Xq/nV")
+                                }),
+                        )
+                        .when(others_live, |this| {
+                            this.child(
+                                div().ml(px(8.)).child(
+                                    self.with_tip(
+                                        "hidden-stream-multiple-tip",
+                                        Tip::text(dc_intl::t("wCrzut"), Side::Top),
+                                        button("hidden-stream-multiple")
+                                            .w(px(height))
+                                            .on_click(cx.listener(move |this, _, _, cx| {
+                                                cx.stop_propagation();
+                                                if let Some(me) = me {
+                                                    this.watch_stream_with(me, true, cx);
+                                                }
+                                            }))
+                                            .child(icon(
+                                                "voice_view_eye_plus",
+                                                20.,
+                                                "--control-secondary-text-default",
+                                            )),
+                                        cx,
+                                    ),
+                                ),
+                            )
+                        }),
+                )
+            })
+            .into_any_element()
     }
 
     /// `Watch Stream` over a stream nobody here watches yet (module 555148: a secondary button; `Watch` under 175px).

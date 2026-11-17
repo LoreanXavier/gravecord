@@ -2001,7 +2001,7 @@ pub(super) fn own_stream_hidden(channel: Id) -> bool {
         .is_some_and(|stored| stored[channel.to_string()].as_bool() == Some(true))
 }
 
-fn set_own_stream_hidden(channel: Id, on: bool) {
+pub(super) fn set_own_stream_hidden(channel: Id, on: bool) {
     let mut stored =
         crate::storage::get(OWN_STREAM_HIDDEN).unwrap_or_else(|| serde_json::json!({}));
     if let Some(map) = stored.as_object_mut() {
