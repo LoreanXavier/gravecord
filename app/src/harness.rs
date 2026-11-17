@@ -426,6 +426,19 @@ pub async fn run(
                     cx.update(|cx| root.update(cx, |root, cx| root.script_context(kind, cx)));
                 let _ = writeln!(output, "{note}");
             }
+            // Capture only: `full-profile <user id> [board|activity|wishlist]` opens that person's full profile.
+            ["full-profile", user, rest @ ..] => {
+                let user = user.parse::<u64>().unwrap_or(0);
+                let tab = rest.first().copied();
+                let note = cx.update(|cx| {
+                    window.update(cx, |_, window, cx| {
+                        root.update(cx, |root, cx| {
+                            root.script_full_profile(user, tab, window, cx)
+                        })
+                    })
+                });
+                let _ = writeln!(output, "{note:?}");
+            }
             // Capture only: `menu-run <row label with _ for spaces>` runs a row of the open message menu.
             ["menu-run", label] => {
                 let label = label.replace('_', " ");

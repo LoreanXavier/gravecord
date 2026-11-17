@@ -8,7 +8,7 @@
 
 use super::friends::{RELATIONSHIP_FRIEND, RELATIONSHIP_INCOMING, RELATIONSHIP_OUTGOING};
 use super::profile_editor::save::{PersonalSection, WidgetData, parse_widgets};
-use super::profile_editor::widgets::{featured_app, tag_choices, widget_data_title};
+use super::profile_editor::widgets::{featured_app, widget_data_title};
 use super::profile_menu::Which;
 use super::{Root, avatar_source, color};
 use crate::editor::{Editor, EditorEvent, EditorStyle};
@@ -50,11 +50,80 @@ pub(super) fn profile_tabs(body: Option<&Value>, other: bool) -> Vec<Tab> {
     if !other || body.is_some_and(|body| !super::shop::data::wishlist_ids(body).is_empty()) {
         tabs.push(Tab::Wishlist);
     }
-    if other {
+    if other && !body.is_some_and(stub_profile) {
         tabs.push(Tab::Friends);
         tabs.push(Tab::Servers);
     }
     tabs
+}
+
+/// Module 776879: a profile with nothing to show (empty bio and pronouns, no banner or accent colour key, no badges,
+/// and private flags equal to the public ones) gets no mutual tabs.
+fn stub_profile(body: &Value) -> bool {
+    let profile = &body["user_profile"];
+    let empty = |key: &str| profile[key].as_str().is_none_or(str::is_empty);
+    let user = &body["user"];
+    empty("bio")
+        && empty("pronouns")
+        && profile.get("banner").is_none()
+        && profile.get("accent_color").is_none()
+        && user["flags"] == user["public_flags"]
+        && body["badges"].as_array().is_none_or(Vec::is_empty)
+}
+
+/// The mutual counts of a profile answer: friends (`mutual_friends_count`, else the list) and servers.
+pub(super) fn mutual_counts(body: Option<&Value>) -> (Option<usize>, Option<usize>) {
+    let Some(body) = body else {
+        return (None, None);
+    };
+    let friends = body["mutual_friends_count"]
+        .as_u64()
+        .map(|count| count as usize)
+        .or_else(|| body["mutual_friends"].as_array().map(Vec::len));
+    (friends, body["mutual_guilds"].as_array().map(Vec::len))
+}
+
+/// Module 837531: Mutual Friends while unknown, No Mutual Friends at none, else the count.
+pub(super) fn mutual_friends_label(count: Option<usize>) -> String {
+    match count {
+        None => dc_intl::t!("0mTJ3j").to_owned(),
+        Some(0) => dc_intl::t!("n9g3ay").to_owned(),
+        Some(count) => dc_intl::t!("5s9jl+", count = count).to_string(),
+    }
+}
+
+/// Module 186272: Mutual Servers while unknown, No Mutual Servers at none, else the count.
+pub(super) fn mutual_servers_label(count: Option<usize>) -> String {
+    match count {
+        None => dc_intl::t!("4lTDZq").to_owned(),
+        Some(0) => dc_intl::t!("jpY0X5").to_owned(),
+        Some(count) => dc_intl::t!("eE3oep", count = count).to_string(),
+    }
+}
+
+/// `si` / `sl` of module 927071: the empty Mutual Friends / Mutual Servers tab's heading and one of its five lines
+/// (`r7` / `r4`, sampled once per opening; here chosen by the person's id so a reopening keeps it).
+pub(super) fn mutual_empty_text(servers: bool, user: Id) -> (&'static str, &'static str) {
+    let friends = [
+        dc_intl::t!("madJdE"),
+        dc_intl::t!("NYmfoP"),
+        dc_intl::t!("R2PaCg"),
+        dc_intl::t!("laSR8h"),
+        dc_intl::t!("DnsJE8"),
+    ];
+    let guilds = [
+        dc_intl::t!("nFSbeE"),
+        dc_intl::t!("gTcxOz"),
+        dc_intl::t!("8T0wYj"),
+        dc_intl::t!("BIHl1g"),
+        dc_intl::t!("jhBm0+"),
+    ];
+    let pick = (user % 5) as usize;
+    if servers {
+        (dc_intl::t!("bFgqYJ"), guilds[pick])
+    } else {
+        (dc_intl::t!("RnD2yZ"), friends[pick])
+    }
 }
 
 pub(super) struct FullProfile {
@@ -66,7 +135,21 @@ pub(super) struct FullProfile {
     pub(super) note: Entity<Editor>,
     /// The note as last saved, so a blur only writes a change.
     saved_note: String,
+    /// Board widgets whose Show more was pressed (`t9`'s `expanded`), by widget key.
+    board_expanded: std::collections::HashSet<String>,
     _events: Subscription,
+}
+
+impl FullProfile {
+    pub(super) fn board_is_expanded(&self, key: &str) -> bool {
+        self.board_expanded.contains(key)
+    }
+
+    pub(super) fn toggle_board_expanded(&mut self, key: &str) {
+        if !self.board_expanded.remove(key) {
+            self.board_expanded.insert(key.to_owned());
+        }
+    }
 }
 
 /// `PLAYED_GAME` and `LISTENED_SESSION` in `ContentInventoryEntryType`.
@@ -622,6 +705,30 @@ fn parse_custom_status(activities: &[Value]) -> Option<CustomStatus> {
 }
 
 impl Root {
+    /// Capture only: `full-profile <user> [board|activity|wishlist]` opens someone's full profile, on a tab when named.
+    #[cfg(feature = "capture")]
+    pub(crate) fn script_full_profile(
+        &mut self,
+        user: Id,
+        tab: Option<&str>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> String {
+        let tab = match tab {
+            Some("board") => Some(Tab::Board),
+            Some("activity") => Some(Tab::Activity),
+            Some("wishlist") => Some(Tab::Wishlist),
+            Some("friends") => Some(Tab::Friends),
+            Some("servers") => Some(Tab::Servers),
+            _ => None,
+        };
+        match tab {
+            Some(tab) => self.open_full_profile_tab(user, tab, window, cx),
+            None => self.open_full_profile(user, window, cx),
+        }
+        format!("full-profile: open for {user}")
+    }
+
     /// The profile on one of its tabs: the Mutual Friends and Mutual Servers links open it there.
     pub(super) fn open_full_profile_tab(
         &mut self,
@@ -682,6 +789,7 @@ impl Root {
             explicit: false,
             note,
             saved_note: String::new(),
+            board_expanded: std::collections::HashSet::new(),
             _events: events,
         });
         for (key, route) in [
@@ -1510,6 +1618,7 @@ impl Root {
         user: Id,
         me: bool,
         palette: &super::dm_profile::Palette,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let strong: Hsla = palette.token("--text-strong").into();
@@ -1522,139 +1631,105 @@ impl Root {
                 .and_then(Value::as_array)
                 .and_then(|games| games.iter().find(|game| game["id"].as_str() == Some(id)))
         };
-        let tag_map = tag_choices();
-        let card_bg = palette.token("--user-profile-overlay-background");
-        let border = palette.token("--border-muted");
         let tile_bg = palette.tile_background(false);
-        let pill_bg = palette.pill_background(false);
+        let visitor = !me;
+        let content_width = super::profile_board::FULL_PROFILE_CARD_CONTENT;
+        let expanded = self
+            .full_profile
+            .as_ref()
+            .map(|open| open.board_expanded.clone())
+            .unwrap_or_default();
+        let game_name = |id: &str| {
+            game(id)
+                .and_then(|item| item["name"].as_str())
+                .filter(|name| !name.is_empty())
+                .map_or_else(
+                    || {
+                        let resolved = self.profile_editor_resolve_game(id);
+                        if resolved.name == id {
+                            dc_intl::t!("GIWFlF").to_owned()
+                        } else {
+                            resolved.name
+                        }
+                    },
+                    str::to_owned,
+                )
+        };
         let widgets: Vec<AnyElement> = body
             .map(parse_widgets)
             .unwrap_or_default()
             .into_iter()
             .filter(|widget| widget.data.is_valid())
-            .map(|widget| {
+            .enumerate()
+            .map(|(index, widget)| {
                 let title = widget_data_title(&widget.data);
+                let key = widget.data.unique_key();
+                let open = expanded.contains(&key);
                 let content: AnyElement = match &widget.data {
-                    WidgetData::FavoriteGames { games }
-                    | WidgetData::CurrentGames { games }
-                    | WidgetData::WantToPlayGames { games }
-                    | WidgetData::PlayedGames { games } => {
-                        let rows: Vec<AnyElement> = games
+                    // `ns` / `na` of module 720060: game detail cards, Games in Rotation cut to two.
+                    WidgetData::FavoriteGames { games } | WidgetData::CurrentGames { games } => {
+                        let limit = if matches!(widget.data, WidgetData::CurrentGames { .. }) {
+                            super::profile_board::CARD_LIST_LIMIT
+                        } else {
+                            1
+                        };
+                        let shown = if open {
+                            games.len()
+                        } else {
+                            games.len().min(limit)
+                        };
+                        let cards: Vec<AnyElement> = games
                             .iter()
+                            .take(shown)
                             .map(|entry| {
-                                let fetched = game(&entry.game_id);
-                                let resolved = self.profile_editor_resolve_game(&entry.game_id);
-                                let name = fetched
-                                    .and_then(|item| item["name"].as_str())
-                                    .filter(|name| !name.is_empty())
-                                    .map_or(resolved.name, str::to_owned);
-                                let picture = self
-                                    .images
-                                    .get(&format!("profile-game:{}", entry.game_id))
-                                    .cloned()
-                                    .or_else(|| {
-                                        resolved
-                                            .cover
-                                            .as_deref()
-                                            .and_then(|url| self.images.get(url).cloned())
-                                    })
-                                    .or_else(|| {
-                                        resolved
-                                            .icon
-                                            .as_deref()
-                                            .and_then(|url| self.images.get(url).cloned())
-                                    });
-                                let comment = entry
-                                    .comment
-                                    .as_deref()
-                                    .map(str::trim)
-                                    .filter(|text| !text.is_empty())
-                                    .map(str::to_owned);
-                                let tag_chips: Vec<AnyElement> = entry
-                                    .tags
-                                    .iter()
-                                    .filter_map(|tag_id| {
-                                        let label = tag_map
-                                            .iter()
-                                            .find(|(id, _)| id == tag_id)
-                                            .map(|(_, label)| *label)?;
-                                        Some(
-                                            div()
-                                                .px(px(6.))
-                                                .py(px(2.))
-                                                .rounded(px(4.))
-                                                .border_1()
-                                                .border_color(border)
-                                                .bg(pill_bg)
-                                                .text_size(px(12.))
-                                                .line_height(px(16.))
-                                                .text_color(default)
-                                                .child(label)
-                                                .into_any_element(),
-                                        )
-                                    })
-                                    .collect();
-                                div()
-                                    .flex()
-                                    .items_start()
-                                    .gap(px(12.))
-                                    .child(
-                                        div()
-                                            .w(px(56.))
-                                            .h(px(74.66))
-                                            .flex_none()
-                                            .rounded(px(8.))
-                                            .overflow_hidden()
-                                            .bg(tile_bg)
-                                            .children(picture.map(|picture| {
-                                                img(picture)
-                                                    .w(px(56.))
-                                                    .h(px(74.66))
-                                                    .object_fit(gpui::ObjectFit::Cover)
-                                            })),
-                                    )
-                                    .child(
-                                        div()
-                                            .flex_1()
-                                            .min_w(px(0.))
-                                            .flex()
-                                            .flex_col()
-                                            .gap(px(4.))
-                                            .child(
-                                                div()
-                                                    .text_size(px(16.))
-                                                    .line_height(px(20.))
-                                                    .font_weight(FontWeight(600.))
-                                                    .text_color(strong)
-                                                    .child(name),
-                                            )
-                                            .when(!tag_chips.is_empty(), |this| {
-                                                this.child(
-                                                    div()
-                                                        .flex()
-                                                        .flex_wrap()
-                                                        .gap(px(4.))
-                                                        .children(tag_chips),
-                                                )
-                                            })
-                                            .when_some(comment, |this, comment| {
-                                                this.child(
-                                                    div()
-                                                        .text_size(px(14.))
-                                                        .line_height(px(18.))
-                                                        .text_color(default)
-                                                        .child(comment),
-                                                )
-                                            }),
-                                    )
-                                    .into_any_element()
+                                self.board_game_card(
+                                    &key,
+                                    entry,
+                                    game_name(&entry.game_id),
+                                    content_width,
+                                    palette,
+                                    window,
+                                    cx,
+                                )
                             })
                             .collect();
                         div()
                             .flex()
                             .flex_col()
-                            .gap(px(10.))
-                            .children(rows)
+                            .gap(px(12.))
+                            .children(cards)
+                            .when(games.len() > limit, |this| {
+                                this.child(self.board_show_more(key.clone(), open, palette, cx))
+                            })
+                            .into_any_element()
+                    }
+                    // `nI` / `nE`: a cover grid of eight, then Show more.
+                    WidgetData::WantToPlayGames { games } | WidgetData::PlayedGames { games } => {
+                        let limit = super::profile_board::COVER_GRID_LIMIT;
+                        let shown = if open {
+                            games.len()
+                        } else {
+                            games.len().min(limit)
+                        };
+                        let (_, gap) = super::profile_board::game_grid(content_width);
+                        let (cover, _) = super::profile_board::cover_size(content_width);
+                        div()
+                            .flex()
+                            .flex_col()
+                            .gap(px(8.))
+                            .child(div().flex().flex_wrap().gap(px(gap)).children(
+                                games.iter().take(shown).map(|entry| {
+                                    self.board_game_cover(
+                                        &entry.game_id,
+                                        &game_name(&entry.game_id),
+                                        cover,
+                                        palette,
+                                    )
+                                }),
+                            ))
+                            .when(games.len() > limit, |this| {
+                                this.child(self.board_show_more(key.clone(), open, palette, cx))
+                            })
                             .into_any_element()
                     }
                     WidgetData::Application { application_id } => {
@@ -1809,18 +1884,16 @@ impl Root {
                         .child(dc_intl::t!("pb2Was", numClips = clips.len()))
                         .into_any_element(),
                 };
-                div()
-                    .p(px(16.))
-                    .rounded(px(16.))
-                    .border_1()
-                    .border_color(border)
-                    .bg(card_bg)
-                    .flex()
-                    .flex_col()
-                    .gap(px(12.))
-                    .child(Self::section_heading(title, subtle))
-                    .child(content)
-                    .into_any_element()
+                self.board_widget_frame(
+                    user,
+                    index,
+                    widget.id.as_deref(),
+                    title,
+                    visitor,
+                    content,
+                    palette,
+                    cx,
+                )
             })
             .collect();
         if widgets.is_empty() {
@@ -1898,11 +1971,12 @@ impl Root {
                 })
                 .into_any_element();
         }
+        // `scroller_9onezO`: 12px between widgets.
         div()
             .pt(px(20.))
             .flex()
             .flex_col()
-            .gap(px(16.))
+            .gap(px(12.))
             .children(widgets)
             .into_any_element()
     }
@@ -2388,11 +2462,15 @@ impl Root {
                 ))
             })
             .collect();
+        let (friend_count, server_count) = mutual_counts(body);
         let display_name = open_guild
             .and_then(|guild| self.stores.members.get(guild, id))
             .and_then(|member| member.nick.as_deref())
             .filter(|nick| !nick.is_empty())
             .map_or_else(|| user.display_name().to_owned(), str::to_owned);
+        // `p?.private` (module 927071): the notice of module 501193 under the names.
+        let private_profile = !me && body.is_some_and(|body| body["private"] == true);
+        let private_name = display_name.clone();
         let for_guild = open_guild.is_some_and(|guild| {
             body.is_some_and(|body| {
                 body["guild_member_profile"].is_object()
@@ -2771,6 +2849,12 @@ impl Root {
                             .flex_col()
                             .gap(px(24.))
                             .child(names)
+                            .when(private_profile, |this| {
+                                this.child(super::profile_board::private_notice(
+                                    &private_name,
+                                    &palette,
+                                ))
+                            })
                             .child(buttons)
                             .when_some(bio, |this, bio| {
                                 this.child(section(None).child(self.bio(&bio, default, cx)))
@@ -2866,18 +2950,49 @@ impl Root {
             .when(tab_list.contains(&Tab::Wishlist), |this| {
                 this.child(tab_item(Tab::Wishlist, dc_intl::t!("7lZ31J").to_owned()))
             })
-            .when(!friends.is_empty(), |this| {
-                this.child(tab_item(
-                    Tab::Friends,
-                    dc_intl::t!("5s9jl+", count = friends.len()),
-                ))
+            // `e3`: both mutual tabs for anyone else, labelled by their counts (modules 837531, 186272).
+            .when(tab_list.contains(&Tab::Friends), |this| {
+                this.child(tab_item(Tab::Friends, mutual_friends_label(friend_count)))
             })
-            .when(!servers.is_empty(), |this| {
-                this.child(tab_item(
-                    Tab::Servers,
-                    dc_intl::t!("eE3oep", count = servers.len()),
-                ))
+            .when(tab_list.contains(&Tab::Servers), |this| {
+                this.child(tab_item(Tab::Servers, mutual_servers_label(server_count)))
             });
+        // `sn`: the empty tab's heading (`heading-sm/medium` `text-strong`) over one line (`body-sm/normal`), centred,
+        // at most 320px wide (`empty_7q_A1n`, `textContainer_7q_A1n`).
+        let mutual_empty = |servers: bool| {
+            let (heading, line) = mutual_empty_text(servers, id);
+            div()
+                .size_full()
+                .min_h(px(240.))
+                .flex()
+                .flex_col()
+                .items_center()
+                .justify_center()
+                .child(
+                    div()
+                        .max_w(px(320.))
+                        .flex()
+                        .flex_col()
+                        .gap(px(8.))
+                        .text_center()
+                        .child(
+                            div()
+                                .text_size(px(16.))
+                                .line_height(px(20.))
+                                .font_weight(FontWeight(500.))
+                                .text_color(strong)
+                                .child(heading),
+                        )
+                        .child(
+                            div()
+                                .text_size(px(14.))
+                                .line_height(px(18.))
+                                .text_color(default)
+                                .child(line),
+                        ),
+                )
+                .into_any_element()
+        };
         let now_ms = chrono::Utc::now().timestamp_millis();
         let row_hover = palette.token("--user-profile-background-hover");
         let dot_cutout = palette.theme.map_or("--background-base-lower", |t| {
@@ -2885,7 +3000,7 @@ impl Root {
         });
         let tile_bg = palette.tile_background(false);
         let panel: AnyElement = match tab {
-            Tab::Board => self.full_profile_board(id, me, &palette, cx),
+            Tab::Board => self.full_profile_board(id, me, &palette, window, cx),
             Tab::Wishlist => wishlist_panel.unwrap_or_else(|| div().into_any_element()),
             Tab::Activity => {
                 let current = self.live_activity_cards(
@@ -2918,6 +3033,8 @@ impl Root {
                     })
                     .into_any_element()
             }
+            Tab::Friends if friend_count == Some(0) => mutual_empty(false),
+            Tab::Servers if server_count == Some(0) => mutual_empty(true),
             Tab::Friends => div()
                 .pt(px(20.))
                 .flex()
@@ -3076,6 +3193,9 @@ impl Root {
                         ),
                     ))
             });
+        let top_band = geo
+            .sys_pad
+            .max(if private_profile { PRIVATE_BANNER } else { 0. });
         let modal = div()
             .parity("full-profile")
             .id("full-profile")
@@ -3099,13 +3219,45 @@ impl Root {
             .children(palette.modal_backdrop())
             .children(top_banner_backdrop)
             .on_click(|_, _, cx| cx.stop_propagation())
+            // anner_B_p0HC in the modal (module 312381): a 48px band across the top, the lock (xs) and Private
+            // Profile in ody-sm/semibold, 4px apart; the content and the close button move below it
+            // (hasPrivateBanner_ZhNJfE, max(system bar, 48px)).
+            .when(private_profile, |this| {
+                this.child(
+                    div()
+                        .absolute()
+                        .top_0()
+                        .left_0()
+                        .right_0()
+                        .h(px(PRIVATE_BANNER))
+                        .bg(palette.token("--background-surface-higher"))
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .gap(px(4.))
+                        .text_color(palette.token("--text-default"))
+                        .child(
+                            svg()
+                                .path("icons/access_lock.svg")
+                                .size(px(16.))
+                                .text_color(palette.token("--text-default")),
+                        )
+                        .child(
+                            div()
+                                .text_size(px(14.))
+                                .line_height(px(18.))
+                                .font_weight(FontWeight(600.))
+                                .child(dc_intl::t!("KPnd2O")),
+                        ),
+                )
+            })
             .child(
                 div()
                     .relative()
                     .size_full()
                     .flex()
                     .flex_col()
-                    .pt(px(geo.pad + geo.sys_pad))
+                    .pt(px(geo.pad + top_band))
                     .pl(px(geo.pad))
                     .pr(px(geo.pad - 16.))
                     .child(columns),
@@ -3114,7 +3266,7 @@ impl Root {
                 div()
                     .id("full-profile-close")
                     .absolute()
-                    .top(px(geo.close_top))
+                    .top(px(geo.close_top - geo.sys_pad + top_band))
                     .right(px(8.))
                     .size(px(32.))
                     .rounded(px(8.))
@@ -3158,6 +3310,9 @@ impl Root {
         )
     }
 }
+
+/// --custom-modal-v2-private-banner-height with hasPrivateBanner_ZhNJfE (--space-48).
+const PRIVATE_BANNER: f32 = 48.;
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 struct ModalGeometry {
@@ -3203,9 +3358,9 @@ fn full_profile_modal_geometry(vw: f32, vh: f32) -> ModalGeometry {
 #[cfg(test)]
 mod tests {
     use super::{
-        Tab, full_profile_modal_geometry, parse_connected_accounts, parse_custom_status,
-        profile_date, profile_route, profile_tabs, should_apply_guild_member, time_ago,
-        wishlist_is_private,
+        Tab, full_profile_modal_geometry, mutual_counts, mutual_empty_text, mutual_friends_label,
+        mutual_servers_label, parse_connected_accounts, parse_custom_status, profile_date,
+        profile_route, profile_tabs, should_apply_guild_member, time_ago, wishlist_is_private,
     };
     use serde_json::json;
 
@@ -3230,6 +3385,7 @@ mod tests {
         assert!(!profile_tabs(Some(&empty_fav), true).contains(&Tab::Wishlist));
 
         let valid_fav_and_wishlist = json!({
+            "user_profile": {"bio": "", "pronouns": "", "banner": null, "accent_color": null},
             "widgets": [{"id": "1", "data": {"type": "favorite_games", "games": [{"game_id": "1001"}]}}],
             "wishlist_settings": {"wl-1": {"visibility": 1}}
         });
@@ -3243,6 +3399,30 @@ mod tests {
                 Tab::Servers
             ]
         );
+    }
+
+    #[test]
+    fn mutual_tabs_show_for_others_with_their_counts_and_hide_on_a_stub_profile() {
+        let none = json!({
+            "user": {"flags": 0, "public_flags": 0},
+            "user_profile": {"bio": "", "pronouns": "", "banner": null, "accent_color": null},
+            "badges": [], "mutual_friends": [], "mutual_guilds": [{"id": "1"}, {"id": "2"}]
+        });
+        assert!(profile_tabs(Some(&none), true).contains(&Tab::Friends));
+        assert_eq!(mutual_counts(Some(&none)), (Some(0), Some(2)));
+        assert_eq!(mutual_counts(None), (None, None));
+        assert_eq!(mutual_friends_label(Some(0)), "No Mutual Friends");
+        assert_eq!(mutual_servers_label(Some(0)), "No Mutual Servers");
+        assert_eq!(mutual_servers_label(Some(2)), "2 Mutual Servers");
+        assert_eq!(mutual_friends_label(None), "Mutual Friends");
+        let counted = json!({"mutual_friends_count": 3, "mutual_friends": []});
+        assert_eq!(mutual_counts(Some(&counted)).0, Some(3));
+        // No banner or accent colour key at all, nothing else either: module 776879's empty profile.
+        let stub = json!({"user": {"flags": 0, "public_flags": 0}, "user_profile": {"bio": "", "pronouns": ""}});
+        assert!(!profile_tabs(Some(&stub), true).contains(&Tab::Friends));
+        let (heading, line) = mutual_empty_text(true, 7);
+        assert!(!heading.is_empty() && !line.is_empty());
+        assert_eq!(mutual_empty_text(false, 7), mutual_empty_text(false, 12));
     }
 
     #[test]

@@ -91,7 +91,7 @@ pub(super) fn canonical_game_id(application: &Value) -> Option<&str> {
     }
 }
 
-fn game_cover_url(game: &Value) -> Option<String> {
+pub(super) fn game_cover_url(game: &Value) -> Option<String> {
     let cover = &game["media"]["cover"];
     let value = cover["value"].as_str().filter(|value| !value.is_empty())?;
     match cover["type"].as_str()? {

@@ -210,6 +210,7 @@ mod poll;
 mod popout_roles;
 mod profile;
 mod profile_art;
+mod profile_board;
 mod profile_editor;
 pub(crate) mod profile_effects;
 mod profile_menu;

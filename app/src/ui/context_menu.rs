@@ -61,6 +61,11 @@ pub(super) enum Target {
     PickerEmoji,
     /// A sticker of the sticker picker (the same `expression-picker` menu).
     PickerSticker(Id),
+    /// The Widget Actions button of a Board widget on someone else's profile (module 40989 `Y`): Report Widget.
+    ProfileWidget {
+        user: Id,
+        widget: Id,
+    },
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -72,6 +77,7 @@ pub(super) enum Act {
     ReportGameIssue,
     ViewGameProfile,
     ReportApp,
+    ReportWidget,
     MarkRead,
     Invite,
     Mute,
@@ -191,7 +197,7 @@ impl Act {
     /// Every row kind once (`Correction` with its first index). `ordinal` is an exhaustive match, so adding a variant
     /// without listing it here fails the build or the `act_list_is_complete` test.
     #[cfg(test)]
-    pub(super) const ALL: [Act; 97] = [
+    pub(super) const ALL: [Act; 98] = [
         Act::InventoryAbout,
         Act::InventoryHide,
         Act::ReportApp,
@@ -289,6 +295,7 @@ impl Act {
         Act::AiFixGrammar,
         Act::AiTranslate,
         Act::AiTransforms,
+        Act::ReportWidget,
     ];
 
     #[cfg(test)]
@@ -391,6 +398,7 @@ impl Act {
             Act::AiFixGrammar => 94,
             Act::AiTranslate => 95,
             Act::AiTransforms => 96,
+            Act::ReportWidget => 97,
         }
     }
 }
@@ -423,6 +431,7 @@ pub(super) fn status(act: Act) -> Status {
         | Act::AiTranslate
         | Act::AiTransforms
         | Act::ReportApp
+        | Act::ReportWidget
         | Act::MarkRead
         | Act::Invite
         | Act::Mute
@@ -744,6 +753,15 @@ pub(super) struct ComposerMenu {
 /// have.
 /// `m` in module 586193: Report App (danger, a flag), then Copy Application ID in its own group when developer mode is on
 /// (`devmode-copy-id`, module 50268). The page's Copy Link button covers the wide layout, so the menu has no such row.
+/// `Y` of module 40989 (`user-profile-widget-context-menu`): Report Widget, danger, with a flag.
+pub(super) fn profile_widget_items() -> Vec<Entry> {
+    vec![Entry::Row(
+        Row::new(Act::ReportWidget, dc_intl::t!("D4GvHE"))
+            .icon("menu_flag")
+            .danger(),
+    )]
+}
+
 pub(super) fn app_directory_items(developer: bool) -> Vec<Entry> {
     let mut out = vec![Entry::Row(
         Row::new(Act::ReportApp, dc_intl::tr("Report App"))
@@ -2366,6 +2384,7 @@ impl Root {
             Target::LauncherApp(_) => launcher_app_items(developer),
             Target::GameProfile(_) => game_profile_items(developer),
             Target::GameAddToProfile(game) => self.game_widget_items(game),
+            Target::ProfileWidget { .. } => profile_widget_items(),
             Target::Favorites => favorites_items(),
             Target::PickerSticker(sticker) => {
                 picker_sticker_items(self.sticker_favorited(sticker), developer)
@@ -2947,6 +2966,9 @@ impl Root {
             (Act::ReportApp, Target::AppDirectory(app)) => {
                 self.open_report_app(app, "app_directory", cx);
             }
+            (Act::ReportWidget, Target::ProfileWidget { user, widget }) => {
+                self.open_report_widget(user, widget, cx);
+            }
             (Act::InventoryAbout, Target::InventoryFeed | Target::InventoryFeedAtPointer) => {
                 self.inventory.about = true
             }
@@ -3042,7 +3064,8 @@ impl Root {
                     | Target::GameProfile(id)
                     | Target::GameAddToProfile(id)
                     | Target::PickerSticker(id) => id,
-                    Target::InventoryFeed
+                    Target::ProfileWidget { .. }
+                    | Target::InventoryFeed
                     | Target::InventoryFeedAtPointer
                     | Target::Composer
                     | Target::Favorites

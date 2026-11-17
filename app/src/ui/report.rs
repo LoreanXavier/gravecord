@@ -64,6 +64,11 @@ enum Subject {
         channel: Option<Id>,
         entrypoint: &'static str,
     },
+    /// A Board widget (`t0.WIDGET`): its owner and the widget's id.
+    Widget {
+        user: Id,
+        widget: Id,
+    },
 }
 
 impl Subject {
@@ -71,6 +76,7 @@ impl Subject {
         match self {
             Self::Event { .. } => "guild_scheduled_event",
             Self::App { .. } => "application",
+            Self::Widget { .. } => "widget",
         }
     }
 }
@@ -126,6 +132,11 @@ impl Root {
             entrypoint,
         };
         self.start_report(0, None, Some(subject), cx);
+    }
+
+    /// Report Widget (module 928658 `GJ`): `name: widget` with the owner's `user_id` and the `widget_id`.
+    pub(super) fn open_report_widget(&mut self, user: Id, widget: Id, cx: &mut Context<Self>) {
+        self.start_report(user, None, Some(Subject::Widget { user, widget }), cx);
     }
 
     fn start_report(
@@ -317,6 +328,12 @@ impl Root {
                     body["channel_id"] = json!(channel.to_string());
                 }
                 body["entrypoint"] = json!(entrypoint);
+            }
+            // `h` in module 369053: `{name, user_id, widget_id}`.
+            (Some(Subject::Widget { user, widget }), _) => {
+                body["name"] = json!("widget");
+                body["user_id"] = json!(user.to_string());
+                body["widget_id"] = json!(widget.to_string());
             }
             // `h` in module 369053: a message report carries its channel and id, and no guild.
             (None, Some(message)) => {
@@ -1337,6 +1354,20 @@ mod tests {
             scroll: ScrollHandle::new(),
             preview_scroll: ScrollHandle::new(),
         }
+    }
+
+    #[test]
+    fn a_widget_report_names_its_owner_and_widget_only() {
+        let open = subject_report(Subject::Widget {
+            user: 7,
+            widget: 11,
+        });
+        let body = Root::report_body(&open, &menu(), 69);
+        assert_eq!(body["name"], "widget");
+        assert_eq!(body["user_id"], "7");
+        assert_eq!(body["widget_id"], "11");
+        assert!(body.get("guild_id").is_none());
+        assert!(body.get("channel_id").is_none());
     }
 
     #[test]

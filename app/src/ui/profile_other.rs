@@ -350,29 +350,31 @@ impl Root {
                             .flex()
                             .items_center()
                             .justify_center()
-                            .child(self.with_tip(
-                                "popout-avatar-tip",
-                                super::tooltip::Tip::text(
-                                    dc_intl::t!("+Xp3hq"),
-                                    super::tooltip::Side::Top,
+                            .child(
+                                self.with_tip(
+                                    "popout-avatar-tip",
+                                    super::tooltip::Tip::text(
+                                        dc_intl::t!("+Xp3hq"),
+                                        super::tooltip::Side::Top,
+                                    ),
+                                    div()
+                                        .id("popout-avatar")
+                                        .group("other-popout-avatar")
+                                        .relative()
+                                        .size(px(80.))
+                                        .rounded_full()
+                                        .cursor_pointer()
+                                        .on_click(cx.listener(move |this, _, window, cx| {
+                                            this.profile = None;
+                                            this.open_full_profile(id, window, cx);
+                                        }))
+                                        .child(self.profile_avatar(&user, &presence, cx))
+                                        .child(super::profile::popout_avatar_hover_overlay(
+                                            "other-popout-avatar",
+                                        )),
+                                    cx,
                                 ),
-                                div()
-                                    .id("popout-avatar")
-                                    .group("other-popout-avatar")
-                                    .relative()
-                                    .size(px(80.))
-                                    .rounded_full()
-                                    .cursor_pointer()
-                                    .on_click(cx.listener(move |this, _, window, cx| {
-                                        this.profile = None;
-                                        this.open_full_profile(id, window, cx);
-                                    }))
-                                    .child(self.profile_avatar(&user, &presence, cx))
-                                    .child(super::profile::popout_avatar_hover_overlay(
-                                        "other-popout-avatar",
-                                    )),
-                                cx,
-                            )),
+                            ),
                     ),
             )
             .into_any_element();
@@ -516,12 +518,19 @@ impl Root {
             .child(names)
             .when(friends > 0 || servers > 0, |this| this.child(mutuals))
             .when_some(bio, |this, bio| this.child(self.bio(&bio, strong, cx)))
-            .when(private, |this| this.child(
-                div().parity("private-profile-notice").p(px(12.)).rounded(px(8.))
-                    .bg(palette.token("--background-mod-normal"))
-                    .text_size(px(14.)).line_height(px(18.)).text_color(strong)
-                    .child(format!("{display_name}'s profile is private, so some info is hidden. Add them as a friend to see more."))
-            ))
+            .when(private, |this| {
+                this.child(
+                    div()
+                        .parity("private-profile-notice")
+                        .p(px(12.))
+                        .rounded(px(8.))
+                        .bg(palette.token("--background-mod-normal"))
+                        .text_size(px(14.))
+                        .line_height(px(18.))
+                        .text_color(strong)
+                        .child(super::profile_board::private_text(&display_name)),
+                )
+            })
             .children(self.live_activity_cards(id, super::live_activity::Surface::Popout, strong, subtle, cx))
             .children(self.popout_voice_card(id, cx))
             .children(self.profile_role_chips(id, strong, cx))

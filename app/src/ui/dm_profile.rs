@@ -190,6 +190,18 @@ pub(super) fn widget_games(body: &Value) -> Vec<String> {
     games
 }
 
+/// A `GET /games` record's icon hash: `media.icon` of type `hash` (module 997013 `getIconURL`), else the record's
+/// `icon_hash`. The records carry no top-level `icon`; the capture demo's synthetic records still do.
+pub(super) fn game_icon_hash(game: &Value) -> Option<&str> {
+    let media = &game["media"]["icon"];
+    (media["type"] == "hash")
+        .then(|| media["value"].as_str())
+        .flatten()
+        .or_else(|| game["icon_hash"].as_str())
+        .or_else(|| game["icon"].as_str())
+        .filter(|hash| !hash.is_empty())
+}
+
 /// The cards `renderCards` of module 312294 makes from the widgets: one collection breadcrumb for every game widget
 /// together, then one per personal widget (application widgets need their surfaces, which are not read here; clips
 /// need their own experiment).
@@ -636,7 +648,7 @@ impl Root {
                     .text_color(strong)
                     .child(open("username", cx).child(user.username.clone()))
                     .when_some(pronouns, |this, pronouns| {
-                        let tip = Tip::text("Pronouns", Side::Top).after(300);
+                        let tip = Tip::text(dc_intl::tr("Pronouns"), Side::Top).after(300);
                         let target = div()
                             .id(SharedString::from(format!("{place}-pronouns-{user_id}")))
                             .mr(px(2.))
@@ -779,7 +791,7 @@ impl Root {
                     .as_array()?
                     .iter()
                     .find(|game| game["id"].as_str() == Some(id))?;
-                game["icon"].as_str()?;
+                game_icon_hash(game)?;
                 Some((
                     id.clone(),
                     game["name"].as_str().unwrap_or_default().to_owned(),
@@ -810,22 +822,30 @@ impl Root {
                 route: format!("/games?{}", url.query().unwrap_or_default()),
             });
         }
-        let icons: Vec<(String, String)> = self
+        let pictures: Vec<(String, String)> = self
             .fetched
             .get(&games_key)
             .and_then(Value::as_array)
             .into_iter()
             .flatten()
-            .filter_map(|game| {
-                let id = game["id"].as_str()?;
-                let icon = game["icon"].as_str()?;
-                Some((
-                    format!("profile-game:{id}"),
-                    format!("https://cdn.discordapp.com/app-icons/{id}/{icon}.png?size=48"),
-                ))
+            .flat_map(|game| {
+                let id = game["id"].as_str().unwrap_or_default();
+                let icon = game_icon_hash(game).map(|icon| {
+                    (
+                        super::profile_board::icon_key(id),
+                        format!("https://cdn.discordapp.com/app-icons/{id}/{icon}.png?size=48"),
+                    )
+                });
+                // `getCoverURL` of module 997013 (the Board's covers, module 201438).
+                let cover = super::inventory_popout::game_cover_url(game)
+                    .map(|url| (super::profile_board::cover_key(id), url));
+                [icon, cover]
+                    .into_iter()
+                    .flatten()
+                    .filter(|_| !id.is_empty())
             })
             .collect();
-        for (key, url) in icons {
+        for (key, url) in pictures {
             self.request_image(key, url);
         }
         if let Some(url) = self
@@ -1248,11 +1268,14 @@ impl Root {
             .and_then(|body| body["user_profile"]["bio"].as_str())
             .filter(|bio| !bio.is_empty())
             .map(str::to_owned);
+        let is_private = body.is_some_and(|body| body["private"] == true);
         let hovering = self.profile_effect_hovered("dm-profile");
         let names = self
             .profile_names("dm-profile", user, None, palette, hovering, cx)
             .into_any_element();
         let mutuals = self.profile_mutuals("dm-profile", user_id, palette, cx);
+        let private =
+            is_private.then(|| super::profile_board::private_notice(user.display_name(), palette));
         let bio = bio.map(|bio| {
             self.bio(&bio, palette.token("--text-strong").into(), cx)
                 .into_any_element()
@@ -1296,6 +1319,7 @@ impl Root {
         SidebarParts {
             names,
             mutuals,
+            private,
             bio,
             member_since,
             games,
@@ -1384,6 +1408,7 @@ impl Root {
                     .child(parts.names)
                     .children(parts.mutuals),
             )
+            .children(parts.private)
             .children(parts.bio)
             .child(parts.member_since)
             .when(has_cards, |this| {
@@ -1591,6 +1616,7 @@ impl Root {
             .flex_col()
             .gap(px(12.))
             .child(parts.names)
+            .children(parts.private)
             .children(parts.activity)
             .child(overlay_box);
         let footer = (!self.full_profile_button_hidden()).then(|| {
@@ -1693,6 +1719,8 @@ fn card_end(palette: &Palette) -> Rgba {
 struct SidebarParts {
     names: AnyElement,
     mutuals: Option<AnyElement>,
+    /// i?.private: the notice of module 501193 (289287), under the names.
+    private: Option<AnyElement>,
     bio: Option<AnyElement>,
     member_since: AnyElement,
     games: Option<AnyElement>,

@@ -57,7 +57,7 @@ pub(crate) struct NewThread {
 }
 
 /// The width a run of text takes at a size and weight, as the text system shapes it.
-fn measure_text(window: &mut Window, text: &str, size: f32, weight: f32) -> f32 {
+pub(super) fn measure_text(window: &mut Window, text: &str, size: f32, weight: f32) -> f32 {
     if text.is_empty() {
         return 0.;
     }
