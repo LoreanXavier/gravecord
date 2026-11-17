@@ -383,12 +383,19 @@ impl Root {
 
     /// A forward of `message` (of `source_channel`, in `guild` if any) into `channel`: an empty message that points at
     /// the source with `message_reference` type 1.
-    pub(super) fn start_local_forward(&mut self, channel: Id, source: (Option<Id>, Id, Id)) {
+    /// Returns the send's nonce, which its `Update::SendResult` carries.
+    pub(super) fn start_local_forward(
+        &mut self,
+        channel: Id,
+        source: (Option<Id>, Id, Id),
+    ) -> String {
         let parts = Parts {
             forward: Some(source),
             ..Parts::default()
         };
-        self.send_with_nonce(channel, crate::net::nonce(), parts);
+        let nonce = crate::net::nonce();
+        self.send_with_nonce(channel, nonce.clone(), parts);
+        nonce
     }
 
     fn send_with_nonce(&mut self, channel: Id, nonce: String, parts: Parts) {
@@ -523,6 +530,7 @@ impl Root {
         outcome: Outcome,
         cx: &mut Context<Self>,
     ) {
+        self.forward_send_ended(nonce, matches!(outcome, Outcome::Sent(_)), cx);
         let resolved = self.send_ui.id_of_nonce(nonce).or_else(|| id_of(nonce));
         self.send_ui.ended_for(resolved, nonce);
         let Some(id) = resolved else {

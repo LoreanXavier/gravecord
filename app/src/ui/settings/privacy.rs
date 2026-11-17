@@ -212,7 +212,7 @@ impl Root {
         }
     }
 
-    fn set_ids(&mut self, list: &IdList, ids: &[u64]) {
+    pub(in crate::ui) fn set_ids(&mut self, list: &IdList, ids: &[u64]) {
         let patch = self.stores.set_proto_ids(list, ids);
         self.send_proto_patch(patch);
     }

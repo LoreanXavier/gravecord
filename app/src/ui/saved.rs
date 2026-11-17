@@ -29,6 +29,8 @@ pub(crate) struct Toast {
 /// The app-wide toast (`toast_W6gbBa`): top centre, three seconds.
 pub(crate) struct AppToast {
     pub message: String,
+    /// The icon (asset path, colour token) a toast names (`P0({icon, iconColor})`), instead of the forward arrow.
+    pub icon: Option<(&'static str, &'static str)>,
     /// `success_O41c2-` (green edge, a check, 90px down) rather than `default_O41c2-` (the forward arrow, 40px).
     pub success: bool,
     pub until: Instant,
@@ -128,11 +130,30 @@ impl Root {
         self.put_app_toast(message, true, cx);
     }
 
-    pub(in crate::ui) fn put_app_toast(&mut self, message: String, success: bool, cx: &mut Context<Self>) {
+    /// `P0({text, icon, iconColor})`: the default toast with its own icon.
+    pub(in crate::ui) fn put_icon_toast(
+        &mut self,
+        message: String,
+        icon: (&'static str, &'static str),
+        cx: &mut Context<Self>,
+    ) {
+        self.put_app_toast(message, false, cx);
+        if let Some(toast) = self.app_toast.as_mut() {
+            toast.icon = Some(icon);
+        }
+    }
+
+    pub(in crate::ui) fn put_app_toast(
+        &mut self,
+        message: String,
+        success: bool,
+        cx: &mut Context<Self>,
+    ) {
         // `minToastDurationMs` (Accessibility, Notification Duration) lengthens the toast; never below the 3s default.
         let duration = std::time::Duration::from_millis(self.toast_duration_ms().max(3000));
         self.app_toast = Some(AppToast {
             message,
+            icon: None,
             success,
             until: Instant::now() + duration,
         });
@@ -162,13 +183,22 @@ impl Root {
                 .map(|toast| (toast.message.as_str(), toast.success, toast.until)),
         )
         .into_iter()
-        .map(|(message, success, opacity, offset)| toast_view(message, success, opacity, offset))
+        .map(|(message, success, opacity, offset)| {
+            let icon = self.app_toast.as_ref().and_then(|toast| toast.icon);
+            toast_view(message, success, icon, opacity, offset)
+        })
         .collect()
     }
 }
 
 /// One toast, `opacity` and `offset` being its enter or leave pose.
-fn toast_view(message: String, success: bool, opacity: f32, offset: f32) -> AnyElement {
+fn toast_view(
+    message: String,
+    success: bool,
+    icon: Option<(&'static str, &'static str)>,
+    opacity: f32,
+    offset: f32,
+) -> AnyElement {
     deferred(
         div()
             .absolute()
@@ -212,16 +242,14 @@ fn toast_view(message: String, success: bool, opacity: f32, offset: f32) -> AnyE
                         )
                     })
                     .relative()
-                    .child(
-                        svg()
-                            .path(if success {
-                                "icons/toast_success.svg"
-                            } else {
-                                "icons/toast_forwarded.svg"
-                            })
-                            .size(px(18.))
-                            .text_color(color("--icon-feedback-positive")),
-                    )
+                    .child({
+                        let (path, token) = icon.unwrap_or(if success {
+                            ("icons/toast_success.svg", "--icon-feedback-positive")
+                        } else {
+                            ("icons/toast_forwarded.svg", "--icon-feedback-positive")
+                        });
+                        svg().path(path).size(px(18.)).text_color(color(token))
+                    })
                     .child(
                         div()
                             .text_size(px(16.))

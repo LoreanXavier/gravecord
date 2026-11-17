@@ -1657,6 +1657,7 @@ impl Root {
             Update::Keybind { id, down } => self.kb_fire(&id, down, cx),
             // The shell, which owns the login, takes this one before it reaches the view.
             Update::AuthFailed | Update::TokenRenewed(_) => {}
+            Update::LimitedAccess => self.limited_access_alert(cx),
             Update::SettingsWritten(answer) => {
                 // The last write was answered: what the server holds now, the changes of other sessions that were
                 // left out in between included. Merged, since everything this app wrote is in it already.

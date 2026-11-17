@@ -509,6 +509,15 @@ pub async fn run(
                 crate::ui::composer_ai::AS_STAFF.store(true, std::sync::atomic::Ordering::Relaxed);
                 let _ = writeln!(output, "composer-ai: staff");
             }
+            // `limited-access`: a request refused for limited access, as `net` reports it (module 218642).
+            ["limited-access"] => {
+                cx.update(|cx| {
+                    root.update(cx, |root, cx| {
+                        root.update(crate::net::Update::LimitedAccess, cx)
+                    })
+                });
+                let _ = writeln!(output, "limited-access: reported");
+            }
             ["gw", name, json @ ..] => {
                 let text = json.join(" ");
                 let note = match serde_json::from_str(&text) {

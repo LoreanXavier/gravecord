@@ -7,21 +7,28 @@
 //!   one before it to succeed.
 
 use super::Root;
+use super::forward::Destination;
 use super::modal::{self, Tone};
 use crate::net::Request;
 use dc_state::Id;
-use gpui::{AnyElement, Context, IntoElement, ParentElement, Styled, div, px};
+use gpui::{
+    AnyElement, Context, FontWeight, IntoElement, ParentElement, Styled, Window, div, prelude::*,
+    px,
+};
 use serde_json::{Value, json};
 use std::collections::{HashMap, VecDeque};
 
 /// The key of a step's answer: `thread-step:{chain}`.
 pub(super) const KEY_PREFIX: &str = "thread-step:";
 
+/// `--radius-sm` of the design system (module 952007): 8px.
+const RADIUS_SM: f32 = 8.;
+
 /// `ChannelFlags.PINNED` (module 746080 `lx`).
 pub(super) const PINNED: u64 = 1 << 1;
 
 /// What the alert's buttons do besides closing it.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug)]
 pub(super) enum Then {
     Close,
     /// Module 41402's `onConfirm`: `await unpin(old)`, then `pin(post)`.
@@ -29,9 +36,18 @@ pub(super) enum Then {
         post: Id,
         old: Id,
     },
+    /// Retry of Forward Failed (module 181622): the forward modal again, with the failed destinations chosen.
+    RetryForward {
+        message: Box<dc_state::Message>,
+        destinations: Vec<Destination>,
+    },
+    /// "Yes, turn them off" (module 228855): the server joins `restricted_guilds`.
+    DmsOff {
+        guild: Id,
+    },
 }
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug)]
 pub(super) struct AlertButton {
     pub id: &'static str,
     pub label: String,
@@ -39,12 +55,26 @@ pub(super) struct AlertButton {
     pub then: Then,
 }
 
-/// One open alert (module 579872 `show`).
-#[derive(Clone, Debug, PartialEq)]
+/// What a dialog shows under its title.
+#[derive(Clone, Debug)]
+pub(super) enum Content {
+    /// `body-md/normal` in `text-default` (module 130577's notice).
+    Text(String),
+    /// Module 181622's `failedDestinations_PiyhYP` box of rows.
+    FailedDestinations(Vec<Destination>),
+    /// Module 228855: "This change affects" over the server's row.
+    AffectedGuild(Id),
+}
+
+/// One open dialog: the alert of module 579872 `show` (small, the body as its subtitle) or a dialog of module 189213
+/// with content (`md` once it has children).
+#[derive(Clone, Debug)]
 pub(super) struct Alert {
     pub id: &'static str,
     pub title: String,
-    pub body: Option<String>,
+    /// The subtitle as runs of text, the bold ones `$b` of the message.
+    pub subtitle: Option<Vec<(String, bool)>>,
+    pub content: Option<Content>,
     pub buttons: Vec<AlertButton>,
 }
 
@@ -77,15 +107,63 @@ impl Alert {
         Self {
             id,
             title: title.into(),
-            body,
+            subtitle: body.map(|body| vec![(body, false)]),
+            content: None,
             buttons,
         }
+    }
+
+    /// Module 189213 picks `md` when the dialog has children, else `sm`.
+    pub(super) fn medium(&self) -> bool {
+        self.content.is_some()
+    }
+}
+
+/// The forwards of one Send of the forward modal, by nonce, until each has its answer.
+pub(super) struct ForwardBatch {
+    pub message: dc_state::Message,
+    pub pending: HashMap<String, Destination>,
+    pub failed: Vec<Destination>,
+}
+
+/// Forward Failed (module 181622): "The message could not be forwarded to the following N location(s):" over the
+/// failed destinations; Cancel and Retry.
+pub(super) fn forward_failed_alert(
+    message: dc_state::Message,
+    destinations: Vec<Destination>,
+) -> Alert {
+    Alert {
+        id: "forward-failed",
+        title: dc_intl::tr("Forward Failed").to_owned(),
+        subtitle: Some(vec![(
+            dc_intl::t!("cn9vFb", count = destinations.len()).to_string(),
+            false,
+        )]),
+        content: Some(Content::FailedDestinations(destinations.clone())),
+        buttons: vec![
+            AlertButton {
+                id: "forward-failed-cancel",
+                label: dc_intl::tr("Cancel").to_owned(),
+                secondary: true,
+                then: Then::Close,
+            },
+            AlertButton {
+                id: "forward-failed-retry",
+                label: dc_intl::tr("Retry").to_owned(),
+                secondary: false,
+                then: Then::RetryForward {
+                    message: Box::new(message),
+                    destinations,
+                },
+            },
+        ],
     }
 }
 
 #[derive(Default)]
 pub(super) struct State {
     pub alert: Option<Alert>,
+    pub forward_batch: Option<ForwardBatch>,
     /// A right press on a `#channel` mention: where, and the channel (read by the message menu's opener).
     pub mention_hit: Option<(gpui::Point<gpui::Pixels>, Id)>,
     /// The requests still to go of each chain, by chain number.
@@ -261,7 +339,7 @@ impl Root {
         }
     }
 
-    fn alert_then(&mut self, then: Then) {
+    fn alert_then(&mut self, then: Then, window: &mut Window, cx: &mut Context<Self>) {
         self.chat_extra.alert = None;
         match then {
             Then::Close => {}
@@ -282,6 +360,11 @@ impl Root {
                 );
                 self.send_thread_chain(steps);
             }
+            Then::RetryForward {
+                message,
+                destinations,
+            } => self.retry_forward(*message, destinations, window, cx),
+            Then::DmsOff { guild } => self.turn_off_guild_dms(guild, cx),
         }
     }
 
@@ -306,22 +389,340 @@ impl Root {
                     } else {
                         Tone::Primary
                     },
-                    move |this, _, _| this.alert_then(then.clone()),
+                    move |this, window, cx| this.alert_then(then.clone(), window, cx),
                 )
             })
             .collect();
-        Some(modal::render_small(
-            modal::Spec {
-                id: alert.id,
-                title: alert.title.into(),
-                subtitle: alert.body.map(|body| div().child(body).into_any_element()),
-                body: None,
-                buttons,
-                close: Box::new(|this, _, _| this.chat_extra.alert = None),
-            },
-            cx,
-        ))
+        let medium = alert.medium();
+        let spec = modal::Spec {
+            id: alert.id,
+            title: alert.title.into(),
+            subtitle: alert.subtitle.map(rich_text),
+            body: alert.content.map(|content| self.alert_content(content, cx)),
+            buttons,
+            close: Box::new(|this, _, _| this.chat_extra.alert = None),
+        };
+        Some(if medium {
+            modal::render(spec, cx)
+        } else {
+            modal::render_small(spec, cx)
+        })
     }
+
+    fn alert_content(&self, content: Content, cx: &mut Context<Self>) -> AnyElement {
+        match content {
+            Content::Text(text) => body_text(text),
+            Content::FailedDestinations(destinations) => {
+                // `failedDestinations_PiyhYP`: a `--border-subtle` edge, 8px corners, 16px above, 8px 16px inside;
+                // `failedRow_PiyhYP` 48px rows with the 32px picture 12px from the name (`body-md/medium`,
+                // `--text-strong`, one line).
+                div()
+                    .mt(px(16.))
+                    .py(px(8.))
+                    .px(px(16.))
+                    .border_1()
+                    .border_color(super::color("--border-subtle"))
+                    .rounded(px(8.))
+                    .children(destinations.into_iter().map(|destination| {
+                        let (icon, name, _) = self.destination_parts(destination, cx);
+                        div()
+                            .h(px(48.))
+                            .flex()
+                            .items_center()
+                            .gap(px(12.))
+                            .child(icon)
+                            .child(
+                                div()
+                                    .flex_1()
+                                    .min_w(px(0.))
+                                    .overflow_hidden()
+                                    .whitespace_nowrap()
+                                    .text_ellipsis()
+                                    .text_size(px(16.))
+                                    .line_height(px(20.))
+                                    .font_weight(FontWeight(500.))
+                                    .text_color(super::color("--text-strong"))
+                                    .child(name),
+                            )
+                    }))
+                    .into_any_element()
+            }
+            Content::AffectedGuild(guild) => self.affected_guild(guild),
+        }
+    }
+}
+
+/// `dmSettingsUpsellLastShown` of module 959702: the modal shows at most once a week.
+const DM_UPSELL_KEY: &str = "dmSettingsUpsellLastShown";
+const DM_UPSELL_COOLDOWN_MS: i64 = 604_800_000;
+
+/// `openDmSettingsUpsellModal`: shown when it never was, or more than a week ago.
+pub(super) fn dm_upsell_due(last_shown_ms: Option<i64>, now_ms: i64) -> bool {
+    last_shown_ms.is_none_or(|last| now_ms - last > DM_UPSELL_COOLDOWN_MS)
+}
+
+/// The action handler of module 8619 for `AUTO_MODERATION_CONTENT_DELETED`: the dialog of module 130577, or the toast
+/// when the message stays in its loaded channel with the notice.
+#[derive(Clone, Debug, PartialEq)]
+pub(super) enum AutomodDeleted {
+    Dialog,
+    /// "Your message was deleted in #channel", for a channel other than the open one.
+    Toast,
+    /// The open channel shows the message with its notice.
+    Nothing,
+}
+
+pub(super) fn automod_deleted(
+    has_thread: bool,
+    has_message: bool,
+    has_notice: bool,
+    in_open_channel: bool,
+) -> AutomodDeleted {
+    if has_thread || !has_message || !has_notice {
+        AutomodDeleted::Dialog
+    } else if in_open_channel {
+        AutomodDeleted::Nothing
+    } else {
+        AutomodDeleted::Toast
+    }
+}
+
+impl Root {
+    /// `AUTO_MODERATION_CONTENT_DELETED {guild_id, channel_id, message, thread, notice}` after the stores took it.
+    pub(super) fn automod_content_deleted(&mut self, data: &Value, cx: &mut Context<Self>) {
+        let message = dc_state::Message::from_value(&data["message"]);
+        let has_notice = message
+            .as_ref()
+            .is_some_and(|message| self.stores.automod_removal_notice(message.id).is_some());
+        let channel = message.as_ref().map(|message| message.channel_id);
+        match automod_deleted(
+            !data["thread"].is_null(),
+            message.is_some(),
+            has_notice,
+            channel.is_some() && channel == self.channel,
+        ) {
+            AutomodDeleted::Nothing => {}
+            AutomodDeleted::Toast => {
+                let name = channel.and_then(|channel| {
+                    self.stores
+                        .guilds
+                        .iter()
+                        .flat_map(|guild| guild.channels.iter())
+                        .find(|known| known.id == channel)
+                        .map(|known| known.name.clone())
+                });
+                // No name, no toast (`null != name`).
+                if let Some(name) = name {
+                    let text = dc_intl::t!("9U3Wb3", channel = format!("#{name}"));
+                    self.put_icon_toast(
+                        text,
+                        ("icons/guild_menu_privacy.svg", "--icon-feedback-critical"),
+                        cx,
+                    );
+                }
+            }
+            AutomodDeleted::Dialog => {
+                // Module 130577: "Your post was removed" with the post's name under it for a thread, else "Your
+                // message was removed"; the notice under the title.
+                let thread = &data["thread"];
+                let notice = data["notice"].as_str().unwrap_or_default().to_owned();
+                self.chat_extra.alert = Some(Alert {
+                    id: "automod-removed",
+                    title: if thread.is_null() {
+                        dc_intl::tr("Your message was removed").to_owned()
+                    } else {
+                        dc_intl::tr("Your post was removed").to_owned()
+                    },
+                    subtitle: thread["name"]
+                        .as_str()
+                        .map(|name| vec![(name.to_owned(), false)]),
+                    content: Some(Content::Text(
+                        message
+                            .as_ref()
+                            .map_or(notice, |message| message.content.clone()),
+                    )),
+                    buttons: vec![AlertButton {
+                        id: "automod-removed-okay",
+                        label: dc_intl::tr("Okay").to_owned(),
+                        secondary: false,
+                        then: Then::Close,
+                    }],
+                });
+                cx.notify();
+            }
+        }
+    }
+
+    /// `DM_SETTINGS_UPSELL_SHOW {guild_id}` (module 959702), after the account turned down message requests from the
+    /// server: once a week, the "Turn off direct messages from this server?" dialog (module 228855), which tells the
+    /// service it was seen (`POST /users/@me/guilds/{guild}/member/ack-dm-upsell-settings`).
+    pub(super) fn dm_settings_upsell(&mut self, data: &Value, cx: &mut Context<Self>) {
+        let Some(guild) = data["guild_id"]
+            .as_str()
+            .and_then(|id| id.parse::<Id>().ok())
+        else {
+            return;
+        };
+        let now = chrono::Utc::now().timestamp_millis();
+        let last = crate::storage::get(DM_UPSELL_KEY).and_then(|value| value.as_i64());
+        if !dm_upsell_due(last, now) {
+            return;
+        }
+        let Some(name) = self
+            .stores
+            .guilds
+            .iter()
+            .find(|known| known.id == guild)
+            .map(|known| known.name.clone())
+        else {
+            return;
+        };
+        crate::storage::set(DM_UPSELL_KEY, json!(now));
+        let _ = self.requests.send(Request::Rest {
+            key: None,
+            method: reqwest::Method::POST,
+            route: format!("/users/@me/guilds/{guild}/member/ack-dm-upsell-settings"),
+            body: None,
+        });
+        let subtitle = dc_intl::format_runs("Depjkv", &[("guild_name", name.into())])
+            .into_iter()
+            .map(|(text, tag)| (text, tag.as_deref() == Some("$b")))
+            .collect();
+        self.chat_extra.alert = Some(Alert {
+            id: "dm-settings-upsell",
+            title: dc_intl::tr("Turn off direct messages from this server?").to_owned(),
+            subtitle: Some(subtitle),
+            content: Some(Content::AffectedGuild(guild)),
+            buttons: vec![
+                AlertButton {
+                    id: "dm-upsell-keep",
+                    label: dc_intl::tr("No, keep them on").to_owned(),
+                    secondary: true,
+                    then: Then::Close,
+                },
+                AlertButton {
+                    id: "dm-upsell-off",
+                    label: dc_intl::tr("Yes, turn them off").to_owned(),
+                    secondary: false,
+                    then: Then::DmsOff { guild },
+                },
+            ],
+        });
+        cx.notify();
+    }
+
+    /// "Yes, turn them off": the server joins the account's `restricted_guilds`, then "Settings changed".
+    fn turn_off_guild_dms(&mut self, guild: Id, cx: &mut Context<Self>) {
+        let mut ids = self
+            .stores
+            .proto_ids(&dc_proto::settings::DM_RESTRICTED_GUILDS);
+        if !ids.contains(&guild) {
+            ids.push(guild);
+        }
+        self.set_ids(&dc_proto::settings::DM_RESTRICTED_GUILDS, &ids);
+        self.show_success_toast(dc_intl::tr("Settings changed").to_owned(), cx);
+    }
+
+    /// Limited access (module 218642, opened by module 700241 from the request interceptor of module 596339 for a
+    /// 4xx answer whose code is 340000 to 349999): title, the explanation, Okay.
+    pub(super) fn limited_access_alert(&mut self, cx: &mut Context<Self>) {
+        self.chat_extra.alert = Some(Alert::show(
+            "limited-access",
+            dc_intl::tr("Your account has limited access"),
+            Some(dc_intl::t!("zNPBMA").to_owned()),
+            None,
+            None,
+            Then::Close,
+        ));
+        cx.notify();
+    }
+
+    /// Module 228855's children: "This change affects" (`body-md/medium`, `text-muted`), 8px above the server's box
+    /// (`guildContainer_wWIOj0`: `--background-mod-subtle`, a `--border-subtle` edge, `--radius-sm` corners, 16px
+    /// inside) with its 30px icon (`SMALL`) 12px from its name (`body-md/semibold`).
+    fn affected_guild(&self, guild: Id) -> AnyElement {
+        let known = self.stores.guilds.iter().find(|known| known.id == guild);
+        let name = known.map(|known| known.name.clone()).unwrap_or_default();
+        let acronym = known.map(dc_state::Guild::acronym).unwrap_or_default();
+        let picture = self.images.get(&format!("guild:{guild}")).cloned();
+        // `R[SMALL]` of module 682163: the acronym's size by its length.
+        let sizes = [14., 14., 12., 12., 10., 8., 6.];
+        let acronym_size = sizes[acronym.chars().count().saturating_sub(1).min(6)];
+        div()
+            .flex()
+            .flex_col()
+            .gap(px(8.))
+            .child(
+                div()
+                    .text_size(px(16.))
+                    .line_height(px(20.))
+                    .font_weight(FontWeight(500.))
+                    .text_color(super::color("--text-muted"))
+                    .child(dc_intl::tr("This change affects").to_owned()),
+            )
+            .child(
+                div()
+                    .p(px(16.))
+                    .rounded(px(RADIUS_SM))
+                    .border_1()
+                    .border_color(super::color("--border-subtle"))
+                    .bg(super::color("--background-mod-subtle"))
+                    .child(
+                        div()
+                            .flex()
+                            .items_center()
+                            .child(
+                                div()
+                                    .size(px(30.))
+                                    .flex_none()
+                                    .rounded_full()
+                                    .overflow_hidden()
+                                    .bg(super::color("--background-base-lower"))
+                                    .flex()
+                                    .items_center()
+                                    .justify_center()
+                                    .text_size(px(acronym_size))
+                                    .text_color(super::color("--text-default"))
+                                    .when(picture.is_none(), |this| this.child(acronym))
+                                    .when_some(picture, |this, picture| {
+                                        this.child(gpui::img(picture).size(px(30.)))
+                                    }),
+                            )
+                            .child(
+                                div()
+                                    .ml(px(12.))
+                                    .text_size(px(16.))
+                                    .line_height(px(20.))
+                                    .font_weight(FontWeight(600.))
+                                    .text_color(super::color("--text-default"))
+                                    .child(name),
+                            ),
+                    ),
+            )
+            .into_any_element()
+    }
+}
+
+/// Runs of text, the bold ones at weight 700 (`$b`, a `strong`).
+fn rich_text(runs: Vec<(String, bool)>) -> AnyElement {
+    let mut text = String::new();
+    let mut highlights = Vec::new();
+    for (run, bold) in runs {
+        let start = text.len();
+        text.push_str(&run);
+        if bold {
+            highlights.push((
+                start..text.len(),
+                gpui::HighlightStyle {
+                    font_weight: Some(FontWeight::BOLD),
+                    ..Default::default()
+                },
+            ));
+        }
+    }
+    div()
+        .child(gpui::StyledText::new(text).with_highlights(highlights))
+        .into_any_element()
 }
 
 /// The address Copy Link of a channel mention copies (module 147036 `af` with no thread: `O(guild, channel, message)`,
@@ -335,7 +736,6 @@ pub(super) fn channel_link(guild: Option<Id>, channel: Id, message: Option<Id>) 
 }
 
 /// The body text of a dialog (`body-md/normal`, `text-default`).
-#[allow(dead_code)]
 pub(super) fn body_text(text: impl Into<gpui::SharedString>) -> AnyElement {
     div()
         .text_size(px(16.))
@@ -405,6 +805,46 @@ mod tests {
             channel_link(None, 2, Some(3)),
             "https://discord.com/channels/@me/2/3"
         );
+    }
+
+    #[test]
+    fn the_dm_upsell_waits_a_week_between_showings() {
+        assert!(dm_upsell_due(None, 0));
+        assert!(!dm_upsell_due(Some(1_000), 1_000 + 604_800_000));
+        assert!(dm_upsell_due(Some(1_000), 1_001 + 604_800_000));
+    }
+
+    #[test]
+    fn automod_deletes_show_the_dialog_unless_the_message_keeps_its_notice() {
+        use AutomodDeleted::*;
+        // A thread, a missing message or one with no notice (its channel was not loaded): the dialog.
+        assert_eq!(automod_deleted(true, true, true, false), Dialog);
+        assert_eq!(automod_deleted(false, false, false, false), Dialog);
+        assert_eq!(automod_deleted(false, true, false, true), Dialog);
+        // The message stays with its notice: a toast unless its channel is the open one.
+        assert_eq!(automod_deleted(false, true, true, false), Toast);
+        assert_eq!(automod_deleted(false, true, true, true), Nothing);
+    }
+
+    #[test]
+    fn forward_failed_counts_its_locations() {
+        let message =
+            dc_state::Message::from_value(&json!({"id": "5", "channel_id": "6", "content": "x",
+            "timestamp": "2026-11-17T21:00:00+00:00", "author": {"id": "9", "username": "a"}}))
+            .unwrap();
+        let one = forward_failed_alert(message.clone(), vec![Destination::Channel(1)]);
+        assert_eq!(one.title, "Forward Failed");
+        assert_eq!(
+            one.subtitle.unwrap()[0].0,
+            "The message could not be forwarded to the following location:"
+        );
+        let two = forward_failed_alert(message, vec![Destination::Channel(1), Destination::Dm(2)]);
+        assert_eq!(
+            two.subtitle.clone().unwrap()[0].0,
+            "The message could not be forwarded to the following locations:"
+        );
+        assert!(two.medium());
+        assert_eq!(two.buttons[1].label, "Retry");
     }
 
     #[test]

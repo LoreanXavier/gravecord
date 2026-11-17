@@ -1237,6 +1237,29 @@ impl Root {
                             .text_size(px(14.))
                             .line_height(px(18.))
                             .children(message.map(|m| {
+                                // Module 173404: a first message by someone blocked or ignored is not shown; the
+                                // line says so instead (`body-sm/medium`, `--text-muted`, `blockedMessage_SOY5H6`
+                                // italic).
+                                let hidden = if self.is_blocked(m.author.id) {
+                                    Some(dc_intl::tr("Post contains a blocked message"))
+                                } else if self.stores.is_ignored(m.author.id) {
+                                    Some(dc_intl::tr("Post contains an ignored message"))
+                                } else {
+                                    None
+                                };
+                                if let Some(hidden) = hidden {
+                                    return div()
+                                        .w_full()
+                                        .min_w(px(0.))
+                                        .overflow_hidden()
+                                        .whitespace_nowrap()
+                                        .text_ellipsis()
+                                        .italic()
+                                        .font_weight(FontWeight(500.))
+                                        .text_color(color("--text-muted"))
+                                        .child(hidden.to_owned())
+                                        .into_any_element();
+                                }
                                 let name = self.guild_display_name(&m.author);
                                 let author_color = self.guild_author_color(
                                     m.author.id,
@@ -2004,7 +2027,9 @@ impl Root {
     ) -> AnyElement {
         let show_members = self.show_members && split.is_none();
         let list_width = split.unwrap_or(
-            self.viewport.0 - self.combined_sidebar_width() - if self.show_members { 265. } else { 0. },
+            self.viewport.0
+                - self.combined_sidebar_width()
+                - if self.show_members { 265. } else { 0. },
         );
         self.ensure_forum(&channel, cx);
         let id = channel.id;
