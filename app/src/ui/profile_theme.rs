@@ -185,6 +185,15 @@ impl ProfileTheme {
         }
     }
 
+    /// `.custom-user-profile-theme.user-profile-modal-v2 .banner_B_p0HC` (module 312381): the full profile's private
+    /// band, `color-mix(in oklab, overlay 65%, primary)` down to `60%`.
+    pub(super) fn private_band_stops(&self) -> (Rgba, Rgba) {
+        (
+            mix_oklab_fraction(self.overlay, self.primary, 0.65),
+            mix_oklab_fraction(self.overlay, self.primary, 0.6),
+        )
+    }
+
     /// `.profile_s3DB6Y` composited top/bottom gradient stops (`blend(primary/secondary, overlay)`).
     pub(super) fn card_gradient_stops(&self) -> (Rgba, Rgba) {
         (
@@ -644,6 +653,23 @@ pub(super) fn cached_palette(key: &str, image: &gpui::Image) -> Vec<[u8; 3]> {
         .unwrap_or_default();
     PALETTES.with(|cache| cache.borrow_mut().insert(id, palette.clone()));
     palette
+}
+
+/// `.custom-user-profile-theme .banner_B_p0HC` (module 312381) in the popout: the theme's primary to secondary
+/// gradient sized 600px tall, of which a band `height` px tall shows the top.
+pub(super) fn popout_private_band(theme: &ProfileTheme, height: f32) -> (Rgba, Rgba) {
+    let t = (height / 600.).clamp(0., 1.);
+    let mix = |a: f32, b: f32| a + (b - a) * t;
+    let (top, end) = (theme.primary, theme.secondary);
+    (
+        top,
+        Rgba {
+            r: mix(top.r, end.r),
+            g: mix(top.g, end.g),
+            b: mix(top.b, end.b),
+            a: mix(top.a, end.a),
+        },
+    )
 }
 
 #[cfg(test)]

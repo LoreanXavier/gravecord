@@ -892,6 +892,19 @@ impl Root {
         {
             self.request_image(url.clone(), url);
         }
+        // Application widgets lay out the app's widget config over the person's identity (module 886100).
+        let apps: Vec<String> = super::profile_editor::save::parse_widgets(&body)
+            .into_iter()
+            .filter_map(|widget| match widget.data {
+                super::profile_editor::save::WidgetData::Application { application_id } => {
+                    Some(application_id)
+                }
+                _ => None,
+            })
+            .collect();
+        for app in apps {
+            self.request_app_widget(user, &app);
+        }
         let widget_urls: Vec<String> = super::profile_editor::save::parse_widgets(&body)
             .into_iter()
             .flat_map(|widget| match widget.data {
@@ -916,15 +929,14 @@ impl Root {
         for url in widget_urls {
             self.request_image(url.clone(), url);
         }
-        // `getFirstWishlistId`: the first key of `wishlist_settings`.
-        if let Some(wishlist) = super::shop::data::wishlist_ids(&body).into_iter().next() {
-            let key = format!("profile-wishlist:{user}");
-            if self.requested.insert(key.clone()) {
-                let _ = self.requests.send(Request::Fetch {
-                    key,
-                    route: super::shop::data::wishlist_route(&wishlist),
-                });
-            }
+        // `getFirstWishlistId`: the first key of `wishlist_settings`, read again when its `updated_at` moves.
+        if let Some((wishlist, guard)) = super::shop::data::wishlist_read_guard(user, &body)
+            && self.requested.insert(guard)
+        {
+            let _ = self.requests.send(Request::Fetch {
+                key: format!("profile-wishlist:{user}"),
+                route: super::shop::data::wishlist_route(&wishlist),
+            });
         }
         if let Some(list) = self.fetched.get(&format!("profile-wishlist:{user}")) {
             let all_skus: Vec<String> = wishlist_entries(list)
@@ -1528,18 +1540,28 @@ impl Root {
             .map_or(super::theme() == dc_tokens::Theme::Light, |theme| {
                 theme.light()
             });
+        // The frame of module 744808 over the redesigned sidebar card, in windows taller than 510px.
+        let (frame_back, frame_front) = self.profile_frame_layers(
+            user_id,
+            304.,
+            None,
+            super::profile_frames::FrameSurface::Sidebar,
+            f32::from(window.viewport_size().height),
+        );
         let card = div()
             .id("dm-profile-card")
             .parity("dm-profile-card")
             .on_hover(cx.listener(|this, inside: &bool, _, cx| {
                 this.profile_effect_hover("dm-profile", *inside, cx);
             }))
+            .relative()
             .w(px(304.))
             .max_h_full()
             .flex()
             .flex_col()
             .p(px(2.))
             .rounded(px(8.))
+            .children(frame_back)
             // `box-shadow: var(--shadow-border)`: a 1px ring outside the card.
             .shadow(vec![gpui::BoxShadow {
                 color: hsla(0., 0., if light_ring { 0. } else { 1. }, 0.08),
@@ -1568,7 +1590,8 @@ impl Root {
                     .children(footer)
                     .children(effect)
                     .child(banner_buttons),
-            );
+            )
+            .children(frame_front);
         div()
             .parity("dm-profile")
             .flex_none()
@@ -1870,6 +1893,16 @@ impl Root {
             "theme_colors": if variant == "light" { serde_json::json!([0xf2c6d8, 0x9fb7e8]) }
                 else if themed { serde_json::json!([0x3a2a6b, 0x0f3f4a]) } else { Value::Null },
         });
+        // `... frame <sku>`: the demo profile wears that profile frame (its product is read as for anyone else's).
+        let frame = words
+            .iter()
+            .position(|word| *word == "frame")
+            .and_then(|at| words.get(at + 1))
+            .map(|sku| (*sku).to_owned());
+        if let Some(sku) = &frame {
+            body["user_profile"]["collectibles"] =
+                serde_json::json!([{"type": 3, "sku_id": sku, "expires_at": null}]);
+        }
         body["badges"] = Value::Array(badges);
         body["mutual_friends"] = Value::Array(mutual);
         body["mutual_friends_count"] = serde_json::json!(2);
@@ -1887,6 +1920,9 @@ impl Root {
         ]);
         body["wishlist_settings"] = serde_json::json!({"demo-wishlist": {"privacy": 0}});
         self.fetched.insert(format!("profile:{user}"), body);
+        if frame.is_some() {
+            self.request_profile_frame(user);
+        }
         let names = ["ULTRAKILL", "Signalis", "Hades", "Hollow Knight", "Celeste"];
         let tints = [0x7a9a3a_u32, 0xc0392b, 0xd35400, 0x34495e, 0x8e44ad];
         let games: Vec<Value> = (0..5)

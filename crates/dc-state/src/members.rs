@@ -20,6 +20,9 @@ pub struct Member {
     pub display_name_styles: Option<crate::display_name_styles::DisplayNameStyles>,
     /// `communication_disabled_until`: when the member's timeout ends (ISO 8601), if one is set.
     pub timeout_until: Option<String>,
+    /// `unusual_dm_activity_until` (`unusualDMActivityUntil` of module 696451, read from the member objects by module
+    /// 225123): until when the member is flagged for unusual DM activity (ISO 8601), which Mod View shows.
+    pub unusual_dm_activity_until: Option<String>,
     /// Member flags (`flags`); bit 2 is `BYPASSES_VERIFICATION`, which Verify Member sets (module 340837).
     pub flags: u64,
 }
@@ -47,6 +50,7 @@ impl Member {
                 &member["display_name_styles"],
             ),
             timeout_until: text(&member["communication_disabled_until"]),
+            unusual_dm_activity_until: text(&member["unusual_dm_activity_until"]),
             flags: member["flags"].as_u64().unwrap_or(0),
         })
     }

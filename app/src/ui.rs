@@ -129,7 +129,6 @@ mod message_requests;
 mod message_tips;
 mod presence;
 mod provider_player;
-mod web_frames;
 mod role_dot;
 pub(crate) mod role_gradient;
 mod role_popout;
@@ -150,8 +149,10 @@ mod unread_badges;
 mod unread_dms;
 mod update_button;
 mod voice_message;
+mod web_frames;
 pub use logout::RootEvent;
 mod account_switcher;
+mod app_widget;
 #[cfg(feature = "capture")]
 mod avatar_demo;
 mod avatar_play;
@@ -205,8 +206,8 @@ mod perf;
 mod permission_spec;
 mod picker;
 mod pins;
-mod plugin_hooks;
 mod plaintext_extensions;
+mod plugin_hooks;
 mod poll;
 mod popout_roles;
 mod profile;
@@ -214,6 +215,7 @@ mod profile_art;
 mod profile_board;
 mod profile_editor;
 pub(crate) mod profile_effects;
+mod profile_frames;
 mod profile_menu;
 mod profile_other;
 mod profile_theme;
@@ -1852,6 +1854,16 @@ impl Root {
                 }
                 if key.starts_with("game-profile:") {
                     self.game_profile_fetched(&key, body, cx);
+                    return;
+                }
+                if key.starts_with(app_widget::CONFIG_PREFIX)
+                    || key.starts_with(app_widget::IDENTITY_PREFIX)
+                {
+                    self.app_widget_fetched(key, body, cx);
+                    return;
+                }
+                if key.starts_with(profile_frames::PRODUCT_PREFIX) {
+                    self.profile_frame_fetched(key, body, cx);
                     return;
                 }
                 if key.starts_with(launcher_home::APP_INDEX_PREFIX) {
@@ -6810,7 +6822,12 @@ impl Root {
                     {
                         // Not in the pinned client: RevealAllSpoilers opens the others too (`plugin_hooks.rs`).
                         let channel = this.channel;
-                        plugin_hooks::reveal_all_spoilers(&mut this.revealed, key.0, channel, modifiers);
+                        plugin_hooks::reveal_all_spoilers(
+                            &mut this.revealed,
+                            key.0,
+                            channel,
+                            modifiers,
+                        );
                         cx.notify();
                         return;
                     }

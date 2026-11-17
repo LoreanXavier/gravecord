@@ -134,6 +134,31 @@ pub(super) fn mutual_empty_text(servers: bool, user: Id) -> (&'static str, &'sta
     }
 }
 
+/// `sr` of module 927071: the empty Activity tab's heading for `name` and one of its sixteen lines (`se`, sampled once
+/// per opening; here chosen by the person's id so a reopening keeps it).
+pub(super) fn activity_empty_text(name: &str, user: Id) -> (String, String) {
+    let pick = (user % 16) as usize;
+    let line = match pick {
+        0 => dc_intl::t!("AyMGXA").to_owned(),
+        1 => dc_intl::t!("aAFW7V").to_owned(),
+        2 => dc_intl::t!("h2g0cM", name = name),
+        3 => dc_intl::t!("rrYh58").to_owned(),
+        4 => dc_intl::t!("HX3K+F").to_owned(),
+        5 => dc_intl::t!("/yW3aY").to_owned(),
+        6 => dc_intl::t!("PmL/v0").to_owned(),
+        7 => dc_intl::t!("IALa3h").to_owned(),
+        8 => dc_intl::t!("HRcTFL").to_owned(),
+        9 => dc_intl::t!("NuCqPt").to_owned(),
+        10 => dc_intl::t!("M1tw+4").to_owned(),
+        11 => dc_intl::t!("UBm1y2").to_owned(),
+        12 => dc_intl::t!("Cu95PQ").to_owned(),
+        13 => dc_intl::t!("R/wFuh").to_owned(),
+        14 => dc_intl::t!("HQPAVT").to_owned(),
+        _ => dc_intl::t!("YolGh4").to_owned(),
+    };
+    (dc_intl::t!("sjSitP", name = name), line)
+}
+
 pub(super) struct FullProfile {
     pub user: Id,
     pub(super) guild: Option<Id>,
@@ -201,15 +226,18 @@ fn profile_route(user: Id, guild: Option<Id>) -> String {
     route
 }
 
-/// 370480.An formats the server's ISO date in the current local timezone.
+/// 370480.An formats the server's ISO date in the current local timezone. A date without an offset (connections'
+/// `metadata.created_at`, `2013-01-06T10:00:00`) is local time, as `new Date()` reads it.
 fn profile_date(value: &str) -> Option<String> {
-    chrono::DateTime::parse_from_rfc3339(value)
+    let local = chrono::DateTime::parse_from_rfc3339(value)
         .ok()
-        .map(|date| {
-            date.with_timezone(&chrono::Local)
-                .format("%b %-d, %Y")
-                .to_string()
-        })
+        .map(|date| date.with_timezone(&chrono::Local).date_naive())
+        .or_else(|| {
+            chrono::NaiveDateTime::parse_from_str(value, "%Y-%m-%dT%H:%M:%S%.f")
+                .ok()
+                .map(|date| date.date())
+        })?;
+    Some(local.format("%b %-d, %Y").to_string())
 }
 
 /// Whether `body["guild_member"]` belongs to `open_guild` and should be merged into `MemberStore`.
@@ -239,417 +267,309 @@ fn encode_uri_segment(input: &str) -> String {
     out
 }
 
+/// One entry of a connection's metadata line (module 169869): `N` (a count and its label), `m` (a tag on a pill) and
+/// `A` (a label after a picture).
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum ConnectionMeta {
+    Text(String),
+    /// `connectedAccountVanityMetadataTag`; PayPal's adds `paypalVerifiedTag` (green, white text).
+    Tag {
+        label: String,
+        paypal: bool,
+    },
+    Item {
+        label: String,
+        icon: &'static str,
+    },
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct ConnectedAccount {
     kind: String,
-    id: String,
     name: String,
-    verified: bool,
     created_at: Option<String>,
     platform_name: &'static str,
-    monogram: &'static str,
-    brand_rgb: u32,
-    light_asset: Option<&'static str>,
-    dark_asset: Option<&'static str>,
-    icon_svg: Option<&'static str>,
+    /// The platform's `icon.lightPNG` (module 573648), which `t0` of module 927071 always draws.
+    icon: &'static str,
     url: Option<String>,
+    metadata: Vec<ConnectionMeta>,
 }
 
-type ConnectedPlatformSpec = (
-    &'static str,
-    &'static str,
-    &'static str,
-    u32,
-    Option<&'static str>,
-    Option<&'static str>,
-    Option<&'static str>,
-);
-
-/// Platform metadata from module 573648 (`connected_accounts` in 927071).
-const CONNECTED_PLATFORMS: &[ConnectedPlatformSpec] = &[
-    (
-        "twitch",
-        "Twitch",
-        "Tw",
-        0x9146ff,
-        Some("4fda00c96319c8ae.svg"),
-        Some("4fda00c96319c8ae.svg"),
-        None,
-    ),
-    (
-        "youtube",
-        "YouTube",
-        "YT",
-        0xff0033,
-        Some("0fa530ba9c04ac32.svg"),
-        Some("0fa530ba9c04ac32.svg"),
-        None,
-    ),
-    (
-        "battlenet",
-        "Battle.net",
-        "BN",
-        0x009ae4,
-        Some("163c8cb9220efc74.svg"),
-        Some("163c8cb9220efc74.svg"),
-        None,
-    ),
-    (
-        "bluesky",
-        "Bluesky",
-        "BS",
-        0x0285ff,
-        Some("2709f058378a099d.svg"),
-        Some("2709f058378a099d.svg"),
-        None,
-    ),
-    (
-        "bungie",
-        "Bungie.net",
-        "Bg",
-        0x1a1e24,
-        Some("5b0c8422db0e5507.svg"),
-        Some("099cd81cf3b4cc98.svg"),
-        None,
-    ),
-    (
-        "skype",
-        "Skype",
-        "Sk",
-        0x00aff0,
-        Some("883a13b030d276ec.svg"),
-        Some("883a13b030d276ec.svg"),
-        None,
-    ),
+/// The platforms of module 573648 (`type`, `name`, `icon.lightPNG`): `isSupported` is a type in this list, and
+/// module 851767 keeps only supported connections of a profile.
+const CONNECTED_PLATFORMS: &[(&str, &str, &str)] = &[
+    ("twitch", "Twitch", "45900de231038a6d.png"),
+    ("youtube", "YouTube", "c569f6e10f1fa390.png"),
+    ("battlenet", "Battle.net", "0e1a419c00a471a2.png"),
+    ("bluesky", "Bluesky", "8a42ef6bc4dd4e0d.png"),
+    ("bungie", "Bungie.net", "9b762e8a42709cc4.png"),
+    ("skype", "Skype", "4f2cb7753e5d5e61.png"),
     (
         "leagueoflegends",
         "League of Legends",
-        "LoL",
-        0x0bc6e3,
-        Some("302a27a2e5cc3fb6.svg"),
-        Some("302a27a2e5cc3fb6.svg"),
-        None,
+        "fc30b78cd5e1db04.png",
     ),
+    ("steam", "Steam", "b68f2f4df4af9085.png"),
+    ("reddit", "Reddit", "afc3f4fa75178004.png"),
+    ("facebook", "Facebook", "bda550439e2a1af0.png"),
+    ("twitter_legacy", "Twitter", "7520545bf8990675.png"),
+    ("twitter", "X", "90d18081c2eb2ea3.png"),
+    ("spotify", "Spotify", "40518c6ced9fed93.png"),
+    ("xbox", "Xbox", "8cea2073e188eabe.png"),
+    ("samsung", "Samsung Galaxy", "d50e7459b395e5d0.png"),
+    ("github", "GitHub", "1cc92a6d139af44d.png"),
+    ("playstation", "PlayStation Network", "ae74d3de4958bf78.png"),
     (
-        "steam",
-        "Steam",
-        "St",
-        0x171a21,
-        Some("dbfa31449965dbd5.svg"),
-        Some("1f7ec18f3695d4cf.svg"),
-        Some("icons/activity_steam.svg"),
+        "playstation-stg",
+        "PlayStation Network (Staging)",
+        "46a23515a87620b9.png",
     ),
+    ("epicgames", "Epic Games", "e87d94bf0041b63e.png"),
+    ("riotgames", "Riot Games", "fa9e14fc0fd3680f.png"),
+    ("roblox", "Roblox", "268c81933d752854.png"),
+    ("paypal", "PayPal", "81a39a4672d62d60.png"),
+    ("ebay", "eBay", "d0f7fa72a2ca6388.png"),
+    ("tiktok", "TikTok", "b4002d11fb3b5c1c.png"),
+    ("instagram", "Instagram", "ea0692691904fca9.png"),
+    ("letterboxd", "Letterboxd", "cb1a567ff6191fb5.png"),
+    ("mastodon", "Mastodon", "53fcd6d102d44c2b.png"),
+    ("crunchyroll", "Crunchyroll", "4e56bb1ecb9b9dc3.png"),
+    ("domain", "Domain", "8d54a5919eb645f9.png"),
+    ("amazon-music", "Amazon Music", "cda6fb74e92e32f1.png"),
     (
-        "reddit",
-        "Reddit",
-        "r/",
-        0xff4500,
-        Some("adfd927dcc2049a5.svg"),
-        Some("adfd927dcc2049a5.svg"),
-        None,
-    ),
-    (
-        "facebook",
-        "Facebook",
-        "fb",
-        0x1877f2,
-        Some("17be29f77bee4405.svg"),
-        Some("17be29f77bee4405.svg"),
-        None,
-    ),
-    (
-        "twitter_legacy",
-        "Twitter",
-        "Tw",
-        0x1da1f2,
-        Some("0815e2c86f2e0e37.svg"),
-        Some("0815e2c86f2e0e37.svg"),
-        None,
-    ),
-    (
-        "twitter",
-        "X",
-        "X",
-        0x111214,
-        Some("5cf814b9693aac47.svg"),
-        Some("a61999ae9bfb9658.svg"),
-        None,
-    ),
-    (
-        "x",
-        "X",
-        "X",
-        0x111214,
-        Some("5cf814b9693aac47.svg"),
-        Some("a61999ae9bfb9658.svg"),
-        None,
-    ),
-    (
-        "spotify",
-        "Spotify",
-        "Sp",
-        0x1db954,
-        Some("d5719388ffc613da.svg"),
-        Some("d5719388ffc613da.svg"),
-        Some("icons/inventory_spotify.svg"),
-    ),
-    (
-        "xbox",
-        "Xbox",
-        "XB",
-        0x107c10,
-        Some("0133fed7d4dc775c.svg"),
-        Some("c4f09fda61827e19.svg"),
-        None,
-    ),
-    (
-        "samsung",
-        "Samsung Galaxy",
-        "SG",
-        0x1428a0,
-        Some("4ed35737da17ede2.svg"),
-        Some("4ed35737da17ede2.svg"),
-        None,
-    ),
-    (
-        "github",
-        "GitHub",
-        "GH",
-        0x24292f,
-        Some("4db64e0649c64e7e.svg"),
-        Some("a35ff3e86ffa1eb2.svg"),
-        None,
-    ),
-    (
-        "playstation",
-        "PlayStation Network",
-        "PS",
-        0x003791,
-        Some("792da49081c21457.svg"),
-        Some("eed203a7ec517e23.svg"),
-        None,
-    ),
-    (
-        "epicgames",
-        "Epic Games",
-        "EG",
-        0x2a2a2a,
-        Some("4fb7893066c0ef83.svg"),
-        Some("199eceff4fca1a0c.svg"),
-        None,
-    ),
-    (
-        "riotgames",
-        "Riot Games",
-        "RG",
-        0xd32936,
-        Some("772307b7d902b47b.svg"),
-        Some("772307b7d902b47b.svg"),
-        None,
-    ),
-    (
-        "roblox",
-        "Roblox",
-        "Rb",
-        0x232527,
-        Some("e04a073ed006173a.svg"),
-        Some("a4d8e9b0404a2d00.svg"),
-        None,
-    ),
-    (
-        "paypal",
-        "PayPal",
-        "PP",
-        0x003087,
-        Some("dcb64a4ff8f61b2c.svg"),
-        Some("dcb64a4ff8f61b2c.svg"),
-        None,
-    ),
-    (
-        "ebay",
-        "eBay",
-        "eB",
-        0xe53238,
-        Some("b28a7a265581b6e3.svg"),
-        Some("b28a7a265581b6e3.svg"),
-        None,
-    ),
-    (
-        "tiktok",
-        "TikTok",
-        "TT",
-        0x111111,
-        Some("53641d0496c85aec.svg"),
-        Some("a303feb844769624.svg"),
-        None,
-    ),
-    (
-        "instagram",
-        "Instagram",
-        "IG",
-        0xe1306c,
-        Some("c05dded52023ed43.svg"),
-        Some("c05dded52023ed43.svg"),
-        None,
-    ),
-    (
-        "letterboxd",
-        "Letterboxd",
-        "Lb",
-        0x202830,
-        Some("4f8b8634a81979a6.svg"),
-        Some("6b6632ec799ccf64.svg"),
-        None,
-    ),
-    (
-        "mastodon",
-        "Mastodon",
-        "M",
-        0x6364ff,
-        Some("0e6385723fe5cd49.svg"),
-        Some("0e6385723fe5cd49.svg"),
-        None,
-    ),
-    (
-        "crunchyroll",
-        "Crunchyroll",
-        "CR",
-        0xf47521,
-        Some("94ef3e8b7fa85a2e.svg"),
-        Some("94ef3e8b7fa85a2e.svg"),
-        None,
-    ),
-    (
-        "domain",
-        "Domain",
-        "www",
-        0x2b2d31,
-        Some("10d4972595802406.svg"),
-        Some("b4376756bcbbf1ef.svg"),
-        Some("icons/oauth_entry_globe.svg"),
-    ),
-    (
-        "amazon-music",
-        "Amazon Music",
-        "AM",
-        0x25d1da,
-        Some("e3c4aacc1a54395d.svg"),
-        Some("e3c4aacc1a54395d.svg"),
-        None,
-    ),
-    (
-        "amazon_music",
-        "Amazon Music",
-        "AM",
-        0x25d1da,
-        Some("e3c4aacc1a54395d.svg"),
-        Some("e3c4aacc1a54395d.svg"),
-        None,
-    ),
-    (
-        "meta-quest",
+        "meta_quest_or_horizon",
         "Meta Quest",
-        "MQ",
-        0x0081fb,
-        Some("d64a395149091d96.svg"),
-        Some("ac961aa8d4bb48a5.svg"),
-        None,
-    ),
-    (
-        "meta_quest",
-        "Meta Quest",
-        "MQ",
-        0x0081fb,
-        Some("d64a395149091d96.svg"),
-        Some("ac961aa8d4bb48a5.svg"),
-        None,
+        "9f3c6255a4538cd8.png",
     ),
 ];
 
-const DEFAULT_CONNECTED_PLATFORM: (&str, &str, u32, Option<&str>, Option<&str>, Option<&str>) = (
-    "Connected Account",
-    "•",
-    0x4e5058,
-    None,
-    None,
-    Some("icons/oauth_entry_globe.svg"),
-);
+/// The Steam item pictures of module 169869 `dy` (modules 455070 and 101554).
+const STEAM_DOTA2_ICON: &str = "44e2229fd99bc14e.png";
+const STEAM_TF2_ICON: &str = "9eb53b4fa3cc12d5.png";
 
-fn connection_platform_icon_key(kind: &str, dark: bool) -> String {
-    format!(
-        "connection-icon:{kind}:{}",
-        if dark { "dark" } else { "light" }
-    )
+fn connection_icon_key(file: &str) -> String {
+    format!("connection-icon:{file}")
 }
 
-/// Platform metadata and profile URLs from module 573648 (`connected_accounts` in 927071).
+/// `Number(value ?? -1)`: absent is -1, a numeric string its number (empty is 0), anything else NaN.
+fn metadata_number(value: &Value) -> f64 {
+    match value {
+        Value::Null => -1.,
+        Value::Number(number) => number.as_f64().unwrap_or(f64::NAN),
+        Value::Bool(flag) => f64::from(u8::from(*flag)),
+        Value::String(text) => {
+            let text = text.trim();
+            if text.is_empty() {
+                0.
+            } else {
+                text.parse().unwrap_or(f64::NAN)
+            }
+        }
+        _ => f64::NAN,
+    }
+}
+
+/// `"1" === value`: the flags are the string "1", a JSON `true` is not one.
+fn metadata_flag(value: &Value) -> bool {
+    value.as_str() == Some("1")
+}
+
+/// `$h` of module 118751: the locale's number below a million, else one decimal and the million abbreviation
+/// (`NUMBER_ABBREVIATIONS_MILLION`, "{num}M" in en-US).
+fn metadata_count(count: f64) -> String {
+    if count < 1e6 {
+        dc_intl::number(count)
+    } else {
+        format!("{:.1}M", count / 1e6)
+    }
+}
+
+/// The metadata line of one connection, as `renderMetadata` of `t0` (module 927071) picks the builder of module
+/// 169869 by platform: Reddit `xE`, Steam `dy`, Letterboxd `uq`, Bluesky / Mastodon / X `ED`, PayPal `gZ`, eBay `ub`,
+/// TikTok `HU`. The keys are `pK` of module 783419.
+fn connection_metadata(kind: &str, metadata: &Value) -> Vec<ConnectionMeta> {
+    let number = |key: &str| metadata_number(&metadata[key]);
+    let flag = |key: &str| metadata_flag(&metadata[key]);
+    let tag = |label: &str| ConnectionMeta::Tag {
+        label: label.to_owned(),
+        paypal: false,
+    };
+    let mut out = Vec::new();
+    match kind {
+        "reddit" => {
+            let karma = number("total_karma");
+            if karma > -1. {
+                out.push(ConnectionMeta::Text(dc_intl::t!(
+                    "SbCNox",
+                    count = karma,
+                    value = metadata_count(karma)
+                )));
+            }
+            if flag("gold") {
+                out.push(tag(dc_intl::t!("06rDHU")));
+            }
+            if flag("mod") {
+                out.push(tag(dc_intl::t!("oWM95M")));
+            }
+        }
+        "steam" => {
+            let games = number("game_count");
+            let dota = number("item_count_dota2");
+            let tf2 = number("item_count_tf2");
+            if games > -1. {
+                out.push(ConnectionMeta::Text(dc_intl::t!(
+                    "ZatMuX",
+                    count = games,
+                    value = metadata_count(games)
+                )));
+            }
+            if dota > -1. {
+                out.push(ConnectionMeta::Item {
+                    label: dc_intl::t!("Y88M5x", count = dota),
+                    icon: STEAM_DOTA2_ICON,
+                });
+            }
+            if tf2 > -1. {
+                out.push(ConnectionMeta::Item {
+                    label: dc_intl::t!("Y88M5x", count = tf2),
+                    icon: STEAM_TF2_ICON,
+                });
+            }
+        }
+        "letterboxd" => {
+            let watches = number("watches");
+            let diary = number("films_in_diary_this_year");
+            if watches > -1. {
+                out.push(ConnectionMeta::Text(dc_intl::t!(
+                    "Ck2y4x",
+                    count = watches,
+                    value = metadata_count(watches)
+                )));
+            }
+            if diary > -1. {
+                out.push(ConnectionMeta::Text(dc_intl::t!(
+                    "5JpDYR",
+                    count = diary,
+                    value = metadata_count(diary)
+                )));
+            }
+        }
+        "bluesky" | "mastodon" | "twitter" => {
+            let posts = number("statuses_count");
+            let followers = number("followers_count");
+            if posts > -1. {
+                out.push(ConnectionMeta::Text(dc_intl::t!(
+                    "wJZw02",
+                    count = posts,
+                    value = metadata_count(posts)
+                )));
+            }
+            if followers > -1. {
+                out.push(ConnectionMeta::Text(dc_intl::t!(
+                    "grbQMy",
+                    count = followers,
+                    value = metadata_count(followers)
+                )));
+            }
+        }
+        "paypal" => {
+            if flag("verified") {
+                out.push(ConnectionMeta::Tag {
+                    label: dc_intl::t!("IhXLyx").to_owned(),
+                    paypal: true,
+                });
+            }
+        }
+        "ebay" => {
+            let positive = number("positive_feedback_percentage");
+            if positive > 0. {
+                out.push(ConnectionMeta::Text(dc_intl::t!(
+                    "YmL22d",
+                    count = positive,
+                    value = format!("{}%", metadata_count(positive))
+                )));
+            }
+            if flag("top_rated_seller") {
+                out.push(tag(dc_intl::t!("TEEYwa")));
+            }
+        }
+        "tiktok" => {
+            let followers = number("follower_count");
+            let following = number("following_count");
+            let likes = number("likes_count");
+            for (count, key) in [
+                (followers, "O0/8iD"),
+                (following, "ftf12v"),
+                (likes, "tEyTTp"),
+            ] {
+                if count > -1. {
+                    out.push(ConnectionMeta::Text(dc_intl::format(
+                        key,
+                        &[
+                            ("count", dc_intl::Arg::from(count)),
+                            ("value", dc_intl::Arg::from(metadata_count(count))),
+                        ],
+                    )));
+                }
+            }
+            if flag("verified") {
+                out.push(tag(dc_intl::t!("QHHwRR")));
+            }
+        }
+        _ => {}
+    }
+    out
+}
+
+/// `getPlatformUserUrl` of module 573648: the profile link a platform builds from the account's name or id.
+fn connection_url(kind: &str, id: &str, name: &str) -> Option<String> {
+    let name = encode_uri_segment(name);
+    let enc_id = encode_uri_segment(id);
+    Some(match kind {
+        "twitch" => format!("https://www.twitch.tv/{name}"),
+        "youtube" => format!("https://www.youtube.com/channel/{enc_id}"),
+        "bluesky" => format!("https://bsky.app/profile/{}", enc_id.replace("%3A", ":")),
+        "skype" => format!("skype:{enc_id}?userinfo"),
+        "steam" => format!("https://steamcommunity.com/profiles/{enc_id}"),
+        "reddit" => format!("https://www.reddit.com/u/{name}"),
+        "twitter_legacy" => format!("https://twitter.com/{name}"),
+        "twitter" => format!("https://x.com/{name}"),
+        "spotify" => format!("https://open.spotify.com/user/{enc_id}"),
+        "github" => format!("https://github.com/{name}"),
+        "roblox" => format!("https://roblox.com/users/{enc_id}/profile"),
+        "ebay" => format!("https://www.ebay.com/usr/{name}"),
+        "tiktok" => format!("https://www.tiktok.com/@{name}"),
+        "instagram" => format!("https://www.instagram.com/{name}"),
+        "letterboxd" => format!("https://letterboxd.com/{name}/"),
+        "mastodon" => id.to_owned(),
+        "domain" => format!("https://{id}/"),
+        _ => return None,
+    })
+}
+
+/// The profile's connections as module 851767 keeps them (supported platforms only) and `t0` of module 927071 draws
+/// them: the platform, the name with its profile link, "Member since" from `metadata.created_at` and the metadata line.
 fn parse_connected_accounts(body: &Value) -> Vec<ConnectedAccount> {
     body["connected_accounts"]
         .as_array()
         .into_iter()
         .flatten()
         .filter_map(|item| {
-            if item["revoked"] == true {
-                return None;
-            }
-            let kind = item["type"].as_str()?.to_ascii_lowercase();
-            let id = item["id"].as_str().unwrap_or_default().to_owned();
-            let name = item["name"].as_str().filter(|s| !s.is_empty())?.to_owned();
-            let verified = item["verified"] == true;
-            let created_at = item["metadata"]["created_at"]
-                .as_str()
-                .and_then(profile_date);
-            let enc_name = encode_uri_segment(&name);
-            let enc_id = encode_uri_segment(&id);
-            let (platform_name, monogram, brand_rgb, light_asset, dark_asset, icon_svg) =
-                CONNECTED_PLATFORMS
-                    .iter()
-                    .find(|(known, ..)| *known == kind)
-                    .map(|(_, title, mono, rgb, light, dark, svg)| {
-                        (*title, *mono, *rgb, *light, *dark, *svg)
-                    })
-                    .unwrap_or(DEFAULT_CONNECTED_PLATFORM);
-            let url = match kind.as_str() {
-                "twitch" => Some(format!("https://www.twitch.tv/{enc_name}")),
-                "youtube" => {
-                    (!id.is_empty()).then(|| format!("https://www.youtube.com/channel/{enc_id}"))
-                }
-                "bluesky" => (!id.is_empty())
-                    .then(|| format!("https://bsky.app/profile/{}", enc_id.replace("%3A", ":"))),
-                "steam" => (!id.is_empty())
-                    .then(|| format!("https://steamcommunity.com/profiles/{enc_id}")),
-                "reddit" => Some(format!("https://www.reddit.com/u/{enc_name}")),
-                "twitter_legacy" => Some(format!("https://twitter.com/{enc_name}")),
-                "twitter" | "x" => Some(format!("https://x.com/{enc_name}")),
-                "spotify" => {
-                    (!id.is_empty()).then(|| format!("https://open.spotify.com/user/{enc_id}"))
-                }
-                "github" => Some(format!("https://github.com/{enc_name}")),
-                "roblox" => (!id.is_empty())
-                    .then(|| format!("https://www.roblox.com/users/{enc_id}/profile")),
-                "ebay" => Some(format!("https://www.ebay.com/usr/{enc_name}")),
-                "tiktok" => Some(format!("https://www.tiktok.com/@{enc_name}")),
-                "instagram" => Some(format!("https://www.instagram.com/{enc_name}")),
-                "letterboxd" => Some(format!("https://letterboxd.com/{enc_name}/")),
-                "mastodon" => {
-                    (id.starts_with("https://") || id.starts_with("http://")).then_some(id.clone())
-                }
-                "domain" => (!id.is_empty()).then(|| format!("https://{id}/")),
-                _ => None,
-            };
+            let kind = item["type"].as_str()?;
+            let &(_, platform_name, icon) = CONNECTED_PLATFORMS
+                .iter()
+                .find(|(known, ..)| *known == kind)?;
+            let id = item["id"].as_str().unwrap_or_default();
+            let name = item["name"].as_str().unwrap_or_default().to_owned();
+            let metadata = &item["metadata"];
             Some(ConnectedAccount {
-                kind,
-                id,
-                name,
-                verified,
-                created_at,
+                kind: kind.to_owned(),
+                created_at: metadata["created_at"].as_str().and_then(profile_date),
                 platform_name,
-                monogram,
-                brand_rgb,
-                light_asset,
-                dark_asset,
-                icon_svg,
-                url,
+                icon,
+                url: connection_url(kind, id, &name),
+                metadata: connection_metadata(kind, metadata),
+                name,
             })
         })
         .collect()
@@ -836,18 +756,17 @@ impl Root {
         cx.notify();
     }
 
+    /// The platform pictures and the Steam item pictures the Connections section draws.
     fn request_connected_account_icons(&mut self, body: &Value) {
         for account in parse_connected_accounts(body) {
-            if let Some(light) = account.light_asset {
+            let items = account.metadata.iter().filter_map(|item| match item {
+                ConnectionMeta::Item { icon, .. } => Some(*icon),
+                _ => None,
+            });
+            for file in std::iter::once(account.icon).chain(items) {
                 self.request_image(
-                    connection_platform_icon_key(&account.kind, false),
-                    format!("https://discord.com/assets/{light}"),
-                );
-            }
-            if let Some(dark) = account.dark_asset {
-                self.request_image(
-                    connection_platform_icon_key(&account.kind, true),
-                    format!("https://discord.com/assets/{dark}"),
+                    connection_icon_key(file),
+                    format!("https://discord.com/assets/{file}"),
                 );
             }
         }
@@ -1108,6 +1027,7 @@ impl Root {
         guild: Option<Id>,
         me: bool,
         palette: &super::dm_profile::Palette,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Option<AnyElement> {
         let light_theme = palette.theme.is_some_and(|t| t.light());
@@ -1242,30 +1162,60 @@ impl Root {
                     .border_color(bubble_border)
                     .map(|d| {
                         if emoji_only {
-                            d.p(px(8.))
+                            d.px(px(12.))
+                                .py(px(8.))
                                 .flex()
                                 .items_center()
                                 .justify_center()
                                 .children(emoji_el)
                         } else {
                             let text = status.text.clone().unwrap_or_default();
+                            let line = || {
+                                div()
+                                    .text_size(px(14.))
+                                    .line_height(px(18.))
+                                    .text_color(default)
+                            };
+                            let has_emoji = emoji_el.is_some();
+                            let (first, rest) = if has_emoji {
+                                super::profile_board::float_first_line(&text, 155. - 20., |part| {
+                                    super::threads::measure_text(window, part, 14., 400.)
+                                })
+                            } else {
+                                (String::new(), text)
+                            };
                             d.px(px(12.))
                                 .py(px(8.))
                                 .flex()
-                                .items_start()
-                                .when_some(emoji_el, |row, art| {
-                                    row.child(div().mr(px(4.)).mt(px(1.)).flex_none().child(art))
+                                .flex_col()
+                                .when(has_emoji, |column| {
+                                    column.child(
+                                        div()
+                                            .flex()
+                                            .items_start()
+                                            .when_some(emoji_el, |row, art| {
+                                                row.child(
+                                                    div()
+                                                        .mr(px(4.))
+                                                        .mt(px(1.))
+                                                        .flex_none()
+                                                        .child(art),
+                                                )
+                                            })
+                                            .when(!first.is_empty(), |row| {
+                                                row.child(line().whitespace_nowrap().child(first))
+                                            }),
+                                    )
                                 })
-                                .child(
-                                    div()
-                                        .min_w(px(0.))
-                                        .line_clamp(2)
-                                        .text_ellipsis()
-                                        .text_size(px(14.))
-                                        .line_height(px(18.))
-                                        .text_color(default)
-                                        .child(text),
-                                )
+                                .when(!rest.is_empty(), |column| {
+                                    column.child(
+                                        line()
+                                            .max_w(px(155.))
+                                            .line_clamp(if has_emoji { 1 } else { 2 })
+                                            .text_ellipsis()
+                                            .child(rest),
+                                    )
+                                })
                         }
                     })
                     .when(me, |d| {
@@ -1292,7 +1242,8 @@ impl Root {
         )
     }
 
-    /// Connected accounts list (`927071.js:760-945`, `.connectedAccounts_O2KI4e`).
+    /// The Connections section's list (`t5` of module 927071, `container_O2KI4e` / `connectionList_O2KI4e`: a column,
+    /// 16px apart): one `t2` row per connection.
     fn full_profile_connections(
         &self,
         user: Id,
@@ -1300,190 +1251,175 @@ impl Root {
         palette: &super::dm_profile::Palette,
         cx: &mut Context<Self>,
     ) -> Option<AnyElement> {
-        let strong: Hsla = palette.token("--text-strong").into();
         let default: Hsla = palette.token("--text-default").into();
-        let subtle: Hsla = palette.token("--text-subtle").into();
         let accounts = parse_connected_accounts(body?);
         if accounts.is_empty() {
             return None;
         }
-        let border = palette.token(if palette.themed {
-            "--user-profile-border"
-        } else {
-            "--border-subtle"
-        });
-        let dark = palette
-            .theme
-            .map_or(!matches!(super::theme(), dc_tokens::Theme::Light), |t| {
-                !t.light()
-            });
+        let border = palette.token("--border-subtle");
+        let tag_fill = palette.token("--background-mod-subtle");
         let rows: Vec<AnyElement> = accounts
             .into_iter()
             .enumerate()
             .map(|(index, account)| {
-                let platform_picture = self
-                    .images
-                    .get(&connection_platform_icon_key(&account.kind, dark))
-                    .cloned();
-                let badge_el = if let Some(picture) = platform_picture {
-                    div()
-                        .id(SharedString::from(format!(
-                            "full-profile-conn-badge-{user}-{index}"
-                        )))
-                        .size(px(24.))
-                        .flex_none()
-                        .flex()
-                        .items_center()
-                        .justify_center()
-                        .child(img(picture).size(px(24.)))
-                } else {
-                    div()
-                        .id(SharedString::from(format!(
-                            "full-profile-conn-badge-{user}-{index}"
-                        )))
-                        .size(px(24.))
-                        .flex_none()
-                        .rounded(px(6.))
-                        .border_1()
-                        .border_color(border)
-                        .bg(gpui::rgb(account.brand_rgb))
-                        .flex()
-                        .items_center()
-                        .justify_center()
-                        .map(|d| match account.icon_svg {
-                            Some(path) => {
-                                d.child(svg().path(path).size(px(14.)).text_color(color("--white")))
-                            }
-                            None => d
-                                .text_size(px(10.))
-                                .line_height(px(12.))
-                                .font_weight(FontWeight(700.))
-                                .text_color(color("--white"))
-                                .child(account.monogram),
-                        })
-                };
-                let badge = self.with_tip(
+                // `platformIconContainer_O2KI4e`: 24px, white with a 1px border-subtle edge and 8px corners, the
+                // 18px `lightPNG` in it, and the platform's name as its tooltip.
+                let picture = self.images.get(&connection_icon_key(account.icon)).cloned();
+                let tile = div()
+                    .id(SharedString::from(format!(
+                        "full-profile-conn-badge-{user}-{index}"
+                    )))
+                    .size(px(24.))
+                    .flex_none()
+                    .rounded(px(8.))
+                    .border_1()
+                    .border_color(border)
+                    .bg(color("--white"))
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .children(picture.map(|picture| img(picture).size(px(18.))));
+                let tile = self.with_tip(
                     format!("full-profile-conn-platform-{user}-{index}"),
                     super::tooltip::Tip::text(account.platform_name, super::tooltip::Side::Top)
                         .after(300),
-                    badge_el,
+                    tile,
                     cx,
                 );
-                let verified = account.verified.then(|| {
-                    svg()
-                        .path("icons/mod_info_verified.svg")
-                        .size(px(16.))
-                        .flex_none()
-                        .text_color(subtle)
-                });
-                let name_text = account.name.clone();
-                let open_link = account.url.clone().map(|url| {
-                    let label = format!("{}: {}", account.platform_name, account.name);
-                    let btn = div()
-                        .id(SharedString::from(format!(
-                            "full-profile-conn-link-{user}-{index}"
-                        )))
-                        .size(px(24.))
-                        .flex_none()
-                        .rounded(px(4.))
-                        .cursor_pointer()
-                        .flex()
-                        .items_center()
-                        .justify_center()
-                        .child(
-                            svg()
-                                .path("icons/open_external.svg")
-                                .size(px(16.))
-                                .text_color(subtle)
-                                .hover(move |s| s.text_color(strong)),
-                        )
-                        .on_click(cx.listener(move |this, _, _, cx| {
-                            this.follow_link(&url, &label, cx);
-                        }));
-                    self.with_tip(
-                        format!("full-profile-conn-open-tip-{user}-{index}"),
-                        super::tooltip::Tip::text(dc_intl::t!("q5jLJB"), super::tooltip::Side::Top)
-                            .after(300),
-                        btn,
-                        cx,
-                    )
-                });
-                let name_row: AnyElement = if let Some(url) = account.url.clone() {
-                    let label = format!("{}: {}", account.platform_name, account.name);
-                    div()
-                        .id(SharedString::from(format!(
-                            "full-profile-conn-name-{user}-{index}"
-                        )))
-                        .min_w(px(0.))
-                        .cursor_pointer()
-                        .flex()
-                        .items_center()
-                        .gap(px(4.))
-                        .child(
-                            div()
-                                .min_w(px(0.))
-                                .text_ellipsis()
-                                .text_size(px(14.))
-                                .line_height(px(18.))
-                                .text_color(default)
-                                .hover(move |s| s.text_color(strong))
-                                .child(name_text),
-                        )
-                        .children(verified)
-                        .on_click(cx.listener(move |this, _, _, cx| {
-                            this.follow_link(&url, &label, cx);
-                        }))
-                        .into_any_element()
-                } else {
-                    div()
-                        .min_w(px(0.))
-                        .flex()
-                        .items_center()
-                        .gap(px(4.))
-                        .child(
-                            div()
-                                .min_w(px(0.))
-                                .text_ellipsis()
-                                .text_size(px(14.))
-                                .line_height(px(18.))
-                                .text_color(default)
-                                .child(name_text),
-                        )
-                        .children(verified)
-                        .into_any_element()
+                // `accountNameText_O2KI4e`: body-sm/normal, one line.
+                let name_text = div()
+                    .min_w(px(0.))
+                    .overflow_hidden()
+                    .text_ellipsis()
+                    .whitespace_nowrap()
+                    .text_size(px(14.))
+                    .line_height(px(18.))
+                    .text_color(default)
+                    .child(account.name.clone());
+                // `platformUrlAnchor_O2KI4e` around `accountName_O2KI4e` (2px gap) with the 16px LinkExternalSmall
+                // glyph (module 509434), underlined on hover; a platform without a profile link shows the name alone.
+                let name: AnyElement = match account.url.clone() {
+                    Some(url) => {
+                        let label = format!(
+                            "{}, {}, {}",
+                            account.platform_name,
+                            account.name,
+                            dc_intl::t!("q5jLJB")
+                        );
+                        div()
+                            .id(SharedString::from(format!(
+                                "full-profile-conn-name-{user}-{index}"
+                            )))
+                            .min_w(px(0.))
+                            .cursor_pointer()
+                            .flex()
+                            .items_center()
+                            .gap(px(2.))
+                            .hover(|style| style.underline())
+                            .child(name_text)
+                            .child(
+                                svg()
+                                    .path("icons/link_external_small.svg")
+                                    .size(px(16.))
+                                    .flex_none()
+                                    .text_color(default),
+                            )
+                            .on_click(cx.listener(move |this, _, _, cx| {
+                                this.follow_link(&url, &label, cx);
+                            }))
+                            .into_any_element()
+                    }
+                    None => name_text.into_any_element(),
                 };
+                let meta_count = account.metadata.len();
+                let meta: Vec<AnyElement> = account
+                    .metadata
+                    .into_iter()
+                    .enumerate()
+                    .map(|(at, item)| {
+                        // `connectedAccountVanityMetadata_VlBwYX`: footnote/normal (10px in a 12px line), 4px above,
+                        // 8px after each but the last.
+                        let base = div()
+                            .mt(px(4.))
+                            .when(at + 1 < meta_count, |this| this.mr(px(8.)))
+                            .text_size(px(10.))
+                            .line_height(px(12.))
+                            .text_color(default);
+                        match item {
+                            ConnectionMeta::Text(text) => base.child(text),
+                            ConnectionMeta::Tag { label, paypal } => base
+                                .rounded(px(12.))
+                                .px(px(8.))
+                                .py(px(1.))
+                                .map(|this| {
+                                    if paypal {
+                                        this.bg(palette.token("--status-positive-background"))
+                                            .text_color(color("--white"))
+                                    } else {
+                                        this.bg(tag_fill)
+                                    }
+                                })
+                                .child(label),
+                            ConnectionMeta::Item { label, icon } => base
+                                .flex()
+                                .items_center()
+                                .children(
+                                    self.images
+                                        .get(&connection_icon_key(icon))
+                                        .cloned()
+                                        .map(|picture| img(picture).size(px(18.)).mr(px(4.))),
+                                )
+                                .child(label),
+                        }
+                        .into_any_element()
+                    })
+                    .collect();
+                // `connection_O2KI4e`: the tile and `connectionInfo_O2KI4e` (a centred column, 4px apart) 8px apart.
                 div()
                     .flex()
-                    .items_center()
                     .gap(px(8.))
-                    .child(badge)
+                    .child(tile)
                     .child(
                         div()
-                            .flex_1()
                             .min_w(px(0.))
                             .flex()
                             .flex_col()
-                            .child(name_row)
-                            .when_some(account.created_at, |d, date| {
-                                d.child(
+                            .justify_center()
+                            .gap(px(4.))
+                            .child(div().flex().flex_col().child(name).when_some(
+                                account.created_at,
+                                |this, date| {
+                                    this.child(
+                                        div()
+                                            .text_size(px(12.))
+                                            .line_height(px(16.))
+                                            .text_color(default)
+                                            .child(dc_intl::t!("9rfonh", date = date)),
+                                    )
+                                },
+                            ))
+                            .when(!meta.is_empty(), |this| {
+                                this.child(
                                     div()
-                                        .text_size(px(12.))
-                                        .line_height(px(16.))
-                                        .text_color(subtle)
-                                        .child(dc_intl::t!("9rfonh", date = date)),
+                                        .flex()
+                                        .flex_row()
+                                        .flex_wrap()
+                                        .items_center()
+                                        .overflow_hidden()
+                                        .children(meta),
                                 )
                             }),
                     )
-                    .children(open_link)
                     .into_any_element()
             })
             .collect();
         Some(
             div()
                 .parity("full-profile-connections")
+                .w_full()
                 .flex()
                 .flex_col()
-                .gap(px(8.))
+                .gap(px(16.))
                 .children(rows)
                 .into_any_element(),
         )
@@ -1678,6 +1614,8 @@ impl Root {
                 let title = widget_data_title(&widget.data);
                 let key = widget.data.unique_key();
                 let open = expanded.contains(&key);
+                // An application widget with its config and identity read draws edge to edge in its card.
+                let mut embedded = false;
                 let content: AnyElement = match &widget.data {
                     // `ns` / `na` of module 720060: game detail cards, Games in Rotation cut to two.
                     WidgetData::FavoriteGames { games } | WidgetData::CurrentGames { games } => {
@@ -1760,47 +1698,59 @@ impl Root {
                                     .get(&format!("profile-game:{application_id}"))
                                     .cloned()
                             });
-                        div()
-                            .flex()
-                            .items_center()
-                            .gap(px(12.))
-                            .child(
-                                div()
-                                    .size(px(48.))
-                                    .flex_none()
-                                    .rounded(px(8.))
-                                    .overflow_hidden()
-                                    .bg(tile_bg)
-                                    .children(picture.map(|picture| {
-                                        img(picture)
-                                            .size(px(48.))
-                                            .object_fit(gpui::ObjectFit::Cover)
-                                    })),
-                            )
-                            .child(
-                                div()
-                                    .flex_1()
-                                    .min_w(px(0.))
-                                    .flex()
-                                    .flex_col()
-                                    .gap(px(2.))
-                                    .child(
-                                        div()
-                                            .text_size(px(16.))
-                                            .line_height(px(20.))
-                                            .font_weight(FontWeight(600.))
-                                            .text_color(strong)
-                                            .child(app_name),
-                                    )
-                                    .child(
-                                        div()
-                                            .text_size(px(12.))
-                                            .line_height(px(16.))
-                                            .text_color(subtle)
-                                            .child(dc_intl::t!("EKR8Ps")),
-                                    ),
-                            )
-                            .into_any_element()
+                        if let Some(laid_out) = self.app_widget_body(
+                            user,
+                            application_id,
+                            &app_name,
+                            picture.clone(),
+                            content_width + 32.,
+                            palette,
+                        ) {
+                            embedded = true;
+                            laid_out
+                        } else {
+                            div()
+                                .flex()
+                                .items_center()
+                                .gap(px(12.))
+                                .child(
+                                    div()
+                                        .size(px(48.))
+                                        .flex_none()
+                                        .rounded(px(8.))
+                                        .overflow_hidden()
+                                        .bg(tile_bg)
+                                        .children(picture.map(|picture| {
+                                            img(picture)
+                                                .size(px(48.))
+                                                .object_fit(gpui::ObjectFit::Cover)
+                                        })),
+                                )
+                                .child(
+                                    div()
+                                        .flex_1()
+                                        .min_w(px(0.))
+                                        .flex()
+                                        .flex_col()
+                                        .gap(px(2.))
+                                        .child(
+                                            div()
+                                                .text_size(px(16.))
+                                                .line_height(px(20.))
+                                                .font_weight(FontWeight(600.))
+                                                .text_color(strong)
+                                                .child(app_name),
+                                        )
+                                        .child(
+                                            div()
+                                                .text_size(px(12.))
+                                                .line_height(px(16.))
+                                                .text_color(subtle)
+                                                .child(dc_intl::t!("EKR8Ps")),
+                                        ),
+                                )
+                                .into_any_element()
+                        }
                     }
                     WidgetData::Personal { sections, .. } => {
                         let rendered: Vec<AnyElement> = sections
@@ -1901,8 +1851,9 @@ impl Root {
                     user,
                     index,
                     widget.id.as_deref(),
-                    title,
+                    if embedded { "".into() } else { title },
                     visitor,
+                    embedded,
                     content,
                     palette,
                     cx,
@@ -2481,6 +2432,7 @@ impl Root {
             .and_then(|member| member.nick.as_deref())
             .filter(|nick| !nick.is_empty())
             .map_or_else(|| user.display_name().to_owned(), str::to_owned);
+        let activity_name = display_name.clone();
         // `p?.private` (module 927071): the notice of module 501193 under the names.
         let private_profile = !me && body.is_some_and(|body| body["private"] == true);
         let private_name = display_name.clone();
@@ -2528,7 +2480,8 @@ impl Root {
             })
             .flatten();
         let banner_img = self.profile_banner_image_in(id, open_guild);
-        let status_bubble = self.full_profile_status_bubble(id, open_guild, me, &palette, cx);
+        let status_bubble =
+            self.full_profile_status_bubble(id, open_guild, me, &palette, window, cx);
         let connections = self.full_profile_connections(id, body, &palette, cx);
         let viewport = window.viewport_size();
         let geo =
@@ -2971,11 +2924,13 @@ impl Root {
                 this.child(tab_item(Tab::Servers, mutual_servers_label(server_count)))
             });
         // `sn`: the empty tab's heading (`heading-sm/medium` `text-strong`) over one line (`body-sm/normal`), centred,
-        // at most 320px wide (`empty_7q_A1n`, `textContainer_7q_A1n`).
+        // at most 320px wide (`empty_7q_A1n`, `textContainer_7q_A1n`), in the panel scroller's 20px top padding
+        // (`tabPanelScroller_y4ZEM5`) like every other tab.
         let mutual_empty = |servers: bool| {
             let (heading, line) = mutual_empty_text(servers, id);
             div()
                 .size_full()
+                .pt(px(20.))
                 .min_h(px(240.))
                 .flex()
                 .flex_col()
@@ -3031,20 +2986,98 @@ impl Root {
                     .flatten()
                     .filter_map(|entry| self.activity_card(entry, now_ms, &palette, strong, subtle))
                     .collect();
-                div()
-                    .pt(px(20.))
-                    .flex()
-                    .flex_col()
-                    .gap(px(8.))
-                    .when(!current.is_empty(), |this| {
-                        this.child(Self::section_heading(dc_intl::t!("J6STd9"), subtle))
-                            .child(div().flex().flex_col().gap(px(8.)).children(current))
-                    })
-                    .when(!cards.is_empty(), |this| {
-                        this.child(Self::section_heading(dc_intl::t!("jzgEoL"), subtle))
-                            .child(div().flex().flex_col().gap(px(8.)).children(cards))
-                    })
-                    .into_any_element()
+                let outbox_read = self.fetched.contains_key(&format!("outbox:{id}"));
+                if !me && outbox_read && current.is_empty() && cards.is_empty() {
+                    // `sr` of module 927071: "<name> doesn't have any activity to share here", one of its sixteen
+                    // lines (sampled once per opening; here by the person's id) and a Message button.
+                    let (heading, line) = activity_empty_text(&activity_name, id);
+                    let message_bg = palette.token("--control-secondary-background-default");
+                    let message_hover = palette.token("--control-secondary-background-hover");
+                    let message_fg = palette.token("--control-secondary-text-default");
+                    div()
+                        // `empty_7q_A1n` sits in the tab panel itself (no scroller), 448px wide from the panel's
+                        // 32px inset: its centre is 8px right of the scroller's.
+                        .size_full()
+                        .pt(px(20.))
+                        .relative()
+                        .left(px(8.))
+                        .flex()
+                        .flex_col()
+                        .items_center()
+                        .justify_center()
+                        .gap(px(24.))
+                        .child(
+                            div()
+                                .max_w(px(320.))
+                                .flex()
+                                .flex_col()
+                                .gap(px(8.))
+                                .text_center()
+                                .child(
+                                    div()
+                                        .text_size(px(16.))
+                                        .line_height(px(20.))
+                                        .font_weight(FontWeight(500.))
+                                        .text_color(strong)
+                                        .child(heading),
+                                )
+                                .child(
+                                    div()
+                                        .text_size(px(14.))
+                                        .line_height(px(18.))
+                                        .text_color(default)
+                                        .child(line),
+                                ),
+                        )
+                        .child(
+                            // `button_F7qvhY` small secondary: 32px, 12px sides, the 16px chat glyph 4px before it.
+                            div()
+                                .id("full-profile-activity-message")
+                                .h(px(32.))
+                                .px(px(12.))
+                                .rounded(px(8.))
+                                .bg(message_bg)
+                                .hover(move |style| style.bg(message_hover))
+                                .cursor_pointer()
+                                .flex()
+                                .items_center()
+                                .gap(px(4.))
+                                .child(
+                                    svg()
+                                        .path("icons/chat_bubble.svg")
+                                        .size(px(16.))
+                                        .text_color(message_fg),
+                                )
+                                .child(
+                                    div()
+                                        .text_size(px(14.))
+                                        .line_height(px(18.))
+                                        .font_weight(FontWeight(500.))
+                                        .text_color(message_fg)
+                                        .child(dc_intl::t!("g33r/P")),
+                                )
+                                .on_click(cx.listener(move |this, _, _, cx| {
+                                    this.full_profile = None;
+                                    this.open_dm_with(id, cx);
+                                })),
+                        )
+                        .into_any_element()
+                } else {
+                    div()
+                        .pt(px(20.))
+                        .flex()
+                        .flex_col()
+                        .gap(px(8.))
+                        .when(!current.is_empty(), |this| {
+                            this.child(Self::section_heading(dc_intl::t!("J6STd9"), subtle))
+                                .child(div().flex().flex_col().gap(px(8.)).children(current))
+                        })
+                        .when(!cards.is_empty(), |this| {
+                            this.child(Self::section_heading(dc_intl::t!("jzgEoL"), subtle))
+                                .child(div().flex().flex_col().gap(px(8.)).children(cards))
+                        })
+                        .into_any_element()
+                }
             }
             Tab::Friends if friend_count == Some(0) => mutual_empty(false),
             Tab::Servers if server_count == Some(0) => mutual_empty(true),
@@ -3209,6 +3242,14 @@ impl Root {
         let top_band = geo
             .sys_pad
             .max(if private_profile { PRIVATE_BANNER } else { 0. });
+        // The frame of module 744808 over the whole modal (`profileContentOuter`), hidden in windows up to 785px tall.
+        let (frame_back, frame_front) = self.profile_frame_layers(
+            id,
+            geo.width,
+            Some(geo.height),
+            super::profile_frames::FrameSurface::Modal,
+            f32::from(viewport.height),
+        );
         let modal = div()
             .parity("full-profile")
             .id("full-profile")
@@ -3231,6 +3272,7 @@ impl Root {
             .bg(modal_bg)
             .children(palette.modal_backdrop())
             .children(top_banner_backdrop)
+            .children(frame_back)
             .on_click(|_, _, cx| cx.stop_propagation())
             // anner_B_p0HC in the modal (module 312381): a 48px band across the top, the lock (xs) and Private
             // Profile in ody-sm/semibold, 4px apart; the content and the close button move below it
@@ -3243,7 +3285,19 @@ impl Root {
                         .left_0()
                         .right_0()
                         .h(px(PRIVATE_BANNER))
-                        .bg(palette.token("--background-surface-higher"))
+                        // `.custom-user-profile-theme.user-profile-modal-v2 .banner_B_p0HC`: on a themed profile the
+                        // band is the overlay mixed into the primary colour, 65% at the top to 60% at the bottom.
+                        .map(|band| match palette.theme.as_ref() {
+                            Some(theme) => {
+                                let (top, bottom) = theme.private_band_stops();
+                                band.bg(gpui::linear_gradient(
+                                    180.,
+                                    gpui::linear_color_stop(top, 0.),
+                                    gpui::linear_color_stop(bottom, 1.),
+                                ))
+                            }
+                            None => band.bg(palette.token("--background-surface-higher")),
+                        })
                         .flex()
                         .items_center()
                         .justify_center()
@@ -3300,7 +3354,8 @@ impl Root {
                             .text_color(secondary_fg),
                     )
                     .on_click(cx.listener(|this, _, _, cx| this.close_full_profile(cx))),
-            );
+            )
+            .children(frame_front);
         // The legacy modal root (`root__KoJTP` in the capture, `EO` in module 935462).
         let pose =
             crate::ui::motion::legacy_modal_pose("full-profile", "full-profile-layer", false);
@@ -3371,10 +3426,11 @@ fn full_profile_modal_geometry(vw: f32, vh: f32) -> ModalGeometry {
 #[cfg(test)]
 mod tests {
     use super::{
-        Tab, full_profile_modal_geometry, initial_tab, mutual_counts, mutual_empty_text,
-        mutual_friends_label, mutual_servers_label, parse_connected_accounts, parse_custom_status,
-        profile_date, profile_route, profile_tabs, should_apply_guild_member, time_ago,
-        wishlist_is_private,
+        ConnectionMeta, STEAM_DOTA2_ICON, STEAM_TF2_ICON, Tab, activity_empty_text,
+        connection_metadata, full_profile_modal_geometry, initial_tab, mutual_counts,
+        mutual_empty_text, mutual_friends_label, mutual_servers_label, parse_connected_accounts,
+        parse_custom_status, profile_date, profile_route, profile_tabs, should_apply_guild_member,
+        time_ago, wishlist_is_private,
     };
     use serde_json::json;
 
@@ -3442,6 +3498,12 @@ mod tests {
             "widgets": [{"id": "1", "data": {"type": "favorite_games", "games": [{"game_id": "1"}]}}]
         });
         assert_eq!(initial_tab(Some(&board), true), Tab::Board);
+        let (heading, line) = activity_empty_text("Ann", 2);
+        assert_eq!(heading, "Ann doesn't have any activity to share here");
+        assert_eq!(
+            line,
+            "Ann keeps their profile simple - ask what they're into"
+        );
         let (heading, line) = mutual_empty_text(true, 7);
         assert!(!heading.is_empty() && !line.is_empty());
         assert_eq!(mutual_empty_text(false, 7), mutual_empty_text(false, 12));
@@ -3471,7 +3533,7 @@ mod tests {
     }
 
     #[test]
-    fn connected_accounts_parse_verified_badges_dates_and_external_urls() {
+    fn connected_accounts_keep_supported_platforms_with_their_dates_and_links() {
         let body = json!({
             "connected_accounts": [
                 {
@@ -3481,31 +3543,92 @@ mod tests {
                     "verified": true,
                     "metadata": {"created_at": "2020-05-15T12:00:00+00:00"}
                 },
-                {
-                    "type": "steam",
-                    "id": "76561198000000000",
-                    "name": "Gordon",
-                    "verified": true
-                },
-                {
-                    "type": "playstation",
-                    "id": "psn-1",
-                    "name": "Hunter",
-                    "verified": false
-                }
+                {"type": "steam", "id": "76561198000000000", "name": "Gordon", "verified": true},
+                {"type": "playstation", "id": "psn-1", "name": "Hunter", "verified": false},
+                {"type": "contacts", "id": "c", "name": "Not a platform"},
+                {"type": "skype", "id": "live:someone", "name": "Someone"}
             ]
         });
         let parsed = parse_connected_accounts(&body);
-        assert_eq!(parsed.len(), 3);
+        let kinds: Vec<&str> = parsed.iter().map(|account| account.kind.as_str()).collect();
+        assert_eq!(kinds, ["github", "steam", "playstation", "skype"]);
         assert_eq!(parsed[0].platform_name, "GitHub");
+        assert_eq!(parsed[0].icon, "1cc92a6d139af44d.png");
         assert_eq!(parsed[0].url.as_deref(), Some("https://github.com/octocat"));
-        assert!(parsed[0].verified);
         assert_eq!(parsed[0].created_at.as_deref(), Some("May 15, 2020"));
         assert_eq!(
             parsed[1].url.as_deref(),
             Some("https://steamcommunity.com/profiles/76561198000000000")
         );
         assert_eq!(parsed[2].url, None);
+        assert_eq!(
+            parsed[3].url.as_deref(),
+            Some("skype:live%3Asomeone?userinfo")
+        );
+    }
+
+    #[test]
+    fn connection_metadata_follows_the_platform_builders() {
+        let text = |value: &str| ConnectionMeta::Text(value.to_owned());
+        let tag = |value: &str| ConnectionMeta::Tag {
+            label: value.to_owned(),
+            paypal: false,
+        };
+        assert_eq!(
+            connection_metadata(
+                "reddit",
+                &json!({"total_karma": "1234", "gold": "1", "mod": "0"})
+            ),
+            [text("1,234 Karma"), tag("Gold")]
+        );
+        assert_eq!(
+            connection_metadata(
+                "steam",
+                &json!({"game_count": "1", "item_count_dota2": "0", "item_count_tf2": "3"})
+            ),
+            [
+                text("1 Game"),
+                ConnectionMeta::Item {
+                    label: "0 items".to_owned(),
+                    icon: STEAM_DOTA2_ICON
+                },
+                ConnectionMeta::Item {
+                    label: "3 items".to_owned(),
+                    icon: STEAM_TF2_ICON
+                },
+            ]
+        );
+        assert_eq!(
+            connection_metadata(
+                "twitter",
+                &json!({"statuses_count": "2500000", "followers_count": "1", "verified": "1"})
+            ),
+            [text("2.5M Posts"), text("1 Follower")]
+        );
+        assert_eq!(
+            connection_metadata(
+                "tiktok",
+                &json!({"follower_count": "10", "following_count": "2", "likes_count": "1", "verified": true})
+            ),
+            [text("10 Followers"), text("2 Following"), text("1 Like")]
+        );
+        assert_eq!(
+            connection_metadata("paypal", &json!({"verified": "1"})),
+            [ConnectionMeta::Tag {
+                label: "Verified Bank Account".to_owned(),
+                paypal: true
+            }]
+        );
+        assert_eq!(
+            connection_metadata(
+                "ebay",
+                &json!({"positive_feedback_percentage": "0", "top_rated_seller": "1"})
+            ),
+            [tag("Top Rated Seller")]
+        );
+        // A missing count is left out, a count that is not a number too.
+        assert!(connection_metadata("letterboxd", &json!({"watches": "many"})).is_empty());
+        assert!(connection_metadata("github", &json!({"followers_count": "5"})).is_empty());
     }
 
     #[test]
@@ -3548,6 +3671,10 @@ mod tests {
             Some("Oct 29, 2021")
         );
         assert_eq!(profile_date("not a date"), None);
+        assert_eq!(
+            profile_date("2013-01-06T10:00:00").as_deref(),
+            Some("Jan 6, 2013")
+        );
     }
 
     #[test]

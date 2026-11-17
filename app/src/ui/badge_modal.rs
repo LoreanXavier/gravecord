@@ -408,10 +408,8 @@ impl Root {
             .users
             .get(&user)
             .map(|user| user.display_name().to_owned());
-        body["badges"]
-            .as_array()
+        super::profile::display_badges(body, self.guild)
             .into_iter()
-            .flatten()
             .enumerate()
             .filter_map(|(index, badge)| {
                 let icon_hash = badge["icon"].as_str()?;

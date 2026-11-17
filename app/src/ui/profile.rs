@@ -37,6 +37,24 @@ pub(super) fn popout_avatar_hover_overlay(group: &'static str) -> gpui::Div {
         .bg(color("--opacity-black-40"))
 }
 
+/// `getBadges` of the display profile (module 527212): the account's badges, then the server profile's
+/// (`guild_badges`, which module 851767 keeps with the guild member profile) when that server is the one in view.
+pub(super) fn display_badges(
+    body: &serde_json::Value,
+    guild: Option<Id>,
+) -> Vec<&serde_json::Value> {
+    let server = guild.is_some_and(|guild| {
+        body["guild_member_profile"]["guild_id"].as_str() == Some(guild.to_string().as_str())
+    });
+    let own = body["badges"].as_array().into_iter().flatten();
+    let scoped = body["guild_badges"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter(move |_| server);
+    own.chain(scoped).collect()
+}
+
 impl Root {
     /// A clickable avatar or name that opens the popout beside itself.
     pub(super) fn profile_trigger(
@@ -180,10 +198,8 @@ impl Root {
         let Some(body) = self.fetched.get(&profile_key(user)) else {
             return Vec::new();
         };
-        body["badges"]
-            .as_array()
+        display_badges(body, self.guild)
             .into_iter()
-            .flatten()
             .filter_map(|badge| badge["icon"].as_str())
             .map(|icon_hash| {
                 let key = format!("badge:{icon_hash}");
@@ -205,7 +221,7 @@ impl Root {
             if !key.starts_with("profile:") {
                 continue;
             }
-            for badge in body["badges"].as_array().into_iter().flatten() {
+            for badge in display_badges(body, self.guild) {
                 let Some(icon) = badge["icon"].as_str() else {
                     continue;
                 };
@@ -251,13 +267,10 @@ impl Root {
         let Some(body) = self.fetched.get(&profile_key(user)) else {
             return;
         };
-        let has_badges = body["badges"]
-            .as_array()
-            .is_some_and(|badges| !badges.is_empty());
-        let wanted: Vec<(String, String)> = body["badges"]
-            .as_array()
+        let badges = display_badges(body, self.guild);
+        let has_badges = !badges.is_empty();
+        let wanted: Vec<(String, String)> = badges
             .into_iter()
-            .flatten()
             .filter_map(|badge| badge["icon"].as_str())
             .map(|icon_hash| {
                 (
@@ -281,6 +294,7 @@ impl Root {
         if has_badges {
             self.request_badge_catalog(user);
         }
+        self.request_profile_frame(user);
         self.request_profile_cards(user);
     }
 
@@ -854,5 +868,32 @@ mod upsell_tests {
     fn a_subscriber_reads_view_perks_instead_of_get_nitro() {
         assert_eq!(upsell_first_button(false), ("nitro_mark", "Get Nitro"));
         assert_eq!(upsell_first_button(true), ("nitro_wheel", "View Perks"));
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::display_badges;
+    use serde_json::json;
+
+    #[test]
+    fn server_badges_follow_the_account_badges_only_for_the_server_in_view() {
+        let body = json!({
+            "badges": [{"id": "a"}],
+            "guild_badges": [{"id": "g"}],
+            "guild_member_profile": {"guild_id": "7"}
+        });
+        let ids = |guild: Option<dc_state::Id>| -> Vec<&str> {
+            display_badges(&body, guild)
+                .into_iter()
+                .filter_map(|badge| badge["id"].as_str())
+                .collect()
+        };
+        assert_eq!(ids(Some(7)), ["a", "g"]);
+        assert_eq!(ids(Some(8)), ["a"]);
+        assert_eq!(ids(None), ["a"]);
+        let no_server_profile =
+            json!({"badges": [], "guild_badges": [{"id": "g"}], "guild_member_profile": null});
+        assert!(display_badges(&no_server_profile, Some(7)).is_empty());
     }
 }
