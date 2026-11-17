@@ -502,7 +502,7 @@ impl Mixer {
 fn gain_for(mix: &[(u64, f32, bool)], user: u64) -> f32 {
     match mix.iter().find(|&&(entry_user, _, _)| entry_user == user) {
         Some((_, _, true)) => 0.0,
-        Some((_, volume, false)) => volume.clamp(0.0, 2.0),
+        Some((_, volume, false)) => volume.clamp(0.0, crate::MAX_USER_GAIN),
         None => 1.0,
     }
 }

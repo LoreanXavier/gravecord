@@ -3632,6 +3632,8 @@ impl Root {
 
     /// Applies a person's volume and mute to the call's mixer, and remembers them for the menu.
     pub(super) fn set_user_mix(&mut self, user: Id, volume: f32, muted: bool) {
+        // Up to 200%, or what the VolumeBooster plugin allows now.
+        let volume = volume.min(super::plugin_hooks::user_volume_max_factor());
         if volume == 1. && !muted {
             self.context.mix.remove(&user);
         } else {
@@ -4608,18 +4610,20 @@ impl Root {
             _ => return div().into_any_element(),
         };
         let factor = self.context.mix.get(&user).map_or(1., |mix| mix.0);
-        let value = super::menu_slider::amplitude_to_perceptual(factor, 200);
+        // 200, or more with the VolumeBooster plugin.
+        let top = super::plugin_hooks::user_volume_max();
+        let value = super::menu_slider::amplitude_to_perceptual(factor, top);
         self.menu_slider_row(
             super::menu_slider::MenuSliderConfig {
                 id: format!("context-volume-{user}").into(),
                 label: row.label.clone(),
                 min: 0,
-                max: 200,
+                max: top,
                 value,
                 palette: super::menu_slider::ThemePalette::Default,
                 format: super::menu_slider::percent_format(),
                 on_change: std::rc::Rc::new(move |this, pct, cx| {
-                    let amp = super::menu_slider::perceptual_to_amplitude(pct, 200);
+                    let amp = super::menu_slider::perceptual_to_amplitude(pct, top);
                     let muted = this.context.mix.get(&user).is_some_and(|mix| mix.1);
                     this.set_user_mix(user, amp, muted);
                     cx.notify();

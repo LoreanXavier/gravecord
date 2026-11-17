@@ -497,6 +497,11 @@ impl Root {
 
     /// Whether the current voice session is alone in a 1-on-1 DM call with no embedded activity running (`566458`).
     fn call_idle_eligible(&self) -> Option<Id> {
+        // Not in the pinned client: the DisableCallIdle plugin (Vencord `src/plugins/disableCallIdle`) never leaves
+        // a call for being alone in it.
+        if crate::plugin_on!("DisableCallIdle") {
+            return None;
+        }
         let call = self.call.as_ref()?;
         if call.guild != 0 {
             return None;

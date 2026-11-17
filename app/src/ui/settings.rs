@@ -26,6 +26,7 @@ pub(in crate::ui) mod gift_redeem;
 mod keybinds;
 mod languages;
 mod model;
+mod mods;
 pub(super) mod nitro_page;
 mod notifications_page;
 mod overlay_page;
@@ -95,6 +96,10 @@ pub(super) enum Page {
     ConnectedApps,
     Developer,
     LogOut,
+    /// The Gravecord group (`mods.rs`): built-in plugins, not in the pinned client.
+    Mods,
+    Plugins,
+    Backup,
     /// The Gravecord group (`tester.rs`): the updater and bug reports, not in the pinned client.
     Updates,
     ReportBug,
@@ -216,12 +221,16 @@ const SECTIONS: &[(Option<&str>, &[Entry])] = &[
     ),
 ];
 
-/// The Gravecord group: the updater and bug reports (`tester.rs`), which the pinned client does not have. It goes after
+/// The Gravecord group: built-in plugins (`mods.rs`, `crate::plugins`), the updater and bug reports (`tester.rs`),
+/// which the pinned client does not have. It goes after
 /// the official groups and before Developer and Log Out, so the official entries keep their places; its labels are
 /// not official messages, so it stays out of `SECTIONS`.
 const GRAVECORD_SECTION: (Option<&str>, &[Entry]) = (
     Some("Gravecord"),
     &[
+        entry(Page::Mods, "Gravecord", "mods"),
+        entry(Page::Plugins, "Plugins", "plugins"),
+        entry(Page::Backup, "Backup & Restore", "backup"),
         entry(Page::Updates, "Updates", "updates"),
         entry(Page::ReportBug, "Report a Bug", "report_bug"),
     ],
@@ -1052,6 +1061,7 @@ impl Root {
         self.settings = Some(Open::new(Page::Account));
         self.guild_search_ready(cx);
         self.settings_search_ready(cx);
+        self.plugin_search_ready(cx);
         self.gift_field_ready(cx);
         // The settings pages' own pictures go first: the Nitro reads below queue dozens of pictures for the Nitro
         // pages, and the theme card's banner waited behind them for one to three seconds.
@@ -2289,6 +2299,9 @@ impl Root {
                 None => self.account_page(cx),
             },
             Page::Clips => self.clips_page(window, cx),
+            Page::Mods => self.mods_page(cx),
+            Page::Plugins => self.plugins_page(window, cx),
+            Page::Backup => self.backup_page(cx),
             Page::Updates => self.updates_page(cx),
             Page::ReportBug => self.report_bug_page(cx),
             page => pages::nodes(page)

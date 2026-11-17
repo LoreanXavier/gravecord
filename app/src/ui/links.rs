@@ -184,7 +184,7 @@ impl Root {
         let open = if protocol {
             is_trusted_protocol(url)
         } else {
-            trusted || is_trusted_domain(url)
+            trusted || is_trusted_domain(url) || super::plugin_hooks::trust_every_link()
         };
         if open {
             cx.open_url(url);

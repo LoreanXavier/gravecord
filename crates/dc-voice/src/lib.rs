@@ -57,6 +57,10 @@ mod capture;
 mod clock;
 mod dave;
 mod dereverb;
+/// The largest volume factor one person can have. The official slider stops at 200% (factor 2); the app's
+/// VolumeBooster plugin lets it reach 1000%, which the slider's curve (`792251.w`) maps to 10^(9 * 6 / 20).
+pub const MAX_USER_GAIN: f32 = 501.187_2;
+
 pub mod devices;
 mod gate;
 pub mod input_watch;
@@ -234,10 +238,10 @@ impl Controls {
             state.video_request = state.video_request.wrapping_add(1);
         });
     }
-    /// Sets how one person sounds to us: a volume factor (1.0 is 100%, up to 2.0) and a local mute. Applies from
-    /// the next 10 ms block, and holds for the rest of the call.
+    /// Sets how one person sounds to us: a volume factor (1.0 is 100%, up to [`MAX_USER_GAIN`]) and a local mute.
+    /// Applies from the next 10 ms block, and holds for the rest of the call.
     pub fn set_user_mix(&self, user: u64, volume: f32, muted: bool) {
-        let clamped = volume.clamp(0.0, 2.0);
+        let clamped = volume.clamp(0.0, MAX_USER_GAIN);
         let mut table = self
             .shared
             .user_mix

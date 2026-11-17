@@ -620,6 +620,16 @@ impl Root {
         let Some(channel) = self.channel else {
             return;
         };
+        // Not in the pinned client: the GifPaste plugin (Vencord `src/plugins/gifPaste`) puts the GIF's link and a
+        // space in the composer instead of sending it, and closes the picker.
+        if crate::plugin_on!("GifPaste") {
+            let text = format!("{} ", gif.url);
+            self.composer
+                .update(cx, |composer, cx| composer.insert(&text, cx));
+            self.picker = None;
+            cx.notify();
+            return;
+        }
         let _ = self.requests.send(Request::Rest {
             key: None,
             method: reqwest::Method::POST,

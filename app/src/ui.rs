@@ -205,6 +205,7 @@ mod perf;
 mod permission_spec;
 mod picker;
 mod pins;
+mod plugin_hooks;
 mod plaintext_extensions;
 mod poll;
 mod popout_roles;
@@ -3530,7 +3531,8 @@ impl Root {
                         let _ = this.requests.send(Request::Edit {
                             channel,
                             message,
-                            content: content.clone(),
+                            // Built-in plugins that rewrite outgoing text (ClearURLs).
+                            content: crate::plugins::outgoing(content),
                         });
                     }
                     this.end_edit(window, cx);
@@ -3652,6 +3654,8 @@ impl Root {
         if self.screening_pending() {
             return;
         }
+        // Built-in plugins that rewrite outgoing text (ClearURLs).
+        let content = crate::plugins::outgoing(&content);
         let staged = self.sticker_ui.take_staged();
         if content.is_empty() && self.pending_files.is_empty() && staged.is_none() {
             return;
@@ -6669,7 +6673,9 @@ impl Root {
         (size, weight, emoji_size): (f32, f32, f32),
     ) -> Piece {
         let open = spoiler_start.is_some_and(|start| {
-            self.spoilers_shown() || self.revealed.contains(&(key.0, key.1, start))
+            self.spoilers_shown()
+                || self.revealed.contains(&(key.0, key.1, start))
+                || plugin_hooks::all_spoilers_revealed(&self.revealed, key.0, self.channel)
         });
         let mut piece = self.piece(span, base, size, weight, emoji_size);
         if open {
@@ -6795,12 +6801,16 @@ impl Root {
         {
             let spoilers = spoilers.to_vec();
             let root = self.weak.clone();
-            element = element.on_piece_click(move |piece, _window, cx| {
+            element = element.on_piece_click(move |piece, window, cx| {
+                let modifiers = window.modifiers();
                 let _ = root.update(cx, |this, cx| {
                     // A hidden spoiler takes the first click; a link inside it follows on the next.
                     if let Some(Some(start)) = spoilers.get(piece).copied()
                         && this.revealed.insert((key.0, key.1, start))
                     {
+                        // Not in the pinned client: RevealAllSpoilers opens the others too (`plugin_hooks.rs`).
+                        let channel = this.channel;
+                        plugin_hooks::reveal_all_spoilers(&mut this.revealed, key.0, channel, modifiers);
                         cx.notify();
                         return;
                     }
@@ -7692,6 +7702,17 @@ impl Root {
                             MouseButton::Right,
                             cx.listener(move |this, event: &gpui::MouseUpEvent, _, cx| {
                                 this.open_menu(menu::Anchor::Pointer(event.position), id, own, cx);
+                            }),
+                        )
+                    })
+                    // Not in the pinned client: the MessageClickActions plugin's double-click (`plugin_hooks.rs`).
+                    .when(!is_starter && editing.is_none(), |this| {
+                        this.on_mouse_down(
+                            MouseButton::Left,
+                            cx.listener(move |this, event: &gpui::MouseDownEvent, window, cx| {
+                                if event.click_count == 2 {
+                                    this.message_double_clicked(id, event.modifiers, window, cx);
+                                }
                             }),
                         )
                     })

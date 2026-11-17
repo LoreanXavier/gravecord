@@ -262,8 +262,11 @@ impl Root {
                         )
                     })
                     // `IL`: the badge counts message requests, not spam, and only above zero.
+                    // NoPendingCount hides the badge, not the row (`getRealMessageRequestCount` keeps it listed).
                     .when(
-                        id == "message-requests" && self.stores.message_requests_count() > 0,
+                        id == "message-requests"
+                            && self.stores.message_requests_count() > 0
+                            && !super::plugin_hooks::hide_count("hideMessageRequestsCount"),
                         |row| {
                             row.child(
                                 super::unread_badges::number(

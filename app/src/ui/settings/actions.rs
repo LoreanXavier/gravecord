@@ -13,7 +13,9 @@
 //! A harness run refuses account writes in `net.rs`, so a request here is proved by its unit test and the effect by
 //! the frame (the switch keeps the value it was given when the route was refused).
 
-use super::{Open, SECTIONS, anchors_of};
+#[cfg(test)]
+use super::SECTIONS;
+use super::{Open, anchors_of, sections};
 use crate::net::Request;
 use crate::ui::{Root, color, modal};
 use gpui::{
@@ -136,6 +138,8 @@ pub(in crate::ui) struct State {
     pub search: Option<gpui::Entity<crate::editor::Editor>>,
     pub search_sub: Option<gpui::Subscription>,
     pub(in crate::ui) connections_asked: bool,
+    /// The Gravecord group's pages (`mods.rs`).
+    pub(in crate::ui) mods: super::mods::State,
     /// The dialog a connection button opens first (`connection_dialogs.rs`).
     pub(in crate::ui) conn: Option<super::connection_dialogs::Dlg>,
     /// The Gift Inventory code box and its accept dialog (`gift_redeem.rs`).
@@ -629,8 +633,7 @@ impl Root {
         category: Option<&str>,
         cx: &mut Context<Self>,
     ) {
-        let entry = SECTIONS
-            .iter()
+        let entry = sections()
             .flat_map(|(_, entries)| entries.iter())
             .find(|entry| entry.label == label);
         let Some(entry) = entry else {
