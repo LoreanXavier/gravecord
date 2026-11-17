@@ -916,15 +916,14 @@ impl Root {
         for url in widget_urls {
             self.request_image(url.clone(), url);
         }
-        // `getFirstWishlistId`: the first key of `wishlist_settings`.
-        if let Some(wishlist) = super::shop::data::wishlist_ids(&body).into_iter().next() {
-            let key = format!("profile-wishlist:{user}");
-            if self.requested.insert(key.clone()) {
-                let _ = self.requests.send(Request::Fetch {
-                    key,
-                    route: super::shop::data::wishlist_route(&wishlist),
-                });
-            }
+        // `getFirstWishlistId`: the first key of `wishlist_settings`, read again when its `updated_at` moves.
+        if let Some((wishlist, guard)) = super::shop::data::wishlist_read_guard(user, &body)
+            && self.requested.insert(guard)
+        {
+            let _ = self.requests.send(Request::Fetch {
+                key: format!("profile-wishlist:{user}"),
+                route: super::shop::data::wishlist_route(&wishlist),
+            });
         }
         if let Some(list) = self.fetched.get(&format!("profile-wishlist:{user}")) {
             let all_skus: Vec<String> = wishlist_entries(list)
