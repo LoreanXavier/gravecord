@@ -1,6 +1,7 @@
 mod asar;
 mod audit;
 mod client;
+mod coverage;
 mod gaps;
 mod headless;
 mod layout;
@@ -27,7 +28,8 @@ fn main() -> Result<()> {
     match args.as_slice() {
         ["snapshot", "pin", rest @ ..] => snapshot::pin(&repo_root(), rest),
         ["client", rest @ ..] => client::run(&repo_root(), rest),
-        ["audit"] => audit::run(&repo_root()),
+        ["audit"] => audit::run(&repo_root(), false),
+        ["audit", "--update-ledger"] => audit::run(&repo_root(), true),
         ["gaps"] => gaps::run(&repo_root()),
         ["report"] => report::run(&repo_root()),
         ["parity", rest @ ..] => parity::run(&repo_root(), rest),
