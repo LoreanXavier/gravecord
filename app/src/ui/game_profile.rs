@@ -57,7 +57,7 @@ fn communities_tab_shown(variant: Option<i64>, communities: usize) -> bool {
 }
 
 /// `kr` of module 776231: the CDN size ladder, the first step at least `size`.
-fn cdn_size(size: u32) -> u32 {
+pub(super) fn cdn_size(size: u32) -> u32 {
     const LADDER: [u32; 31] = [
         16, 20, 22, 24, 28, 32, 40, 44, 48, 56, 60, 64, 80, 96, 100, 128, 160, 240, 256, 300, 320,
         480, 512, 600, 640, 1024, 1280, 1536, 2048, 3072, 4096,
@@ -532,6 +532,9 @@ impl Root {
             });
         }
         self.profile = None;
+        self.game_announcements_fetch(&game);
+        self.game_add_to_profile_wanted();
+        self.game_announcements_scroll = 0.;
         self.game_profile = Some(GameProfile {
             game,
             tab: Tab::Overview,
@@ -756,6 +759,39 @@ impl Root {
                 div()
                     .flex()
                     .gap(px(8.))
+                    // `K.$` `overlay-secondary` `sm` with text: 12px in, the large plus 16px, 4px, then the label.
+                    .when(self.game_add_to_profile_shown(&id), |this| {
+                        let menu_game = id.clone();
+                        this.child(
+                            div()
+                                .id("game-profile-add-to-profile")
+                                .h(px(32.))
+                                .px(px(12.))
+                                .rounded(px(8.))
+                                .bg(gpui::rgba(0x0000008f))
+                                .flex()
+                                .items_center()
+                                .gap(px(4.))
+                                .cursor_pointer()
+                                .text_size(px(14.))
+                                .line_height(px(18.))
+                                .font_weight(FontWeight(500.))
+                                .text_color(gpui::white())
+                                .child(icon("plus_large", 16., "--white"))
+                                .child(dc_intl::tr("Add to Profile"))
+                                .on_click(cx.listener(
+                                    move |this, event: &gpui::ClickEvent, _, cx| {
+                                        if let Ok(game) = menu_game.parse::<u64>() {
+                                            this.open_context_menu(
+                                                super::context_menu::Target::GameAddToProfile(game),
+                                                event.position(),
+                                                cx,
+                                            );
+                                        }
+                                    },
+                                )),
+                        )
+                    })
                     .child(self.game_profile_bar_button(
                         "game-profile-link",
                         "share_link",
@@ -938,7 +974,8 @@ impl Root {
                         .text_color(color("--text-default"))
                         .child(description.clone()),
                 )
-            });
+            })
+            .children(self.game_announcements_section(&id, cx));
         let section_title = |text: &'static str| {
             div()
                 .px(px(8.))

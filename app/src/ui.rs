@@ -133,7 +133,9 @@ mod stickers;
 mod stream_previews;
 mod top_emoji;
 mod game_communities;
-mod channel_notice;
+mod game_announcements;
+mod game_add_to_profile;
+pub(crate) mod channel_notice;
 mod stream_zoom;
 mod timestamps;
 mod tray;
@@ -692,6 +694,7 @@ pub struct Root {
     /// The game profile (module 581745).
     game_profile: Option<game_profile::GameProfile>,
     game_communities_layout: game_communities::Layout,
+    game_announcements_scroll: f32,
     game_communities_filter: game_communities::Filter,
     /// When the text launcher's collections last arrived (module 503406 asks again after ten minutes).
     launcher_collections_at: Option<i64>,
@@ -1086,6 +1089,7 @@ impl Root {
             report_issue: None,
             game_profile: None,
             game_communities_layout: Default::default(),
+            game_announcements_scroll: 0.,
             game_communities_filter: Default::default(),
             launcher_collections_at: None,
             upload_error: None,
@@ -1645,6 +1649,11 @@ impl Root {
                     return;
                 }
                 if self.top_emoji_fetched(&key, &body, cx) {
+                    return;
+                }
+                if key.starts_with(game_announcements::KEY_PREFIX) {
+                    self.game_announcements_fetched(&key, body);
+                    cx.notify();
                     return;
                 }
                 if key.starts_with(game_communities::KEY_PREFIX) {
@@ -6380,7 +6389,11 @@ impl Root {
             }
             Kind::Role(id) => {
                 let role = self.current_guild().and_then(|guild| guild.roles.get(id));
-                format!("@{}", role.map_or("deleted-role", String::as_str))
+                // `YV4F/n`: a role the client does not know is plain "@unknown-role" (`roleMention.parse` of the rules).
+                format!(
+                    "@{}",
+                    role.map_or_else(|| dc_intl::tr("unknown-role").to_string(), String::clone)
+                )
             }
             Kind::Channel(id) => self
                 .current_guild()

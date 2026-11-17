@@ -52,6 +52,8 @@ pub(super) enum Target {
     LauncherApp(Id),
     /// The "..." of a game's profile (`game-profile-context` of module 581745).
     GameProfile(Id),
+    /// The game profile's Add to Profile menu.
+    GameAddToProfile(Id),
     /// The Favorites server's star in the rail (module 132598): Thread Settings, Hide Favorites.
     Favorites,
     /// An emoji of the emoji picker (`expression-picker`, module 233503); the emoji is kept in
@@ -177,13 +179,15 @@ pub(super) enum Act {
     CopyEmoji,
     /// Copy Emoji Image Link: a custom emoji's picture address (developer mode).
     CopyExpressionLink,
+    /// A game widget row of Add to Profile, by its place in the menu.
+    GameWidget(u8),
 }
 
 impl Act {
     /// Every row kind once (`Correction` with its first index). `ordinal` is an exhaustive match, so adding a variant
     /// without listing it here fails the build or the `act_list_is_complete` test.
     #[cfg(test)]
-    pub(super) const ALL: [Act; 93] = [
+    pub(super) const ALL: [Act; 94] = [
         Act::InventoryAbout,
         Act::InventoryHide,
         Act::ReportApp,
@@ -277,6 +281,7 @@ impl Act {
         Act::FavoriteExpression,
         Act::CopyEmoji,
         Act::CopyExpressionLink,
+        Act::GameWidget(0),
     ];
 
     #[cfg(test)]
@@ -375,6 +380,7 @@ impl Act {
             Act::FavoriteExpression => 90,
             Act::CopyEmoji => 91,
             Act::CopyExpressionLink => 92,
+            Act::GameWidget(_) => 93,
         }
     }
 }
@@ -402,6 +408,7 @@ pub(super) fn status(act: Act) -> Status {
         | Act::FavoriteExpression
         | Act::CopyEmoji
         | Act::CopyExpressionLink
+        | Act::GameWidget(_)
         | Act::ReportApp
         | Act::MarkRead
         | Act::Invite
@@ -517,7 +524,7 @@ pub(super) struct Row {
 }
 
 impl Row {
-    fn new(act: Act, label: impl Into<String>) -> Self {
+    pub(super) fn new(act: Act, label: impl Into<String>) -> Self {
         Self {
             act,
             label: label.into(),
@@ -546,12 +553,12 @@ impl Row {
         self
     }
 
-    fn disabled(mut self, disabled: bool) -> Self {
+    pub(super) fn disabled(mut self, disabled: bool) -> Self {
         self.disabled = disabled;
         self
     }
 
-    fn sub(mut self, sub: impl Into<String>) -> Self {
+    pub(super) fn sub(mut self, sub: impl Into<String>) -> Self {
         self.sub = Some(sub.into());
         self
     }
@@ -561,7 +568,7 @@ impl Row {
         self
     }
 
-    fn icon(mut self, name: &'static str) -> Self {
+    pub(super) fn icon(mut self, name: &'static str) -> Self {
         self.icon = Some(name);
         self
     }
@@ -2301,6 +2308,7 @@ impl Root {
             Target::AppDirectory(_) => app_directory_items(developer),
             Target::LauncherApp(_) => launcher_app_items(developer),
             Target::GameProfile(_) => game_profile_items(developer),
+            Target::GameAddToProfile(game) => self.game_widget_items(game),
             Target::Favorites => favorites_items(),
             Target::PickerSticker(sticker) => {
                 picker_sticker_items(self.sticker_favorited(sticker), developer)
@@ -2840,6 +2848,9 @@ impl Root {
                     self.open_game_profile(app, cx);
                 }
             }
+            (Act::GameWidget(kind), Target::GameAddToProfile(game)) => {
+                self.toggle_game_widget(game, kind, cx);
+            }
             (Act::ReportGameIssue, Target::GameProfile(game)) => {
                 let game = game.to_string();
                 let name = self.game_profile_name(&game);
@@ -2970,6 +2981,7 @@ impl Root {
                     Target::AppDirectory(id)
                     | Target::LauncherApp(id)
                     | Target::GameProfile(id)
+                    | Target::GameAddToProfile(id)
                     | Target::PickerSticker(id) => id,
                     Target::InventoryFeed
                     | Target::InventoryFeedAtPointer

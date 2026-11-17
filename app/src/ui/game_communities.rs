@@ -2,8 +2,8 @@
 //! `GET /discoverable-guilds?guild_ids=…` (`te`, `DISCOVERABLE_GUILDS_FETCH_SUCCESS`, `jE` of module 449054), in a grid
 //! (`grid_zGFyZa`: columns of at least 280px, 12px apart) or a list (`list_zGFyZa`), with the "View as" switch
 //! (`tT`). While the answer is out, eight skeleton cards (`tU`/`tB`). A card opens the server as a preview, as the
-//! Discover cards do (`eQ.Z2`, a lurk join), and closes the profile. Not here yet: the guild badge before the name
-//! (`tr.A`), the languages filter (`tP`, shown with two or more preferred locales) and the skeletons' shimmer.
+//! Discover cards do (`eQ.Z2`, a lurk join), and closes the profile. With two or more preferred locales a languages
+//! filter (`tP`) leaves languages out. Not here yet: the skeletons' shimmer.
 use super::{Root, color};
 use dc_state::Id;
 use gpui::{AnyElement, Context, FontWeight, IntoElement, div, img, prelude::*, px};
