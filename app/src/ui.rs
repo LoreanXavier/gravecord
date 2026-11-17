@@ -53,10 +53,12 @@ mod call_popout;
 mod call_volume;
 #[cfg(feature = "capture")]
 pub(crate) mod callsim;
+mod carousel;
 #[cfg(feature = "capture")]
 mod ch_fixture;
 mod channel_drag;
 mod channel_icon;
+pub(crate) mod channel_notice;
 mod channel_settings;
 mod channel_settings_pages;
 mod channel_status;
@@ -64,6 +66,7 @@ mod clips;
 mod code_copy;
 mod command_feedback;
 mod components;
+pub(crate) mod composer_ai;
 mod composer_plus;
 #[cfg(feature = "capture")]
 mod content_demo;
@@ -87,6 +90,10 @@ mod forward;
 mod friend_nickname;
 mod friends;
 mod full_profile;
+mod game_add_to_profile;
+mod game_announcements;
+mod game_communities;
+mod game_similar;
 mod games_spec;
 mod gateway_screens;
 mod gifs;
@@ -107,10 +114,10 @@ mod invite;
 mod invite_embed;
 mod keyboard;
 mod last_channel;
+mod library;
 mod lightbox;
 mod links;
 mod live_activity;
-mod spotify_activity;
 pub mod login;
 mod logout;
 mod lottie_icon;
@@ -121,28 +128,21 @@ mod message_kinds;
 mod message_requests;
 mod message_tips;
 mod presence;
+mod provider_player;
 mod role_dot;
 pub(crate) mod role_gradient;
 mod role_popout;
 mod schedule_message;
 mod sent_attachment;
+mod spotify_activity;
 mod stage;
 mod sticker_player;
 mod sticker_popout;
 mod stickers;
 mod stream_previews;
-mod top_emoji;
-mod game_communities;
-mod game_announcements;
-mod game_add_to_profile;
-mod library;
-mod provider_player;
-pub(crate) mod composer_ai;
-mod carousel;
-mod game_similar;
-pub(crate) mod channel_notice;
 mod stream_zoom;
 mod timestamps;
+mod top_emoji;
 mod tray;
 mod typing_avatar;
 mod unread_badges;
@@ -161,6 +161,8 @@ mod favorites;
 mod fetch_failures;
 mod forums;
 pub(crate) mod frame_clock;
+mod game_genres;
+mod game_profile;
 mod gif_tiles;
 mod guild_events;
 mod guild_guide;
@@ -171,6 +173,7 @@ pub(crate) mod image_fit;
 mod image_retry;
 mod inline_video;
 mod jump;
+mod launcher_home;
 mod media_image;
 mod member_avatars;
 pub(crate) mod memory_trim;
@@ -223,9 +226,6 @@ mod remediation;
 mod reminder_modal;
 mod report;
 mod report_issue;
-mod game_genres;
-mod game_profile;
-mod launcher_home;
 mod running_game_panel;
 mod running_games;
 mod saved;
@@ -1258,10 +1258,8 @@ impl Root {
                             );
                         }
                     } else {
-                        this.sidebar_resizing = Some((
-                            f32::from(event.position.x),
-                            this.combined_sidebar_width(),
-                        ));
+                        this.sidebar_resizing =
+                            Some((f32::from(event.position.x), this.combined_sidebar_width()));
                     }
                     cx.notify();
                 }),
@@ -1313,7 +1311,9 @@ impl Root {
             Update::Tray(action) => self.tray_action(action, cx),
             Update::Updater => cx.notify(),
             Update::SpotifySocket { account, connected } => {
-                self.stores.spotify.set_socket_connected(&account, connected);
+                self.stores
+                    .spotify
+                    .set_socket_connected(&account, connected);
                 self.spotify_devices_changed(cx);
                 cx.notify();
             }
@@ -1663,7 +1663,9 @@ impl Root {
                 }
             }
             Update::Fetched { key, body } => {
-                if self.spotify_metadata_fetched(&key, &body, cx) { return; }
+                if self.spotify_metadata_fetched(&key, &body, cx) {
+                    return;
+                }
                 self.active_now_fetched(&key, &body);
                 if key.starts_with(message_requests::KEY_PREFIX) {
                     self.message_requests_fetched(&key, &body, cx);
@@ -2165,10 +2167,7 @@ impl Root {
                         .into_iter()
                         .next();
                     if let Some(wid) = wid_opt {
-                        let changed = self
-                            .wishlist_ids_cache
-                            .insert(user, wid.clone())
-                            .as_deref()
+                        let changed = self.wishlist_ids_cache.insert(user, wid.clone()).as_deref()
                             != Some(wid.as_str());
                         if changed {
                             self.persist_wishlist_cache();
@@ -2467,7 +2466,11 @@ impl Root {
                 });
             }
         }
-        if let Some(list) = self.fetched.get(&format!("profile-wishlist:{user}")).cloned() {
+        if let Some(list) = self
+            .fetched
+            .get(&format!("profile-wishlist:{user}"))
+            .cloned()
+        {
             self.shop_seed_effects(&list);
             let all_skus: Vec<String> = dm_profile::wishlist_entries(&list)
                 .into_iter()
@@ -2677,7 +2680,10 @@ impl Root {
             }
             // The sticker of each join message's "Wave to say hi!" button.
             let me = self.stores.current_user.as_ref().map(|me| me.id);
-            for message in messages.iter().filter(|message| message.kind == dm::USER_JOIN) {
+            for message in messages
+                .iter()
+                .filter(|message| message.kind == dm::USER_JOIN)
+            {
                 let (id, format_type) = dm::welcome_sticker(me, message.id);
                 let sticker = dc_state::stickers::Sticker {
                     id,
@@ -3102,13 +3108,7 @@ impl Root {
                                                 ),
                                         )
                                         .children(user.tag.as_ref().map(|tag| {
-                                            self.server_tag_button(
-                                                tag,
-                                                format!("member-tag-{}", user.id),
-                                                cx,
-                                            )
-                                            .ml(px(4.))
-                                            .flex_none()
+                                            self.server_tag_chip(tag).ml(px(4.)).flex_none()
                                         }))
                                         .when(owner == Some(user.id), |this| {
                                             this.child(div().ml(px(4.)).child(icon(
@@ -3503,6 +3503,8 @@ impl Root {
     fn begin_edit(&mut self, message: Id, text: &str, window: &mut Window, cx: &mut Context<Self>) {
         let editor = cx.new(|cx| {
             let mut editor = Editor::new(editor_style(), cx);
+            // The edit box is the same rich input as the composer: typed markdown and links are styled.
+            editor.set_markdown_preview(true);
             editor.set_text(text);
             editor
         });
@@ -4133,7 +4135,11 @@ impl Root {
                             cx,
                         )
                         .occlude()
-                        .mr(px(if update_button.is_some() { 12. } else { 16. }))
+                        .mr(px(if update_button.is_some() {
+                            12.
+                        } else {
+                            16.
+                        }))
                     })
                     .children(update_button)
                     .child(
@@ -4715,9 +4721,7 @@ impl Root {
                                             style.opacity(0.)
                                         })
                                     })
-                                    .when(selected, |badge| {
-                                        badge.right(px(40.))
-                                    })
+                                    .when(selected, |badge| badge.right(px(40.)))
                                     .child(unread_badges::number(
                                         mentions,
                                         "--background-feedback-notification",
@@ -4864,8 +4868,7 @@ impl Root {
                     .sidebar_rows()
                     .first()
                     .is_some_and(|first| first.kind != ChannelKind::Category)
-            })
-        {
+            }) {
             14.
         } else {
             2.
@@ -4909,11 +4912,10 @@ impl Root {
                         !self.hide_muted(guild.id)
                             || row.kind == ChannelKind::Category
                             || self.sidebar_channel_attention(guild, row)
-                            || !self.stores.guild_settings.channel_muted(
-                                guild.id,
-                                row.id,
-                                now,
-                            )
+                            || !self
+                                .stores
+                                .guild_settings
+                                .channel_muted(guild.id, row.id, now)
                     })
                     .filter(|row| {
                         row.kind == ChannelKind::Category
@@ -5167,15 +5169,18 @@ impl Root {
                             .flex_col()
                             .overflow_y_scroll()
                             .on_drag_move::<channel_drag::ChannelDrag>(cx.listener(
-                                |this, event: &gpui::DragMoveEvent<channel_drag::ChannelDrag>, _, cx| {
+                                |this,
+                                 event: &gpui::DragMoveEvent<channel_drag::ChannelDrag>,
+                                 _,
+                                 cx| {
                                     this.channel_drag_moved(event, cx)
                                 },
                             ))
-                            .on_drop(
-                                cx.listener(|this, drag: &channel_drag::ChannelDrag, _, cx| {
+                            .on_drop(cx.listener(
+                                |this, drag: &channel_drag::ChannelDrag, _, cx| {
                                     this.channel_dropped(drag, cx)
-                                }),
-                            )
+                                },
+                            ))
                             .children(rows)
                             .child(div().flex_none().h(px(16.))),
                     )
@@ -5247,11 +5252,7 @@ impl Root {
                     .text_size(px(12.))
                     .line_height(px(16.))
                     .font_weight(FontWeight(600.))
-                    .text_color(color(if mentions {
-                        "--white"
-                    } else {
-                        "--text-strong"
-                    }))
+                    .text_color(color(if mentions { "--white" } else { "--text-strong" }))
                     .on_click(cx.listener(move |this, _, _, cx| {
                         this.sidebar_scroll
                             .set_offset(gpui::point(px(0.), px(-target)));
@@ -6360,7 +6361,8 @@ impl Root {
                     } else {
                         // `.search_bWCaDq`: `clamp(64px, 100cqi - 320px, 244px)`, the container being the header
                         // (chat-150 dump: 134.7px of a 478.7px header with its 24px of padding).
-                        (self.viewport.0 - self.combined_sidebar_width() - 24. - 320.).clamp(64., 244.)
+                        (self.viewport.0 - self.combined_sidebar_width() - 24. - 320.)
+                            .clamp(64., 244.)
                     }))
                     .min_w(px(64.))
                     .h(px(32.))
@@ -6456,10 +6458,8 @@ impl Root {
             span.kind,
             Kind::Role(id) if self.current_guild().is_none_or(|guild| !guild.roles.contains_key(&id))
         );
-        let mention = matches!(
-            span.kind,
-            Kind::User(_) | Kind::Channel(_) | Kind::Everyone
-        ) || (matches!(span.kind, Kind::Role(_)) && !deleted_role);
+        let mention = matches!(span.kind, Kind::User(_) | Kind::Channel(_) | Kind::Everyone)
+            || (matches!(span.kind, Kind::Role(_)) && !deleted_role);
         let mut run_font: Font = font(if style.code { MONO } else { SANS });
         run_font.features = kerning();
         run_font.weight = match (style.bold, mention) {
@@ -6838,13 +6838,8 @@ impl Root {
             .iter()
             .zip(&spoilers)
             .map(|(span, start)| {
-                let mut piece = self.piece_with_spoiler(
-                    span,
-                    *start,
-                    key,
-                    strong,
-                    (size, 700., size * 1.375),
-                );
+                let mut piece =
+                    self.piece_with_spoiler(span, *start, key, strong, (size, 700., size * 1.375));
                 piece.font.weight = FontWeight(700.);
                 piece
             })
@@ -7107,7 +7102,12 @@ impl Root {
                 let shown = width.min(self.content_width.max(1.));
                 let (width, height) = (px(shown), px(height * shown / width));
                 if attachment.is_video() {
-                    return self.attachment_video_obscured(message, attachment, (width, height), cx);
+                    return self.attachment_video_obscured(
+                        message,
+                        attachment,
+                        (width, height),
+                        cx,
+                    );
                 }
                 self.attachment_tile_obscured(message, attachment, (width, height), false, cx)
             })
@@ -9289,7 +9289,11 @@ impl Render for Root {
         self.prepare_inline_videos(window, cx);
         media_image::set_pixel_ratio(window.scale_factor());
         let media_channel = self.channel;
-        if self.prepared.media_channel.is_some_and(|last| last != media_channel) {
+        if self
+            .prepared
+            .media_channel
+            .is_some_and(|last| last != media_channel)
+        {
             self.media_left_channel();
         }
         self.prepared.media_channel = Some(media_channel);
@@ -10166,8 +10170,10 @@ impl Render for Root {
                                         this.sidebar_resize_move(event, cx);
                                     }
                                     if this.selection.borrow().is_dragging() {
-                                        let mut changed =
-                                            this.selection.borrow_mut().drag_to_point(event.position);
+                                        let mut changed = this
+                                            .selection
+                                            .borrow_mut()
+                                            .drag_to_point(event.position);
                                         let bounds = this.list.viewport_bounds();
                                         if bounds.size.height > px(0.) {
                                             let edge = px(28.);

@@ -788,3 +788,99 @@ async fn a_redirect_on_the_same_host_is_followed() {
         .unwrap();
     assert_eq!(std::fs::read(path).unwrap(), data);
 }
+
+// ---- channels ----
+
+#[test]
+fn nightly_builds_update_in_order_and_channels_do_not_cross_by_themselves() {
+    let nightly = Channel::Nightly;
+    let stable = Channel::Stable;
+    let n1 = version("0.0.0-nightly.202611171830");
+    let n2 = version("0.0.0-nightly.202611172045");
+    assert!(n1.is_nightly() && !version("0.0.0").is_nightly());
+    // Build numbers compare as numbers, later is newer; the same build or an older one is not offered.
+    assert!(is_offer(&n1, &n2, nightly));
+    assert!(!is_offer(&n2, &n2, nightly));
+    assert!(!is_offer(&n2, &n1, nightly));
+    assert!(is_offer(
+        &version("0.0.0-nightly.999999999999"),
+        &version("0.0.0-nightly.1000000000000"),
+        nightly
+    ));
+    // A stable install on the stable channel takes only newer stable releases.
+    assert!(is_offer(&version("0.1.0"), &version("0.2.0"), stable));
+    assert!(!is_offer(&version("0.2.0"), &version("0.2.0"), stable));
+    // A nightly sorts below its stable release, so after a switch either way any other build replaces it.
+    assert!(n2 < version("0.0.0"));
+    assert!(is_offer(&n2, &version("0.0.0"), stable));
+    assert!(is_offer(&version("0.0.0"), &n1, nightly));
+    assert!(!is_offer(&version("0.0.0"), &version("0.0.0"), nightly));
+}
+
+#[test]
+fn each_channel_has_a_feed_on_github_and_its_downloads_are_allowed() {
+    let repository = "https://github.com/LoreanXavier/gravecord";
+    assert_eq!(Channel::Stable.feed(repository), DEFAULT_FEED);
+    let nightly = Channel::Nightly.feed(&format!("{repository}/"));
+    assert_eq!(
+        nightly,
+        "https://github.com/LoreanXavier/gravecord/releases/download/nightly/update.json"
+    );
+    let feed = Policy::STRICT.feed_url(&nightly).unwrap();
+    let go = |to: &str| redirect_allowed(&feed, &Url::parse(to).unwrap(), Policy::STRICT);
+    assert!(go(
+        "https://github.com/LoreanXavier/gravecord/releases/download/nightly/gravecord-setup.exe"
+    ));
+    assert!(go("https://release-assets.githubusercontent.com/x"));
+    assert!(go("https://objects.githubusercontent.com/x"));
+    assert!(!go("https://example.com/x"));
+    // The relative setup name of `cargo xtask package` resolves next to the nightly feed.
+    let json = feed_json("0.0.0-nightly.202611171830", "gravecord-setup.exe", b"x");
+    let manifest = Manifest::parse(json.as_bytes(), &feed, Policy::STRICT).unwrap();
+    assert_eq!(
+        manifest.url.as_str(),
+        "https://github.com/LoreanXavier/gravecord/releases/download/nightly/gravecord-setup.exe"
+    );
+}
+
+#[tokio::test]
+async fn a_nightly_feed_is_offered_and_downloaded_end_to_end() {
+    let data = b"nightly setup".to_vec();
+    let json = feed_json("0.0.0-nightly.202611172045", "gravecord-setup.exe", &data);
+    let server = Server::start(HashMap::from([
+        ("/update.json", Route::Body(json.into_bytes())),
+        ("/gravecord-setup.exe", Route::Body(data.clone())),
+    ]));
+    let feed = server.url("/update.json");
+    let client = client_for(&feed);
+    let current = version("0.0.0-nightly.202611171830");
+    let accept = |offered: &Version| is_offer(&current, offered, Channel::Nightly);
+    let Check::Available(manifest) =
+        check_offer(&client, &feed, Policy::loopback_for_tests(), &accept)
+            .await
+            .unwrap()
+    else {
+        panic!("a newer nightly must be offered");
+    };
+    let dir = Scratch::new("nightly");
+    let seen = std::sync::Mutex::new(Vec::new());
+    let path = download(&client, &manifest, &dir.0, &|done, total| {
+        seen.lock().unwrap().push((done, total));
+    })
+    .await
+    .unwrap();
+    assert_eq!(std::fs::read(path).unwrap(), data);
+    assert_eq!(
+        seen.lock().unwrap().last(),
+        Some(&(data.len() as u64, data.len() as u64))
+    );
+    // The same build is not offered again.
+    let same = version("0.0.0-nightly.202611172045");
+    let again = |offered: &Version| is_offer(&same, offered, Channel::Nightly);
+    assert_eq!(
+        check_offer(&client, &feed, Policy::loopback_for_tests(), &again)
+            .await
+            .unwrap(),
+        Check::NoUpdate
+    );
+}

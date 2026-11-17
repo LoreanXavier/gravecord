@@ -322,33 +322,35 @@ impl Root {
                     .flex()
                     .items_center()
                     .justify_center()
-                    .child(self.with_tip(
-                        "self-popout-avatar-tip",
-                        super::tooltip::Tip::text(
-                            dc_intl::t!("+Xp3hq"),
-                            super::tooltip::Side::Top,
+                    .child(
+                        self.with_tip(
+                            "self-popout-avatar-tip",
+                            super::tooltip::Tip::text(
+                                dc_intl::t!("+Xp3hq"),
+                                super::tooltip::Side::Top,
+                            ),
+                            div()
+                                .id("self-popout-avatar")
+                                .group("self-popout-avatar")
+                                .relative()
+                                .size(px(80.))
+                                .rounded_full()
+                                .cursor_pointer()
+                                .children(
+                                    avatar.map(|picture| img(picture).size(px(80.)).rounded_full()),
+                                )
+                                .child(popout_avatar_hover_overlay("self-popout-avatar"))
+                                .child(status_dot_large(
+                                    &self.stores.status,
+                                    "--background-surface-high",
+                                ))
+                                .on_click(cx.listener(move |this, _, window, cx| {
+                                    this.profile = None;
+                                    this.open_full_profile(user.id, window, cx);
+                                })),
+                            cx,
                         ),
-                        div()
-                            .id("self-popout-avatar")
-                            .group("self-popout-avatar")
-                            .relative()
-                            .size(px(80.))
-                            .rounded_full()
-                            .cursor_pointer()
-                            .children(
-                                avatar.map(|picture| img(picture).size(px(80.)).rounded_full()),
-                            )
-                            .child(popout_avatar_hover_overlay("self-popout-avatar"))
-                            .child(status_dot_large(
-                                &self.stores.status,
-                                "--background-surface-high",
-                            ))
-                            .on_click(cx.listener(move |this, _, window, cx| {
-                                this.profile = None;
-                                this.open_full_profile(user.id, window, cx);
-                            })),
-                        cx,
-                    )),
+                    ),
             )
             .when(own, |this| this.child(status_bubble()));
         // The button on the banner is on the top layer, above the profile effect, so it is drawn after it.

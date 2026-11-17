@@ -18,18 +18,31 @@ use tracing_subscriber::{Layer, filter::filter_fn, fmt};
 
 /// How many log files the voice folder keeps (the newest).
 pub const KEEP_FILES: usize = 5;
+/// A tester log file is closed and a new one started past this size, so a long session cannot fill the disk; with
+/// [`KEEP_FILES`] the folder stays under 160 MiB.
+pub const TESTER_FILE_BYTES: u64 = 32 * 1024 * 1024;
+
+/// The always-on log of a tester build (`updater::tester_build`): its folder and the open file.
+struct TesterSink {
+    folder: PathBuf,
+    file: File,
+    written: u64,
+}
 
 struct Sinks {
     command_line: Option<File>,
     debug: Option<File>,
+    tester: Option<TesterSink>,
 }
 
 static SINKS: Mutex<Sinks> = Mutex::new(Sinks {
     command_line: None,
     debug: None,
+    tester: None,
 });
 static COMMAND_LINE: AtomicBool = AtomicBool::new(false);
 static DEBUG: AtomicBool = AtomicBool::new(false);
+static TESTER: AtomicBool = AtomicBool::new(false);
 
 struct Writer;
 
@@ -39,9 +52,21 @@ impl Write for Writer {
             let Sinks {
                 command_line,
                 debug,
+                tester,
             } = &mut *sinks;
             for file in [command_line, debug].into_iter().flatten() {
                 let _ = file.write_all(buffer);
+            }
+            if let Some(sink) = tester {
+                if sink.written + buffer.len() as u64 > TESTER_FILE_BYTES
+                    && let Some((file, _)) = new_file(&sink.folder, "gravecord")
+                {
+                    sink.file = file;
+                    sink.written = 0;
+                }
+                if sink.file.write_all(buffer).is_ok() {
+                    sink.written += buffer.len() as u64;
+                }
             }
         }
         Ok(buffer.len())
@@ -74,7 +99,8 @@ pub fn init(command_line: Option<File>) {
     let filter = filter_fn(|meta| {
         *meta.level() <= Level::DEBUG
             && (COMMAND_LINE.load(Ordering::Acquire)
-                || (DEBUG.load(Ordering::Acquire) && ours(meta.target())))
+                || ((DEBUG.load(Ordering::Acquire) || TESTER.load(Ordering::Acquire))
+                    && ours(meta.target())))
     });
     let _ = tracing_subscriber::registry()
         .with(
@@ -102,23 +128,79 @@ pub fn log_files(folder: &Path) -> Vec<PathBuf> {
     found.into_iter().map(|(_, path)| path).collect()
 }
 
-/// Switches the debug log file on: a new file in `folder`, the older ones beyond [`KEEP_FILES`] removed.
-pub fn start_file(folder: &Path) -> Option<PathBuf> {
+/// A new `<prefix>-<seconds>.log` in `folder`; the files beyond the newest [`KEEP_FILES`] are removed. The stamp gets
+/// a counter when a file of that second exists already (a tester file rotating fast).
+fn new_file(folder: &Path, prefix: &str) -> Option<(File, PathBuf)> {
     std::fs::create_dir_all(folder).ok()?;
     let stamp = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map_or(0, |elapsed| elapsed.as_secs());
-    let path = folder.join(format!("gravecord-voice-{stamp}.log"));
+    let path = (0..100)
+        .map(|count| match count {
+            0 => folder.join(format!("{prefix}-{stamp}.log")),
+            _ => folder.join(format!("{prefix}-{stamp}-{count}.log")),
+        })
+        .find(|path| !path.exists())?;
     let file = File::create(&path).ok()?;
+    for old in log_files(folder).into_iter().skip(KEEP_FILES) {
+        let _ = std::fs::remove_file(old);
+    }
+    Some((file, path))
+}
+
+/// Switches the debug log file on: a new file in `folder`, the older ones beyond [`KEEP_FILES`] removed.
+pub fn start_file(folder: &Path) -> Option<PathBuf> {
+    let (file, path) = new_file(folder, "gravecord-voice")?;
     let mut sinks = SINKS.lock().ok()?;
     sinks.debug = Some(file);
     DEBUG.store(true, Ordering::Release);
     drop(sinks);
-    for old in log_files(folder).into_iter().skip(KEEP_FILES) {
-        let _ = std::fs::remove_file(old);
-    }
     tracing::callsite::rebuild_interest_cache();
     Some(path)
+}
+
+/// A tester build's log, on from start to exit: the debug events of gravecord's own crates in a new
+/// `gravecord-<seconds>.log` of `folder`, a new file every [`TESTER_FILE_BYTES`], the newest [`KEEP_FILES`] kept.
+/// HTTP lines name paths without their queries (`dc_http::log_path`), and tokens and message text are never logged,
+/// so the files can be sent with a bug report.
+pub fn start_tester_file(folder: &Path) -> Option<PathBuf> {
+    let (file, path) = new_file(folder, "gravecord")?;
+    let mut sinks = SINKS.lock().ok()?;
+    sinks.tester = Some(TesterSink {
+        folder: folder.to_owned(),
+        file,
+        written: 0,
+    });
+    TESTER.store(true, Ordering::Release);
+    drop(sinks);
+    tracing::callsite::rebuild_interest_cache();
+    Some(path)
+}
+
+/// Switches the tester log off (Report a Bug's "Keep a log file" in a build that is not a tester build).
+pub fn stop_tester_file() {
+    TESTER.store(false, Ordering::Release);
+    if let Ok(mut sinks) = SINKS.lock() {
+        sinks.tester = None;
+    }
+    tracing::callsite::rebuild_interest_cache();
+}
+
+/// Whether this start keeps a log file: always in a tester build, otherwise when Report a Bug's switch (the
+/// `logging.keep` storage key) is on.
+pub fn keep_log() -> bool {
+    crate::updater::tester_build()
+        || crate::storage::get("logging.keep").is_some_and(|value| value.as_bool() == Some(true))
+}
+
+/// The folder of the tester log, when it is on.
+pub fn tester_folder() -> Option<PathBuf> {
+    SINKS
+        .lock()
+        .ok()?
+        .tester
+        .as_ref()
+        .map(|sink| sink.folder.clone())
 }
 
 /// Switches it off and closes the file.

@@ -41,6 +41,7 @@ mod search_terms;
 mod server_boost_page;
 mod soundboard;
 mod streamer;
+mod tester;
 pub(crate) use render::radio_dot;
 mod high_contrast_tokens;
 mod swatches;
@@ -94,6 +95,9 @@ pub(super) enum Page {
     ConnectedApps,
     Developer,
     LogOut,
+    /// The Gravecord group (`tester.rs`): the updater and bug reports, not in the pinned client.
+    Updates,
+    ReportBug,
 }
 
 /// Every page that is drawn from the generated rows.
@@ -212,9 +216,27 @@ const SECTIONS: &[(Option<&str>, &[Entry])] = &[
     ),
 ];
 
+/// The Gravecord group: the updater and bug reports (`tester.rs`), which the pinned client does not have. It goes after
+/// the official groups and before Developer and Log Out, so the official entries keep their places; its labels are
+/// not official messages, so it stays out of `SECTIONS`.
+const GRAVECORD_SECTION: (Option<&str>, &[Entry]) = (
+    Some("Gravecord"),
+    &[
+        entry(Page::Updates, "Updates", "updates"),
+        entry(Page::ReportBug, "Report a Bug", "report_bug"),
+    ],
+);
+
+/// The sidebar's groups: the official ones with the Gravecord group before the last.
+fn sections() -> impl Iterator<Item = &'static (Option<&'static str>, &'static [Entry])> {
+    let (head, tail) = SECTIONS.split_at(SECTIONS.len() - 1);
+    head.iter()
+        .chain(std::iter::once(&GRAVECORD_SECTION))
+        .chain(tail)
+}
+
 fn label_of(page: Page) -> &'static str {
-    SECTIONS
-        .iter()
+    sections()
         .flat_map(|(_, entries)| entries.iter())
         .find(|entry| entry.page == page)
         .map_or("", |entry| entry.label)
@@ -1040,8 +1062,7 @@ impl Root {
     /// Opens settings on the page with this sidebar label ("Data & Privacy", "Server Boost").
     pub(super) fn open_settings_section(&mut self, label: &str, cx: &mut Context<Self>) {
         self.open_settings(cx);
-        let page = SECTIONS
-            .iter()
+        let page = sections()
             .flat_map(|(_, entries)| entries.iter())
             .filter(|entry| entry.page != Page::Clips || self.clips_listed())
             .find(|entry| entry.label == label)
@@ -1060,8 +1081,7 @@ impl Root {
         cx: &mut Context<Self>,
     ) {
         self.open_settings(cx);
-        let entry = SECTIONS
-            .iter()
+        let entry = sections()
             .flat_map(|(_, entries)| entries.iter())
             .filter(|entry| entry.page != Page::Clips || self.clips_listed())
             .find(|entry| entry.label == page_label);
@@ -1084,8 +1104,7 @@ impl Root {
     /// Opens settings on the page whose label, lower case with dashes, is `slug`: "data-privacy", "voice-video".
     pub(crate) fn open_settings_page(&mut self, slug: &str, cx: &mut Context<Self>) {
         self.open_settings(cx);
-        let page = SECTIONS
-            .iter()
+        let page = sections()
             .flat_map(|(_, entries)| entries.iter())
             .filter(|entry| entry.page != Page::Clips || self.clips_listed())
             .find(|entry| page_slug(entry.label) == slug)
@@ -1113,8 +1132,7 @@ impl Root {
             return;
         };
         if open.page == page {
-            let entry = SECTIONS
-                .iter()
+            let entry = sections()
                 .flat_map(|(_, entries)| entries.iter())
                 .find(|entry| entry.page == page);
             let first = entry.and_then(|entry| anchors_of(entry).into_iter().next());
@@ -1771,8 +1789,7 @@ impl Root {
             (entry.page != Page::Clips || self.clips_listed())
                 && search::page_matches(entry.page, entry.label, &query)
         };
-        let visible: Vec<_> = SECTIONS
-            .iter()
+        let visible: Vec<_> = sections()
             .filter(|(_, entries)| entries.iter().any(|entry| kept(&entry)))
             .collect();
         let no_results = visible.is_empty();
@@ -2260,6 +2277,8 @@ impl Root {
                 None => self.account_page(cx),
             },
             Page::Clips => self.clips_page(window, cx),
+            Page::Updates => self.updates_page(cx),
+            Page::ReportBug => self.report_bug_page(cx),
             page => pages::nodes(page)
                 .iter()
                 .map(|node| {

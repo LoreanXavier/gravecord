@@ -20,6 +20,7 @@ mod logging;
 mod login_art;
 mod lottie;
 mod markup_preview;
+mod mp4_info;
 mod net;
 mod notifications;
 mod palette;
@@ -42,7 +43,6 @@ mod ui;
 mod updater;
 mod upload_flow;
 mod video_clip;
-mod mp4_info;
 mod video_vod;
 mod webauthn;
 #[cfg(feature = "capture")]
@@ -365,6 +365,15 @@ fn run() -> Result<()> {
         .and_then(instance::Instance::take_requests);
     record_panics();
     record_log();
+    // A tester build always keeps a log for bug reports (Settings > Report a Bug), other builds when it is switched on
+    // there; a capture run never writes one.
+    if logging::keep_log()
+        && !storage::is_capture_run()
+        && let Some(dir) = storage::data_dir()
+    {
+        logging::start_tester_file(&dir.join("logs"));
+        tracing::info!(version = %updater::current_version(), "tester build");
+    }
     if let Some(error) = instance_error {
         tracing::warn!(%error, "single-instance claim unavailable");
     }

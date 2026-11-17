@@ -5,12 +5,16 @@
 //! button is in `ui.rs`; its click is `AUTO_UPDATER_QUIT_AND_INSTALL`.
 //!
 //! gravecord has no Squirrel, so the feed is a small JSON file (`update.json`: version, setup file, size, SHA-256)
-//! next to the setup file of the latest GitHub release of the repository named in the workspace metadata. The setup
+//! next to the setup file of a GitHub release: the latest release for the Stable channel, the rolling `nightly` release
+//! for the Nightly channel that tester builds (`cargo xtask package --channel nightly`) follow. The repository is the
+//! workspace's unless the build names another (`GRAVECORD_UPDATE_REPOSITORY`; testers cannot read a private one).
+//! Settings > Updates shows the state, progress, failures and the channel (`ui/settings/tester.rs`). The setup
 //! file is downloaded into the app's data folder, verified against the feed's size and hash, and run silently with the
 //! installer's own arguments (`docs/installer.md`).
 //!
 //! Safety rules, each with a test: HTTPS only; the setup URL and every redirect stay on the feed's host (a GitHub feed
-//! may also use GitHub's download host); the hash is mandatory; a version that is not newer is ignored; a missing feed
+//! may also use GitHub's download host); the hash is mandatory; a version that is not newer is ignored (after a
+//! channel switch, any other version is taken, since a nightly sorts below its stable release); a missing feed
 //! (404) means "no update" with no error; a file that fails verification is deleted; nothing is run from a capture run.
 
 use crate::net::Update;
@@ -26,8 +30,9 @@ use std::sync::{LazyLock, Mutex};
 use std::time::Duration;
 use tokio::sync::mpsc::UnboundedSender;
 
-/// The default feed: `update.json` of the latest release of the repository in the workspace metadata. The single
-/// place that names it; `GRAVECORD_UPDATE_FEED` or the `update.feed` storage key replace it.
+/// The stable channel's feed for the workspace's repository, as [`Channel::feed`] builds it: `update.json` of the
+/// latest release. `GRAVECORD_UPDATE_FEED` or the `update.feed` storage key replace the channel's feed.
+#[cfg(test)]
 pub const DEFAULT_FEED: &str = concat!(
     env!("CARGO_PKG_REPOSITORY"),
     "/releases/latest/download/update.json"
@@ -40,9 +45,74 @@ const MAX_FEED_BYTES: usize = 64 * 1024;
 pub const MAX_SETUP_BYTES: u64 = 1 << 30;
 const MAX_REDIRECTS: usize = 5;
 
-/// This build's version.
+/// This build's version: the package's, or the stamped one `cargo xtask package --channel nightly` gave a tester
+/// build (`0.0.0-nightly.202611171830`).
 pub fn current_version() -> Version {
-    Version::parse(env!("CARGO_PKG_VERSION")).expect("the package version is a valid version")
+    let text = option_env!("GRAVECORD_BUILD_VERSION").unwrap_or(env!("CARGO_PKG_VERSION"));
+    Version::parse(text).expect("the build version is a valid version")
+}
+
+/// Whether this is a tester build (`cargo xtask package --channel nightly`): it follows the nightly feed by default and
+/// always keeps a log file (`crate::logging::start_tester_file`).
+pub fn tester_build() -> bool {
+    option_env!("GRAVECORD_CHANNEL") == Some("nightly")
+}
+
+/// The repository whose releases carry the feeds: `GRAVECORD_UPDATE_REPOSITORY` at build time (testers cannot read a
+/// private repository's releases, so a tester build may name a public one), else the workspace's.
+pub fn repository() -> &'static str {
+    option_env!("GRAVECORD_UPDATE_REPOSITORY").unwrap_or(env!("CARGO_PKG_REPOSITORY"))
+}
+
+/// Which builds an install follows.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Channel {
+    /// The latest release.
+    Stable,
+    /// Every tester build: the rolling `nightly` release, replaced on each publish.
+    Nightly,
+}
+
+impl Channel {
+    fn key(self) -> &'static str {
+        match self {
+            Self::Stable => "stable",
+            Self::Nightly => "nightly",
+        }
+    }
+
+    /// The feed of this channel in `repository`. GitHub's `latest` never resolves to a pre-release, so the nightly feed
+    /// names its fixed tag.
+    pub fn feed(self, repository: &str) -> String {
+        let repository = repository.trim_end_matches('/');
+        match self {
+            Self::Stable => format!("{repository}/releases/latest/download/update.json"),
+            Self::Nightly => format!("{repository}/releases/download/nightly/update.json"),
+        }
+    }
+}
+
+/// The channel in force: the `update.channel` storage key, else nightly for a tester build and stable otherwise.
+pub fn channel() -> Channel {
+    match crate::storage::get("update.channel")
+        .and_then(|value| value.as_str().map(str::to_owned))
+        .as_deref()
+    {
+        Some("nightly") => Channel::Nightly,
+        Some("stable") => Channel::Stable,
+        _ if tester_build() => Channel::Nightly,
+        _ => Channel::Stable,
+    }
+}
+
+/// Switches channel and checks again at once. A download already finished for the other channel is forgotten.
+pub fn set_channel(channel: Channel) {
+    crate::storage::set("update.channel", serde_json::json!(channel.key()));
+    if let Ok(mut ready) = READY.lock() {
+        *ready = None;
+    }
+    set_state(State::NotAvailable);
+    request_check();
 }
 
 // ---- versions ----
@@ -55,6 +125,11 @@ pub struct Version {
 }
 
 impl Version {
+    /// A tester build's version: `x.y.z-nightly.N`.
+    pub fn is_nightly(&self) -> bool {
+        self.pre.first().is_some_and(|part| part == "nightly")
+    }
+
     pub fn parse(text: &str) -> Result<Self> {
         let text = text.trim();
         let text = text.strip_prefix('v').unwrap_or(text);
@@ -280,6 +355,18 @@ pub fn is_update(current: &Version, offered: &Version) -> bool {
     offered > current
 }
 
+/// What a channel accepts: a newer version, or after a channel switch any other version, since a nightly
+/// (`0.0.0-nightly.N`) sorts below the stable release it leads to and the stable feed's build must still replace it.
+pub fn is_offer(current: &Version, offered: &Version, channel: Channel) -> bool {
+    let running_nightly = current.is_nightly();
+    let switching = running_nightly != (channel == Channel::Nightly);
+    if switching {
+        offered != current
+    } else {
+        is_update(current, offered)
+    }
+}
+
 fn build_client(feed: &Url, policy: Policy) -> Result<reqwest::Client> {
     let feed = feed.clone();
     reqwest::Client::builder()
@@ -312,11 +399,22 @@ async fn read_limited(mut response: reqwest::Response, limit: usize) -> Result<V
 }
 
 /// Fetches the feed. 404 and 410 are "no update"; any other failure is an error the caller only logs.
+#[cfg(test)]
 pub async fn check(
     client: &reqwest::Client,
     feed: &Url,
     policy: Policy,
     current: &Version,
+) -> Result<Check> {
+    check_offer(client, feed, policy, &|offered| is_update(current, offered)).await
+}
+
+/// [`check`] with the channel's own rule for what counts as an offer ([`is_offer`]).
+pub async fn check_offer(
+    client: &reqwest::Client,
+    feed: &Url,
+    policy: Policy,
+    accept: &(dyn Fn(&Version) -> bool + Sync),
 ) -> Result<Check> {
     let response = client.get(feed.clone()).send().await?;
     let status = response.status();
@@ -328,7 +426,7 @@ pub async fn check(
     }
     let body = read_limited(response, MAX_FEED_BYTES).await?;
     let manifest = Manifest::parse(&body, feed, policy)?;
-    Ok(if is_update(current, &manifest.version) {
+    Ok(if accept(&manifest.version) {
         Check::Available(manifest)
     } else {
         Check::NoUpdate
@@ -587,6 +685,54 @@ pub enum State {
     },
 }
 
+/// What the Updates settings page shows beyond the title bar's states, which the official client keeps silent about:
+/// a check running, its failure, the download's progress, the last check's time and what the feed offered.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Status {
+    pub checking: bool,
+    /// Seconds since 1970 of the last check that finished.
+    pub last_checked: Option<u64>,
+    /// The last check's failure, in words, until the next check succeeds.
+    pub error: Option<String>,
+    /// Bytes downloaded of the total.
+    pub progress: Option<(u64, u64)>,
+    /// This copy was not started from an install, so nothing here could apply an update.
+    pub not_installed: bool,
+}
+
+static STATUS: Mutex<Status> = Mutex::new(Status {
+    checking: false,
+    last_checked: None,
+    error: None,
+    progress: None,
+    not_installed: false,
+});
+
+pub fn status() -> Status {
+    STATUS
+        .lock()
+        .map_or_else(|_| Status::default(), |status| status.clone())
+}
+
+fn set_status(change: impl FnOnce(&mut Status)) {
+    let changed = STATUS.lock().is_ok_and(|mut status| {
+        let before = status.clone();
+        change(&mut status);
+        *status != before
+    });
+    if changed {
+        notify_window();
+    }
+}
+
+fn notify_window() {
+    if let Ok(sender) = SENDER.lock()
+        && let Some(sender) = sender.as_ref()
+    {
+        let _ = sender.send(Update::Updater);
+    }
+}
+
 static STATE: Mutex<State> = Mutex::new(State::NotAvailable);
 static READY: Mutex<Option<Ready>> = Mutex::new(None);
 static SENDER: Mutex<Option<UnboundedSender<Update>>> = Mutex::new(None);
@@ -642,21 +788,17 @@ fn set_state(state: State) {
         }
         *current = state;
     }
-    if let Ok(sender) = SENDER.lock()
-        && let Some(sender) = sender.as_ref()
-    {
-        let _ = sender.send(Update::Updater);
-    }
+    notify_window();
 }
 
-/// The feed address in force: the environment, then the `update.feed` storage key, then the default.
-fn configured_feed() -> Result<Url> {
+/// The feed address in force: the environment, then the `update.feed` storage key, then the channel's feed.
+pub fn configured_feed() -> Result<Url> {
     let text = std::env::var("GRAVECORD_UPDATE_FEED")
         .ok()
         .or_else(|| {
             crate::storage::get("update.feed").and_then(|value| value.as_str().map(str::to_owned))
         })
-        .unwrap_or_else(|| DEFAULT_FEED.to_owned());
+        .unwrap_or_else(|| channel().feed(repository()));
     Policy::STRICT.feed_url(&text)
 }
 
@@ -702,11 +844,23 @@ pub fn attach(sender: UnboundedSender<Update>) {
                     let mut requested = false;
                     loop {
                         if requested || CHECK_REQUESTS.begin() {
-                            if let Err(error) = cycle().await {
-                                // The official client shows nothing for an update error.
-                                tracing::debug!(error = %format!("{error:#}"), "update check failed");
+                            set_status(|status| status.checking = true);
+                            let outcome = cycle().await;
+                            let now = std::time::SystemTime::now()
+                                .duration_since(std::time::UNIX_EPOCH)
+                                .map_or(0, |elapsed| elapsed.as_secs());
+                            let error = outcome.as_ref().err().map(|error| format!("{error:#}"));
+                            if let Some(error) = &error {
+                                // The official client shows nothing for an update error; the Updates page does.
+                                tracing::debug!(%error, "update check failed");
                                 set_state(State::NotAvailable);
                             }
+                            set_status(|status| {
+                                status.checking = false;
+                                status.last_checked = Some(now);
+                                status.error = error;
+                                status.progress = None;
+                            });
                             CHECK_REQUESTS.finish();
                         }
                         requested = tokio::select! {
@@ -728,7 +882,9 @@ async fn cycle() -> Result<()> {
         return Ok(());
     }
     let exe = std::env::current_exe()?;
-    if installed_dir(&exe).is_none() {
+    let not_installed = installed_dir(&exe).is_none();
+    set_status(|status| status.not_installed = not_installed);
+    if not_installed {
         // Not an install: nothing here could apply an update.
         return Ok(());
     }
@@ -737,9 +893,20 @@ async fn cycle() -> Result<()> {
         .join("update");
     let feed = configured_feed()?;
     let client = build_client(&feed, Policy::STRICT)?;
-    let Check::Available(manifest) =
-        check(&client, &feed, Policy::STRICT, &current_version()).await?
-    else {
+    let current = current_version();
+    let channel = channel();
+    let accept = move |offered: &Version| is_offer(&current, offered, channel);
+    let found = check_offer(&client, &feed, Policy::STRICT, &accept).await?;
+    tracing::debug!(
+        channel = channel.key(),
+        current = %current_version(),
+        offered = %match &found {
+            Check::Available(manifest) => manifest.version.to_string(),
+            Check::NoUpdate => "nothing newer".to_owned(),
+        },
+        "update check"
+    );
+    let Check::Available(manifest) = found else {
         sweep(&dir, &[]);
         return Ok(());
     };
@@ -749,7 +916,15 @@ async fn cycle() -> Result<()> {
     set_state(State::Downloading {
         version: version.clone(),
     });
-    let path = download(&client, &manifest, &dir, &|_, _| {}).await?;
+    let path = download(&client, &manifest, &dir, &|done, total| {
+        // A step per percent is enough for the page; every chunk would wake the window thousands of times.
+        let percent = |bytes: u64| bytes.saturating_mul(100) / total.max(1);
+        let step = status().progress.map(|(before, _)| percent(before));
+        if step != Some(percent(done)) || done == total {
+            set_status(|status| status.progress = Some((done, total)));
+        }
+    })
+    .await?;
     if let Ok(mut ready) = READY.lock() {
         *ready = Some(Ready { manifest, path });
     }

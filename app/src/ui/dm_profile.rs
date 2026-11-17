@@ -503,6 +503,31 @@ impl Root {
             )
     }
 
+    /// The pill as the official profiles draw it (module 534400 without `disableGuildProfile`): a press opens the
+    /// server's tag card beside it. The lists (direct messages, members, voice) draw the plain chip.
+    pub(super) fn profile_server_tag_button(
+        &self,
+        tag: &dc_state::ServerTag,
+        palette: &Palette,
+        key: String,
+        cx: &mut Context<Self>,
+    ) -> gpui::Stateful<gpui::Div> {
+        let guild = tag.guild_id;
+        let anchor_key = key.clone();
+        self.profile_server_tag_pill(tag, palette)
+            .id(gpui::SharedString::from(key.clone()))
+            .relative()
+            .cursor_pointer()
+            .child(self.anchor_probe(key))
+            .on_click(cx.listener(move |this, _, _, cx| {
+                cx.stop_propagation();
+                let anchor = this.tip_anchors.borrow().get(anchor_key.as_str()).copied();
+                if let Some(anchor) = anchor {
+                    this.open_guild_tag_popout(guild, anchor, cx);
+                }
+            }))
+    }
+
     /// `displayNameRow` and `usernameAndPronounsRow` of module 465829, with the note button (module 243166) after the
     /// name in the sidebar.
     fn profile_names(
@@ -631,7 +656,12 @@ impl Root {
                         {
                             self.want_image(url.clone(), url, cx);
                         }
-                        self.profile_server_tag_pill(tag, palette)
+                        self.profile_server_tag_button(
+                            tag,
+                            palette,
+                            format!("{place}-tag-{user_id}"),
+                            cx,
+                        )
                     }))
                     .children(self.badge_pill(place, user_id, palette, cx)),
             )

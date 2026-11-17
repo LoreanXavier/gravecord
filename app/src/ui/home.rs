@@ -458,12 +458,8 @@ impl Root {
                                         )
                                         // `clanTag_zln_tS` 4px on; `clanTagMuted_zln_tS` at .3.
                                         .children(recipient.tag.as_ref().map(|tag| {
-                                            self.server_tag_button(
-                                                tag,
-                                                format!("dm-tag-{}", recipient.id),
-                                                cx,
-                                            )
-                                            .when(look.dimmed, |chip| chip.opacity(0.3))
+                                            self.server_tag_chip(tag)
+                                                .when(look.dimmed, |chip| chip.opacity(0.3))
                                         })),
                                 )
                                 // `activityStatusText_zln_tS` is `color: inherit`: the line takes the row's text colour.
@@ -550,31 +546,6 @@ impl Root {
                     .text_color(color("--text-default"))
                     .child(tag.tag.clone()),
             )
-    }
-
-    /// The chip as a button: a click opens the server's tag card beside it (the popout the message header's chip
-    /// opens). `key` names the chip's place so its bounds can anchor the card.
-    pub(super) fn server_tag_button(
-        &self,
-        tag: &dc_state::ServerTag,
-        key: String,
-        cx: &mut Context<Self>,
-    ) -> gpui::Stateful<gpui::Div> {
-        let guild = tag.guild_id;
-        let anchor_key = key.clone();
-        self.server_tag_chip(tag)
-            .id(SharedString::from(key.clone()))
-            .relative()
-            .cursor_pointer()
-            .hover(|style| style.bg(color("--background-mod-muted")))
-            .child(self.anchor_probe(key))
-            .on_click(cx.listener(move |this, _, _, cx| {
-                cx.stop_propagation();
-                let anchor = this.tip_anchors.borrow().get(anchor_key.as_str()).copied();
-                if let Some(anchor) = anchor {
-                    this.open_guild_tag_popout(guild, anchor, cx);
-                }
-            }))
     }
 
     pub(super) fn close_dm(&mut self, channel: Id, cx: &mut Context<Self>) {

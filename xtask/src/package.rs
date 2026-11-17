@@ -39,8 +39,20 @@ fn app_version(repo: &Path) -> Result<String> {
         .context("no version in app/Cargo.toml")
 }
 
-fn build(repo: &Path) -> Result<()> {
-    let status = Command::new("cargo")
+/// What the build is told about itself: a tester (nightly) build names its channel and its stamped version, which the
+/// app reads at compile time (`app/src/updater.rs`); a stable build has neither, so a nightly setting never leaks
+/// into it from the shell.
+fn build(repo: &Path, nightly: Option<&str>) -> Result<()> {
+    let mut command = Command::new("cargo");
+    match nightly {
+        Some(version) => command
+            .env("GRAVECORD_CHANNEL", "nightly")
+            .env("GRAVECORD_BUILD_VERSION", version),
+        None => command
+            .env_remove("GRAVECORD_CHANNEL")
+            .env_remove("GRAVECORD_BUILD_VERSION"),
+    };
+    let status = command
         .current_dir(repo)
         .env("RUSTFLAGS", "-C target-feature=+crt-static")
         .env("CARGO_BUILD_JOBS", "4")
@@ -154,18 +166,56 @@ fn refresh_portable(dist: &Path, app_exe: &Path, assets: &Path) -> Result<Portab
     }
 }
 
-pub fn run(repo: &Path) -> Result<()> {
+/// `YYYYMMDDHHMM` in UTC: the nightly build number. Later builds sort higher as numbers, which is how the updater
+/// orders `0.0.0-nightly.N` versions.
+fn nightly_stamp(since_epoch: u64) -> String {
+    let days = (since_epoch / 86_400) as i64;
+    let minutes = since_epoch % 86_400 / 60;
+    // Civil date from days since 1970-01-01 (Howard Hinnant's days_from_civil, inverted).
+    let z = days + 719_468;
+    let era = z.div_euclid(146_097);
+    let doe = z - era * 146_097;
+    let yoe = (doe - doe / 1_460 + doe / 36_524 - doe / 146_096) / 365;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let day = doy - (153 * mp + 2) / 5 + 1;
+    let month = if mp < 10 { mp + 3 } else { mp - 9 };
+    let year = yoe + era * 400 + i64::from(month <= 2);
+    format!(
+        "{year:04}{month:02}{day:02}{:02}{:02}",
+        minutes / 60,
+        minutes % 60
+    )
+}
+
+/// `cargo xtask package` (stable) or `cargo xtask package --channel nightly` (a tester build: version
+/// `<app version>-nightly.<UTC stamp>`, written to `gravecord-dist/nightly`). Publishing the nightly is copying its
+/// `gravecord-setup.exe` and `update.json` to the `nightly` release of the update repository.
+pub fn run(repo: &Path, nightly: bool) -> Result<()> {
+    let base = app_version(repo)?;
+    let version = if nightly {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .context("the clock is before 1970")?;
+        format!("{base}-nightly.{}", nightly_stamp(now.as_secs()))
+    } else {
+        base
+    };
     if std::env::var_os("GRAVECORD_PACKAGE_SKIP_BUILD").is_none() {
-        build(repo)?;
+        build(repo, nightly.then_some(version.as_str()))?;
     }
     let release = repo.join(TARGET_DIR).join("release");
     let app_exe = release.join("gravecord.exe");
     let stub_path = release.join("gravecord-setup.exe");
     let assets = repo.join("app/assets");
-    let dist = dist_dir(repo);
+    let dist = if nightly {
+        dist_dir(repo).join("nightly")
+    } else {
+        dist_dir(repo)
+    };
     std::fs::create_dir_all(&dist)?;
+    println!("version: {version}");
 
-    let version = app_version(repo)?;
     let archive = Archive {
         version: version.clone(),
         entries: payload::collect(&app_exe, &assets)?,
@@ -203,6 +253,18 @@ pub fn run(repo: &Path) -> Result<()> {
 mod tests {
     use super::*;
     use std::os::windows::fs::OpenOptionsExt;
+
+    #[test]
+    fn nightly_stamps_are_utc_dates_that_sort_as_numbers() {
+        assert_eq!(nightly_stamp(0), "197001010000");
+        // 2026-11-17 18:30 UTC.
+        assert_eq!(nightly_stamp(1_794_940_200), "202611171830");
+        // 2024-02-29 23:59 UTC, a leap day.
+        assert_eq!(nightly_stamp(1_709_251_140), "202402292359");
+        let a: u64 = nightly_stamp(1_794_940_200).parse().unwrap();
+        let b: u64 = nightly_stamp(1_794_940_260).parse().unwrap();
+        assert!(b > a);
+    }
 
     fn scratch(name: &str) -> PathBuf {
         let dir = std::env::temp_dir().join(format!("gc-package-{name}-{}", std::process::id()));

@@ -697,6 +697,8 @@ impl Root {
                 img(banner_picture)
                     .h(px(120.))
                     .w_full()
+                    // gpui does not clip a picture to its parent's corners: the banner takes the card's top radius.
+                    .rounded_t(px(15.))
                     .object_fit(gpui::ObjectFit::Cover),
             )
             .child(

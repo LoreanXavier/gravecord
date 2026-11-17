@@ -78,47 +78,112 @@ pub fn fit_size(width: u32, height: u32, max_width: u32, max_height: u32) -> (u3
     )
 }
 
-/// Bilinear source tap: byte offsets of the two neighbours and the 8-bit blend weight.
+/// Source span of one destination sample: byte offsets with 8-bit weights summing to 256.
+///
+/// Enlarging, the span is the two bilinear neighbours. Shrinking, it is every source pixel the destination pixel
+/// covers, weighted by coverage (an area average, libyuv's box filter). Bilinear on a shrink weighs one-pixel strokes
+/// unevenly by where they fall between its taps and past 2:1 skips source pixels outright, so small text turns uneven and shimmers as it scrolls.
 #[derive(Clone, Copy)]
 struct Tap {
-    near: usize,
-    far: usize,
-    weight: u32,
+    first: usize,
+    len: usize,
 }
 
 /// Destination axis mapping into a source axis, with letterbox bounds.
 struct Axis {
     taps: Vec<Tap>,
+    spans: Vec<(usize, u32)>,
     start: usize,
     end: usize,
 }
 
+/// Above this source-to-destination ratio (any shrink) the area average is used.
+const AREA_RATIO: f64 = 1.0;
+
 impl Axis {
     fn new(source: usize, scaled: usize, destination: usize, step: usize) -> Self {
+        let area = source as f64 / scaled as f64 > AREA_RATIO;
+        Self::with_filter(source, scaled, destination, step, area)
+    }
+
+    fn with_filter(
+        source: usize,
+        scaled: usize,
+        destination: usize,
+        step: usize,
+        area: bool,
+    ) -> Self {
         let start = (destination - scaled) / 2;
+        let ratio = source as f64 / scaled as f64;
+        let mut spans = Vec::new();
         let taps = (0..scaled)
             .map(|index| {
-                let position = ((index as f64 + 0.5) * source as f64 / scaled as f64 - 0.5)
-                    .clamp(0.0, (source - 1) as f64);
-                let near = position as usize;
+                let first = spans.len();
+                if area {
+                    let (from, to) = (index as f64 * ratio, (index + 1) as f64 * ratio);
+                    let mut weights = Vec::new();
+                    let mut pixel = from.floor() as usize;
+                    while (pixel as f64) < to && pixel < source {
+                        let cover = (to.min(pixel as f64 + 1.0) - from.max(pixel as f64)).max(0.0);
+                        weights.push((pixel * step, cover / ratio));
+                        pixel += 1;
+                    }
+                    push_weights(&mut spans, &weights);
+                } else {
+                    let position =
+                        ((index as f64 + 0.5) * ratio - 0.5).clamp(0.0, (source - 1) as f64);
+                    let near = position as usize;
+                    let weight = ((position - near as f64) * 256.0) as u32;
+                    spans.push((near * step, 256 - weight));
+                    if weight != 0 {
+                        spans.push(((near + 1).min(source - 1) * step, weight));
+                    }
+                }
                 Tap {
-                    near: near * step,
-                    far: (near + 1).min(source - 1) * step,
-                    weight: ((position - near as f64) * 256.0) as u32,
+                    first,
+                    len: spans.len() - first,
                 }
             })
             .collect();
         Self {
             taps,
+            spans,
             start,
             end: start + scaled,
         }
     }
 
-    fn tap(&self, index: usize) -> Option<Tap> {
-        (self.start..self.end)
-            .contains(&index)
-            .then(|| self.taps[index - self.start])
+    fn tap(&self, index: usize) -> Option<&[(usize, u32)]> {
+        (self.start..self.end).contains(&index).then(|| {
+            let tap = self.taps[index - self.start];
+            &self.spans[tap.first..tap.first + tap.len]
+        })
+    }
+}
+
+/// Quantizes coverage fractions to 8-bit weights that sum to exactly 256, dropping zero weights.
+fn push_weights(spans: &mut Vec<(usize, u32)>, weights: &[(usize, f64)]) {
+    let before = spans.len();
+    let mut given = 0u32;
+    let mut cumulative = 0.0;
+    for &(offset, fraction) in weights {
+        cumulative += fraction;
+        let upto = ((cumulative * 256.0).round() as u32).min(256);
+        let weight = upto.saturating_sub(given);
+        given += weight;
+        if weight != 0 {
+            spans.push((offset, weight));
+        }
+    }
+    if given < 256 {
+        // Never the previous sample's span: only a weight this call pushed takes the remainder.
+        if spans.len() > before {
+            if let Some(last) = spans.last_mut() {
+                last.1 += 256 - given;
+            }
+        } else {
+            spans.push((weights[0].0, 256));
+        }
     }
 }
 
@@ -153,8 +218,7 @@ fn cached_axes(key: AxisKey) -> Arc<Axes> {
     let scale = (key.dst_width as f64 / key.src_width as f64)
         .min(key.dst_height as f64 / key.src_height as f64);
     let scaled_width = ((key.src_width as f64 * scale).round() as usize).clamp(1, key.dst_width);
-    let scaled_height =
-        ((key.src_height as f64 * scale).round() as usize).clamp(1, key.dst_height);
+    let scaled_height = ((key.src_height as f64 * scale).round() as usize).clamp(1, key.dst_height);
     let axes = Arc::new(Axes {
         columns: Axis::new(key.src_width, scaled_width, key.dst_width, 4),
         rows: Axis::new(key.src_height, scaled_height, key.dst_height, key.stride),
@@ -484,7 +548,7 @@ impl Band<'_> {
         };
         if self.identity {
             // Every tap has weight 0 here; reading the bytes straight gives the same values a few times faster.
-            let line = &self.source[y.near..][..out.len() * 4];
+            let line = &self.source[y[0].0..][..out.len() * 4];
             let [r, g, b] = self.offsets;
             for (rgb, pixel) in out.iter_mut().zip(line.as_chunks::<4>().0) {
                 *rgb = [
@@ -495,28 +559,26 @@ impl Band<'_> {
             }
             return;
         }
-        let (near, far) = (&self.source[y.near..], &self.source[y.far..]);
         for (column, rgb) in out.iter_mut().enumerate() {
             let Some(x) = self.columns.tap(column) else {
                 *rgb = [0; 3];
                 continue;
             };
-            for (channel, value) in rgb.iter_mut().enumerate() {
-                let byte = self.offsets[channel];
-                let lerp = |line: &[u8]| {
-                    let a = u32::from(line[x.near + byte]);
-                    if x.weight == 0 {
-                        return a << 8;
+            let mut sum = [0u32; 3];
+            for &(row_offset, row_weight) in y {
+                let line = &self.source[row_offset..];
+                let mut across = [0u32; 3];
+                for &(column_offset, column_weight) in x {
+                    let pixel = &line[column_offset..column_offset + 4];
+                    for (channel, value) in across.iter_mut().enumerate() {
+                        *value += u32::from(pixel[self.offsets[channel]]) * column_weight;
                     }
-                    a * (256 - x.weight) + u32::from(line[x.far + byte]) * x.weight
-                };
-                let upper = lerp(near);
-                *value = if y.weight == 0 {
-                    (upper + 128) >> 8
-                } else {
-                    (upper * (256 - y.weight) + lerp(far) * y.weight + 32_768) >> 16
-                };
+                }
+                for (total, value) in sum.iter_mut().zip(across) {
+                    *total += value * row_weight;
+                }
             }
+            *rgb = sum.map(|total| (total + 32_768) >> 16);
         }
     }
 }
@@ -839,6 +901,112 @@ mod tests {
             assert_eq!(owned.as_ptr(), ptr);
             assert_eq!(owned.capacity(), cap);
             assert!(actual == expected, "{chroma:?}");
+        }
+    }
+
+    /// Screen text through the downscaler, against the exact area average of the same text. Bilinear on a
+    /// shrink drops one-pixel strokes between its taps; the area path keeps every stroke at its true weight.
+    #[test]
+    fn shrinking_text_keeps_its_strokes() {
+        let text = |width: usize, height: usize| {
+            let mut data = solid(width, height, width * 4, [255, 255, 255, 255]);
+            let mut seed = 0x2545_f491_u32;
+            for glyph_y in (4..height - 14).step_by(16) {
+                for glyph_x in (4..width - 9).step_by(9) {
+                    for y in 0..12 {
+                        for x in 0..7 {
+                            seed ^= seed << 13;
+                            seed ^= seed >> 17;
+                            seed ^= seed << 5;
+                            if (x == 0 || y == 0 || x == 6 || y == 11 || x == y / 2)
+                                && seed.is_multiple_of(3)
+                            {
+                                let at = ((glyph_y + y) * width + glyph_x + x) * 4;
+                                data[at..at + 4].copy_from_slice(&[30, 30, 30, 255]);
+                            }
+                        }
+                    }
+                }
+            }
+            data
+        };
+        let psnr = |source: (usize, usize), destination: (usize, usize), area: bool| {
+            let data = text(source.0, source.1);
+            let (width, height) = destination;
+            let columns = Axis::with_filter(source.0, width, width, 4, area);
+            let rows = Axis::with_filter(source.1, height, height, source.0 * 4, area);
+            let mut out = vec![0; width * height * 3 / 2];
+            let (luma_out, uv) = out.split_at_mut(width * height);
+            Band {
+                source: &data,
+                identity: false,
+                offsets: PixelOrder::Bgra.offsets(),
+                columns: &columns,
+                rows: &rows,
+                width,
+                first: 0,
+                luma: luma_out,
+                chroma: Out::Interleaved(uv),
+            }
+            .run();
+            let rx = source.0 as f64 / width as f64;
+            let ry = source.1 as f64 / height as f64;
+            let cover = |index: usize, pixel: usize, ratio: f64| {
+                ((index + 1) as f64 * ratio).min(pixel as f64 + 1.0)
+                    - (index as f64 * ratio).max(pixel as f64)
+            };
+            let mut error = 0.0;
+            for y in 0..height {
+                for x in 0..width {
+                    let (mut sum, mut total) = (0.0, 0.0);
+                    let rows =
+                        (y as f64 * ry).floor() as usize..((y + 1) as f64 * ry).ceil() as usize;
+                    for sy in rows {
+                        let columns =
+                            (x as f64 * rx).floor() as usize..((x + 1) as f64 * rx).ceil() as usize;
+                        for sx in columns {
+                            let weight = cover(y, sy, ry) * cover(x, sx, rx);
+                            let at = (sy * source.0 + sx) * 4;
+                            let [b, g, r] = [0, 1, 2].map(|i| f64::from(data[at + i]));
+                            sum += (16.0 + (66.0 * r + 129.0 * g + 25.0 * b) / 256.0) * weight;
+                            total += weight;
+                        }
+                    }
+                    let difference = f64::from(out[y * width + x]) - sum / total;
+                    error += difference * difference;
+                }
+            }
+            10.0 * (255.0 * 255.0 / (error / (width * height) as f64)).log10()
+        };
+        for (source, destination) in [
+            // The ratios of 2160p, 1440p and 1080p shares sent at 1080p or 720p, on small frames.
+            ((768, 432), (384, 216)),
+            ((480, 270), (320, 180)),
+            ((640, 360), (480, 270)),
+            ((500, 280), (400, 224)),
+            ((768, 432), (256, 144)),
+            ((640, 360), (160, 90)),
+        ] {
+            let bilinear = psnr(source, destination, false);
+            let area = psnr(source, destination, true);
+            eprintln!(
+                "{source:?} -> {destination:?}: bilinear {bilinear:.1} dB, area {area:.1} dB"
+            );
+            let ratio = source.0 as f64 / destination.0 as f64;
+            let chosen = Axis::new(source.0, destination.0, destination.0, 4).spans;
+            let expected = Axis::with_filter(
+                source.0,
+                destination.0,
+                destination.0,
+                4,
+                ratio > AREA_RATIO,
+            );
+            assert!(chosen == expected.spans, "{source:?}");
+            if ratio > AREA_RATIO {
+                // Exactly 2:1 the two filters are the same average.
+                assert!(area >= bilinear - 0.01, "{source:?}: {area} vs {bilinear}");
+                assert!(area > 55.0, "{source:?}: {area}");
+            }
         }
     }
 }

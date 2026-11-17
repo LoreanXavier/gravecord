@@ -88,7 +88,7 @@ impl Root {
     }
 
     /// `handleInstallDownload`.
-    fn update_clicked(&mut self, cx: &mut Context<Self>) {
+    pub(in crate::ui) fn update_clicked(&mut self, cx: &mut Context<Self>) {
         if !matches!(updater::state(), State::Ready { .. }) {
             return;
         }

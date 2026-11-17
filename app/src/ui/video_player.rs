@@ -539,14 +539,24 @@ impl VideoHub {
         (retired, next_deadline)
     }
 
-    /// Pauses the players of messages in the chat: not the lightbox's (`lb:`) nor the one shown full screen, which
-    /// stay on screen whatever channel is open.
-    pub(super) fn pause_inline(&mut self) {
+    /// Drops the players of messages in the chat, as the official list unmounting its `<video>` elements does: a
+    /// video started in a channel that was left starts over from the poster when the channel opens again. The
+    /// lightbox's and the full-screen one stay. Their pictures are freed on the next frame.
+    pub(super) fn release_inline(&mut self) {
         let fullscreen = self.fullscreen.as_ref().map(|fs| fs.key.clone());
-        for (key, entry) in &mut self.entries {
-            if !key.starts_with("lb:") && fullscreen.as_ref() != Some(key) && entry.player.playing()
-            {
-                entry.player.pause();
+        let keys: Vec<String> = self
+            .entries
+            .keys()
+            .filter(|key| !key.starts_with("lb:") && fullscreen.as_ref() != Some(*key))
+            .cloned()
+            .collect();
+        for key in keys {
+            if let Some(mut entry) = self.entries.remove(&key) {
+                if entry.player.playing() {
+                    entry.player.pause();
+                }
+                let images = entry.player.take_all_images();
+                self.pending_retired.extend(images);
             }
         }
     }
@@ -655,10 +665,11 @@ impl Root {
 
     /// Another channel opened: its message list is no longer drawn, so its media stop as an unmounted `<video>` or
     /// `<audio>` element does in the official client (modules 153440, 527388 and 989161 pause nothing themselves; the
-    /// element leaving the page does). Inline videos and the shared sound engine pause, keeping their positions, and a
-    /// Play still waiting for its download is dropped rather than starting later in a channel no longer shown.
+    /// element leaving the page does). Inline videos are dropped, so they start over when the channel opens again; the
+    /// shared sound engine pauses, and a Play still waiting for its download is dropped rather than starting later in
+    /// a channel no longer shown.
     pub(super) fn media_left_channel(&mut self) {
-        self.video_hub.borrow_mut().pause_inline();
+        self.video_hub.borrow_mut().release_inline();
         self.voice_hub.borrow_mut().drop_play_intents();
         // Sent whatever the status says: it lags, and a play clicked just before leaving may not show in it yet. The
         // clip editor's preview is not a message's media and keeps playing.
@@ -1165,27 +1176,8 @@ impl Root {
                     )
                     .into_any_element(),
             )
-        } else if matches!(tick_status, LoadStatus::Loading) && tick_playing {
-            Some(
-                div()
-                    .absolute()
-                    .inset_0()
-                    .flex()
-                    .items_center()
-                    .justify_center()
-                    .child(
-                        div()
-                            .size(px(40.0))
-                            .rounded_full()
-                            .bg(play_circle_bg(false))
-                            .flex()
-                            .items_center()
-                            .justify_center()
-                            .child(icon("clips_retry", 20.0, "--white")),
-                    )
-                    .into_any_element(),
-            )
         } else {
+            // While a started video loads, module 153440 draws nothing over it (`onWaiting` only reports analytics).
             None
         };
 

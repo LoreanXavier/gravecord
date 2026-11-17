@@ -2440,7 +2440,8 @@ impl Root {
         let status_bubble = self.full_profile_status_bubble(id, open_guild, me, &palette, cx);
         let connections = self.full_profile_connections(id, body, &palette, cx);
         let viewport = window.viewport_size();
-        let geo = full_profile_modal_geometry(f32::from(viewport.width), f32::from(viewport.height));
+        let geo =
+            full_profile_modal_geometry(f32::from(viewport.width), f32::from(viewport.height));
         let card_bg = if palette.themed {
             palette.top
         } else {
@@ -2517,11 +2518,14 @@ impl Root {
                         this.child(div().size(px(4.)).rounded_full().bg(default))
                             .child(pronouns)
                     })
-                    .children(
-                        user.tag
-                            .as_ref()
-                            .map(|tag| self.profile_server_tag_pill(tag, &palette)),
-                    )
+                    .children(user.tag.as_ref().map(|tag| {
+                        self.profile_server_tag_button(
+                            tag,
+                            &palette,
+                            format!("full-profile-tag-{id}"),
+                            cx,
+                        )
+                    }))
                     .children(self.badge_pill("full-profile", id, &palette, cx)),
             );
         let secondary_bg = palette.token("--control-secondary-background-default");
@@ -2733,8 +2737,8 @@ impl Root {
             .flex_none()
             .rounded_t(px(16.))
             .overflow_hidden()
-            .border_1()
-            .border_color(border_muted)
+            // `profile_s3DB6Y` has no border, only its shadow (design/dom/profile/full-loreanxavier: the avatar at
+            // 240,160 is the card's 208,80 plus 32 and 80).
             .bg(card_bg)
             .children(palette.card_backdrop(140.))
             .shadow(vec![gpui::BoxShadow {
@@ -3006,32 +3010,38 @@ impl Root {
                 }))
                 .into_any_element(),
         };
-        let columns = div().w_full().flex_1().min_w(px(0.)).h_full().flex().child(identity).child(
-            div()
-                .flex_1()
-                .min_w(px(0.))
-                .pt(px(20.))
-                .pl(px(32.))
-                .pr(px(16.))
-                .flex()
-                .flex_col()
-                .child(tabs)
-                .child(
-                    // `tabBarPanel_y4ZEM5` starts 2px above the tab line's bottom.
-                    div()
-                        .id("full-profile-panel")
-                        .mt(px(-2.))
-                        .flex_1()
-                        .min_h(px(0.))
-                        .overflow_y_scroll()
-                        .pb(px(16.))
-                        .child(panel),
-                ),
-        );
-        let modal_bg = palette.theme.map_or_else(
-            || color("--background-base-lower"),
-            |t| t.modal_background,
-        );
+        let columns = div()
+            .w_full()
+            .flex_1()
+            .min_w(px(0.))
+            .h_full()
+            .flex()
+            .child(identity)
+            .child(
+                div()
+                    .flex_1()
+                    .min_w(px(0.))
+                    .pt(px(20.))
+                    .pl(px(32.))
+                    .pr(px(16.))
+                    .flex()
+                    .flex_col()
+                    .child(tabs)
+                    .child(
+                        // `tabBarPanel_y4ZEM5` starts 2px above the tab line's bottom.
+                        div()
+                            .id("full-profile-panel")
+                            .mt(px(-2.))
+                            .flex_1()
+                            .min_h(px(0.))
+                            .overflow_y_scroll()
+                            .pb(px(16.))
+                            .child(panel),
+                    ),
+            );
+        let modal_bg = palette
+            .theme
+            .map_or_else(|| color("--background-base-lower"), |t| t.modal_background);
         let modal_fade_end = palette.theme.map_or(modal_bg, |t| {
             super::profile_theme::blend_over(t.modal_background, t.modal_inner_stops().1)
         });
@@ -3075,7 +3085,15 @@ impl Root {
             .h(px(geo.height))
             .rounded(px(geo.radius))
             .overflow_hidden()
-            .border_1()
+            // Filling the window's height (below 785px) the official modal shows its edge on the sides only: a line at
+            // x 159 and 1120 of a 1280x720 window, none at the top, so the card starts at y 80, not 81.
+            .map(|modal| {
+                if geo.radius == 0. && geo.sys_pad > 0. {
+                    modal.border_l_1().border_r_1()
+                } else {
+                    modal.border_1()
+                }
+            })
             .border_color(border_muted)
             .bg(modal_bg)
             .children(palette.modal_backdrop())

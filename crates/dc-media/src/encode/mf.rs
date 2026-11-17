@@ -208,6 +208,14 @@ impl Encoder {
             let _ = attributes.SetUINT32(&MF_LOW_LATENCY, 1);
             let codec: ICodecAPI = transform.cast().map_err(|e| unavailable("codec api", e))?;
             let _ = codec.SetValue(&CODECAPI_AVLowLatencyMode, &VARIANT::from(true));
+            // 0 is fastest, 100 best quality: at the same bitrate the quality end keeps small text readable.
+            // Advisory: an encoder that rejects it keeps its own preset.
+            let quality =
+                codec.SetValue(&CODECAPI_AVEncCommonQualityVsSpeed, &VARIANT::from(100_u32));
+            tracing::debug!(
+                accepted = quality.is_ok(),
+                "hardware H.264 encoder quality-vs-speed set to quality"
+            );
             let _ = codec.SetValue(
                 &CODECAPI_AVEncCommonRateControlMode,
                 &VARIANT::from(eAVEncCommonRateControlMode_CBR.0 as u32),
@@ -399,7 +407,10 @@ impl Encoder {
         Ok(self.pending_outputs.pop_front())
     }
 
-    unsafe fn acquire_sample(pool: &mut Vec<PooledSample>, min_capacity: u32) -> Result<PooledSample> {
+    unsafe fn acquire_sample(
+        pool: &mut Vec<PooledSample>,
+        min_capacity: u32,
+    ) -> Result<PooledSample> {
         if let Some(index) = pool
             .iter()
             .position(|entry| unsafe { entry.is_reusable(min_capacity) })
@@ -502,8 +513,9 @@ impl Encoder {
                 let candidate = match self.transform.GetOutputAvailableType(0, index) {
                     Ok(media_type) => media_type,
                     Err(error) => {
-                        return Err(last_error
-                            .unwrap_or_else(|| failed("renegotiate output type", error)));
+                        return Err(
+                            last_error.unwrap_or_else(|| failed("renegotiate output type", error))
+                        );
                     }
                 };
                 index += 1;

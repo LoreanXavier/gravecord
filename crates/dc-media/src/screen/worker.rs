@@ -347,6 +347,7 @@ fn run(
     let mut last_preview = Instant::now() - PREVIEW_INTERVAL;
     let mut initial_preview_sent = false;
     let mut keyframe_wait: Option<Instant> = None;
+    let mut stats = ShareStats::new();
 
     while !state.stop.load(Ordering::Acquire) {
         let timeout = if keyframe_wait.is_some() {
@@ -418,6 +419,7 @@ fn run(
         };
         encoder.set_bitrate(settings.clamp_bitrate(state.bitrate.load(Ordering::Acquire)))?;
         let chroma = encoder.chroma();
+        let converting = Instant::now();
         to_yuv420_vec(
             &mut frame.data,
             SourceMeta {
@@ -432,7 +434,13 @@ fn run(
             &mut yuv,
         )?;
         let force = state.keyframe.swap(false, Ordering::AcqRel);
+        let encoding = Instant::now();
         let output = encoder.encode(&yuv, chroma, force)?;
+        stats.frame(
+            encoding - converting,
+            encoding.elapsed(),
+            output.as_ref().map_or(0, |output| output.data.len()),
+        );
         state.backend.store(
             match encoder.backend() {
                 Backend::Hardware => 1,
@@ -464,6 +472,12 @@ fn run(
             }
         }
         drain_pending_outputs(state, encoder, &mut video, &mut last_encoded)?;
+        stats.report(
+            (frame_w, frame_h),
+            (settings.width, settings.height),
+            encoder.backend(),
+            settings.clamp_bitrate(state.bitrate.load(Ordering::Acquire)),
+        );
 
         let local = state
             .local
@@ -495,6 +509,60 @@ fn run(
         return Err(Error::unavailable(error));
     }
     Ok(())
+}
+
+/// Five-second totals of the share's own work, written to the debug log: the sizes in and out, the encoder in use,
+/// the rate asked for against the bytes the encoder gave back (outputs drained later are not counted), and the time
+/// conversion and encoding take per frame. Quality questions start here: a share at its source size never scales,
+/// and an encoded rate far under the target points at the encoder, a low target at the bandwidth estimate.
+struct ShareStats {
+    since: Instant,
+    frames: u32,
+    bytes: usize,
+    convert: Duration,
+    encode: Duration,
+}
+
+impl ShareStats {
+    const EVERY: Duration = Duration::from_secs(5);
+
+    fn new() -> Self {
+        Self {
+            since: Instant::now(),
+            frames: 0,
+            bytes: 0,
+            convert: Duration::ZERO,
+            encode: Duration::ZERO,
+        }
+    }
+
+    fn frame(&mut self, convert: Duration, encode: Duration, bytes: usize) {
+        self.frames += 1;
+        self.bytes += bytes;
+        self.convert += convert;
+        self.encode += encode;
+    }
+
+    fn report(&mut self, source: (u32, u32), sent: (u32, u32), backend: Backend, target: u32) {
+        let elapsed = self.since.elapsed();
+        if elapsed < Self::EVERY || self.frames == 0 {
+            return;
+        }
+        let seconds = elapsed.as_secs_f64();
+        let per_frame = |total: Duration| total.as_secs_f64() * 1000. / f64::from(self.frames);
+        tracing::debug!(
+            source = %format!("{}x{}", source.0, source.1),
+            sent = %format!("{}x{}", sent.0, sent.1),
+            backend = ?backend,
+            fps = %format!("{:.1}", f64::from(self.frames) / seconds),
+            target_kbps = target / 1000,
+            encoded_kbps = (self.bytes as f64 * 8. / seconds / 1000.) as u64,
+            convert_ms = %format!("{:.2}", per_frame(self.convert)),
+            encode_ms = %format!("{:.2}", per_frame(self.encode)),
+            "screen share"
+        );
+        *self = Self::new();
+    }
 }
 
 /// One picture of `source`, for the picker: a single capture frame cut down to fit `max_width` x `max_height`.

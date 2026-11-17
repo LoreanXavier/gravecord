@@ -566,6 +566,28 @@ pub async fn run(
                     });
                 }
             }
+            // `dblclick x y`: two presses, the second with a click count of two, as the system reports a double press.
+            ["dblclick", x, y] => {
+                if let Some(position) = at(x, y) {
+                    cx.update(|cx| {
+                        dispatch(cx, window, moved(position, None));
+                        dispatch(cx, window, down(position));
+                        dispatch(cx, window, up(position));
+                        dispatch(
+                            cx,
+                            window,
+                            PlatformInput::MouseDown(MouseDownEvent {
+                                button: MouseButton::Left,
+                                position,
+                                modifiers: Modifiers::default(),
+                                click_count: 2,
+                                first_mouse: false,
+                            }),
+                        );
+                        dispatch(cx, window, up(position));
+                    });
+                }
+            }
             ["click", x, y] => {
                 if let Some(position) = at(x, y) {
                     cx.update(|cx| {

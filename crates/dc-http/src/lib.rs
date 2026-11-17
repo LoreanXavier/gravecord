@@ -30,6 +30,12 @@ pub enum ConditionalGet {
 
 const MAX_RATE_LIMIT_RETRIES: u32 = 5;
 
+/// A route as the debug log writes it: the path only. Queries can carry what the user typed (a search) or a
+/// refresh token, and debug logs leave the machine in bug reports.
+fn log_path(route: &str) -> &str {
+    route.split_once('?').map_or(route, |(path, _)| path)
+}
+
 fn diagnostic_route(route: &str) -> &str {
     match route.split_once('?') {
         Some((path, query))
@@ -213,7 +219,7 @@ impl Client {
         for attempt in 0..=MAX_RATE_LIMIT_RETRIES {
             let response = self.send(&method, route, body).await?;
             let status = response.status();
-            debug!("{method} {diagnostic}: {status}");
+            debug!("{method} {}: {status}", log_path(route));
             if status == StatusCode::TOO_MANY_REQUESTS {
                 let body: Value = response.json().await.unwrap_or(Value::Null);
                 if slowmode_rejection(&body) {
@@ -225,7 +231,10 @@ impl Client {
                 }
                 last_retry_after = body["retry_after"].as_f64();
                 let wait = retry_after(&body);
-                warn!("{diagnostic} rate limited for {wait:?}, attempt {attempt}");
+                warn!(
+                    "{} rate limited for {wait:?}, attempt {attempt}",
+                    log_path(route)
+                );
                 if attempt == MAX_RATE_LIMIT_RETRIES {
                     // No attempt follows; the caller gets the wait instead.
                     break;
@@ -273,7 +282,7 @@ impl Client {
             .send()
             .await?;
         let status = response.status();
-        debug!("GET {route} as bearer: {status}");
+        debug!("GET {} as bearer: {status}", log_path(route));
         let text = response.text().await?;
         let value = serde_json::from_str(&text).unwrap_or(Value::Null);
         if status.is_success() {
@@ -314,12 +323,15 @@ impl Client {
             }
             let response = request.send().await?;
             let status = response.status();
-            debug!("POST {route}: {status}");
+            debug!("POST {}: {status}", log_path(route));
             if status == StatusCode::TOO_MANY_REQUESTS {
                 let body: Value = response.json().await.unwrap_or(Value::Null);
                 last_retry_after = body["retry_after"].as_f64();
                 let wait = retry_after(&body);
-                warn!("{route} rate limited for {wait:?}, attempt {attempt}");
+                warn!(
+                    "{} rate limited for {wait:?}, attempt {attempt}",
+                    log_path(route)
+                );
                 if attempt == MAX_RATE_LIMIT_RETRIES {
                     break;
                 }
@@ -374,7 +386,7 @@ impl Client {
             .send()
             .await?;
         let status = response.status();
-        debug!("POST {route}: {status}");
+        debug!("POST {}: {status}", log_path(route));
         let text = response.text().await?;
         let value = if text.is_empty() {
             Value::Null
