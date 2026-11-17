@@ -234,6 +234,16 @@ impl Root {
                     self.follow_link(&url, &label, cx);
                 }
             }
+            Action::FavoriteEmoji => {
+                if let Some(super::menu::Hit::Emoji { key }) = self.menu_extra.hit.clone() {
+                    self.toggle_favorite_emoji(&key);
+                }
+            }
+            Action::FavoriteSticker => {
+                if let Some(super::menu::Hit::Sticker { id }) = self.menu_extra.hit.clone() {
+                    self.toggle_favorite_sticker(id, cx);
+                }
+            }
             Action::VideoStats => {
                 self.toggle_menu_video_stats();
                 cx.notify();
@@ -285,6 +295,7 @@ impl Root {
             super::menu::Hit::Link { url, .. }
             | super::menu::Hit::Media { url, .. }
             | super::menu::Hit::Video { url, .. } => Some(url.clone()),
+            super::menu::Hit::Emoji { .. } | super::menu::Hit::Sticker { .. } => None,
         }
     }
 
@@ -319,7 +330,10 @@ impl Root {
     fn menu_image(&self) -> Option<std::sync::Arc<gpui::Image>> {
         match self.menu_extra.hit.as_ref()? {
             super::menu::Hit::Media { key, .. } => self.images.get(key).cloned(),
-            super::menu::Hit::Link { .. } | super::menu::Hit::Video { .. } => None,
+            super::menu::Hit::Link { .. }
+            | super::menu::Hit::Video { .. }
+            | super::menu::Hit::Emoji { .. }
+            | super::menu::Hit::Sticker { .. } => None,
         }
     }
 

@@ -213,6 +213,20 @@ fn row_height(row: &StickerRow) -> f32 {
 }
 
 impl Root {
+    /// Whether the menu's sticker is a favourite: `None` when the store does not know it, or it is a server's sticker
+    /// of a server this account is not in (module 253925: no row then).
+    pub(super) fn sticker_favorited(&self, id: Id) -> Option<bool> {
+        let sticker = self.stores.stickers.sticker(id)?;
+        if sticker.is_guild()
+            && sticker
+                .guild_id
+                .is_none_or(|guild| self.stores.guild(guild).is_none())
+        {
+            return None;
+        }
+        Some(self.favorite_sticker_ids().contains(&id))
+    }
+
     /// `favoriteStickers.stickerIds`: this session's list once it changed, else the account's settings as fetched.
     pub(super) fn favorite_sticker_ids(&self) -> Vec<Id> {
         if let Some(list) = self.sticker_ui.favorites.as_ref() {
@@ -707,7 +721,7 @@ impl Root {
 
     /// `uK` and `vr`: the sticker joins the favourites or leaves them, and the whole list goes to the account's
     /// settings (limit 250, as the official strings say).
-    fn toggle_favorite_sticker(&mut self, id: Id, cx: &mut Context<Self>) {
+    pub(super) fn toggle_favorite_sticker(&mut self, id: Id, cx: &mut Context<Self>) {
         if self.sticker_ui.favorites.is_none() && !self.frecency_arrived() {
             return;
         }
@@ -1598,7 +1612,26 @@ impl Root {
                 .flex_wrap()
                 .gap(px(4.))
                 .children(stickers.iter().map(|(id, name, format_type)| {
-                    self.sticker_target(*id, name, *format_type, interacting, MESSAGE_STICKER, cx)
+                    let sticker = *id;
+                    // A right press tells the message menu it was on this sticker (module 253925).
+                    div()
+                        .on_mouse_up(
+                            gpui::MouseButton::Right,
+                            cx.listener(move |this, event: &gpui::MouseUpEvent, _, _| {
+                                this.menu_hit = Some((
+                                    event.position,
+                                    super::menu::Hit::Sticker { id: sticker },
+                                ));
+                            }),
+                        )
+                        .child(self.sticker_target(
+                            *id,
+                            name,
+                            *format_type,
+                            interacting,
+                            MESSAGE_STICKER,
+                            cx,
+                        ))
                 }))
                 .into_any_element(),
         )

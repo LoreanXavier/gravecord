@@ -230,6 +230,8 @@ fn category_label(category: &str) -> &'static str {
 fn category_icon(category: &str) -> &'static str {
     match category {
         "recent" => "picker_cat_recent",
+        // `StarIcon`.
+        "favorites" => "clips_star",
         "people" => "picker_cat_people",
         "nature" => "picker_cat_nature",
         "food" => "picker_cat_food",
@@ -304,7 +306,108 @@ fn rows_of(sections: &[Section], collapsed: &HashSet<String>, headings: bool) ->
     rows
 }
 
+/// Module 554375 `x`: what `favoriteEmojis` keeps of an emoji, its id when custom, else the name of its base emoji
+/// (a skin tone variant counts as the emoji it varies).
+pub(super) fn favorite_key(kind: &super::emoji_popout::Kind) -> Option<String> {
+    match kind {
+        super::emoji_popout::Kind::Custom { id, .. } => Some(id.to_string()),
+        super::emoji_popout::Kind::Standard(surrogates) => {
+            let bare = |text: &str| text.replace('\u{fe0f}', "");
+            let wanted = bare(surrogates);
+            let index = EMOJIS
+                .iter()
+                .position(|emoji| bare(emoji.surrogates) == wanted)?;
+            let base = EMOJIS
+                .iter()
+                .find(|emoji| emoji.diversity_children.contains(&(index as u16)))
+                .unwrap_or(&EMOJIS[index]);
+            base.names.first().map(|name| (*name).to_owned())
+        }
+    }
+}
+
+/// The `favoriteEmojis` key of a picker emoji: a custom one's id, a unicode one's first name.
+pub(super) fn item_favorite_key(item: &Item) -> String {
+    match item {
+        Item::Custom { id, .. } => id.to_string(),
+        Item::Unicode(index) => EMOJIS[usize::from(*index)].names[0].to_owned(),
+    }
+}
+
+/// Module 690521 `Ez` at 32: `getEmojiURL` (486020) asks the CDN for the size at the screen's scale, the first of
+/// module 776231's sizes that holds it.
+pub(super) fn emoji_image_link(id: Id, animated: bool, scale: f32) -> String {
+    const SIZES: [u32; 31] = [
+        16, 20, 22, 24, 28, 32, 40, 44, 48, 56, 60, 64, 80, 96, 100, 128, 160, 240, 256, 300, 320,
+        480, 512, 600, 640, 1024, 1280, 1536, 2048, 3072, 4096,
+    ];
+    let wanted = 32. * scale.max(1.);
+    let size = SIZES
+        .iter()
+        .copied()
+        .find(|size| wanted <= *size as f32)
+        .unwrap_or(4096);
+    let animated = if animated { "&animated=true" } else { "" };
+    format!("https://cdn.discordapp.com/emojis/{id}.webp?size={size}{animated}")
+}
+
 impl Root {
+    /// `favoriteEmojis.emojis`: this session's list once it changed, else the account's settings as fetched.
+    pub(super) fn favorite_emoji_keys(&self) -> Vec<String> {
+        if let Some(list) = self.emoji_favorites.as_ref() {
+            return list.clone();
+        }
+        self.fetched
+            .get(FRECENCY_KEY)
+            .and_then(|body| body["settings"].as_str())
+            .map(dc_proto::frecency::favorite_emojis)
+            .unwrap_or_default()
+    }
+
+    /// The Favorites section: the favourites this account can use, in their order.
+    fn favorite_emoji_items(&self) -> Vec<Item> {
+        self.favorite_emoji_keys()
+            .iter()
+            .filter_map(|key| self.emoji_lookup(key))
+            .collect()
+    }
+
+    /// Whether the menu's emoji is a favourite: `None` when this account cannot use it (no row then).
+    pub(super) fn emoji_favorited(&self, key: &str) -> Option<bool> {
+        self.emoji_lookup(key)?;
+        Some(self.favorite_emoji_keys().iter().any(|known| known == key))
+    }
+
+    /// `V4` and `Sw` of module 554375: the emoji joins the favourites (250 at most) or leaves them; the list, without
+    /// what no longer resolves, goes to the account's settings whole.
+    pub(super) fn toggle_favorite_emoji(&mut self, key: &str) {
+        if self.emoji_favorites.is_none() && !self.frecency_arrived() {
+            return;
+        }
+        let mut list: Vec<String> = self
+            .favorite_emoji_keys()
+            .into_iter()
+            .filter(|known| self.emoji_lookup(known).is_some())
+            .collect();
+        if let Some(at) = list.iter().position(|known| known == key) {
+            list.remove(at);
+        } else if list.len() < 250 {
+            list.push(key.to_owned());
+        } else {
+            return;
+        }
+        if !crate::storage::settings_writes_blocked() {
+            let patch = dc_proto::frecency::favorite_emojis_patch(&list);
+            let _ = self.requests.send(Request::Rest {
+                key: None,
+                method: reqwest::Method::PATCH,
+                route: "/users/@me/settings-proto/2".to_owned(),
+                body: Some(serde_json::json!({"settings": patch})),
+            });
+        }
+        self.emoji_favorites = Some(list);
+    }
+
     fn emoji_lookup(&self, key: &str) -> Option<Item> {
         if let Ok(id) = key.parse::<u64>() {
             if let Some(emoji) = self
@@ -430,12 +533,24 @@ impl Root {
                 items,
             }];
         }
-        let mut sections = vec![Section {
+        // `EmojiStore.categories`: Favorites (when there are any), then Frequently Used, the servers, the unicode
+        // categories.
+        let mut sections = Vec::new();
+        let favorites = self.favorite_emoji_items();
+        if !favorites.is_empty() {
+            sections.push(Section {
+                key: "favorites".to_owned(),
+                label: "Favorites".to_owned(),
+                icon: SectionIcon::Category("favorites"),
+                items: favorites,
+            });
+        }
+        sections.push(Section {
             key: "recent".to_owned(),
             label: "Frequently Used".to_owned(),
             icon: SectionIcon::Category("recent"),
             items: self.frequent_emoji(),
-        }];
+        });
         if let Some(store) = pack_store.as_ref() {
             sections.extend(nitro_packs::pinned_pack_sections(store));
         }
@@ -641,6 +756,21 @@ impl Root {
         }
         for (key, url) in wanted {
             self.request_image(key, url);
+        }
+    }
+
+    /// The open picker's sections again, for its current search (after a favourite changed).
+    pub(super) fn refresh_open_picker(&mut self, cx: &gpui::App) {
+        let query = self
+            .picker
+            .as_ref()
+            .map(|picker| picker.search.read(cx).text().to_owned())
+            .unwrap_or_default();
+        self.refresh_picker(&query);
+        // The rail lists the unfiltered sections, which gained or lost Favorites.
+        let all = self.picker_sections("");
+        if let Some(picker) = self.picker.as_mut() {
+            picker.all = all;
         }
     }
 
@@ -985,6 +1115,7 @@ impl Root {
                         let picture = self.images.get(&item.image_key(self.skin_tone)).cloned();
                         let hovered_item = item.clone();
                         let chosen = item.clone();
+                        let menu_item = item.clone();
                         div()
                             .id(SharedString::from(format!("picker-cell-{index}-{offset}")))
                             .size(px(CELL))
@@ -1003,6 +1134,19 @@ impl Root {
                             .on_click(cx.listener(move |this, event: &gpui::ClickEvent, _, cx| {
                                 this.choose_emoji(chosen.clone(), event.modifiers().shift, cx);
                             }))
+                            // `expression-picker` (module 233503) under a right press.
+                            .on_mouse_up(
+                                gpui::MouseButton::Right,
+                                cx.listener(move |this, event: &gpui::MouseUpEvent, _, cx| {
+                                    this.context.picker_emoji = Some(menu_item.clone());
+                                    this.open_context_menu(
+                                        super::context_menu::Target::PickerEmoji,
+                                        event.position,
+                                        cx,
+                                    );
+                                    cx.stop_propagation();
+                                }),
+                            )
                             .children(picture.map(|picture| {
                                 let art = img(picture).size(px(40.));
                                 // An animated emoji plays under the pointer only (module 565645: hover or
@@ -1909,7 +2053,24 @@ impl Root {
 
 #[cfg(test)]
 mod tests {
-    use super::{EMOJIS, search_unicode};
+    use super::{EMOJIS, favorite_key, search_unicode};
+    use crate::ui::emoji_popout::Kind;
+
+    #[test]
+    fn favorite_keys_follow_module_554375() {
+        let standard = |text: &str| favorite_key(&Kind::Standard(text.to_owned()));
+        assert_eq!(standard("\u{1f44d}").as_deref(), Some("thumbsup"));
+        // A skin tone counts as its base emoji.
+        assert_eq!(standard("\u{1f44d}\u{1f3fd}").as_deref(), Some("thumbsup"));
+        // The variation selector is not part of the match.
+        assert_eq!(standard("\u{2764}\u{fe0f}"), standard("\u{2764}"));
+        let custom = Kind::Custom {
+            id: 42,
+            name: "blob".to_owned(),
+        };
+        assert_eq!(favorite_key(&custom).as_deref(), Some("42"));
+        assert_eq!(standard("plain text"), None);
+    }
 
     #[test]
     fn search_ranks_exact_then_prefix_then_contains() {

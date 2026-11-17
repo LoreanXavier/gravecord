@@ -420,9 +420,52 @@ pub fn favorite_stickers_patch(ids: &[u64]) -> String {
     STANDARD.encode(settings)
 }
 
+pub const FAVORITE_EMOJIS: u64 = 5;
+
+/// `FavoriteEmojis` (module 803805): `emojis` is field 1 of the message in field 5, repeated strings. A custom emoji
+/// is its id, a unicode one its name (`EmojiStore.favoriteEmojis` looks each up by id, then by name).
+pub fn favorite_emojis(settings_base64: &str) -> Vec<String> {
+    let Ok(settings) = STANDARD.decode(settings_base64) else {
+        return Vec::new();
+    };
+    let mut out = Vec::new();
+    for (number, value) in fields(&settings) {
+        let (true, Value::Bytes(message)) = (number == FAVORITE_EMOJIS, value) else {
+            continue;
+        };
+        for (field, value) in fields(message) {
+            if let (1, Value::Bytes(text)) = (field, value) {
+                out.push(String::from_utf8_lossy(text).into_owned());
+            }
+        }
+    }
+    out
+}
+
+/// The PATCH body that sets the favourite emoji: the whole `favorite_emojis` message, which the server replaces as
+/// one (`updateAsync("favoriteEmojis")` writes the full list).
+pub fn favorite_emojis_patch(emojis: &[String]) -> String {
+    let mut message = Vec::new();
+    for emoji in emojis {
+        push_field(&mut message, 1, emoji.as_bytes());
+    }
+    let mut settings = Vec::new();
+    push_field(&mut settings, FAVORITE_EMOJIS, &message);
+    STANDARD.encode(settings)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn favorite_emojis_round_trip() {
+        let emojis = vec!["1234567890".to_owned(), "thumbsup".to_owned()];
+        assert_eq!(favorite_emojis(&favorite_emojis_patch(&emojis)), emojis);
+        assert!(favorite_emojis(&favorite_emojis_patch(&[])).is_empty());
+        // The other fields of the settings are left alone.
+        assert!(favorite_emojis(&favorite_stickers_patch(&[7])).is_empty());
+    }
 
     #[test]
     fn favorite_stickers_round_trip_packed_and_unpacked() {

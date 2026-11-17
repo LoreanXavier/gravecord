@@ -98,6 +98,10 @@ pub(super) enum Action {
     SaveImage,
     /// "Save File" of a voice message (module 761304 `save-voice-message-audio`): its audio file is downloaded.
     SaveVoiceFile,
+    /// "Favorite Emoji" / "Unfavorite Emoji" of the emoji under the pointer (module 253925).
+    FavoriteEmoji,
+    /// "Favorite Sticker" / "Unfavorite Sticker" of the sticker under the pointer (module 253925).
+    FavoriteSticker,
     /// "Stats for Nerds" of a video (module 761304 `video-stats-for-nerds`): a check box for its stats overlay.
     VideoStats,
     /// "Report Message" (module 847342): other people's messages, a danger row at the bottom.
@@ -146,6 +150,10 @@ pub(super) struct SavedState {
     pub voice_file: bool,
     /// The pointer was on a video: "Stats for Nerds" ends the picture rows' group.
     pub video: bool,
+    /// The pointer was on an emoji this account can use: whether it is a favourite (Unfavorite / Favorite Emoji).
+    pub favorite_emoji: Option<bool>,
+    /// The pointer was on a sticker the store knows: whether it is a favourite (Unfavorite / Favorite Sticker).
+    pub favorite_sticker: Option<bool>,
     /// A direct message: threads grow only in server channels.
     pub no_thread: bool,
     /// The message failed to send (`state === SEND_FAILED`): no Edit, Reply, Forward or Pin, and Resend message.
@@ -210,6 +218,14 @@ pub(super) enum Hit {
     Link {
         url: String,
         label: String,
+    },
+    /// A sticker of the message.
+    Sticker {
+        id: Id,
+    },
+    /// An emoji of the message: its `favoriteEmojis` key (module 554375 `x`).
+    Emoji {
+        key: String,
     },
     /// A video player: the attachment's address, and the source the player plays (`VideoStatsStore`'s key).
     Video {
@@ -468,6 +484,37 @@ pub(super) fn message_items_saved(own: bool, saved: SavedState) -> Vec<Item> {
     // the delete group when the menu is the hover bar's or a right press's (`to`).
     // `tz`: the picture rows (`tP`), then Save File of a voice message (`tB`).
     let mut pictures = Vec::new();
+    // `tw` (module 253925) opens the group: the emoji's favourite row.
+    match saved.favorite_emoji {
+        Some(true) => pictures.push(Item::Entry(
+            "Unfavorite Emoji",
+            "clips_star_outline",
+            Action::FavoriteEmoji,
+            false,
+        )),
+        Some(false) => pictures.push(Item::Entry(
+            "Favorite Emoji",
+            "clips_star",
+            Action::FavoriteEmoji,
+            false,
+        )),
+        None => {}
+    }
+    match saved.favorite_sticker {
+        Some(true) => pictures.push(Item::Entry(
+            "Unfavorite Sticker",
+            "clips_star_outline",
+            Action::FavoriteSticker,
+            false,
+        )),
+        Some(false) => pictures.push(Item::Entry(
+            "Favorite Sticker",
+            "clips_star",
+            Action::FavoriteSticker,
+            false,
+        )),
+        None => {}
+    }
     if saved.image {
         pictures.push(Item::Entry(
             "Copy Image",
@@ -687,6 +734,7 @@ impl Root {
                 Some(Hit::Link { url, .. } | Hit::Media { url, .. } | Hit::Video { url, .. }) => {
                     LinkKind::of(url)
                 }
+                Some(Hit::Emoji { .. } | Hit::Sticker { .. }) => LinkKind::None,
                 None => LinkKind::None,
             },
             no_thread: self.guild.is_none(),
@@ -695,6 +743,14 @@ impl Root {
             voice_file: found
                 .is_some_and(|known| known.is_voice_message() && !known.attachments.is_empty()),
             video: matches!(&self.menu_extra.hit, Some(Hit::Video { .. })),
+            favorite_emoji: match &self.menu_extra.hit {
+                Some(Hit::Emoji { key }) => self.emoji_favorited(key),
+                _ => None,
+            },
+            favorite_sticker: match &self.menu_extra.hit {
+                Some(Hit::Sticker { id }) => self.sticker_favorited(*id),
+                _ => None,
+            },
             no_react: !self.pref_on("chat_emoji_render_reactions", true)
                 || channel.is_some_and(|channel| {
                     !self.can_in_channel(channel, dc_state::permissions::ADD_REACTIONS)
@@ -1916,6 +1972,22 @@ mod tests {
             ..Default::default()
         };
         assert_eq!(tail(video, 3), ["-", "Copy Media Link", "Open Media Link"]);
+        // An emoji's favourite row opens the group (`tw`), Favorite or Unfavorite by the account's list.
+        let emoji = super::SavedState {
+            favorite_emoji: Some(false),
+            ..Default::default()
+        };
+        assert_eq!(tail(emoji, 2), ["-", "Favorite Emoji"]);
+        let favorite = super::SavedState {
+            favorite_emoji: Some(true),
+            ..Default::default()
+        };
+        assert_eq!(tail(favorite, 2), ["-", "Unfavorite Emoji"]);
+        let sticker = super::SavedState {
+            favorite_sticker: Some(false),
+            ..Default::default()
+        };
+        assert_eq!(tail(sticker, 2), ["-", "Favorite Sticker"]);
         // On the player itself, "Stats for Nerds" closes the group before the links (module 761304 `tF`).
         let player = super::SavedState {
             video: true,

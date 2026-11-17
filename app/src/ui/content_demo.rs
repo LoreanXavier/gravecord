@@ -77,6 +77,14 @@ impl Root {
                     ]}),
                 );
             }
+            // Unicode emoji, one with a skin tone, to right-press for the favourite row.
+            "emoji" => {
+                push(
+                    person(900, "ada"),
+                    "nice \u{1f44d} and \u{1f44d}\u{1f3fd} and \u{2764}\u{fe0f}",
+                    json!({}),
+                );
+            }
             "links" => {
                 push(
                     person(900, "ada"),

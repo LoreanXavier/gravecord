@@ -612,6 +612,8 @@ pub struct Root {
     sticker_ui: stickers::Stickers,
     /// The favourite GIFs once this session changed them; until then the settings fetch is read.
     favorite_gifs: Option<Vec<dc_proto::frecency::FavoriteGif>>,
+    /// The favourite emoji (`favoriteEmojis.emojis`) once this session changed them; until then the settings fetch.
+    emoji_favorites: Option<Vec<String>>,
     shown_blocked: HashSet<Id>,
     shown_blocked_profiles: HashSet<Id>,
     hovered_dm: Option<Id>,
@@ -1020,6 +1022,7 @@ impl Root {
             gifs: None,
             sticker_ui: stickers::Stickers::default(),
             favorite_gifs: None,
+            emoji_favorites: None,
             shown_blocked: HashSet::new(),
             shown_blocked_profiles: HashSet::new(),
             hovered_dm: None,
@@ -6619,6 +6622,11 @@ impl Root {
                 _ => None,
             })
             .collect();
+        // A right press on a link or an emoji tells the message menu what it was on (modules 777933 and 253925).
+        let emoji_keys: Vec<Option<String>> = emoji
+            .iter()
+            .map(|kind| kind.as_ref().and_then(picker::favorite_key))
+            .collect();
         // A user mention opens the user popout beside itself, as the author name does (module 288539 wraps
         // the mention in the popout of module 342296); a channel mention navigates.
         let user_mentions: Vec<Option<u64>> = spans
@@ -6656,14 +6664,19 @@ impl Root {
             });
         }
         let links = link_runs(spans);
-        if links.iter().any(Option::is_some) {
+        if links.iter().any(Option::is_some) || emoji_keys.iter().any(Option::is_some) {
             let root = self.weak.clone();
             let runs = links.clone();
             element = element.on_piece_context(move |piece, at, _, cx| {
-                if let Some(Some((url, label))) = runs.get(piece).cloned() {
-                    let _ = root.update(cx, |this, _| {
-                        this.menu_hit = Some((at, menu::Hit::Link { url, label }));
-                    });
+                let hit = if let Some(Some((url, label))) = runs.get(piece).cloned() {
+                    Some(menu::Hit::Link { url, label })
+                } else if let Some(Some(key)) = emoji_keys.get(piece).cloned() {
+                    Some(menu::Hit::Emoji { key })
+                } else {
+                    None
+                };
+                if let Some(hit) = hit {
+                    let _ = root.update(cx, |this, _| this.menu_hit = Some((at, hit)));
                 }
             });
         }

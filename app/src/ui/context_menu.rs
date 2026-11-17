@@ -54,6 +54,9 @@ pub(super) enum Target {
     GameProfile(Id),
     /// The Favorites server's star in the rail (module 132598): Thread Settings, Hide Favorites.
     Favorites,
+    /// An emoji of the emoji picker (`expression-picker`, module 233503); the emoji is kept in
+    /// `State::picker_emoji`.
+    PickerEmoji,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -166,13 +169,19 @@ pub(super) enum Act {
     StageInvite,
     StageLeave,
     StageMoveToAudience,
+    /// Favorite / Unfavorite Emoji of the picker's emoji (module 253925 `isInExpressionPicker`).
+    FavoriteExpression,
+    /// Copy Emoji: a unicode emoji's characters (developer mode).
+    CopyEmoji,
+    /// Copy Emoji Image Link: a custom emoji's picture address (developer mode).
+    CopyExpressionLink,
 }
 
 impl Act {
     /// Every row kind once (`Correction` with its first index). `ordinal` is an exhaustive match, so adding a variant
     /// without listing it here fails the build or the `act_list_is_complete` test.
     #[cfg(test)]
-    pub(super) const ALL: [Act; 90] = [
+    pub(super) const ALL: [Act; 93] = [
         Act::InventoryAbout,
         Act::InventoryHide,
         Act::ReportApp,
@@ -263,6 +272,9 @@ impl Act {
         Act::Suggestions,
         Act::SubmitButton,
         Act::ViewGameProfile,
+        Act::FavoriteExpression,
+        Act::CopyEmoji,
+        Act::CopyExpressionLink,
     ];
 
     #[cfg(test)]
@@ -358,6 +370,9 @@ impl Act {
             Act::Suggestions => 87,
             Act::SubmitButton => 88,
             Act::ViewGameProfile => 89,
+            Act::FavoriteExpression => 90,
+            Act::CopyEmoji => 91,
+            Act::CopyExpressionLink => 92,
         }
     }
 }
@@ -382,6 +397,9 @@ pub(super) fn status(act: Act) -> Status {
         | Act::ManageSpotifyPrivacy
         | Act::ReportGameIssue
         | Act::ViewGameProfile
+        | Act::FavoriteExpression
+        | Act::CopyEmoji
+        | Act::CopyExpressionLink
         | Act::ReportApp
         | Act::MarkRead
         | Act::Invite
@@ -730,6 +748,43 @@ pub(super) fn launcher_app_items(developer: bool) -> Vec<Entry> {
 
 /// `game-profile-context` of module 581745: Report Issue (danger, `game-profile-something-wrong`), then Copy Game ID in
 /// its own group in developer mode.
+/// Module 233503: the favourite row (Favorite or Unfavorite Emoji, `None` when it cannot be a favourite), then in
+/// developer mode Copy Emoji for a unicode emoji, or Copy Emoji ID and Copy Emoji Image Link for a custom one.
+pub(super) fn picker_emoji_items(
+    favorited: Option<bool>,
+    custom: bool,
+    developer: bool,
+) -> Vec<Entry> {
+    let mut out = Vec::new();
+    match favorited {
+        Some(true) => out.push(Entry::Row(
+            Row::new(Act::FavoriteExpression, dc_intl::tr("Unfavorite Emoji"))
+                .icon("clips_star_outline"),
+        )),
+        Some(false) => out.push(Entry::Row(
+            Row::new(Act::FavoriteExpression, dc_intl::tr("Favorite Emoji")).icon("clips_star"),
+        )),
+        None => {}
+    }
+    if developer {
+        if custom {
+            out.push(Entry::Row(
+                Row::new(Act::CopyId, dc_intl::tr("Copy Emoji ID")).icon("menu_id"),
+            ));
+            out.push(Entry::Row(
+                Row::new(Act::CopyExpressionLink, dc_intl::tr("Copy Emoji Image Link"))
+                    .icon("menu_copy_message_link"),
+            ));
+        } else {
+            out.push(Entry::Row(Row::new(
+                Act::CopyEmoji,
+                dc_intl::tr("Copy Emoji"),
+            )));
+        }
+    }
+    out
+}
+
 pub(super) fn game_profile_items(developer: bool) -> Vec<Entry> {
     let mut out = vec![Entry::Row(
         Row::new(Act::ReportGameIssue, dc_intl::tr("Report Issue"))
@@ -1513,6 +1568,8 @@ pub(super) struct State {
     pub omit_mention: bool,
     /// The game of the card whose "..." is open (`detected` of the Report Issue dialog).
     pub game_activity: Option<super::report_issue::Detected>,
+    /// The picker's emoji whose menu is open.
+    pub picker_emoji: Option<super::picker::Item>,
 }
 
 const MUTE_FOR: [(i64, &str); 6] = [
@@ -2212,6 +2269,17 @@ impl Root {
             Target::LauncherApp(_) => launcher_app_items(developer),
             Target::GameProfile(_) => game_profile_items(developer),
             Target::Favorites => favorites_items(),
+            Target::PickerEmoji => {
+                let Some(item) = self.context.picker_emoji.clone() else {
+                    return;
+                };
+                let key = super::picker::item_favorite_key(&item);
+                picker_emoji_items(
+                    self.emoji_favorited(&key),
+                    matches!(item, super::picker::Item::Custom { .. }),
+                    developer,
+                )
+            }
             Target::Guild(guild) => {
                 let Some(known) = self.stores.guild(guild) else {
                     return;
@@ -2690,6 +2758,33 @@ impl Root {
                     );
                 }
             }
+            (Act::FavoriteExpression, Target::PickerEmoji) => {
+                if let Some(item) = self.context.picker_emoji.take() {
+                    self.toggle_favorite_emoji(&super::picker::item_favorite_key(&item));
+                    self.refresh_open_picker(cx);
+                }
+            }
+            (Act::CopyEmoji, Target::PickerEmoji) => {
+                if let Some(item) = self.context.picker_emoji.take() {
+                    cx.write_to_clipboard(ClipboardItem::new_string(item.message_text(0)));
+                }
+            }
+            (Act::CopyExpressionLink, Target::PickerEmoji) => {
+                if let Some(super::picker::Item::Custom { id, animated, .. }) =
+                    self.context.picker_emoji.take()
+                {
+                    cx.write_to_clipboard(ClipboardItem::new_string(
+                        super::picker::emoji_image_link(id, animated, self.ui_scale.get()),
+                    ));
+                }
+            }
+            (Act::CopyId, Target::PickerEmoji) => {
+                if let Some(super::picker::Item::Custom { id, .. }) =
+                    self.context.picker_emoji.take()
+                {
+                    cx.write_to_clipboard(ClipboardItem::new_string(id.to_string()));
+                }
+            }
             (Act::ViewGameProfile, Target::GameActivity { .. }) => {
                 if let Some(app) = self
                     .context
@@ -2833,7 +2928,8 @@ impl Root {
                     Target::InventoryFeed
                     | Target::InventoryFeedAtPointer
                     | Target::Composer
-                    | Target::Favorites => {
+                    | Target::Favorites
+                    | Target::PickerEmoji => {
                         return;
                     }
                 };
@@ -4588,6 +4684,31 @@ mod tests {
                 Entry::Separator => "-".to_owned(),
             })
             .collect()
+    }
+
+    #[test]
+    fn picker_emoji_menu_follows_module_233503() {
+        assert_eq!(
+            labels(&picker_emoji_items(Some(false), false, false)),
+            ["Favorite Emoji"]
+        );
+        assert_eq!(
+            labels(&picker_emoji_items(Some(true), false, true)),
+            ["Unfavorite Emoji", "Copy Emoji"]
+        );
+        assert_eq!(
+            labels(&picker_emoji_items(Some(false), true, true)),
+            ["Favorite Emoji", "Copy Emoji ID", "Copy Emoji Image Link"]
+        );
+        assert!(picker_emoji_items(None, true, false).is_empty());
+        assert_eq!(
+            crate::ui::picker::emoji_image_link(7, true, 1.),
+            "https://cdn.discordapp.com/emojis/7.webp?size=32&animated=true"
+        );
+        assert_eq!(
+            crate::ui::picker::emoji_image_link(7, false, 1.25),
+            "https://cdn.discordapp.com/emojis/7.webp?size=40"
+        );
     }
 
     #[test]
