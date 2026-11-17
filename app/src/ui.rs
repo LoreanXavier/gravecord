@@ -10062,7 +10062,9 @@ impl Render for Root {
                     cx.notify();
                     cx.stop_propagation();
                 } else if event.keystroke.key == "escape"
-                    && (this.interaction_modal_escape() || this.chat_alert_escape())
+                    && (this.interaction_modal_escape()
+                        || this.chat_alert_escape()
+                        || this.overdue_notice_escape())
                 {
                     cx.notify();
                     cx.stop_propagation();

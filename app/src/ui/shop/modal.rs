@@ -589,6 +589,13 @@ impl Root {
                 this.show_success_toast("Link Copied!".to_owned(), cx);
             },
         ));
+        // Module 60831 `p`: the button carries the "Share" tooltip above it.
+        let share = self.with_tip(
+            "shop-modal-share-tip",
+            crate::ui::tooltip::Tip::text(dc_intl::tr("Share"), crate::ui::tooltip::Side::Top),
+            share,
+            cx,
+        );
         let user = self
             .stores
             .current_user

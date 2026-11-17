@@ -36,6 +36,28 @@ pub(crate) struct AppToast {
     pub until: Instant,
 }
 
+/// `InboxLastOpenedAt` of module 113367: when the inbox was last opened (Unix milliseconds).
+const INBOX_LAST_OPENED_KEY: &str = "InboxLastOpenedAt";
+
+/// `getOverdueMessageReminderCount` and `getMostRecentOverdueDueAt` (module 85109): the reminders due by `now_ms`, and
+/// the latest due time among them (0 for none).
+pub(crate) fn overdue_reminders<'a>(
+    due_times: impl Iterator<Item = &'a str>,
+    now_ms: i64,
+) -> (usize, i64) {
+    due_times
+        .filter_map(|due| chrono::DateTime::parse_from_rfc3339(due).ok())
+        .map(|due| due.timestamp_millis())
+        .filter(|due| *due <= now_ms)
+        .fold((0, 0), |(count, latest), due| (count + 1, latest.max(due)))
+}
+
+/// Module 113367: the inbox button keeps "N overdue reminder(s)" open while some are overdue and the latest became
+/// due after the inbox was last opened.
+pub(crate) fn overdue_notice_shown(count: usize, latest_due_ms: i64, last_opened_ms: i64) -> bool {
+    count > 0 && latest_due_ms > last_opened_ms
+}
+
 /// moment's `humanize()` with its default thresholds in the interface locale, as the reminder labels use it.
 pub(crate) fn humanize(milliseconds: i64) -> String {
     dc_intl::humanize(milliseconds, false)
@@ -264,6 +286,36 @@ fn toast_view(
 }
 
 impl Root {
+    /// `Vc` of module 113367: the inbox was opened (or the notice dismissed with Escape) now.
+    pub(super) fn mark_inbox_opened(&mut self) {
+        crate::storage::set(
+            INBOX_LAST_OPENED_KEY,
+            serde_json::json!(chrono::Utc::now().timestamp_millis()),
+        );
+    }
+
+    /// The overdue reminders' text when the notice shows.
+    fn overdue_notice(&self) -> Option<String> {
+        let now = chrono::Utc::now().timestamp_millis();
+        let (count, latest) = overdue_reminders(
+            self.stores.saved.values().filter_map(|due| due.as_deref()),
+            now,
+        );
+        let opened = crate::storage::get(INBOX_LAST_OPENED_KEY)
+            .and_then(|value| value.as_i64())
+            .unwrap_or(0);
+        overdue_notice_shown(count, latest, opened).then(|| dc_intl::t!("yBmFPA", count = count))
+    }
+
+    /// Escape while the overdue notice shows dismisses it.
+    pub(super) fn overdue_notice_escape(&mut self) -> bool {
+        if self.toast.is_none() && self.overdue_notice().is_some() {
+            self.mark_inbox_opened();
+            return true;
+        }
+        false
+    }
+
     /// Bookmark Message / Remove Bookmark.
     pub(super) fn toggle_bookmark(&mut self, channel: Id, message: Id, cx: &mut Context<Self>) {
         let bookmarked = self.saved_state(channel, message).is_some();
@@ -418,9 +470,18 @@ impl Root {
 
     /// The toast under the Inbox button: a rich tooltip with its caret at the end, pointing up at the button.
     pub(super) fn toast_layer(&self) -> Option<AnyElement> {
-        let toast = self.toast.as_ref()?;
+        // Module 113367: the toast while it shows, else the overdue reminders (a clock in `TEXT_STRONG`).
+        let (message, icon, icon_color): (SharedString, ToastIcon, &str) = match self.toast.as_ref()
+        {
+            Some(toast) => (toast.message.clone(), toast.icon, "--status-positive"),
+            None => (
+                self.overdue_notice()?.into(),
+                ToastIcon::Clock,
+                "--text-strong",
+            ),
+        };
         let inbox = self.tip_anchors.borrow().get("bar-inbox").copied()?;
-        let (icon_file, size) = match toast.icon {
+        let (icon_file, size) = match icon {
             ToastIcon::Clock => ("menu_create_reminder", 18.),
             ToastIcon::Bookmark => ("menu_remove_bookmark", 18.),
         };
@@ -461,7 +522,7 @@ impl Root {
                                         svg()
                                             .path(format!("icons/{icon_file}.svg"))
                                             .size(px(size))
-                                            .text_color(color("--status-positive")),
+                                            .text_color(color(icon_color)),
                                     ),
                                 )
                                 .child(
@@ -470,7 +531,7 @@ impl Root {
                                         .text_size(px(14.))
                                         .line_height(px(18.))
                                         .text_color(color("--text-default"))
-                                        .child(toast.message.clone()),
+                                        .child(message),
                                 )
                                 .child(
                                     svg()
@@ -495,6 +556,30 @@ impl Root {
 mod tests {
     use super::{humanize, reminder_choices};
     use chrono::{Local, TimeZone};
+
+    #[test]
+    fn overdue_reminders_count_and_their_latest_due_time() {
+        use super::{overdue_notice_shown, overdue_reminders};
+        let due = [
+            "2026-11-17T10:00:00+00:00",
+            "2026-11-17T12:00:00+00:00",
+            "2026-11-19T12:00:00+00:00",
+        ];
+        let now = chrono::DateTime::parse_from_rfc3339("2026-11-18T00:00:00+00:00")
+            .unwrap()
+            .timestamp_millis();
+        let (count, latest) = overdue_reminders(due.iter().copied(), now);
+        assert_eq!(count, 2);
+        let noon = chrono::DateTime::parse_from_rfc3339(due[1])
+            .unwrap()
+            .timestamp_millis();
+        assert_eq!(latest, noon);
+        // Shown until the inbox is opened after the latest one became due.
+        assert!(overdue_notice_shown(count, latest, noon - 1));
+        assert!(!overdue_notice_shown(count, latest, noon));
+        assert!(!overdue_notice_shown(0, 0, 0));
+        assert_eq!(dc_intl::t!("yBmFPA", count = 2usize), "2 overdue reminders");
+    }
 
     #[test]
     fn humanize_follows_moment() {
