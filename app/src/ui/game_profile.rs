@@ -48,6 +48,14 @@ enum Media {
     Image(String),
 }
 
+/// `2026-09-game-profiles-v3-communities-tab` (module 581745, `enabled` in variation 1).
+const COMMUNITIES_TAB: &str = "2026-09-game-profiles-v3-communities-tab";
+
+/// `eL`: fewer than three community servers, or an account outside the experiment, shows no Communities tab.
+fn communities_tab_shown(variant: Option<i64>, communities: usize) -> bool {
+    variant == Some(1) && communities >= 3
+}
+
 /// `kr` of module 776231: the CDN size ladder, the first step at least `size`.
 fn cdn_size(size: u32) -> u32 {
     const LADDER: [u32; 31] = [
@@ -639,6 +647,13 @@ impl Root {
             .game_record(&id)
             .map(|game| media_items(&id, &game))
             .unwrap_or_default();
+        // `eL` / `eS`: the Communities tab is for accounts in its experiment and games with three community servers.
+        let communities_tab = communities_tab_shown(
+            self.stores.experiments.variant(COMMUNITIES_TAB),
+            self.game_record(&id)
+                .and_then(|game| game["community_guild_ids"].as_array().map(Vec::len))
+                .unwrap_or(0),
+        );
         // `j = Math.min(n, f.length - 1)`.
         let shown = open.media.min(media_list.len().saturating_sub(1));
         let game = self.game_record(&id);
@@ -726,7 +741,9 @@ impl Root {
                     .flex()
                     .gap(px(32.))
                     .child(tab_item("Overview", Tab::Overview))
-                    .child(tab_item("Communities", Tab::Communities)),
+                    .when(communities_tab, |this| {
+                        this.child(tab_item("Communities", Tab::Communities))
+                    }),
             )
             .child(
                 div()
@@ -1293,8 +1310,8 @@ impl Root {
 #[cfg(test)]
 mod tests {
     use super::{
-        Media, cdn_size, detail_rows, genres, link_glyphs, media_items, mobile_reviews,
-        platform_glyphs, rating_texts, store_website,
+        Media, cdn_size, communities_tab_shown, detail_rows, genres, link_glyphs, media_items,
+        mobile_reviews, platform_glyphs, rating_texts, store_website,
     };
     use serde_json::Value;
 
@@ -1311,6 +1328,14 @@ mod tests {
                 "google_play": {"rating": 4.599999904632568, "rating_count": 552025}
             }
         })
+    }
+
+    #[test]
+    fn the_communities_tab_needs_the_experiment_and_three_servers() {
+        assert!(communities_tab_shown(Some(1), 3));
+        assert!(!communities_tab_shown(Some(1), 2));
+        assert!(!communities_tab_shown(Some(0), 9));
+        assert!(!communities_tab_shown(None, 9));
     }
 
     #[test]
