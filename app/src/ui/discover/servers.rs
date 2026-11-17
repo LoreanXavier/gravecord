@@ -258,7 +258,7 @@ impl Root {
     // ---- lurking ----
 
     /// A card was clicked: `PUT /guilds/{id}/members/@me?lurker=true`. The answer arrives under `discover:lurk:{id}`.
-    pub(super) fn servers_join(&mut self, id: u64, cx: &mut Context<Self>) {
+    pub(in crate::ui) fn servers_join(&mut self, id: u64, cx: &mut Context<Self>) {
         if self.discover.servers.pending.contains(&id) {
             return;
         }

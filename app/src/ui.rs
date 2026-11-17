@@ -132,6 +132,7 @@ mod sticker_popout;
 mod stickers;
 mod stream_previews;
 mod top_emoji;
+mod game_communities;
 mod channel_notice;
 mod stream_zoom;
 mod timestamps;
@@ -690,6 +691,7 @@ pub struct Root {
     report_issue: Option<report_issue::ReportIssue>,
     /// The game profile (module 581745).
     game_profile: Option<game_profile::GameProfile>,
+    game_communities_layout: game_communities::Layout,
     /// When the text launcher's collections last arrived (module 503406 asks again after ten minutes).
     launcher_collections_at: Option<i64>,
     /// The dialog of a refused upload (too large, too many, empty).
@@ -1082,6 +1084,7 @@ impl Root {
             modify_attachment: None,
             report_issue: None,
             game_profile: None,
+            game_communities_layout: Default::default(),
             launcher_collections_at: None,
             upload_error: None,
             sent_edit: None,
@@ -1640,6 +1643,11 @@ impl Root {
                     return;
                 }
                 if self.top_emoji_fetched(&key, &body, cx) {
+                    return;
+                }
+                if key.starts_with(game_communities::KEY_PREFIX) {
+                    self.game_communities_fetched(&key, body);
+                    cx.notify();
                     return;
                 }
                 if key.starts_with(boost_apply::KEY_PREFIX) {

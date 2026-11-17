@@ -143,8 +143,11 @@ impl Root {
         else {
             return false;
         };
-        let ids = (!body["fetch_failed"].as_bool().unwrap_or(false))
-            .then(|| ranked_ids(body))
+        // A REST answer arrives as `{ok, status, body}`.
+        let ids = body["ok"]
+            .as_bool()
+            .unwrap_or(false)
+            .then(|| ranked_ids(&body["body"]))
             .flatten();
         with_state(|state| {
             state.fetching.remove(&guild);

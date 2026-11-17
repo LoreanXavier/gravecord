@@ -18,7 +18,7 @@ use gpui::{
 };
 use serde_json::Value;
 
-const KEY_PREFIX: &str = "game-profile:";
+pub(super) const KEY_PREFIX: &str = "game-profile:";
 /// Website categories of module 505779 that are stores, in the order `iR` tries them.
 const STORE_ORDER: [u64; 6] = [16, 13, 22, 20, 21, 23];
 
@@ -709,8 +709,15 @@ impl Root {
                 .text_color(color("--text-default"))
                 .child(label)
                 .on_click(cx.listener(move |this, _, _, cx| {
+                    let mut game = None;
                     if let Some(open) = this.game_profile.as_mut() {
                         open.tab = which;
+                        game = Some(open.game.clone());
+                    }
+                    if which == Tab::Communities
+                        && let Some(game) = game
+                    {
+                        this.game_communities_fetch(&game);
                     }
                     cx.notify();
                 }))
@@ -1180,7 +1187,7 @@ impl Root {
                     .flex_col()
                     // `t8`: the banner art 500px high under a gradient to the dialog's colour 200px down; it sits
                     // at the top of the page and scrolls away with it (the scrolled capture shows none of it).
-                    .children(banner.map(|banner| {
+                    .children(banner.filter(|_| tab == Tab::Overview).map(|banner| {
                         div()
                             .absolute()
                             .top_0()
@@ -1199,7 +1206,11 @@ impl Root {
                         ),
                     ))
                     .child(div().h(px(57.)).flex_none())
-                    .child(hero)
+                    // `tH` is its own scroller under the top bar: the hero belongs to the Overview.
+                    .when(tab == Tab::Overview, |this| this.child(hero))
+                    .when(tab == Tab::Communities, |this| {
+                        this.child(self.game_communities_section(&id, 1198., cx))
+                    })
                     .when(tab == Tab::Overview, |this| {
                         this.child(
                             div()
