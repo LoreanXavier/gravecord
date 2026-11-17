@@ -473,6 +473,13 @@ impl Tracker {
                     step.update = Some(self.current());
                 }
             }
+            // `STREAM_DELETE` with `unavailable` (the stream's server went away): the official store keeps the stream
+            // as RECONNECTING (module 616356) and its next `STREAM_CREATE` and `STREAM_SERVER_UPDATE` join again. Ended
+            // here, the watcher was left with the Watch Stream card.
+            Dispatch::Delete {
+                reason: EndReason::Unavailable,
+                ..
+            } => step.update = self.set(StreamStatus::Connecting),
             Dispatch::Delete { reason, .. } => step.update = self.ended(*reason),
             Dispatch::ServerUpdate { .. } => {}
         }
@@ -857,6 +864,54 @@ mod tests {
             tracker.lost().is_none(),
             "an ended stream is not reconnected"
         );
+    }
+
+    /// `STREAM_DELETE` with `unavailable`: the stream waits to come back (RECONNECTING, module 616356) and its next
+    /// server joins again, where any other reason ends it.
+    #[test]
+    fn an_unavailable_stream_waits_and_rejoins_its_next_server() {
+        let now = Instant::now();
+        let key = StreamKey::parse("call:2:3").unwrap();
+        let mut tracker = Tracker::new(key, Role::Watch, 9, "s".into(), now);
+        let create = Dispatch::Create {
+            key,
+            rtc_server_id: 900,
+            rtc_channel_id: None,
+            region: None,
+            viewers: vec![],
+            paused: false,
+        };
+        let server = |endpoint: &str| Dispatch::ServerUpdate {
+            key,
+            endpoint: endpoint.into(),
+            token: "t".into(),
+        };
+        tracker.dispatch(&create, now);
+        assert!(tracker.dispatch(&server("a"), now).join.is_some());
+        let update = tracker
+            .dispatch(
+                &Dispatch::Delete {
+                    key,
+                    reason: EndReason::Unavailable,
+                },
+                now,
+            )
+            .update;
+        assert_eq!(tracker.status(), StreamStatus::Connecting);
+        assert!(update.is_none() || update.is_some_and(|u| u.status == StreamStatus::Connecting));
+        tracker.dispatch(&create, now);
+        assert!(
+            tracker.dispatch(&server("b"), now).join.is_some(),
+            "the stream's next server joins again"
+        );
+        tracker.dispatch(
+            &Dispatch::Delete {
+                key,
+                reason: EndReason::Other,
+            },
+            now,
+        );
+        assert_eq!(tracker.status(), StreamStatus::Ended(EndReason::Other));
     }
 
     #[test]

@@ -208,7 +208,13 @@ impl Root {
 
     /// The call of this client, not yet connected: it waits for the voice server and our own voice state.
     fn open_call(&mut self, guild: Id, channel: Id) {
-        let controls = dc_voice::Controls::new();
+        self.open_call_with(guild, channel, dc_voice::Controls::new());
+    }
+
+    /// [`Self::open_call`] with these controls: a restart passes the old call's `rejoin()`, which keeps the media
+    /// hub and playout that running Go Live streams were given (a fresh one left their sound on a playout no longer
+    /// played).
+    fn open_call_with(&mut self, guild: Id, channel: Id, controls: dc_voice::Controls) {
         controls.set_self_mute(self.self_mute);
         controls.set_self_deaf(self.self_deaf);
         self.call = Some(Call {
@@ -238,10 +244,11 @@ impl Root {
             return;
         };
         info!("voice: connection starts over");
+        let controls = call.controls.rejoin();
         call.controls.disconnect();
         self.speaking.clear();
         let server = self.stores.voice_server.take();
-        self.open_call(call.guild, call.channel);
+        self.open_call_with(call.guild, call.channel, controls);
         if !tell {
             self.stores.voice_server = server;
         }
@@ -435,7 +442,12 @@ impl Root {
     }
 
     /// Ends the call here; `tell` sends the voice state that leaves the channel.
+    #[track_caller]
     fn end_voice(&mut self, tell: bool, cx: &mut Context<Self>) {
+        // Which path ended the call: a stream that dropped with it was otherwise unexplained in the log.
+        if self.call.is_some() {
+            info!(at = %std::panic::Location::caller(), tell, "voice call ended");
+        }
         self.soundboard_stop();
         self.streams_stop_all(cx);
         self.leave_activity_on_call_end(cx);

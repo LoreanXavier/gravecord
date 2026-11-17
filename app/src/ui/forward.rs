@@ -593,7 +593,10 @@ impl Root {
         let count = forward.selected.len();
         let full = count >= MAX_DESTINATIONS;
         let search_focused = forward.search.read(cx).focus_handle(cx).is_focused(window);
-        let height = (f32::from(window.viewport_size().height) - 112.).max(300.);
+        // `size-md` (design/dom/modals/forward-*): at most 800 tall (`max-height: min(800px, 100%)`), the list filling
+        // it, 56px of the window kept above and below; 480 wide, or the window less 24px each side when narrower.
+        let height = (f32::from(window.viewport_size().height) - 112.).clamp(300., 800.);
+        let width = (f32::from(window.viewport_size().width) - 48.).min(480.);
         let rows: Vec<AnyElement> = if results.is_empty() {
             vec![
                 div()
@@ -643,7 +646,7 @@ impl Root {
             .parity_with_border("forward-modal", 1.)
             .id("forward-modal")
             .occlude()
-            .w(px(480.))
+            .w(px(width))
             .h(px(height))
             .pt(px(8.))
             .pb(px(16.))

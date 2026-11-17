@@ -35,7 +35,7 @@ use serde_json::Value;
 
 pub(super) const FETCH_PREFIX: &str = "pedit:";
 /// `DismissibleContent.USER_PROFILE_PREMIUM_AND_SHOP_ENTRY_POINTS` (module 554146).
-const UPSELL_CONTENT: u16 = 458;
+pub(super) const UPSELL_CONTENT: u16 = 458;
 /// `DismissibleContent.DISPLAY_NAME_STYLES_FLYWHEEL_NEW_BADGE_PROFILE_PAGE` (module 554146).
 pub(super) const NAME_STYLES_NEW_CONTENT: u16 = 774;
 

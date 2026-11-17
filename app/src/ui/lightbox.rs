@@ -753,14 +753,22 @@ impl Root {
             .lightbox
             .as_ref()
             .is_some_and(|open| open.items[open.index].is_video);
+        // Menu items of module 165862: 8px padding, 36px with their 20px icon (CopyIcon, LinkIcon, IdIcon of 2323).
         let row = |id: &'static str, label: &'static str, cx: &mut Context<Self>| {
+            let glyph = if id == "lightbox-copy-image" {
+                "menu_copy_text"
+            } else {
+                "menu_copy_message_link"
+            };
             div()
                 .id(id)
-                .h(px(32.))
+                .h(px(36.))
                 .px(px(8.))
                 .rounded(px(4.))
                 .flex()
                 .items_center()
+                .justify_between()
+                .gap(px(8.))
                 .cursor_pointer()
                 .hover(|this| this.bg(midnight("--background-mod-subtle")))
                 .text_size(px(14.))
@@ -768,6 +776,7 @@ impl Root {
                 .font_weight(FontWeight(500.))
                 .text_color(midnight("--text-default"))
                 .child(label)
+                .child(icon(glyph, 20., "--interactive-text-default"))
                 .on_hover(cx.listener(|this, hovered: &bool, _, cx| {
                     if *hovered && let Some(open) = this.lightbox.as_mut() {
                         open.details_open = false;
@@ -790,20 +799,15 @@ impl Root {
         let details = item.as_ref().and_then(|item| item.details.clone());
         let details_open = self.lightbox.as_ref().is_some_and(|open| open.details_open);
         let developer = self.developer_mode();
-        let separator = || {
-            div()
-                .my(px(4.))
-                .mx(px(4.))
-                .h(px(1.))
-                .bg(midnight("--border-subtle"))
-        };
+        // `separator_M3qk4j`: 8px above and below, the scroller's full width.
+        let separator = || div().my(px(8.)).h(px(1.)).bg(midnight("--border-subtle"));
         // `eB` of module 2323: a row with its value under the label; a click copies the value.
         let detail_row =
             |id: &'static str, label: &'static str, value: String, cx: &mut Context<Self>| {
                 let copied = value.clone();
                 div()
                     .id(id)
-                    .py(px(6.))
+                    .py(px(8.))
                     .px(px(8.))
                     .rounded(px(4.))
                     .flex()
@@ -842,9 +846,12 @@ impl Root {
                 .id("lightbox-details-menu")
                 .occlude()
                 .absolute()
-                .left(px(196.))
-                .top(px(if is_video { 41. } else { 73. }))
-                .w(px(220.))
+                // `submenu_M3qk4j`: beside the menu, at least 188 and at most 320 wide.
+                .left_full()
+                .ml(px(-4.))
+                .top(px(if is_video { 53. } else { 89. }))
+                .min_w(px(188.))
+                .max_w(px(320.))
                 .p(px(8.))
                 .rounded(px(8.))
                 .border_1()
@@ -872,7 +879,7 @@ impl Root {
         let view_details = details.as_ref().map(|_| {
             div()
                 .id("lightbox-view-details")
-                .h(px(32.))
+                .h(px(36.))
                 .px(px(8.))
                 .rounded(px(4.))
                 .flex()
@@ -906,11 +913,13 @@ impl Root {
             let id = details.id.to_string();
             div()
                 .id("lightbox-copy-attachment-id")
-                .h(px(32.))
+                .h(px(36.))
                 .px(px(8.))
                 .rounded(px(4.))
                 .flex()
                 .items_center()
+                .justify_between()
+                .gap(px(8.))
                 .cursor_pointer()
                 .hover(|this| this.bg(midnight("--background-mod-subtle")))
                 .text_size(px(14.))
@@ -918,6 +927,7 @@ impl Root {
                 .font_weight(FontWeight(500.))
                 .text_color(midnight("--text-default"))
                 .child("Copy Attachment ID")
+                .child(icon("menu_id", 20., "--interactive-text-default"))
                 .on_hover(cx.listener(|this, hovered: &bool, _, cx| {
                     if *hovered && let Some(open) = this.lightbox.as_mut() {
                         open.details_open = false;
@@ -938,7 +948,9 @@ impl Root {
             .id("lightbox-more-menu")
             .occlude()
             .relative()
-            .w(px(200.))
+            // `flexible_M3qk4j`: as wide as its rows, 188 to 320.
+            .min_w(px(188.))
+            .max_w(px(320.))
             .p(px(8.))
             .rounded(px(8.))
             .border_1()

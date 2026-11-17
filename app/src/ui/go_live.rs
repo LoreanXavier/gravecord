@@ -249,12 +249,46 @@ pub(super) fn preset_subtext(preset: Preset, account: Account) -> Option<String>
     }
 }
 
-/// The text of the quality pill on a stream tile: `720P 30FPS`, `SOURCE 15FPS`.
+/// The text of the quality pill on a stream tile (module 872363, `text-transform: none`): `720p 30FPS`,
+/// `Source 15FPS` ("Source" is `XjXqzh`).
 pub(super) fn quality_badge(resolution: Resolution, fps: u32) -> String {
-    match resolution {
-        Resolution::Source => format!("SOURCE {fps}FPS"),
-        other => format!("{}P {fps}FPS", other.height()),
+    quality_text(
+        match resolution {
+            Resolution::Source => None,
+            other => Some(other.height()),
+        },
+        fps,
+    )
+}
+
+/// [`quality_badge`] from a height (`None` for the source's own size) and a frame rate.
+pub(super) fn quality_text(height: Option<u32>, fps: u32) -> String {
+    match height {
+        Some(height) => format!("{height}p {fps}FPS"),
+        None => format!("{} {fps}FPS", dc_intl::t("XjXqzh")),
     }
+}
+
+/// Module 872363 `g = HB(k) || OI(k)`: the pill carries the Nitro wheel when the frame rate or the resolution is not
+/// one a free account may stream (650338 against the table of 753070): 60 FPS, or 1080p, 1440p or Source at any rate
+/// but 5. The streamer's or the viewer's Nitro does not enter.
+pub(super) fn quality_is_premium(height: Option<u32>, fps: u32) -> bool {
+    fps >= 60 || (fps != 5 && height.is_none_or(|height| height >= 1080))
+}
+
+/// [`quality_is_premium`] read back from a pill's text.
+pub(super) fn label_is_premium(label: &str) -> bool {
+    let mut parts = label.split(' ');
+    let (Some(resolution), Some(rate)) = (parts.next(), parts.next()) else {
+        return false;
+    };
+    let Some(fps) = rate.strip_suffix("FPS").and_then(|fps| fps.parse().ok()) else {
+        return false;
+    };
+    let height = resolution
+        .strip_suffix('p')
+        .and_then(|height| height.parse().ok());
+    quality_is_premium(height, fps)
 }
 
 /// The stored choices of `ApplicationStreamingSettingsStore`: preset Video, 720p, 30 fps and the sound by default.
@@ -2793,8 +2827,17 @@ mod tests {
 
     #[test]
     fn the_badge_reads_like_the_tile_pill() {
-        assert_eq!(quality_badge(Resolution::P720, 30), "720P 30FPS");
-        assert_eq!(quality_badge(Resolution::Source, 5), "SOURCE 5FPS");
+        assert_eq!(quality_badge(Resolution::P720, 30), "720p 30FPS");
+        assert_eq!(quality_badge(Resolution::Source, 5), "Source 5FPS");
+        // The Nitro wheel: 60 FPS, or 1080p and up (Source too) unless at 5 FPS.
+        assert!(!label_is_premium("720p 30FPS"));
+        assert!(label_is_premium("720p 60FPS"));
+        assert!(label_is_premium("1080p 30FPS"));
+        assert!(label_is_premium("1440p 15FPS"));
+        assert!(!label_is_premium("1440p 5FPS"));
+        assert!(label_is_premium("Source 30FPS"));
+        assert!(!label_is_premium("Source 5FPS"));
+        assert!(!label_is_premium("480p 30FPS"));
     }
 
     #[test]

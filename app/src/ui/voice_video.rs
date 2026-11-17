@@ -217,6 +217,9 @@ pub(super) struct Video {
     /// Owners whose streams we started watching in this call, kept across server-side `STREAM_DELETE`
     /// ordering races until `VOICE_STATE_UPDATE` confirms the stream ended.
     watched_owners: std::collections::HashSet<u64>,
+    /// Owners whose stream this account stopped watching by hand: a DM call does not watch them again on its own
+    /// until they stop streaming.
+    unwatched_by_hand: std::collections::HashSet<u64>,
     /// A stream asked to be watched before this account's voice state of the call arrived (Watch Stream from
     /// outside the call): the owner and whether several were asked for. Sent once the state is there.
     pending_watch: Option<(u64, bool)>,
@@ -238,8 +241,9 @@ impl Video {
     }
 
     pub(super) fn prune_watched_owners(&mut self, active_streamers: &[u64]) {
-        self.watched_owners
-            .retain(|owner| active_streamers.contains(owner) || self.streams.keys().any(|k| k.owner() == *owner));
+        self.watched_owners.retain(|owner| {
+            active_streamers.contains(owner) || self.streams.keys().any(|k| k.owner() == *owner)
+        });
     }
 
     pub(super) fn clear_watched_owners(&mut self) {
@@ -483,11 +487,7 @@ impl Root {
                     let was = call.camera;
                     call.camera = *camera;
                     if was != *camera {
-                        crate::sounds::play_event(if *camera {
-                            "camera_on"
-                        } else {
-                            "camera_off"
-                        });
+                        crate::sounds::play_event(if *camera { "camera_on" } else { "camera_off" });
                     }
                     let (guild, channel) = (call.guild, call.channel);
                     self.send_voice_state(guild, Some(channel));
@@ -1013,10 +1013,8 @@ impl Root {
                 .as_ref()
                 .map(|started| super::go_live::quality_badge(started.quality.0, started.quality.1))
                 .or_else(|| {
-                    live.remote_quality.map(|(height, fps)| match height {
-                        Some(height) => format!("{height}P {fps}FPS"),
-                        None => format!("SOURCE {fps}FPS"),
-                    })
+                    live.remote_quality
+                        .map(|(height, fps)| super::go_live::quality_text(height, fps))
                 }),
             name: live.started.as_ref().map(|started| started.name.clone()),
             icon: live
@@ -1052,6 +1050,7 @@ impl Root {
         force_multiple: bool,
         cx: &mut Context<Self>,
     ) {
+        self.video.unwatched_by_hand.remove(&owner);
         let Some(call) = &self.call else {
             return;
         };
@@ -1094,6 +1093,43 @@ impl Root {
             StreamKey::Call { channel, owner }
         };
         self.stream_watch(key, cx);
+    }
+
+    /// Module 505293 `x`: in a DM call every stream is watched without asking, and a watched stream that ended while
+    /// its owner is still live is watched again, without moving the focus (`watchStream(..., {noFocus: true})`).
+    /// Without it a stream the server ended (or a call that started over) left the Watch Stream card, and pressing it
+    /// went through joining the call. Not for owners this account stopped watching by hand, until they stop streaming.
+    pub(super) fn dm_auto_watch(&mut self, cx: &mut Context<Self>) {
+        let Some(call) = self
+            .call
+            .as_ref()
+            .filter(|call| call.guild == 0 && call.connected)
+        else {
+            return;
+        };
+        let channel = call.channel;
+        if self.stream_identity().is_none() {
+            return;
+        }
+        let me = self.stores.current_user.as_ref().map(|user| user.id);
+        let streamers = self.streamers_in_call().unwrap_or_default();
+        self.video
+            .unwatched_by_hand
+            .retain(|owner| streamers.contains(owner));
+        for owner in streamers {
+            if Some(owner) == me || self.video.unwatched_by_hand.contains(&owner) {
+                continue;
+            }
+            let watching = self.video.streams.iter().any(|(key, live)| {
+                key.owner() == owner
+                    && live.last.role == Role::Watch
+                    && !matches!(live.last.status, streams::StreamStatus::Ended(_))
+            });
+            if !watching {
+                info!("stream: watching a DM call stream on its own");
+                self.stream_watch(StreamKey::Call { channel, owner }, cx);
+            }
+        }
     }
 
     /// Watch Stream on a tile of the call `(guild, channel)` (`handleSelectParticipant` of module 540462:
@@ -1152,6 +1188,7 @@ impl Root {
 
     /// Stops watching `owner`'s stream (the tile menu).
     pub(super) fn unwatch_stream_of(&mut self, owner: u64, cx: &mut Context<Self>) {
+        self.video.unwatched_by_hand.insert(owner);
         let key = self
             .video
             .streams

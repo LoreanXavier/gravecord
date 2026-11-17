@@ -1498,6 +1498,7 @@ impl Root {
                 if name == "VOICE_STATE_UPDATE" {
                     let (others, streamers) = voice_before.unwrap_or_default();
                     self.after_voice_state(others, streamers, &data);
+                    self.dm_auto_watch(cx);
                 }
                 if name.starts_with("RELATIONSHIP_") {
                     self.rebuild_rows();

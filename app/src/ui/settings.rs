@@ -386,7 +386,13 @@ fn anchors_of(entry: &Entry) -> Vec<Anchor> {
                 badge: *badge,
                 // Categories sit between dividers: every other child of the panel.
                 target: index * 2,
-                key: (entry.page == Page::Account).then(|| ACCOUNT_KEYS[index]),
+                // The marker each category draws: the click glides to it once it is laid out. Without one the click
+                // could only ask the scroller for a child it does not track, and Clips' entries never moved.
+                key: match entry.page {
+                    Page::Account => Some(ACCOUNT_KEYS[index]),
+                    Page::Clips => clips::CATEGORIES.get(index).copied(),
+                    _ => None,
+                },
             })
             .collect();
     }
@@ -1094,7 +1100,9 @@ impl Root {
             {
                 open.anchor.set(index);
                 open.spy.set((0., true));
-                open.content.scroll_to_top_of_item(anchor.target);
+                if anchor.key.is_none() {
+                    open.content.scroll_to_top_of_item(anchor.target);
+                }
                 PENDING_SCROLL.set(anchor.key);
             }
         }
@@ -1199,9 +1207,12 @@ impl Root {
         PENDING_SCROLL.set(key);
         PENDING_GLIDE.set(placed);
         if !placed {
-            // A marker not drawn yet: the panel child first, the marker's place once it has one.
+            // A marker not drawn yet: the scroll-spy places it once it is (the scroller tracks only its direct
+            // children, so asking it for a section by index never moved anything).
             open.content_spring.borrow_mut().abort();
-            open.content.scroll_to_top_of_item(target);
+            if key.is_none() {
+                open.content.scroll_to_top_of_item(target);
+            }
         }
     }
 
@@ -1874,13 +1885,14 @@ impl Root {
                     .relative()
                     .flex_1()
                     .min_h(px(0.))
-                    .child(scroll_driver(nav_scroll.clone(), nav_spring))
+                    .child(scroll_driver(nav_scroll.clone(), nav_spring.clone()))
                     .child(
                         div()
                             .id("settings-nav")
                             .size_full()
                             .overflow_y_scroll()
                             .track_scroll(&nav_scroll)
+                            .on_scroll(move |_, _, _| nav_spring.borrow_mut().abort())
                             .child(
                                 div()
                                     .pt(px(12.))
@@ -2362,6 +2374,10 @@ impl Root {
                             .size_full()
                             .overflow_y_scroll()
                             .track_scroll(&open.content)
+                            .on_scroll({
+                                let spring = open.content_spring.clone();
+                                move |_, _, _| spring.borrow_mut().abort()
+                            })
                             .child(
                                 div().flex().justify_center().px(px(16.)).child(
                                     div()
@@ -2611,8 +2627,8 @@ fn nav_into_view(
     .size_full()
 }
 
-/// Paints nothing: moves a scroller along its animated scroll each frame, before the scroller is laid out. A wheel
-/// scroll that moved it meanwhile takes over (the spring lets go).
+/// Paints nothing: moves a scroller along its animated scroll each frame, before the scroller is laid out. The wheel
+/// takes over: each scroller's `on_scroll_wheel` lets the spring go.
 fn scroll_driver(handle: ScrollHandle, spring: Rc<RefCell<ScrollSpring>>) -> impl IntoElement {
     canvas(
         move |_, window, _| {
@@ -2621,15 +2637,12 @@ fn scroll_driver(handle: ScrollHandle, spring: Rc<RefCell<ScrollSpring>>) -> imp
                 return;
             }
             let max = f32::from(handle.max_offset().y).max(0.);
-            let at = -f32::from(handle.offset().y);
-            if (at - (spring.shown() as f32).clamp(0., max)).abs() > 1. {
-                spring.abort();
-                return;
-            }
+            // The official spring (module 354730) sets `scrollTop` until it lands; only the wheel stops it (the
+            // scrollers' `on_scroll`). Comparing positions here also stopped it for a touchpad's trailing
+            // momentum, and a click then seemed to do nothing.
             if let Some(position) = spring.frame(motion::now()) {
                 let position = (position as f32).clamp(0., max);
                 handle.set_offset(point(handle.offset().x, px(-position)));
-                spring.set_shown(f64::from(position));
             }
             if spring.is_animating() {
                 motion::keep_animating();

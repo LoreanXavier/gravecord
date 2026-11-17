@@ -247,9 +247,43 @@ struct FocusCrumb {
     viewers: Vec<Option<std::sync::Arc<gpui::Image>>>,
 }
 
+/// The quality half of a stream's live pill (module 872363, CSS 102137): the Nitro wheel (`premiumStreamIcon`, 14px,
+/// white, 4px before the text) when the quality is above the free tier, the resolution, 4px, the frame rate.
+pub(super) fn quality_pill(text: String) -> gpui::Div {
+    let premium = super::go_live::label_is_premium(&text);
+    let (resolution, rate) = text
+        .split_once(' ')
+        .map_or((text.clone(), String::new()), |(a, b)| {
+            (a.to_owned(), b.to_owned())
+        });
+    div()
+        .h(px(16.))
+        .px(px(6.))
+        .flex()
+        .items_center()
+        .bg(mid("--interactive-muted"))
+        .text_size(px(12.))
+        .line_height(px(16.))
+        .font_weight(FontWeight(600.))
+        .text_color(rgba(0xffffffff))
+        .when(premium, |this| {
+            this.child(
+                gpui::svg()
+                    .path("icons/nitro_wheel.svg")
+                    .size(px(14.))
+                    .mr(px(4.))
+                    .flex_none()
+                    .text_color(rgba(0xffffffff)),
+            )
+        })
+        .child(div().mr(px(4.)).child(resolution))
+        .child(rate)
+}
+
 /// The live indicator of a focused stream (module 872363 with `showQuality`): the quality, when the stream told it,
 /// joined to LIVE.
 pub(super) fn live_indicator(quality: Option<String>) -> AnyElement {
+    let quality_pill = |text: String| quality_pill(text).rounded_l(px(16.));
     let pill = |text: String, fill: &'static str| {
         div()
             .h(px(16.))
@@ -269,10 +303,7 @@ pub(super) fn live_indicator(quality: Option<String>) -> AnyElement {
         .flex_none()
         .items_center()
         .child(match quality {
-            Some(text) => div()
-                .flex()
-                .child(pill(text, "--interactive-muted").rounded_l(px(16.)))
-                .child(live),
+            Some(text) => div().flex().child(quality_pill(text)).child(live),
             None => div().flex().child(live.rounded_l(px(16.))),
         })
         .into_any_element()
@@ -1521,7 +1552,7 @@ impl Root {
                 .right(px(8.))
                 .flex()
                 .when_some(quality, |this, text| {
-                    this.child(pill(text, "--interactive-muted").rounded_l(px(16.)))
+                    this.child(quality_pill(text).rounded_l(px(16.)))
                 })
                 .child(if stream.label.is_none() {
                     live.rounded_l(px(16.))

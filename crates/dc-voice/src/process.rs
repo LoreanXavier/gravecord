@@ -210,7 +210,53 @@ struct Deep {
     ready: Arc<AtomicBool>,
     failed: Arc<AtomicBool>,
     sequence: u64,
+    /// The model's output delay in samples, set once it has loaded.
+    delay: Arc<AtomicU32>,
+    /// The captured frames delayed by as much as the model delays its output. A frame the model does not hand back
+    /// in time (loading, a full queue, a late answer) goes out from here, so the voice keeps one timing: sent as
+    /// captured, it jumped about 30 ms ahead of the model's frames around it and that much speech played twice.
+    line: DelayLine,
 }
+
+/// A fixed delay over frames: what went in `len` samples ago comes out.
+struct DelayLine {
+    samples: std::collections::VecDeque<f32>,
+    len: usize,
+}
+
+impl DelayLine {
+    fn new(len: usize) -> Self {
+        Self {
+            samples: std::iter::repeat_n(0.0, len).collect(),
+            len,
+        }
+    }
+
+    /// Changes the delay, keeping the newest history.
+    fn set_len(&mut self, len: usize) {
+        while self.samples.len() > len {
+            self.samples.pop_front();
+        }
+        while self.samples.len() < len {
+            self.samples.push_front(0.0);
+        }
+        self.len = len;
+    }
+
+    /// Takes `frame` in and gives back the frame from `len` samples before.
+    fn shift(&mut self, frame: &Frame) -> Frame {
+        self.samples.extend(frame.iter().copied());
+        let mut out = [0.0; 960];
+        for value in &mut out {
+            *value = self.samples.pop_front().unwrap_or(0.0);
+        }
+        out
+    }
+}
+
+/// DeepFilterNet 3's output delay at 48 kHz until the loaded model tells its own: the STFT's
+/// `fft_size - hop_size` (960 - 480) and `lookahead` (2) hops of 480 (`libDF/src/tract.rs` `DfTract`).
+const DEEP_DEFAULT_DELAY: usize = 1440;
 
 /// How long the worker waits for a frame back: the model takes a few milliseconds of its 20.
 const DEEP_WAIT: Duration = Duration::from_millis(15);
@@ -221,7 +267,9 @@ impl Deep {
         let (results, receive) = mpsc::sync_channel(4);
         let ready = Arc::new(AtomicBool::new(false));
         let failed = Arc::new(AtomicBool::new(false));
+        let delay = Arc::new(AtomicU32::new(DEEP_DEFAULT_DELAY as u32));
         let (thread_ready, thread_failed) = (ready.clone(), failed.clone());
+        let thread_delay = delay.clone();
         std::thread::Builder::new()
             .name("dc-voice-denoise".into())
             .spawn(move || {
@@ -237,6 +285,9 @@ impl Deep {
                             return;
                         }
                     };
+                let model_delay = model.fft_size.saturating_sub(model.hop_size)
+                    + model.lookahead * model.hop_size;
+                thread_delay.store(model_delay as u32, Ordering::Release);
                 thread_ready.store(true, Ordering::Release);
                 // The worker dropping its end ends the thread.
                 while let Ok(message) = frames.recv() {
@@ -277,6 +328,8 @@ impl Deep {
             ready,
             failed,
             sequence: 0,
+            delay,
+            line: DelayLine::new(DEEP_DEFAULT_DELAY),
         })
     }
 
@@ -284,15 +337,22 @@ impl Deep {
         self.ready.load(Ordering::Acquire) && !self.failed.load(Ordering::Acquire)
     }
 
-    /// The frame through the model, or left as it is while the model loads or falls behind.
+    /// The frame through the model, or the captured frame delayed as much as the model's output while the model
+    /// loads or falls behind.
     fn process(&mut self, frame: &mut Frame) {
+        let delay = self.delay.load(Ordering::Acquire) as usize;
+        if delay != self.line.len {
+            self.line.set_len(delay);
+        }
+        let captured = *frame;
+        *frame = self.line.shift(&captured);
         if !self.ready() {
             return;
         }
         self.sequence += 1;
         if self
             .send
-            .try_send(ToDeep::Frame(self.sequence, *frame))
+            .try_send(ToDeep::Frame(self.sequence, captured))
             .is_err()
         {
             return;
@@ -512,6 +572,25 @@ impl Processor {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn the_delay_line_gives_back_what_went_in_its_length_before() {
+        let mut line = super::DelayLine::new(1440);
+        let frame = |n: usize| -> crate::Frame { std::array::from_fn(|i| (n * 960 + i) as f32) };
+        // 1440 samples of silence first, then sample k of the input comes out 1440 samples later.
+        let first = line.shift(&frame(0));
+        assert!(first.iter().all(|value| *value == 0.0));
+        let second = line.shift(&frame(1));
+        assert!(second[..480].iter().all(|value| *value == 0.0));
+        assert_eq!(second[480], 0.0);
+        assert_eq!(second[481], 1.0);
+        let third = line.shift(&frame(2));
+        assert_eq!(third[0], 480.0);
+        // A shorter delay keeps the newest history and stays continuous.
+        line.set_len(960);
+        let fourth = line.shift(&frame(3));
+        assert_eq!(fourth[0], 1920.0);
+    }
+
     use super::*;
 
     fn energy(frames: &[Frame]) -> f32 {

@@ -392,32 +392,34 @@ impl Root {
                     .flex()
                     .items_center()
                     .justify_center()
-                    .child(self.with_tip(
-                        "status-popout-avatar-tip",
-                        super::tooltip::Tip::text(
-                            dc_intl::t!("+Xp3hq"),
-                            super::tooltip::Side::Top,
+                    .child(
+                        self.with_tip(
+                            "status-popout-avatar-tip",
+                            super::tooltip::Tip::text(
+                                dc_intl::t!("+Xp3hq"),
+                                super::tooltip::Side::Top,
+                            ),
+                            div()
+                                .id("status-popout-avatar")
+                                .group("status-popout-avatar")
+                                .relative()
+                                .size(px(80.))
+                                .rounded_full()
+                                .cursor_pointer()
+                                .children(
+                                    avatar.map(|picture| img(picture).size(px(80.)).rounded_full()),
+                                )
+                                .child(super::profile::popout_avatar_hover_overlay(
+                                    "status-popout-avatar",
+                                ))
+                                .child(status_dot_large(&status, "--background-surface-high"))
+                                .on_click(cx.listener(move |this, _, window, cx| {
+                                    this.status_popout = None;
+                                    this.open_full_profile(user.id, window, cx);
+                                })),
+                            cx,
                         ),
-                        div()
-                            .id("status-popout-avatar")
-                            .group("status-popout-avatar")
-                            .relative()
-                            .size(px(80.))
-                            .rounded_full()
-                            .cursor_pointer()
-                            .children(
-                                avatar.map(|picture| img(picture).size(px(80.)).rounded_full()),
-                            )
-                            .child(super::profile::popout_avatar_hover_overlay(
-                                "status-popout-avatar",
-                            ))
-                            .child(status_dot_large(&status, "--background-surface-high"))
-                            .on_click(cx.listener(move |this, _, window, cx| {
-                                this.status_popout = None;
-                                this.open_full_profile(user.id, window, cx);
-                            })),
-                        cx,
-                    )),
+                    ),
             )
             .child(self.status_bubble(custom_text, cx));
 
@@ -616,10 +618,12 @@ impl Root {
                     .flex()
                     .flex_col()
                     .child(names)
-                    .child(div().mt(px(6.)).child(super::profile::upsell_card_for(
-                        self.premium().is_subscriber(),
-                        cx,
-                    )))
+                    .when(self.profile_upsell_shown(), |this| {
+                        this.child(div().mt(px(6.)).child(super::profile::upsell_card_for(
+                            self.premium().is_subscriber(),
+                            cx,
+                        )))
+                    })
                     .child(div().mt(px(12.)).child(first))
                     .child(div().mt(px(12.)).child(second)),
             );

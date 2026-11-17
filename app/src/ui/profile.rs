@@ -451,7 +451,7 @@ impl Root {
             .flex_col()
             .gap(px(12.))
             .child(names)
-            .when(own, |this| {
+            .when(own && self.profile_upsell_shown(), |this| {
                 this.child(upsell(self.premium().is_subscriber(), cx))
             })
             .children(own.then(|| self.popout_voice_card(user.id, cx)).flatten())
@@ -584,6 +584,35 @@ pub(super) fn upsell_card_for(premium: bool, cx: &mut Context<Root>) -> impl Int
     upsell(premium, cx)
 }
 
+/// `newUserCooldownMs` (module 68656 `P3`): a dismissible content counts as dismissed while the account is younger
+/// than a day (the default; the `2026-08-dcf-new-user-cooldown` experiment can lengthen it).
+const NEW_USER_COOLDOWN_MS: i64 = 24 * 60 * 60 * 1000;
+/// Discord's epoch: a snowflake's top bits are milliseconds since it.
+const DISCORD_EPOCH_MS: i64 = 1_420_070_400_000;
+
+/// Whether an account made at snowflake `id` is still inside the new-user cooldown at `now_ms`.
+pub(super) fn new_account(id: Id, now_ms: i64) -> bool {
+    let made = (id >> 22) as i64 + DISCORD_EPOCH_MS;
+    now_ms - made < NEW_USER_COOLDOWN_MS
+}
+
+impl Root {
+    /// `HX(USER_PROFILE_PREMIUM_AND_SHOP_ENTRY_POINTS)` (module 560296): the card shows on your own profile until its
+    /// content is dismissed in the account's settings (Nitro or not, only the first button differs), and not for an
+    /// account younger than the new-user cooldown.
+    pub(super) fn profile_upsell_shown(&self) -> bool {
+        let now = chrono::Utc::now().timestamp_millis();
+        !self
+            .stores
+            .content_dismissed(super::profile_editor::UPSELL_CONTENT)
+            && self
+                .stores
+                .current_user
+                .as_ref()
+                .is_some_and(|user| !new_account(user.id, now))
+    }
+}
+
 /// The first button's icon and label: Get Nitro, or View Perks for a subscriber (module 560296 `$`).
 fn upsell_first_button(premium: bool) -> (&'static str, &'static str) {
     if premium {
@@ -600,11 +629,15 @@ fn upsell_first_button(premium: bool) -> (&'static str, &'static str) {
 enum UpsellAction {
     OpenShop,
     GetNitro,
+    /// View Perks (module 38145): `APPLICATION_STORE`, the Nitro home at `/store`, closing the profile.
+    OpenNitro,
 }
 
 fn upsell_action(premium: bool, shop_button: bool) -> UpsellAction {
-    if shop_button || premium {
+    if shop_button {
         UpsellAction::OpenShop
+    } else if premium {
+        UpsellAction::OpenNitro
     } else {
         UpsellAction::GetNitro
     }
@@ -638,6 +671,10 @@ fn upsell(premium: bool, cx: &mut Context<Root>) -> impl IntoElement {
                     match action {
                         UpsellAction::OpenShop => this.open_shop(cx),
                         UpsellAction::GetNitro => this.open_purchase(false, cx),
+                        UpsellAction::OpenNitro => {
+                            this.full_profile = None;
+                            this.open_nitro(cx);
+                        }
                     }
                     cx.notify();
                 }))
@@ -665,7 +702,18 @@ fn upsell(premium: bool, cx: &mut Context<Root>) -> impl IntoElement {
                         .text_color(color("--text-strong"))
                         .child("Amp up your profile"),
                 )
-                .child(icon("upsell_close", 16., "--interactive-text-default")),
+                // The close (`Dr(..., {dismissAction: USER_DISMISS})`): the content's bit in the account's
+                // `dismissed_contents`, saved to the server, so the card stays closed everywhere.
+                .child(
+                    div()
+                        .id("profile-upsell-close")
+                        .cursor_pointer()
+                        .child(icon("upsell_close", 16., "--interactive-text-default"))
+                        .on_click(cx.listener(|this, _, _, cx| {
+                            this.dismiss_profile_content(super::profile_editor::UPSELL_CONTENT);
+                            cx.notify();
+                        })),
+                ),
         )
         .child(
             div()
@@ -784,11 +832,22 @@ mod upsell_tests {
 
     #[test]
     fn the_upsell_buttons_go_by_tier() {
-        // Non-subscriber: Get Nitro buys, Shop opens the Shop. Subscriber: View Perks opens the Shop too.
+        // Non-subscriber: Get Nitro buys, Shop opens the Shop. Subscriber: View Perks opens the Nitro home.
         assert_eq!(upsell_action(false, false), UpsellAction::GetNitro);
         assert_eq!(upsell_action(false, true), UpsellAction::OpenShop);
-        assert_eq!(upsell_action(true, false), UpsellAction::OpenShop);
+        assert_eq!(upsell_action(true, false), UpsellAction::OpenNitro);
         assert_eq!(upsell_action(true, true), UpsellAction::OpenShop);
+    }
+
+    #[test]
+    fn a_new_account_does_not_see_dismissible_cards_for_a_day() {
+        // A snowflake made at `ms` after the Discord epoch.
+        let made = |ms: i64| ((ms as u64) << 22) as super::Id;
+        let start = 1_000_000_000_i64;
+        let now = super::DISCORD_EPOCH_MS + start;
+        assert!(super::new_account(made(start - 1000), now));
+        assert!(super::new_account(made(start - 23 * 3_600_000), now));
+        assert!(!super::new_account(made(start - 25 * 3_600_000), now));
     }
 
     #[test]

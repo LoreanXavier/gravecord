@@ -20,8 +20,6 @@ pub(super) struct ScrollSpring {
     /// The time of the last frame, in ms; none before the first frame of a run, which only records it.
     last: Option<f64>,
     animating: bool,
-    /// The position last handed to the scroller, to tell a wheel scroll that took over.
-    shown: f64,
 }
 
 impl ScrollSpring {
@@ -34,7 +32,6 @@ impl ScrollSpring {
     pub(in crate::ui) fn start(&mut self, from: f64, to: f64) {
         self.target = to;
         self.from = from;
-        self.shown = from;
         self.accumulator = 0.;
         if !self.animating {
             self.animating = true;
@@ -47,19 +44,10 @@ impl ScrollSpring {
         self.target
     }
 
-    pub(in crate::ui) fn set_shown(&mut self, shown: f64) {
-        self.shown = shown;
-    }
-
     /// Lets go: a wheel scroll or a jump took the scroller over.
     pub(super) fn abort(&mut self) {
         self.animating = false;
         self.accumulator = 0.;
-    }
-
-    /// The position the scroller last got from this spring.
-    pub(super) fn shown(&self) -> f64 {
-        self.shown
     }
 
     fn updates(&self, velocity: f64, position: f64) -> (f64, f64, f64) {
@@ -88,7 +76,6 @@ impl ScrollSpring {
                 || (position > self.target && self.from < self.target);
             if crossed || (acceleration * STEP).abs() < THRESHOLD {
                 self.from = self.target;
-                self.shown = self.target;
                 self.abort();
                 return Some(self.target);
             }
@@ -100,7 +87,6 @@ impl ScrollSpring {
             position += (next - position) * (self.accumulator / STEP);
         }
         self.last = Some(now);
-        self.shown = position;
         Some(position)
     }
 }
