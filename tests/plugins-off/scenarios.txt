@@ -23,3 +23,4 @@ backspace-click | wait 5000; key backspace; click 520 368; keyup backspace; wait
 plus-click | wait 5000; click 410 683; wait 1000
 user-menu | wait 5000; rightclick 410 233; wait 800
 image-menu | window size 1600 1000; wait 4000; go dm 0; wait 1500; gw MESSAGE_CREATE {"id":"1600000000000000001","channel_id":"1568693333864480939","type":0,"content":"","author":{"id":"1137833003905724474","username":"onugeccen","discriminator":"0"},"attachments":[{"id":"1600000000000000002","filename":"0.png","url":"https://cdn.discordapp.com/embed/avatars/0.png","proxy_url":"https://media.discordapp.net/embed/avatars/0.png","content_type":"image/png","width":256,"height":256,"size":1000}],"embeds":[],"mentions":[],"timestamp":"2026-11-18T01:00:00.000000+00:00"}; wait 3000; rightclick 575 700; wait 800
+upload-card | wait 5000; attach C:/Projects/gravecord-plugins/app/assets/icons/../../../tests/plugins-off/scenarios.txt; wait 1000; move 560 480; wait 500

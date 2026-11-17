@@ -7,18 +7,22 @@ use serde_json::Value;
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) enum Lit {
     Str(&'static str),
+    /// A number option (the original's enum values, as AnonymiseFileNames' `method`).
+    Int(i64),
 }
 
 impl Lit {
     pub(crate) fn to_value(self) -> Value {
         match self {
             Lit::Str(text) => Value::from(text),
+            Lit::Int(number) => Value::from(number),
         }
     }
 
     pub(crate) fn matches(self, value: &Value) -> bool {
         match self {
             Lit::Str(text) => value.as_str() == Some(text),
+            Lit::Int(number) => value.as_f64() == Some(number as f64),
         }
     }
 }
@@ -287,6 +291,71 @@ pub(crate) const DEFS: &[Def] = &[
                 label: "Ask before deleting",
                 description: "Show an \"are you sure\" dialog before deleting a server (with the setting above).",
                 kind: Kind::Switch { default: true },
+            },
+        ],
+    },
+    Def {
+        id: "AnonymiseFileNames",
+        name: "AnonymiseFileNames",
+        description: "Anonymise uploaded file names.",
+        origin: Origin::Vencord,
+        source: "src/plugins/anonymiseFileNames/index.tsx",
+        default_on: false,
+        settings: &[
+            Setting {
+                key: "anonymiseByDefault",
+                label: "Anonymise by default",
+                description: "Whether to anonymise file names by default.",
+                kind: Kind::Switch { default: true },
+            },
+            Setting {
+                key: "spoilerMessages",
+                label: "Spoiler files",
+                description: "Mark anonymised files as spoilers.",
+                kind: Kind::Switch { default: false },
+            },
+            Setting {
+                key: "method",
+                label: "Anonymising method",
+                description: "How the new name is made.",
+                kind: Kind::Select {
+                    options: &[
+                        ("Random Characters", Lit::Int(0)),
+                        ("Consistent", Lit::Int(1)),
+                        ("Timestamp", Lit::Int(2)),
+                        ("Date", Lit::Int(3)),
+                    ],
+                    default: 0,
+                },
+            },
+            Setting {
+                key: "randomisedLength",
+                label: "Random characters length",
+                description: "How many random characters the name has (Random Characters).",
+                kind: Kind::Number {
+                    default: 7.,
+                    min: 1.,
+                    max: 100.,
+                    step: 1.,
+                },
+            },
+            Setting {
+                key: "consistent",
+                label: "Consistent filename",
+                description: "The name every file gets (Consistent).",
+                kind: Kind::Text {
+                    default: "image",
+                    max_len: 200,
+                },
+            },
+            Setting {
+                key: "dateFormat",
+                label: "Date format",
+                description: "YYYY, MM, DD, HH, mm, ss, SSS are supported (Date).",
+                kind: Kind::Text {
+                    default: "YYYY-MM-DD_HH-mm-ss-SSS",
+                    max_len: 200,
+                },
             },
         ],
     },

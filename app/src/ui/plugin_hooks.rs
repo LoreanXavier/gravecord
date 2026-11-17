@@ -190,6 +190,106 @@ fn encode_uri_component(text: &str) -> String {
     out
 }
 
+/// AnonymiseFileNames (Vencord `src/plugins/anonymiseFileNames`): the name an upload is sent with. `choice` is the
+/// card's own switch (`None` until it is pressed: `anonymiseByDefault`), `now_ms` the local time for the Timestamp
+/// and Date methods, `random` a source of indices for Random. `None` keeps the name.
+pub(super) fn anonymised_name_in(
+    state: &State,
+    name: &str,
+    choice: Option<bool>,
+    now: chrono::DateTime<chrono::Local>,
+    mut random: impl FnMut(usize) -> usize,
+) -> Option<String> {
+    const ID: &str = "AnonymiseFileNames";
+    if !state.is_on(ID) {
+        return None;
+    }
+    let flag = |key| state.value(ID, key) == Value::Bool(true);
+    if !choice.unwrap_or_else(|| flag("anonymiseByDefault")) {
+        return None;
+    }
+    // The app marks a spoiler in the name; the original keeps it apart from the name, so it survives here too.
+    let (spoiler, plain) = match name.strip_prefix(super::uploads::SPOILER_PREFIX) {
+        Some(plain) => (true, plain),
+        None => (false, name),
+    };
+    // `tarExtMatcher`, else the last dot.
+    let tar = regex_tar(plain);
+    let ext = match tar.or_else(|| plain.rfind('.')) {
+        Some(at) => &plain[at..],
+        None => "",
+    };
+    let text = |key| state.value(ID, key).as_str().unwrap_or("").to_owned();
+    let stem = match state.value(ID, "method").as_i64().unwrap_or(0) {
+        1 => text("consistent"),
+        2 => now.timestamp_millis().to_string(),
+        3 => {
+            let format = text("dateFormat")
+                .replace("YYYY", &now.format("%Y").to_string())
+                .replace("MM", &now.format("%m").to_string())
+                .replace("DD", &now.format("%d").to_string())
+                .replace("HH", &now.format("%H").to_string())
+                .replace("mm", &now.format("%M").to_string())
+                .replace("ss", &now.format("%S").to_string())
+                .replace("SSS", &format!("{:03}", now.timestamp_subsec_millis()));
+            if format.is_empty() {
+                now.timestamp_millis().to_string()
+            } else {
+                format
+            }
+        }
+        _ => {
+            const CHARS: &[u8] = b"0123456789bdfhjkmnpqrstvwxz";
+            let length = state
+                .value(ID, "randomisedLength")
+                .as_f64()
+                .unwrap_or(7.)
+                .max(0.) as usize;
+            (0..length)
+                .map(|_| CHARS[random(CHARS.len()) % CHARS.len()] as char)
+                .collect()
+        }
+    };
+    let prefix = if spoiler || flag("spoilerMessages") {
+        super::uploads::SPOILER_PREFIX
+    } else {
+        ""
+    };
+    Some(format!("{prefix}{stem}{ext}"))
+}
+
+/// `/\.tar\.\w+$/`: where a `.tar.gz`-like extension starts.
+fn regex_tar(name: &str) -> Option<usize> {
+    let at = name.rfind(".tar.")?;
+    let rest = &name[at + 5..];
+    (!rest.is_empty() && rest.chars().all(|c| c.is_alphanumeric() || c == '_')).then_some(at)
+}
+
+/// The name an upload is sent with now (see [`anonymised_name_in`]).
+pub(super) fn anonymised_name(name: &str, choice: Option<bool>) -> Option<String> {
+    if crate::plugins::bypassed() {
+        return None;
+    }
+    let now = chrono::Local::now();
+    crate::plugins::with(|state| {
+        anonymised_name_in(state, name, choice, now, |count| {
+            rand::random_range(0..count.max(1))
+        })
+    })
+}
+
+/// Whether an upload card shows the anonymise switch, and what it says while untouched (`anonymiseByDefault`).
+pub(super) fn anonymise_default() -> Option<bool> {
+    if crate::plugins::bypassed() {
+        return None;
+    }
+    crate::plugins::with(|state| {
+        state
+            .is_on("AnonymiseFileNames")
+            .then(|| state.value("AnonymiseFileNames", "anonymiseByDefault") == Value::Bool(true))
+    })
+}
+
 /// AlwaysTrust's `noDeleteSafety` and `confirmModal`: how a server is deleted.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum DeleteSafety {
@@ -593,5 +693,60 @@ mod tests {
         );
         assert_eq!(encode_uri_component("a-_.!~*'()é"), "a-_.!~*'()%C3%A9");
         assert!(!reverse_image_search());
+    }
+
+    #[test]
+    fn anonymised_names_follow_each_method() {
+        let now = chrono::Local::now();
+        let zero = |_| 0;
+        let state = State::default();
+        assert_eq!(anonymised_name_in(&state, "cat.png", None, now, zero), None);
+        let mut state = with_on("AnonymiseFileNames");
+        let name = |state: &State, file: &str, choice: Option<bool>, pick: fn(usize) -> usize| {
+            anonymised_name_in(state, file, choice, now, pick)
+        };
+        assert_eq!(
+            name(&state, "cat.png", None, zero).as_deref(),
+            Some("0000000.png")
+        );
+        assert_eq!(name(&state, "cat.png", Some(false), zero), None);
+        assert_eq!(
+            name(&state, "a.tar.gz", None, |_| 26).as_deref(),
+            Some("zzzzzzz.tar.gz")
+        );
+        assert_eq!(
+            name(&state, "README", None, zero).as_deref(),
+            Some("0000000")
+        );
+        // A spoiler stays one.
+        assert_eq!(
+            name(&state, "SPOILER_cat.png", None, zero).as_deref(),
+            Some("SPOILER_0000000.png")
+        );
+        state.set_value("AnonymiseFileNames", "method", &json!(1));
+        assert_eq!(
+            name(&state, "cat.png", None, zero).as_deref(),
+            Some("image.png")
+        );
+        state.set_value("AnonymiseFileNames", "spoilerMessages", &json!(true));
+        assert_eq!(
+            name(&state, "cat.png", None, zero).as_deref(),
+            Some("SPOILER_image.png")
+        );
+        state.set_value("AnonymiseFileNames", "spoilerMessages", &json!(false));
+        state.set_value("AnonymiseFileNames", "method", &json!(2));
+        let millis = format!("{}.png", now.timestamp_millis());
+        assert_eq!(name(&state, "cat.png", None, zero), Some(millis.clone()));
+        state.set_value("AnonymiseFileNames", "method", &json!(3));
+        state.set_value("AnonymiseFileNames", "dateFormat", &json!("YYYY/MM"));
+        assert_eq!(
+            name(&state, "cat.png", None, zero),
+            Some(format!("{}.png", now.format("%Y/%m")))
+        );
+        state.set_value("AnonymiseFileNames", "dateFormat", &json!(""));
+        assert_eq!(name(&state, "cat.png", None, zero), Some(millis));
+        state.set_value("AnonymiseFileNames", "anonymiseByDefault", &json!(false));
+        assert_eq!(name(&state, "cat.png", None, zero), None);
+        assert!(name(&state, "cat.png", Some(true), zero).is_some());
     }
 }

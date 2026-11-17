@@ -109,8 +109,11 @@ for dp, dn, fn in os.walk(ROOT):
             if s:
                 for key, body in top_level_entries(balanced(text, s.end() - 1)):
                     kind = re.search(r'type:\s*OptionType\.(\w+)', body)
+                    # A select marks its default option with `default: true`; take that option's value.
+                    picked = re.search(r'value:\s*([^,}\n]+?),\s*default:\s*true', body)
                     default = re.search(r'\bdefault:\s*([^,\n]+)', body)
-                    settings.append((key, kind.group(1) if kind else '?', default.group(1).strip() if default else ''))
+                    default = picked.group(1).strip() if picked else (default.group(1).strip() if default else '')
+                    settings.append((key, kind.group(1) if kind else '?', default))
             sources.setdefault(name.group(1), (rel, desc.group(1) if desc else '', settings))
 
 # The ported plugins and their settings, from the registry.
@@ -124,6 +127,7 @@ idle = {(a, b): why.replace('\\"', '"') for a, b, why in re.findall(
 
 # How each ported plugin is built here, and its proof.
 PORTED = {
+    'AnonymiseFileNames': "uploads.rs: files are renamed as they are sent, by the original's four methods; a switch first in each upload card's bar turns it off for that file. A spoilered file stays one. Its /Spoiler command is not ported: the app runs no client-side slash commands of plugins.",
     'ReverseImageSearch': 'menu.rs: "Search Image" at the end of the link group when a picture is right-clicked; a '
                           'submenu of its seven engines and All, opened in the browser. The engine favicons (fetched '
                           'from DuckDuckGo by the original) are not drawn: plugin code fetches nothing.',
@@ -160,6 +164,7 @@ PORTED = {
                      'so the original\'s 200% cap on the sync has nothing to cap.',
 }
 TESTS = {
+    'AnonymiseFileNames': '`anonymised_names_follow_each_method`; frames anon-on/anon-off; plugins-off upload-card',
     'ReverseImageSearch': '`image_search_opens_each_engine_with_the_encoded_address`; frame ris-on; plugins-off image-menu',
     'BetterUploadButton': '`copy_user_urls_and_quick_mention_write_what_the_originals_write` (off); frame bub-on; '
                           'plugins-off plus-click',
@@ -218,7 +223,6 @@ PLANNED = {
     'AccountPanelServerProfile': 'a right-click menu on the account panel that opens the server profile popout.',
     'AltKrispSwitch': 'Krisp, which is blocked here (its signature check); without it there is nothing to switch to.',
     'AlwaysAnimate': 'a switch in the image pipeline to play animated avatars, banners and emoji without hover.',
-    'AnonymiseFileNames': 'a rename of attachments in the upload path (random names, kept extension).',
     'BetterActivities': 'activity icons in member list rows and every activity in the profile popout.',
     'BetterAudioPlayer': 'a spectrograph and oscilloscope in the audio attachment player (needs the decoded samples).',
     'BetterBlockedUsers': 'search in the blocked list, selectable names, no blocked-profile prompt, grouped blocked messages.',

@@ -12,7 +12,7 @@ every setting changed), and with every plugin off, and fails on one differing pi
 The list is the plugins enabled in the owner's Equicord backup of 2026-09-21 (156). Sources were read in the local
 Equicord checkout of 2026-11-14 (`src/plugins` is Vencord's, `src/equicordplugins` Equicord's).
 
-Totals: 16 ported, 3 native, 92 planned, 45 not applicable.
+Totals: 17 ported, 3 native, 91 planned, 45 not applicable.
 
 Status: **ported** works and has its proof; **native** is what gravecord already does without a plugin;
 **planned** is not built yet (an import keeps its settings for when it is); **not applicable** has nothing to
@@ -24,7 +24,7 @@ port in a native client, or was removed upstream.
 | AltKrispSwitch | planned | equicordplugins/altKrispSwitch/index.tsx | Makes the Noise Suppression Popout switch between None and Krisp instead of Krisp and Standard | Krisp, which is blocked here (its signature check); without it there is nothing to switch to. |  |
 | AlwaysAnimate | planned | plugins/alwaysAnimate/index.ts | Animates anything that can be animated | a switch in the image pipeline to play animated avatars, banners and emoji without hover. |  |
 | AlwaysTrust | ported | plugins/alwaysTrust/index.tsx | Removes the annoying untrusted domain and suspicious file popup | links.rs: any link opens without "Leaving Discord" (`domain`); server_settings.rs: Delete Server without the typed name, behind the plugin's own "Delete server?" (`noDeleteSafety`, `confirmModal`). | `always_trust_needs_its_domain_setting`, `always_trust_deletes_servers_by_its_two_settings`; frames trust-off/on, trust-settings |
-| AnonymiseFileNames | planned | plugins/anonymiseFileNames/index.tsx | Anonymise uploaded file names | a rename of attachments in the upload path (random names, kept extension). |  |
+| AnonymiseFileNames | ported | plugins/anonymiseFileNames/index.tsx | Anonymise uploaded file names | uploads.rs: files are renamed as they are sent, by the original's four methods; a switch first in each upload card's bar turns it off for that file. A spoilered file stays one. Its /Spoiler command is not ported: the app runs no client-side slash commands of plugins. | `anonymised_names_follow_each_method`; frames anon-on/anon-off; plugins-off upload-card |
 | AudioPlayerAPI | not applicable | equicordplugins/_api/audioPlayer.ts | API to play internal Discord audio files or external audio links. | client-mod plumbing (an API for other plugins), nothing to port. |  |
 | BadgeAPI | not applicable | plugins/_api/badges/index.tsx | API to add badges to users | client-mod plumbing (an API for other plugins), nothing to port. |  |
 | BetterActivities | planned | equicordplugins/betterActivities/index.tsx | Shows activity icons in the member list and allows showing all activities | activity icons in member list rows and every activity in the profile popout. |  |
@@ -187,6 +187,12 @@ Every setting of each original (`definePluginSettings`), its type and default th
 | AlwaysTrust | `file` | BOOLEAN | `true` | nothing to act on yet: the app does not show the pinned client's "Potentially Dangerous Download" dialog yet (module 432518, opened from module 889558), so there is no dialog to remove |
 | AlwaysTrust | `noDeleteSafety` | BOOLEAN | `true` | ported |
 | AlwaysTrust | `confirmModal` | BOOLEAN | `true` | ported |
+| AnonymiseFileNames | `anonymiseByDefault` | BOOLEAN | `true` | ported |
+| AnonymiseFileNames | `spoilerMessages` | BOOLEAN | `false` | ported |
+| AnonymiseFileNames | `method` | SELECT | `Methods.Random` | ported |
+| AnonymiseFileNames | `randomisedLength` | NUMBER | `7` | ported |
+| AnonymiseFileNames | `consistent` | STRING | `"image"` | ported |
+| AnonymiseFileNames | `dateFormat` | STRING | `"YYYY-MM-DD_HH-mm-ss-SSS"` | ported |
 | MessageClickActions | `singleClickAction` | SELECT | `"DELETE"` | ported |
 | MessageClickActions | `singleClickModifier` | SELECT | `"BACKSPACE"` | ported |
 | MessageClickActions | `singleClickOthersAction` | SELECT | `"DELETE"` | ported |
