@@ -77,6 +77,10 @@ impl Root {
                     ]}),
                 );
             }
+            // A join message (USER_JOIN), with its "Wave to say hi!" button.
+            "join" => {
+                push(person(900, "ada"), "", json!({"type": 7}));
+            }
             // Unicode emoji, one with a skin tone, to right-press for the favourite row.
             "emoji" => {
                 push(

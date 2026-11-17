@@ -3,7 +3,7 @@
 
 use super::{Root, avatar_source, color, header_time, icon};
 use crate::parity::Parity;
-use dc_state::Message;
+use dc_state::{Id, Message};
 use gpui::{AnyElement, Context, FontWeight, IntoElement, SharedString, div, img, prelude::*, px};
 
 /// `FRIEND_REQUEST_ACCEPTED` in the message type enum.
@@ -13,6 +13,26 @@ pub(super) const CHANNEL_PINNED_MESSAGE: u64 = 6;
 
 /// `USER_JOIN` and `THREAD_CREATED`.
 pub(super) const USER_JOIN: u64 = 7;
+
+/// `SUPPRESS_JOIN_NOTIFICATION_REPLIES` of `system_channel_flags`.
+const SUPPRESS_JOIN_NOTIFICATION_REPLIES: u64 = 1 << 3;
+
+/// Module 117096 `tJ`: the stickers the "Wave to say hi!" button picks from, with their `format_type`.
+const WELCOME_STICKERS: [(Id, u64); 6] = [
+    (749_054_660_769_218_631, 3),
+    (751_606_379_340_365_864, 3),
+    (754_108_890_559_283_200, 3),
+    (781_291_131_828_699_156, 2),
+    (816_087_792_291_282_944, 3),
+    (819_128_604_311_027_752, 3),
+];
+
+/// `tZ`: the sticker for a join message, by the account's and the message's snowflake times.
+pub(super) fn welcome_sticker(me: Option<Id>, message: Id) -> (Id, u64) {
+    let time = |id: Id| (id >> 22) + 1_420_070_400_000;
+    let index = (me.map_or(0, time) + time(message)) % WELCOME_STICKERS.len() as u64;
+    WELCOME_STICKERS[index as usize]
+}
 pub(super) const THREAD_CREATED: u64 = 18;
 /// The join line's green arrow (`icon_bLMKT5`, a CSS background).
 pub(super) const JOIN_ARROW: &str = "https://discordapp.com/assets/8b9de960da063cb9.svg";
@@ -413,6 +433,122 @@ impl Root {
             .into_any_element()
     }
 
+    /// Module 117096 `tK`: the "Wave to say hi!" button shows under a join message of a server when the account may
+    /// send here (not a media post, not a locked archived thread it cannot manage), has passed the rules screening,
+    /// the newcomer is not a bot, and the server does not suppress join replies.
+    fn welcome_cta_shown(&self, message: &Message) -> bool {
+        let (Some(guild), Some(channel)) = (self.current_guild(), self.current_channel()) else {
+            return false;
+        };
+        let send = self.can_in_channel(channel, dc_state::permissions::SEND_MESSAGES);
+        // `UJ` of module 406704.
+        let thread = guild.threads.iter().find(|thread| thread.id == channel.id);
+        let media_post = thread.is_some_and(|thread| {
+            guild.channels.iter().any(|parent| {
+                parent.id == thread.parent_id && parent.kind == dc_state::ChannelKind::Other(16)
+            })
+        });
+        let locked = thread.is_some_and(|thread| thread.archived && thread.locked)
+            && !self.can_in_channel(channel, dc_state::permissions::MANAGE_THREADS);
+        send && !media_post
+            && !locked
+            && !guild.my_pending
+            && !message.author.bot
+            && guild.system_channel_flags & SUPPRESS_JOIN_NOTIFICATION_REPLIES == 0
+    }
+
+    /// The button itself (`welcomeCTA_eZQ1Gc` around a secondary md button): the chosen sticker at 24 and the label,
+    /// 4px apart, 40 high with 15px inside its 1px border; it sends the sticker as a reply that mentions the newcomer.
+    fn welcome_cta(&self, message: &Message, cx: &mut Context<Self>) -> Option<AnyElement> {
+        if !self.welcome_cta_shown(message) {
+            return None;
+        }
+        let me = self.stores.current_user.as_ref().map(|me| me.id);
+        let (sticker, format_type) = welcome_sticker(me, message.id);
+        let interacting = self.hovered == Some(message.id);
+        let art = self.sticker_art(
+            sticker,
+            dc_state::stickers::Format::from_wire(format_type),
+            24.,
+            interacting,
+            false,
+            cx,
+        );
+        let (channel, guild, reply_to) = (message.channel_id, self.guild, message.id);
+        Some(
+            div()
+                .pb(px(2.))
+                .flex()
+                .child(
+                    div()
+                        .id(("welcome-cta", message.id))
+                        .h(px(40.))
+                        .min_w(px(100.))
+                        .px(px(15.))
+                        .py(px(7.))
+                        .rounded(px(8.))
+                        .border_1()
+                        .border_color(color("--control-secondary-border-default"))
+                        .bg(color("--control-secondary-background-default"))
+                        .text_color(color("--control-secondary-text-default"))
+                        .hover(|style| {
+                            style
+                                .bg(color("--control-secondary-background-hover"))
+                                .border_color(color("--control-secondary-border-hover"))
+                                .text_color(color("--control-secondary-text-hover"))
+                        })
+                        .cursor_pointer()
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .gap(px(4.))
+                        .child(
+                            div()
+                                .size(px(24.))
+                                .flex_none()
+                                .children(art.map(|art| art.size(px(24.)))),
+                        )
+                        .child(
+                            div()
+                                .text_size(px(16.))
+                                .line_height(px(20.))
+                                .font_weight(FontWeight(500.))
+                                .whitespace_nowrap()
+                                .child(dc_intl::tr("Wave to say hi!")),
+                        )
+                        .on_click(cx.listener(move |this, _, _, _| {
+                            this.send_greet(channel, guild, reply_to, sticker);
+                        })),
+                )
+                .into_any_element(),
+        )
+    }
+
+    /// `sendGreetMessage`: the sticker goes to `/channels/{id}/greet` as a reply to the join message, mentioning its
+    /// author (`getSendMessageOptionsForReply` with `shouldMention`, so no `allowed_mentions`).
+    fn send_greet(&mut self, channel: Id, guild: Option<Id>, message: Id, sticker: Id) {
+        let mut reference = serde_json::json!({
+            "channel_id": channel.to_string(),
+            "message_id": message.to_string(),
+        });
+        if let Some(guild) = guild {
+            reference["guild_id"] = serde_json::json!(guild.to_string());
+        }
+        let _ = self.requests.send(crate::net::Request::Rest {
+            key: None,
+            method: reqwest::Method::POST,
+            route: format!("/channels/{channel}/greet"),
+            body: Some(serde_json::json!({
+                "sticker_ids": [sticker.to_string()],
+                "message_reference": reference,
+            })),
+        });
+        // `STICKER_TRACK_USAGE`.
+        self.stores
+            .stickers
+            .track(&[sticker], super::picker::now_ms());
+    }
+
     /// `getSystemMessageUserJoin` in module 779014: one of thirteen lines, picked by the message's snowflake time
     /// modulo 13, as (before, after) around the name.
     pub(super) fn join_line(message: &Message) -> (String, String) {
@@ -658,6 +794,7 @@ impl Root {
                     })
                     .when(message.kind == USER_JOIN, |this| {
                         this.child(self.join_message_line(message))
+                            .children(self.welcome_cta(message, cx))
                     })
                     .when(
                         !matches!(
@@ -700,5 +837,21 @@ impl Root {
                     ),
             )
             .into_any_element()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::welcome_sticker;
+
+    #[test]
+    fn the_wave_sticker_is_module_117096s_pick() {
+        // The fixture's join message and account, whose official button showed Choco (index 3).
+        assert_eq!(
+            welcome_sticker(Some(1_137_833_003_905_724_474), 1_568_999_739_821_785_150),
+            (781_291_131_828_699_156, 2)
+        );
+        let (sticker, _) = welcome_sticker(None, 1_568_999_739_821_785_150);
+        assert!(sticker > 0);
     }
 }

@@ -479,6 +479,9 @@ pub struct Guild {
     pub max_stage_video_channel_users: u64,
     /// `premium_progress_bar_enabled`: the boost progress bar in the channel list.
     pub premium_progress_bar_enabled: bool,
+    /// `system_channel_flags`: which system messages the guild silences (SUPPRESS_JOIN_NOTIFICATION_REPLIES is
+    /// 1 << 3, the "Wave to say hi!" button).
+    pub system_channel_flags: u64,
     pub emojis: Vec<GuildEmoji>,
     /// Active threads this session knows (READY's `threads`, then THREAD_* events).
     pub threads: Vec<Thread>,
@@ -867,6 +870,10 @@ impl Guild {
                 .as_bool()
                 .or(properties["premium_progress_bar_enabled"].as_bool())
                 .unwrap_or(false),
+            system_channel_flags: value["system_channel_flags"]
+                .as_u64()
+                .or(properties["system_channel_flags"].as_u64())
+                .unwrap_or(0),
             emojis: GuildEmoji::list(&value["emojis"]),
             tag,
             tag_badge,
@@ -908,6 +915,9 @@ impl Guild {
         self.premium_progress_bar_enabled = value["premium_progress_bar_enabled"]
             .as_bool()
             .unwrap_or(self.premium_progress_bar_enabled);
+        self.system_channel_flags = value["system_channel_flags"]
+            .as_u64()
+            .unwrap_or(self.system_channel_flags);
         if let Some(roles) = value["roles"].as_array() {
             self.roles = roles
                 .iter()
@@ -4847,6 +4857,7 @@ mod tests {
             premium_subscription_count: 0,
             max_stage_video_channel_users: 0,
             premium_progress_bar_enabled: false,
+            system_channel_flags: 0,
             emojis: Vec::new(),
             threads: Vec::new(),
             tag: None,

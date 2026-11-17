@@ -2607,6 +2607,24 @@ impl Root {
             if messages.iter().any(|message| message.kind == dm::USER_JOIN) {
                 media.push(("inbox:join".to_owned(), dm::JOIN_ARROW.to_owned()));
             }
+            // The sticker of each join message's "Wave to say hi!" button.
+            let me = self.stores.current_user.as_ref().map(|me| me.id);
+            for message in messages.iter().filter(|message| message.kind == dm::USER_JOIN) {
+                let (id, format_type) = dm::welcome_sticker(me, message.id);
+                let sticker = dc_state::stickers::Sticker {
+                    id,
+                    name: String::new(),
+                    description: None,
+                    tags: None,
+                    kind: 0,
+                    format_type,
+                    guild_id: None,
+                    pack_id: None,
+                    available: true,
+                    user_id: None,
+                };
+                media.push((stickers::art_key(id), stickers::art_url(&sticker)));
+            }
             // A thread's card shows its latest message: load each started thread once.
             let threads: Vec<Id> = messages
                 .iter()
@@ -9362,6 +9380,15 @@ impl Render for Root {
                 this.end_browser_resize();
                 this.clips_mouse_up(cx);
                 this.video_mouse_up(cx);
+            }))
+            // A scroll moves the content under a pointer that stays put; Chromium then sends the element a
+            // mouseleave and its tooltip closes. gpui only rereads hover on a move, so the tooltip closes here.
+            .on_scroll(cx.listener(|this, _: &gpui::ScrollEvent, _, cx| {
+                if this.tip.is_some() || this.tip_pending.is_some() {
+                    this.tip = None;
+                    this.tip_pending = None;
+                    cx.notify();
+                }
             }))
             .on_mouse_move(cx.listener(|this, event: &gpui::MouseMoveEvent, _, cx| {
                 this.move_browser_resize(event, cx);
