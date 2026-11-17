@@ -319,16 +319,71 @@ impl Root {
                     .any(|channel| channel.id == source.channel_id)
             })
             .map(|guild| guild.id);
+        let mut pending = std::collections::HashMap::new();
         for destination in &forward.selected {
             // The forward first, then the note as a message of its own: the queue keeps that order, and a failed
             // forward fails the note that waits behind it.
-            self.start_local_forward(destination.channel(), (guild, source.channel_id, source.id));
+            let nonce = self
+                .start_local_forward(destination.channel(), (guild, source.channel_id, source.id));
+            pending.insert(nonce, *destination);
             if !note.is_empty() {
                 self.start_local_text(destination.channel(), note.clone());
             }
         }
+        // Module 92961 awaits every send: "Message forwarded!" when all went, else Forward Failed (181622) lists the
+        // destinations that did not.
+        self.chat_extra.forward_batch = Some(super::chat_notices::ForwardBatch {
+            message: source.clone(),
+            pending,
+            failed: Vec::new(),
+        });
         self.go_to_destination(&forward.selected);
-        self.show_app_toast("Message forwarded!", cx);
+        cx.notify();
+    }
+
+    /// One forward of the batch ended.
+    pub(super) fn forward_send_ended(&mut self, nonce: &str, sent: bool, cx: &mut Context<Self>) {
+        let Some(batch) = self.chat_extra.forward_batch.as_mut() else {
+            return;
+        };
+        let Some(destination) = batch.pending.remove(nonce) else {
+            return;
+        };
+        if !sent {
+            batch.failed.push(destination);
+        }
+        if !batch.pending.is_empty() {
+            return;
+        }
+        let Some(batch) = self.chat_extra.forward_batch.take() else {
+            return;
+        };
+        if batch.failed.is_empty() {
+            self.show_app_toast("Message forwarded!", cx);
+            return;
+        }
+        // The rows keep the order the destinations were chosen in.
+        let failed: Vec<Destination> = batch.failed;
+        self.chat_extra.alert = Some(super::chat_notices::forward_failed_alert(
+            batch.message,
+            failed,
+        ));
+        cx.notify();
+    }
+
+    /// Retry (module 181622 `fO`): the forward modal again for the message, the failed destinations chosen.
+    pub(super) fn retry_forward(
+        &mut self,
+        message: Message,
+        destinations: Vec<Destination>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.open_forward(message, window, cx);
+        if let Some(forward) = self.forward.as_mut() {
+            forward.selected = destinations;
+        }
+        cx.notify();
     }
 
     /// `transitionToDestination` with a single destination.
@@ -383,17 +438,13 @@ impl Root {
         None
     }
 
-    fn destination_row(
+    /// A destination's picture (32px), name and second line, as its row in the modal draws them.
+    pub(super) fn destination_parts(
         &self,
         destination: Destination,
-        index: usize,
         cx: &mut Context<Self>,
-    ) -> AnyElement {
-        let selected = self
-            .forward
-            .as_ref()
-            .is_some_and(|forward| forward.selected.contains(&destination));
-        let (icon, name, detail) = match destination {
+    ) -> (AnyElement, String, String) {
+        match destination {
             Destination::Dm(channel) => {
                 let dm = self
                     .stores
@@ -490,7 +541,20 @@ impl Root {
                     guild.map(|guild| guild.name.clone()).unwrap_or_default(),
                 )
             }
-        };
+        }
+    }
+
+    fn destination_row(
+        &self,
+        destination: Destination,
+        index: usize,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let selected = self
+            .forward
+            .as_ref()
+            .is_some_and(|forward| forward.selected.contains(&destination));
+        let (icon, name, detail) = self.destination_parts(destination, cx);
         // `getDestinationIsUnavailable` (module 969223): the row is `disabled_dhbHaH`, its picture and checkbox at half
         // opacity, its name `--text-muted`, its detail line the reason, the cursor `not-allowed`.
         let blocked = self.forward_blocked(destination);

@@ -383,12 +383,19 @@ impl Root {
 
     /// A forward of `message` (of `source_channel`, in `guild` if any) into `channel`: an empty message that points at
     /// the source with `message_reference` type 1.
-    pub(super) fn start_local_forward(&mut self, channel: Id, source: (Option<Id>, Id, Id)) {
+    /// Returns the send's nonce, which its `Update::SendResult` carries.
+    pub(super) fn start_local_forward(
+        &mut self,
+        channel: Id,
+        source: (Option<Id>, Id, Id),
+    ) -> String {
         let parts = Parts {
             forward: Some(source),
             ..Parts::default()
         };
-        self.send_with_nonce(channel, crate::net::nonce(), parts);
+        let nonce = crate::net::nonce();
+        self.send_with_nonce(channel, nonce.clone(), parts);
+        nonce
     }
 
     fn send_with_nonce(&mut self, channel: Id, nonce: String, parts: Parts) {
@@ -523,6 +530,7 @@ impl Root {
         outcome: Outcome,
         cx: &mut Context<Self>,
     ) {
+        self.forward_send_ended(nonce, matches!(outcome, Outcome::Sent(_)), cx);
         let resolved = self.send_ui.id_of_nonce(nonce).or_else(|| id_of(nonce));
         self.send_ui.ended_for(resolved, nonce);
         let Some(id) = resolved else {
@@ -602,9 +610,18 @@ impl Root {
     /// `MESSAGE_SEND_FAILED` and what the failure asks besides (module 138399).
     fn send_failed(&mut self, channel: Id, id: Id, failure: &Failure, cx: &mut Context<Self>) {
         let mut failed = vec![id];
-        failed.extend(self.send_ui.cancel_waiting(channel));
+        let waiting = self.send_ui.cancel_waiting(channel);
+        // A forward that waited behind this one fails with it: the forward modal's batch hears of it (module 181622).
+        let waiting_nonces: Vec<String> = waiting
+            .iter()
+            .filter_map(|id| self.send_ui.sends.get(id).map(|send| send.nonce.clone()))
+            .collect();
+        failed.extend(waiting);
         for id in failed {
             self.mark_failed(channel, id);
+        }
+        for nonce in waiting_nonces {
+            self.forward_send_ended(&nonce, false, cx);
         }
         // Polls, forwards and inventory sends never get a notice; the composer sends none of them.
         match send_policy::followup(failure, false) {

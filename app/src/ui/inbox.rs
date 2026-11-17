@@ -154,6 +154,8 @@ impl Root {
 
     pub(super) fn toggle_inbox(&mut self, cx: &mut Context<Self>) {
         if self.inbox.take().is_none() {
+            // `onOpen` of the inbox button (module 113367 `Vc`): the overdue reminders' notice stops.
+            self.mark_inbox_opened();
             self.inbox = Some(InboxTab::default());
             self.request_unreads();
             self.request_image("inbox:join".to_owned(), JOIN_ARROW.to_owned());

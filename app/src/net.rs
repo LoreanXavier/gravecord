@@ -12,7 +12,10 @@ use tokio::sync::mpsc;
 use tracing::warn;
 
 pub enum Update {
-    SpotifyReply { request: u64, reply: crate::spotify::Reply },
+    SpotifyReply {
+        request: u64,
+        reply: crate::spotify::Reply,
+    },
     GatewayConnected(bool),
     /// The local RPC server: a game connected, set or cleared its activity, or left (`dc-rpc`).
     Rpc(dc_rpc::Event),
@@ -133,6 +136,8 @@ pub enum Update {
     },
     /// The gateway closed with 4004 or a request came back 401: the stored login is dead.
     AuthFailed,
+    /// A request was refused because the account has limited access (module 218642).
+    LimitedAccess,
     /// `PATCH /users/@me` answered with a new token (a password change): the shell keeps it where the login is
     /// kept (`UPDATE_TOKEN`, module 631670 `KD`).
     TokenRenewed(Token),
@@ -812,7 +817,10 @@ pub(crate) fn inert_refuses(request: &Request, updates: &mpsc::UnboundedSender<U
         let _ = updates.send(Update::Fetched { key, body });
     }
     if let Request::Spotify(crate::spotify::Command::Perform { request, .. }) = request {
-        let _ = updates.send(Update::SpotifyReply { request: *request, reply: crate::spotify::Reply::Refused });
+        let _ = updates.send(Update::SpotifyReply {
+            request: *request,
+            reply: crate::spotify::Reply::Refused,
+        });
     }
     // A send the view shows as a row ends as a failed message, as one whose request never got an answer does.
     if let Request::SendLocal { nonce, channel, .. } = request {
@@ -1363,10 +1371,15 @@ pub async fn run(token: Token, updates: mpsc::UnboundedSender<Update>, requests:
     } = requests;
     let identity = Identity::new();
     let dead = updates.clone();
+    let limited = updates.clone();
     let client = match Client::new(token.clone(), identity.clone()).map(|client| {
-        client.on_unauthorized(move || {
-            let _ = dead.send(Update::AuthFailed);
-        })
+        client
+            .on_unauthorized(move || {
+                let _ = dead.send(Update::AuthFailed);
+            })
+            .on_limited_access(move || {
+                let _ = limited.send(Update::LimitedAccess);
+            })
     }) {
         Ok(client) => Arc::new(client),
         Err(error) => {
@@ -1440,7 +1453,10 @@ pub async fn run(token: Token, updates: mpsc::UnboundedSender<Update>, requests:
                 if let Some(worker) = &spotify {
                     worker.request(command);
                 } else if let crate::spotify::Command::Perform { request, .. } = command {
-                    let _ = updates.send(Update::SpotifyReply { request, reply: crate::spotify::Reply::Refused });
+                    let _ = updates.send(Update::SpotifyReply {
+                        request,
+                        reply: crate::spotify::Reply::Refused,
+                    });
                 }
             }
             Request::LoadMessages { channel } => {

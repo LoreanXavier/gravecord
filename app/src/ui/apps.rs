@@ -39,6 +39,45 @@ impl Root {
 
     /// Message commands (`type: 3`) in the loaded index, with their application.
     fn message_commands(&self) -> Vec<(Value, Option<Value>)> {
+        self.commands_of_type(3)
+    }
+
+    /// User commands (`type: 2`) in the loaded index: the user menu's Apps submenu (module 173500 with
+    /// `commandTypes: [USER]`).
+    pub(super) fn user_commands(&self) -> Vec<(Value, Option<Value>)> {
+        self.commands_of_type(2)
+    }
+
+    /// A user command run on `user` (`executeCommand` of module 545152 with `commandTargetId`): `POST /interactions`
+    /// type 2 whose data is the command, type 2, aimed at the user.
+    pub(super) fn run_user_command(&mut self, command: &Value, user: Id) {
+        let session = self.stores.session_id.clone().unwrap_or_default();
+        let Some(channel) = self.channel else {
+            return;
+        };
+        let body = json!({
+            "type": 2,
+            "application_id": command["application_id"],
+            "guild_id": self.guild.map(|guild| guild.to_string()),
+            "channel_id": channel.to_string(),
+            "session_id": session,
+            "data": {
+                "version": command["version"],
+                "id": command["id"],
+                "name": command["name"],
+                "type": 2,
+                "options": [],
+                "application_command": command,
+                "attachments": [],
+                "target_id": user.to_string(),
+            },
+            "nonce": crate::net::nonce(),
+            "analytics_location": "user_context_menu",
+        });
+        let _ = self.requests.send(Request::Interaction { body });
+    }
+
+    fn commands_of_type(&self, kind: u64) -> Vec<(Value, Option<Value>)> {
         let Some(index) = self
             .command_index_key()
             .and_then(|key| self.fetched.get(&key))
@@ -53,7 +92,7 @@ impl Root {
             .as_array()
             .into_iter()
             .flatten()
-            .filter(|command| command["type"].as_u64() == Some(3))
+            .filter(|command| command["type"].as_u64() == Some(kind))
             .map(|command| {
                 let application = applications
                     .iter()

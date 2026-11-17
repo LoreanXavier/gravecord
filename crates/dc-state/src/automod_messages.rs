@@ -10,6 +10,9 @@ use crate::{Id, Stores, id, text};
 use serde_json::Value;
 use std::collections::HashMap;
 
+/// `MessageFlags.EPHEMERAL` (module 652215 `pr7`).
+const EPHEMERAL: u64 = 1 << 6;
+
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct FailedMessage {
     pub id: String,
@@ -27,6 +30,9 @@ pub struct MentionRaid {
 #[derive(Default)]
 pub struct AutomodMessages {
     failed: HashMap<String, FailedMessage>,
+    /// MessageStore's `k` (module 596344): the notice of each message AutoMod deleted after it was posted, kept when
+    /// the message's channel was loaded.
+    removal_notices: HashMap<Id, Value>,
     raids: HashMap<Id, MentionRaid>,
     version: u64,
 }
@@ -42,6 +48,8 @@ impl Stores {
                 }
             }
             "AUTO_MODERATION_CONTENT_DELETED" => {
+                self.automod_content_deleted(data);
+                let store = &mut self.automod;
                 if let Some(message) = text(&data["message"]["id"]) {
                     store.failed.insert(
                         message.clone(),
@@ -80,6 +88,50 @@ impl Stores {
             }
             _ => {}
         }
+    }
+
+    /// MessageStore (module 596344) on `AUTO_MODERATION_CONTENT_DELETED {message, thread, notice}`: a message (not a
+    /// thread) of a loaded channel is received if it is not there yet, becomes EPHEMERAL (`1 << 6`) and keeps its
+    /// notice (`getAutomodRemovalNotice`).
+    fn automod_content_deleted(&mut self, data: &Value) {
+        if !data["thread"].is_null() || !data["message"].is_object() {
+            return;
+        }
+        let Some(message) = crate::Message::from_value(&data["message"]) else {
+            return;
+        };
+        let channel = message.channel_id;
+        if !self
+            .windows
+            .get(&channel)
+            .is_some_and(|window| window.ready)
+        {
+            return;
+        }
+        let id = message.id;
+        if !self
+            .messages
+            .get(&channel)
+            .is_some_and(|list| list.iter().any(|known| known.id == id))
+        {
+            self.receive_message(message);
+        }
+        let Some(known) = self
+            .messages
+            .get_mut(&channel)
+            .and_then(|list| list.iter_mut().find(|known| known.id == id))
+        else {
+            return;
+        };
+        known.flags |= EPHEMERAL;
+        self.automod
+            .removal_notices
+            .insert(id, data["notice"].clone());
+    }
+
+    /// MessageStore `getAutomodRemovalNotice(messageId)`.
+    pub fn automod_removal_notice(&self, message: Id) -> Option<&Value> {
+        self.automod.removal_notices.get(&message)
     }
 
     /// `I(messageId)` of 93474: the notice leaves with a new version.
@@ -143,6 +195,35 @@ mod tests {
         );
         stores.dispatch("READY", &json!({}));
         assert!(stores.automod_message("51").is_none());
+    }
+
+    #[test]
+    fn a_message_deleted_in_a_loaded_channel_turns_private_and_keeps_its_notice() {
+        let mut stores = Stores::default();
+        let message = |id: &str, channel: &str| {
+            json!({"id": id, "channel_id": channel, "content": "x", "type": 0, "flags": 0,
+                "timestamp": "2026-11-17T21:00:00+00:00",
+                "author": {"id": "9", "username": "a", "discriminator": "0"}})
+        };
+        stores.load_messages(2, &json!([]));
+        stores.dispatch(
+            "AUTO_MODERATION_CONTENT_DELETED",
+            &json!({"guild_id": "1", "channel_id": "2", "message": message("60", "2"), "notice": "n"}),
+        );
+        let known = stores.messages[&2].iter().find(|m| m.id == 60).unwrap();
+        assert_eq!(known.flags & EPHEMERAL, EPHEMERAL);
+        assert_eq!(stores.automod_removal_notice(60), Some(&json!("n")));
+        // A channel that was never loaded, or a thread, keeps no notice: the dialog shows instead.
+        stores.dispatch(
+            "AUTO_MODERATION_CONTENT_DELETED",
+            &json!({"channel_id": "3", "message": message("61", "3"), "notice": "n"}),
+        );
+        assert!(stores.automod_removal_notice(61).is_none());
+        stores.dispatch(
+            "AUTO_MODERATION_CONTENT_DELETED",
+            &json!({"channel_id": "2", "message": message("62", "2"), "thread": {"id": "5"}, "notice": "n"}),
+        );
+        assert!(stores.automod_removal_notice(62).is_none());
     }
 
     #[test]

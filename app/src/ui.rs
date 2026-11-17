@@ -62,6 +62,7 @@ pub(crate) mod channel_notice;
 mod channel_settings;
 mod channel_settings_pages;
 mod channel_status;
+mod chat_notices;
 mod clips;
 mod code_copy;
 mod command_feedback;
@@ -523,6 +524,8 @@ pub struct Root {
     channel_drag: channel_drag::State,
     /// A message over the length limit, held while the "too long" dialog asks what to do.
     too_long: Option<String>,
+    /// Small chat dialogs and chained thread requests (`chat_notices`).
+    chat_extra: chat_notices::State,
     focus: FocusHandle,
     /// Focus bookkeeping and keyboard modality (`keyboard`).
     keys: keyboard::State,
@@ -969,6 +972,7 @@ impl Root {
             context: context_menu::State::default(),
             channel_drag: channel_drag::State::default(),
             too_long: None,
+            chat_extra: chat_notices::State::default(),
             focus: cx.focus_handle(),
             keys: Default::default(),
             images: HashMap::new(),
@@ -1374,7 +1378,11 @@ impl Root {
                 .then_some((self.guild, self.channel));
                 let rebuild_messages = matches!(
                     name.as_str(),
-                    "MESSAGE_CREATE" | "MESSAGE_DELETE" | "MESSAGE_UPDATE" | "MESSAGE_ACK"
+                    "MESSAGE_CREATE"
+                        | "MESSAGE_DELETE"
+                        | "MESSAGE_UPDATE"
+                        | "MESSAGE_ACK"
+                        | "AUTO_MODERATION_CONTENT_DELETED"
                 );
                 // Capture before dispatch changes the message indices that the current rows refer to.
                 let message_anchor = rebuild_messages.then(|| self.scroll_anchor()).flatten();
@@ -1657,6 +1665,7 @@ impl Root {
             Update::Keybind { id, down } => self.kb_fire(&id, down, cx),
             // The shell, which owns the login, takes this one before it reaches the view.
             Update::AuthFailed | Update::TokenRenewed(_) => {}
+            Update::LimitedAccess => self.limited_access_alert(cx),
             Update::SettingsWritten(answer) => {
                 // The last write was answered: what the server holds now, the changes of other sessions that were
                 // left out in between included. Merged, since everything this app wrote is in it already.
@@ -1677,6 +1686,10 @@ impl Root {
                     return;
                 }
                 self.active_now_fetched(&key, &body);
+                if key.starts_with(chat_notices::KEY_PREFIX) {
+                    self.thread_step_fetched(&key, &body);
+                    return;
+                }
                 if key.starts_with(message_requests::KEY_PREFIX) {
                     self.message_requests_fetched(&key, &body, cx);
                     return;
@@ -5766,7 +5779,8 @@ impl Root {
             .current_dm()
             .filter(|channel| channel.kind == 3)
             .cloned();
-        let muted = self.channel_muted_now();
+        // Module 187360: the bell is slashed while the channel is muted or its resolved level is not All Messages.
+        let muted = self.channel_bell_slashed();
         // Module 586944: "Search in DMs" (`m7OrlR`) in the every-DM context, else "Search {name}" (`LDZtFO`) with the
         // server's or the conversation's name (the key is the same for both; its Turkish reads "{name} sunucusunu ara").
         let search = if self.search_all_dms() {
@@ -6295,12 +6309,19 @@ impl Root {
                                 cx,
                             )
                             .cursor_pointer()
-                            .on_click(cx.listener(|this, _, _, cx| {
-                                this.tip = None;
-                                this.notify_open = !this.notify_open;
-                                this.notify_submenu = None;
-                                cx.notify();
-                            })),
+                            .on_click(cx.listener(
+                                |this, event: &gpui::ClickEvent, _, cx| {
+                                    this.tip = None;
+                                    // Module 187360: a shift-click mutes or unmutes at once, without the menu.
+                                    if event.modifiers().shift {
+                                        this.toggle_channel_mute_now();
+                                    } else {
+                                        this.notify_open = !this.notify_open;
+                                        this.notify_submenu = None;
+                                    }
+                                    cx.notify();
+                                },
+                            )),
                         )
                         .child(
                             self.header_stop(
@@ -6786,10 +6807,28 @@ impl Root {
             });
         }
         let links = link_runs(spans);
-        if links.iter().any(Option::is_some) || emoji_keys.iter().any(Option::is_some) {
+        let channels: Vec<Option<u64>> = spans
+            .iter()
+            .map(|span| match span.kind {
+                Kind::Channel(id) => Some(id),
+                _ => None,
+            })
+            .collect();
+        if links.iter().any(Option::is_some)
+            || emoji_keys.iter().any(Option::is_some)
+            || channels.iter().any(Option::is_some)
+        {
             let root = self.weak.clone();
             let runs = links.clone();
+            let mentions = channels.clone();
             element = element.on_piece_context(move |piece, at, _, cx| {
+                // A channel mention opens its own menu (module 223998) instead of the message's.
+                if let Some(Some(channel)) = mentions.get(piece).copied() {
+                    let _ = root.update(cx, |this, _| {
+                        this.chat_extra.mention_hit = Some((at, channel))
+                    });
+                    return;
+                }
                 let hit = if let Some(Some((url, label))) = runs.get(piece).cloned() {
                     Some(menu::Hit::Link { url, label })
                 } else if let Some(Some(key)) = emoji_keys.get(piece).cloned() {
@@ -6802,13 +6841,6 @@ impl Root {
                 }
             });
         }
-        let channels: Vec<Option<u64>> = spans
-            .iter()
-            .map(|span| match span.kind {
-                Kind::Channel(id) => Some(id),
-                _ => None,
-            })
-            .collect();
         if spoilers.iter().any(Option::is_some)
             || links.iter().any(Option::is_some)
             || channels.iter().any(Option::is_some)
@@ -9982,6 +10014,10 @@ impl Render for Root {
                     cx.stop_propagation();
                     return;
                 }
+                // Module 113367's listener only records the time (the overdue notice ends); the key goes on.
+                if event.keystroke.key == "escape" && this.overdue_notice_escape() {
+                    cx.notify();
+                }
                 if event.keystroke.key == "escape" && this.voice_dialog_close(cx) {
                     cx.stop_propagation();
                     return;
@@ -10047,7 +10083,9 @@ impl Render for Root {
                     this.forward = None;
                     cx.notify();
                     cx.stop_propagation();
-                } else if event.keystroke.key == "escape" && this.interaction_modal_escape() {
+                } else if event.keystroke.key == "escape"
+                    && (this.interaction_modal_escape() || this.chat_alert_escape())
+                {
                     cx.notify();
                     cx.stop_propagation();
                 } else if event.keystroke.key == "escape" && this.custom_reminder.is_some() {
@@ -10573,6 +10611,7 @@ impl Render for Root {
             .children(self.remove_friend_modal(cx))
             .children(self.not_friend_modal(cx))
             .children(self.favorites_full_modal(cx))
+            .children(self.chat_alert_modal(cx))
             .children(self.library_remove_modal(cx))
             .children(self.composer_ai_modal(cx))
             .children(self.friend_nickname_layer(window, cx))
