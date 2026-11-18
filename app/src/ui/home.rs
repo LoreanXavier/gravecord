@@ -475,8 +475,8 @@ impl Root {
                                 // Not in the pinned client: MessagePeek's last message in its place
                                 // (`plugin_hooks/message_peek.rs`).
                                 .children({
-                                    let presence =
-                                        self.presence_line_with(&recipient, None, true, 16., look.text);
+                                    let presence = self
+                                        .presence_line_with(&recipient, None, true, 16., look.text);
                                     match self.message_peek(channel, presence.is_some()) {
                                         super::plugin_hooks::Peek::Keep => presence,
                                         super::plugin_hooks::Peek::Empty => None,
@@ -602,6 +602,7 @@ impl Root {
         // 645959: a message request or spam channel is in neither sorted list; pinned conversations (`FAVORITE`, the
         // "@me" override flag) come first, each group newest first.
         let listed = dc_state::private_channels::sorted_channels(&self.stores);
+        let no_private_channels = listed.is_empty();
         let rows: Vec<AnyElement> = listed
             .into_iter()
             .filter_map(|channel| self.dm_row(channel, cx))
@@ -761,13 +762,37 @@ impl Root {
                     ),
             )
             .children(rows)
+            .when(no_private_channels, |list| {
+                list.child(no_private_channels_art())
+            })
+    }
+
+    /// `FriendsStore.isInitialized()` (module 595623): true from the session's own `CONNECTION_OPEN`. A READY replayed
+    /// from the start cache is not it: the friends' presences come with the live session, so before it every friend
+    /// would be listed offline.
+    pub(super) fn friends_initialized(&self) -> bool {
+        self.stores.current_user.is_some() && !self.hydrated_from_cache
     }
 
     pub(super) fn friends_panel(
         &mut self,
         window: &gpui::Window,
         cx: &mut Context<Self>,
-    ) -> impl IntoElement {
+    ) -> AnyElement {
+        // 596339 `AQ`: until the store is initialized the whole page is `Aq`, the default spinner centred on
+        // `loading_zrUwGA` (`design/dom/loading/connecting.json`: no tab bar, no "no friends online" note).
+        if !self.friends_initialized() {
+            return div()
+                .parity("friends-loading")
+                .flex_1()
+                .size_full()
+                .bg(color("--background-base-lower"))
+                .flex()
+                .items_center()
+                .justify_center()
+                .child(super::login::wandering_cubes())
+                .into_any_element();
+        }
         let people = self.friends_people(window, cx);
         let wide = f32::from(window.viewport_size().width) > 1200.;
         div()
@@ -801,7 +826,54 @@ impl Root {
                     )
                     .when(wide, |row| row.child(self.active_now_column(cx))),
             )
+            .into_any_element()
     }
+}
+
+/// The DM list with no conversations (module 830507 `Q`, the `no-private-channels` row): ten rows of a 32px circle and
+/// a 144 x 20 pill, 44px apart, fading from 1 to .1, in a 184 x 428 picture with 16px of padding
+/// (`empty_Bce46W`: `fill: var(--background-base-low)`). The list draws it before READY too.
+fn no_private_channels_art() -> impl IntoElement {
+    let fill = color("--background-base-low");
+    div()
+        .parity("no-private-channels")
+        .flex_none()
+        .relative()
+        // The list's 1px border, then the picture's padding.
+        .ml(px(17.))
+        .mt(px(16.))
+        .w(px(184.))
+        .h(px(428.))
+        .children((0..10).map(move |row| {
+            let top = 44. * row as f32;
+            let opacity = 1. - 0.1 * row as f32;
+            div()
+                .absolute()
+                .left_0()
+                .top(px(top))
+                .w(px(184.))
+                .h(px(32.))
+                .opacity(opacity)
+                .child(
+                    div()
+                        .absolute()
+                        .left_0()
+                        .top_0()
+                        .size(px(32.))
+                        .rounded_full()
+                        .bg(fill),
+                )
+                .child(
+                    div()
+                        .absolute()
+                        .left(px(40.))
+                        .top(px(6.))
+                        .w(px(144.))
+                        .h(px(20.))
+                        .rounded(px(10.))
+                        .bg(fill),
+                )
+        }))
 }
 
 /// How a row of the DM list looks (module 181254 `eY` and its stylesheets 834050, 884848 and 121046).

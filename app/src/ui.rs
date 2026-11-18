@@ -891,6 +891,10 @@ pub struct Root {
     /// Members the start cache brought (server, user): asked for again once the gateway is up, so none stays as the
     /// last run knew it.
     start_members: Vec<(Id, Id)>,
+    /// The member list the start cache drew (server and its `GUILD_MEMBER_LIST_UPDATE`), until the live one replaces it.
+    start_member_list: Option<(Id, serde_json::Value)>,
+    /// When the open server's member list was last kept for the next start.
+    member_list_saved: Option<(Id, Instant)>,
     /// Pictures of the screen kept for the next start that are not in yet: each is written to the start's folder
     /// when it comes in (`start_cache::kept_for_the_start`).
     start_keep: HashSet<String>,
@@ -1059,7 +1063,10 @@ impl Root {
             menu_extra: menu::MenuExtra::default(),
             last_menu: None,
             confirm_delete: None,
-            show_members: false,
+            // Capture builds: `GRAVECORD_SHOW_MEMBERS=1` starts with the member list open, so a start's first frames show
+            // it (the panel is opened by its header button otherwise; ChannelSectionStore is not ported, F-0081).
+            show_members: cfg!(feature = "capture")
+                && std::env::var("GRAVECORD_SHOW_MEMBERS").as_deref() == Ok("1"),
             member_view: None,
             show_dm_profile: true,
             group_members: true,
@@ -1272,6 +1279,8 @@ impl Root {
             ready: false,
             hydrated_from_cache: false,
             start_members: Vec::new(),
+            start_member_list: None,
+            member_list_saved: None,
             start_keep: HashSet::new(),
             splash: splash::Splash::new(),
             forums: HashMap::new(),
@@ -1507,6 +1516,9 @@ impl Root {
                 if name == "MESSAGE_CREATE" {
                     self.send_echo(&data);
                 }
+                if name == "GUILD_MEMBER_LIST_UPDATE" {
+                    self.member_list_arriving(&data);
+                }
                 let dispatching = std::time::Instant::now();
                 self.stores.dispatch(&name, &data);
                 self.unread_notice_event(&name, &data);
@@ -1522,6 +1534,7 @@ impl Root {
                 self.spotify_loading_changed();
                 if name == "READY" {
                     self.blocked_in_voice.reset();
+                    self.keep_start_member_presences();
                 }
                 if let Some((guild, user, old)) = voice_mover {
                     let new = self.voice_channel_of(guild, user);
@@ -1756,6 +1769,9 @@ impl Root {
                     "GUILD_MEMBER_LIST_UPDATE" | "GUILD_MEMBER_UPDATE" | "GUILD_MEMBERS_CHUNK"
                 ) {
                     self.request_member_images();
+                }
+                if name == "GUILD_MEMBER_LIST_UPDATE" {
+                    self.member_list_applied(&data);
                 }
                 if name == "GUILD_CREATE"
                     && let Some(joined) = self.pending_join
@@ -2494,7 +2510,6 @@ impl Root {
                 self.start_picture_arrived(&key, &image);
                 self.images.insert(key, image);
             }
-            #[cfg(feature = "capture")]
             Update::Spinner(clip) => self.splash_clip(clip),
             Update::Images(images) => {
                 for (key, bytes) in images {

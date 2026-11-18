@@ -79,7 +79,9 @@ pub enum Error {
 }
 
 pub struct Client {
-    http: reqwest::Client,
+    /// The connection pool. Replaced by a fresh one when a request had to be asked again on a new connection
+    /// (`get_hedged`): the old pool's connection is the one that stopped answering.
+    http: std::sync::RwLock<reqwest::Client>,
     /// Replaced when the account's token is renewed (`UPDATE_TOKEN`, module 631670 `KD`).
     token: std::sync::RwLock<Token>,
     identity: Identity,
@@ -124,6 +126,22 @@ pub fn fixed_headers(identity: &Identity) -> Result<HeaderMap, Error> {
     Ok(headers)
 }
 
+/// The connection pool of a client. Every request to a host rides one HTTP/2 connection: one that stops answering (a
+/// sleep, a changed network) is found by its pings and dropped, so the next requests open a new one instead of waiting
+/// on it. The connect timeout covers the TCP connect and the TLS handshake (reqwest wraps the whole connector).
+fn pool(identity: &Identity) -> Result<reqwest::Client, Error> {
+    Ok(reqwest::Client::builder()
+        .user_agent(pin::USER_AGENT)
+        .default_headers(fixed_headers(identity)?)
+        .tcp_nodelay(true)
+        .pool_max_idle_per_host(32)
+        .connect_timeout(Duration::from_secs(10))
+        .http2_keep_alive_interval(Duration::from_secs(20))
+        .http2_keep_alive_timeout(Duration::from_secs(10))
+        .http2_keep_alive_while_idle(true)
+        .build()?)
+}
+
 /// A `multipart/form-data` request (`Client::post_form`).
 #[derive(Clone, Debug)]
 pub struct Form {
@@ -137,26 +155,79 @@ pub struct Form {
 
 impl Client {
     pub fn new(token: Token, identity: Identity) -> Result<Self, Error> {
-        let http = reqwest::Client::builder()
-            .user_agent(pin::USER_AGENT)
-            .default_headers(fixed_headers(&identity)?)
-            .tcp_nodelay(true)
-            .pool_max_idle_per_host(32)
-            // Every request to a host rides one HTTP/2 connection: one that stops answering (a sleep, a changed
-            // network) is found by its pings and dropped, so the next requests open a new one instead of waiting on it.
-            .connect_timeout(std::time::Duration::from_secs(10))
-            .http2_keep_alive_interval(std::time::Duration::from_secs(20))
-            .http2_keep_alive_timeout(std::time::Duration::from_secs(10))
-            .http2_keep_alive_while_idle(true)
-            .build()?;
+        let http = pool(&identity)?;
         Ok(Self {
-            http,
+            http: std::sync::RwLock::new(http),
             token: std::sync::RwLock::new(token),
             identity,
             unauthorized: None,
             limited_access: None,
             api_base: pin::API_BASE.to_owned(),
         })
+    }
+
+    fn http(&self) -> reqwest::Client {
+        self.http.read().unwrap_or_else(|e| e.into_inner()).clone()
+    }
+
+    /// The same client on a pool of its own: new connections, and a new name lookup for each.
+    fn fresh(&self) -> Result<Self, Error> {
+        Ok(Self {
+            http: std::sync::RwLock::new(pool(&self.identity)?),
+            token: std::sync::RwLock::new(Token::new(self.authorization())),
+            identity: self.identity.clone(),
+            unauthorized: self.unauthorized.clone(),
+            limited_access: self.limited_access.clone(),
+            api_base: self.api_base.clone(),
+        })
+    }
+
+    /// `GET` for a request the screen waits on (the open channel's page at the start). With HTTP/2 every request to
+    /// a host shares one connection, so a connection that stopped answering (or a connect that hangs, as one routed to
+    /// a dead address does) would hold it until the connect timeout or the pings give up. When no answer has come
+    /// after `after`, the same request is asked again on a new pool, and the first good answer wins; when the new
+    /// pool's answers, the later requests use it too.
+    pub async fn get_hedged(&self, route: &str, after: Duration) -> Result<Value, Error> {
+        let first = self.get(route);
+        tokio::pin!(first);
+        tokio::select! {
+            result = &mut first => return result,
+            () = tokio::time::sleep(after) => {}
+        }
+        debug!(
+            "GET {}: no answer after {} ms, asking again on a new connection",
+            log_path(route),
+            after.as_millis()
+        );
+        let Ok(fresh) = self.fresh() else {
+            return first.await;
+        };
+        let second = fresh.get(route);
+        tokio::pin!(second);
+        tokio::select! {
+            result = &mut first => match result {
+                Ok(value) => Ok(value),
+                Err(_) => {
+                    let result = second.await;
+                    if result.is_ok() {
+                        self.adopt(fresh.http());
+                    }
+                    result
+                }
+            },
+            result = &mut second => match result {
+                Ok(value) => {
+                    self.adopt(fresh.http());
+                    Ok(value)
+                }
+                Err(_) => first.await,
+            },
+        }
+    }
+
+    /// The new pool answered where the old one did not: the requests after this one use it.
+    fn adopt(&self, http: reqwest::Client) {
+        *self.http.write().unwrap_or_else(|e| e.into_inner()) = http;
     }
 
     /// Sends every route to `base` instead of the API (for tests against a local server).
@@ -218,7 +289,7 @@ impl Client {
         let (route, reason) = split_audit_reason(route);
         let url = format!("{}{route}", self.api_base);
         let mut request = self
-            .http
+            .http()
             .request(method.clone(), url)
             .header("authorization", self.authorization())
             .header(
@@ -302,7 +373,7 @@ impl Client {
     pub async fn get_as_bearer(&self, route: &str, bearer: &str) -> Result<Value, Error> {
         let url = format!("{}{route}", self.api_base);
         let response = self
-            .http
+            .http()
             .get(url)
             .header("authorization", format!("Bearer {bearer}"))
             .header(
@@ -340,7 +411,7 @@ impl Client {
                 body = body.text(name.clone(), value.clone());
             }
             let mut request = self
-                .http
+                .http()
                 .post(&url)
                 .header("authorization", self.authorization())
                 .header(
@@ -405,7 +476,7 @@ impl Client {
             body = body.part(name.clone(), part);
         }
         let response = self
-            .http
+            .http()
             .post(&url)
             .header("authorization", self.authorization())
             .header(
@@ -435,7 +506,7 @@ impl Client {
 
     /// A public asset: no authorization, so tokens never reach a CDN.
     pub async fn fetch_public(&self, url: &str) -> Result<Vec<u8>, Error> {
-        let response = self.http.get(url).send().await?.error_for_status()?;
+        let response = self.http().get(url).send().await?.error_for_status()?;
         Ok(response.bytes().await?.to_vec())
     }
 
@@ -445,7 +516,7 @@ impl Client {
         url: &str,
         etag: Option<&str>,
     ) -> Result<ConditionalGet, Error> {
-        let mut req = self.http.get(url);
+        let mut req = self.http().get(url);
         if let Some(tag) = etag {
             req = req.header(reqwest::header::IF_NONE_MATCH, tag);
         }
@@ -470,7 +541,7 @@ impl Client {
     /// Puts a file at the signed URL `POST /channels/{id}/attachments` handed out. The URL is the grant, so no
     /// authorization goes with it.
     pub async fn put_upload(&self, url: &str, bytes: Vec<u8>) -> Result<(), Error> {
-        self.http
+        self.http()
             .put(url)
             .header("content-type", "application/octet-stream")
             .body(bytes)
@@ -696,6 +767,116 @@ mod tests {
     }
 
     /// A local server that answers every request 429: the error that ends the retries carries the last wait.
+    #[tokio::test]
+    async fn a_page_held_by_a_connection_that_never_answers_is_asked_again_on_a_new_one() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        // The first connection is accepted and never answered (as one routed to a dead address); the next ones are.
+        let server = tokio::spawn(async move {
+            let mut held = Vec::new();
+            let mut connections = 0;
+            while let Ok((mut stream, _)) = listener.accept().await {
+                connections += 1;
+                if connections == 1 {
+                    held.push(stream);
+                    continue;
+                }
+                // Every request on the connection is answered (the client keeps it for the next one).
+                tokio::spawn(async move {
+                    let mut buffer = [0_u8; 4096];
+                    loop {
+                        let mut seen = Vec::new();
+                        while !seen.windows(4).any(|window| window == b"\r\n\r\n") {
+                            match stream.read(&mut buffer).await {
+                                Ok(0) | Err(_) => return,
+                                Ok(read) => seen.extend_from_slice(&buffer[..read]),
+                            }
+                        }
+                        let body = r#"[{"id":"1"}]"#;
+                        let answer = format!(
+                            "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\n\r\n{body}",
+                            body.len()
+                        );
+                        if stream.write_all(answer.as_bytes()).await.is_err() {
+                            return;
+                        }
+                    }
+                });
+            }
+        });
+        let client = Client::new(Token::new("fixture"), Identity::new())
+            .unwrap()
+            .with_api_base(format!("http://{address}"));
+        let started = std::time::Instant::now();
+        let page = client.get_hedged("/channels/1/messages?limit=50", Duration::from_millis(300));
+        let page = tokio::time::timeout(Duration::from_secs(10), page)
+            .await
+            .expect("the page answers within the test's bound")
+            .unwrap();
+        assert_eq!(page[0]["id"], "1");
+        let took = started.elapsed();
+        assert!(
+            took >= Duration::from_millis(300) && took < Duration::from_secs(3),
+            "answered after the hedge, not after a timeout: {took:?}"
+        );
+        // The pool that answered is the one the next requests use: they never wait on the silent connection.
+        let again = std::time::Instant::now();
+        let page = tokio::time::timeout(Duration::from_secs(3), client.get("/channels/1/messages"))
+            .await
+            .expect("the next request does not wait on the silent connection")
+            .unwrap();
+        assert_eq!(page[0]["id"], "1");
+        assert!(again.elapsed() < Duration::from_secs(2));
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn a_page_that_answers_in_time_is_asked_for_once() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let requests = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let counted = requests.clone();
+        let server = tokio::spawn(async move {
+            while let Ok((mut stream, _)) = listener.accept().await {
+                let counted = counted.clone();
+                tokio::spawn(async move {
+                    let mut buffer = [0_u8; 4096];
+                    loop {
+                        let mut seen = Vec::new();
+                        while !seen.windows(4).any(|window| window == b"\r\n\r\n") {
+                            match stream.read(&mut buffer).await {
+                                Ok(0) | Err(_) => return,
+                                Ok(read) => seen.extend_from_slice(&buffer[..read]),
+                            }
+                        }
+                        counted.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                        let body = "[]";
+                        let answer = format!(
+                            "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\n\r\n{body}",
+                            body.len()
+                        );
+                        if stream.write_all(answer.as_bytes()).await.is_err() {
+                            return;
+                        }
+                    }
+                });
+            }
+        });
+        let client = Client::new(Token::new("fixture"), Identity::new())
+            .unwrap()
+            .with_api_base(format!("http://{address}"));
+        let page = client.get_hedged("/channels/1/messages?limit=50", Duration::from_secs(2));
+        let page = tokio::time::timeout(Duration::from_secs(10), page)
+            .await
+            .expect("the page answers within the test's bound")
+            .unwrap();
+        assert!(page.is_array());
+        assert_eq!(requests.load(std::sync::atomic::Ordering::SeqCst), 1);
+        server.abort();
+    }
+
     #[tokio::test]
     async fn a_route_that_stays_rate_limited_reports_the_last_retry_after() {
         use tokio::io::{AsyncReadExt, AsyncWriteExt};

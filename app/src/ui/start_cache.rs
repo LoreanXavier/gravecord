@@ -30,6 +30,14 @@ const READY_FILE: &str = "start-ready.json.zst";
 const LEGACY_READY_FILE: &str = "start-ready.json";
 const MESSAGES_FILE: &str = "start-messages.json";
 const WISHLISTS_FILE: &str = "start-wishlists.json.zst";
+/// The open server's member list as the window last showed it (its top rows), apart from the page so a long list never
+/// pushes the page over its bound.
+const MEMBERS_FILE: &str = "start-members.json";
+const MAX_MEMBER_LIST_BYTES: usize = 256 * 1024;
+/// The most rows of the member list kept: more than a window shows.
+pub(crate) const MAX_MEMBER_ROWS: usize = 60;
+/// The most bytes read for the member list's avatars at a start, on top of the page's own budget.
+const MAX_MEMBER_PICTURE_BYTES: usize = 2 * 1024 * 1024;
 const MAX_WISHLISTS_BYTES: usize = 2 * 1024 * 1024;
 pub(crate) const MAX_WISHLIST_USERS: usize = 64;
 
@@ -88,6 +96,8 @@ pub(crate) struct Cached {
     pub(crate) pictures: Vec<(String, Vec<u8>)>,
     /// The kept page's authors as server members (`KeptPage::members`).
     pub(crate) members: Vec<Value>,
+    /// The open server's member list (its server and a `GUILD_MEMBER_LIST_UPDATE` with one SYNC of the top rows).
+    pub(crate) member_list: Option<(u64, Value)>,
 }
 
 /// Pictures of the first screen kept by name with the messages, and the most bytes read for them at a start.
@@ -445,6 +455,75 @@ pub(crate) fn save_messages(
     }
 }
 
+/// Keeps the open server's member list for the next start: `update` is a `GUILD_MEMBER_LIST_UPDATE` with one SYNC of
+/// its top rows, `pictures` the rows' avatars (key and URL; the picture cache holds their bytes).
+pub(crate) fn save_member_list(
+    account: Option<u64>,
+    guild: u64,
+    update: &Value,
+    pictures: &[(String, String)],
+) {
+    let (true, Some(account)) = (enabled(), account) else {
+        return;
+    };
+    let pictures: Vec<Value> = pictures
+        .iter()
+        .filter(|(_, url)| url.starts_with("https://"))
+        .take(MAX_MEMBER_ROWS)
+        .map(|(key, url)| json!([key, url]))
+        .collect();
+    let value = json!({"version": VERSION, "account": account.to_string(), "guild": guild.to_string(), "update": update, "pictures": pictures});
+    if serde_json::to_vec(&value).is_ok_and(|bytes| bytes.len() <= MAX_MEMBER_LIST_BYTES) {
+        std::thread::spawn(move || write_atomic(MEMBERS_FILE, &value));
+    }
+}
+
+/// What the members file keeps.
+struct KeptMemberList {
+    guild: u64,
+    update: Value,
+    pictures: Vec<(String, String)>,
+}
+
+/// The kept member list, when it was kept for `account` and is one SYNC of at most `MAX_MEMBER_ROWS` rows.
+fn member_list_for(mut value: Value, account: Option<u64>) -> Option<KeptMemberList> {
+    let kept_for = value["account"].as_str()?.parse::<u64>().ok()?;
+    if Some(kept_for) != account {
+        return None;
+    }
+    let guild: u64 = value["guild"].as_str()?.parse().ok()?;
+    let update = value["update"].take();
+    let ops = update["ops"].as_array()?;
+    let [op] = ops.as_slice() else {
+        return None;
+    };
+    let rows = op["items"].as_array()?.len();
+    if op["op"] != "SYNC" || rows == 0 || rows > MAX_MEMBER_ROWS {
+        return None;
+    }
+    if update["guild_id"].as_str() != Some(guild.to_string().as_str()) {
+        return None;
+    }
+    let pictures = value["pictures"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .take(MAX_MEMBER_ROWS)
+        .filter_map(|pair| {
+            Some((
+                pair.get(0)?.as_str()?.to_owned(),
+                pair.get(1)?.as_str()?.to_owned(),
+            ))
+        })
+        .filter(|(_, url)| url.starts_with("https://"))
+        .collect();
+    Some(KeptMemberList {
+        guild,
+        update,
+        pictures,
+    })
+}
+
 fn read(name: &str, limit: usize) -> Option<Value> {
     let path = file(name)?;
     if std::fs::metadata(&path).ok()?.len() as usize > limit + 1024 {
@@ -533,6 +612,10 @@ fn messages_for(mut value: Value, account: Option<u64>) -> Option<KeptPage> {
 /// the smaller ones after it still come (the list is the most wanted first). A copy past its freshness is still the
 /// picture of its URL (the URLs name the picture's hash), and the usual request refreshes it.
 fn read_pictures(pictures: &[(String, String)]) -> Vec<(String, Vec<u8>)> {
+    read_pictures_within(pictures, MAX_PICTURE_BYTES)
+}
+
+fn read_pictures_within(pictures: &[(String, String)], budget: usize) -> Vec<(String, Vec<u8>)> {
     let mut total = 0;
     let mut out = Vec::new();
     for (key, url) in pictures {
@@ -544,7 +627,7 @@ fn read_pictures(pictures: &[(String, String)]) -> Vec<(String, Vec<u8>)> {
         let Some(bytes) = bytes else {
             continue;
         };
-        if total + bytes.len() > MAX_PICTURE_BYTES {
+        if total + bytes.len() > budget {
             continue;
         }
         total += bytes.len();
@@ -572,6 +655,20 @@ pub(crate) fn load(account: Option<u64>) -> Option<Cached> {
         ),
         None => (None, Vec::new(), Vec::new()),
     };
+    let mut pictures = pictures;
+    let member_list = read(MEMBERS_FILE, MAX_MEMBER_LIST_BYTES)
+        .and_then(|value| member_list_for(value, account))
+        .map(|kept| {
+            let have: std::collections::HashSet<String> =
+                pictures.iter().map(|(key, _)| key.clone()).collect();
+            let wanted: Vec<(String, String)> = kept
+                .pictures
+                .into_iter()
+                .filter(|(key, _)| !have.contains(key))
+                .collect();
+            pictures.extend(read_pictures_within(&wanted, MAX_MEMBER_PICTURE_BYTES));
+            (kept.guild, kept.update)
+        });
     let wishlists = file(WISHLISTS_FILE)
         .and_then(|path| load_wishlists_from(&path, MAX_WISHLISTS_BYTES + 1024));
     crate::start_trace::mark("cache_read");
@@ -581,6 +678,7 @@ pub(crate) fn load(account: Option<u64>) -> Option<Cached> {
         wishlists,
         pictures,
         members,
+        member_list,
     })
 }
 
@@ -593,7 +691,13 @@ pub(crate) fn saved_channel() -> Option<u64> {
 
 /// Logging out removes what the account left, so the next login never starts from it.
 pub(crate) fn forget() {
-    for name in [READY_FILE, LEGACY_READY_FILE, MESSAGES_FILE, WISHLISTS_FILE] {
+    for name in [
+        READY_FILE,
+        LEGACY_READY_FILE,
+        MESSAGES_FILE,
+        WISHLISTS_FILE,
+        MEMBERS_FILE,
+    ] {
         if let Some(path) = file(name) {
             let _ = std::fs::remove_file(path);
         }
@@ -602,6 +706,9 @@ pub(crate) fn forget() {
         let _ = std::fs::remove_dir_all(dir);
     }
 }
+
+/// A member list to keep: its server, its `GUILD_MEMBER_LIST_UPDATE` and its rows' avatars (key and URL).
+type KeptList = (u64, Value, Vec<(String, String)>);
 
 impl Root {
     /// Applies the cache before the gateway answers: the same stores, filled the way READY fills them, and the
@@ -672,6 +779,14 @@ impl Root {
             }
         }
         crate::start_trace::took("dur_cache_wishlists", wishing);
+        // The member list as the last run showed it, when the app opens on that server.
+        if let Some((guild, update)) = cached.member_list
+            && Some(guild) == self.guild
+        {
+            self.stores.dispatch("GUILD_MEMBER_LIST_UPDATE", &update);
+            self.start_member_list = Some((guild, update));
+            crate::start_trace::mark("cache_members");
+        }
         if let Some((channel, page)) = cached.messages
             && Some(channel) == self.channel
         {
@@ -735,6 +850,8 @@ impl Root {
         }
         if reached("members_applied") {
             mark("frame_members");
+        } else if self.start_member_list.is_some() {
+            mark("frame_cached_members");
         }
         #[cfg(feature = "capture")]
         if has_messages && !reached("frame_pictures") {
@@ -968,6 +1085,122 @@ impl Root {
         crate::start_trace::mark("pictures_decoding");
     }
 
+    /// The open server's member list as the window shows it, for the next start: a `GUILD_MEMBER_LIST_UPDATE` with one
+    /// SYNC of the rows that fit in the window (each member with the presence that sets its status and activity line,
+    /// so a row is as tall as it will be live) and the rows' avatars. `None` before the list is in.
+    pub(super) fn member_list_to_keep(&self) -> Option<KeptList> {
+        use dc_state::member_list::Row;
+        let guild = self.guild?;
+        let list = self.stores.member_lists.get(&guild)?;
+        let fits = ((self.viewport.1 / 42.).ceil() as usize + 2).min(MAX_MEMBER_ROWS);
+        let mut items = Vec::new();
+        let mut pictures = Vec::new();
+        for row in list.rows.iter().take(fits) {
+            match row {
+                Row::Group { id, count } => {
+                    items.push(json!({"group": {"id": id, "count": count}}))
+                }
+                Row::Member {
+                    user,
+                    nick,
+                    roles,
+                    status,
+                } => {
+                    let mut member = self
+                        .stores
+                        .members
+                        .get(guild, user.id)
+                        .map(dc_state::members::Member::to_cache_value)
+                        .unwrap_or_else(|| json!({}));
+                    member["user"] = user.to_cache_value();
+                    member["nick"] = json!(nick);
+                    member["roles"] = roles.iter().map(|role| json!(role.to_string())).collect();
+                    let presence = self.stores.presence.get(user.id, Some(guild));
+                    member["presence"] = json!({
+                        "user": {"id": user.id.to_string()},
+                        "status": status,
+                        "activities": presence.map(|presence| presence.activities.clone()).unwrap_or_default(),
+                        "client_status": presence.map_or(Value::Null, |presence| presence.clients.clone()),
+                    });
+                    items.push(json!({ "member": member }));
+                    pictures.push(self.guild_avatar_source(user));
+                }
+                Row::Unknown => break,
+            }
+        }
+        if items.is_empty() {
+            return None;
+        }
+        let groups: Vec<Value> = list
+            .groups
+            .iter()
+            .map(|(id, count)| json!({"id": id, "count": count}))
+            .collect();
+        let last = items.len() - 1;
+        let update = json!({
+            "guild_id": guild.to_string(),
+            "id": "everyone",
+            "member_count": self.stores.member_counts.get_member_count(guild),
+            "online_count": self.stores.member_counts.get_online_count(guild),
+            "groups": groups,
+            "ops": [{"op": "SYNC", "range": [0, last], "items": items}],
+        });
+        Some((guild, update, pictures))
+    }
+
+    /// A live `GUILD_MEMBER_LIST_UPDATE` is about to be applied. The first SYNC of the server whose list came from the
+    /// start cache replaces that list whole (a SYNC only writes its own range, and the cached rows past it would stay).
+    pub(super) fn member_list_arriving(&mut self, data: &Value) {
+        let Some((guild, _)) = &self.start_member_list else {
+            return;
+        };
+        let same = data["guild_id"].as_str() == Some(guild.to_string().as_str());
+        let syncs = data["ops"]
+            .as_array()
+            .is_some_and(|ops| ops.iter().any(|op| op["op"] == "SYNC"));
+        if same && syncs {
+            self.stores.member_lists.remove(guild);
+            self.start_member_list = None;
+        }
+    }
+
+    /// The live list is in: it is kept for the next start the first time, then at most every 30 s.
+    pub(super) fn member_list_applied(&mut self, data: &Value) {
+        let Some(guild) = self.guild else {
+            return;
+        };
+        if data["guild_id"].as_str() != Some(guild.to_string().as_str()) || !enabled() {
+            return;
+        }
+        if self.member_list_saved.is_some_and(|(saved, at)| {
+            saved == guild && at.elapsed() < std::time::Duration::from_secs(30)
+        }) {
+            return;
+        }
+        let Some((guild, update, pictures)) = self.member_list_to_keep() else {
+            return;
+        };
+        self.member_list_saved = Some((guild, std::time::Instant::now()));
+        save_member_list(
+            self.stores.current_user.as_ref().map(|me| me.id),
+            guild,
+            &update,
+            &pictures,
+        );
+    }
+
+    /// The live READY empties the presence store: the cached rows keep their presences (and so their heights and
+    /// status dots) until the live list replaces them.
+    pub(super) fn keep_start_member_presences(&mut self) {
+        if let Some((guild, update)) = &self.start_member_list
+            && Some(*guild) == self.guild
+        {
+            self.stores
+                .presence
+                .dispatch("GUILD_MEMBER_LIST_UPDATE", update);
+        }
+    }
+
     /// The server the app opens on, as READY's cache needs to know it.
     pub(super) fn cache_guild(&self) -> Option<String> {
         self.guild.map(|guild| guild.to_string())
@@ -1116,6 +1349,7 @@ mod tests {
             wishlists: None,
             pictures: Vec::new(),
             members: Vec::new(),
+            member_list: None,
         };
         assert_eq!(cached.account(), Some(1));
         let page = json!({"version": VERSION, "account": "1", "channel": "100", "page": [{"id": "5"}],
@@ -1138,6 +1372,44 @@ mod tests {
             messages_for(unkeyed, Some(1)).is_none(),
             "a page kept before pages named their account is not drawn"
         );
+    }
+
+    #[test]
+    fn a_kept_member_list_is_one_sync_of_its_own_account_and_server() {
+        let item = |user: &str| {
+            json!({"member": {"user": {"id": user, "username": "u"}, "roles": [],
+            "presence": {"user": {"id": user}, "status": "online", "activities": [{"type": 4, "state": "hi"}]}}})
+        };
+        let update = json!({"guild_id": "10", "id": "everyone", "groups": [{"id": "online", "count": 2}],
+            "ops": [{"op": "SYNC", "range": [0, 2], "items": [{"group": {"id": "online", "count": 2}}, item("2"), item("3")]}]});
+        let file = json!({"version": VERSION, "account": "1", "guild": "10", "update": update,
+            "pictures": [["avatar:2", "https://cdn.discordapp.com/avatars/2/a.webp?size=80"], ["x", "file:///etc"]]});
+        let kept = member_list_for(file.clone(), Some(1)).unwrap();
+        assert_eq!(kept.guild, 10);
+        assert_eq!(kept.pictures.len(), 1, "only https pictures are read");
+        assert!(
+            member_list_for(file.clone(), Some(2)).is_none(),
+            "another account's list is never drawn"
+        );
+        let mut other = file.clone();
+        other["guild"] = json!("11");
+        assert!(
+            member_list_for(other, Some(1)).is_none(),
+            "the list names its own server"
+        );
+        let mut two_ops = file;
+        two_ops["update"]["ops"] = json!([{"op": "SYNC", "range": [0, 0], "items": [item("2")]},
+            {"op": "DELETE", "index": 0}]);
+        assert!(member_list_for(two_ops, Some(1)).is_none());
+        // Replayed as the gateway's own update, the rows, their presences and the group come back.
+        let mut stores = dc_state::Stores::default();
+        stores.dispatch("GUILD_MEMBER_LIST_UPDATE", &kept.update);
+        let list = stores.member_lists.get(&10).unwrap();
+        assert_eq!(list.rows.len(), 3);
+        assert_eq!(list.groups, vec![("online".to_owned(), 2)]);
+        let presence = stores.presence.get(2, Some(10)).unwrap();
+        assert_eq!(presence.status, "online");
+        assert_eq!(presence.activities.len(), 1);
     }
 
     #[test]

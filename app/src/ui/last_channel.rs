@@ -79,6 +79,34 @@ fn kept() -> bool {
     !storage::is_capture_run()
 }
 
+/// A harness run keeps no place, so it starts as a first start does. `GRAVECORD_START_PLACE` (capture builds only)
+/// gives it one in memory, `<server id>/<channel id>` or `@me`, as if the last run had been closed there: the start's
+/// own requests for it can be measured that way. Nothing is read from or written to the profile.
+fn harness_place() -> Places {
+    #[cfg(feature = "capture")]
+    if let Ok(place) = std::env::var("GRAVECORD_START_PLACE") {
+        return parse_place(&place);
+    }
+    Places::default()
+}
+
+/// `<server id>/<channel id>`, `<server id>` or `@me`; anything else is no place.
+#[cfg_attr(not(feature = "capture"), allow(dead_code))]
+fn parse_place(place: &str) -> Places {
+    let mut places = Places::default();
+    if place.trim() == "@me" {
+        places.remember_home();
+        return places;
+    }
+    let mut parts = place.trim().splitn(2, '/');
+    let guild = parts.next().and_then(|guild| guild.parse::<Id>().ok());
+    let channel = parts.next().and_then(|channel| channel.parse::<Id>().ok());
+    if let Some(guild) = guild {
+        places.remember(guild, channel);
+    }
+    places
+}
+
 fn with<R>(change: impl FnOnce(&mut Places) -> R) -> R {
     PLACES.with(|places| {
         let mut places = places.borrow_mut();
@@ -88,7 +116,7 @@ fn with<R>(change: impl FnOnce(&mut Places) -> R) -> R {
                     .map(|value| Places::parse(&value))
                     .unwrap_or_default()
             } else {
-                Places::default()
+                harness_place()
             }
         });
         change(places)
@@ -132,6 +160,21 @@ pub(super) fn last() -> Option<Option<Id>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_harness_place_names_a_channel_a_server_or_home() {
+        let place = parse_place("1568692564637524109/1568692565136375900");
+        assert_eq!(place.last(), Some(Some(1568692564637524109)));
+        assert_eq!(
+            place.channel_of(1568692564637524109),
+            Some(1568692565136375900)
+        );
+        assert_eq!(parse_place("@me").last(), Some(None));
+        assert_eq!(parse_place("5").last(), Some(Some(5)));
+        assert_eq!(parse_place("5").channel_of(5), None);
+        assert_eq!(parse_place("nope").last(), None);
+        assert_eq!(parse_place("").last(), None);
+    }
 
     #[test]
     fn each_server_keeps_its_own_channel_and_the_last_place_wins() {

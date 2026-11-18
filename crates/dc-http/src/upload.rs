@@ -63,7 +63,7 @@ impl Client {
             sent: 0,
             report,
         });
-        self.http
+        self.http()
             .put(url)
             .header("content-type", "application/octet-stream")
             .body(body)
