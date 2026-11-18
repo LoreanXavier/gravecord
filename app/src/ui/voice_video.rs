@@ -226,6 +226,10 @@ pub(super) struct Video {
     /// Own stream queued to restart after Change Stream / Stream Quality / Share Stream Audio once `STREAM_DELETE`
     /// completes (or the short fallback timer fires).
     pending_restart: Option<PendingRestart>,
+    /// The focused stream we watched, which its owner ended: `ApplicationStreamingStore` keeps it `ENDED` (module
+    /// 616356 closes every other ended stream at once), and its tile says "This stream has ended." (module 566331)
+    /// until Close Stream.
+    pub(super) ended_focus: Option<StreamKey>,
 }
 
 impl Video {
@@ -963,11 +967,23 @@ impl Root {
     pub(crate) fn streams_stop_all(&mut self, cx: &mut Context<Self>) {
         self.video.pending_watch = None;
         self.video.pending_restart = None;
+        self.video.ended_focus = None;
         self.video.watched_owners.clear();
         let keys: Vec<StreamKey> = self.video.streams.keys().copied().collect();
         for key in keys {
             self.stream_stop_key(key, cx);
         }
+    }
+
+    /// Close Stream of the ended stream's tile (`Xi` of module 401843, `STREAM_CLOSE`): the tile goes, and the view
+    /// with it.
+    pub(super) fn close_ended_stream(&mut self, cx: &mut Context<Self>) {
+        if let Some(key) = self.video.ended_focus.take()
+            && self.vv.focus.tile == Some((key.owner(), super::video_tiles::TileKind::Stream))
+        {
+            self.vv.focus.tile = None;
+        }
+        cx.notify();
     }
 
     /// Ends the stream we send, if any (op 19 and the connection).
@@ -1451,6 +1467,21 @@ impl Root {
                 self.stream_was_full(key.to_string(), cx);
             }
             if let Some(live) = self.video.streams.remove(&key) {
+                // `STREAM_DELETE` (module 616356): ENDED unless unavailable or unauthorized; kept only for the
+                // stream on screen (`b !== r && w(r)`), and never in a Stage (module 566331 closes it there).
+                let focused =
+                    self.vv.focus.tile == Some((key.owner(), super::video_tiles::TileKind::Stream));
+                if !tell_gateway
+                    && live.last.role == Role::Watch
+                    && focused
+                    && matches!(
+                        reason,
+                        EndReason::UserRequested | EndReason::Other | EndReason::RateLimited
+                    )
+                    && !self.is_stage_voice_channel(key.guild().unwrap_or(0), key.channel())
+                {
+                    self.video.ended_focus = Some(key);
+                }
                 live.controls.stop();
                 if tell_gateway && reason != EndReason::StreamFull {
                     let _ = self.requests.send(Request::StreamOp {

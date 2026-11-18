@@ -442,7 +442,12 @@ struct Participant {
     tile: Candidate,
     /// Our own stream with Show My Screen Share off: `HIDDEN_STREAM` (module 568598), drawn as module 256195.
     hidden: bool,
+    /// The focused stream its owner ended (`ended_focus`), drawn as module 566331.
+    ended: bool,
 }
+
+/// The art of an ended stream's tile (`art_XFjmsP`).
+const ENDED_STREAM_ART: &str = "https://discord.com/assets/422703837071ae97.svg";
 
 /// The art of a hidden stream's tile (module 913516).
 const HIDDEN_STREAM_ART: &str = "https://discord.com/assets/4e2cd55089053b35.svg";
@@ -756,6 +761,7 @@ impl Root {
                         ..tile.clone()
                     },
                     hidden: hidden_stream,
+                    ended: false,
                 });
             }
             out.push(Participant {
@@ -765,7 +771,35 @@ impl Root {
                 speaking,
                 tile,
                 hidden: false,
+                ended: false,
             });
+        }
+        // The focused stream that ended stays as its tile until closed, its owner still in the channel.
+        if let Some(key) = self.video.ended_focus
+            && key.channel() == channel
+            && !out.iter().any(|person| {
+                person.tile.kind == TileKind::Stream && person.tile.user == key.owner()
+            })
+            && let Some(index) = out
+                .iter()
+                .position(|person| person.tile.user == key.owner())
+        {
+            let owner = &out[index];
+            let ended = Participant {
+                user: owner.user.clone(),
+                mute: owner.mute,
+                deaf: owner.deaf,
+                speaking: false,
+                tile: Candidate {
+                    kind: TileKind::Stream,
+                    going_live: true,
+                    connected: false,
+                    ..owner.tile.clone()
+                },
+                hidden: false,
+                ended: true,
+            };
+            out.insert(index, ended);
         }
         out
     }
@@ -1264,6 +1298,9 @@ impl Root {
         if people.iter().any(|person| person.hidden) {
             self.request_image(HIDDEN_STREAM_ART.to_owned(), HIDDEN_STREAM_ART.to_owned());
         }
+        if people.iter().any(|person| person.ended) {
+            self.request_image(ENDED_STREAM_ART.to_owned(), ENDED_STREAM_ART.to_owned());
+        }
         let mut tiles: Vec<AnyElement> = people
             .iter()
             .map(|person| self.tile(person, layout, cx))
@@ -1531,7 +1568,7 @@ impl Root {
         let outside = self.vv.outside;
         let media = self.tile_media_for(person);
         let video = matches!(media, TileMedia::Video(_));
-        let waiting = stream_tile && stream.is_none() && !person.hidden;
+        let waiting = stream_tile && stream.is_none() && !person.hidden && !person.ended;
         let loading = if stream_tile {
             stream.is_some() && !video
         } else {
@@ -1697,11 +1734,14 @@ impl Root {
                     },
                 ))
             })
-            .when(!person.hidden, |this| {
+            .when(!person.hidden && !person.ended, |this| {
                 this.child(self.tile_media(media, person, layout))
             })
             .when(person.hidden, |this| {
                 this.child(self.hidden_stream_content(layout, is_focus, cx))
+            })
+            .when(person.ended, |this| {
+                this.child(self.ended_stream_content(layout.tile_width, cx))
             })
             .when(loading && !person.hidden, |this| this.child(spinner()))
             .when(waiting, |this| {
@@ -1999,6 +2039,83 @@ impl Root {
                         }),
                 )
             })
+            .into_any_element()
+    }
+
+    /// Module 566331 over the focused stream its owner ended (`container_XFjmsP`, onyx, 4px of padding): the art
+    /// (`art_XFjmsP`: none under 550 wide, 134 high under 1000, else 185, 48 under it), "This stream has ended."
+    /// (`heading-sm/medium` under 550, else `heading-lg/medium`, `text-strong`, 24 under it) and the secondary Close
+    /// Stream (`sm` under 550, else `md`).
+    /// GAP: the container's radial over linear purple gradient is drawn as `--modal-background` alone.
+    fn ended_stream_content(&self, width: f32, cx: &mut Context<Self>) -> AnyElement {
+        use super::overlay::onyx;
+        let small = width < 550.;
+        let art_height = if small {
+            None
+        } else if width < 1000. {
+            Some(134.)
+        } else {
+            Some(185.)
+        };
+        let art = self.images.get(ENDED_STREAM_ART).cloned();
+        div()
+            .absolute()
+            .inset_0()
+            .overflow_hidden()
+            .bg(onyx("--modal-background"))
+            .p(px(4.))
+            .flex()
+            .flex_col()
+            .items_center()
+            .justify_center()
+            .children(art_height.map(|art_height| {
+                div().w_full().pb(px(48.)).flex().justify_center().child(
+                    div()
+                        .w_full()
+                        .h(px(art_height))
+                        .flex()
+                        .justify_center()
+                        .children(art.map(|art| {
+                            img(art)
+                                .h(px(art_height))
+                                .object_fit(gpui::ObjectFit::Contain)
+                        })),
+                )
+            }))
+            .child(
+                div()
+                    .mb(px(24.))
+                    .text_center()
+                    .text_size(px(if small { 16. } else { 20. }))
+                    .line_height(px(if small { 20. } else { 24. }))
+                    .font_weight(FontWeight(500.))
+                    .text_color(onyx("--text-strong"))
+                    .child(dc_intl::t("Kb4Ukp")),
+            )
+            .child(
+                div()
+                    .id("ended-stream-close")
+                    .h(px(if small { 32. } else { 40. }))
+                    .px(px(if small { 12. } else { 16. }))
+                    .rounded(px(8.))
+                    .border_1()
+                    .border_color(onyx("--control-secondary-border-default"))
+                    .bg(onyx("--control-secondary-background-default"))
+                    .hover(|style| style.bg(onyx("--control-secondary-background-hover")))
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .cursor_pointer()
+                    .text_size(px(if small { 14. } else { 16. }))
+                    .line_height(px(if small { 18. } else { 20. }))
+                    .font_weight(FontWeight(500.))
+                    .text_color(onyx("--control-secondary-text-default"))
+                    .child(dc_intl::t("4EGMWL"))
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        cx.stop_propagation();
+                        this.close_ended_stream(cx);
+                    })),
+            )
             .into_any_element()
     }
 
