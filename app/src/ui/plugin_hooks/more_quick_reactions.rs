@@ -182,24 +182,6 @@ impl Root {
             }))
             .into_any_element()
     }
-
-    /// The reaction names the quick lists start from: the frecent ones, and with `frequentEmojis` off the favourites
-    /// first (`getEmojiInPriorityOrderWithoutFetchingLatest`).
-    pub(in crate::ui) fn quick_reaction_names(&self) -> Vec<String> {
-        let frequent = self.frequent_reactions();
-        match grid() {
-            Some(grid) if !grid.frequent_only => {
-                let mut names = self.favorite_emoji_keys();
-                for name in frequent {
-                    if !names.contains(&name) {
-                        names.push(name);
-                    }
-                }
-                names
-            }
-            _ => frequent,
-        }
-    }
 }
 
 #[cfg(test)]

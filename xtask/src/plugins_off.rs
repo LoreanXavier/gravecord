@@ -49,6 +49,9 @@ thread_local! {
     /// The last signed-in launch: Discord flagged the fixture account after bursts of logins (twice on 2026-11-18), so
     /// launches are spaced like perf's (`perf::launch_gap`, `GRAVECORD_PERF_GAP_SECS`).
     static LAST_LAUNCH: std::cell::Cell<Option<Instant>> = const { std::cell::Cell::new(None) };
+    /// `--replay <folder>`: every launch is answered by a local replay of that recording (`replay.rs`) instead of
+    /// Discord, a server of its own for each launch so each starts from the recording's beginning, as perf's do.
+    static REPLAY: std::cell::RefCell<Option<PathBuf>> = const { std::cell::RefCell::new(None) };
 }
 
 /// The settle step's line, for a failure's report.
@@ -172,8 +175,32 @@ fn capture(
         "--script".to_owned(),
         mode.script(&scenario.script),
     ];
-    if let Some(wait) = super::perf::launch_gap(LAST_LAUNCH.with(std::cell::Cell::get)) {
-        std::thread::sleep(wait);
+    match REPLAY.with(|replay| replay.borrow().clone()) {
+        Some(folder) => {
+            let server = super::replay::start(
+                &folder,
+                0,
+                super::replay::Options {
+                    ready_delay_ms: None,
+                    no_latency: false,
+                    log: Some(png.with_extension("replay.log")),
+                },
+            )?;
+            // SAFETY: as above; the replay server's threads never read the environment.
+            unsafe {
+                std::env::set_var("GRAVECORD_REPLAY", &server.url);
+                std::env::set_var(
+                    "GRAVECORD_REPLAY_ACCOUNT",
+                    server.account.as_deref().unwrap_or("0"),
+                );
+            }
+        }
+        // Signed in to Discord: launches stay spaced.
+        None => {
+            if let Some(wait) = super::perf::launch_gap(LAST_LAUNCH.with(std::cell::Cell::get)) {
+                std::thread::sleep(wait);
+            }
+        }
     }
     let pid = super::headless::spawn(exe, &args, repo)?;
     LAST_LAUNCH.with(|cell| cell.set(Some(Instant::now())));
@@ -352,6 +379,19 @@ fn quiet(log: &str) -> Option<bool> {
 }
 
 pub fn run(repo: &Path, args: &[&str]) -> Result<()> {
+    let mut names: Vec<&str> = Vec::new();
+    let mut rest = args.iter();
+    while let Some(arg) = rest.next() {
+        if *arg == "--replay" {
+            let Some(folder) = rest.next() else {
+                bail!("--replay takes the recording's folder");
+            };
+            REPLAY.with(|replay| *replay.borrow_mut() = Some(PathBuf::from(folder)));
+        } else {
+            names.push(arg);
+        }
+    }
+    let args = names.as_slice();
     let target = target_dir(repo);
     let exe = target.join("debug").join("gravecord.exe");
     let status = Command::new("cargo")

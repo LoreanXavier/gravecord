@@ -543,6 +543,11 @@ pub async fn run(
                 });
                 let _ = writeln!(output, "limited-access: reported");
             }
+            // Whether the stored login held for the whole run (`net::login_refused`).
+            ["signed-in"] => {
+                let refused = crate::net::login_refused();
+                let _ = writeln!(output, "signed-in: {}", if refused { "no" } else { "yes" });
+            }
             // Capture only: `fetched <key> <json>` hands the view an answer of one of its reads as if the network had
             // brought it (local fixtures for pages the test account has no data for, such as its connections).
             ["fetched", key, json @ ..] => {
