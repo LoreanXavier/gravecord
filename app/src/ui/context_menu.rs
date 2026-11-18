@@ -1945,6 +1945,8 @@ pub(super) struct State {
     pub game_activity: Option<super::report_issue::Detected>,
     /// The picker's emoji whose menu is open.
     pub picker_emoji: Option<super::picker::Item>,
+    /// The open menu was opened in the overlay window (its Chat widget's rail): it is drawn there, not in the app.
+    pub in_overlay: bool,
 }
 
 const MUTE_FOR: [(i64, &str); 6] = [
@@ -2593,6 +2595,7 @@ impl Root {
         at: Point<Pixels>,
         cx: &mut Context<Self>,
     ) {
+        self.context.in_overlay = false;
         let developer = self.developer_mode();
         let from_voice_row = std::mem::take(&mut self.context.voice_row);
         let stage_channel_items = std::mem::take(&mut self.context.stage_channel_items);

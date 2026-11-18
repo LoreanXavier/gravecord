@@ -786,7 +786,12 @@ fn text_block(
 impl Root {
     /// One toast (`x` of module 376113): the 40 px icon 12 px before the details (title, body, hint, buttons), the
     /// dismiss button at the top right on hover.
-    fn overlay_toast(&self, id: u64, toast: &Toast, cx: &mut Context<Self>) -> AnyElement {
+    pub(super) fn overlay_toast(
+        &self,
+        id: u64,
+        toast: &Toast,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
         let group = gpui::SharedString::from(format!("overlay-toast-{id}"));
         let clickable = toast.click.is_some();
         let icon_box = toast.icon.as_ref().map(|key| {

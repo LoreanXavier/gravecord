@@ -17,6 +17,12 @@ use gpui::{
 use serde_json::{Value, json};
 use std::collections::{HashMap, HashSet};
 
+/// Module 467840: the accept confirmation is for accounts in Great Britain (`c = new Set(["GB"])`) whose NSFW content
+/// is not allowed.
+pub(super) fn accept_needs_confirmation(country: Option<&str>, nsfw_allowed: bool) -> bool {
+    !nsfw_allowed && country == Some("GB")
+}
+
 /// Keys of this page's REST answers (`Update::Fetched`).
 pub(super) const KEY_PREFIX: &str = "mr:";
 
@@ -219,8 +225,25 @@ impl Root {
         });
     }
 
-    /// Accept DM (`RK`): the row is busy until the answer.
+    /// Accept DM (`acceptMessageRequest` of module 190857): for an account in Great Britain whose NSFW content is not
+    /// allowed (module 467840, `nsfwAllowed === false`) the confirmation of module 987176 asks first.
     pub(super) fn mr_accept(&mut self, channel: Id, cx: &mut Context<Self>) {
+        if self.message_requests.busy.contains_key(&channel) {
+            return;
+        }
+        if accept_needs_confirmation(
+            self.stores.location_metadata.get_country_code(),
+            self.stores.account.nsfw_allowed,
+        ) {
+            self.chat_extra.alert = Some(super::chat_notices::accept_request_alert(channel));
+            cx.notify();
+            return;
+        }
+        self.mr_accept_now(channel, cx);
+    }
+
+    /// `RK`: the row is busy until the answer.
+    pub(super) fn mr_accept_now(&mut self, channel: Id, cx: &mut Context<Self>) {
         if self.message_requests.busy.contains_key(&channel) {
             return;
         }
@@ -404,14 +427,7 @@ impl Root {
                             .min_h(px(0.))
                             .w_full()
                             .flex()
-                            .child(
-                                div()
-                                    .relative()
-                                    .flex_1()
-                                    .min_w(px(0.))
-                                    .h_full()
-                                    .child(body),
-                            )
+                            .child(div().relative().flex_1().min_w(px(0.)).h_full().child(body))
                             .children(sidebar.map(|id| self.mr_sidebar(id, cx))),
                     ),
             )
@@ -1277,6 +1293,14 @@ impl Root {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn only_a_british_account_without_nsfw_confirms() {
+        assert!(accept_needs_confirmation(Some("GB"), false));
+        assert!(!accept_needs_confirmation(Some("GB"), true));
+        assert!(!accept_needs_confirmation(Some("US"), false));
+        assert!(!accept_needs_confirmation(None, false));
+    }
 
     #[test]
     fn accept_puts_consent_status_accepted() {

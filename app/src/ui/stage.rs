@@ -119,6 +119,16 @@ pub(super) struct StartStage {
     busy: bool,
     error: Option<String>,
     focus_pending: Cell<bool>,
+    /// The blocked notice's "View all" popout is open (module 918192 `d`).
+    blocked_list: bool,
+}
+
+impl StartStage {
+    /// The blocked notice's View all popout is open (for the harness).
+    #[cfg(feature = "capture")]
+    pub(super) fn blocked_list_open(&self) -> bool {
+        self.blocked_list
+    }
 }
 
 /// `NewChannelsStore` (module 454058): a channel of a Community server shows the NEW pill while it is not vocal, not
@@ -1182,6 +1192,144 @@ impl Root {
 
     /// `tQ` of module 993838: the Start the Stage modal, or Change the topic when the Stage is live. For the menu
     /// and the view.
+    /// `E` of module 918192 (`blockedNotice_jBt7uB`, 24 under it): the deny icon in `--red-400` (blocked people,
+    /// or both) or the eye-slash (only ignored), the line in `body-xs/normal`, and View all (`blockedButton_jBt7uB`:
+    /// the link colour, 12 px semibold, 4 px after the line), whose popout lists them on the left, bottom-aligned
+    /// (`container_jBt7uB`: `--background-surface-high`, 4 px corners, the border and high shadows, at most 300 high,
+    /// 8 px inside). `None` without blocked or ignored people in the channel.
+    fn stage_blocked_notice(
+        &self,
+        channel: Id,
+        list_open: bool,
+        cx: &mut Context<Self>,
+    ) -> Option<AnyElement> {
+        let guild = self.stores.guild_of_channel(channel)?.id;
+        let me = self.stores.current_user.as_ref().map(|me| me.id);
+        let states = self.stores.voice_members(guild, channel);
+        let others = states.iter().filter(|state| Some(state.user_id) != me);
+        let blocked: Vec<Id> = others
+            .clone()
+            .filter(|state| self.is_blocked(state.user_id))
+            .map(|state| state.user_id)
+            .collect();
+        let ignored: Vec<Id> = others
+            .filter(|state| {
+                !self.is_blocked(state.user_id) && self.stores.is_ignored(state.user_id)
+            })
+            .map(|state| state.user_id)
+            .collect();
+        if blocked.is_empty() && ignored.is_empty() {
+            return None;
+        }
+        let number = |count: usize| [("number", (count as i64).into())];
+        let (glyph, text) = if !blocked.is_empty() && !ignored.is_empty() {
+            ("deny_circle", dc_intl::t("P/KFXz").to_owned())
+        } else if !ignored.is_empty() {
+            (
+                "eye_slash",
+                dc_intl::format("Ri3o33", &number(ignored.len())),
+            )
+        } else {
+            (
+                "deny_circle",
+                dc_intl::format("6Tcdt7", &number(blocked.len())),
+            )
+        };
+        let tint = if glyph == "deny_circle" {
+            "--red-400"
+        } else {
+            "--interactive-icon-default"
+        };
+        let popout = list_open.then(|| {
+            let rows: Vec<AnyElement> = blocked
+                .iter()
+                .map(|user| self.stage_person_row(guild, channel, *user, true))
+                .chain(
+                    ignored
+                        .iter()
+                        .map(|user| self.stage_person_row(guild, channel, *user, false)),
+                )
+                .collect();
+            div()
+                .id("stage-blocked-list")
+                .occlude()
+                .absolute()
+                .bottom_0()
+                .right(gpui::relative(1.))
+                .min_w(px(240.))
+                .max_h(px(300.))
+                .overflow_y_scroll()
+                .p(px(8.))
+                .rounded(px(4.))
+                .bg(color("--background-surface-high"))
+                .shadow(vec![
+                    gpui::BoxShadow {
+                        color: gpui::hsla(0., 0., 1., 0.08),
+                        offset: gpui::point(px(0.), px(0.)),
+                        blur_radius: px(0.),
+                        spread_radius: px(1.),
+                        inset: false,
+                    },
+                    gpui::BoxShadow {
+                        color: gpui::hsla(0., 0., 0., 0.24),
+                        offset: gpui::point(px(0.), px(12.)),
+                        blur_radius: px(24.),
+                        spread_radius: px(0.),
+                        inset: false,
+                    },
+                ])
+                .on_mouse_down_out(cx.listener(|this, _, _, cx| {
+                    if let Some(open) = this.start_stage.as_mut() {
+                        open.blocked_list = false;
+                    }
+                    cx.notify();
+                }))
+                .children(rows)
+        });
+        Some(
+            div()
+                .mb(px(24.))
+                .flex()
+                .justify_center()
+                .child(
+                    div()
+                        .flex()
+                        .items_center()
+                        .child(icon(glyph, 24., tint))
+                        .child(
+                            div()
+                                .text_size(px(12.))
+                                .line_height(px(16.))
+                                .text_color(color("--text-default"))
+                                .child(text),
+                        )
+                        .child(
+                            div()
+                                .relative()
+                                .child(
+                                    div()
+                                        .id("stage-blocked-view-all")
+                                        .ml(px(4.))
+                                        .cursor_pointer()
+                                        .text_size(px(12.))
+                                        .line_height(px(16.))
+                                        .font_weight(FontWeight(600.))
+                                        .text_color(color("--text-link"))
+                                        .on_click(cx.listener(|this, _, _, cx| {
+                                            if let Some(open) = this.start_stage.as_mut() {
+                                                open.blocked_list = !open.blocked_list;
+                                            }
+                                            cx.notify();
+                                        }))
+                                        .child(dc_intl::t("rUEjBe")),
+                                )
+                                .children(popout),
+                        ),
+                )
+                .into_any_element(),
+        )
+    }
+
     pub(in crate::ui) fn open_start_stage(&mut self, channel: Id, cx: &mut Context<Self>) {
         let editing = self.stores.stage_instances.is_live(channel);
         let topic = self
@@ -1217,6 +1365,7 @@ impl Root {
             editing,
             busy: false,
             error: None,
+            blocked_list: false,
             focus_pending: Cell::new(true),
         });
         cx.notify();
@@ -1432,12 +1581,18 @@ impl Root {
                         },
                     )])),
             );
+        // `blockedUsersContainer_CWLnwx` (module 128347): for a Stage not live yet with blocked or ignored people in it,
+        // the notice of module 918192.
+        let blocked_notice = (!open.editing)
+            .then(|| self.stage_blocked_notice(open.channel, open.blocked_list, cx))
+            .flatten();
         let body = div()
             .flex_none()
             .px(px(32.))
             .flex()
             .flex_col()
             .gap(px(8.))
+            .children(blocked_notice)
             .child(
                 div()
                     .h(px(20.))

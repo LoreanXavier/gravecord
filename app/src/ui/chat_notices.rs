@@ -49,6 +49,35 @@ pub(super) enum Then {
     UploadLogs,
     /// Save of the Soundboard Keybind modal (module 29681 `f`).
     SaveSoundboardKeybind,
+    /// Confirm of "Are you sure you know this person?" (module 987176): the message request is accepted.
+    AcceptMessageRequest {
+        channel: Id,
+    },
+}
+
+/// Module 987176 as module 190857 opens it before a message request is accepted: the title, its subtitle, Cancel and
+/// Confirm.
+pub(super) fn accept_request_alert(channel: Id) -> Alert {
+    Alert {
+        id: "message-request-confirm",
+        title: dc_intl::t("66tnno").to_owned(),
+        subtitle: Some(vec![(dc_intl::t("c/k4SW").to_owned(), false)]),
+        content: None,
+        buttons: vec![
+            AlertButton {
+                id: "message-request-confirm-cancel",
+                label: dc_intl::t("ETE/oC").to_owned(),
+                secondary: true,
+                then: Then::Close,
+            },
+            AlertButton {
+                id: "message-request-confirm-accept",
+                label: dc_intl::t("cY+Oob").to_owned(),
+                secondary: false,
+                then: Then::AcceptMessageRequest { channel },
+            },
+        ],
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -509,6 +538,7 @@ impl Root {
             Then::DmsOff { guild } => self.turn_off_guild_dms(guild, cx),
             Then::UploadLogs => self.voice_upload_logs(cx),
             Then::SaveSoundboardKeybind => self.soundboard_keybind_save(),
+            Then::AcceptMessageRequest { channel } => self.mr_accept_now(channel, cx),
         }
     }
 

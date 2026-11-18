@@ -124,6 +124,8 @@ pub(super) enum Menu {
     More,
     /// The chevron of the tray's red button: the watched streams of others, each with Stop Watching.
     Watched,
+    /// "Disconnect Actions" (module 984624 `exit-options`): End Event.
+    ExitOptions,
     /// A tile's Options: whose, and where the pointer was (the menu's top-left corner).
     Tile(Id, Point<Pixels>),
     /// A stream tile's Options, by its owner.
@@ -2462,7 +2464,51 @@ impl Root {
                                     .map(|picture| img(picture).size(px(24.)).rounded_full()),
                             )
                             .child(crumb.title.clone())
-                    })),
+                    }))
+                    // `ei` of module 681281 with nothing focused: the channel's running event (module 961314): the
+                    // divider, the status line of 103355 with `liveText` "Live Event" (`body-md/semibold`, the calendar
+                    // and the text in `--text-feedback-positive`), and the event's name (`body-md/normal`,
+                    // `eventName_4__wLb`: 8 px on each side, one line).
+                    .children(
+                        focus
+                            .is_none()
+                            .then(|| self.call_live_event())
+                            .flatten()
+                            .map(|event_name| {
+                                div()
+                                    .flex()
+                                    .items_center()
+                                    .gap(px(9.))
+                                    .min_w(px(0.))
+                                    .child(
+                                        div()
+                                            .size(px(4.))
+                                            .rounded_full()
+                                            .bg(mid("--interactive-icon-default")),
+                                    )
+                                    .child(
+                                        div()
+                                            .flex()
+                                            .items_center()
+                                            .gap(px(8.))
+                                            .font_weight(FontWeight(600.))
+                                            .text_color(mid("--text-feedback-positive"))
+                                            .child(icon("events", 20., "--text-feedback-positive"))
+                                            .child(dc_intl::t("kM6e4G")),
+                                    )
+                                    .child(
+                                        div()
+                                            .mx(px(8.))
+                                            .min_w(px(0.))
+                                            .overflow_hidden()
+                                            .whitespace_nowrap()
+                                            .text_ellipsis()
+                                            .font_weight(FontWeight(400.))
+                                            .text_color(mid("--text-default"))
+                                            .child(event_name),
+                                    )
+                            }),
+                    ),
             )
             .child(div().flex_1())
             .children(
@@ -2489,6 +2535,9 @@ impl Root {
                     .filter(|crumb| crumb.stream)
                     .map(|crumb| div().mr(px(16.)).child(live_indicator(crumb.quality))),
             )
+            // Module 977851 (`V`): drawn only while the chat is closed (`er` of 416528 and `!c` of 482877 both require
+            // it), so its label is always Show Chat; "Hide Chat" and "Chat in the popout is coming soon." need the chat
+            // open or an `inPopout` that no caller passes (nothing dispatches SHOW_TEXT_IN_VOICE_POPOUT_COMING_SOON_TIP).
             .when(!chat_open, |this| {
                 this.child(self.with_tip(
                     "voice-show-chat-tip",
@@ -3073,7 +3122,10 @@ impl Root {
                 };
                 let stream = self.vv.end_shows_stream.get();
                 let others = self.watched_streams().len();
-                let nub_shown = others > usize::from(stream);
+                // Module 984624: Disconnect gets the chevron of Disconnect Actions while a running event of this
+                // channel can be managed by this account.
+                let exit_event = (!stream).then(|| self.call_manageable_event()).flatten();
+                let nub_shown = others > usize::from(stream) || exit_event.is_some();
                 let button = div()
                     .id("call-disconnect")
                     .w(px(66. * scale))
@@ -3144,7 +3196,12 @@ impl Root {
                     .flex_row_reverse()
                     .child(self.anchor_probe("call-end-group"))
                     .when(nub_shown, |this| {
-                        let open = self.vv.menu == Some(Menu::Watched);
+                        let menu = if exit_event.is_some() {
+                            Menu::ExitOptions
+                        } else {
+                            Menu::Watched
+                        };
+                        let open = self.vv.menu == Some(menu);
                         this.child(
                             self.bar_opener(
                                 div().id("call-end-chevron"),
@@ -3163,8 +3220,8 @@ impl Root {
                             .items_center()
                             .justify_center()
                             .cursor_pointer()
-                            .on_click(cx.listener(|this, _, _, cx| {
-                                this.toggle_bar_menu("call-end-chevron", Menu::Watched, cx);
+                            .on_click(cx.listener(move |this, _, _, cx| {
+                                this.toggle_bar_menu("call-end-chevron", menu, cx);
                             }))
                             .child(icon(
                                 "voice_view_caret",
@@ -3710,8 +3767,81 @@ impl Root {
             Menu::Camera => self.camera_menu(cx),
             Menu::Share => self.share_menu(cx),
             Menu::Watched => self.watched_menu(cx),
+            Menu::ExitOptions => self.exit_options_menu(cx),
             Menu::Stream(..) => self.tile_menu_layer(cx).into_iter().collect(),
         }
+    }
+
+    /// `L.Qs(channel)`: the name of the call channel's running event.
+    fn call_live_event(&self) -> Option<String> {
+        let call = self.call.as_ref()?;
+        self.stores
+            .scheduled_events
+            .active(call.guild)
+            .into_iter()
+            .find(|event| event.channel_id == Some(call.channel))
+            .map(|event| event.name.clone())
+    }
+
+    /// `f.Qs(channelId)` with `canManageGuildEvent`: the running event of the call's channel, when this account may
+    /// end it.
+    fn call_manageable_event(&self) -> Option<(Id, Id)> {
+        let call = self.call.as_ref()?;
+        let event = self
+            .stores
+            .scheduled_events
+            .active(call.guild)
+            .into_iter()
+            .find(|event| event.channel_id == Some(call.channel))?;
+        let manage = self
+            .stores
+            .guild(call.guild)
+            .zip(self.stores.me())
+            .is_some_and(|(guild, me)| super::guild_events::can_manage_event(guild, me, event));
+        manage.then_some((call.guild, event.id))
+    }
+
+    /// The `exit-options` menu ("Disconnect Actions"): End Event (danger, the circled X) ends the event at once
+    /// (`endEvent`).
+    fn exit_options_menu(&self, cx: &mut Context<Self>) -> Vec<AnyElement> {
+        let Some((guild, event)) = self.call_manageable_event() else {
+            return Vec::new();
+        };
+        let row = self.vmenu_row_ex(
+            "end-voice-event",
+            Some("standing_circle_x"),
+            dc_intl::t("qaYzPA"),
+            None,
+            true,
+            true,
+            false,
+            cx,
+            move |this, _, cx| {
+                this.vv.menu = None;
+                this.end_guild_event(guild, event, cx);
+            },
+        );
+        let width = 220.;
+        let Some((left, top)) = self.menu_at("call-end-group", width, 36. + 16.) else {
+            return Vec::new();
+        };
+        vec![
+            deferred(
+                div().absolute().left(px(left)).top(px(top)).child(
+                    self.menu_panel(width, true)
+                        .id("voice-exit-options")
+                        .popout("voice-exit-options", PopKind::Fade, PopSide::Top)
+                        .on_mouse_down_out(cx.listener(
+                            |this, event: &gpui::MouseDownEvent, _, cx| {
+                                this.close_call_popup(event, cx);
+                            },
+                        ))
+                        .child(row),
+                ),
+            )
+            .with_priority(2)
+            .into_any_element(),
+        ]
     }
 
     /// The call-bar flavour of the microphone chevron's menu.

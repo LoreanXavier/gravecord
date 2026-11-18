@@ -26,6 +26,15 @@ use gpui::{
 use serde_json::{Value, json};
 use std::collections::HashSet;
 
+/// `canManageGuildEvent` for the rest of the app (Disconnect Actions, module 984624).
+pub(super) fn can_manage_event(
+    guild: &dc_state::Guild,
+    me: permissions::Me,
+    event: &ScheduledEvent,
+) -> bool {
+    list::can_manage(guild, me, event)
+}
+
 /// `MANAGE_EVENTS`.
 pub(super) const MANAGE_EVENTS: u64 = 1 << 33;
 /// `CREATE_EVENTS`.

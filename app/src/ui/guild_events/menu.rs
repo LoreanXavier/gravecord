@@ -691,6 +691,18 @@ impl Root {
         cx.notify();
     }
 
+    /// `endEvent` of module 496092 from outside the events pages (Disconnect Actions, module 984624): the event is
+    /// marked completed.
+    pub(in crate::ui) fn end_guild_event(&mut self, guild: Id, event: Id, cx: &mut Context<Self>) {
+        let _ = self.requests.send(Request::Rest {
+            key: Some(format!("{STATUS_KEY}{guild}:{event}:3")),
+            method: reqwest::Method::PATCH,
+            route: event_route(guild, event),
+            body: Some(status_body(3)),
+        });
+        cx.notify();
+    }
+
     /// `deleteGuildEvent`: the event is deleted for everyone, after the confirmation.
     pub(super) fn cancel_event(&mut self, event: Id, cx: &mut Context<Self>) {
         let Some(guild) = self.guild_events.as_ref().map(|open| open.guild) else {

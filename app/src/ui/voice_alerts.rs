@@ -819,7 +819,13 @@ impl Root {
     /// `k` of module 918192 with `showStatus` (`user_jBt7uB`: 8px padding; the 32px avatar; `userInfo` 12px after it):
     /// the name and `#discriminator` (`body-md/normal`, the tag `text-subtle`), then Blocked (`text-feedback-critical`)
     /// or Ignored and `| Speaker`, `| Stage Moderator` or `| Audience` (`body-xs/normal`, `text-muted`).
-    fn stage_person_row(&self, guild: Id, channel: Id, user: Id, is_blocked: bool) -> AnyElement {
+    pub(super) fn stage_person_row(
+        &self,
+        guild: Id,
+        channel: Id,
+        user: Id,
+        is_blocked: bool,
+    ) -> AnyElement {
         let known = self.stores.users.get(&user);
         let picture = known.and_then(|known| self.images.get(&avatar_source(known).0).cloned());
         let name = known

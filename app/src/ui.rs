@@ -10800,7 +10800,11 @@ impl Render for Root {
             .children(self.pin_modal(cx))
             .children(self.voice_discard_modal(cx))
             .children(self.too_long_modal(cx))
-            .children(self.context_menu_layer(window, cx))
+            .children(
+                (!self.context.in_overlay)
+                    .then(|| self.context_menu_layer(window, cx))
+                    .flatten(),
+            )
             .children(self.search_popout(window, cx))
             .children(self.file_menu_layer(cx))
             .children(self.file_expanded_layer(cx))

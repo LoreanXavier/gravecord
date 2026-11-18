@@ -242,6 +242,15 @@ impl Root {
             .justify_center()
             .cursor_pointer()
             .on_mouse_down(gpui::MouseButton::Left, |_, _, cx| cx.stop_propagation())
+            // `onContextMenu` (`_` of module 415173): a DM's or group's menu, else the channel's (769192 for a voice
+            // channel, 813407 for a text one).
+            .on_mouse_down(
+                gpui::MouseButton::Right,
+                cx.listener(move |this, event: &gpui::MouseDownEvent, _, cx| {
+                    cx.stop_propagation();
+                    this.overlay_rail_menu(channel, event.position, cx);
+                }),
+            )
             .on_click(cx.listener(move |this, _, _, cx| {
                 if voice
                     && this.overlay.text_chat.voice_chat_minimized()
@@ -269,6 +278,29 @@ impl Root {
                 )
             })
             .into_any_element()
+    }
+
+    /// The rail's context menu, drawn in the overlay window: the app's own menu of the DM, group or channel
+    /// (`overlay-user-context` 92016, `overlay-channel-context` 769192 and 813407 open there in the official client).
+    pub(super) fn overlay_rail_menu(
+        &mut self,
+        channel: Id,
+        at: gpui::Point<gpui::Pixels>,
+        cx: &mut Context<Self>,
+    ) {
+        let private = self
+            .stores
+            .private_channels
+            .iter()
+            .any(|known| known.id == channel);
+        let target = if private {
+            super::context_menu::Target::Dm(channel)
+        } else {
+            super::context_menu::Target::Channel(channel)
+        };
+        self.open_context_menu(target, at, cx);
+        self.context.in_overlay = true;
+        cx.notify();
     }
 
     /// The Chat widget's content at the widget's size.

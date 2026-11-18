@@ -999,6 +999,22 @@ pub async fn run(
                 };
                 let _ = writeln!(output, "{line}");
             }
+            // `overlay rightclick <x> <y>`: a right press and release in the overlay window (a context menu).
+            ["overlay", "rightclick", x, y] => {
+                let handle = root.read_with(cx, |root, _| root.overlay_window());
+                let line = match (handle, at(x, y)) {
+                    (Some(overlay), Some(point)) => {
+                        cx.update(|cx| {
+                            dispatch(cx, overlay, moved(point, None));
+                            dispatch(cx, overlay, right_down(point));
+                            dispatch(cx, overlay, right_up(point));
+                        });
+                        format!("overlay rightclick: {x},{y}")
+                    }
+                    _ => "overlay rightclick: no overlay window".to_owned(),
+                };
+                let _ = writeln!(output, "{line}");
+            }
             // `overlay move <x> <y>`: the pointer moves there in the overlay window (a hover, a tooltip).
             ["overlay", "move", x, y] => {
                 let handle = root.read_with(cx, |root, _| root.overlay_window());
