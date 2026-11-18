@@ -172,6 +172,7 @@ mod tests {
             .map(|entry| match entry {
                 Entry::Row(row) => row.label.clone(),
                 Entry::Separator => "-".to_owned(),
+                Entry::Heading(text) => format!("# {text}"),
             })
             .collect()
     }

@@ -12,7 +12,7 @@ every setting changed), and with every plugin off, and fails on one differing pi
 The list is the plugins enabled in the owner's Equicord backup of 2026-09-21 (156). Sources were read in the local
 Equicord checkout of 2026-11-14 (`src/plugins` is Vencord's, `src/equicordplugins` Equicord's).
 
-Totals: 55 ported, 8 native, 48 planned, 45 not applicable.
+Totals: 56 ported, 8 native, 47 planned, 45 not applicable.
 
 Status: **ported** works and has its proof; **native** is what gravecord already does without a plugin;
 **planned** is not built yet (an import keeps its settings for when it is); **not applicable** has nothing to
@@ -79,7 +79,7 @@ port in a native client, or was removed upstream.
 | GifMaker | planned | equicordplugins/gifMaker/index.tsx | Create and caption GIFs from any media in chat or the GIF picker. | a GIF encoder and its editor. |  |
 | GifPaste | ported | plugins/gifPaste/index.ts | Makes picking a gif in the gif picker insert a link into the chatbox instead of instantly sending it | gifs.rs: picking a GIF inserts its link and a space in the composer and closes the picker. | `switch_only_plugins_follow_their_switch_and_the_master`; frames gifpaste-off/on; plugins-off gif-picker |
 | GlobalBadges | planned | equicordplugins/globalBadges/index.tsx | Adds global badges from other client mods | its third-party badge service. |  |
-| GreetStickerPicker | planned | plugins/greetStickerPicker/index.tsx | Allows you to use any greet sticker instead of only the random one by right-clicking the 'Wave to say hi!' button | a sticker choice for the "Wave to say hi!" button. |  |
+| GreetStickerPicker | ported | plugins/greetStickerPicker/index.tsx | Allows you to use any greet sticker instead of only the random one by right-clicking the 'Wave to say hi!' button | plugin_hooks/greet_sticker_picker.rs: a right click on Wave to say hi! opens Greet Mode (radios Greet / Message) and Greet Stickers (Wumpus, Nelly, Clyde, Choco, Doggo, Peach); a sticker goes out as a mentioning reply by /greet in Greet mode or as an ordinary sticker message in Message mode. The app's menus gained group labels and radio rows for it. GAP: Unholy Multi-Greet (private settings without UI). | `the_menu_has_the_mode_and_the_six_stickers`; menu unit test; frame pending: the fixture account token answers 401 since 17:51, captures stopped |
 | HeaderBarAPI | not applicable | equicordplugins/_api/headerBar.ts | API to add buttons to the header bar and channel toolbar. | client-mod plumbing (an API for other plugins), nothing to port. |  |
 | IgnoreActivities | ported | plugins/ignoreActivities/index.tsx | Ignore activities from showing up on your status ONLY. You can configure which ones are specifically ignored from the Registered Games and Activities tabs, or use the general settings below | plugin_hooks/ignore_activities.rs: your own activity list filtered before it goes out (op 3) and before your own status shows it: ignore* by kind (custom status untouched), idsList blacklisting or whitelisting application ids by listMode, and an Enable Activity check in a registered game's overflow menu that keeps that game off by id or exe path (re-checking turns detection back on). GAP: the eye toggle in the app launcher; start's pruning of games never seen. | `kinds_are_ignored_by_their_switch_and_custom_status_never`, `the_ids_list_blacklists_or_whitelists`, `an_ignored_game_goes_by_its_id_or_its_exe`; no frame (the capture profile has no registered game); plugins-off: the filter sits on the presence path, which a capture never sends |
 | IloveSpam | native | (not in the 2026-11-14 checkout) |  | the app does not hide the messages of users flagged as likely spammers (the user flag 1<<20 that the pinned client's message list checks) yet (GAP: main app), so they already show as any other; when the app adds the rule, this plugin needs its hook there. |  |
@@ -217,6 +217,7 @@ Every setting of each original (`definePluginSettings`), its type and default th
 | FixImagesQuality | `originalImagesInChat` | BOOLEAN | `false` | ported |
 | GameActivityToggle | `oldIcon` | BOOLEAN | `false` | ported |
 | GameActivityToggle | `location` | SELECT | `"PANEL"` | nothing to act on yet: the original only reads it while EquicordToolbox is on, which is not ported; the button stays next to Mute/Deafen as with the default |
+| GreetStickerPicker | `greetMode` | SELECT | `GreetMode.Greet` | ported |
 | IgnoreActivities | `importCustomRPC` | COMPONENT | `` | not ported: not applicable yet: it copies CustomRPC's application id, and CustomRPC is not ported. |
 | IgnoreActivities | `listMode` | SELECT | `FilterMode.Whitelist` | ported |
 | IgnoreActivities | `idsList` | COMPONENT | `""` | ported |

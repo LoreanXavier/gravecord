@@ -10,6 +10,7 @@ pub(in crate::ui) mod clips_enhancements;
 mod download_all;
 mod full_vc_pfp;
 mod game_activity_toggle;
+mod greet_sticker_picker;
 mod ignore_activities;
 mod member_count;
 mod message_clicks;

@@ -741,6 +741,26 @@ pub(crate) const DEFS: &[Def] = &[
         settings: &[],
     },
     Def {
+        id: "GreetStickerPicker",
+        name: "GreetStickerPicker",
+        description: "Allows you to use any greet sticker instead of only the random one by right-clicking the 'Wave to say hi!' button",
+        origin: Origin::Vencord,
+        source: "src/plugins/greetStickerPicker/index.tsx",
+        default_on: false,
+        settings: &[Setting {
+            key: "greetMode",
+            label: "Greet Mode",
+            description: "Choose the greet mode",
+            kind: Kind::Select {
+                options: &[
+                    ("Greet (you can only greet 3 times)", Lit::Str("Greet")),
+                    ("Normal Message (you can greet spam)", Lit::Str("Message")),
+                ],
+                default: 0,
+            },
+        }],
+    },
+    Def {
         id: "IgnoreActivities",
         name: "IgnoreActivities",
         description: "Ignore activities from showing up on your status ONLY. You can configure which ones are specifically ignored from the Registered Games and Activities tabs, or use the general settings below",

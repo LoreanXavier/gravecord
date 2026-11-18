@@ -29,6 +29,12 @@ pub(super) enum Target {
     },
     /// Not in the pinned client: a PinDMs category header, by its place (`plugin_hooks/pin_dms.rs`).
     PinCategory(u16),
+    /// Not in the pinned client: the "Wave to say hi!" button of a join message (GreetStickerPicker,
+    /// `plugin_hooks/greet_sticker_picker.rs`).
+    Greet {
+        channel: Id,
+        message: Id,
+    },
     InventoryFeed,
     InventoryFeedAtPointer,
     InventoryAuthor {
@@ -306,13 +312,17 @@ pub(super) enum Act {
     PluginPinDeleteCategory,
     /// Not in the pinned client: NewGuildSettings' row (`plugin_hooks/new_guild_settings.rs`).
     PluginApplyNewGuildSettings,
+    /// Not in the pinned client: GreetStickerPicker's rows: Message mode (true) or Greet, and a sticker by its place
+    /// (`plugin_hooks/greet_sticker_picker.rs`).
+    PluginGreetMode(bool),
+    PluginGreetSticker(u8),
 }
 
 impl Act {
     /// Every row kind once (`Correction` with its first index). `ordinal` is an exhaustive match, so adding a variant
     /// without listing it here fails the build or the `act_list_is_complete` test.
     #[cfg(test)]
-    pub(super) const ALL: [Act; 136] = [
+    pub(super) const ALL: [Act; 138] = [
         Act::InventoryAbout,
         Act::InventoryHide,
         Act::ReportApp,
@@ -454,6 +464,8 @@ impl Act {
         Act::PluginPinCategoryDown,
         Act::PluginPinDeleteCategory,
         Act::PluginApplyNewGuildSettings,
+        Act::PluginGreetMode(false),
+        Act::PluginGreetSticker(0),
     ];
 
     #[cfg(test)]
@@ -600,6 +612,8 @@ impl Act {
             Act::PluginPinCategoryDown => 133,
             Act::PluginPinDeleteCategory => 134,
             Act::PluginApplyNewGuildSettings => 135,
+            Act::PluginGreetMode(_) => 136,
+            Act::PluginGreetSticker(_) => 137,
         }
     }
 }
@@ -643,7 +657,9 @@ pub(super) fn status(act: Act) -> Status {
         | Act::PluginPinCategoryUp
         | Act::PluginPinCategoryDown
         | Act::PluginPinDeleteCategory
-        | Act::PluginApplyNewGuildSettings => Wired,
+        | Act::PluginApplyNewGuildSettings
+        | Act::PluginGreetMode(_)
+        | Act::PluginGreetSticker(_) => Wired,
         Act::InventoryAbout
         | Act::InventoryHide
         | Act::ViewAllActivity
@@ -877,15 +893,21 @@ impl Row {
 pub(super) enum Entry {
     Row(Row),
     Separator,
+    /// Not in the pinned client's menus here: a group's label (`MenuGroup label`), for plugins' menus.
+    Heading(&'static str),
 }
 
 /// A menu's height: its rows, 17px per separator, and the 8px padding and 1px border at the top and bottom.
+/// A group label: 12/16 semibold muted text with 4px above and below and 8px at the sides.
+const HEADING_HEIGHT: f32 = 24.;
+
 fn menu_height(items: &[Entry]) -> f32 {
     items
         .iter()
         .map(|entry| match entry {
             Entry::Row(row) => row.height(),
             Entry::Separator => 17.,
+            Entry::Heading(_) => HEADING_HEIGHT,
         })
         .sum::<f32>()
         + 18.
@@ -3000,6 +3022,7 @@ impl Root {
             Target::AccountPanel => self.account_panel_items(),
             Target::Role { role, guild } => self.better_role_items(role, guild),
             Target::PinCategory(index) => self.pin_category_items(usize::from(index)),
+            Target::Greet { .. } => self.greet_picker_items(),
             Target::SpotifyActivity { user, popout } => spotify_activity_items(
                 self.stores
                     .current_user
@@ -3610,6 +3633,7 @@ impl Root {
             .iter()
             .filter_map(|item| match item {
                 Entry::Row(row) => Some(label_width(window, &row.label) + 34.),
+                Entry::Heading(text) => Some(label_width(window, text) + 16.),
                 Entry::Separator => None,
             })
             .fold(144., f32::max)
@@ -3658,6 +3682,13 @@ impl Root {
             }
             (Act::PluginServerInfo, Target::Guild(guild)) => {
                 self.server_info_open(guild, cx);
+            }
+            // Not in the pinned client: GreetStickerPicker (`plugin_hooks/greet_sticker_picker.rs`).
+            (
+                Act::PluginGreetMode(_) | Act::PluginGreetSticker(_),
+                Target::Greet { channel, message },
+            ) => {
+                self.greet_picker_run(act, channel, message, cx);
             }
             // Not in the pinned client: PinDMs' category menu (`plugin_hooks/pin_dms.rs`).
             (
@@ -3994,7 +4025,7 @@ impl Root {
                     Target::ProgressBar(guild) | Target::RaidAlert(guild) => guild,
                     Target::RtcChannel { channel, .. } => channel,
                     Target::Role { role, .. } => role,
-                    Target::PinCategory(_) => return,
+                    Target::PinCategory(_) | Target::Greet { .. } => return,
                     Target::ProfileWidget { .. }
                     | Target::AttachmentLink
                     | Target::AccountPanel
@@ -5238,6 +5269,20 @@ impl Root {
                         .into_any_element(),
                 ),
                 Entry::Row(row) => rows.push(self.context_row(index, row, target, cx)),
+                Entry::Heading(text) => rows.push(
+                    div()
+                        .h(px(HEADING_HEIGHT))
+                        .flex_none()
+                        .px(px(8.))
+                        .flex()
+                        .items_center()
+                        .text_size(px(12.))
+                        .line_height(px(16.))
+                        .font_weight(FontWeight(600.))
+                        .text_color(color("--text-muted"))
+                        .child(*text)
+                        .into_any_element(),
+                ),
             }
         }
         let menu = deferred(
@@ -5945,6 +5990,7 @@ mod tests {
             .map(|entry| match entry {
                 Entry::Row(row) => row.label.clone(),
                 Entry::Separator => "-".to_owned(),
+                Entry::Heading(text) => format!("# {text}"),
             })
             .collect()
     }
@@ -6333,7 +6379,7 @@ mod tests {
             .iter()
             .filter_map(|entry| match entry {
                 Entry::Row(row) => Some(row.height()),
-                Entry::Separator => None,
+                Entry::Separator | Entry::Heading(_) => None,
             })
             .collect();
         // Mark As Read 34, Favorites 36, Pin 34, Copy Link 34, Mute 36, Notifications 52.

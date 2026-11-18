@@ -27,6 +27,11 @@ const WELCOME_STICKERS: [(Id, u64); 6] = [
     (819_128_604_311_027_752, 3),
 ];
 
+/// Not in the pinned client: the welcome sticker at `index` (GreetStickerPicker, `plugin_hooks/greet_sticker_picker.rs`).
+pub(super) fn welcome_sticker_at(index: usize) -> Option<Id> {
+    WELCOME_STICKERS.get(index).map(|(id, _)| *id)
+}
+
 /// `tZ`: the sticker for a join message, by the account's and the message's snowflake times.
 pub(super) fn welcome_sticker(me: Option<Id>, message: Id) -> (Id, u64) {
     let time = |id: Id| (id >> 22) + 1_420_070_400_000;
@@ -574,7 +579,25 @@ impl Root {
                         )
                         .on_click(cx.listener(move |this, _, _, _| {
                             this.send_greet(channel, guild, reply_to, sticker);
-                        })),
+                        }))
+                        // Not in the pinned client: GreetStickerPicker's menu on a right click
+                        // (`plugin_hooks/greet_sticker_picker.rs`).
+                        .when(self.greet_picker_on(), |this| {
+                            this.on_mouse_up(
+                                gpui::MouseButton::Right,
+                                cx.listener(move |this, event: &gpui::MouseUpEvent, _, cx| {
+                                    this.open_context_menu(
+                                        super::context_menu::Target::Greet {
+                                            channel,
+                                            message: reply_to,
+                                        },
+                                        event.position,
+                                        cx,
+                                    );
+                                    cx.stop_propagation();
+                                }),
+                            )
+                        }),
                 )
                 .into_any_element(),
         )
@@ -582,7 +605,13 @@ impl Root {
 
     /// `sendGreetMessage`: the sticker goes to `/channels/{id}/greet` as a reply to the join message, mentioning its
     /// author (`getSendMessageOptionsForReply` with `shouldMention`, so no `allowed_mentions`).
-    fn send_greet(&mut self, channel: Id, guild: Option<Id>, message: Id, sticker: Id) {
+    pub(in crate::ui) fn send_greet(
+        &mut self,
+        channel: Id,
+        guild: Option<Id>,
+        message: Id,
+        sticker: Id,
+    ) {
         let mut reference = serde_json::json!({
             "channel_id": channel.to_string(),
             "message_id": message.to_string(),
