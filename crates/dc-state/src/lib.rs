@@ -3265,6 +3265,25 @@ impl Stores {
         patch
     }
 
+    /// The in-app feedback state of one survey type (`inAppFeedbackSettings`, read by module 220162).
+    pub fn in_app_feedback(&self, kind: u64) -> settings::InAppFeedbackState {
+        settings::in_app_feedback_state(&self.settings_raw, kind)
+    }
+
+    /// Sets one survey type's state and returns the PATCH value; empty before the settings arrived.
+    pub fn set_in_app_feedback(
+        &mut self,
+        kind: u64,
+        state: settings::InAppFeedbackState,
+    ) -> String {
+        if !self.settings_loaded {
+            return String::new();
+        }
+        let (patch, updated) = settings::set_in_app_feedback(&self.settings_raw, kind, state);
+        self.settings_raw = updated;
+        patch
+    }
+
     /// The status the account's proto settings hold: the chosen one, when it lapses, and the custom status.
     pub fn status_state(&self) -> Option<settings::StatusState> {
         settings::read_status(&self.settings_raw)

@@ -51,9 +51,9 @@ mod call_background;
 mod call_menus;
 mod call_popout;
 mod call_volume;
-mod camera_failed;
 #[cfg(feature = "capture")]
 pub(crate) mod callsim;
+mod camera_failed;
 mod carousel;
 #[cfg(feature = "capture")]
 mod ch_fixture;
@@ -158,6 +158,7 @@ mod web_frames;
 pub use logout::RootEvent;
 mod account_switcher;
 mod app_widget;
+mod av_errors;
 #[cfg(feature = "capture")]
 mod avatar_demo;
 mod avatar_play;
@@ -165,6 +166,7 @@ mod boost_page;
 mod channel_browser;
 mod discover;
 mod favorites;
+mod feedback;
 mod fetch_failures;
 mod forums;
 pub(crate) mod frame_clock;
@@ -238,6 +240,7 @@ mod remediation;
 mod reminder_modal;
 mod report;
 mod report_issue;
+mod rtc_channel;
 mod running_game_panel;
 mod running_games;
 mod saved;
@@ -258,6 +261,8 @@ mod slowmode;
 mod splash;
 pub(crate) mod start_cache;
 mod status_menu;
+mod stream_failed;
+mod video_pip;
 #[cfg(feature = "capture")]
 pub(crate) use server_discovery::FORCE_ELIGIBLE;
 mod server_discovery_form;
@@ -625,6 +630,16 @@ pub struct Root {
     /// The survey after the overlay was switched off, and its opening at the next frame (`overlay_survey`).
     overlay_survey: Option<overlay_survey::OverlaySurvey>,
     overlay_survey_pending: bool,
+    /// The call, stream and report surveys (`feedback`).
+    feedback: feedback::Feedback,
+    /// Capture only: the next survey's 1% roll, set by `feedback upload`.
+    feedback_roll: Option<f64>,
+    /// The voice panel's strip of people shows them all (`rtc_channel`, Show All Users).
+    voice_users_expanded: bool,
+    /// The video picture-in-picture window (`video_pip`).
+    video_pip: video_pip::VideoPip,
+    /// The AV warnings of the call's streams and camera (`av_errors`).
+    av_errors: av_errors::AvErrors,
     /// The menu over a speaker's or audience member's tile (module 106401 and 237749's rows), where it was opened.
     stage_tile_menu: Option<stage::TileMenu>,
     /// Stage instances whose Live Now card was closed with its X.
@@ -1061,6 +1076,11 @@ impl Root {
             video_ready: Default::default(),
             overlay_survey: None,
             overlay_survey_pending: false,
+            feedback: Default::default(),
+            feedback_roll: None,
+            voice_users_expanded: false,
+            video_pip: Default::default(),
+            av_errors: Default::default(),
             stage_tile_menu: None,
             live_now_closed: Vec::new(),
             publish_confirm: None,
@@ -9487,6 +9507,7 @@ impl Render for Root {
         crate::perf::RENDERS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         self.interaction_modal_frame(window, cx);
         self.open_pending_overlay_survey(cx);
+        self.av_errors_frame(cx);
         #[cfg(feature = "capture")]
         let _build = crate::perf::Timer::build();
         // The motion clock for this frame; reduced motion as module 775602 decides it.
@@ -9936,6 +9957,10 @@ impl Render for Root {
                     cx.stop_propagation();
                     return;
                 }
+                if keys.key == "escape" && this.feedback_escape(cx) {
+                    cx.stop_propagation();
+                    return;
+                }
                 if keys.key == "escape" && this.overlay_survey.take().is_some() {
                     cx.notify();
                     cx.stop_propagation();
@@ -9964,7 +9989,7 @@ impl Render for Root {
                     return;
                 }
                 if keys.key == "escape" && this.report.is_some() {
-                    this.report = None;
+                    this.report_closed(cx);
                     cx.notify();
                     cx.stop_propagation();
                     return;
@@ -10796,6 +10821,7 @@ impl Render for Root {
             .children(self.stage_end_modal(cx))
             .children(self.voice_alert_modal(cx))
             .children(self.overlay_survey_modal(cx))
+            .children(self.feedback_modal(cx))
             .children(self.publish_modal(cx))
             .children(self.guild_events_layer(window, cx))
             .children(self.guild_menu_layer(cx))
@@ -10825,6 +10851,7 @@ impl Render for Root {
             .children(self.update_dialog_layer(cx))
             .children(self.oauth_layer(window, cx))
             .children(self.activity_pip_layer(window))
+            .children(self.video_pip_layer(window, cx))
             .children(self.notify_menu(window, cx))
             .children(self.notify_mute_submenu(window, cx))
             .children(self.unpin_modal(cx))

@@ -2077,6 +2077,7 @@ mod tests {
             danger: false,
             disabled: false,
             shortcut: None,
+            radio: false,
         }
     }
 

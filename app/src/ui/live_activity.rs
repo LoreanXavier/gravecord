@@ -73,6 +73,40 @@ fn elapsed(activity: &Value, now: i64) -> Option<String> {
     Some(duration_text(span.max(0) / 1000, false))
 }
 /// `gF` of module 583846: the party chip's text, the state with "(n of max)" (or "(n)") after it.
+/// `aria-valuetext` of module 753713: "{elapsed} of {duration}", each as `XK` of module 583846 writes it ("1 hour, 2
+/// minutes, 3 seconds" without the hours when there are none), the elapsed time floored to ten seconds and held to
+/// the duration.
+pub(super) fn playback_value_text(elapsed_s: i64, duration_s: i64) -> String {
+    let words = |total: i64| {
+        let total = total.max(0);
+        let (hours, minutes, seconds) = (total / 3600, (total / 60) % 60, total % 60);
+        let mut parts = Vec::new();
+        if hours > 0 {
+            parts.push(dc_intl::format(
+                "xCjYxK",
+                &[("hours", (hours as f64).into())],
+            ));
+        }
+        parts.push(dc_intl::format(
+            "iXLF9W",
+            &[("minutes", (minutes as f64).into())],
+        ));
+        parts.push(dc_intl::format(
+            "geSp4K",
+            &[("seconds", (seconds as f64).into())],
+        ));
+        parts.join(", ")
+    };
+    let elapsed = elapsed_s.clamp(0, duration_s.max(0)) / 10 * 10;
+    dc_intl::format(
+        "bnnNER",
+        &[
+            ("elapsed", words(elapsed).into()),
+            ("duration", words(duration_s).into()),
+        ],
+    )
+}
+
 fn party_text(state: Option<&str>, party: &Value) -> Option<String> {
     let size = &party["size"];
     let (count, max) = (size[0].as_i64(), size[1].as_i64());
@@ -639,8 +673,15 @@ impl Root {
                     && end > start
                 {
                     let progress = ((now - start) as f32 / (end - start) as f32).clamp(0., 1.);
+                    // Module 753713: the bar is a progress bar named Playback progress whose value reads "{elapsed} of
+                    // {duration}" in words, the elapsed time rounded down to ten seconds.
+                    let spoken = playback_value_text((now - start) / 1000, (end - start) / 1000);
                     details = details.child(
                         div()
+                            .id(SharedString::from(format!("activity-progress-{user}-{index}-{large}")))
+                            .role(gpui::Role::ProgressIndicator)
+                            .aria_label(dc_intl::t("z2lxfe"))
+                            .aria_description(spoken)
                             .flex()
                             .items_center()
                             .gap(px(8.))
@@ -955,6 +996,16 @@ impl Root {
 mod tests {
     use super::*;
     use serde_json::json;
+    #[test]
+    fn playback_value_text_floors_the_elapsed_time_to_ten_seconds() {
+        let text = playback_value_text(83, 200);
+        assert!(text.starts_with("1 minute"), "{text}");
+        assert!(
+            text.contains("20 seconds of 3 minutes, 20 seconds"),
+            "{text}"
+        );
+    }
+
     #[test]
     fn a_party_chip_reads_the_state_and_the_party_size() {
         let party = json!({"id": "p", "size": [3, 4]});

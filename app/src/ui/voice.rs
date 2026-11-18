@@ -40,6 +40,9 @@ pub(crate) struct Call {
     pub flags: std::collections::HashMap<u64, u64>,
     /// Unexpected `DisconnectReason::Failed` auto-reconnect attempts on this call.
     failed_reconnects: u8,
+    /// Someone else was ever connected to the call (`getWasEverMultiParticipant` of module 495867), which the voice
+    /// feedback survey asks for (module 409181).
+    pub(super) ever_multi: bool,
 }
 
 impl Call {
@@ -257,6 +260,7 @@ impl Root {
             tracker: Default::default(),
             generation: 0,
             failed_reconnects: 0,
+            ever_multi: false,
         });
         self.stores.voice_server = None;
     }
@@ -377,6 +381,7 @@ impl Root {
             tracker: Default::default(),
             generation: 0,
             failed_reconnects: 0,
+            ever_multi: true,
         });
         self.start_voice_tick(cx);
         self.sync_dm_call_idle_timer(cx);
@@ -403,6 +408,7 @@ impl Root {
             tracker: Default::default(),
             generation: 0,
             failed_reconnects: 0,
+            ever_multi: true,
         });
     }
 
@@ -416,6 +422,7 @@ impl Root {
     }
 
     pub(super) fn leave_voice(&mut self, cx: &mut Context<Self>) {
+        self.voice_left_by_hand(cx);
         self.end_voice(true, cx);
     }
 
@@ -679,6 +686,7 @@ impl Root {
                     && !call.rtc_users.contains(&user_id)
                 {
                     call.rtc_users.push(user_id);
+                    call.ever_multi = true;
                 }
                 self.rtc_step();
             }
@@ -1406,6 +1414,20 @@ impl Root {
                                                         guild_id, channel_id, cx,
                                                     );
                                                 }))
+                                                // `onContextMenu` of the channel link: the `rtc-channel` menu
+                                                // (module 576701).
+                                                .on_mouse_down(
+                                                    gpui::MouseButton::Right,
+                                                    cx.listener(move |this, event: &gpui::MouseDownEvent, _, cx| {
+                                                        this.open_rtc_channel_menu(
+                                                            guild_id,
+                                                            channel_id,
+                                                            event.position,
+                                                            cx,
+                                                        );
+                                                        cx.stop_propagation();
+                                                    }),
+                                                )
                                                 .child(match guild {
                                                     Some(guild) => {
                                                         format!("{channel} / {}", guild.name)
@@ -1425,6 +1447,8 @@ impl Root {
                                         .child(disconnect),
                                 ),
                         )
+                        // Show Voice Users: the channel's people under the connection row (module 596339 `TB`).
+                        .children(self.rtc_voice_users(guild_id, channel_id, cx))
                         // A Stage's panel has no camera, screen, activity or soundboard row (stage-ann/stage-live).
                         .children((!stage).then(|| {
                             div()

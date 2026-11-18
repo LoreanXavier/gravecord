@@ -678,7 +678,7 @@ impl Root {
         })
     }
 
-    fn user_of(&self, id: Id) -> User {
+    pub(super) fn user_of(&self, id: Id) -> User {
         self.stores
             .users
             .get(&id)
@@ -773,6 +773,16 @@ impl Root {
                 hidden: false,
                 ended: false,
             });
+        }
+        // A failed stream on screen keeps its owner's stream tile, drawn as module 768088.
+        if let Some(key) = self.video.ended_focus
+            && self.video.ended_failed
+            && key.channel() == channel
+            && let Some(person) = out.iter_mut().find(|person| {
+                person.tile.kind == TileKind::Stream && person.tile.user == key.owner()
+            })
+        {
+            person.ended = true;
         }
         // The focused stream that ended stays as its tile until closed, its owner still in the channel.
         if let Some(key) = self.video.ended_focus
@@ -1578,11 +1588,10 @@ impl Root {
         };
         // A person's video still without a picture after 20 seconds: "Failed to start camera" (module 566566).
         let camera_failed = !stream_tile && !outside && {
-            let (failed, began) = self.video_ready.borrow_mut().observe(
-                user_id,
-                loading,
-                std::time::Instant::now(),
-            );
+            let (failed, began) =
+                self.video_ready
+                    .borrow_mut()
+                    .observe(user_id, loading, std::time::Instant::now());
             if began {
                 cx.spawn(async move |this, cx| {
                     cx.background_executor()
@@ -1602,6 +1611,33 @@ impl Root {
         // The focused stream's quality and LIVE sit in the header instead.
         let is_focus = self.vv.focus.tile == Some((user_id, kind));
         let zoom_controls = stream_tile && is_focus && video;
+        // Module 555148's stream tile (not focused) and 83982's tile of our own camera carry the AV warning of
+        // module 275731 / 289552 (`av_errors`).
+        let own_camera_tile =
+            !stream_tile && self.stores.current_user.as_ref().map(|me| me.id) == Some(user_id);
+        let warning = if stream_tile && !is_focus {
+            self.av_warning_icon(user_id, "tile", cx)
+        } else if own_camera_tile {
+            self.av_warning_icon(0, "tile", cx)
+        } else {
+            None
+        };
+        let has_indicators = stream.as_ref().filter(|_| !is_focus).is_some();
+        let (mut warning, camera_warning) = if has_indicators {
+            (warning, None)
+        } else {
+            (
+                None,
+                warning.map(|warning| {
+                    div()
+                        .absolute()
+                        .top(px(8.))
+                        .right(px(8.))
+                        .child(warning)
+                        .into_any_element()
+                }),
+            )
+        };
         let indicators = stream.as_ref().filter(|_| !is_focus).map(|stream| {
             let pill = |text: String, fill: &'static str| {
                 div()
@@ -1624,6 +1660,8 @@ impl Root {
                 .top(px(8.))
                 .right(px(8.))
                 .flex()
+                .items_center()
+                .children(warning.take())
                 .when_some(quality, |this, text| {
                     this.child(quality_pill(text).rounded_l(px(16.)))
                 })
@@ -1761,7 +1799,11 @@ impl Root {
                 this.child(self.hidden_stream_content(layout, is_focus, cx))
             })
             .when(person.ended, |this| {
-                this.child(self.ended_stream_content(layout.tile_width, cx))
+                this.child(if self.video.ended_failed {
+                    self.stream_failed_content(layout.tile_width, cx)
+                } else {
+                    self.ended_stream_content(layout.tile_width, cx)
+                })
             })
             .when(camera_failed, |this| {
                 this.child(self.camera_failed_content(user_id, layout.tile_width, is_focus, cx))
@@ -1795,6 +1837,7 @@ impl Root {
                 |this| this.child(own_preview_paused()),
             )
             .children(indicators)
+            .children(camera_warning)
             .child(
                 div()
                     .absolute()
@@ -2431,6 +2474,16 @@ impl Root {
             // Module 416528: the clips indicator, then the focused stream's quality and LIVE.
             .children(self.clips_enabled_badge(cx))
             .children(members.map(|count| self.call_participants_button(count, cx)))
+            // Module 416528: the warning of the focused stream (275731) or our focused camera (289552) before LIVE.
+            .children(self.vv.focus.tile.and_then(|(owner, kind)| {
+                let me = self.stores.current_user.as_ref().map(|me| me.id);
+                let warning = match kind {
+                    TileKind::Stream => self.av_warning_icon(owner, "header", cx),
+                    TileKind::User if Some(owner) == me => self.av_warning_icon(0, "header", cx),
+                    TileKind::User => None,
+                };
+                warning.map(|warning| div().mr(px(16.)).child(warning))
+            }))
             .children(
                 focus
                     .filter(|crumb| crumb.stream)

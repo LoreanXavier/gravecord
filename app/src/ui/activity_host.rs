@@ -186,7 +186,8 @@ impl Root {
     /// What shows in the picture-in-picture window until the page paints over it: the application's cover on the
     /// card's own ground. Drawn above the consent scrim, like the window.
     pub(super) fn activity_pip_layer(&self, window: &Window) -> Option<AnyElement> {
-        if !self.activities.pip {
+        // The video window takes the place first (`pipVideoWindow ?? pipActivityWindow`, module 197808).
+        if !self.activities.pip || self.video_pip_shown() {
             return None;
         }
         let running = self.activities.running.as_ref()?;
