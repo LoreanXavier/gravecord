@@ -12,7 +12,7 @@ every setting changed), and with every plugin off, and fails on one differing pi
 The list is the plugins enabled in the owner's Equicord backup of 2026-09-21 (156). Sources were read in the local
 Equicord checkout of 2026-11-14 (`src/plugins` is Vencord's, `src/equicordplugins` Equicord's).
 
-Totals: 36 ported, 5 native, 70 planned, 45 not applicable.
+Totals: 36 ported, 6 native, 69 planned, 45 not applicable.
 
 Status: **ported** works and has its proof; **native** is what gravecord already does without a plugin;
 **planned** is not built yet (an import keeps its settings for when it is); **not applicable** has nothing to
@@ -141,7 +141,7 @@ port in a native client, or was removed upstream.
 | SpotifyCrack | planned | plugins/spotifyCrack/index.ts | Free listen along, no auto-pausing in voice chat, and allows activity to continue playing when idling | listen along without Premium and no Spotify pause on voice. |  |
 | SpotifyShareCommands | planned | plugins/spotifyShareCommands/index.ts | Share your current Spotify track, album or artist via slash command (/track, /album, /artist) | its /track, /album, /artist commands. |  |
 | SteamStatusSync | planned | equicordplugins/steamStatusSync/index.tsx | Sync your status to Steam! (Online, Away, Invisible, or Offline.) | status sync with the Steam client. |  |
-| StopAutoUnread | planned | equicordplugins/stopAutoUnread/index.ts |  | no automatic unread marking. |  |
+| StopAutoUnread | native | equicordplugins/stopAutoUnread/index.ts |  | the app never raises a channel to All Messages by itself: the pinned client's `maybeAutoUpgradeChannel` (called by the unreads notice hook in module 626977) is not ported (GAP: main app), so there is nothing to stop. |  |
 | Streaks | planned | equicordplugins/streaks/index.tsx | Shows a streak next to a user when you exchange DMs with them on consecutive days. | DM streak counts (its service login in the data store is not copied). |  |
 | StreamerModeOnStream | not applicable | (not in the 2026-11-14 checkout) |  | no longer in the Equicord checkout of 2026-11-14 (added in 9e0aa4b2, since dropped). |  |
 | StreamingCodecDisabler | planned | equicordplugins/streamingCodecDisabler/index.ts | Disable video codecs of your choice for streaming and cameras. | a codec choice for streams and cameras in dc-media. |  |

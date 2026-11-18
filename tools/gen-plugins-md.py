@@ -242,7 +242,7 @@ SKIPPED_SETTINGS = {}
 
 # Already what gravecord does without a plugin.
 NATIVE = {
-    'StopAutoUnread': 'the app never raises a channel to All Messages by itself: the pinned client's '
+    'StopAutoUnread': 'the app never raises a channel to All Messages by itself: the pinned client\'s '
                       '`maybeAutoUpgradeChannel` (called by the unreads notice hook in module 626977) is not ported '
                       '(GAP: main app), so there is nothing to stop.',
     'NoTrack': 'gravecord sends no analytics, metrics or Sentry reports; its only `/science` post is the overlay problem '
