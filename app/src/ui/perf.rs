@@ -176,7 +176,8 @@ impl Root {
                 self.open_discover(discover::Place::Apps, cx);
                 "discover apps".to_owned()
             }
-            _ => "usage: go home | dm <n> | dm-id <channel> | shop | quests | discover | apps".to_owned(),
+            _ => "usage: go home | dm <n> | dm-id <channel> | shop | quests | discover | apps"
+                .to_owned(),
         }
     }
 }
