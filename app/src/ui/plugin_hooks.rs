@@ -6,6 +6,7 @@ mod better_role_context;
 mod better_role_dot;
 mod bigger_stream_preview;
 mod call_timer;
+pub(in crate::ui) mod clips_enhancements;
 mod download_all;
 mod full_vc_pfp;
 mod game_activity_toggle;

@@ -273,7 +273,12 @@ impl Root {
                     pid,
                     window: dc_detect::main_window(pid)?,
                     name: game.name.clone().unwrap_or_default(),
-                    application_id: game.id.clone(),
+                    // Not in the pinned client: ClipsEnhancements' Rich Presence tagging
+                    // (`plugin_hooks/clips_enhancements.rs`).
+                    application_id: self.clip_application(
+                        game.name.as_deref().unwrap_or_default(),
+                        game.id.clone(),
+                    ),
                 })
             };
             let visible = self.detect.store.visible_game().cloned();

@@ -600,6 +600,27 @@ pub(crate) const DEFS: &[Def] = &[
         settings: &[],
     },
     Def {
+        id: "ClipsEnhancements",
+        name: "ClipsEnhancements",
+        description: "Add more Clip FPS and duration options, custom clip length, RPC tagging and more",
+        origin: Origin::Equicord,
+        source: "src/equicordplugins/clipsEnhancements.discordDesktop/index.tsx",
+        default_on: false,
+        settings: &[Setting {
+            key: "richPresenceTagging",
+            label: "Rich Presence Tagging",
+            description: "When should clips be tagged with the current Rich Presence?",
+            kind: Kind::Select {
+                options: &[
+                    ("Always", Lit::Str("always")),
+                    ("Only when beginning or end of activity name matches", Lit::Str("whenMatched")),
+                    ("Never", Lit::Str("never")),
+                ],
+                default: 1,
+            },
+        }],
+    },
+    Def {
         id: "ColorSighted",
         name: "ColorSighted",
         description: "Removes the colorblind-friendly icons from statuses, just like 2015-2017 Discord.",

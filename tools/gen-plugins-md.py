@@ -21,7 +21,6 @@ enabled = sorted((k for k, v in backup['settings']['plugins'].items() if v.get('
 RENAMED = {
     'BetterQuickReact': 'MoreQuickReactions',
     'ExpressionCloner': 'ExpressionManager',
-    'IloveSpam': 'ILoveSpam',
     'LimitMiddleClickPaste': 'MiddleClickTweaks',
     'MessageTags': 'CustomCommands',
     'TenorGifSearch': 'GifProviderSwitcher',
@@ -150,6 +149,7 @@ PORTED = {
     'WhoReacted': "plugin_hooks/who_reacted.rs: after each reaction's count up to five avatars at 90% (four and +N past five), from GET reactions?limit=100&type=0 queued one per 250 ms newest first and merged into the users; nothing on a message with over ten reactions; clickableAvatars opens the profile popout instead of reacting. Super reactions (type 1) are not fetched: the app draws no burst pills.",
     'BetterRoleContext': "plugin_hooks/better_role_context.rs: a right click on a member list role header opens the role menu: Edit Role (Manage Roles: Server Settings on Roles with the role open), Copy Role Color (#rrggbb), View Role Icon (role-icons/<id>/<icon>.<roleIconFileFormat> at 128 in the viewer, without sender or Forward), View Role Members (the role's member popout) and Copy Role ID, with the original's icons. GAP: the dev-context rows of a profile's role chip (the chips open no menu here).",
     'BiggerStreamPreview': "plugin_hooks/bigger_stream_preview.rs: a streaming person's user menu ends with a separator and View Stream Preview (screen icon), opening the stream preview picture at 1280x720 in the viewer (fetched first when not cached, opened on arrival). GAP: the row on a stream tile's own menu.",
+    'ClipsEnhancements': "plugin_hooks/clips_enhancements.rs: Clips settings list 3-30 minute lengths, 240p/360p/2160p/4320p and 45-240 FPS beside the pinned client's choices, sorted (Source last), and the recorder keeps those rates; a clip's game is tagged with your own playing activity's application by richPresenceTagging (always, when the name's first or last word matches, never). GAP: the clipsLink button; the recorder's 384 MB video cap still bounds a long clip.",
     'FriendInvites': "plugin_hooks/plugin_commands.rs: /create friend invite, /view friend invites and /revoke friend invites among the built-in commands (POST/GET/DELETE /users/@me/invites, the pinned client's FRIEND_INVITES route), answered privately by Clyde with discord.gg links, <t:…:R> expiry and uses; a failed request says nothing, as the original's rejected promise.",
     'SpotifyShareCommands': "plugin_hooks/plugin_commands.rs: /track, /album and /artist among the built-in commands send open.spotify.com links of what your Spotify plays (album and first artist kept from the player state), after the optional message; without music Clyde says \"You're not listening to any music.\". GAP: a local file reads as no music.",
     'PinDMs': "plugin_hooks/pin_dms.rs: categories at the top of the DM list (header in the category colour with a chevron, a click folds it, the open conversation stays), pinned conversations leave the plain list; pinOrder by recent message or custom; canCollapseDmSection folds the plain list from its title (dmSectionCollapsed hidden). Pin DMs submenu in the DM/user menus (Add Category, categories; Unpin DM, Move Up/Down), category menu (Edit, Move Up/Down, Delete), New/Edit Category dialog in the folder dialog's layout without the default swatch. Categories per account in storage. GAP: the friends sidebar, the quick switcher order, submenu row tints.",
@@ -222,6 +222,7 @@ TESTS = {
     'WhoReacted': '`five_at_most_with_the_rest_counted`; frame wr-on (demo-reactors); plugins-off reactions, chat',
     'BetterRoleContext': '`rows_follow_what_the_role_offers_in_the_original_order`, `colors_copy_as_css_hex_and_the_format_defaults_to_png`; frames brc-menu, brc-members, brc-icon, brc-edit (synthetic hoisted role); plugins-off role-header',
     'BiggerStreamPreview': 'frame bsp-menu (callsim peer live, row at the end of the voice row menu); plugins-off user-volume, voice-profile',
+    'ClipsEnhancements': '`tagging_matches_by_the_name_s_ends`, `labels_follow_the_messages`; frame ce-length (with NoNitroUpsell: the Clips page needs Nitro in a capture run, so plugins-off has no Clips scenario; the plugin-off lists are the clips label tests)',
     'FriendInvites': '`answers_read_as_the_original_writes_them`, `every_plugin_with_commands_is_defined`; frame ssc-commands (the three commands among Built-In); plugins-off slash-list',
     'SpotifyShareCommands': '`answers_read_as_the_original_writes_them`; frames ssc-commands, ssc-none (Clyde: not listening); plugins-off slash-list',
     'PinDMs': '`categories_round_trip_and_order_by_recency_or_as_kept`, `the_pin_menu_offers_categories_or_unpin_and_moves`, `swaps_stay_inside_the_list_and_settings_default_off`; frames pd-menu, pd-sub, pd-dialog, pd-list, pd-folded, pd-catmenu; plugins-off dm-list, user-menu',
@@ -271,6 +272,9 @@ TESTS = {
 }
 # Original settings a port does not have, with why (none today).
 SKIPPED_SETTINGS = {
+    'ClipsEnhancements': {
+        'clipsLink': 'a button that opens Clips settings; the plugin page here lists settings, and the extra choices are in Clips settings itself.',
+    },
     'PinDMs': {
         'userBasedCategoryList': 'kept apart from the settings (storage key plugin-pin-dms, per account), written by the Pin DMs menus and the category dialog.',
     },
@@ -287,6 +291,9 @@ SKIPPED_SETTINGS = {
 
 # Already what gravecord does without a plugin.
 NATIVE = {
+    'IloveSpam': "the app does not hide the messages of users flagged as likely spammers (the user flag 1<<20 that the "
+                 "pinned client's message list checks) yet (GAP: main app), so they already show as any other; when the "
+                 "app adds the rule, this plugin needs its hook there.",
     'StopAutoUnread': 'the app never raises a channel to All Messages by itself: the pinned client\'s '
                       '`maybeAutoUpgradeChannel` (called by the unreads notice hook in module 626977) is not ported '
                       '(GAP: main app), so there is nothing to stop.',
@@ -335,7 +342,6 @@ PLANNED = {
     'BetterGifAltText': "a place where alt text shows: the original changes the `alt` that screen readers read, and the app draws images without an accessibility tree.",
     'BetterPlusReacts': '"+:emoji:" reacting to the Nth message above, in the composer\'s send path.',
     'BypassStatus': 'notification and sound rules that pass Do Not Disturb for chosen users, channels and servers.',
-    'ClipsEnhancements': 'more clip FPS and duration options in the clips settings.',
     'ClipUpload': 'a button to upload a local video as a clip.',
     'CustomRPC': 'a custom rich presence editor and its activity.',
     'Decor': 'its third-party avatar decorations service (decor-auth in the backup\'s data store is not copied).',
