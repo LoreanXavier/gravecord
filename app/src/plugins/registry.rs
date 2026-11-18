@@ -957,6 +957,20 @@ pub(crate) const DEFS: &[Def] = &[
         }],
     },
     Def {
+        id: "FixYoutubeEmbeds",
+        name: "FixYoutubeEmbeds",
+        description: "Bypasses youtube videos being blocked from display on Discord (for example by UMG)",
+        origin: Origin::Vencord,
+        source: "src/plugins/fixYoutubeEmbeds.desktop/index.tsx",
+        default_on: false,
+        settings: &[Setting {
+            key: "youtubeDescription",
+            label: "Youtube Description",
+            description: "Adds descriptions to youtube video embeds",
+            kind: Kind::Switch { default: false },
+        }],
+    },
+    Def {
         id: "FriendInvites",
         name: "FriendInvites",
         description: "Create and manage friend invite links via slash commands (/create friend invite, /view friend invites, /revoke friend invites).",

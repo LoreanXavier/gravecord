@@ -12,7 +12,7 @@ every setting changed), and with every plugin off, and fails on one differing pi
 The list is the plugins enabled in the owner's Equicord backup of 2026-09-21 (156). Sources were read in the local
 Equicord checkout of 2026-11-14 (`src/plugins` is Vencord's, `src/equicordplugins` Equicord's).
 
-Totals: 77 ported, 9 native, 25 planned, 45 not applicable.
+Totals: 78 ported, 9 native, 24 planned, 45 not applicable.
 
 Status: **ported** works and has its proof; **native** is what gravecord already does without a plugin;
 **planned** is not built yet (an import keeps its settings for when it is); **not applicable** has nothing to
@@ -69,7 +69,7 @@ port in a native client, or was removed upstream.
 | FavoriteEmojiFirst | ported | plugins/favEmojiFirst/index.tsx | Puts your favorite emoji first in the emoji autocomplete and also has emoji alias. | autocomplete.rs + plugin_hooks.rs favorite_emoji_first: the emoji autocomplete sorts every match, puts your favourite emoji (the picker's Favorites) first and cuts the list where it was. Not 1:1 yet: the alias half (see its settings). | frames fef-on/fef-off/fef-top (:smi with smiling_imp a favourite, demo-favorite); plugins-off emoji-autocomplete |
 | FavoriteGifSearch | not applicable | (not in the 2026-11-14 checkout) |  | removed from Equicord in 0001bab8: "now a default Discord feature". |  |
 | FixImagesQuality | ported | plugins/fixImagesQuality/index.tsx | Improves quality of images by loading them at their original resolution | media_image.rs, lightbox.rs: attachment pictures without the proxy's size in chat (scaled only past 2000 x 1200), the original file in the viewer (and in chat with originalImagesInChat). | `fix_images_quality_loads_full_resolution`; plugins-off image-menu (an attachment picture) |
-| FixYoutubeEmbeds | planned | plugins/fixYoutubeEmbeds.desktop/index.tsx | Bypasses youtube videos being blocked from display on Discord (for example by UMG) | the YouTube embed workaround inside the web host. |  |
+| FixYoutubeEmbeds | ported | plugins/fixYoutubeEmbeds.desktop/index.tsx | Bypasses youtube videos being blocked from display on Discord (for example by UMG) | plugin_hooks/fix_youtube_embeds.rs: youtubeDescription shows a video embed's description, folded to 20 characters and ... (a click opens and folds it). The Referer fix for YouTube's embedded player page has no request to change here: this client opens no player page. | `long_descriptions_fold_to_twenty_characters`; frames pending (live runs held) |
 | ForceOwnerCrown | native | plugins/forceOwnerCrown/index.ts | Force the owner crown next to usernames even if the server is large. | the member list shows the owner crown at any server size. |  |
 | FriendInvites | ported | plugins/friendInvites/index.ts | Create and manage friend invite links via slash commands (/create friend invite, /view friend invites, /revoke friend invites). | plugin_hooks/plugin_commands.rs: /create friend invite, /view friend invites and /revoke friend invites among the built-in commands (POST/GET/DELETE /users/@me/invites, the pinned client's FRIEND_INVITES route), answered privately by Clyde with discord.gg links, <t:…:R> expiry and uses; a failed request says nothing, as the original's rejected promise. | `answers_read_as_the_original_writes_them`, `every_plugin_with_commands_is_defined`; frame ssc-commands (the three commands among Built-In); plugins-off slash-list |
 | FriendsSince | not applicable | (not in the 2026-11-14 checkout) |  | removed from Equicord in 36c7a837: "now a stock Discord feature"; gravecord shows Friends Since in profiles. |  |
@@ -238,6 +238,7 @@ Every setting of each original (`definePluginSettings`), its type and default th
 | FavoriteEmojiFirst | `aliases` | COMPONENT | `` | not ported: not ported yet: the emoji alias editor (Set Alias in the emoji menus, this list, `:alias:` written out on send and offered in the autocomplete) is the next step of this port. |
 | FavoriteEmojiFirst | `clearAll` | COMPONENT | `` | not ported: not ported yet: comes with the alias editor (see aliases). |
 | FixImagesQuality | `originalImagesInChat` | BOOLEAN | `false` | ported |
+| FixYoutubeEmbeds | `youtubeDescription` | BOOLEAN | `false` | ported |
 | GameActivityToggle | `oldIcon` | BOOLEAN | `false` | ported |
 | GameActivityToggle | `location` | SELECT | `"PANEL"` | nothing to act on yet: the original only reads it while EquicordToolbox is on, which is not ported; the button stays next to Mute/Deafen as with the default |
 | GlobalBadges | `apiUrl` | STRING | `"https://badges.equicord.org/"` | ported |

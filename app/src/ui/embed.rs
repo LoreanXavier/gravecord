@@ -1403,6 +1403,35 @@ impl Root {
                 Self::embed_plain_text(description)
             };
             column = column.child(div().mt(px(8.)).child(text));
+        } else if embed.kind == "video"
+            && let Some(description) = &embed.description
+            && let Some(shown) =
+                super::plugin_hooks::video_description(message_id, index, description)
+        {
+            // Not in the pinned client: FixYoutubeEmbeds' `youtubeDescription` (`plugin_hooks/fix_youtube_embeds.rs`).
+            has_content = true;
+            let folded = matches!(shown, super::plugin_hooks::VideoDescription::Folded(_));
+            let inner = match shown {
+                super::plugin_hooks::VideoDescription::Whole => {
+                    div().mt(px(8.)).child(Self::embed_plain_text(description))
+                }
+                super::plugin_hooks::VideoDescription::Folded(text) => div().child(text),
+            };
+            column = column.child(
+                div()
+                    .id(SharedString::from(format!(
+                        "yt-description-{message_id}-{index}"
+                    )))
+                    .cursor_pointer()
+                    .when(folded, |this| this.mt(px(8.)))
+                    .text_size(px(14.))
+                    .line_height(px(18.))
+                    .child(inner)
+                    .on_click(cx.listener(move |_, _, _, cx| {
+                        super::plugin_hooks::toggle_video_description(message_id, index);
+                        cx.notify();
+                    })),
+            );
         }
         // `embedFields_XyW1ZT`: rows of up to three inline fields, 8px apart both ways.
         if !embed.fields.is_empty() {

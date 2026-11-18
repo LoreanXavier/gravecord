@@ -147,6 +147,7 @@ assert len(idle) == idle_entries, f'IDLE_SETTINGS: read {len(idle)} of {idle_ent
 
 # How each ported plugin is built here, and its proof.
 PORTED = {
+    'FixYoutubeEmbeds': "plugin_hooks/fix_youtube_embeds.rs: youtubeDescription shows a video embed's description, folded to 20 characters and ... (a click opens and folds it). The Referer fix for YouTube's embedded player page has no request to change here: this client opens no player page.",
     'TenorGifSearch': "plugin_hooks/gif_provider_switcher.rs + plugins/gif_provider.rs (now GifProviderSwitcher upstream): the GIF picker's category tiles, trending results, searches and shares go to Tenor or Giphy (provider; Klipy keeps Discord's), their answers turned into Discord's shapes off the UI thread (Request::GifProvider, paged to the picker's 50); the search field reads Search Tenor and each result tile has its source's badge (in the pinned client's primary badge colours: the client mod's --badge-background-brand is not a token of this Discord build). GAP: the provider choice beside the search field and several providers at once (provider is set in the plugin settings), search suggestions and the /tenor command (the app has neither).",
     'SpotifyCrack': "plugin_hooks/spotify_crack.rs: every Spotify account reads as Premium in SPOTIFY_PROFILE_UPDATE (listen along without Premium); noSpotifyAutoPause keeps speaking in voice from pausing Spotify after 30 seconds. keepSpotifyActivityOnIdle is idle: this client does not send your Spotify activity yet.",
     'SearchFix': "plugin_hooks/search_fix.rs: a search page past offset 5000 is asked for in the other sort order from offset 0, as the plugin rewrites the query; the card carries its note.",
@@ -244,6 +245,7 @@ PORTED = {
                      'so the original\'s 200% cap on the sync has nothing to cap.',
 }
 TESTS = {
+    'FixYoutubeEmbeds': '`long_descriptions_fold_to_twenty_characters`; frames pending (live runs held)',
     'TenorGifSearch': '`the_provider_and_badges_follow_the_original`, `answers_take_discord_shapes`; frames pending (live runs held)',
     'SpotifyCrack': '`the_defaults_follow_the_original`',
     'SearchFix': '`past_5000_the_order_flips_from_the_start`',
@@ -416,7 +418,6 @@ PLANNED = {
     'CustomRPC': 'a custom rich presence editor and its activity.',
     'Decor': 'its third-party avatar decorations service (decor-auth in the backup\'s data store is not copied).',
     'Experiments': 'the experiments and developer pages.',
-    'FixYoutubeEmbeds': 'the YouTube embed workaround inside the web host.',
     'FullSearchContext': "the pinned client's own menu of a search result first: a right click on a result opens nothing here yet (the search listbox's short menu, `handleContextMenu`, is not ported: GAP, main app), and the app's message menu reads its message from the open channel's list, so a result from another channel needs that menu to take any message; FullSearchContext then swaps the short menu for the full one and adds Copy Author ID.",
     'GifMaker': 'a GIF encoder and its editor.',
     'LimitlessScreenshare': 'resolution and FPS sliders past the tier limits (owner: later, FakeNitro-style).',

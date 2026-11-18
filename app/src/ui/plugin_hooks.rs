@@ -10,6 +10,10 @@ mod bypass_status;
 mod call_timer;
 pub(in crate::ui) mod clips_enhancements;
 mod download_all;
+mod fix_youtube_embeds;
+pub(in crate::ui) use fix_youtube_embeds::{
+    VideoDescription, toggle_video_description, video_description,
+};
 mod full_vc_pfp;
 mod game_activity_toggle;
 mod gif_provider_switcher;
