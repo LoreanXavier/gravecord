@@ -630,6 +630,8 @@ pub struct Root {
     overlay_survey_pending: bool,
     /// The call, stream and report surveys (`feedback`).
     feedback: feedback::Feedback,
+    /// Capture only: the next survey's 1% roll, set by `feedback upload`.
+    feedback_roll: Option<f64>,
     /// The voice panel's strip of people shows them all (`rtc_channel`, Show All Users).
     voice_users_expanded: bool,
     /// The video picture-in-picture window (`video_pip`).
@@ -1073,6 +1075,7 @@ impl Root {
             overlay_survey: None,
             overlay_survey_pending: false,
             feedback: Default::default(),
+            feedback_roll: None,
             voice_users_expanded: false,
             video_pip: Default::default(),
             av_errors: Default::default(),

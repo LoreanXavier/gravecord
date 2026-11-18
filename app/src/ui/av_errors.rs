@@ -173,6 +173,8 @@ pub(super) struct AvErrors {
     pub streams: HashMap<u64, AvError>,
     pub camera: Option<AvError>,
     sampling: bool,
+    /// Capture only: warnings set by `av force`, kept over what the samples say.
+    forced: HashMap<u64, AvError>,
     /// The icon whose popout is open, and when the pointer left it (the 250 ms close delay).
     hovered: Option<(String, Option<Instant>)>,
 }
@@ -307,6 +309,13 @@ impl Root {
             .history
             .retain(|(owner, _), _| *owner == 0 || live.contains(owner));
         self.av_errors.since.retain(|owner, _| live.contains(owner));
+        for (owner, error) in &self.av_errors.forced {
+            if *owner == 0 {
+                self.av_errors.camera = Some(*error);
+            } else {
+                streams.insert(*owner, *error);
+            }
+        }
         self.av_errors.streams = streams;
     }
 
@@ -432,10 +441,20 @@ impl Root {
                     "2013" => AvError::CameraSendLowFps,
                     _ => return "codes: 2002 2003 2005 2013".to_owned(),
                 };
-                if *who == "camera" {
-                    self.av_errors.camera = Some(error);
-                } else if let Ok(owner) = who.parse::<u64>() {
-                    self.av_errors.streams.insert(owner, error);
+                let owner = if *who == "camera" {
+                    Some(0)
+                } else if *who == "focused" {
+                    self.focused_tile_owner()
+                } else {
+                    who.parse::<u64>().ok()
+                };
+                if let Some(owner) = owner {
+                    self.av_errors.forced.insert(owner, error);
+                    if owner == 0 {
+                        self.av_errors.camera = Some(error);
+                    } else {
+                        self.av_errors.streams.insert(owner, error);
+                    }
                 }
                 cx.notify();
                 "forced".to_owned()

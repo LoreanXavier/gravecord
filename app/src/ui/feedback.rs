@@ -420,6 +420,11 @@ pub(super) struct Feedback {
 impl Root {
     /// `possiblyShowFeedbackModal`: the gates, then after 200 ms the survey (unless a higher one took its place).
     pub(super) fn possibly_show_feedback(&mut self, kind: Kind, cx: &mut Context<Self>) {
+        // A harness run never rolls the dice (a survey would cover other frames at random); `feedback gate` drives
+        // the gates there.
+        if crate::storage::is_capture_run() {
+            return;
+        }
         let (chance, _) = kind.config();
         if rand::random::<f64>() >= chance {
             return;
@@ -541,7 +546,8 @@ impl Root {
             Kind::Voice | Kind::Report => "d9+vQ8",
             Kind::Stream { .. } => "mMTVnv",
         };
-        let alert = match after_submit(form.kind, &form.picks, rand::random()) {
+        let roll = self.feedback_roll.take().unwrap_or_else(rand::random);
+        let alert = match after_submit(form.kind, &form.picks, roll) {
             After::Nothing => None,
             // "Feedback Submitted" (module 845671): the thanks and Done.
             After::Thanks => Some(Alert {
@@ -593,12 +599,35 @@ impl Root {
             ["stream"] => self.open_feedback(Kind::Stream { streamer: true }, cx),
             ["stream-viewer"] => self.open_feedback(Kind::Stream { streamer: false }, cx),
             ["report"] => self.open_feedback(Kind::Report, cx),
-            ["gate", "voice"] => {
-                self.show_feedback_after_debounce(Kind::Voice, cx);
-                return format!(
-                    "voice survey allowed {}",
-                    self.feedback_allowed(Kind::Voice)
-                );
+            // The gates without the chance: what leaving a call, stopping a stream or closing a report asks.
+            ["gate", kind] => {
+                let kind = match *kind {
+                    "voice" => Kind::Voice,
+                    "stream" => Kind::Stream { streamer: true },
+                    "report" => Kind::Report,
+                    _ => return "usage: feedback gate voice|stream|report".to_owned(),
+                };
+                let allowed = self.feedback_allowed(kind);
+                self.show_feedback_after_debounce(kind, cx);
+                return format!("{kind:?} survey allowed {allowed}");
+            }
+            // The dialog a survey's 1% roll opens (72514).
+            ["upload"] => {
+                self.feedback.form = Some(Form {
+                    kind: Kind::Voice,
+                    tree: categories(Kind::Voice, &mut rand::rng()),
+                    picks: Picks {
+                        rating: Some(Rating::Bad),
+                        category: Some(0),
+                        problem: Some(0),
+                    },
+                    dont_show: false,
+                    text: cx.new(|cx| Editor::new(super::editor_style(), cx)),
+                    hovered_face: None,
+                });
+                self.feedback_roll = Some(0.0);
+                self.close_feedback(cx);
+                return "upload logs asked".to_owned();
             }
             // Picks Other of the open problem list, wherever the shuffle put it.
             ["other"] => {
