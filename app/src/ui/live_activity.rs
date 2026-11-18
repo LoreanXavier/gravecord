@@ -491,7 +491,9 @@ impl Root {
                 let connect_offer = (!own && !bot)
                     .then(|| platform_presence::connect_offer(activity, &self.linked_platforms()))
                     .flatten();
+                // 325158 `b`: a Crunchyroll activity's small image is not drawn.
                 let small = asset_url(activity, "small_image")
+                    .filter(|_| !platform_presence::is_crunchyroll(activity))
                     .and_then(|url| self.images.get(&url))
                     .cloned();
                 let kind = activity["type"].as_u64().unwrap_or(0);
@@ -725,7 +727,12 @@ impl Root {
                         .iter()
                         .enumerate()
                         .filter_map(|(button_index, label)| {
-                            let label = label.as_str()?.to_owned();
+                            // 802880 `tc`: a Crunchyroll activity's buttons read Watch (`I6JG46`).
+                            let label = if platform_presence::is_crunchyroll(activity) {
+                                dc_intl::t("I6JG46").to_owned()
+                            } else {
+                                label.as_str()?.to_owned()
+                            };
                             let activity = activity.clone();
                             Some(
                                 div()
@@ -840,7 +847,7 @@ impl Root {
                                 "activity-watch-{user}-{index}-{large}"
                             )))
                             .when(!large, |this| this.w_full())
-                            .px(px(12.))
+                            .px(px(11.))
                             .h(px(32.))
                             .rounded(px(8.))
                             .border_1()
@@ -877,9 +884,12 @@ impl Root {
                                 "activity-connect-platform-{user}-{index}-{large}"
                             )))
                             .when(!large, |this| this.w_full())
-                            .px(px(12.))
+                            // `$.FD` (993401): the secondary `sm` button of 821609, 1px border.
+                            .px(px(11.))
                             .h(px(32.))
                             .rounded(px(8.))
+                            .border_1()
+                            .border_color(color("--control-secondary-border-default"))
                             .bg(color("--control-secondary-background-default"))
                             .hover(|s| s.bg(color("--control-secondary-background-hover")))
                             .flex()

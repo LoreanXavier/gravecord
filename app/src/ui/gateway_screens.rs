@@ -54,13 +54,13 @@ impl Root {
             "READY" | "USER_CONNECTIONS_CALLBACK" => self.connection_gateway(name, data),
             "USER_NOTE_UPDATE" => self.note_updated(data, cx),
             // ConnectedAccountsStore (module 417869): a gateway update (not a local one carrying `accounts`) reads
-            // the connections again; here the next opening of the page asks, and an open page asks now.
+            // the connections again.
             "USER_CONNECTIONS_UPDATE" if data["accounts"].is_null() => {
+                // Module 417869 reads them again whatever is open: a link finished from a profile card's Connect
+                // button must close its dialog and drop the offer. Only the connections are read: an open settings
+                // panel and tab stay where they are.
                 self.settings_extra.connections_asked = false;
-                if self.settings.is_some() {
-                    // Only the connections are read again: the open panel and tab must not move.
-                    self.settings_request_connections();
-                }
+                self.settings_request_connections();
                 cx.notify();
             }
             "GUILD_BAN_ADD" | "GUILD_BAN_REMOVE" => cx.notify(),

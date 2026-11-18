@@ -320,21 +320,7 @@ impl Root {
         let row_selected = selected || context_menu_open;
         let avatar = self.images.get(&avatar_source(&recipient).0).cloned();
         // Module 935154: a Twitch or YouTube stream shows as the streaming status.
-        let status = match self.stores.status(recipient.id) {
-            "offline" | "invisible" => self.stores.status(recipient.id).to_owned(),
-            status => {
-                let streams =
-                    self.stores
-                        .presence
-                        .get(recipient.id, None)
-                        .is_some_and(|presence| {
-                            presence.activities.iter().any(|activity| {
-                                super::platform_presence::stream_url(activity).is_some()
-                            })
-                        });
-                if streams { "streaming" } else { status }.to_owned()
-            }
-        };
+        let status = self.display_status(recipient.id, None);
         let look = row_look_with_menu(
             selected,
             hovered,

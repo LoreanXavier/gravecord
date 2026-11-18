@@ -429,6 +429,23 @@ pub(super) fn stream_url(activity: &Value) -> Option<String> {
     matches.then(|| url.to_owned())
 }
 
+impl super::Root {
+    /// The status a person's avatar shows (module 935154): `streaming` while one of their activities is a Twitch or
+    /// YouTube stream (960076) and they are not offline, else their status.
+    pub(super) fn display_status(&self, user: dc_state::Id, guild: Option<dc_state::Id>) -> String {
+        let status = self.stores.status(user);
+        if matches!(status, "offline" | "invisible") {
+            return status.to_owned();
+        }
+        let streams = self
+            .stores
+            .presence
+            .get(user, guild)
+            .is_some_and(|presence| presence.activities.iter().any(|a| stream_url(a).is_some()));
+        if streams { "streaming" } else { status }.to_owned()
+    }
+}
+
 /// Module 682261: an activity with rich presence (details, art, a party, secrets or a state).
 pub(super) fn is_rich(activity: &Value) -> bool {
     activity["type"] != 4

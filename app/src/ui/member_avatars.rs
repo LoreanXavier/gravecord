@@ -693,7 +693,7 @@ impl Root {
             && self
                 .stores
                 .presence
-                .get(user, None)
+                .get(user, guild)
                 .is_some_and(|presence| presence.activities.iter().any(is_stream))
         {
             status = Status::Streaming;

@@ -267,9 +267,8 @@ impl Root {
     pub(in crate::ui) fn connection_gateway(&mut self, name: &str, data: &Value) {
         match name {
             "READY" => {
-                if let Some(list) = data["connected_accounts"].as_array()
-                    && self.settings_extra.connections.is_none()
-                {
+                // `CONNECTION_OPEN` replaces the accounts (another account signed in has its own).
+                if let Some(list) = data["connected_accounts"].as_array() {
                     self.settings_extra.connections = Some(list.clone());
                 }
             }
