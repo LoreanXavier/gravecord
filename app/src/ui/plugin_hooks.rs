@@ -4,6 +4,7 @@ mod always_animate;
 mod better_role_dot;
 mod call_timer;
 mod download_all;
+mod full_vc_pfp;
 mod game_activity_toggle;
 mod member_count;
 mod message_clicks;

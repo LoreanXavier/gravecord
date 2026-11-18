@@ -12,7 +12,7 @@ every setting changed), and with every plugin off, and fails on one differing pi
 The list is the plugins enabled in the owner's Equicord backup of 2026-09-21 (156). Sources were read in the local
 Equicord checkout of 2026-11-14 (`src/plugins` is Vencord's, `src/equicordplugins` Equicord's).
 
-Totals: 37 ported, 6 native, 68 planned, 45 not applicable.
+Totals: 38 ported, 6 native, 67 planned, 45 not applicable.
 
 Status: **ported** works and has its proof; **native** is what gravecord already does without a plugin;
 **planned** is not built yet (an import keeps its settings for when it is); **not applicable** has nothing to
@@ -74,7 +74,7 @@ port in a native client, or was removed upstream.
 | FriendInvites | planned | plugins/friendInvites/index.ts | Create and manage friend invite links via slash commands (/create friend invite, /view friend invites, /revoke friend invites). | slash commands for friend invite links. |  |
 | FriendsSince | not applicable | (not in the 2026-11-14 checkout) |  | removed from Equicord in 36c7a837: "now a stock Discord feature"; gravecord shows Friends Since in profiles. |  |
 | FullSearchContext | planned | plugins/fullSearchContext/index.tsx | Makes the message context menu in message search results have all options you'd expect | the full message menu on search results. |  |
-| FullVCPFP | planned | equicordplugins/fullVcPfp/index.tsx | Makes avatars take up the entire vc tile | avatars filling voice call tiles. |  |
+| FullVCPFP | ported | equicordplugins/fullVcPfp/index.tsx | Makes avatars take up the entire vc tile | plugin_hooks/full_vc_pfp.rs: a call tile without video draws the avatar over the whole tile (contain, unrounded, the 80px circle gone) at 1024px, the server avatar first. Not 1:1: an animated avatar stays still while its owner speaks (the original asks for the animated file then). | `the_server_avatar_comes_first_at_1024`; frame fvp-on (callsim); plugins-off voice-profile, user-volume |
 | GameActivityToggle | ported | plugins/gameActivityToggle/index.tsx | Adds a button next to the mic and deafen button to toggle game activity. Right click it to toggle Spotify activity. | plugin_hooks/game_activity_toggle.rs: a panel button before the microphone that turns Share my activity on and off (the account setting, so the presence changes at once), red with the struck-through gamepad while off; oldIcon draws the old line. Not 1:1: the right-click Share Spotify Activity menu is missing, because the app has no Spotify connection show_activity request yet. | `the_button_reads_its_settings_and_names_the_next_state`; frames gat-on/gat-off/gat-old; plugins-off chat (user panel) |
 | GifMaker | planned | equicordplugins/gifMaker/index.tsx | Create and caption GIFs from any media in chat or the GIF picker. | a GIF encoder and its editor. |  |
 | GifPaste | ported | plugins/gifPaste/index.ts | Makes picking a gif in the gif picker insert a link into the chatbox instead of instantly sending it | gifs.rs: picking a GIF inserts its link and a space in the composer and closes the picker. | `switch_only_plugins_follow_their_switch_and_the_master`; frames gifpaste-off/on; plugins-off gif-picker |

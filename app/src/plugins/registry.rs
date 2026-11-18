@@ -591,6 +591,15 @@ pub(crate) const DEFS: &[Def] = &[
         }],
     },
     Def {
+        id: "FullVCPFP",
+        name: "FullVCPFP",
+        description: "Makes avatars take up the entire vc tile",
+        origin: Origin::Equicord,
+        source: "src/equicordplugins/fullVcPfp/index.tsx",
+        default_on: false,
+        settings: &[],
+    },
+    Def {
         id: "GameActivityToggle",
         name: "GameActivityToggle",
         description: "Adds a button next to the mic and deafen button to toggle game activity. Right click it to \

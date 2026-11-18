@@ -141,6 +141,7 @@ assert len(idle) == idle_entries, f'IDLE_SETTINGS: read {len(idle)} of {idle_ent
 
 # How each ported plugin is built here, and its proof.
 PORTED = {
+    'FullVCPFP': "plugin_hooks/full_vc_pfp.rs: a call tile without video draws the avatar over the whole tile (contain, unrounded, the 80px circle gone) at 1024px, the server avatar first. Not 1:1: an animated avatar stays still while its owner speaks (the original asks for the animated file then).",
     'BetterRoleDot': "plugin_hooks/better_role_dot.rs: a click on the role dot (chat, member list, and the popout's dots) copies #rrggbb with the success toast; bothStyles makes every In names / Next to names test true (names, role mentions and dots together); copyRoleColorInProfilePopout draws the popout's roles with dots.",
     'NoNitroUpsell': "plugin_hooks.rs premium_type_override, nitro.rs premium_wire: while on, the account's tier reads as Nitro (premiumTypeOverride 2) everywhere the app asks for it, so the upsells that depend on it are left out, as the original tricks the client; the server still applies the real tier.",
     'WhoReacted': "plugin_hooks/who_reacted.rs: after each reaction's count up to five avatars at 90% (four and +N past five), from GET reactions?limit=100&type=0 queued one per 250 ms newest first and merged into the users; nothing on a message with over ten reactions; clickableAvatars opens the profile popout instead of reacting. Super reactions (type 1) are not fetched: the app draws no burst pills.",
@@ -198,6 +199,7 @@ PORTED = {
                      'so the original\'s 200% cap on the sync has nothing to cap.',
 }
 TESTS = {
+    'FullVCPFP': '`the_server_avatar_comes_first_at_1024`; frame fvp-on (callsim); plugins-off voice-profile, user-volume',
     'BetterRoleDot': '`colours_copy_as_color_strings_and_switches_read`; frame brd-both; plugins-off chat, member-list, profile-popout',
     'NoNitroUpsell': '`no_nitro_upsell_reads_as_nitro_only_while_on`; frames nnu-on/nnu-off (Appearance: Color Themes as Nitro); plugins-off gif-picker, settings-appearance',
     'WhoReacted': '`five_at_most_with_the_rest_counted`; frame wr-on (demo-reactors); plugins-off reactions, chat',
@@ -304,7 +306,6 @@ PLANNED = {
     'FixYoutubeEmbeds': 'the YouTube embed workaround inside the web host.',
     'FriendInvites': 'slash commands for friend invite links.',
     'FullSearchContext': 'the full message menu on search results.',
-    'FullVCPFP': 'avatars filling voice call tiles.',
     'GifMaker': 'a GIF encoder and its editor.',
     'GlobalBadges': 'its third-party badge service.',
     'GreetStickerPicker': 'a sticker choice for the "Wave to say hi!" button.',
