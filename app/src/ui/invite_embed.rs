@@ -14,6 +14,101 @@ use dc_state::{Id, Message};
 use gpui::{AnyElement, Context, FontWeight, IntoElement, SharedString, div, img, prelude::*, px};
 use std::sync::Arc;
 
+/// The key of an invite card's Join (`POST /invites/{code}`): `invite-accept:{code}`.
+pub(super) const ACCEPT_KEY: &str = "invite-accept:";
+/// `UNDER_MINIMUM_AGE` and `AGE_GROUP_UNVERIFIED` of the abort codes (module 652215 `t02`).
+const UNDER_MINIMUM_AGE: u64 = 20024;
+const AGE_GROUP_UNVERIFIED: u64 = 20086;
+/// The user experiment module 42376 reads (`invite_accept_error`).
+const AGE_ERRORS_EXPERIMENT: &str = "2026-09-invite-accept-age-group-errors";
+
+/// `M$` of module 506775: the age group the Age-Restricted Server dialog speaks to.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum AgeGroup {
+    Teen,
+    Unverified,
+}
+
+/// `M` of module 656: an accept refused with `UNDER_MINIMUM_AGE` speaks to a teen, `AGE_GROUP_UNVERIFIED` to an
+/// unverified account, and only for an account in the experiment.
+pub(super) fn age_gate_for(code: Option<u64>, experiment: bool) -> Option<AgeGroup> {
+    let group = match code? {
+        UNDER_MINIMUM_AGE => AgeGroup::Teen,
+        AGE_GROUP_UNVERIFIED => AgeGroup::Unverified,
+        _ => return None,
+    };
+    experiment.then_some(group)
+}
+
+/// The Age-Restricted Server dialog (module 656 `g` on the dialog of module 189213): the group's line of module
+/// 112417 `K` as its subtitle. A teen gets Confirm Age (`secondary`) before Go Back; an unverified account Go Back
+/// (`secondary`) before Confirm Age. Confirm Age does not join (`joins: false`).
+pub(super) fn age_restricted_alert(group: AgeGroup) -> super::chat_notices::Alert {
+    use super::chat_notices::{Alert, AlertButton, Then};
+    use super::modal::Tone;
+    let subtitle = match group {
+        AgeGroup::Teen => dc_intl::t("dqC1w2"),
+        AgeGroup::Unverified => dc_intl::t("qiLic6"),
+    };
+    // GAP: Confirm Age would open module 871309's age verification (`NSFW_AGE_GATE`); this client does not verify
+    // ages (owner decision 2026-11-12), so the button only closes.
+    let confirm = |tone| AlertButton {
+        id: "age-restricted-confirm",
+        label: dc_intl::t("FDSSia").to_owned(),
+        tone,
+        then: Then::Close,
+    };
+    let back = |tone| AlertButton {
+        id: "age-restricted-back",
+        label: dc_intl::t("/g10LC").to_owned(),
+        tone,
+        then: Then::Close,
+    };
+    Alert {
+        id: "age-restricted-server",
+        title: dc_intl::t("xi46lg").to_owned(),
+        subtitle: Some(vec![(subtitle.to_owned(), false)]),
+        content: None,
+        buttons: match group {
+            AgeGroup::Teen => vec![confirm(Tone::Secondary), back(Tone::Primary)],
+            AgeGroup::Unverified => vec![back(Tone::Secondary), confirm(Tone::Primary)],
+        },
+    }
+}
+
+impl Root {
+    /// The answer of an invite card's Join: a refusal for the account's age group opens module 656's dialog.
+    pub(super) fn invite_accept_answered(
+        &mut self,
+        key: &str,
+        report: &serde_json::Value,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        if !key.starts_with(ACCEPT_KEY) {
+            return false;
+        }
+        if report["ok"].as_bool() != Some(true) {
+            self.pending_join = None;
+            let experiment = self.stores.experiments.variant(AGE_ERRORS_EXPERIMENT) == Some(1);
+            if let Some(group) = age_gate_for(report["body"]["code"].as_u64(), experiment) {
+                self.chat_extra.alert = Some(age_restricted_alert(group));
+            }
+            cx.notify();
+        }
+        true
+    }
+
+    /// Capture only: `invite-error <code>` answers a Join as Discord refuses it.
+    pub(crate) fn script_invite_error(&mut self, code: &str, cx: &mut Context<Self>) -> String {
+        let report = serde_json::json!({"ok": false, "status": 403, "body": {"code": code.parse::<u64>().unwrap_or(0)}});
+        self.invite_accept_answered(&format!("{ACCEPT_KEY}x"), &report, cx);
+        format!(
+            "alert {:?}",
+            self.chat_extra.alert.as_ref().map(|alert| alert.id)
+        )
+    }
+}
+
 /// Hosts that carry invites: `discord.gg/{code}` (`INVITE_HOST`), and `/invite/{code}` on the client's own hosts.
 pub(super) fn invite_codes(content: &str) -> Vec<String> {
     let mut codes = Vec::new();
@@ -480,7 +575,7 @@ impl Root {
                 } else {
                     // `acceptInvite`: POST /invites/{code}, then the server opens when it arrives.
                     let _ = this.requests.send(Request::Rest {
-                        key: None,
+                        key: Some(format!("{ACCEPT_KEY}{code_owned}")),
                         method: reqwest::Method::POST,
                         route: format!("/invites/{code_owned}"),
                         body: Some(serde_json::json!({})),
@@ -715,7 +810,21 @@ impl Root {
 
 #[cfg(test)]
 mod tests {
-    use super::{brighten, invite_codes};
+    use super::{AgeGroup, age_gate_for, age_restricted_alert, brighten, invite_codes};
+
+    #[test]
+    fn age_refusals_open_the_gate_only_inside_the_experiment() {
+        assert_eq!(age_gate_for(Some(20024), true), Some(AgeGroup::Teen));
+        assert_eq!(age_gate_for(Some(20086), true), Some(AgeGroup::Unverified));
+        assert_eq!(age_gate_for(Some(20024), false), None);
+        assert_eq!(age_gate_for(Some(50013), true), None);
+        assert_eq!(age_gate_for(None, true), None);
+        let teen = age_restricted_alert(AgeGroup::Teen);
+        assert_eq!(teen.title, "Age-Restricted Server");
+        assert_eq!(teen.buttons[0].label, "Confirm Age");
+        let unverified = age_restricted_alert(AgeGroup::Unverified);
+        assert_eq!(unverified.buttons[0].label, "Go Back");
+    }
 
     #[test]
     fn codes_come_from_invite_hosts_only() {

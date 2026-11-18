@@ -76,6 +76,9 @@ pub(super) enum Target {
         guild: Id,
         channel: Id,
     },
+    /// A channel of an Audit Log entry (`channel-context` of module 194195, from module 989433's
+    /// `onChannelContextMenu` and `onTargetContextMenu`).
+    AuditChannel(Id),
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -1253,6 +1256,33 @@ pub(super) fn channel_mention_items(developer: bool) -> Vec<Entry> {
         group(
             &mut out,
             vec![Row::new(Act::CopyId, dc_intl::tr("Copy Channel ID")).icon("menu_id")],
+        );
+    }
+    tidy(out)
+}
+
+/// `channel-context` of module 194195 ("Channel Actions") for a channel of an Audit Log entry: Edit Channel (Edit
+/// Category) for whoever may see it and manage channels, roles or webhooks (module 317910), Jump to Channel for a
+/// channel that is not a category; Copy Channel ID in its own group in Developer Mode.
+pub(super) fn audit_channel_items(category: bool, can_edit: bool, developer: bool) -> Vec<Entry> {
+    let mut out = Vec::new();
+    if can_edit {
+        out.push(Entry::Row(Row::new(
+            Act::EditChannel,
+            if category {
+                dc_intl::t("zdPFs9")
+            } else {
+                dc_intl::t("3gUsJb")
+            },
+        )));
+    }
+    if !category {
+        out.push(Entry::Row(Row::new(Act::GoToServer, dc_intl::t("bQIM40"))));
+    }
+    if developer {
+        group(
+            &mut out,
+            vec![Row::new(Act::CopyId, dc_intl::t("gFHI3k")).icon("menu_id")],
         );
     }
     tidy(out)
@@ -2723,6 +2753,32 @@ impl Root {
             Target::RtcChannel { guild, channel } => self.rtc_channel_items(guild, channel),
             Target::Favorites => favorites_items(),
             Target::ChannelMention(_) => channel_mention_items(developer),
+            Target::AuditChannel(channel) => {
+                let Some(guild) = self.guild_of_channel(channel) else {
+                    return;
+                };
+                let known = self
+                    .stores
+                    .guild(guild)
+                    .and_then(|known| known.channels.iter().find(|c| c.id == channel))
+                    .cloned();
+                let category = known
+                    .as_ref()
+                    .is_some_and(|c| c.kind == dc_state::ChannelKind::Category);
+                let can_edit = [
+                    dc_state::permissions::MANAGE_CHANNELS,
+                    dc_state::permissions::MANAGE_ROLES,
+                    dc_state::permissions::MANAGE_WEBHOOKS,
+                ]
+                .into_iter()
+                .any(|bit| self.my_permission(guild, known.as_ref(), bit))
+                    && self.my_permission(
+                        guild,
+                        known.as_ref(),
+                        dc_state::permissions::VIEW_CHANNEL,
+                    );
+                audit_channel_items(category, can_edit, developer)
+            }
             Target::PickerSticker(sticker) => {
                 picker_sticker_items(self.sticker_favorited(sticker), developer)
             }
@@ -3502,7 +3558,8 @@ impl Root {
                     | Target::Category(id)
                     | Target::Thread(id)
                     | Target::Dm(id)
-                    | Target::ChannelMention(id) => id,
+                    | Target::ChannelMention(id)
+                    | Target::AuditChannel(id) => id,
                     Target::User { user, .. }
                     | Target::InventoryAuthor { user }
                     | Target::SpotifyActivity { user, .. }
@@ -3527,9 +3584,19 @@ impl Root {
             }
             (
                 Act::EditChannel,
-                Target::Channel(channel) | Target::Category(channel) | Target::Thread(channel),
+                Target::Channel(channel)
+                | Target::Category(channel)
+                | Target::Thread(channel)
+                | Target::AuditChannel(channel),
             ) => {
                 self.open_channel_settings(channel, window, cx);
+            }
+            // Jump to Channel of module 194195: `uh(guild, channel)`, then the settings close (`jH`).
+            (Act::GoToServer, Target::AuditChannel(channel)) => {
+                if let Some(guild) = self.guild_of_channel(channel) {
+                    self.server_settings = None;
+                    self.select(guild, Some(channel));
+                }
             }
             (Act::DeleteChannel, Target::Channel(channel) | Target::Category(channel)) => {
                 self.open_channel_settings(channel, window, cx);
@@ -5409,6 +5476,22 @@ mod tests {
                 Entry::Separator => "-".to_owned(),
             })
             .collect()
+    }
+
+    #[test]
+    fn audit_channel_menu_follows_module_194195() {
+        assert_eq!(
+            labels(&audit_channel_items(false, true, true)),
+            ["Edit Channel", "Jump to Channel", "-", "Copy Channel ID"]
+        );
+        assert_eq!(
+            labels(&audit_channel_items(true, true, false)),
+            ["Edit Category"]
+        );
+        assert_eq!(
+            labels(&audit_channel_items(false, false, false)),
+            ["Jump to Channel"]
+        );
     }
 
     #[test]

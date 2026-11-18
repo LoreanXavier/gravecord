@@ -53,6 +53,14 @@ pub(super) enum Then {
     AcceptMessageRequest {
         channel: Id,
     },
+    /// Confirm of Withdraw Application (module 678655 `handleCancelApplication`): `removeGuildJoinRequest`.
+    WithdrawApplication {
+        guild: Id,
+    },
+    /// Reapply of module 267.
+    Reapply {
+        guild: Id,
+    },
 }
 
 /// Module 987176 as module 190857 opens it before a message request is accepted: the title, its subtitle, Cancel and
@@ -67,16 +75,32 @@ pub(super) fn accept_request_alert(channel: Id) -> Alert {
             AlertButton {
                 id: "message-request-confirm-cancel",
                 label: dc_intl::t("ETE/oC").to_owned(),
-                secondary: true,
+                tone: Tone::Secondary,
                 then: Then::Close,
             },
             AlertButton {
                 id: "message-request-confirm-accept",
                 label: dc_intl::t("cY+Oob").to_owned(),
-                secondary: false,
+                tone: Tone::Primary,
                 then: Then::AcceptMessageRequest { channel },
             },
         ],
+    }
+}
+
+/// "Invite permission required" (module 132610): the title, its subtitle and Got It.
+pub(super) fn invite_permission_alert() -> Alert {
+    Alert {
+        id: "invite-permission-required",
+        title: dc_intl::t("xSV3nU").to_owned(),
+        subtitle: Some(vec![(dc_intl::t("jPMGbB").to_owned(), false)]),
+        content: None,
+        buttons: vec![AlertButton {
+            id: "invite-permission-got-it",
+            label: dc_intl::t("NX+WJN").to_owned(),
+            tone: Tone::Primary,
+            then: Then::Close,
+        }],
     }
 }
 
@@ -84,7 +108,7 @@ pub(super) fn accept_request_alert(channel: Id) -> Alert {
 pub(super) struct AlertButton {
     pub id: &'static str,
     pub label: String,
-    pub secondary: bool,
+    pub tone: Tone,
     pub then: Then,
 }
 
@@ -102,6 +126,8 @@ pub(super) enum Content {
     /// Module 29681: the Open Soundboard (Hold) keybind being edited; `original` is its shortcut when the modal
     /// opened (`None`: there was none), put back unless Save is pressed.
     SoundboardKeybind { original: Option<Vec<[u32; 3]>> },
+    /// Module 267: "Reason:" (4px from it) and the moderators' reason, `body-md/medium` in `text-default`.
+    RejectionReason(String),
 }
 
 /// The Soundboard Keybind modal (module 29681): "Soundboard Keybind", Cancel and Save.
@@ -115,13 +141,13 @@ pub(super) fn soundboard_keybind_alert(original: Option<Vec<[u32; 3]>>) -> Alert
             AlertButton {
                 id: "soundboard-keybind-cancel",
                 label: dc_intl::t("ETE/oC").to_owned(),
-                secondary: true,
+                tone: Tone::Secondary,
                 then: Then::Close,
             },
             AlertButton {
                 id: "soundboard-keybind-save",
                 label: dc_intl::t("R3BPH+").to_owned(),
-                secondary: false,
+                tone: Tone::Primary,
                 then: Then::SaveSoundboardKeybind,
             },
         ],
@@ -140,7 +166,7 @@ pub(super) fn upload_errors_alert(
         buttons: vec![AlertButton {
             id: "emoji-upload-errors-ok",
             label: dc_intl::t("NX+WJN").to_owned(),
-            secondary: true,
+            tone: Tone::Secondary,
             then: Then::Close,
         }],
     }
@@ -174,14 +200,14 @@ impl Alert {
             buttons.push(AlertButton {
                 id: "alert-cancel",
                 label: cancel,
-                secondary: true,
+                tone: Tone::Secondary,
                 then: Then::Close,
             });
         }
         buttons.push(AlertButton {
             id: "alert-confirm",
             label: confirm.unwrap_or_else(|| dc_intl::tr("Okay").to_owned()),
-            secondary: false,
+            tone: Tone::Primary,
             then,
         });
         Self {
@@ -224,13 +250,13 @@ pub(super) fn forward_failed_alert(
             AlertButton {
                 id: "forward-failed-cancel",
                 label: dc_intl::tr("Cancel").to_owned(),
-                secondary: true,
+                tone: Tone::Secondary,
                 then: Then::Close,
             },
             AlertButton {
                 id: "forward-failed-retry",
                 label: dc_intl::tr("Retry").to_owned(),
-                secondary: false,
+                tone: Tone::Primary,
                 then: Then::RetryForward {
                     message: Box::new(message),
                     destinations,
@@ -539,6 +565,8 @@ impl Root {
             Then::UploadLogs => self.voice_upload_logs(cx),
             Then::SaveSoundboardKeybind => self.soundboard_keybind_save(),
             Then::AcceptMessageRequest { channel } => self.mr_accept_now(channel, cx),
+            Then::WithdrawApplication { guild } => self.remove_join_request(guild),
+            Then::Reapply { guild } => self.reapply(guild),
         }
     }
 
@@ -571,11 +599,7 @@ impl Root {
                 modal::button(
                     button.id,
                     button.label,
-                    if button.secondary {
-                        Tone::Secondary
-                    } else {
-                        Tone::Primary
-                    },
+                    button.tone,
                     move |this, window, cx| this.alert_then(then.clone(), window, cx),
                 )
             })
@@ -639,6 +663,16 @@ impl Root {
                     .into_any_element()
             }
             Content::AffectedGuild(guild) => self.affected_guild(guild),
+            Content::RejectionReason(reason) => div()
+                .flex()
+                .flex_wrap()
+                .text_size(px(16.))
+                .line_height(px(20.))
+                .font_weight(FontWeight(500.))
+                .text_color(super::color("--text-default"))
+                .child(div().mr(px(4.)).child(dc_intl::t("cf1psW")))
+                .child(reason)
+                .into_any_element(),
             Content::EmojiUploadErrors(errors) => div()
                 .flex()
                 .flex_col()
@@ -743,7 +777,7 @@ impl Root {
                     buttons: vec![AlertButton {
                         id: "automod-removed-okay",
                         label: dc_intl::tr("Okay").to_owned(),
-                        secondary: false,
+                        tone: Tone::Primary,
                         then: Then::Close,
                     }],
                 });
@@ -796,13 +830,13 @@ impl Root {
                 AlertButton {
                     id: "dm-upsell-keep",
                     label: dc_intl::tr("No, keep them on").to_owned(),
-                    secondary: true,
+                    tone: Tone::Secondary,
                     then: Then::Close,
                 },
                 AlertButton {
                     id: "dm-upsell-off",
                     label: dc_intl::tr("Yes, turn them off").to_owned(),
-                    secondary: false,
+                    tone: Tone::Primary,
                     then: Then::DmsOff { guild },
                 },
             ],
@@ -820,6 +854,28 @@ impl Root {
         }
         self.set_ids(&dc_proto::settings::DM_RESTRICTED_GUILDS, &ids);
         self.show_success_toast(dc_intl::tr("Settings changed").to_owned(), cx);
+    }
+
+    /// The server header's invite button (module 182179): `K` of module 855687 (Create Invite in the server, or a
+    /// custom invite link) opens Invite to Server; anyone else sees "Invite permission required" (module 132610),
+    /// its subtitle and Got It.
+    pub(super) fn header_invite(&mut self, cx: &mut Context<Self>) {
+        let Some(guild) = self.guild else { return };
+        let vanity = self
+            .stores
+            .guild(guild)
+            .is_some_and(|known| known.vanity_url_code.is_some());
+        if vanity || self.my_permission(guild, None, dc_state::permissions::CREATE_INSTANT_INVITE) {
+            self.open_invite(cx);
+            return;
+        }
+        self.script_invite_permission(cx);
+    }
+
+    /// The header invite's refusal; the harness shows it for an account that may invite.
+    pub(crate) fn script_invite_permission(&mut self, cx: &mut Context<Self>) {
+        self.chat_extra.alert = Some(invite_permission_alert());
+        cx.notify();
     }
 
     /// Limited access (module 218642, opened by module 700241 from the request interceptor of module 596339 for a

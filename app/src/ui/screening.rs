@@ -72,6 +72,64 @@ fn submission(
     Some(json!({"version":form.get("version")?, "form_fields":fields}))
 }
 
+/// The keys of the account's own join-request calls: `join-request:{remove|reset}:{guild}`.
+pub(super) const JOIN_REQUEST_KEY: &str = "join-request:";
+
+/// What the pending member's bar says (module 678655 `render`, its `showMemberVerificationModal` branch, by the
+/// account's own request's `applicationStatus`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum PendingBar {
+    /// No request yet (or approved): "You must complete a few more steps before you can talk." and Complete.
+    Complete,
+    /// "Your application to join the server is awaiting review.", its subtitle and Withdraw Application.
+    Submitted,
+    /// "Your application to join the server has been rejected." and Learn more (module 267).
+    Rejected,
+}
+
+pub(super) fn pending_bar(status: Option<&str>) -> PendingBar {
+    match status {
+        Some(dc_state::guild_join_requests::SUBMITTED) => PendingBar::Submitted,
+        Some(dc_state::guild_join_requests::REJECTED) => PendingBar::Rejected,
+        _ => PendingBar::Complete,
+    }
+}
+
+/// Module 267 on the dialog of module 189213: "Your application to join {guildName} has been denied." (the
+/// server's name unknown: "...the server..."), then "Reason:" (4px from the reason, `body-md/medium`,
+/// `text-default`) when one was given; Reapply (`secondary`) and Okay (`critical-primary`).
+pub(super) fn application_denied_alert(
+    guild: Id,
+    name: Option<String>,
+    reason: Option<String>,
+) -> super::chat_notices::Alert {
+    use super::chat_notices::{Alert, AlertButton, Content, Then};
+    use super::modal::Tone;
+    Alert {
+        id: "application-denied",
+        title: match name {
+            Some(name) => dc_intl::t!("P+/gzA", guildName = name).to_string(),
+            None => dc_intl::t("gBPcuP").to_owned(),
+        },
+        subtitle: None,
+        content: reason.map(Content::RejectionReason),
+        buttons: vec![
+            AlertButton {
+                id: "application-denied-reapply",
+                label: dc_intl::t("I1LYVk").to_owned(),
+                tone: Tone::Secondary,
+                then: Then::Reapply { guild },
+            },
+            AlertButton {
+                id: "application-denied-okay",
+                label: dc_intl::t("BddRzS").to_owned(),
+                tone: Tone::Critical,
+                then: Then::Close,
+            },
+        ],
+    }
+}
+
 fn scroll_fader(root: &Root, distance: gpui::Pixels, top: bool) -> Option<gpui::Div> {
     if distance <= px(0.) {
         return None;
@@ -217,7 +275,167 @@ impl Root {
         true
     }
 
+    /// The account's own join request in the open server, if any (`UserGuildJoinRequestStore.getRequest`).
+    fn own_join_status(&self) -> Option<String> {
+        let guild = self.guild?;
+        self.stores
+            .join_requests
+            .get_request(guild)
+            .and_then(|request| request.application_status.clone())
+    }
+
+    /// Withdraw Application (`handleCancelApplication` of module 678655): "Are you sure?" on the alert of module
+    /// 732159, Cancel and Confirm.
+    fn ask_withdraw_application(&mut self, cx: &mut Context<Self>) {
+        let Some(guild) = self.guild else { return };
+        self.chat_extra.alert = Some(super::chat_notices::Alert::show(
+            "withdraw-application",
+            dc_intl::t("aIz1oV"),
+            Some(dc_intl::t("13tjTU").to_owned()),
+            Some(dc_intl::t("ETE/oC").to_owned()),
+            Some(dc_intl::t("cY+Oob").to_owned()),
+            super::chat_notices::Then::WithdrawApplication { guild },
+        ));
+        cx.notify();
+    }
+
+    /// `removeGuildJoinRequest` (module 624458): `DELETE /guilds/{guild}/requests/@me`, then
+    /// `USER_GUILD_JOIN_REQUEST_UPDATE {request: null}`.
+    pub(super) fn remove_join_request(&mut self, guild: Id) {
+        let _ = self.requests.send(Request::Rest {
+            key: Some(format!("{JOIN_REQUEST_KEY}remove:{guild}")),
+            method: reqwest::Method::DELETE,
+            route: format!("/guilds/{guild}/requests/@me"),
+            body: None,
+        });
+    }
+
+    /// `resetGuildJoinRequest` (module 624458): `POST /guilds/{guild}/requests/@me`; the answer is the new request.
+    pub(super) fn reset_join_request(&mut self, guild: Id) {
+        let _ = self.requests.send(Request::Rest {
+            key: Some(format!("{JOIN_REQUEST_KEY}reset:{guild}")),
+            method: reqwest::Method::POST,
+            route: format!("/guilds/{guild}/requests/@me"),
+            body: None,
+        });
+    }
+
+    /// The answers of [`Self::remove_join_request`] and [`Self::reset_join_request`]: on success the store takes
+    /// `USER_GUILD_JOIN_REQUEST_UPDATE`. Reapply of a pending member opens the verification form once the old request
+    /// is gone (module 267's `Ze`).
+    pub(super) fn join_request_answered(
+        &mut self,
+        key: &str,
+        report: &Value,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        let Some(rest) = key.strip_prefix(JOIN_REQUEST_KEY) else {
+            return false;
+        };
+        let (kind, guild) = rest.split_once(':').unwrap_or((rest, ""));
+        let Ok(guild) = guild.parse::<Id>() else {
+            return true;
+        };
+        if report["ok"].as_bool() != Some(true) {
+            return true;
+        }
+        let request = if kind == "reset" {
+            report["body"].clone()
+        } else {
+            Value::Null
+        };
+        self.stores.dispatch(
+            "USER_GUILD_JOIN_REQUEST_UPDATE",
+            &serde_json::json!({"guildId": guild.to_string(), "request": request}),
+        );
+        if kind == "remove"
+            && self.reapply_after_remove.take() == Some(guild)
+            && self.guild == Some(guild)
+        {
+            self.open_screening(cx);
+        }
+        cx.notify();
+        true
+    }
+
+    /// "Your application to join {guild} has been denied." (module 267): the reason under it when the moderators
+    /// gave one; Reapply and Okay.
+    pub(super) fn show_application_denied(&mut self, cx: &mut Context<Self>) {
+        let Some(guild) = self.guild else { return };
+        let name = self.stores.guild(guild).map(|known| known.name.clone());
+        let reason = self
+            .stores
+            .join_requests
+            .get_request(guild)
+            .and_then(|request| request.rejection_reason.clone())
+            .filter(|reason| !reason.is_empty());
+        self.chat_extra.alert = Some(application_denied_alert(guild, name, reason));
+        cx.notify();
+    }
+
+    /// Reapply of module 267: a pending member's request is removed and the form opens again; anyone else resets it.
+    pub(super) fn reapply(&mut self, guild: Id) {
+        let pending = self
+            .stores
+            .guild(guild)
+            .is_some_and(|known| known.my_pending);
+        if pending {
+            self.reapply_after_remove = Some(guild);
+            self.remove_join_request(guild);
+        } else {
+            self.reset_join_request(guild);
+        }
+    }
+
+    /// Capture only: the open server becomes one this account is a pending member of, with its own request in the
+    /// given status (`none` drops it) and an optional rejection reason.
+    pub(crate) fn script_join_request(&mut self, words: &[&str], cx: &mut Context<Self>) -> String {
+        let Some(guild) = self.guild else {
+            return "no server open".to_owned();
+        };
+        if let Some(known) = self
+            .stores
+            .guilds
+            .iter_mut()
+            .find(|known| known.id == guild)
+        {
+            known.my_pending = true;
+        }
+        let status = words.first().copied().unwrap_or("none");
+        let reason = words
+            .get(1..)
+            .map(|rest| rest.join(" "))
+            .unwrap_or_default();
+        let request = if status == "none" {
+            Value::Null
+        } else {
+            json!({
+                "join_request_id": "1", "guild_id": guild.to_string(), "user_id": null,
+                "application_status": status, "form_responses": [],
+                "rejection_reason": if reason.is_empty() { Value::Null } else { json!(reason) },
+            })
+        };
+        self.stores.dispatch(
+            "USER_GUILD_JOIN_REQUEST_UPDATE",
+            &json!({"guildId": guild.to_string(), "request": request}),
+        );
+        cx.notify();
+        format!("{status} in {guild}")
+    }
+
     pub(super) fn screening_composer(&self, cx: &mut Context<Self>) -> AnyElement {
+        let status = self.own_join_status();
+        let bar = pending_bar(status.as_deref());
+        let (message, subtitle, label) = match bar {
+            PendingBar::Complete => (dc_intl::t("rEBKvg"), None, dc_intl::t("r8/DT+")),
+            PendingBar::Submitted => (
+                dc_intl::t("5iLvSx"),
+                Some(dc_intl::t("FdsK4h")),
+                dc_intl::t("mqtdmQ"),
+            ),
+            PendingBar::Rejected => (dc_intl::t("lk30cY"), None, dc_intl::t("8RrsHr")),
+        };
+        let primary = bar == PendingBar::Complete;
         div()
             .relative()
             .flex_none()
@@ -229,7 +447,7 @@ impl Root {
             .child(
                 div()
                     .parity_with_border("screening-composer", 1.)
-                    .h(px(58.))
+                    .min_h(px(58.))
                     .py(px(12.))
                     .rounded(px(8.))
                     .border_1()
@@ -242,12 +460,39 @@ impl Root {
                             .ml(px(16.))
                             .flex_1()
                             .min_w(px(0.))
-                            .line_height(px(20.))
-                            .font_weight(FontWeight(600.))
-                            .text_color(color("--text-strong"))
-                            .child("You must complete a few more steps before you can talk."),
+                            .flex()
+                            .flex_col()
+                            .child(
+                                div()
+                                    .line_height(px(20.))
+                                    .font_weight(FontWeight(600.))
+                                    .text_color(color("--text-strong"))
+                                    .child(message),
+                            )
+                            // `body-xs/normal` in `text-muted` (module 786051).
+                            .children(subtitle.map(|subtitle| {
+                                div()
+                                    .text_size(px(12.))
+                                    .line_height(px(16.))
+                                    .text_color(color("--text-muted"))
+                                    .child(subtitle)
+                            })),
                     )
-                    .child(
+                    .child({
+                        // Complete is `primary`; the application states keep module 786051's `secondary`.
+                        let (border, background, text) = if primary {
+                            (
+                                "--control-primary-border-default",
+                                "--control-primary-background-default",
+                                "--control-primary-text-default",
+                            )
+                        } else {
+                            (
+                                "--control-secondary-border-default",
+                                "--control-secondary-background-default",
+                                "--control-secondary-text-default",
+                            )
+                        };
                         div()
                             .id("screening-open")
                             .flex_none()
@@ -257,18 +502,22 @@ impl Root {
                             .px(px(11.))
                             .rounded(px(8.))
                             .border_1()
-                            .border_color(color("--control-primary-border-default"))
-                            .bg(color("--control-primary-background-default"))
+                            .border_color(color(border))
+                            .bg(color(background))
                             .cursor_pointer()
                             .flex()
                             .items_center()
                             .text_size(px(14.))
                             .line_height(px(18.))
                             .font_weight(FontWeight(500.))
-                            .text_color(color("--control-primary-text-default"))
-                            .child("Complete")
-                            .on_click(cx.listener(|this, _, _, cx| this.open_screening(cx))),
-                    ),
+                            .text_color(color(text))
+                            .child(label)
+                            .on_click(cx.listener(move |this, _, _, cx| match bar {
+                                PendingBar::Complete => this.open_screening(cx),
+                                PendingBar::Submitted => this.ask_withdraw_application(cx),
+                                PendingBar::Rejected => this.show_application_denied(cx),
+                            }))
+                    }),
             )
             .into_any_element()
     }
@@ -481,6 +730,27 @@ impl Root {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn the_pending_bar_follows_the_accounts_own_request() {
+        assert_eq!(pending_bar(None), PendingBar::Complete);
+        assert_eq!(pending_bar(Some("APPROVED")), PendingBar::Complete);
+        assert_eq!(pending_bar(Some("SUBMITTED")), PendingBar::Submitted);
+        assert_eq!(pending_bar(Some("REJECTED")), PendingBar::Rejected);
+        let denied = application_denied_alert(5, Some("Fixture".into()), Some("No".into()));
+        assert_eq!(
+            denied.title,
+            "Your application to join Fixture has been denied."
+        );
+        assert_eq!(denied.buttons.len(), 2);
+        assert_eq!(denied.buttons[1].tone, super::super::modal::Tone::Critical);
+        let unnamed = application_denied_alert(5, None, None);
+        assert!(unnamed.content.is_none());
+        assert_eq!(
+            unnamed.title,
+            "Your application to join the server has been denied."
+        );
+    }
+
     #[test]
     fn required_terms_gate_submission_and_preserve_the_form_version() {
         let form = json!({"version":"v1", "form_fields":[

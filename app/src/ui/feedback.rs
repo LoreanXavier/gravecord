@@ -21,6 +21,7 @@
 //! the CSS of modules 830141, 694413, 164249 and 439248 for the later steps, which no capture shows.
 
 use super::chat_notices::{Alert, AlertButton, Content, Then};
+use super::modal::Tone;
 use super::{Root, color, icon};
 use crate::editor::Editor;
 use crate::net::Request;
@@ -600,7 +601,7 @@ impl Root {
                 buttons: vec![AlertButton {
                     id: "feedback-submitted-done",
                     label: dc_intl::t("i4jeWR").to_owned(),
-                    secondary: false,
+                    tone: Tone::Primary,
                     then: Then::Close,
                 }],
             }),
@@ -614,13 +615,13 @@ impl Root {
                     AlertButton {
                         id: "feedback-upload-cancel",
                         label: dc_intl::t("ETE/oC").to_owned(),
-                        secondary: true,
+                        tone: Tone::Secondary,
                         then: Then::Close,
                     },
                     AlertButton {
                         id: "feedback-upload-logs",
                         label: dc_intl::t("EbwFfR").to_owned(),
-                        secondary: false,
+                        tone: Tone::Primary,
                         then: Then::UploadLogs,
                     },
                 ],

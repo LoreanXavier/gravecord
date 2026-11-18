@@ -985,6 +985,23 @@ impl Root {
             .cloned()
     }
 
+    /// The channel an entry's menu is about (module 989433): its target for a channel or overwrite entry
+    /// (`onTargetContextMenu`), else the channel of its options (`onChannelContextMenu`); only a channel the
+    /// server still has (module 194195 takes a channel record).
+    fn audit_menu_channel(&self, guild: Id, entry: &Entry) -> Option<Id> {
+        let known = self.stores.guild(guild)?;
+        let exists = |id: Option<&str>| {
+            let id = id?.parse::<Id>().ok()?;
+            known.channels.iter().any(|c| c.id == id).then_some(id)
+        };
+        if matches!(target_type(entry.action), "CHANNEL" | "CHANNEL_OVERWRITE")
+            && let Some(id) = exists(entry.target_id.as_deref())
+        {
+            return Some(id);
+        }
+        exists(entry.options["channel_id"].as_str())
+    }
+
     /// `m1` with its hash, for a channel by id.
     fn audit_channel(&self, guild: Id, id: &str) -> Option<String> {
         let known = self.stores.guild(guild)?;
@@ -1691,6 +1708,7 @@ impl Root {
             .and_then(|user| self.images.get(&avatar_source(user).0).cloned());
         let target = target_type(entry.action);
         let id = entry.id.clone();
+        let menu_channel = self.audit_menu_channel(guild, entry);
         let header = div()
             .id(SharedString::from(format!("audit-row-{}", entry.id)))
             .h(px(60.))
@@ -1735,6 +1753,23 @@ impl Root {
                             .line_height(px(20.))
                             .overflow_hidden()
                             .whitespace_nowrap()
+                            // GAP: the official title opens the channel menu from the channel's own words only;
+                            // here a right press anywhere on the title line opens it.
+                            .when_some(menu_channel, |this, channel| {
+                                this.on_mouse_down(
+                                    gpui::MouseButton::Right,
+                                    cx.listener(
+                                        move |this, event: &gpui::MouseDownEvent, _, cx| {
+                                            cx.stop_propagation();
+                                            this.open_context_menu(
+                                                super::context_menu::Target::AuditChannel(channel),
+                                                event.position,
+                                                cx,
+                                            );
+                                        },
+                                    ),
+                                )
+                            })
                             .child(Self::audit_spans(self.audit_title(guild, entry), 16.)),
                     )
                     .child(

@@ -9,6 +9,7 @@
 //! (`isPlatformEmbedded`).
 
 use super::chat_notices::{Alert, AlertButton, Content, Then};
+use super::modal::Tone;
 use super::{Root, color, icon};
 use dc_state::Id;
 use gpui::{AnyElement, Context, IntoElement, SharedString, deferred, div, prelude::*, px};
@@ -80,7 +81,7 @@ impl Root {
             buttons: vec![AlertButton {
                 id: "stream-report-submitted-done",
                 label: dc_intl::t("i4jeWR").to_owned(),
-                secondary: false,
+                tone: Tone::Primary,
                 then: Then::Close,
             }],
         });
