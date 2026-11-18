@@ -7,6 +7,7 @@ mod game_activity_toggle;
 mod member_count;
 mod message_clicks;
 mod message_peek;
+mod message_pronouns;
 mod platform_indicators;
 mod read_all;
 mod server_list_indicators;

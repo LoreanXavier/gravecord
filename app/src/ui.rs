@@ -8241,7 +8241,10 @@ impl Root {
                                             cx,
                                         )
                                         .ml(px(8.)),
-                                    ),
+                                    )
+                                    // Not in the pinned client: UserMessagesPronouns
+                                    // (`plugin_hooks/message_pronouns.rs`).
+                                    .children(self.message_pronouns(message, cx)),
                             )
                             .child(content),
                     )

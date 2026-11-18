@@ -1127,6 +1127,34 @@ pub(crate) const DEFS: &[Def] = &[
         }],
     },
     Def {
+        id: "UserMessagesPronouns",
+        name: "UserMessagesPronouns",
+        description: "Adds pronouns to chat user messages",
+        origin: Origin::Vencord,
+        source: "src/plugins/userMessagesPronouns/index.ts",
+        default_on: false,
+        settings: &[
+            Setting {
+                key: "pronounsFormat",
+                label: "Pronouns format",
+                description: "The format for pronouns to appear in chat",
+                kind: Kind::Select {
+                    options: &[
+                        ("Lowercase", Lit::Str("LOWERCASE")),
+                        ("Capitalized", Lit::Str("CAPITALIZED")),
+                    ],
+                    default: 0,
+                },
+            },
+            Setting {
+                key: "showSelf",
+                label: "Show yourself",
+                description: "Enable or disable showing pronouns for yourself",
+                kind: Kind::Switch { default: true },
+            },
+        ],
+    },
+    Def {
         id: "VoiceDownload",
         name: "VoiceDownload",
         description: "Adds a download to voice messages. (Opens a new browser tab)",
