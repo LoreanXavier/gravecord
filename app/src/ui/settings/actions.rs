@@ -485,7 +485,6 @@ impl Root {
                     self.settings_extra.connections = body.as_array().cloned();
                     self.connection_pending_apply();
                     self.request_connection_card_icons();
-                    self.connection_dialog_linked();
                 }
                 true
             }

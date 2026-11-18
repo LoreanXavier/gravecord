@@ -596,7 +596,12 @@ pub(super) fn message_items_saved(own: bool, saved: SavedState) -> Vec<Item> {
     }
     // Not in the pinned client: ReverseImageSearch, at the end of the link group (`findGroupChildrenByChildId`).
     if saved.search_image {
-        media.push(Item::Entry("Search Image", "settings_search", Action::SearchImage, true));
+        media.push(Item::Entry(
+            "Search Image",
+            "settings_search",
+            Action::SearchImage,
+            true,
+        ));
     }
     push_menu_group(&mut items, media);
 
@@ -794,14 +799,39 @@ impl Root {
         }
     }
 
-    /// The quick reaction row: the four most frecent reactions (`Z.D6`), unicode emoji from the dataset.
+    /// `getEmojiInPriorityOrderWithoutFetchingLatest` (module 121681, `D6` of 822123): the favourite emoji, then the
+    /// frecent reactions, each once. GAP: unicode emoji only (the dataset's); a custom favourite or reaction is left
+    /// out of the menu's rows.
+    pub(super) fn priority_reactions(&self) -> Vec<&'static dc_tokens::emoji_data::Emoji> {
+        priority_order(
+            self.favorite_emoji_keys(),
+            self.frequent_reactions(),
+            |name| dc_tokens::emoji_by_name(name).map(Same),
+        )
+        .into_iter()
+        .map(|Same(emoji)| emoji)
+        .collect()
+    }
+
+    /// The quick reaction row of the message menu (module 761304 `tr`): the first four in priority order, less the
+    /// sprite-sheet faces of `eP`.
     pub(super) fn quick_reactions(&self) -> Vec<&'static dc_tokens::emoji_data::Emoji> {
-        self.frequent_reactions()
+        self.priority_reactions()
             .into_iter()
-            .filter_map(|name| dc_tokens::emoji_by_name(&name))
             .filter(|emoji| !(emoji.sprite.is_some() && NOT_QUICK.contains(&emoji.names[0])))
             .take(4)
             .collect()
+    }
+
+    /// The hover bar's three (module 891522 `np`): the frecent reactions only (`QZ`), topped up with
+    /// `100`, `laughing` and `sparkling_heart` when fewer than three.
+    pub(super) fn hover_bar_reactions(&self) -> Vec<&'static dc_tokens::emoji_data::Emoji> {
+        hover_order(self.frequent_reactions(), |name| {
+            dc_tokens::emoji_by_name(name).map(Same)
+        })
+        .into_iter()
+        .map(|Same(emoji)| emoji)
+        .collect()
     }
 
     pub(super) fn run_action(
@@ -1648,7 +1678,8 @@ impl Root {
             )
     }
 
-    /// Add Reaction's submenu (module 761304): up to twelve frecent reactions, then View More for the picker.
+    /// Add Reaction's submenu (module 761304 `td`): up to twelve in priority order (favourites first), then View More
+    /// for the picker.
     fn reaction_rows(
         &self,
         channel: Id,
@@ -1656,9 +1687,8 @@ impl Root {
         cx: &mut Context<Self>,
     ) -> Vec<(AnyElement, f32)> {
         let mut rows: Vec<(AnyElement, f32)> = self
-            .frequent_reactions()
+            .priority_reactions()
             .into_iter()
-            .filter_map(|name| dc_tokens::emoji_by_name(&name))
             .take(12)
             .enumerate()
             .map(|(index, emoji)| {
@@ -1906,8 +1936,101 @@ impl Root {
     }
 }
 
+/// One dataset emoji, compared by identity (the official lists compare the emoji objects).
+#[derive(Clone, Copy)]
+struct Same(&'static dc_tokens::emoji_data::Emoji);
+
+impl PartialEq for Same {
+    fn eq(&self, other: &Self) -> bool {
+        std::ptr::eq(self.0, other.0)
+    }
+}
+
+/// Favourites then frecent, resolved, each emoji once (the concat's `Set` keeps the first).
+fn priority_order<T: PartialEq>(
+    favorites: Vec<String>,
+    frecent: Vec<String>,
+    resolve: impl Fn(&str) -> Option<T>,
+) -> Vec<T> {
+    let mut out: Vec<T> = Vec::new();
+    for item in favorites
+        .iter()
+        .chain(frecent.iter())
+        .filter_map(|key| resolve(key))
+    {
+        if !out.contains(&item) {
+            out.push(item);
+        }
+    }
+    out
+}
+
+/// `l.length >= 3 ? l : unique(l.concat(nh))`, then the first three.
+fn hover_order<T: PartialEq>(frecent: Vec<String>, resolve: impl Fn(&str) -> Option<T>) -> Vec<T> {
+    let mut out: Vec<T> = frecent.iter().filter_map(|key| resolve(key)).collect();
+    if out.len() < 3 {
+        for item in ["100", "laughing", "sparkling_heart"]
+            .into_iter()
+            .filter_map(&resolve)
+        {
+            if !out.contains(&item) {
+                out.push(item);
+            }
+        }
+    }
+    out.truncate(3);
+    out
+}
+
 #[cfg(test)]
-mod tests {
+mod priority_tests {
+    use super::{hover_order, priority_order};
+
+    #[test]
+    fn favourites_come_before_frecent_reactions() {
+        let names = |items: &[&str]| {
+            items
+                .iter()
+                .map(|item| (*item).to_owned())
+                .collect::<Vec<_>>()
+        };
+        let resolve = |name: &str| (name != "gone").then(|| name.to_owned());
+        let order = priority_order(
+            names(&["heart", "gone", "fire"]),
+            names(&["fire", "thumbsup"]),
+            |n| resolve(n).map(|_| n.len() as u32 * 100 + n.as_bytes()[0] as u32),
+        );
+        assert_eq!(order.len(), 3);
+        let order = priority_order(names(&["b", "a"]), names(&["a", "c"]), |n| {
+            Some(n.as_bytes()[0])
+        });
+        assert_eq!(order, [b'b', b'a', b'c']);
+        assert_eq!(
+            priority_order(Vec::new(), names(&["x", "y"]), |n| Some(n.as_bytes()[0])),
+            [b'x', b'y']
+        );
+    }
+
+    #[test]
+    fn the_hover_bar_tops_up_to_three() {
+        let names = |items: &[&str]| {
+            items
+                .iter()
+                .map(|item| (*item).to_owned())
+                .collect::<Vec<_>>()
+        };
+        let id = |n: &str| Some(n.as_bytes()[0]);
+        assert_eq!(
+            hover_order(names(&["a", "b", "c", "d"]), id),
+            [b'a', b'b', b'c']
+        );
+        assert_eq!(hover_order(names(&["laughing"]), id), [b'l', b'1', b's']);
+        assert_eq!(
+            hover_order(names(&["x"]), |n: &str| Some(n.to_owned())),
+            ["x", "100", "laughing"].map(str::to_owned)
+        );
+    }
+
     use super::{Action, Item, message_items};
 
     #[test]

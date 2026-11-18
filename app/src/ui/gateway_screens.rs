@@ -52,6 +52,7 @@ impl Root {
     ) {
         match name {
             "READY" | "USER_CONNECTIONS_CALLBACK" => self.connection_gateway(name, data),
+            "USER_CONNECTIONS_LINK_CALLBACK" => self.connection_link_callback(data, cx),
             "USER_NOTE_UPDATE" => self.note_updated(data, cx),
             // ConnectedAccountsStore (module 417869): a gateway update (not a local one carrying `accounts`) reads
             // the connections again.

@@ -11,6 +11,17 @@ use std::time::Duration;
 
 use super::platform_presence;
 
+/// `aspectRatio: "crunchyroll"` (module 802880 over 623671): `.aspectRatio_1AI0dL.crunchyroll_1AI0dL` is
+/// `aspect-ratio: 2/3` at the image size's width, so a Crunchyroll show's poster is half again as tall as the square
+/// art of other activities (cover fit).
+pub(super) fn poster_height(activity: &Value, image_size: f32) -> f32 {
+    if platform_presence::is_crunchyroll(activity) {
+        image_size * 1.5
+    } else {
+        image_size
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum Surface {
     Popout,
@@ -549,6 +560,7 @@ impl Root {
                     field(&activity["assets"], "large_text")
                 };
                 let image_size = if large { 100. } else { 60. };
+                let poster_height = poster_height(activity, image_size);
                 let glyph = if kind == 2 {
                     "activity_music"
                 } else if matches!(kind, 1 | 3) {
@@ -1022,7 +1034,8 @@ impl Root {
                                 this.child(
                                     div()
                                         .relative()
-                                        .size(px(image_size))
+                                        .w(px(image_size))
+                                        .h(px(poster_height))
                                         .flex_none()
                                         .rounded(px(8.))
                                         .overflow_hidden()
@@ -1032,7 +1045,11 @@ impl Root {
                                             )
                                         })
                                         .children(art.map(|picture| {
-                                            img(picture).size(px(image_size)).rounded(px(8.))
+                                            img(picture)
+                                                .w(px(image_size))
+                                                .h(px(poster_height))
+                                                .object_fit(gpui::ObjectFit::Cover)
+                                                .rounded(px(8.))
                                         }))
                                         .children(small.map(|picture| {
                                             img(picture)
@@ -1092,6 +1109,16 @@ impl Root {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn a_crunchyroll_show_takes_the_tall_poster() {
+        let show = json!({"type": 3, "application_id": "981509069309354054"});
+        assert_eq!(poster_height(&show, 60.), 90.);
+        assert_eq!(poster_height(&show, 100.), 150.);
+        let game = json!({"type": 0, "application_id": "1"});
+        assert_eq!(poster_height(&game, 60.), 60.);
+    }
+
     #[test]
     fn playback_value_text_floors_the_elapsed_time_to_ten_seconds() {
         let text = playback_value_text(83, 200);

@@ -1212,6 +1212,14 @@ pub async fn run(
                 let line = root.update(cx, |root, cx| root.script_connect_error(kind, cx));
                 let _ = writeln!(output, "{line}");
             }
+            ["connect-open", kind] => {
+                let line = root.update(cx, |root, cx| root.script_connect_open(kind, cx));
+                let _ = writeln!(output, "{line}");
+            }
+            ["connect-state"] => {
+                let line = root.read_with(cx, |root, _| root.script_connect_state());
+                let _ = writeln!(output, "{line}");
+            }
             ["dmcall", rest @ ..] => {
                 let line = root.update(cx, |root, cx| root.script_dmcall(rest, cx));
                 let _ = writeln!(output, "dmcall: {line}");

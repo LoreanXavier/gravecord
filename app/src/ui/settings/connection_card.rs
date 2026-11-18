@@ -148,6 +148,15 @@ pub(super) fn join_request(integration: &str) -> Request {
     }
 }
 
+/// `PLATFORM_TWITTER` of module 646514 (`unsafe_rawColors`, no CSS variable).
+const TWITTER_BLUE: u32 = 0x1da1f2;
+
+/// The card's Verified on Twitter condition (module 158935): only an X account (`twitter`) whose metadata `verified`
+/// (`pK.TWITTER_VERIFIED`) is the string `"1"`; Bluesky and Mastodon take the mark only on the profile.
+pub(super) fn twitter_verified(kind: &str, metadata: &Value) -> bool {
+    kind == "twitter" && metadata["verified"].as_str() == Some("1")
+}
+
 /// The record's flags arrive as `0`/`1` (`visibility`, `metadata_visibility`) or booleans.
 pub(super) fn flag(value: &Value) -> bool {
     value
@@ -909,6 +918,50 @@ impl Root {
         )
     }
 
+    /// The Verified on Twitter mark of the card (module 158935 `l`, the flower of module 152578): the 16px flower in
+    /// `PLATFORM_TWITTER` with the 16px CheckmarkSmall in white on it, in `connectionAccountLabelVerified_yX-kzH`
+    /// (20 by 16, 4px after the name), tooltip `Jebrww` on top. GAP: no DOM capture of this mark (the fixture account
+    /// has no verified X link).
+    fn twitter_verified_badge(&self, id: &str, cx: &mut Context<Self>) -> AnyElement {
+        let badge = div()
+            .relative()
+            .size(px(16.))
+            .flex_none()
+            .child(
+                gpui::svg()
+                    .path("icons/discover_flower.svg")
+                    .size(px(16.))
+                    .text_color(gpui::rgb(TWITTER_BLUE)),
+            )
+            .child(
+                div()
+                    .absolute()
+                    .inset_0()
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .child(
+                        gpui::svg()
+                            .path("icons/discover_flower_check.svg")
+                            .size(px(16.))
+                            .flex_none()
+                            .text_color(gpui::rgb(0xffffff)),
+                    ),
+            );
+        div()
+            .flex_none()
+            .w(px(20.))
+            .h(px(16.))
+            .ml(px(4.))
+            .child(self.with_tip(
+                format!("settings-conn-verified-{id}"),
+                crate::ui::tooltip::Tip::text(dc_intl::t("Jebrww"), crate::ui::tooltip::Side::Top),
+                badge,
+                cx,
+            ))
+            .into_any_element()
+    }
+
     /// One connected account (`TW`, `connection_yX-kzH`).
     pub(super) fn connection_card(
         &self,
@@ -945,13 +998,25 @@ impl Root {
                     .flex()
                     .flex_col()
                     .child(
+                        // `connectionAccountLabelContainer_yX-kzH`: the name, then the Verified on Twitter mark.
                         div()
-                            .text_size(px(16.))
-                            .line_height(px(20.))
-                            .font_weight(FontWeight(600.))
-                            .text_color(color("--text-strong"))
-                            .text_ellipsis()
-                            .child(account.name.clone()),
+                            .flex()
+                            .flex_row()
+                            .items_center()
+                            .child(
+                                div()
+                                    .min_w(px(0.))
+                                    .text_size(px(16.))
+                                    .line_height(px(20.))
+                                    .font_weight(FontWeight(600.))
+                                    .text_color(color("--text-strong"))
+                                    .text_ellipsis()
+                                    .child(account.name.clone()),
+                            )
+                            .children(
+                                twitter_verified(&account.kind, &item["metadata"])
+                                    .then(|| self.twitter_verified_badge(&account.id, cx)),
+                            ),
                     )
                     .child(
                         div()
@@ -1181,6 +1246,19 @@ mod tests {
         assert!(!toggle_state(
             &json!({"metadata_visibility": 0}),
             Toggle::Details
+        ));
+    }
+
+    #[test]
+    fn only_a_verified_x_account_takes_the_twitter_mark() {
+        assert!(twitter_verified("twitter", &json!({"verified": "1"})));
+        assert!(!twitter_verified("twitter", &json!({"verified": "0"})));
+        assert!(!twitter_verified("twitter", &json!({"verified": 1})));
+        assert!(!twitter_verified("twitter", &Value::Null));
+        assert!(!twitter_verified("bluesky", &json!({"verified": "1"})));
+        assert!(!twitter_verified(
+            "twitter_legacy",
+            &json!({"verified": "1"})
         ));
     }
 

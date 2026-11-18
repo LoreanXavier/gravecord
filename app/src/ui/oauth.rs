@@ -45,6 +45,8 @@ const END_SLACK: f32 = 37.;
 pub(super) struct Args {
     pub client_id: String,
     pub response_type: String,
+    /// The console link's consent (module 910316) passes one for PlayStation; the SDK flow refuses any.
+    pub redirect_uri: Option<String>,
     pub code_challenge: Option<String>,
     pub code_challenge_method: Option<String>,
     pub state: Option<String>,
@@ -95,6 +97,7 @@ pub(super) fn parse_args(args: &Value) -> Result<Args, (u32, String)> {
     Ok(Args {
         client_id,
         response_type: text_of(&args["response_type"]).unwrap_or_else(|| "code".to_owned()),
+        redirect_uri: None,
         code_challenge: text_of(&args["code_challenge"]),
         code_challenge_method: text_of(&args["code_challenge_method"]),
         state: text_of(&args["state"]),
@@ -174,6 +177,7 @@ pub(super) fn authorize_get_route(args: &Args, integration: u64) -> String {
         query(&[
             ("client_id", Some(args.client_id.clone())),
             ("response_type", Some(args.response_type.clone())),
+            ("redirect_uri", args.redirect_uri.clone()),
             ("code_challenge", args.code_challenge.clone()),
             ("code_challenge_method", args.code_challenge_method.clone()),
             ("scope", Some(args.scopes.join(" "))),
@@ -191,6 +195,7 @@ pub(super) fn authorize_post_route(args: &Args, requested: &[String]) -> String 
         query(&[
             ("client_id", Some(args.client_id.clone())),
             ("response_type", Some(args.response_type.clone())),
+            ("redirect_uri", args.redirect_uri.clone()),
             ("code_challenge", args.code_challenge.clone()),
             ("code_challenge_method", args.code_challenge_method.clone()),
             ("scope", Some(requested.join(" "))),
@@ -293,7 +298,7 @@ fn percent_decode(text: &str) -> String {
 }
 
 /// The query (and fragment) parameters of a URL, decoded.
-fn location_params(location: &str) -> Vec<(String, String)> {
+pub(super) fn location_params(location: &str) -> Vec<(String, String)> {
     let rest = location.split_once('?').map_or("", |(_, rest)| rest);
     rest.split('#')
         .flat_map(|part| part.split('&'))
@@ -309,7 +314,7 @@ pub(super) fn at_end(max_scroll: f32, scrolled: f32) -> bool {
 }
 
 /// Whether the account's own `Authorize` and the Cancel button's deny may be posted from this build.
-fn grants_allowed() -> bool {
+pub(super) fn grants_allowed() -> bool {
     !cfg!(feature = "capture") || std::env::var_os("GRAVECORD_ALLOW_AUTHORIZE").is_some()
 }
 
@@ -608,6 +613,36 @@ pub(super) fn needs_guild(requested: &[String], integration: u64) -> bool {
             .any(|scope| scope == BOT || scope == COMMANDS || scope == WEBHOOK)
 }
 
+/// Which made-up line ends the scope list: random in the official client (`es.O_[Math.floor(Math.random() * n)]`),
+/// the golden's in the capture harness.
+pub(super) fn fake_index() -> usize {
+    if cfg!(feature = "capture") {
+        6
+    } else {
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |time| time.subsec_nanos() as usize)
+    }
+}
+
+/// The ids of `GET /applications/{id}/disclosures` (`disclosures`).
+pub(super) fn disclosure_ids(body: Option<&Value>) -> Vec<u64> {
+    body.and_then(|body| body["disclosures"].as_array())
+        .map(|items| items.iter().filter_map(Value::as_u64).collect())
+        .unwrap_or_default()
+}
+
+/// What the consent parts are drawn from: the authorize GET, the disclosures and the request.
+pub(super) struct ConsentData {
+    pub get: Value,
+    pub disclosures: Vec<u64>,
+    pub requested: Vec<String>,
+    pub integration: u64,
+    pub fake: usize,
+    /// `isTrustedName` of the hook: the console link's consent passes true.
+    pub trusted_name: bool,
+}
+
 // --- the flow -----------------------------------------------------------------------------------------------------
 
 #[derive(Clone, Debug, PartialEq)]
@@ -647,14 +682,7 @@ pub(crate) struct Flow {
 impl Flow {
     fn new(nonce: String, args: Args) -> Self {
         let requested = requested_scopes(&args.scopes);
-        // The made-up line is random in the official client; the capture harness shows the golden's.
-        let fake = if cfg!(feature = "capture") {
-            6
-        } else {
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .map_or(0, |time| time.subsec_nanos() as usize)
-        };
+        let fake = fake_index();
         Self {
             nonce,
             args,
@@ -687,7 +715,7 @@ impl Flow {
 }
 
 impl Root {
-    fn oauth_location(&self) -> Location {
+    pub(super) fn oauth_location(&self) -> Location {
         let dm = self
             .stores
             .private_channels
@@ -1130,64 +1158,26 @@ fn footer_button(
 }
 
 impl Root {
-    /// The consent modal, or its error.
-    pub(super) fn oauth_layer(
-        &mut self,
-        window: &mut Window,
+    /// The header (`eZ`), scope list (`eU`) and details (`em`) the OAuth2 hook 610056 returns as `header`, `body` and
+    /// `appDetails`: drawn by the consent modal in its content box and by the console link's consent slide (910316).
+    pub(super) fn oauth_consent_parts(
+        &self,
+        data: &ConsentData,
         cx: &mut Context<Self>,
-    ) -> Option<AnyElement> {
-        let flow = self.activities.oauth.as_ref()?;
-        if let View::Failed(message) = &flow.view {
-            let message = message.clone();
-            return Some(super::modal::render(
-                super::modal::Spec {
-                    id: "oauth-error",
-                    title: plain(spec::ERROR, &[]).into(),
-                    subtitle: Some(div().child(message).into_any_element()),
-                    body: None,
-                    buttons: vec![super::modal::button(
-                        "oauth-error-close",
-                        plain(spec::CLOSE, &[]),
-                        super::modal::Tone::Secondary,
-                        |this, _, cx| this.oauth_close(cx),
-                    )],
-                    close: Box::new(|this, _, cx| this.oauth_close(cx)),
-                },
-                cx,
-            ));
-        }
-        if flow.view != View::Consent {
-            return None;
-        }
-        let get = flow.get.clone()?;
+    ) -> (AnyElement, AnyElement, AnyElement) {
+        let get = &data.get;
         let application = get["application"].clone();
         let name = application["name"].as_str().unwrap_or_default().to_owned();
-        let integration = flow.integration.unwrap_or(GUILD_INSTALL);
-        let requested = flow.requested.clone();
-        let accounts = account_scopes(&requested);
-        let rows = scope_rows(&accounts, &requested, integration, flow.fake);
-        let trusted = flags_of(&application) & PARENT_FLAG != 0;
-        let disclosures: Vec<u64> = flow
-            .disclosures
-            .as_ref()
-            .and_then(|body| body["disclosures"].as_array())
-            .map(|items| items.iter().filter_map(Value::as_u64).collect())
-            .unwrap_or_default();
+        let (integration, requested, disclosures) =
+            (data.integration, &data.requested, &data.disclosures);
+        let accounts = account_scopes(requested);
+        let rows = scope_rows(&accounts, requested, integration, data.fake);
+        // `isTrustedName: H || ej`.
+        let trusted = data.trusted_name || flags_of(&application) & PARENT_FLAG != 0;
         let guild_count = application["approximate_guild_count"]
             .as_u64()
             .or_else(|| get["bot"]["approximate_guild_count"].as_u64());
-        let entries = details(&application, &requested, &disclosures, guild_count);
-        let needs_guild = needs_guild(&requested, integration) && {
-            // The server the request names, when the account may manage it.
-            let named = flow.args.guild_id.as_deref();
-            !named.is_some_and(|id| {
-                get["guilds"].as_array().is_some_and(|guilds| {
-                    guilds.iter().any(|guild| guild["id"].as_str() == Some(id))
-                })
-            })
-        };
-        let busy = flow.posting.is_some();
-        let (scroll, reached) = (flow.scroll.clone(), flow.reached.clone());
+        let entries = details(&application, requested, disclosures, guild_count);
         let has_scopes = !rows.is_empty();
 
         let app_id = application["id"].as_str().unwrap_or_default().to_owned();
@@ -1338,6 +1328,68 @@ impl Root {
                             .child(rich(IDS[at.min(7)], &entry.segs, link_color, cx)),
                     )
             }));
+        (
+            head.into_any_element(),
+            scope_list.into_any_element(),
+            detail_list.into_any_element(),
+        )
+    }
+}
+
+impl Root {
+    /// The consent modal, or its error.
+    pub(super) fn oauth_layer(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Option<AnyElement> {
+        let flow = self.activities.oauth.as_ref()?;
+        if let View::Failed(message) = &flow.view {
+            let message = message.clone();
+            return Some(super::modal::render(
+                super::modal::Spec {
+                    id: "oauth-error",
+                    title: plain(spec::ERROR, &[]).into(),
+                    subtitle: Some(div().child(message).into_any_element()),
+                    body: None,
+                    buttons: vec![super::modal::button(
+                        "oauth-error-close",
+                        plain(spec::CLOSE, &[]),
+                        super::modal::Tone::Secondary,
+                        |this, _, cx| this.oauth_close(cx),
+                    )],
+                    close: Box::new(|this, _, cx| this.oauth_close(cx)),
+                },
+                cx,
+            ));
+        }
+        if flow.view != View::Consent {
+            return None;
+        }
+        let get = flow.get.clone()?;
+        let integration = flow.integration.unwrap_or(GUILD_INSTALL);
+        let requested = flow.requested.clone();
+        let disclosures = disclosure_ids(flow.disclosures.as_ref());
+        let needs_guild = needs_guild(&requested, integration) && {
+            // The server the request names, when the account may manage it.
+            let named = flow.args.guild_id.as_deref();
+            !named.is_some_and(|id| {
+                get["guilds"].as_array().is_some_and(|guilds| {
+                    guilds.iter().any(|guild| guild["id"].as_str() == Some(id))
+                })
+            })
+        };
+        let busy = flow.posting.is_some();
+        let (scroll, reached) = (flow.scroll.clone(), flow.reached.clone());
+        let data = ConsentData {
+            get,
+            disclosures,
+            requested,
+            integration,
+            fake: flow.fake,
+            trusted_name: false,
+        };
+        let (head, scope_list, detail_list) = self.oauth_consent_parts(&data, cx);
         let content = div()
             .w_full()
             .p(px(32.))
