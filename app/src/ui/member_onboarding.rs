@@ -55,6 +55,11 @@ impl gpui::Asset for FallbackArt {
     }
 }
 
+/// GAP: the page stays off until the member onboarding flow (module 197463) is built: its Start Onboarding would
+/// otherwise lead nowhere and the member would lose the server's channels (decision 2026-11-18). The member keeps the
+/// channels, as before.
+const SHOW_BLOCKED_PAGE: bool = false;
+
 /// `$Y` of module 961973: the server has `GUILD_ONBOARDING`, the member joined (on or after the cutoff), started
 /// onboarding and did not complete it. A member with no join date (a lurker) is never blocked.
 pub(super) fn blocked(guild: &Guild) -> bool {
@@ -72,7 +77,7 @@ impl Root {
     /// The channel route shows the blocked page instead of the channel (`gk` of 596339 passes it the channel id, and
     /// its button needs one). The static routes (server guide, channel browser, members) are checked before it.
     pub(super) fn onboarding_blocked(&self) -> bool {
-        self.channel.is_some() && self.current_guild().is_some_and(blocked)
+        SHOW_BLOCKED_PAGE && self.channel.is_some() && self.current_guild().is_some_and(blocked)
     }
 
     /// Module 140354 without a splash (`fullBorderWithGradient_kgfy3D` and the 426660 art).
