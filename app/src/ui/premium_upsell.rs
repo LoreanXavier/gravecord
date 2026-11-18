@@ -136,6 +136,8 @@ impl Root {
             .items_center()
             .justify_center()
             .on_click(cx.listener(move |this, _, window, cx| {
+                // Only this dialog closes, not one under it (a picker).
+                cx.stop_propagation();
                 close_scrim(this, window, cx);
                 cx.notify();
             }))

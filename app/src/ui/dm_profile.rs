@@ -20,8 +20,8 @@ use gpui::{
 use serde_json::Value;
 
 thread_local! {
-    /// The people whose DM profile has been drawn: `oD`'s `c`, which keeps it up after a later read fails.
-    static SHOWN_SIDEBARS: std::cell::RefCell<std::collections::HashSet<Id>> = Default::default();
+    /// The person whose DM profile is drawn: `oD`'s `c` (per mount), which keeps it up after a later read fails.
+    static SHOWN_SIDEBAR: std::cell::Cell<Option<Id>> = const { std::cell::Cell::new(None) };
 }
 
 /// `lineClamp` of module 501925 (6 unless given), as the classic sidebar draws the bio.
@@ -438,8 +438,13 @@ impl Root {
                 .iter()
                 .map(|span| self.piece(span, text, 14., 400., 18.))
                 .collect();
+            // Every paragraph after the first starts on its own line, an empty or emoji-only one too: the break
+            // takes the style of the first text piece found.
             if at > 0
-                && let Some(first) = block_pieces.iter().find(|piece| piece.image.is_none())
+                && let Some(first) = block_pieces
+                    .iter()
+                    .chain(pieces.iter())
+                    .find(|piece| piece.image.is_none())
             {
                 let mut gap = first.clone();
                 gap.text = "\n".to_owned();
@@ -1427,12 +1432,12 @@ impl Root {
         // `oD` draws nothing in the redesign until the profile has loaded (no skeleton, no jump); once drawn it stays
         // (`c`), so a later failed read shows its warning in place (module 559506).
         let loaded = self.fetched.contains_key(&format!("profile:{}", user.id));
-        let shown = SHOWN_SIDEBARS.with(|set| set.borrow().contains(&user.id));
+        let shown = SHOWN_SIDEBAR.get() == Some(user.id);
         if redesign && !loaded && !shown {
             return None;
         }
         if !shown {
-            SHOWN_SIDEBARS.with(|set| set.borrow_mut().insert(user.id));
+            SHOWN_SIDEBAR.set(Some(user.id));
         }
         self.request_profile_cards(user.id);
         if redesign {
@@ -2048,7 +2053,13 @@ impl Root {
                 .get(&key)
                 .cloned()
                 .unwrap_or_else(|| serde_json::json!({}));
-            body["user_profile"]["bio"] = Value::from(words[1..].join(" "));
+            // `<br>` stands for a line break, so a bio can have paragraphs.
+            body["user_profile"]["bio"] = Value::from(
+                words[1..]
+                    .join(" ")
+                    .replace(" <br> ", "\n")
+                    .replace("<br>", "\n"),
+            );
             self.fetched.insert(key, body);
             cx.notify();
             return "profile demo: bio set".to_owned();

@@ -507,6 +507,7 @@ impl Root {
     /// The Game Friend section of the DM profile (heading `Uv/eTx` over module 361311), for a person who is not a
     /// friend (821269 `q`) and has game friendships with this account whose games are known.
     pub(super) fn game_friends_section(&self, user: Id, palette: &Palette) -> Option<AnyElement> {
+        // GAP: 821269 also leaves out a provisional account (`isProvisional`), which this client does not know.
         if self.stores.relationships.get(&user) == Some(&super::friends::RELATIONSHIP_FRIEND) {
             return None;
         }
