@@ -43,6 +43,9 @@ pub(crate) struct Call {
     /// Someone else was ever connected to the call (`getWasEverMultiParticipant` of module 495867), which the voice
     /// feedback survey asks for (module 409181).
     pub(super) ever_multi: bool,
+    /// `hasUsedBackgroundInCall` of VideoBackgroundStore (module 912630): our camera was on with a video background
+    /// in this channel, so leaving asks for the video background survey (module 932140) instead of the call's.
+    pub(super) used_background: bool,
 }
 
 impl Call {
@@ -261,6 +264,7 @@ impl Root {
             generation: 0,
             failed_reconnects: 0,
             ever_multi: false,
+            used_background: false,
         });
         self.stores.voice_server = None;
     }
@@ -382,6 +386,7 @@ impl Root {
             generation: 0,
             failed_reconnects: 0,
             ever_multi: true,
+            used_background: false,
         });
         self.start_voice_tick(cx);
         self.sync_dm_call_idle_timer(cx);
@@ -409,6 +414,7 @@ impl Root {
             generation: 0,
             failed_reconnects: 0,
             ever_multi: true,
+            used_background: false,
         });
     }
 

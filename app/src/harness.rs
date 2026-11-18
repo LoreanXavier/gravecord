@@ -1000,6 +1000,34 @@ pub async fn run(
                 };
                 let _ = writeln!(output, "{line}");
             }
+            // `overlay rightclick <x> <y>`: a right press and release in the overlay window (a context menu).
+            ["overlay", "rightclick", x, y] => {
+                let handle = root.read_with(cx, |root, _| root.overlay_window());
+                let line = match (handle, at(x, y)) {
+                    (Some(overlay), Some(point)) => {
+                        cx.update(|cx| {
+                            dispatch(cx, overlay, moved(point, None));
+                            dispatch(cx, overlay, right_down(point));
+                            dispatch(cx, overlay, right_up(point));
+                        });
+                        format!("overlay rightclick: {x},{y}")
+                    }
+                    _ => "overlay rightclick: no overlay window".to_owned(),
+                };
+                let _ = writeln!(output, "{line}");
+            }
+            // `overlay move <x> <y>`: the pointer moves there in the overlay window (a hover, a tooltip).
+            ["overlay", "move", x, y] => {
+                let handle = root.read_with(cx, |root, _| root.overlay_window());
+                let line = match (handle, at(x, y)) {
+                    (Some(overlay), Some(point)) => {
+                        cx.update(|cx| dispatch(cx, overlay, moved(point, None)));
+                        format!("overlay move: {x},{y}")
+                    }
+                    _ => "overlay move: no overlay window".to_owned(),
+                };
+                let _ = writeln!(output, "{line}");
+            }
             // `overlay key <stroke>`: a key press sent to the overlay window (Enter in the Chat widget's composer).
             ["overlay", "key", stroke] => {
                 let handle = root.read_with(cx, |root, _| root.overlay_window());
@@ -1107,6 +1135,12 @@ pub async fn run(
             ["feedback", rest @ ..] => {
                 let line = root.update(cx, |root, cx| root.script_feedback(rest, cx));
                 let _ = writeln!(output, "feedback: {line}");
+            }
+            // Capture only: a stream's Report a problem (`ui::stream_report`).
+            #[cfg(feature = "capture")]
+            ["streamreport", rest @ ..] => {
+                let line = root.update(cx, |root, cx| root.script_stream_report(rest, cx));
+                let _ = writeln!(output, "{line}");
             }
             // Capture only: the AV warnings (`ui::av_errors`) and a watched stream that fails (`av fail <owner>`).
             #[cfg(feature = "capture")]

@@ -824,6 +824,14 @@ impl Root {
     pub(in crate::ui) fn video_background_save(&mut self, choice: Choice, cx: &mut Context<Self>) {
         let filter = choice.to_filter();
         let _ = self.stores.set_video_background(filter.as_ref());
+        // `VIDEO_SAVE_LAST_USED_BACKGROUND_OPTION` of module 912630: a background picked while our camera is on in
+        // the channel counts as used in the call.
+        if filter.is_some()
+            && let Some(call) = self.call.as_mut()
+            && call.camera
+        {
+            call.used_background = true;
+        }
         if !crate::storage::settings_writes_blocked() {
             crate::storage::set(STORED, choice.to_json());
         }

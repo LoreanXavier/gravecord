@@ -490,9 +490,12 @@ impl Root {
         match event {
             dc_voice::Event::VideoState { camera } => {
                 info!(camera, "camera state");
+                let background = self.stores.video_background().is_some();
                 if let Some(call) = self.call.as_mut() {
                     let was = call.camera;
                     call.camera = *camera;
+                    // `T` of VideoBackgroundStore (module 912630): video on in the channel with a background set.
+                    call.used_background |= *camera && background;
                     if was != *camera {
                         crate::sounds::play_event(if *camera { "camera_on" } else { "camera_off" });
                     }
@@ -686,6 +689,18 @@ impl Root {
                 cx.notify();
                 format!("show non-video participants={value}")
             }
+            // The Start the Stage modal of a Stage channel, as its moderator opens it (module 128347).
+            ["start-stage", id] => match id.parse::<u64>() {
+                Ok(channel) => {
+                    self.open_start_stage(channel, cx);
+                    format!("start stage {channel}: open={}", self.start_stage.is_some())
+                }
+                Err(_) => "usage: voice start-stage <channel>".to_owned(),
+            },
+            ["start-stage-list"] => format!(
+                "start stage blocked list open={:?}",
+                self.start_stage.as_ref().map(|open| open.blocked_list_open())
+            ),
             // A channel joined by id, through the same questions a click on its row asks (a Stage injected with `gw`
             // in an inert run: the voice state is refused, so the call only exists here).
             ["join-channel", id] => match id.parse::<u64>().ok().and_then(|id| {

@@ -474,10 +474,7 @@ pub fn play_ring_loop(sound: &str) -> Option<Handle> {
 
 /// Pre-fetches core voice, stream, and ring sounds in the background once per process when audio is active.
 pub fn prefetch_call_sounds() {
-    if cfg!(test)
-        || storage::is_capture_run()
-        || std::env::var_os("GRAVECORD_INERT").is_some()
-    {
+    if cfg!(test) || storage::is_capture_run() || std::env::var_os("GRAVECORD_INERT").is_some() {
         return;
     }
     static ONCE: Once = Once::new();
@@ -507,7 +504,10 @@ pub fn prefetch_call_sounds() {
                     let Some(file) = asset_file(name) else {
                         continue;
                     };
-                    let cached = cache().lock().ok().is_some_and(|files| files.contains_key(file));
+                    let cached = cache()
+                        .lock()
+                        .ok()
+                        .is_some_and(|files| files.contains_key(file));
                     if cached {
                         continue;
                     }
@@ -610,6 +610,11 @@ pub(crate) fn fetch_url(url: &str) -> Result<Vec<u8>, String> {
 
 /// Attachment audio has its own budget; it must not inherit the short UI sounds' limit.
 pub(crate) fn fetch_url_limited(url: &str, max_bytes: usize) -> Result<Vec<u8>, String> {
+    fetch_url_typed(url, max_bytes).map(|(bytes, _)| bytes)
+}
+
+/// A file from a URL and its `Content-Type` (empty when the answer names none).
+pub(crate) fn fetch_url_typed(url: &str, max_bytes: usize) -> Result<(Vec<u8>, String), String> {
     static RUNTIME: OnceLock<Option<tokio::runtime::Runtime>> = OnceLock::new();
     static CLIENT: OnceLock<Result<reqwest::Client, String>> = OnceLock::new();
     let runtime = RUNTIME
@@ -641,6 +646,12 @@ pub(crate) fn fetch_url_limited(url: &str, max_bytes: usize) -> Result<Vec<u8>, 
         if !response.status().is_success() {
             return Err(format!("status {}", response.status()));
         }
+        let kind = response
+            .headers()
+            .get(reqwest::header::CONTENT_TYPE)
+            .and_then(|value| value.to_str().ok())
+            .unwrap_or_default()
+            .to_owned();
         if response
             .content_length()
             .is_some_and(|size| size > max_bytes as u64)
@@ -654,7 +665,7 @@ pub(crate) fn fetch_url_limited(url: &str, max_bytes: usize) -> Result<Vec<u8>, 
             }
             bytes.extend_from_slice(&chunk);
         }
-        Ok(bytes)
+        Ok((bytes, kind))
     })
 }
 

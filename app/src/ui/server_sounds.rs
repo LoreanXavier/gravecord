@@ -26,6 +26,8 @@ const BASE_SLOTS: usize = 8;
 
 /// "Upload a Sound" while it is open.
 pub(crate) struct SoundDialog {
+    /// The server the sound is uploaded to or belongs to.
+    guild: Id,
     pub(super) name: Entity<Editor>,
     file: Option<(String, String)>,
     emoji_name: Option<String>,
@@ -75,12 +77,10 @@ impl Root {
             if let Ok(guild) = guild.parse::<Id>() {
                 self.request_sounds(guild);
             }
-            if let Some(open) = self.server_settings.as_mut() {
-                if report["ok"] == true {
-                    open.sound_dialog = None;
-                } else if let Some(dialog) = open.sound_dialog.as_mut() {
-                    dialog.error = report["body"]["message"].as_str().map(str::to_owned);
-                }
+            if report["ok"] == true {
+                self.sound_dialog = None;
+            } else if let Some(dialog) = self.sound_dialog.as_mut() {
+                dialog.error = report["body"]["message"].as_str().map(str::to_owned);
             }
         } else if let Some(guild) = key
             .strip_prefix(SOUNDS_PREFIX)
@@ -116,7 +116,13 @@ impl Root {
             .unwrap_or_default()
     }
 
-    pub(super) fn open_sound_dialog(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+    /// "Upload a Sound" for `guild` (module 122998), drawn over whatever is open: Server Settings or the app.
+    pub(super) fn open_sound_dialog(
+        &mut self,
+        guild: Id,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         let name = cx.new(|cx| {
             let mut editor = Editor::new(super::editor_style(), cx);
             editor.set_placeholder("Sound Name".to_owned());
@@ -124,11 +130,7 @@ impl Root {
         });
         let events = cx.subscribe(&name, |this, editor, event: &EditorEvent, cx| {
             match event {
-                EditorEvent::Cancel => {
-                    if let Some(open) = this.server_settings.as_mut() {
-                        open.sound_dialog = None;
-                    }
-                }
+                EditorEvent::Cancel => this.sound_dialog = None,
                 EditorEvent::Submit(text) => {
                     let text = text.clone();
                     editor.update(cx, |editor, _| editor.set_text(&text));
@@ -146,31 +148,33 @@ impl Root {
         });
         let handle = gpui::Focusable::focus_handle(name.read(cx), cx);
         window.focus(&handle, cx);
-        if let Some(open) = self.server_settings.as_mut() {
-            open.sound_dialog = Some(SoundDialog {
-                name,
-                file: None,
-                emoji_name: None,
-                emoji_id: None,
-                volume: 1.,
-                dragging: false,
-                error: None,
-                editing: None,
-                _events: events,
-            });
-        }
+        self.sound_dialog = Some(SoundDialog {
+            guild,
+            name,
+            file: None,
+            emoji_name: None,
+            emoji_id: None,
+            volume: 1.,
+            dragging: false,
+            error: None,
+            editing: None,
+            _events: events,
+        });
         cx.notify();
     }
 
-    /// Edit on a row: the same dialog with the sound's values, saved with `PATCH` (module 796774 `xV`).
-    fn edit_sound(&mut self, sound: &Value, window: &mut Window, cx: &mut Context<Self>) {
-        self.open_sound_dialog(window, cx);
+    /// Edit on a row, or Edit Sound of a sound's menu (module 923819 opens 122998 with `existingSound`): the same
+    /// dialog with the sound's values, saved with `PATCH` (module 796774 `xV`).
+    pub(super) fn edit_sound(
+        &mut self,
+        guild: Id,
+        sound: &Value,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.open_sound_dialog(guild, window, cx);
         let name = sound["name"].as_str().unwrap_or_default().to_owned();
-        if let Some(dialog) = self
-            .server_settings
-            .as_mut()
-            .and_then(|open| open.sound_dialog.as_mut())
-        {
+        if let Some(dialog) = self.sound_dialog.as_mut() {
             dialog.name.update(cx, |editor, _| editor.set_text(&name));
             dialog.volume = sound["volume"].as_f64().unwrap_or(1.) as f32;
             dialog.emoji_id = sound["emoji_id"].as_str().map(str::to_owned);
@@ -197,11 +201,7 @@ impl Root {
             .chars()
             .take(32)
             .collect();
-        if let Some(dialog) = self
-            .server_settings
-            .as_mut()
-            .and_then(|open| open.sound_dialog.as_mut())
-        {
+        if let Some(dialog) = self.sound_dialog.as_mut() {
             dialog.file = Some((shown, uri));
             if dialog.name.read(cx).text().is_empty() {
                 dialog.name.update(cx, |editor, _| editor.set_text(&stem));
@@ -236,11 +236,7 @@ impl Root {
         if id.is_none() {
             self.request_emoji_image(&name);
         }
-        if let Some(dialog) = self
-            .server_settings
-            .as_mut()
-            .and_then(|open| open.sound_dialog.as_mut())
-        {
+        if let Some(dialog) = self.sound_dialog.as_mut() {
             dialog.emoji_id = id;
             dialog.emoji_name = Some(name);
         }
@@ -248,11 +244,7 @@ impl Root {
     }
 
     fn upload_sound(&mut self, guild: Id, cx: &mut Context<Self>) {
-        let Some(dialog) = self
-            .server_settings
-            .as_ref()
-            .and_then(|open| open.sound_dialog.as_ref())
-        else {
+        let Some(dialog) = self.sound_dialog.as_ref() else {
             return;
         };
         let name = dialog.name.read(cx).text().trim().to_owned();
@@ -294,11 +286,7 @@ impl Root {
 
     fn set_sound_volume(&mut self, x: gpui::Pixels, left: f32, cx: &mut Context<Self>) {
         let fraction = ((f32::from(x) - left) / SLIDER_WIDTH).clamp(0., 1.);
-        if let Some(dialog) = self
-            .server_settings
-            .as_mut()
-            .and_then(|open| open.sound_dialog.as_mut())
-        {
+        if let Some(dialog) = self.sound_dialog.as_mut() {
             dialog.volume = fraction;
         }
         cx.notify();
@@ -306,9 +294,8 @@ impl Root {
 
     /// "Upload a Sound".
     pub(super) fn sound_dialog_modal(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
-        let open = self.server_settings.as_ref()?;
-        let dialog = open.sound_dialog.as_ref()?;
-        let guild = open.guild;
+        let dialog = self.sound_dialog.as_ref()?;
+        let guild = dialog.guild;
         let editing = dialog.editing.is_some();
         let ready =
             (editing || dialog.file.is_some()) && !dialog.name.read(cx).text().trim().is_empty();
@@ -489,11 +476,7 @@ impl Root {
                                 .borrow()
                                 .get("sound-volume")
                                 .map_or(0., |bounds| f32::from(bounds.left()) + 5.);
-                            if let Some(dialog) = this
-                                .server_settings
-                                .as_mut()
-                                .and_then(|open| open.sound_dialog.as_mut())
-                            {
+                            if let Some(dialog) = this.sound_dialog.as_mut() {
                                 dialog.dragging = true;
                             }
                             this.set_sound_volume(event.position.x, left, cx);
@@ -501,9 +484,8 @@ impl Root {
                     )
                     .on_mouse_move(cx.listener(|this, event: &MouseMoveEvent, _, cx| {
                         let dragging = this
-                            .server_settings
+                            .sound_dialog
                             .as_ref()
-                            .and_then(|open| open.sound_dialog.as_ref())
                             .is_some_and(|dialog| dialog.dragging);
                         if dragging && event.dragging() {
                             let left = this
@@ -517,11 +499,7 @@ impl Root {
                     .on_mouse_up(
                         MouseButton::Left,
                         cx.listener(|this, _, _, cx| {
-                            if let Some(dialog) = this
-                                .server_settings
-                                .as_mut()
-                                .and_then(|open| open.sound_dialog.as_mut())
-                            {
+                            if let Some(dialog) = this.sound_dialog.as_mut() {
                                 dialog.dragging = false;
                             }
                             cx.notify();
@@ -563,11 +541,7 @@ impl Root {
                     .child(error)
             }))
             .into_any_element();
-        let close = |this: &mut Root| {
-            if let Some(open) = this.server_settings.as_mut() {
-                open.sound_dialog = None;
-            }
-        };
+        let close = |this: &mut Root| this.sound_dialog = None;
         Some(super::modal::render(
             super::modal::Spec {
                 id: "sound-upload-modal",
@@ -621,6 +595,7 @@ impl Root {
             .and_then(|user| self.images.get(&avatar_source(user).0).cloned());
         let target = id.clone();
         let edited = sound.clone();
+        let menu_sound = sound.clone();
         let group = SharedString::from(format!("server-sound-{id}"));
         let tool = |key: String, glyph: &'static str, tint: &'static str| {
             div()
@@ -656,6 +631,19 @@ impl Root {
                     .flex()
                     .items_center()
                     .gap(px(8.))
+                    // `onContextMenu` of the name (`v` of module 496502 with this server as the call's).
+                    .on_mouse_up(
+                        MouseButton::Right,
+                        cx.listener(move |this, event: &gpui::MouseUpEvent, _, cx| {
+                            if let Some(sound) = super::soundboard::Sound::from_value(
+                                &menu_sound,
+                                &guild.to_string(),
+                            ) {
+                                this.open_sound_menu(&sound, Some(guild), event.position, cx);
+                            }
+                            cx.stop_propagation();
+                        }),
+                    )
                     .child(
                         div()
                             .text_size(px(14.))
@@ -711,7 +699,7 @@ impl Root {
                         )
                         .on_click(cx.listener(
                             move |this, _, window, cx| {
-                                this.edit_sound(&edited, window, cx);
+                                this.edit_sound(guild, &edited, window, cx);
                             },
                         )),
                     )
@@ -738,25 +726,28 @@ impl Root {
     /// The page: heading, intro, then No Sounds with its button, or the button, the free slots and the list.
     pub(super) fn server_sounds_page(&self, guild: Id, cx: &mut Context<Self>) -> AnyElement {
         let sounds = self.sounds_of(guild);
-        let upload = |cx: &mut Context<Self>| {
-            div()
-                .id("server-sound-upload")
-                .h(px(40.))
-                .px(px(15.))
-                .rounded(px(8.))
-                .border_1()
-                .border_color(color("--control-primary-border-default"))
-                .bg(color("--control-primary-background-default"))
-                .cursor_pointer()
-                .flex()
-                .items_center()
-                .text_size(px(16.))
-                .line_height(px(20.))
-                .font_weight(FontWeight(500.))
-                .text_color(color("--white"))
-                .child("Upload Sound")
-                .on_click(cx.listener(|this, _, window, cx| this.open_sound_dialog(window, cx)))
-        };
+        let upload =
+            |cx: &mut Context<Self>| {
+                div()
+                    .id("server-sound-upload")
+                    .h(px(40.))
+                    .px(px(15.))
+                    .rounded(px(8.))
+                    .border_1()
+                    .border_color(color("--control-primary-border-default"))
+                    .bg(color("--control-primary-background-default"))
+                    .cursor_pointer()
+                    .flex()
+                    .items_center()
+                    .text_size(px(16.))
+                    .line_height(px(20.))
+                    .font_weight(FontWeight(500.))
+                    .text_color(color("--white"))
+                    .child("Upload Sound")
+                    .on_click(cx.listener(move |this, _, window, cx| {
+                        this.open_sound_dialog(guild, window, cx)
+                    }))
+            };
         let mut page = div()
             .flex()
             .flex_col()

@@ -8,8 +8,8 @@
 //! people's sounds. A sound is an mp3 on the CDN (`/soundboard-sounds/{id}`), decoded once and played on the voice
 //! speaker at `min(soundVolume * M(soundboardVolume) / 100 * min(outputVolume / 100, 1), 1)`.
 //!
-//! Left out, as the build has no dump or no counterpart: the TIP line (it names the `SOUNDBOARD_HOLD` keybind, which
-//! gravecord has no overlay for), Frequently Used and the sticky section headers, the sound button's locked-click
+//! The TIP line names the Open Soundboard (Hold) keybind and opens the Soundboard Keybind modal (module 29681); the
+//! wheel it opens over the game is `overlay_wheel.rs`. Left out, as the build has no dump or no counterpart: Frequently Used and the sticky section headers, the sound button's locked-click
 //! upsell modal, the tooltip delay (app tooltips open at once), and a per-user "mute soundboard" (no setting for it).
 
 use super::audio_menu::volume_to_slider;
@@ -46,6 +46,19 @@ const MORE_SLOTS: usize = 200;
 const PLAY_START: &str = "SOUNDBOARD_PLAY_START";
 const PLAY_END: &str = "SOUNDBOARD_PLAY_END";
 
+/// Download Sound's limit on a fetched file (soundboard uploads are far smaller).
+const DOWNLOAD_MAX_BYTES: usize = 8 << 20;
+
+/// The file type of a downloaded sound (`switch (e.type)` of module 923819): `audio/mpeg` and `audio/mpeg3` are mp3,
+/// `audio/ogg` is ogg; anything else cannot be named and the download fails.
+pub(super) fn sound_extension(content_type: &str) -> Option<&'static str> {
+    match content_type.split(';').next().unwrap_or_default().trim() {
+        "audio/mpeg" | "audio/mpeg3" => Some("mp3"),
+        "audio/ogg" => Some("ogg"),
+        _ => None,
+    }
+}
+
 /// The picker's box: 8px right of the panel, its bottom on the soundboard button's.
 const PICKER_LEFT: f32 = 362.;
 const PICKER_BOTTOM: f32 = 78.;
@@ -59,6 +72,8 @@ const GIFT_TIP_LEFT: f32 = 64.;
 const GIFT_TIP_BOTTOM: f32 = 16.;
 const GIFT_TIP_WIDTH: f32 = 451.;
 const GIFT_TIP_HEIGHT: f32 = 52.;
+/// `DismissibleContent.SOUNDBOARD_KEYBIND_TIP` (module 554146).
+const KEYBIND_TIP_CONTENT: u16 = 232;
 const RAIL_WIDTH: f32 = 48.;
 const NOTICE_HEIGHT: f32 = 154.;
 const LIST_WIDTH: f32 = 483.;
@@ -897,6 +912,158 @@ impl Root {
         cx.notify();
     }
 
+    /// A press on a sound from elsewhere (the overlay's soundboard wheel, module 177303 `p.Ak`).
+    pub(super) fn soundboard_click_sound(&mut self, sound: &Sound, cx: &mut Context<Self>) {
+        self.soundboard_click(sound, cx);
+    }
+
+    /// The wheel opens (`f.E7()`, `loadIfNecessary`): the sounds and their emoji are asked for once.
+    pub(super) fn soundboard_load_for_wheel(&mut self) {
+        self.soundboard_request();
+        let known: Vec<Sound> = self
+            .soundboard
+            .defaults
+            .iter()
+            .chain(self.soundboard.guilds.values().flatten())
+            .cloned()
+            .collect();
+        self.request_sound_images(&known);
+    }
+
+    /// `C` of module 177303 over `y.Y(channel, true)`: the call's server first, then (with Soundboard Everywhere and
+    /// Use External Sounds) every other server, then the defaults; favourites first, only available sounds.
+    pub(super) fn soundboard_wheel_sounds(&self) -> Vec<Sound> {
+        let ctx = self.soundboard_ctx();
+        let current = self
+            .call
+            .as_ref()
+            .map(|call| call.guild)
+            .filter(|guild| *guild != 0);
+        let mut guilds: Vec<String> = current.iter().map(|guild| guild.to_string()).collect();
+        if ctx.everywhere && (current.is_none() || ctx.external) {
+            for guild in &self.stores.guilds {
+                if Some(guild.id) != current {
+                    guilds.push(guild.id.to_string());
+                }
+            }
+        }
+        let all: Vec<&Sound> = self
+            .soundboard
+            .defaults
+            .iter()
+            .chain(self.soundboard.guilds.values().flatten())
+            .collect();
+        let plain: Vec<dc_overlay::wheel::Sound> = all
+            .iter()
+            .map(|sound| dc_overlay::wheel::Sound {
+                id: sound.id.clone(),
+                guild: sound.guild.clone(),
+                available: sound.available,
+            })
+            .collect();
+        dc_overlay::wheel::order(&plain, &guilds, &self.soundboard.favorites)
+            .into_iter()
+            .filter_map(|picked| {
+                all.iter()
+                    .find(|sound| sound.id == picked.id && sound.guild == picked.guild)
+                    .map(|sound| (*sound).clone())
+            })
+            .collect()
+    }
+
+    /// A sound of the wheel (`S.Ay` with `className: soundButton_JhiVh1`, 96 by 52 with the border and high shadows):
+    /// its emoji and name; the selected one (`focused`) shows the hover look with the play glyph.
+    pub(super) fn soundboard_wheel_item(&self, sound: &Sound, focused: bool) -> AnyElement {
+        let picture = sound
+            .emoji_id
+            .as_ref()
+            .and_then(|id| self.images.get(&format!("custom:{id}")))
+            .or_else(|| {
+                sound
+                    .emoji_name
+                    .as_ref()
+                    .and_then(|name| self.images.get(&format!("emoji:{name}")))
+            })
+            .cloned();
+        let onyx = super::overlay::onyx;
+        div()
+            .relative()
+            .w(px(96.))
+            .h(px(52.))
+            .rounded(px(8.))
+            .bg(onyx("--background-base-lower"))
+            // `--shadow-border` then `--shadow-high` of the dark themes.
+            .shadow(vec![
+                BoxShadow {
+                    color: hsla(0., 0., 1., 0.08),
+                    offset: point(px(0.), px(0.)),
+                    blur_radius: px(0.),
+                    spread_radius: px(1.),
+                    inset: false,
+                },
+                BoxShadow {
+                    color: hsla(0., 0., 0., 0.24),
+                    offset: point(px(0.), px(12.)),
+                    blur_radius: px(24.),
+                    spread_radius: px(0.),
+                    inset: false,
+                },
+            ])
+            .child(
+                div()
+                    .size_full()
+                    .px(px(8.))
+                    .rounded(px(8.))
+                    .border_1()
+                    .border_color(if focused {
+                        onyx("--border-subtle")
+                    } else {
+                        gpui::rgba(0)
+                    })
+                    .bg(onyx("--background-mod-subtle"))
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .gap(px(8.))
+                    .child(
+                        div()
+                            .size(px(20.))
+                            .flex_none()
+                            .children(picture.map(|picture| img(picture).size(px(20.)))),
+                    )
+                    .child(
+                        div()
+                            .text_size(px(12.))
+                            .line_height(px(16.))
+                            .font_weight(FontWeight(500.))
+                            .text_color(onyx("--text-strong"))
+                            .whitespace_nowrap()
+                            .overflow_hidden()
+                            .child(sound.name.clone()),
+                    ),
+            )
+            .when(focused, |this| {
+                this.child(
+                    div()
+                        .absolute()
+                        .inset_0()
+                        .rounded(px(7.))
+                        .bg(onyx("--background-surface-highest"))
+                        .opacity(0.8)
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .child(
+                            svg()
+                                .path("icons/sb_play.svg")
+                                .size(px(20.))
+                                .text_color(onyx("--text-strong")),
+                        ),
+                )
+            })
+            .into_any_element()
+    }
+
     /// The pointer entered or left the bar's soundboard button or its popup: the defaults load on the first entry.
     pub(super) fn soundboard_hover(&mut self, inside: bool, cx: &mut Context<Self>) {
         if inside && !self.vv.suggest {
@@ -1054,7 +1221,7 @@ impl Root {
         }
         self.request_sounds(guild);
         if allowed {
-            self.open_sound_dialog(window, cx);
+            self.open_sound_dialog(guild, window, cx);
         }
         cx.notify();
     }
@@ -1558,10 +1725,9 @@ impl Root {
                                 .child("This will play when your friend opens their gift"),
                         ),
                 )
-                .when(!self.soundboard.gift_tip_closed, |this| {
-                    this.child(self.soundboard_gift_tip(cx))
-                })
-            });
+            })
+            // The TIP line under the sounds, in both pickers.
+            .children(self.soundboard_gift_tip(cx));
 
         let wrapper = if let Some(at) = gift_at {
             // Above the button, held inside the window (the capture's picker is clamped to the top edge).
@@ -1642,73 +1808,106 @@ impl Root {
 
     /// `keybindHint_mb9pZg` at the foot of Gift Nitro's picker: a warning icon, the line with its "Edit Keybind"
     /// link and a close button (design/dom/dm/gift-step2-sound-picker-darker-cozy.json: 451x52, 8px in, icon 20px).
-    fn soundboard_gift_tip(&self, cx: &mut Context<Self>) -> AnyElement {
-        div()
-            .absolute()
-            .left(px(GIFT_TIP_LEFT))
-            .bottom(px(GIFT_TIP_BOTTOM))
-            .w(px(GIFT_TIP_WIDTH))
-            .h(px(GIFT_TIP_HEIGHT))
-            .px(px(8.))
-            .rounded(px(8.))
-            .bg(color("--background-base-lower"))
-            .flex()
-            .items_center()
-            .child(
-                div()
-                    .mr(px(8.))
-                    .child(icon("ob_warning", 20., "--text-feedback-warning")),
-            )
-            .child(
-                // The line wraps like the capture's (391px wide): the words flow, "Edit Keybind." is the link.
-                div()
-                    .flex_1()
-                    .min_w(px(0.))
-                    .flex()
-                    .flex_wrap()
-                    .gap_x(px(3.5))
-                    .text_size(px(14.))
-                    .line_height(px(18.))
-                    .font_weight(FontWeight(500.))
-                    .text_color(color("--text-default"))
-                    .child(div().font_weight(FontWeight(700.)).child("TIP:"))
-                    .children(
-                        "Hold CTRL + \" to use Soundboard in a game overlay."
-                            .split(' ')
-                            .map(|word| div().child(word)),
-                    )
-                    .children(
-                        ["Edit", "Keybind."]
-                            .into_iter()
-                            .enumerate()
-                            .map(|(index, word)| {
-                                div()
-                                    .id(("sb-gift-edit-keybind", index))
-                                    .cursor_pointer()
-                                    .text_color(color("--text-link"))
-                                    .hover(|style| style.underline())
-                                    .on_click(cx.listener(|this, _, window, cx| {
-                                        this.soundboard_gift_close(window, cx);
-                                        this.nitro.purchase = None;
-                                        this.open_settings_page("keybinds", cx);
-                                    }))
-                                    .child(word)
-                            }),
-                    ),
-            )
-            .child(
-                div()
-                    .id("sb-gift-tip-close")
-                    .size(px(16.))
-                    .flex_none()
-                    .cursor_pointer()
-                    .on_click(cx.listener(|this, _, _, cx| {
-                        this.soundboard.gift_tip_closed = true;
-                        cx.notify();
-                    }))
-                    .child(icon("sb_close", 16., "--interactive-text-default")),
-            )
-            .into_any_element()
+    /// The TIP line at the foot of the picker (module 327289, `udMTth`): "TIP: Hold {keybind} to use Soundboard in a
+    /// game overlay. Edit Keybind." with the Open Soundboard (Hold) keybind; Edit Keybind opens the Soundboard
+    /// Keybind modal (module 29681). Shown on the desktop while the keybind exists and `SOUNDBOARD_KEYBIND_TIP`
+    /// (content 232) is not dismissed; the close button dismisses it.
+    fn soundboard_gift_tip(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
+        let keybind = self.soundboard_hold_text()?;
+        if self.soundboard.gift_tip_closed || self.stores.content_dismissed(KEYBIND_TIP_CONTENT) {
+            return None;
+        }
+        let words: Vec<String> = format!("Hold {keybind} to use Soundboard in a game overlay.")
+            .split(' ')
+            .map(str::to_owned)
+            .collect();
+        Some(
+            div()
+                .absolute()
+                .left(px(GIFT_TIP_LEFT))
+                .bottom(px(GIFT_TIP_BOTTOM))
+                .w(px(GIFT_TIP_WIDTH))
+                .h(px(GIFT_TIP_HEIGHT))
+                .px(px(8.))
+                .rounded(px(8.))
+                .bg(color("--background-base-lower"))
+                .flex()
+                .items_center()
+                .child(
+                    div()
+                        .mr(px(8.))
+                        .child(icon("ob_warning", 20., "--text-feedback-warning")),
+                )
+                .child(
+                    // The line wraps like the capture's (391px wide): the words flow, "Edit Keybind" is the link.
+                    div()
+                        .flex_1()
+                        .min_w(px(0.))
+                        .flex()
+                        .flex_wrap()
+                        .gap_x(px(3.5))
+                        .text_size(px(14.))
+                        .line_height(px(18.))
+                        .font_weight(FontWeight(500.))
+                        .text_color(color("--text-default"))
+                        .child(div().font_weight(FontWeight(700.)).child("TIP:"))
+                        .children(words.into_iter().map(|word| div().child(word)))
+                        .child(
+                            div()
+                                .flex()
+                                .child(
+                                    div()
+                                        .id("sb-edit-keybind")
+                                        .cursor_pointer()
+                                        .text_color(color("--text-link"))
+                                        .hover(|style| style.underline())
+                                        .on_click(cx.listener(|this, _, window, cx| {
+                                            // `i()` closes the picker first.
+                                            if this.soundboard.gift_picker.is_some() {
+                                                this.soundboard_gift_close(window, cx);
+                                            } else {
+                                                this.close_panel_popout(cx);
+                                            }
+                                            this.open_soundboard_keybind();
+                                            cx.notify();
+                                        }))
+                                        .child(dc_intl::tr("Edit Keybind")),
+                                )
+                                .child("."),
+                        ),
+                )
+                .child(
+                    div()
+                        .id("sb-gift-tip-close")
+                        .size(px(16.))
+                        .flex_none()
+                        .cursor_pointer()
+                        .on_click(cx.listener(|this, _, _, cx| {
+                            this.soundboard.gift_tip_closed = true;
+                            this.soundboard_dismiss_keybind_tip();
+                            cx.notify();
+                        }))
+                        .child(icon("sb_close", 16., "--interactive-text-default")),
+                )
+                .into_any_element(),
+        )
+    }
+
+    /// `Dr(SOUNDBOARD_KEYBIND_TIP)`: the content's bit in `dismissed_contents` (held back in a harness run).
+    fn soundboard_dismiss_keybind_tip(&mut self) {
+        if self.stores.content_dismissed(KEYBIND_TIP_CONTENT) {
+            return;
+        }
+        let patch = self.stores.dismiss_content(KEYBIND_TIP_CONTENT);
+        if patch.is_empty() || crate::storage::settings_writes_blocked() {
+            return;
+        }
+        let _ = self.requests.send(Request::Rest {
+            key: None,
+            method: reqwest::Method::PATCH,
+            route: "/users/@me/settings-proto/1".into(),
+            body: Some(json!({"settings": patch})),
+        });
     }
 
     /// "Soundboard Volume": a context menu holding the slider.
@@ -1744,32 +1943,29 @@ impl Root {
             }])
             .occlude()
             .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
-            .child(
-                div().p(px(8.)).child(self.menu_slider_row(
-                    super::menu_slider::MenuSliderConfig {
-                        id: if is_gift {
-                            "gift-soundboard-slider".into()
-                        } else {
-                            "soundboard-slider".into()
-                        },
-                        label: dc_intl::t!("kbFsAD").to_owned(),
-                        min: 0,
-                        max: 100,
-                        value,
-                        palette: super::menu_slider::ThemePalette::Default,
-                        format: super::menu_slider::percent_format(),
-                        on_change: std::rc::Rc::new(|_, pct, cx| {
-                            let volume = (super::menu_slider::perceptual_to_amplitude(pct, 100)
-                                * 100.)
-                                .round()
-                                .clamp(0., 100.);
-                            super::settings::set_soundboard_volume(volume);
-                            cx.notify();
-                        }),
+            .child(div().p(px(8.)).child(self.menu_slider_row(
+                super::menu_slider::MenuSliderConfig {
+                    id: if is_gift {
+                        "gift-soundboard-slider".into()
+                    } else {
+                        "soundboard-slider".into()
                     },
-                    cx,
-                )),
-            )
+                    label: dc_intl::t!("kbFsAD").to_owned(),
+                    min: 0,
+                    max: 100,
+                    value,
+                    palette: super::menu_slider::ThemePalette::Default,
+                    format: super::menu_slider::percent_format(),
+                    on_change: std::rc::Rc::new(|_, pct, cx| {
+                        let volume = (super::menu_slider::perceptual_to_amplitude(pct, 100) * 100.)
+                            .round()
+                            .clamp(0., 100.);
+                        super::settings::set_soundboard_volume(volume);
+                        cx.notify();
+                    }),
+                },
+                cx,
+            )))
             .into_any_element()
     }
 
@@ -2120,6 +2316,146 @@ impl Root {
     }
 
     /// `soundButton`: the emoji and the name; over it the preview speaker, the play mark and the star.
+    /// `canUseCustomCallSounds` (Nitro).
+    fn custom_call_sounds(&self) -> bool {
+        dc_state::premium::PremiumType::from_wire(self.stores.account.premium_type)
+            .has(dc_state::premium::Feature::CustomCallSounds)
+    }
+
+    /// A right press on a sound (`v` of module 496502): `sound-button-context` opens when the sound's server is known
+    /// or the account can use custom call sounds; `call_guild` is the call's server (`activeCallGuildId`).
+    pub(super) fn open_sound_menu(
+        &mut self,
+        sound: &Sound,
+        call_guild: Option<Id>,
+        at: gpui::Point<gpui::Pixels>,
+        cx: &mut Context<Self>,
+    ) {
+        let known = sound
+            .guild
+            .parse::<Id>()
+            .ok()
+            .is_some_and(|guild| self.stores.guild(guild).is_some());
+        if !known && !self.custom_call_sounds() {
+            return;
+        }
+        self.context.picker_sound = Some((sound.clone(), call_guild));
+        self.open_context_menu(super::context_menu::Target::PickerSound, at, cx);
+    }
+
+    /// The facts of module 923819's rows for `sound`.
+    pub(super) fn sound_facts(
+        &self,
+        sound: &Sound,
+        call_guild: Option<Id>,
+        developer: bool,
+    ) -> super::context_menu::SoundFacts {
+        let own = sound
+            .guild
+            .parse::<Id>()
+            .ok()
+            .and_then(|guild| self.stores.guild(guild));
+        super::context_menu::SoundFacts {
+            can_manage: own.zip(self.stores.me()).is_some_and(|(guild, me)| {
+                permissions::can_in_guild(guild, me, permissions::MANAGE_GUILD_EXPRESSIONS)
+            }),
+            entrance: call_guild.is_some() && self.custom_call_sounds(),
+            default_sound: sound.guild == DISCORD,
+            developer,
+        }
+    }
+
+    /// Set as Server / Global Entrance Sound (`un` of module 458976): the guild's `joinSound` in the settings.
+    pub(super) fn set_entrance_sound(&mut self, guild: u64, sound: &Sound) {
+        let (Ok(id), sound_guild) = (
+            sound.id.parse::<u64>(),
+            sound.guild.parse::<u64>().unwrap_or(0),
+        ) else {
+            return;
+        };
+        let patch = self.stores.set_join_sound(guild, id, sound_guild);
+        tracing::info!(guild, "soundboard: entrance sound set");
+        if crate::storage::settings_writes_blocked() {
+            crate::inert::note("held entrance sound settings write");
+            return;
+        }
+        self.send_proto_patch(patch);
+    }
+
+    /// Download Sound (`E` of module 923819): the file is fetched, its type names the extension (`audio/mpeg` mp3,
+    /// `audio/ogg` ogg, anything else fails), and a save dialog takes `{id}.{ext}`; any failure shows Sound Download
+    /// Failed. The fetch and the write run off the UI thread.
+    pub(super) fn download_sound(&mut self, sound: &Sound, cx: &mut Context<Self>) {
+        if sound.id.is_empty() || !sound.id.bytes().all(|byte| byte.is_ascii_digit()) {
+            return;
+        }
+        let url = format!("{CDN}{}", sound.id);
+        let id = sound.id.clone();
+        let (sender, fetched) = tokio::sync::oneshot::channel();
+        let spawned = std::thread::Builder::new()
+            .name("gravecord-sound-download".into())
+            .spawn(move || {
+                let result = crate::sounds::fetch_url_typed(&url, DOWNLOAD_MAX_BYTES)
+                    .ok()
+                    .and_then(|(bytes, kind)| Some((bytes, sound_extension(&kind)?)));
+                let _ = sender.send(result);
+            });
+        if spawned.is_err() {
+            self.sound_download_failed(cx);
+            return;
+        }
+        let inert = crate::inert::on();
+        cx.spawn(async move |this, cx| {
+            let Ok(Some((bytes, extension))) = fetched.await else {
+                let _ = this.update(cx, |this, cx| this.sound_download_failed(cx));
+                return;
+            };
+            if inert {
+                // A harness run opens no save dialog and writes no file.
+                tracing::info!(
+                    extension,
+                    size = bytes.len(),
+                    "soundboard: Download Sound fetched (inert: no save dialog)"
+                );
+                return;
+            }
+            let directory = std::env::var_os("USERPROFILE")
+                .or_else(|| std::env::var_os("HOME"))
+                .map(std::path::PathBuf::from)
+                .unwrap_or_default();
+            let name = format!("{id}.{extension}");
+            let Ok(chosen) =
+                this.update(cx, |_, cx| cx.prompt_for_new_path(&directory, Some(&name)))
+            else {
+                return;
+            };
+            let Ok(Ok(Some(path))) = chosen.await else {
+                return;
+            };
+            let written = cx
+                .background_executor()
+                .spawn(async move { std::fs::write(path, bytes).is_ok() })
+                .await;
+            if !written {
+                let _ = this.update(cx, |this, cx| this.sound_download_failed(cx));
+            }
+        })
+        .detach();
+    }
+
+    /// Sound Download Failed (module 157559 `show`): the title, the apology and Okay.
+    fn sound_download_failed(&mut self, cx: &mut Context<Self>) {
+        self.chat_extra.alert = Some(super::chat_notices::Alert::show(
+            "sound-download-failed",
+            dc_intl::t("mK3tDH"),
+            Some(dc_intl::t("jLlfDN").to_owned()),
+            None,
+            Some(dc_intl::t("BddRzS").to_owned()),
+            super::chat_notices::Then::Close,
+        ));
+        cx.notify();
+    }
+
     fn soundboard_button(
         &self,
         section: &str,
@@ -2147,6 +2483,7 @@ impl Root {
             })
             .cloned();
         let (pressed, previewed, starred) = (sound.clone(), sound.clone(), sound.clone());
+        let menu_sound = sound.clone();
         let labels = sound_labels(sound.emoji_name.as_deref(), &sound.name, favorite);
         let secondary = |id: String| {
             div()
@@ -2253,6 +2590,21 @@ impl Root {
                             this.soundboard_click(&pressed, cx);
                         }
                     }))
+                    // `onContextMenu: T && !eC` (module 533491, `enableSecondaryActions` from 327289): a usable
+                    // sound's `sound-button-context` for the call's server.
+                    .on_mouse_up(
+                        MouseButton::Right,
+                        cx.listener(move |this, event: &gpui::MouseUpEvent, _, cx| {
+                            // A DM call has no server (`h?.guild_id` is null).
+                            let call_guild = this
+                                .call
+                                .as_ref()
+                                .map(|call| call.guild)
+                                .filter(|guild| *guild != 0);
+                            this.open_sound_menu(&menu_sound, call_guild, event.position, cx);
+                            cx.stop_propagation();
+                        }),
+                    )
             })
             .child(
                 div()
@@ -2343,6 +2695,54 @@ fn search_section(ctx: &Ctx, query: &str, guilds: &[(Id, String)], board: &Board
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_downloaded_sound_is_named_by_its_type() {
+        assert_eq!(sound_extension("audio/mpeg"), Some("mp3"));
+        assert_eq!(sound_extension("audio/mpeg3"), Some("mp3"));
+        assert_eq!(sound_extension("audio/ogg"), Some("ogg"));
+        assert_eq!(sound_extension("audio/wav"), None);
+        assert_eq!(sound_extension(""), None);
+    }
+
+    #[test]
+    fn the_sound_menu_rows_follow_module_923819() {
+        use super::super::context_menu::{Act, Entry, SoundFacts, sound_items};
+        let acts = |facts: SoundFacts| -> Vec<Act> {
+            sound_items(facts)
+                .into_iter()
+                .filter_map(|entry| match entry {
+                    Entry::Row(row) => Some(row.act),
+                    _ => None,
+                })
+                .collect()
+        };
+        // Someone else's server sound, no Nitro, no developer mode: Download Sound alone.
+        assert_eq!(acts(SoundFacts::default()), [Act::DownloadSound]);
+        // A default sound has no Download Sound; without anything else the menu is empty.
+        let default_sound = SoundFacts {
+            default_sound: true,
+            ..SoundFacts::default()
+        };
+        assert!(acts(default_sound).is_empty());
+        // Everything, in the bundle's order.
+        let all = SoundFacts {
+            can_manage: true,
+            entrance: true,
+            default_sound: false,
+            developer: true,
+        };
+        assert_eq!(
+            acts(all),
+            [
+                Act::EditSound,
+                Act::EntranceServer,
+                Act::EntranceGlobal,
+                Act::DownloadSound,
+                Act::CopyId
+            ]
+        );
+    }
 
     #[test]
     fn sound_buttons_are_named_with_the_emoji_and_the_sound() {

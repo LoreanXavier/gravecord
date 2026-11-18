@@ -40,6 +40,11 @@ use std::collections::HashMap;
 use std::rc::Rc;
 use std::time::Instant;
 
+/// `eR` of module 911024: the crash notice stays ten seconds.
+const CRASH_NOTICE_MS: f64 = 10_000.;
+/// The id the crash notice's toast answers to.
+const CRASH_TOAST: u64 = u64::MAX;
+
 /// The harness's hidden desktop (`DESKTOP` of `xtask/src/headless.rs`).
 const HIDDEN_DESKTOP: &str = "gravecord-headless";
 
@@ -70,7 +75,11 @@ pub(super) fn gate() -> bool {
     *GATE.get_or_init(|| {
         let env = std::env::var("GRAVECORD_OVERLAY").ok();
         let inert_or_test = cfg!(test) || crate::inert::on();
-        gate_on(crate::storage::is_capture_run(), inert_or_test, env.as_deref())
+        gate_on(
+            crate::storage::is_capture_run(),
+            inert_or_test,
+            env.as_deref(),
+        )
     })
 }
 
@@ -110,19 +119,33 @@ impl Render for OverlayView {
         // A panic while the overlay's elements are built closes the overlay window for the rest of the session; the
         // app goes on. It is caught inside the update so the app's state is handed back.
         let mut failed = false;
+        let id = window.window_handle().window_id();
         let body = self.root.upgrade().and_then(|root| {
             root.update(cx, |root, cx| {
                 if root.overlay.failed {
+                    // Module 911024 `eM`: the crash notice stays ten seconds, then the window goes.
+                    if let Some(notice) = root.overlay_crash_notice(cx) {
+                        return Some((notice, false));
+                    }
                     failed = true;
                     return None;
                 }
                 root.overlay.scale = window.scale_factor();
-                match guarded(|| root.overlay_body(width, height, cx)) {
-                    Some(body) => Some((body, root.overlay.animating)),
+                match guarded(|| root.overlay_body(width, height, window, cx)) {
+                    // The widgets' button tooltips (module 968898) are drawn in this window.
+                    Some(body) => Some((
+                        div()
+                            .size_full()
+                            .child(body)
+                            .children(root.tip_layer_in(Some(id)))
+                            .into_any_element(),
+                        root.overlay.animating,
+                    )),
                     None => {
                         root.overlay_failed();
-                        failed = true;
-                        None
+                        let notice = root.overlay_crash_notice(cx);
+                        failed = notice.is_none();
+                        notice.map(|notice| (notice, false))
                     }
                 }
             })
@@ -298,6 +321,14 @@ pub(super) struct Overlay {
     pub(super) chat_variant: Option<Option<i64>>,
     /// The pointer in the window (logical px) at its last move: where a Settings menu opens.
     pub(super) pointer: (f32, f32),
+    /// When drawing the overlay panicked (ms on the clock): the crash notice is up for ten seconds.
+    pub(super) crashed: Option<f64>,
+    /// The crash notice's end timer is running.
+    pub(super) crash_timer: bool,
+    /// The soundboard wheel (`SoundboardOverlayStore`, module 528772).
+    pub(super) wheel: Option<super::overlay_wheel::Wheel>,
+    /// A harness run: the sound the wheel would have played.
+    pub(super) wheel_played: Option<String>,
 }
 
 impl Default for Overlay {
@@ -345,6 +376,10 @@ impl Default for Overlay {
             failed: false,
             chat_variant: None,
             pointer: (0., 0.),
+            wheel: None,
+            wheel_played: None,
+            crashed: None,
+            crash_timer: false,
         }
     }
 }
@@ -455,6 +490,13 @@ impl Root {
             store::SETTINGS_STORE,
             store::set_notification_disabled(&stored, setting, disabled),
         );
+    }
+
+    /// A menu opened in the overlay window goes with the overlay's lock or the overlay itself.
+    pub(super) fn overlay_close_context_menu(&mut self) {
+        if std::mem::take(&mut self.context.in_overlay) {
+            self.context.open = None;
+        }
     }
 
     /// The overlay's clock in ms.
@@ -590,15 +632,90 @@ impl Root {
         decision::hidden_reason(&self.overlay_inputs().0).unwrap_or("shown")
     }
 
-    /// Drawing panicked: everything of the window is let go and it is not opened again.
+    /// Drawing panicked (the error boundary `eP` of module 911024): the overlay locks (`OVERLAY_CRASHED`,
+    /// `OVERLAY_SET_INPUT_LOCKED`) and shows "Discord Overlay has crashed!" with Reload Overlay for ten seconds
+    /// (`eR`); dismissed or timed out, the window is let go and not opened again this session.
     pub(super) fn overlay_failed(&mut self) {
         self.overlay.failed = true;
-        self.overlay.window = None;
-        self.overlay.hwnd = None;
-        self.overlay.shown = None;
+        self.overlay.crashed = Some(self.overlay_now());
+        self.overlay.crash_timer = false;
+        self.overlay.locked = true;
         self.overlay.drag = None;
         self.overlay.menu = None;
         self.overlay.report = None;
+        self.overlay.wheel = None;
+        self.overlay_close_context_menu();
+    }
+
+    /// The crash notice while it is up, else `None` (and the window's handles are let go).
+    fn overlay_crash_notice(&mut self, cx: &mut Context<Self>) -> Option<AnyElement> {
+        let since = self.overlay.crashed.map(|at| self.overlay_now() - at);
+        if since.is_none_or(|since| since >= CRASH_NOTICE_MS) {
+            self.overlay.crashed = None;
+            self.overlay.window = None;
+            self.overlay.hwnd = None;
+            self.overlay.shown = None;
+            return None;
+        }
+        // One timer for the notice's end, armed on its first draw (not one per redraw).
+        if !std::mem::replace(&mut self.overlay.crash_timer, true) {
+            let wait = CRASH_NOTICE_MS - since.unwrap_or(0.);
+            cx.spawn(async move |this, cx| {
+                cx.background_executor()
+                    .timer(std::time::Duration::from_millis(wait.ceil() as u64))
+                    .await;
+                let _ = this.update(cx, |_, cx| cx.notify());
+            })
+            .detach();
+        }
+        let toast = Toast {
+            kind: ToastKind::Welcome,
+            // `X.A` of module 144400 at 40 by 40.
+            icon: Some("icon:overlay_crashed".to_owned()),
+            title: Some(dc_intl::t("U38qZj").to_owned()),
+            body: None,
+            hint: None,
+            max_lines: None,
+            confirm: Some(dc_intl::t("TzAl1a").to_owned()),
+            cancel: None,
+            click: None,
+            channel: None,
+            no_zone: false,
+        };
+        let (width, height) = self.overlay.size;
+        let anchor = layout::anchor_pixels(
+            layout::default_of(layout::NOTIFICATIONS)
+                .map(|widget| widget.anchor)
+                .unwrap_or_default(),
+            width,
+            height,
+        );
+        Some(
+            div()
+                .relative()
+                .size_full()
+                .child(
+                    div()
+                        .absolute()
+                        .left(px(anchor.left.unwrap_or(0.) + 10.))
+                        .top(px(anchor.top.unwrap_or(0.) + 10.))
+                        .w(px(300.))
+                        .child(self.overlay_toast(CRASH_TOAST, &toast, cx))
+                        .child(self.overlay_zone_probe()),
+                )
+                .into_any_element(),
+        )
+    }
+
+    /// Reload Overlay (`location.reload`): the overlay is drawn again from scratch.
+    fn overlay_reload(&mut self, cx: &mut Context<Self>) {
+        tracing::info!("overlay: reloaded after a crash");
+        self.overlay.failed = false;
+        self.overlay.crashed = None;
+        self.overlay.springs.clear();
+        self.overlay.toasts_drawn.clear();
+        self.overlay.leaving.clear();
+        cx.notify();
     }
 
     /// `OVERLAY_V3_SHOW_WIDGETS` (Alt held and released while unlocked).
@@ -747,6 +864,8 @@ impl Root {
                 self.overlay.menu = None;
                 self.overlay.report = None;
                 self.overlay.widgets_panel = false;
+                self.overlay.wheel = None;
+                self.overlay_close_context_menu();
                 if self.overlay.shown.take().is_some() {
                     #[cfg(windows)]
                     if let Some(hwnd) = self.overlay.hwnd {
@@ -877,6 +996,7 @@ impl Root {
         self.overlay.locked = !self.overlay.locked;
         self.overlay.drag = None;
         self.overlay.menu = None;
+        self.overlay_close_context_menu();
         self.overlay.show_widgets = true;
         self.overlay.lock_changed = self.overlay_now();
         tracing::info!(
@@ -1415,6 +1535,18 @@ impl Root {
         action: ToastAction,
         cx: &mut Context<Self>,
     ) {
+        // The crash notice: Reload Overlay reloads; its X (`hideNotification`) lets the window go.
+        if id == CRASH_TOAST {
+            match action {
+                ToastAction::Confirm => self.overlay_reload(cx),
+                ToastAction::Dismiss => {
+                    self.overlay.crashed = None;
+                    cx.notify();
+                }
+                _ => {}
+            }
+            return;
+        }
         let now = self.overlay_now();
         let Some(toast) = self
             .overlay
@@ -1959,7 +2091,13 @@ impl Root {
 
     /// The overlay window's content at its size: the scrim, the widgets of the layout in z order, the toolbar and
     /// the empty state while unlocked.
-    fn overlay_body(&mut self, width: f32, height: f32, cx: &mut Context<Self>) -> AnyElement {
+    fn overlay_body(
+        &mut self,
+        width: f32,
+        height: f32,
+        window: &Window,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
         // The game's client area the window was placed over is the overlay's size (`windowSize`), whatever the
         // window reported last.
         let scale = self.overlay.scale.max(0.1);
@@ -2039,8 +2177,19 @@ impl Root {
                         self.overlay_text_chat(&widget, frame.width, frame.height, cx),
                     )
                 }
-                // Activity, Video, Streams and Friends are not built (BLOCKED.md). They have no render gate, so the
-                // official empty state does not count them as gone either.
+                // Video and Streams (`iS`, `e2` of module 415173): with nothing to draw the frame stays, empty.
+                layout::VIDEO => (
+                    dc_intl::tr("Video"),
+                    self.overlay_video_content(&widget, locked, show_empty, (width, height), cx)
+                        .unwrap_or_else(|| div().into_any_element()),
+                ),
+                layout::GO_LIVE => (
+                    dc_intl::tr("Streams"),
+                    self.overlay_go_live_content(&widget, locked, show_empty, (width, height), cx)
+                        .unwrap_or_else(|| div().into_any_element()),
+                ),
+                // Activity and Friends are not built (BLOCKED.md). They have no render gate, so the official empty
+                // state does not count them as gone either.
                 _ => continue,
             };
             widgets.push(self.overlay_widget_frame(&widget, title, content, &frame, cx));
@@ -2123,6 +2272,14 @@ impl Root {
                     .then(|| self.overlay_report_layer(width, height, cx))
                     .flatten(),
             )
+            // A rail entry's menu opened in this window (the app's `context_menu_layer`).
+            .children(
+                (!locked && self.context.in_overlay)
+                    .then(|| self.context_menu_layer(window, cx))
+                    .flatten(),
+            )
+            // `eQ` of module 427830: the soundboard wheel over everything, locked or not.
+            .children(self.overlay_wheel_layer(cx))
             .into_any_element()
     }
 }
@@ -2147,6 +2304,8 @@ impl Root {
             "notifications" => Some(layout::NOTIFICATIONS),
             "quick" => Some(layout::QUICK_ACTIONS),
             "chat" => Some(layout::TEXT_CHAT),
+            "video" => Some(layout::VIDEO),
+            "golive" => Some(layout::GO_LIVE),
             _ => None,
         };
         match words {
@@ -2386,13 +2545,15 @@ impl Root {
                     .iter()
                     .map(|widget| {
                         format!(
-                            "{} anchor={:?} size={:?} pinned={} hidden={} z={}",
+                            "{} anchor={:?} size={:?} pinned={} hidden={} z={} opacity={} horizontal={}",
                             widget.kind,
                             widget.anchor,
                             widget.size,
                             widget.pinned,
                             widget.hidden,
-                            widget.z_index
+                            widget.z_index,
+                            widget.opacity,
+                            widget.horizontal()
                         )
                     })
                     .collect();
@@ -2413,7 +2574,10 @@ impl Root {
                 self.overlay.pointer = (x.parse().unwrap_or(0.), y.parse().unwrap_or(0.));
                 let menu = match *kind {
                     "voice" => dc_overlay::menus::Menu::Voice,
-                    _ => dc_overlay::menus::Menu::Notifications,
+                    "video" => dc_overlay::menus::Menu::Video,
+                    "golive" => dc_overlay::menus::Menu::GoLive,
+                    "notifications" => dc_overlay::menus::Menu::Notifications,
+                    _ => return "overlay menu voice|notifications|video|golive <x> <y>".to_owned(),
                 };
                 self.overlay.menu = None;
                 self.overlay_open_menu(menu);
@@ -2442,6 +2606,17 @@ impl Root {
                 self.overlay_open_report(cx);
                 cx.notify();
                 "overlay report: open".to_owned()
+            }
+            ["wheel", rest @ ..] => self.script_overlay_wheel(rest, cx),
+            // What the error boundary does when drawing fails (the crash notice), and its Reload Overlay.
+            ["crash"] => {
+                self.overlay_failed();
+                cx.notify();
+                format!("overlay crash: failed={} notice={:?}", self.overlay.failed, self.overlay.crashed.is_some())
+            }
+            ["reload"] => {
+                self.overlay_toast_action(CRASH_TOAST, ToastAction::Confirm, cx);
+                format!("overlay reload: failed={}", self.overlay.failed)
             }
             ["alt", value] => {
                 self.overlay_show_widgets(*value != "on", cx);

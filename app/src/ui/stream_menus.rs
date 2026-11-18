@@ -94,7 +94,7 @@ pub(super) fn choose_resolution(
 }
 
 impl Root {
-    fn menu_at(&self, anchor_id: &str, width: f32, height: f32) -> Option<(f32, f32)> {
+    pub(super) fn menu_at(&self, anchor_id: &str, width: f32, height: f32) -> Option<(f32, f32)> {
         let anchor = self.tip_anchors.borrow().get(anchor_id).copied()?;
         let centre = f32::from(anchor.left()) + f32::from(anchor.size.width) / 2.;
         let (ox, oy) = self.call_origin();
@@ -704,8 +704,16 @@ mod tests {
 
         for boosted in [boosted_t2, boosted_t3] {
             assert!(!frame_rate_shows_premium(&gaming, boosted, 60));
-            assert!(!resolution_shows_premium(&gaming, boosted, Resolution::P1440));
-            assert!(resolution_shows_premium(&gaming, boosted, Resolution::Source));
+            assert!(!resolution_shows_premium(
+                &gaming,
+                boosted,
+                Resolution::P1440
+            ));
+            assert!(resolution_shows_premium(
+                &gaming,
+                boosted,
+                Resolution::Source
+            ));
         }
     }
 }
