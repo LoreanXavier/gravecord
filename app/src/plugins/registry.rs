@@ -812,6 +812,53 @@ pub(crate) const DEFS: &[Def] = &[
         settings: &[],
     },
     Def {
+        id: "TypingIndicator",
+        name: "TypingIndicator",
+        description: "Adds an indicator if someone is typing on a channel.",
+        origin: Origin::Vencord,
+        source: "src/plugins/typingIndicator/index.tsx",
+        default_on: false,
+        settings: &[
+            Setting {
+                key: "includeCurrentChannel",
+                label: "Current channel",
+                description: "Whether to show the typing indicator for the currently selected channel.",
+                kind: Kind::Switch { default: true },
+            },
+            Setting {
+                key: "includeMutedChannels",
+                label: "Muted channels",
+                description: "Whether to show the typing indicator for muted channels.",
+                kind: Kind::Switch { default: false },
+            },
+            Setting {
+                key: "includeIgnoredUsers",
+                label: "Ignored users",
+                description: "Whether to show the typing indicator for ignored users.",
+                kind: Kind::Switch { default: false },
+            },
+            Setting {
+                key: "includeBlockedUsers",
+                label: "Blocked users",
+                description: "Whether to show the typing indicator for blocked users.",
+                kind: Kind::Switch { default: false },
+            },
+            Setting {
+                key: "indicatorMode",
+                label: "Indicator",
+                description: "How should the indicator be displayed?",
+                kind: Kind::Select {
+                    options: &[
+                        ("Avatars and animated dots", Lit::Int(3)),
+                        ("Animated dots", Lit::Int(1)),
+                        ("Avatars", Lit::Int(2)),
+                    ],
+                    default: 0,
+                },
+            },
+        ],
+    },
+    Def {
         id: "UnlimitedAccounts",
         name: "UnlimitedAccounts",
         description: "Lets the account switcher hold more than five accounts.",

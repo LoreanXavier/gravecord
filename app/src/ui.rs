@@ -4735,6 +4735,8 @@ impl Root {
                                 })
                                 .child(channel.name.clone()),
                         )
+                        // Not in the pinned client: TypingIndicator (`plugin_hooks/typing_indicator.rs`).
+                        .children(self.typing_indicator(channel.id, self.guild, cx))
                         // `channelInfo_Wx6SnQ` with the primary badge (module 616740 `isNewChannel` or mention count): right edge of the
                         // row's content, hidden while the row is hovered for the action icons (stage-ann/ann-view).
                         .when(mentions > 0, |row| {

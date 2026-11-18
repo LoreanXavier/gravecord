@@ -26,3 +26,4 @@ image-menu | window size 1600 1000; wait 4000; go dm 0; wait 1500; gw MESSAGE_CR
 upload-card | wait 5000; attach C:/Projects/gravecord-plugins/app/assets/icons/../../../tests/plugins-off/scenarios.txt; wait 1000; move 560 480; wait 500
 member-list | wait 5000; click 1000 57; wait 2500
 guild-tooltip | wait 5000; move 36 109; wait 1500
+channel-typing | wait 5000; gw TYPING_START {"channel_id":"1568692565136375900","guild_id":"1568692564637524109","user_id":"903573240566399026","timestamp":4102444800}; wait 800; move 180 451; wait 1200

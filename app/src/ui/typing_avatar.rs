@@ -183,6 +183,11 @@ fn dots(r: f32, tint: &str, css: bool, enter: f32) -> AnyElement {
     row.into_any_element()
 }
 
+/// Module 863610's dots of radius `r`, themed: what the TypingIndicator plugin draws (`plugin_hooks`).
+pub(super) fn three_dots(r: f32) -> AnyElement {
+    dots(r, "--text-default", false, 1.)
+}
+
 /// The chat line's dots (module 620014 `X`): the CSS dots (`.dot_U9Tvvz`, 7px, 2px apart) or module 863610 with
 /// `dotRadius` 3.5, themed (`--text-default`).
 pub(super) fn chat_dots(css: bool) -> AnyElement {
