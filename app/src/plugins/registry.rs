@@ -2181,6 +2181,82 @@ pub(crate) const DEFS: &[Def] = &[
         settings: &[],
     },
     Def {
+        id: "SteamStatusSync",
+        name: "SteamStatusSync",
+        description: "Sync your status to Steam! (Online, Away, Invisible, or Offline.)",
+        origin: Origin::Equicord,
+        source: "src/equicordplugins/steamStatusSync/index.tsx",
+        default_on: false,
+        settings: &[
+            Setting {
+                key: "onlineStatus",
+                label: "Online Status",
+                description: "Steam status when on Online",
+                kind: Kind::Select {
+                    options: &[
+                        ("Online", Lit::Str("online")),
+                        ("Away", Lit::Str("away")),
+                        ("Invisible", Lit::Str("invisible")),
+                        ("Offline (Disconnect Steam Chat)", Lit::Str("offline")),
+                        ("Disabled", Lit::Str("none")),
+                    ],
+                    default: 0,
+                },
+            },
+            Setting {
+                key: "idleStatus",
+                label: "Idle Status",
+                description: "Steam status when on Idle",
+                kind: Kind::Select {
+                    options: &[
+                        ("Online", Lit::Str("online")),
+                        ("Away", Lit::Str("away")),
+                        ("Invisible", Lit::Str("invisible")),
+                        ("Offline (Disconnect Steam Chat)", Lit::Str("offline")),
+                        ("Disabled", Lit::Str("none")),
+                    ],
+                    default: 1,
+                },
+            },
+            Setting {
+                key: "dndStatus",
+                label: "Dnd Status",
+                description: "Steam status when on Do Not Disturb",
+                kind: Kind::Select {
+                    options: &[
+                        ("Online", Lit::Str("online")),
+                        ("Away", Lit::Str("away")),
+                        ("Invisible", Lit::Str("invisible")),
+                        ("Offline (Disconnect Steam Chat)", Lit::Str("offline")),
+                        ("Disabled", Lit::Str("none")),
+                    ],
+                    default: 4,
+                },
+            },
+            Setting {
+                key: "invisibleStatus",
+                label: "Invisible Status",
+                description: "Steam status when on Invisible",
+                kind: Kind::Select {
+                    options: &[
+                        ("Online", Lit::Str("online")),
+                        ("Away", Lit::Str("away")),
+                        ("Invisible", Lit::Str("invisible")),
+                        ("Offline (Disconnect Steam Chat)", Lit::Str("offline")),
+                        ("Disabled", Lit::Str("none")),
+                    ],
+                    default: 2,
+                },
+            },
+            Setting {
+                key: "goInvisibleIfActivityIsHidden",
+                label: "Go Invisible If Activity Is Hidden",
+                description: "Always go invisible if hiding game activity on Discord",
+                kind: Kind::Switch { default: false },
+            },
+        ],
+    },
+    Def {
         id: "StreamingCodecDisabler",
         name: "StreamingCodecDisabler",
         description: "Disable video codecs of your choice for streaming and cameras.",

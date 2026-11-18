@@ -10396,6 +10396,8 @@ impl Render for Root {
         self.userpfp_prepare();
         // Not in the pinned client: GlobalBadges' list, at start and every 30 minutes (`plugin_hooks/global_badges.rs`).
         self.global_badges_prepare();
+        // Not in the pinned client: SteamStatusSync (`plugin_hooks/steam_status_sync.rs`).
+        self.steam_status_sync(cx);
         if changed(&mut self.prepared.badge, self.data_revision) {
             self.refresh_notification_badge_soon(cx);
         }

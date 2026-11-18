@@ -56,6 +56,7 @@ mod silent_message_toggle;
 mod spotify_crack;
 pub(in crate::ui) use spotify_crack::spotify_no_auto_pause;
 pub(crate) use spotify_crack::spotify_premium_forced;
+mod steam_status_sync;
 mod streaming_codec_disabler;
 pub(in crate::ui) use streaming_codec_disabler::sync_streaming_codecs;
 mod super_reaction_tweaks;
