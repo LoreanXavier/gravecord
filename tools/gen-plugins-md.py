@@ -147,6 +147,7 @@ assert len(idle) == idle_entries, f'IDLE_SETTINGS: read {len(idle)} of {idle_ent
 
 # How each ported plugin is built here, and its proof.
 PORTED = {
+    'GlobalBadges': "plugin_hooks/global_badges.rs: the badges of other client mods (apiUrl/users, fetched while on and every 30 minutes; Vencord's and Equicord's left out, each mod behind its Show switch) lead a profile's badge row, round at 90% with their text as tooltip and Copy Badge Name / Copy Badge Image Link on a right click; the card has Join GlobalBadges Server. GAP: the badge directory entry a click opens in the original, the toolbox's Refetch, the Allow Host notice; the Show switches are listed instead of the multi-select.",
     'UserPFP': "plugin_hooks/userpfp.rs: the UserPFP list (databaseSource, fetched while on, hidden as in a release build) and the avatars you set with Set Avatar in a person's menu (stored locally, the Custom Avatar dialog with Original/Local previews, the PNG/GIF URL field, a PNG/JPEG dropped or chosen as a data URL, Delete and Save) replace avatars wherever they are drawn, unless preferNitro and the avatar is animated; UserPFP-hosted pictures are asked for still and GIFs play where avatars animate; overrideServerAvatars puts the custom (else the person's own) avatar over server avatars; the card has the local-only note and the Join UserPFP Server and Support UserPFP here buttons. GAP: the Allow Host notice (no content security policy here).",
     'USRBG': "plugin_hooks/usrbg.rs: the USRBG list is fetched once while the plugin is on; a listed person's profiles show that banner (in place of their own unless nitroFirst) and, with voiceBackground, their voice tile without video shows it as a cover background; the card has the Get your own USRBG banner button.",
     'StreamingCodecDisabler': "plugin_hooks/streaming_codec_disabler.rs + dc-voice signal.rs: disableH264Codec puts H264 into a voice connection's codec list (ops 1 and 14) with encode false, as filterCodecs does; the other four codecs are not offered by this client.",
@@ -240,6 +241,7 @@ PORTED = {
                      'so the original\'s 200% cap on the sync has nothing to cap.',
 }
 TESTS = {
+    'GlobalBadges': '`badges_follow_the_switches_and_blocked_mods`; frames pending (live runs held)',
     'UserPFP': '`userpfp_pictures_are_asked_for_still`; frames pending (live runs held)',
     'USRBG': '`banners_follow_the_list_and_nitro_first`; frames pending (live runs held)',
     'StreamingCodecDisabler': '`only_the_switch_takes_h264_out`',
@@ -319,6 +321,10 @@ TESTS = {
 }
 # Original settings a port does not have, with why (none today).
 SKIPPED_SETTINGS = {
+    'GlobalBadges': {
+        'apiUrlPermission': "not ported: the desktop client's content security policy notice (Allow Host); this client reaches any host.",
+        'showClientMods': 'ported as the sixteen Show switches it edits, listed one by one instead of one multi-select.',
+    },
     'BetterActivities': {
         'divider': 'a 1px line between the member list and the popout settings in the plugin card (a COMPONENT, no value); the card here lists the settings without it.',
     },
@@ -407,7 +413,6 @@ PLANNED = {
     'FixYoutubeEmbeds': 'the YouTube embed workaround inside the web host.',
     'FullSearchContext': "the pinned client's own menu of a search result first: a right click on a result opens nothing here yet (the search listbox's short menu, `handleContextMenu`, is not ported: GAP, main app), and the app's message menu reads its message from the open channel's list, so a result from another channel needs that menu to take any message; FullSearchContext then swaps the short menu for the full one and adds Copy Author ID.",
     'GifMaker': 'a GIF encoder and its editor.',
-    'GlobalBadges': 'its third-party badge service.',
     'LimitlessScreenshare': 'resolution and FPS sliders past the tier limits (owner: later, FakeNitro-style).',
     'MessageLogger': 'a store of deleted and edited messages and their red/edited display.',
     'PermissionsViewer': 'a permission breakdown in profiles and menus.',

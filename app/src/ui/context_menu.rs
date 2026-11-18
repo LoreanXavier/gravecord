@@ -29,6 +29,8 @@ pub(super) enum Target {
     },
     /// Not in the pinned client: a PinDMs category header, by its place (`plugin_hooks/pin_dms.rs`).
     PinCategory(u16),
+    /// Not in the pinned client: a GlobalBadges badge (`plugin_hooks/global_badges.rs` keeps which).
+    PluginBadge,
     /// Not in the pinned client: the "Wave to say hi!" button of a join message (GreetStickerPicker,
     /// `plugin_hooks/greet_sticker_picker.rs`).
     Greet {
@@ -320,13 +322,16 @@ pub(super) enum Act {
     PluginStatusBypass,
     /// Not in the pinned client: UserPFP's Set Avatar (`plugin_hooks/userpfp.rs`).
     PluginSetAvatar,
+    /// Not in the pinned client: GlobalBadges' badge menu (`plugin_hooks/global_badges.rs`).
+    PluginCopyBadgeName,
+    PluginCopyBadgeLink,
 }
 
 impl Act {
     /// Every row kind once (`Correction` with its first index). `ordinal` is an exhaustive match, so adding a variant
     /// without listing it here fails the build or the `act_list_is_complete` test.
     #[cfg(test)]
-    pub(super) const ALL: [Act; 140] = [
+    pub(super) const ALL: [Act; 142] = [
         Act::InventoryAbout,
         Act::InventoryHide,
         Act::ReportApp,
@@ -472,6 +477,8 @@ impl Act {
         Act::PluginGreetSticker(0),
         Act::PluginStatusBypass,
         Act::PluginSetAvatar,
+        Act::PluginCopyBadgeName,
+        Act::PluginCopyBadgeLink,
     ];
 
     #[cfg(test)]
@@ -622,6 +629,8 @@ impl Act {
             Act::PluginGreetSticker(_) => 137,
             Act::PluginStatusBypass => 138,
             Act::PluginSetAvatar => 139,
+            Act::PluginCopyBadgeName => 140,
+            Act::PluginCopyBadgeLink => 141,
         }
     }
 }
@@ -669,7 +678,9 @@ pub(super) fn status(act: Act) -> Status {
         | Act::PluginGreetMode(_)
         | Act::PluginGreetSticker(_)
         | Act::PluginStatusBypass
-        | Act::PluginSetAvatar => Wired,
+        | Act::PluginSetAvatar
+        | Act::PluginCopyBadgeName
+        | Act::PluginCopyBadgeLink => Wired,
         Act::InventoryAbout
         | Act::InventoryHide
         | Act::ViewAllActivity
@@ -3064,6 +3075,7 @@ impl Root {
             Target::AccountPanel => self.account_panel_items(),
             Target::Role { role, guild } => self.better_role_items(role, guild),
             Target::PinCategory(index) => self.pin_category_items(usize::from(index)),
+            Target::PluginBadge => self.global_badge_items(),
             Target::Greet { .. } => self.greet_picker_items(),
             Target::SpotifyActivity { user, popout } => spotify_activity_items(
                 self.stores
@@ -3733,6 +3745,9 @@ impl Root {
             (Act::PluginStatusBypass, target) => self.bypass_status_toggle(target, cx),
             // Not in the pinned client: UserPFP (`plugin_hooks/userpfp.rs`).
             (Act::PluginSetAvatar, Target::User { user, .. }) => self.userpfp_open(user, cx),
+            // Not in the pinned client: GlobalBadges (`plugin_hooks/global_badges.rs`).
+            (Act::PluginCopyBadgeName, Target::PluginBadge) => self.global_badge_copy(false, cx),
+            (Act::PluginCopyBadgeLink, Target::PluginBadge) => self.global_badge_copy(true, cx),
             // Not in the pinned client: GreetStickerPicker (`plugin_hooks/greet_sticker_picker.rs`).
             (
                 Act::PluginGreetMode(_) | Act::PluginGreetSticker(_),
@@ -4075,7 +4090,7 @@ impl Root {
                     Target::ProgressBar(guild) | Target::RaidAlert(guild) => guild,
                     Target::RtcChannel { channel, .. } => channel,
                     Target::Role { role, .. } => role,
-                    Target::PinCategory(_) | Target::Greet { .. } => return,
+                    Target::PinCategory(_) | Target::Greet { .. } | Target::PluginBadge => return,
                     Target::ProfileWidget { .. }
                     | Target::AttachmentLink
                     | Target::AccountPanel

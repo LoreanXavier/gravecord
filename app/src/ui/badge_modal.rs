@@ -403,41 +403,56 @@ impl Root {
         let Some(body) = self.fetched.get(&format!("profile:{user}")) else {
             return Vec::new();
         };
+        // Not in the pinned client: GlobalBadges' badges lead the row (`plugin_hooks/global_badges.rs`).
+        let leading = self.global_badge_elements(place, user, cx);
         let name = self
             .stores
             .users
             .get(&user)
             .map(|user| user.display_name().to_owned());
-        super::profile::display_badges(body, self.guild)
+        leading
             .into_iter()
-            .enumerate()
-            .filter_map(|(index, badge)| {
-                let icon_hash = badge["icon"].as_str()?;
-                let id = badge["id"].as_str().unwrap_or_default().to_owned();
-                let description =
-                    badge_description(body, &id, badge["description"].as_str().unwrap_or_default());
-                let picture = self.images.get(&format!("badge:{icon_hash}")).cloned();
-                let tip = Tip::body(self.badge_tip(user, &id, &description), Side::Top).after(300);
-                let username = name.clone();
-                let target = div()
-                    .id(SharedString::from(format!("{place}-badge-{user}-{index}")))
-                    .size(px(20.))
-                    .cursor_pointer()
-                    .children(picture.map(|picture| img(picture).size(px(20.))))
-                    .on_click(cx.listener(move |this, _, _, cx| {
-                        this.open_badge_modal(
-                            Some(user),
-                            username.clone(),
-                            catalog_id(&id),
-                            false,
-                            cx,
+            .chain(
+                super::profile::display_badges(body, self.guild)
+                    .into_iter()
+                    .enumerate()
+                    .filter_map(|(index, badge)| {
+                        let icon_hash = badge["icon"].as_str()?;
+                        let id = badge["id"].as_str().unwrap_or_default().to_owned();
+                        let description = badge_description(
+                            body,
+                            &id,
+                            badge["description"].as_str().unwrap_or_default(),
                         );
-                    }));
-                Some(
-                    self.with_tip(format!("{place}-badge-tip-{user}-{index}"), tip, target, cx)
-                        .into_any_element(),
-                )
-            })
+                        let picture = self.images.get(&format!("badge:{icon_hash}")).cloned();
+                        let tip = Tip::body(self.badge_tip(user, &id, &description), Side::Top)
+                            .after(300);
+                        let username = name.clone();
+                        let target = div()
+                            .id(SharedString::from(format!("{place}-badge-{user}-{index}")))
+                            .size(px(20.))
+                            .cursor_pointer()
+                            .children(picture.map(|picture| img(picture).size(px(20.))))
+                            .on_click(cx.listener(move |this, _, _, cx| {
+                                this.open_badge_modal(
+                                    Some(user),
+                                    username.clone(),
+                                    catalog_id(&id),
+                                    false,
+                                    cx,
+                                );
+                            }));
+                        Some(
+                            self.with_tip(
+                                format!("{place}-badge-tip-{user}-{index}"),
+                                tip,
+                                target,
+                                cx,
+                            )
+                            .into_any_element(),
+                        )
+                    }),
+            )
             .collect()
     }
 }

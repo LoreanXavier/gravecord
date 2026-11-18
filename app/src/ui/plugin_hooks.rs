@@ -12,6 +12,7 @@ pub(in crate::ui) mod clips_enhancements;
 mod download_all;
 mod full_vc_pfp;
 mod game_activity_toggle;
+mod global_badges;
 mod greet_sticker_picker;
 mod ignore_activities;
 mod image_zoom;
@@ -698,7 +699,7 @@ pub(in crate::ui) fn skip_blocked_prompt() -> bool {
 pub(in crate::ui) fn has_own_section(id: &str) -> bool {
     matches!(
         id,
-        "MessageTags" | "ClipsEnhancements" | "USRBG" | "UserPFP"
+        "MessageTags" | "ClipsEnhancements" | "USRBG" | "UserPFP" | "GlobalBadges"
     )
 }
 
@@ -717,6 +718,7 @@ impl super::Root {
             "MessageTags" => Some(self.message_tags_settings(cx)),
             "USRBG" => Some(self.usrbg_settings(cx)),
             "UserPFP" => Some(self.userpfp_settings(cx)),
+            "GlobalBadges" => Some(self.global_badges_settings(cx)),
             "ClipsEnhancements" => Some(
                 gpui::div()
                     .id("clips-enhancements-link")

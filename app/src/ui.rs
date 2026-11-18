@@ -2001,6 +2001,10 @@ impl Root {
                 if self.relationship_notifier_fetched(&key, &body, cx) {
                     return;
                 }
+                // Not in the pinned client: GlobalBadges' list (`plugin_hooks/global_badges.rs`).
+                if self.global_badges_fetched(&key, &body, cx) {
+                    return;
+                }
                 // Not in the pinned client: UserPFP's list (`plugin_hooks/userpfp.rs`).
                 if self.userpfp_fetched(&key, &body, cx) {
                     return;
@@ -10389,6 +10393,8 @@ impl Render for Root {
         self.usrbg_prepare();
         // Not in the pinned client: UserPFP's list, once (`plugin_hooks/userpfp.rs`).
         self.userpfp_prepare();
+        // Not in the pinned client: GlobalBadges' list, at start and every 30 minutes (`plugin_hooks/global_badges.rs`).
+        self.global_badges_prepare();
         if changed(&mut self.prepared.badge, self.data_revision) {
             self.refresh_notification_badge_soon(cx);
         }

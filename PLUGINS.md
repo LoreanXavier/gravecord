@@ -12,7 +12,7 @@ every setting changed), and with every plugin off, and fails on one differing pi
 The list is the plugins enabled in the owner's Equicord backup of 2026-09-21 (156). Sources were read in the local
 Equicord checkout of 2026-11-14 (`src/plugins` is Vencord's, `src/equicordplugins` Equicord's).
 
-Totals: 73 ported, 9 native, 29 planned, 45 not applicable.
+Totals: 74 ported, 9 native, 28 planned, 45 not applicable.
 
 Status: **ported** works and has its proof; **native** is what gravecord already does without a plugin;
 **planned** is not built yet (an import keeps its settings for when it is); **not applicable** has nothing to
@@ -78,7 +78,7 @@ port in a native client, or was removed upstream.
 | GameActivityToggle | ported | plugins/gameActivityToggle/index.tsx | Adds a button next to the mic and deafen button to toggle game activity. Right click it to toggle Spotify activity. | plugin_hooks/game_activity_toggle.rs: a panel button before the microphone that turns Share my activity on and off (the account setting, so the presence changes at once), red with the struck-through gamepad while off; oldIcon draws the old line. Not 1:1: the right-click Share Spotify Activity menu is missing, because the app has no Spotify connection show_activity request yet. | `the_button_reads_its_settings_and_names_the_next_state`; frames gat-on/gat-off/gat-old; plugins-off chat (user panel) |
 | GifMaker | planned | equicordplugins/gifMaker/index.tsx | Create and caption GIFs from any media in chat or the GIF picker. | a GIF encoder and its editor. |  |
 | GifPaste | ported | plugins/gifPaste/index.ts | Makes picking a gif in the gif picker insert a link into the chatbox instead of instantly sending it | gifs.rs: picking a GIF inserts its link and a space in the composer and closes the picker. | `switch_only_plugins_follow_their_switch_and_the_master`; frames gifpaste-off/on; plugins-off gif-picker |
-| GlobalBadges | planned | equicordplugins/globalBadges/index.tsx | Adds global badges from other client mods | its third-party badge service. |  |
+| GlobalBadges | ported | equicordplugins/globalBadges/index.tsx | Adds global badges from other client mods | plugin_hooks/global_badges.rs: the badges of other client mods (apiUrl/users, fetched while on and every 30 minutes; Vencord's and Equicord's left out, each mod behind its Show switch) lead a profile's badge row, round at 90% with their text as tooltip and Copy Badge Name / Copy Badge Image Link on a right click; the card has Join GlobalBadges Server. GAP: the badge directory entry a click opens in the original, the toolbox's Refetch, the Allow Host notice; the Show switches are listed instead of the multi-select. | `badges_follow_the_switches_and_blocked_mods`; frames pending (live runs held) |
 | GreetStickerPicker | ported | plugins/greetStickerPicker/index.tsx | Allows you to use any greet sticker instead of only the random one by right-clicking the 'Wave to say hi!' button | plugin_hooks/greet_sticker_picker.rs: a right click on Wave to say hi! opens Greet Mode (radios Greet / Message) and Greet Stickers (Wumpus, Nelly, Clyde, Choco, Doggo, Peach); a sticker goes out as a mentioning reply by /greet in Greet mode or as an ordinary sticker message in Message mode. The app's menus gained group labels and radio rows for it. GAP: Unholy Multi-Greet (private settings without UI). | `the_menu_has_the_mode_and_the_six_stickers`; menu unit test; frame gsp-menu (synthetic join message, right click on Wave to say hi!) |
 | HeaderBarAPI | not applicable | equicordplugins/_api/headerBar.ts | API to add buttons to the header bar and channel toolbar. | client-mod plumbing (an API for other plugins), nothing to port. |  |
 | IgnoreActivities | ported | plugins/ignoreActivities/index.tsx | Ignore activities from showing up on your status ONLY. You can configure which ones are specifically ignored from the Registered Games and Activities tabs, or use the general settings below | plugin_hooks/ignore_activities.rs: your own activity list filtered before it goes out (op 3) and before your own status shows it: ignore* by kind (custom status untouched), idsList blacklisting or whitelisting application ids by listMode, and an Enable Activity check in a registered game's overflow menu that keeps that game off by id or exe path (re-checking turns detection back on). GAP: the eye toggle in the app launcher; start's pruning of games never seen. | `kinds_are_ignored_by_their_switch_and_custom_status_never`, `the_ids_list_blacklists_or_whitelists`, `an_ignored_game_goes_by_its_id_or_its_exe`; no frame (the capture profile has no registered game); plugins-off: the filter sits on the presence path, which a capture never sends |
@@ -240,6 +240,25 @@ Every setting of each original (`definePluginSettings`), its type and default th
 | FixImagesQuality | `originalImagesInChat` | BOOLEAN | `false` | ported |
 | GameActivityToggle | `oldIcon` | BOOLEAN | `false` | ported |
 | GameActivityToggle | `location` | SELECT | `"PANEL"` | nothing to act on yet: the original only reads it while EquicordToolbox is on, which is not ported; the button stays next to Mute/Deafen as with the default |
+| GlobalBadges | `apiUrl` | STRING | `"https://badges.equicord.org/"` | ported |
+| GlobalBadges | `apiUrlPermission` | COMPONENT | `` | not ported: not ported: the desktop client's content security policy notice (Allow Host); this client reaches any host. |
+| GlobalBadges | `showClientMods` | COMPONENT | `` | ported as the sixteen Show switches it edits, listed one by one instead of one multi-select. |
+| GlobalBadges | `showCustom` | BOOLEAN | `true` | ported |
+| GlobalBadges | `showNekocord` | BOOLEAN | `true` | ported |
+| GlobalBadges | `showReviewDB` | BOOLEAN | `true` | ported |
+| GlobalBadges | `showAero` | BOOLEAN | `true` | ported |
+| GlobalBadges | `showAliucord` | BOOLEAN | `true` | ported |
+| GlobalBadges | `showRaincord` | BOOLEAN | `true` | ported |
+| GlobalBadges | `showVelocity` | BOOLEAN | `true` | ported |
+| GlobalBadges | `showEnmity` | BOOLEAN | `true` | ported |
+| GlobalBadges | `showPaicord` | BOOLEAN | `true` | ported |
+| GlobalBadges | `showBunny` | BOOLEAN | `true` | ported |
+| GlobalBadges | `showGooseMod` | BOOLEAN | `true` | ported |
+| GlobalBadges | `showReplugged` | BOOLEAN | `true` | ported |
+| GlobalBadges | `showBetterDiscord` | BOOLEAN | `true` | ported |
+| GlobalBadges | `showVendroidEnhanced` | BOOLEAN | `true` | ported |
+| GlobalBadges | `showRevenge` | BOOLEAN | `true` | ported |
+| GlobalBadges | `showReCord` | BOOLEAN | `true` | ported |
 | GreetStickerPicker | `greetMode` | SELECT | `GreetMode.Greet` | ported |
 | IgnoreActivities | `importCustomRPC` | COMPONENT | `` | not ported: not applicable yet: it copies CustomRPC's application id, and CustomRPC is not ported. |
 | IgnoreActivities | `listMode` | SELECT | `FilterMode.Whitelist` | ported |
