@@ -109,8 +109,11 @@ for dp, dn, fn in os.walk(ROOT):
             if s:
                 for key, body in top_level_entries(balanced(text, s.end() - 1)):
                     kind = re.search(r'type:\s*OptionType\.(\w+)', body)
+                    # A select marks its default option with `default: true`; take that option's value.
+                    picked = re.search(r'value:\s*([^,}\n]+?),\s*default:\s*true', body)
                     default = re.search(r'\bdefault:\s*([^,\n]+)', body)
-                    settings.append((key, kind.group(1) if kind else '?', default.group(1).strip() if default else ''))
+                    default = picked.group(1).strip() if picked else (default.group(1).strip() if default else '')
+                    settings.append((key, kind.group(1) if kind else '?', default))
             sources.setdefault(name.group(1), (rel, desc.group(1) if desc else '', settings))
 
 # The ported plugins and their settings, from the registry.
@@ -124,6 +127,24 @@ idle = {(a, b): why.replace('\\"', '"') for a, b, why in re.findall(
 
 # How each ported plugin is built here, and its proof.
 PORTED = {
+    'ReadAllNotificationsButton': "plugin_hooks/read_all.rs: a Read All tile (or compact text) under the Home button; one BULK_ACK of every server's unread channels and joined threads (the app's own bulk ack).",
+    'FixImagesQuality': "media_image.rs, lightbox.rs: attachment pictures without the proxy's size in chat (scaled only past 2000 x 1200), the original file in the viewer (and in chat with originalImagesInChat).",
+    'OnePingPerDM': "notifications.rs: in the DMs it affects only the oldest unread message (the first after the channel's ack) plays the sound; ignored users, allowed mentions and @everyone still ping; the desktop notification is left alone; alwaysPlaySound plays the message sound for any message that notifies.",
+    'VoiceDownload': "voice_message.rs: a download arrow after a voice message's volume that opens the file in the browser (the original's desktop behaviour).",
+    'CallTimer': "plugin_hooks/call_timer.rs: your time under the connection panel's channel line (seconds always, code font); with `allCallTimers` everyone's time by their voice row, as the clock icon with a tooltip or, with `showWithoutHover`, as text under the name. Join times start when the app first sees someone in a channel.",
+    'MemberCount': "plugin_hooks/member_count.rs: online, total and in-voice counts with their tooltips at the top of the member list, online and total in the server tooltip. Not ported: the original's gateway requests (`preload` of a server's online count, member list subscriptions while the list is hidden); plugin code sends nothing, so an unopened server shows '?' online until its count arrives.",
+    'AnonymiseFileNames': "uploads.rs: files are renamed as they are sent, by the original's four methods; a switch first in each upload card's bar turns it off for that file. A spoilered file stays one. Its /Spoiler command is not ported: the app runs no client-side slash commands of plugins.",
+    'ReverseImageSearch': 'menu.rs: "Search Image" at the end of the link group when a picture is right-clicked; a '
+                          'submenu of its seven engines and All, opened in the browser. The engine favicons (fetched '
+                          'from DuckDuckGo by the original) are not drawn: plugin code fetches nothing.',
+    'BetterUploadButton': 'ui.rs: the composer plus opens the file picker on a click and its menu on a right click.',
+    'ColorSighted': 'member_avatars.rs, ui.rs status dots, status_menu.rs: idle, Do Not Disturb and offline keep their '
+                    'colour but draw the plain disk; the mobile phone stays (the original leaves it too).',
+    'CopyUserURLs': 'context_menu.rs: "Copy User URL" at the end of user and DM menus; copies '
+                    '`<https://discord.com/users/ID>` (angle brackets, as the original).',
+    'QuickMention': 'hover_bar.rs: an @ button after the quick reactions and before Add Reaction, where you may write; '
+                    'inserts `<@ID> ` in the composer (shown as text: the composer draws no mention pill for typed '
+                    'syntax).',
     'AlwaysTrust': 'links.rs: any link opens without "Leaving Discord" (`domain`); server_settings.rs: Delete Server '
                    'without the typed name, behind the plugin\'s own "Delete server?" (`noDeleteSafety`, `confirmModal`).',
     'ClearURLs': 'plugins/clear_urls.rs: the ClearURLs rules, bundled; messages sent and edited.',
@@ -149,6 +170,19 @@ PORTED = {
                      'so the original\'s 200% cap on the sync has nothing to cap.',
 }
 TESTS = {
+    'ReadAllNotificationsButton': '`the_button_is_a_tile_or_compact_text`; frame ranb-on; plugins-off chat (rail)',
+    'FixImagesQuality': '`fix_images_quality_loads_full_resolution`; plugins-off image-menu (an attachment picture)',
+    'OnePingPerDM': '`one_ping_per_dm_lets_the_oldest_unread_ping`; no frame (a sound, not a picture)',
+    'VoiceDownload': 'frames vd-on/vd-off/vd-pair; plugins-off chat (the voice message is in view)',
+    'CallTimer': '`plugin_hooks::call_timer::tests` (3); frames ct-on/ct-all; plugins-off voice-profile',
+    'MemberCount': '`plugin_hooks::member_count::tests` (2); frames mc-on/mc-off; plugins-off member-list',
+    'AnonymiseFileNames': '`anonymised_names_follow_each_method`; frames anon-on/anon-off; plugins-off upload-card',
+    'ReverseImageSearch': '`image_search_opens_each_engine_with_the_encoded_address`; frame ris-on; plugins-off image-menu',
+    'BetterUploadButton': '`copy_user_urls_and_quick_mention_write_what_the_originals_write` (off); frame bub-on; '
+                          'plugins-off plus-click',
+    'ColorSighted': 'frames cs-on/cs-off; plugins-off dm-list, chat',
+    'CopyUserURLs': '`copy_user_urls_and_quick_mention_write_what_the_originals_write`; frame url-on; plugins-off user-menu',
+    'QuickMention': '`quick_mention_sits_before_add_reaction`; frames qm-on, qm-click; plugins-off hover-bar',
     'AlwaysTrust': '`always_trust_needs_its_domain_setting`, `always_trust_deletes_servers_by_its_two_settings`; '
                    'frames trust-off/on, trust-settings',
     'ClearURLs': '`plugins::clear_urls::tests` (6); frames clearurls-off/on; plugins-off send-link',
@@ -201,32 +235,26 @@ PLANNED = {
     'AccountPanelServerProfile': 'a right-click menu on the account panel that opens the server profile popout.',
     'AltKrispSwitch': 'Krisp, which is blocked here (its signature check); without it there is nothing to switch to.',
     'AlwaysAnimate': 'a switch in the image pipeline to play animated avatars, banners and emoji without hover.',
-    'AnonymiseFileNames': 'a rename of attachments in the upload path (random names, kept extension).',
     'BetterActivities': 'activity icons in member list rows and every activity in the profile popout.',
     'BetterAudioPlayer': 'a spectrograph and oscilloscope in the audio attachment player (needs the decoded samples).',
     'BetterBlockedUsers': 'search in the blocked list, selectable names, no blocked-profile prompt, grouped blocked messages.',
     'BetterCommands': 'changes to the slash command UI.',
     'BetterFolders': 'a second server sidebar for folders.',
     'BetterForwards': 'forward dialog tweaks.',
-    'BetterGifAltText': 'GIF alt text from the tags or file name.',
+    'BetterGifAltText': "a place where alt text shows: the original changes the `alt` that screen readers read, and the app draws images without an accessibility tree.",
     'BetterPlusReacts': '"+:emoji:" reacting to the Nth message above, in the composer\'s send path.',
     'BetterRoleContext': 'role context menu rows (copy colour, edit role, view icon).',
     'BetterRoleDot': 'copy a role colour on its dot; dots and coloured names together.',
-    'BetterUploadButton': 'left click uploads, right click opens the menu, on the composer\'s plus button.',
     'BiggerStreamPreview': 'a larger stream preview popout.',
     'BypassStatus': 'notification and sound rules that pass Do Not Disturb for chosen users, channels and servers.',
-    'CallTimer': 'a timer per user in voice channels and in the connection panel.',
     'CancelFriendRequest': 'a cancel button for outgoing friend requests in profiles.',
     'ClipsEnhancements': 'more clip FPS and duration options in the clips settings.',
     'ClipUpload': 'a button to upload a local video as a clip.',
-    'ColorSighted': 'status dots without the colour-blind shapes (member_avatars.rs masks).',
-    'CopyUserURLs': '"Copy User URL" in the user context menu.',
     'CustomRPC': 'a custom rich presence editor and its activity.',
     'Decor': 'its third-party avatar decorations service (decor-auth in the backup\'s data store is not copied).',
     'DownloadAllAttachments': 'a hover-bar button that saves every attachment of a message.',
     'Experiments': 'the experiments and developer pages.',
     'FavoriteEmojiFirst': 'favourite emoji first in the emoji autocomplete.',
-    'FixImagesQuality': 'original-resolution image requests in the image pipeline.',
     'FixYoutubeEmbeds': 'the YouTube embed workaround inside the web host.',
     'FriendInvites': 'slash commands for friend invite links.',
     'FullSearchContext': 'the full message menu on search results.',
@@ -238,7 +266,6 @@ PLANNED = {
     'IgnoreActivities': 'a list of activities kept off your status.',
     'ImageZoom': 'a zoom lens in the image viewer.',
     'LimitlessScreenshare': 'resolution and FPS sliders past the tier limits (owner: later, FakeNitro-style).',
-    'MemberCount': 'online and total counts in the member list header and server tooltip.',
     'MessageLogger': 'a store of deleted and edited messages and their red/edited display.',
     'MessagePeek': 'the last message and its time under each DM in the list.',
     'MoreCommands': 'its slash commands.',
@@ -247,18 +274,14 @@ PLANNED = {
     'NoNitroUpsell': 'every Nitro upsell hidden (the app draws them from the pinned client).',
     'NoPushToTalk': 'voice activity allowed where push to talk is required.',
     'NoUnblockToJump': 'jumping to blocked users\' messages without unblocking.',
-    'OnePingPerDM': 'one notification sound per DM until it is read.',
     'OpenInApp': 'Spotify, Steam and other links opened in their apps.',
     'PermissionFreeWill': 'no client-side limits in channel permission editing.',
     'PermissionsViewer': 'a permission breakdown in profiles and menus.',
     'PinDMs': 'pinned DM categories in the DM list.',
     'PlatformIndicators': 'desktop, mobile and web icons by names.',
     'PreviewMessage': 'a preview of the message before sending.',
-    'QuickMention': 'a mention button in the message hover bar.',
     'Quoter': 'a quote image made from a message.',
-    'ReadAllNotificationsButton': 'a button that marks every server read.',
     'RelationshipNotifier': 'notices when a friend, group or server removes you (its data store lists are not copied).',
-    'ReverseImageSearch': 'image search rows in the image context menu.',
     'RoleColorEverywhere': 'role colours in mentions, lists, voice and reactions.',
     'SearchFix': 'its search request fix.',
     'SedEnhanced': '`s/a/b/` editing the last message, in the send path.',
@@ -266,7 +289,7 @@ PLANNED = {
     'ServerListIndicators': 'online friend and server counts by the server list.',
     'ShowConnections': 'connected accounts in user popouts and the DM sidebar.',
     'ShowHiddenThings': 'hidden and moderator-only things shown.',
-    'SilentMessageToggle': 'a composer button that sends messages silently (`@silent` flag).',
+    'SilentMessageToggle': "the pinned client's `@silent` prefix first: its send path strips it and sets SUPPRESS_NOTIFICATIONS (the `silentPrefix` rule and the sends of modules 857069 and 92961); the app sends the text as typed, so the plugin's prefix would reach people as words.",
     'SpotifyCrack': 'listen along without Premium and no Spotify pause on voice.',
     'SpotifyShareCommands': 'its /track, /album, /artist commands.',
     'SteamStatusSync': 'status sync with the Steam client.',
@@ -277,14 +300,13 @@ PLANNED = {
     'Translate+': 'message translation (needs a translation service).',
     'TypingIndicator': 'typing dots by channels in the channel list.',
     'TypingTweaks': 'avatars and role colours in the typing line.',
-    'UnlockedAvatarZoom': 'a wider zoom in the avatar crop tool.',
+    'UnlockedAvatarZoom': "the avatar crop tool (Edit Image of a new avatar), which the app does not have yet; the plugin only raises its zoom slider's maximum.",
     'UserMessagesPronouns': 'pronouns by names in chat.',
     'UserPFP': 'its third-party avatar service.',
     'USRBG': 'its third-party banner service.',
     'ValidReply': 'replied messages fetched when missing.',
     'ValidUser': 'unknown mentioned users fetched.',
     'ViewIcons': 'avatars, banners and icons opened full size, with menu rows.',
-    'VoiceDownload': 'a download button on voice messages.',
     'VoiceMessages': 'recording voice messages on desktop.',
     'VoiceMessageTranscriber': 'an on-device Whisper model runner.',
     'WhoReacted': 'reactor avatars on reactions.',

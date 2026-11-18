@@ -1128,6 +1128,10 @@ fn status_tint(status: &str) -> &'static str {
 }
 
 fn status_menu_icon(status: &str) -> &'static str {
+    // Not in the pinned client: ColorSighted draws every status as the plain disk (`plugin_hooks.rs`).
+    if super::plugin_hooks::color_sighted() {
+        return "status_menu_online";
+    }
     match status {
         "dnd" => "status_menu_dnd",
         "idle" => "status_menu_idle",

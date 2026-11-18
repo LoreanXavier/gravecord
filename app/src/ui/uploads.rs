@@ -170,6 +170,8 @@ pub(crate) struct Pending {
     blurred: Option<Arc<Image>>,
     /// The alt text set in Modify Attachment.
     pub description: Option<String>,
+    /// Not in the pinned client: the card's AnonymiseFileNames switch, `None` until pressed (`plugin_hooks.rs`).
+    pub anonymise: Option<bool>,
 }
 
 /// The prefix that marks an attachment as a spoiler (`SPOILER_` in module 453771).
@@ -222,6 +224,7 @@ impl Pending {
             picture,
             blurred,
             description: None,
+            anonymise: None,
         })
     }
 
@@ -239,9 +242,12 @@ impl Pending {
 
     /// What the message sends for this card.
     pub fn upload(self) -> crate::net::Upload {
+        // Not in the pinned client: AnonymiseFileNames renames the file as it is sent (`plugin_hooks.rs`).
+        let name =
+            super::plugin_hooks::anonymised_name(&self.name, self.anonymise).unwrap_or(self.name);
         crate::net::Upload {
             path: self.path,
-            name: self.name,
+            name,
             description: self.description,
         }
     }
@@ -559,6 +565,21 @@ impl Root {
                     .border_1()
                     .border_color(hsla(0., 0., 1., 0.08))
                     .flex()
+                    // Not in the pinned client: AnonymiseFileNames' switch, first in the bar (`plugin_hooks.rs`).
+                    .children(super::plugin_hooks::anonymise_default().map(|default| {
+                        let on = pending.anonymise.unwrap_or(default);
+                        action(
+                            format!("upload-anonymise-{index}"),
+                            if on { "plugin_anon_on" } else { "plugin_anon_off" },
+                            "--interactive-text-default",
+                        )
+                        .on_click(cx.listener(move |this, _, _, cx| {
+                            if let Some(pending) = this.pending_files.get_mut(index) {
+                                pending.anonymise = Some(!on);
+                            }
+                            cx.notify();
+                        }))
+                    }))
                     .child(
                         action(
                             format!("upload-spoiler-{index}"),

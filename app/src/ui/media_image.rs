@@ -184,6 +184,15 @@ pub(super) fn attachment_obscure_kind(
 }
 
 pub(super) fn attachment_url(attachment: &Attachment, width: u32, height: u32) -> String {
+    // Not in the pinned client: FixImagesQuality's full-resolution picture (`plugin_hooks.rs`).
+    if let Some(url) = super::plugin_hooks::fixed_image_url(
+        &attachment.proxy_url,
+        (attachment.width.unwrap_or(0), attachment.height.unwrap_or(0)),
+        attachment.is_animated(),
+        false,
+    ) {
+        return url;
+    }
     scaled_image_url(
         &attachment.proxy_url,
         attachment.is_animated(),

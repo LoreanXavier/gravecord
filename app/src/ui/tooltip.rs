@@ -769,7 +769,13 @@ impl Root {
             }
             Body::Guild(id) => {
                 let guild = self.stores.guild(*id)?;
-                frame()
+                // Not in the pinned client: MemberCount's counts under the name (`plugin_hooks/member_count.rs`).
+                let counts = self.member_count_tooltip(*id);
+                let framed = || match &counts {
+                    Some(_) => frame().flex_col().items_start(),
+                    None => frame(),
+                };
+                framed()
                     .child(
                         div()
                             .max_w(px(MAX_WIDTH - 24.))
@@ -783,6 +789,7 @@ impl Root {
                             }))
                             .child(div().min_w(px(0.)).line_clamp(2).child(guild.name.clone())),
                     )
+                    .children(counts)
                     .into_any_element()
             }
         })

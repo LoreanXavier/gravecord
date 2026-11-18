@@ -1402,7 +1402,9 @@ impl Root {
                                                     }
                                                     None => channel.clone(),
                                                 }),
-                                        ),
+                                        )
+                                        // Not in the pinned client: CallTimer (`plugin_hooks/call_timer.rs`).
+                                        .children(self.call_timer_connection()),
                                 )
                                 .child(
                                     div()
@@ -1566,6 +1568,12 @@ impl Root {
                 let speaking = self.speaking.contains(&state.user_id)
                     || self.soundboard.user_playing(state.user_id);
                 let member = state.user_id;
+                // Not in the pinned client: CallTimer's time by the row (`plugin_hooks/call_timer.rs`).
+                let (timer_under, timer_icon) = match self.call_timer_row(member, cx) {
+                    Some((true, text)) => (Some(text), None),
+                    Some((false, icon)) => (None, Some(icon)),
+                    None => (None, None),
+                };
                 div()
                     .id(gpui::SharedString::from(format!("{prefix}-{member}")))
                     .on_mouse_up(
@@ -1670,7 +1678,8 @@ impl Root {
                                 user.display_name().to_owned(),
                                 self.name_styles(&user, Some(guild)).as_ref(),
                                 super::name_styles::Display::Font,
-                            )),
+                            ))
+                            .children(timer_under),
                     )
                     // `icons_YUoOxm`: 16px, the muted microphone or the deafened headphones.
                     .when(deaf, |this| {
@@ -1707,6 +1716,7 @@ impl Root {
                                 .child("LIVE"),
                         )
                     })
+                    .children(timer_icon)
                     .into_any_element()
             })
             .collect()

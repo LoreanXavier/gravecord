@@ -136,6 +136,8 @@ pub(super) struct Caps {
     pub can_delete: bool,
     /// Shift held, not in keyboard mode, and no picker or menu of the bar open.
     pub expanded: bool,
+    /// Not in the pinned client: the QuickMention plugin's button (`plugin_hooks.rs`).
+    pub quick_mention: bool,
 }
 
 /// One button of the bar, in its order.
@@ -157,6 +159,8 @@ pub(super) enum Button {
     Publish,
     Delete,
     More,
+    /// Not in the pinned client: QuickMention (`plugin_hooks.rs`).
+    QuickMention,
 }
 
 /// The buttons of `nA`, left to right. The expanded bar (Shift held) leads with the shortcuts and drops the quick
@@ -183,10 +187,14 @@ pub(super) fn buttons(caps: Caps) -> Vec<Button> {
             out.push(Button::Reply);
         }
     }
+    if caps.can_react && !x {
+        out.push(Button::Quick);
+    }
+    // Vencord's message popover buttons sit between the quick reactions and Add Reaction.
+    if caps.quick_mention {
+        out.push(Button::QuickMention);
+    }
     if caps.can_react {
-        if !x {
-            out.push(Button::Quick);
-        }
         out.push(Button::AddReaction);
     }
     if caps.can_reply && !caps.can_edit {
@@ -323,6 +331,7 @@ impl Root {
             can_publish: self.can_publish(message),
             can_delete: (own || can(MANAGE_MESSAGES)) && !UNDELETABLE.contains(&kind),
             expanded: false,
+            quick_mention: super::plugin_hooks::quick_mention(private || can(SEND_MESSAGES)),
         }
     }
 }
@@ -360,6 +369,7 @@ pub(super) fn label_icon(button: Button, caps: Caps) -> (&'static str, &'static 
         Button::Publish => (dc_intl::tr("Publish"), "announcement_channel"),
         Button::Delete => (dc_intl::tr("Delete"), "msg_trash"),
         Button::More => (dc_intl::tr("More"), "msg_more"),
+        Button::QuickMention => ("Quick Mention", "plugin_mention"),
     }
 }
 

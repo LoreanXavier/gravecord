@@ -1,6 +1,9 @@
 //! Where the built-in plugins (`crate::plugins`) act on the chat. Not part of the pinned client.
 
+mod call_timer;
+mod member_count;
 mod message_clicks;
+mod read_all;
 mod voice_stats;
 
 pub(super) use message_clicks::follow as follow_message_clicks;
@@ -92,6 +95,397 @@ fn trust_every_link_in(state: &State) -> bool {
 
 pub(super) fn trust_every_link() -> bool {
     !crate::plugins::bypassed() && crate::plugins::with(trust_every_link_in)
+}
+
+/// CopyUserURLs (Vencord `src/plugins/copyUserURLs`): "Copy User URL" at the end of a user's context menu.
+pub(super) fn with_user_url_row(
+    mut items: Vec<super::context_menu::Entry>,
+    user: Option<Id>,
+) -> Vec<super::context_menu::Entry> {
+    if user.is_some() && !crate::plugins::bypassed() && crate::plugin_on!("CopyUserURLs") {
+        items.push(super::context_menu::Entry::Separator);
+        items.push(super::context_menu::Entry::Row(
+            super::context_menu::Row::new(
+                super::context_menu::Act::CopyLink,
+                "Copy User URL".to_owned(),
+            )
+            .icon("menu_copy_message_link"),
+        ));
+    }
+    items
+}
+
+/// The URL as the original copies it: in angle brackets, so a pasted link shows no embed.
+pub(super) fn user_url(user: Id) -> String {
+    format!("<https://discord.com/users/{user}>")
+}
+
+pub(super) fn copy_user_url(user: Id, cx: &mut gpui::App) {
+    cx.write_to_clipboard(gpui::ClipboardItem::new_string(user_url(user)));
+}
+
+/// QuickMention (Vencord `src/plugins/quickMention`): its hover bar button shows where you may write (any DM, a server
+/// channel with Send Messages).
+pub(super) fn quick_mention(can_send: bool) -> bool {
+    can_send && !crate::plugins::bypassed() && crate::plugin_on!("QuickMention")
+}
+
+/// `insertTextIntoChatInputBox(`<@${msg.author.id}> `)`.
+pub(super) fn mention_text(user: Id) -> String {
+    format!("<@{user}> ")
+}
+
+/// BetterUploadButton (Vencord `src/plugins/betterUploadButton`): the composer's plus uploads on a click and opens its
+/// menu on a right click.
+pub(super) fn better_upload_button() -> bool {
+    !crate::plugins::bypassed() && crate::plugin_on!("BetterUploadButton")
+}
+
+/// ColorSighted (Vencord `src/plugins/colorSighted`): status dots keep their colour but lose the shapes cut into them
+/// for colour blindness (`Masks.STATUS_ONLINE` for idle, Do Not Disturb, streaming and offline).
+pub(super) fn color_sighted() -> bool {
+    !crate::plugins::bypassed() && crate::plugin_on!("ColorSighted")
+}
+
+/// ReverseImageSearch (Vencord `src/plugins/reverseImageSearch`): its engines, in its order, and the address each
+/// opens for a picture (`engine + encodeURIComponent(src)`).
+pub(super) const IMAGE_SEARCH_ENGINES: &[(&str, &str)] = &[
+    ("Google", "https://lens.google.com/uploadbyurl?url="),
+    (
+        "Yandex",
+        "https://yandex.com/images/search?rpt=imageview&url=",
+    ),
+    ("SauceNAO", "https://saucenao.com/search.php?url="),
+    ("IQDB", "https://iqdb.org/?url="),
+    (
+        "Bing",
+        "https://www.bing.com/images/search?view=detailv2&iss=sbi&q=imgurl:",
+    ),
+    ("TinEye", "https://www.tineye.com/search?url="),
+    ("ImgOps", "https://imgops.com/start?url="),
+];
+
+/// The last row of the submenu, which opens every engine.
+pub(super) const IMAGE_SEARCH_ALL: &str = "All";
+
+pub(super) fn reverse_image_search() -> bool {
+    !crate::plugins::bypassed() && crate::plugin_on!("ReverseImageSearch")
+}
+
+pub(super) fn image_search_url(engine: usize, src: &str) -> String {
+    format!(
+        "{}{}",
+        IMAGE_SEARCH_ENGINES[engine].1,
+        encode_uri_component(src)
+    )
+}
+
+/// JavaScript's `encodeURIComponent`: everything but `A-Z a-z 0-9 - _ . ! ~ * ' ( )` as UTF-8 percent escapes.
+fn encode_uri_component(text: &str) -> String {
+    let mut out = String::new();
+    for byte in text.bytes() {
+        if byte.is_ascii_alphanumeric() || b"-_.!~*'()".contains(&byte) {
+            out.push(byte as char);
+        } else {
+            out.push_str(&format!("%{byte:02X}"));
+        }
+    }
+    out
+}
+
+/// AnonymiseFileNames (Vencord `src/plugins/anonymiseFileNames`): the name an upload is sent with. `choice` is the
+/// card's own switch (`None` until it is pressed: `anonymiseByDefault`), `now_ms` the local time for the Timestamp
+/// and Date methods, `random` a source of indices for Random. `None` keeps the name.
+pub(super) fn anonymised_name_in(
+    state: &State,
+    name: &str,
+    choice: Option<bool>,
+    now: chrono::DateTime<chrono::Local>,
+    mut random: impl FnMut(usize) -> usize,
+) -> Option<String> {
+    const ID: &str = "AnonymiseFileNames";
+    if !state.is_on(ID) {
+        return None;
+    }
+    let flag = |key| state.value(ID, key) == Value::Bool(true);
+    if !choice.unwrap_or_else(|| flag("anonymiseByDefault")) {
+        return None;
+    }
+    // The app marks a spoiler in the name; the original keeps it apart from the name, so it survives here too.
+    let (spoiler, plain) = match name.strip_prefix(super::uploads::SPOILER_PREFIX) {
+        Some(plain) => (true, plain),
+        None => (false, name),
+    };
+    // `tarExtMatcher`, else the last dot.
+    let tar = regex_tar(plain);
+    let ext = match tar.or_else(|| plain.rfind('.')) {
+        Some(at) => &plain[at..],
+        None => "",
+    };
+    let text = |key| state.value(ID, key).as_str().unwrap_or("").to_owned();
+    let stem = match state.value(ID, "method").as_i64().unwrap_or(0) {
+        1 => text("consistent"),
+        2 => now.timestamp_millis().to_string(),
+        3 => {
+            let format = text("dateFormat")
+                .replace("YYYY", &now.format("%Y").to_string())
+                .replace("MM", &now.format("%m").to_string())
+                .replace("DD", &now.format("%d").to_string())
+                .replace("HH", &now.format("%H").to_string())
+                .replace("mm", &now.format("%M").to_string())
+                .replace("ss", &now.format("%S").to_string())
+                .replace("SSS", &format!("{:03}", now.timestamp_subsec_millis()));
+            if format.is_empty() {
+                now.timestamp_millis().to_string()
+            } else {
+                format
+            }
+        }
+        _ => {
+            const CHARS: &[u8] = b"0123456789bdfhjkmnpqrstvwxz";
+            let length = state
+                .value(ID, "randomisedLength")
+                .as_f64()
+                .unwrap_or(7.)
+                .max(0.) as usize;
+            (0..length)
+                .map(|_| CHARS[random(CHARS.len()) % CHARS.len()] as char)
+                .collect()
+        }
+    };
+    let prefix = if spoiler || flag("spoilerMessages") {
+        super::uploads::SPOILER_PREFIX
+    } else {
+        ""
+    };
+    Some(format!("{prefix}{stem}{ext}"))
+}
+
+/// `/\.tar\.\w+$/`: where a `.tar.gz`-like extension starts.
+fn regex_tar(name: &str) -> Option<usize> {
+    let at = name.rfind(".tar.")?;
+    let rest = &name[at + 5..];
+    (!rest.is_empty() && rest.chars().all(|c| c.is_alphanumeric() || c == '_')).then_some(at)
+}
+
+/// The name an upload is sent with now (see [`anonymised_name_in`]).
+pub(super) fn anonymised_name(name: &str, choice: Option<bool>) -> Option<String> {
+    if crate::plugins::bypassed() {
+        return None;
+    }
+    let now = chrono::Local::now();
+    crate::plugins::with(|state| {
+        anonymised_name_in(state, name, choice, now, |count| {
+            rand::random_range(0..count.max(1))
+        })
+    })
+}
+
+/// Whether an upload card shows the anonymise switch, and what it says while untouched (`anonymiseByDefault`).
+pub(super) fn anonymise_default() -> Option<bool> {
+    if crate::plugins::bypassed() {
+        return None;
+    }
+    crate::plugins::with(|state| {
+        state
+            .is_on("AnonymiseFileNames")
+            .then(|| state.value("AnonymiseFileNames", "anonymiseByDefault") == Value::Bool(true))
+    })
+}
+
+/// VoiceDownload (Vencord `src/plugins/voiceDownload`): after a voice message's volume, a 24px download arrow
+/// (`--interactive-icon-default`, `-active` under the pointer) that opens the file in the browser, as the original does
+/// on the desktop app (`target: "_blank"`); the press does not reach the message.
+pub(super) fn voice_download_button(url: &str, salt: usize) -> Option<gpui::AnyElement> {
+    use gpui::{
+        InteractiveElement, IntoElement, ParentElement, StatefulInteractiveElement, Styled,
+    };
+    if crate::plugins::bypassed() || !crate::plugin_on!("VoiceDownload") {
+        return None;
+    }
+    let url = url.to_owned();
+    let over = super::motion::hovered(super::motion::key(&("voice-download", salt)));
+    Some(
+        gpui::div()
+            .id(("voice-download", salt))
+            .size(gpui::px(24.))
+            .flex_none()
+            .cursor_pointer()
+            .child(super::motion::hover_probe(super::motion::key(&(
+                "voice-download",
+                salt,
+            ))))
+            .child(super::icon(
+                "plugin_download",
+                24.,
+                if over {
+                    "--interactive-icon-active"
+                } else {
+                    "--interactive-icon-default"
+                },
+            ))
+            .on_click(move |_, _, cx| {
+                cx.stop_propagation();
+                cx.open_url(&url);
+            })
+            .into_any_element(),
+    )
+}
+
+/// OnePingPerDM (Vencord `src/plugins/onePingPerDM`): `isPrivateChannelRead`, whether a message may ping. Outside
+/// the DMs it affects, from an ignored user, or a mention it allows, yes; else only the channel's oldest unread
+/// message pings (`ReadStateStore.getOldestUnreadMessageId`, here `oldest`, the first message that came after the
+/// channel's ack).
+fn ping_allowed_in(
+    state: &State,
+    message: &Value,
+    me: Id,
+    channel_kind: Option<u64>,
+    oldest: Option<Id>,
+) -> bool {
+    const ID: &str = "OnePingPerDM";
+    let text = |key| state.value(ID, key).as_str().unwrap_or("").to_owned();
+    let flag = |key| state.value(ID, key) == Value::Bool(true);
+    let author = message["author"]["id"].as_str().unwrap_or("");
+    if text("ignoreUsers")
+        .split(", ")
+        .filter(|id| !id.is_empty())
+        .any(|id| id == author)
+    {
+        return true;
+    }
+    let affect = text("channelToAffect");
+    let mentioned = message["mentions"].as_array().is_some_and(|mentions| {
+        mentions
+            .iter()
+            .any(|user| user["id"].as_str() == Some(&me.to_string()))
+    });
+    if !matches!(channel_kind, Some(1 | 3))
+        || (channel_kind == Some(1) && affect == "group_dm")
+        || (channel_kind == Some(3) && affect == "user_dm")
+        || (flag("allowMentions") && mentioned)
+        || (flag("allowEveryone") && message["mention_everyone"].as_bool() == Some(true))
+    {
+        return true;
+    }
+    let id = message["id"].as_str().and_then(|id| id.parse::<Id>().ok());
+    oldest.is_some() && oldest == id
+}
+
+thread_local! {
+    /// Per DM, the first message that arrived after its ack (`_oldestUnreadMessageId`).
+    static OLDEST_UNREAD: std::cell::RefCell<std::collections::HashMap<Id, Id>> =
+        std::cell::RefCell::new(std::collections::HashMap::new());
+}
+
+/// The notification of a message with OnePingPerDM: no sound unless it may ping; with `alwaysPlaySound` the message
+/// sound even where the sound setting is off. The desktop notification itself is left as it was.
+pub(super) fn one_ping_per_dm(
+    stores: &dc_state::Stores,
+    message: &Value,
+    mut decision: dc_state::notifications::Decision,
+) -> dc_state::notifications::Decision {
+    if crate::plugins::bypassed() {
+        return decision;
+    }
+    crate::plugins::with(|state| {
+        if !state.is_on("OnePingPerDM") || !(decision.desktop || decision.sound.is_some()) {
+            return;
+        }
+        let Some(me) = stores.current_user.as_ref().map(|user| user.id) else {
+            return;
+        };
+        let channel = message["channel_id"]
+            .as_str()
+            .and_then(|id| id.parse::<Id>().ok());
+        let id = message["id"].as_str().and_then(|id| id.parse::<Id>().ok());
+        let (Some(channel), Some(id)) = (channel, id) else {
+            return;
+        };
+        let kind = stores
+            .private_channels
+            .iter()
+            .find(|known| known.id == channel)
+            .map(|known| known.kind);
+        let acked = stores.read_states.acked(channel, 0);
+        let oldest = OLDEST_UNREAD.with(|oldest| {
+            let mut oldest = oldest.borrow_mut();
+            let first = oldest.entry(channel).or_insert(id);
+            if *first <= acked {
+                *first = id;
+            }
+            *first
+        });
+        if !ping_allowed_in(state, message, me, kind, Some(oldest)) {
+            decision.sound = None;
+        } else if state.value("OnePingPerDM", "alwaysPlaySound") == Value::Bool(true) {
+            decision.sound = Some("message1");
+        }
+    });
+    decision
+}
+
+/// FixImagesQuality (Vencord `src/plugins/fixImagesQuality`, `getSrc`): an attachment picture at its own resolution.
+/// In the chat the media proxy's picture without a size, scaled down only past 2000 x 1200 pixels; in the viewer, or
+/// in the chat too with `originalImagesInChat`, the original file on cdn.discordapp.com. `animated` is the
+/// original's `!freeze`; a frozen GIF asks for WebP. `None` leaves the app's own address.
+fn fixed_image_url_in(
+    state: &State,
+    src: &str,
+    (width, height): (u32, u32),
+    animated: bool,
+    modal: bool,
+) -> Option<String> {
+    const ID: &str = "FixImagesQuality";
+    if !state.is_on(ID) || src.starts_with("data:") {
+        return None;
+    }
+    let mut url = url::Url::parse(src).ok()?;
+    if !url.path().starts_with("/attachments/") {
+        return None;
+    }
+    let mut pairs: Vec<(String, String)> = url
+        .query_pairs()
+        .filter(|(key, _)| key != "animated" && key != "width" && key != "height")
+        .map(|(key, value)| (key.into_owned(), value.into_owned()))
+        .collect();
+    pairs.push(("animated".to_owned(), animated.to_string()));
+    if !animated && url.path().ends_with(".gif") {
+        pairs.retain(|(key, _)| key != "format");
+        pairs.push(("format".to_owned(), "webp".to_owned()));
+    }
+    let original = state.value(ID, "originalImagesInChat") == Value::Bool(true);
+    if !original && !modal {
+        let pixels = f64::from(width) * f64::from(height);
+        let limit = 2000. * 1200.;
+        if pixels > limit {
+            let scale = (pixels / limit).sqrt();
+            pairs.push((
+                "width".to_owned(),
+                (f64::from(width) / scale).round().to_string(),
+            ));
+            pairs.push((
+                "height".to_owned(),
+                (f64::from(height) / scale).round().to_string(),
+            ));
+        }
+    } else {
+        url.set_host(Some("cdn.discordapp.com")).ok()?;
+    }
+    url.query_pairs_mut().clear().extend_pairs(pairs);
+    Some(url.to_string())
+}
+
+pub(super) fn fixed_image_url(
+    src: &str,
+    size: (u32, u32),
+    animated: bool,
+    modal: bool,
+) -> Option<String> {
+    if crate::plugins::bypassed() {
+        return None;
+    }
+    crate::plugins::with(|state| fixed_image_url_in(state, src, size, animated, modal))
 }
 
 /// AlwaysTrust's `noDeleteSafety` and `confirmModal`: how a server is deleted.
@@ -446,5 +840,224 @@ mod tests {
         assert_eq!(server_delete_safety_in(&state), DeleteSafety::Skip);
         state.set_value("AlwaysTrust", "noDeleteSafety", &json!(false));
         assert_eq!(server_delete_safety_in(&state), DeleteSafety::Official);
+    }
+
+    #[test]
+    fn copy_user_urls_and_quick_mention_write_what_the_originals_write() {
+        assert_eq!(user_url(42), "<https://discord.com/users/42>");
+        assert_eq!(mention_text(42), "<@42> ");
+        // Off (the unit tests' state), the menu is untouched and there is no button.
+        let items = vec![super::super::context_menu::Entry::Separator];
+        assert_eq!(with_user_url_row(items.clone(), Some(42)), items);
+        assert!(!quick_mention(true));
+        assert!(!better_upload_button());
+        assert!(!color_sighted());
+    }
+
+    /// The QuickMention button sits where Vencord's popover buttons go: after the quick reactions, before Add
+    /// Reaction, and it is there without the reaction buttons too.
+    #[test]
+    fn quick_mention_sits_before_add_reaction() {
+        use super::super::hover_bar::{Button, Caps, buttons};
+        let caps = Caps {
+            can_react: true,
+            can_reply: true,
+            quick_mention: true,
+            ..Caps::default()
+        };
+        assert_eq!(
+            &buttons(caps)[..3],
+            [Button::Quick, Button::QuickMention, Button::AddReaction]
+        );
+        let caps = Caps {
+            can_reply: true,
+            quick_mention: true,
+            ..Caps::default()
+        };
+        assert_eq!(buttons(caps)[0], Button::QuickMention);
+        let off = Caps {
+            can_react: true,
+            ..Caps::default()
+        };
+        assert!(!buttons(off).contains(&Button::QuickMention));
+    }
+
+    #[test]
+    fn image_search_opens_each_engine_with_the_encoded_address() {
+        assert_eq!(IMAGE_SEARCH_ENGINES.len(), 7);
+        assert_eq!(
+            image_search_url(0, "https://cdn.discordapp.com/a b.png?x=1&y=2"),
+            "https://lens.google.com/uploadbyurl?url=https%3A%2F%2Fcdn.discordapp.com%2Fa%20b.png%3Fx%3D1%26y%3D2"
+        );
+        assert_eq!(encode_uri_component("a-_.!~*'()é"), "a-_.!~*'()%C3%A9");
+        assert!(!reverse_image_search());
+    }
+
+    #[test]
+    fn anonymised_names_follow_each_method() {
+        let now = chrono::Local::now();
+        let zero = |_| 0;
+        let state = State::default();
+        assert_eq!(anonymised_name_in(&state, "cat.png", None, now, zero), None);
+        let mut state = with_on("AnonymiseFileNames");
+        let name = |state: &State, file: &str, choice: Option<bool>, pick: fn(usize) -> usize| {
+            anonymised_name_in(state, file, choice, now, pick)
+        };
+        assert_eq!(
+            name(&state, "cat.png", None, zero).as_deref(),
+            Some("0000000.png")
+        );
+        assert_eq!(name(&state, "cat.png", Some(false), zero), None);
+        assert_eq!(
+            name(&state, "a.tar.gz", None, |_| 26).as_deref(),
+            Some("zzzzzzz.tar.gz")
+        );
+        assert_eq!(
+            name(&state, "README", None, zero).as_deref(),
+            Some("0000000")
+        );
+        // A spoiler stays one.
+        assert_eq!(
+            name(&state, "SPOILER_cat.png", None, zero).as_deref(),
+            Some("SPOILER_0000000.png")
+        );
+        state.set_value("AnonymiseFileNames", "method", &json!(1));
+        assert_eq!(
+            name(&state, "cat.png", None, zero).as_deref(),
+            Some("image.png")
+        );
+        state.set_value("AnonymiseFileNames", "spoilerMessages", &json!(true));
+        assert_eq!(
+            name(&state, "cat.png", None, zero).as_deref(),
+            Some("SPOILER_image.png")
+        );
+        state.set_value("AnonymiseFileNames", "spoilerMessages", &json!(false));
+        state.set_value("AnonymiseFileNames", "method", &json!(2));
+        let millis = format!("{}.png", now.timestamp_millis());
+        assert_eq!(name(&state, "cat.png", None, zero), Some(millis.clone()));
+        state.set_value("AnonymiseFileNames", "method", &json!(3));
+        state.set_value("AnonymiseFileNames", "dateFormat", &json!("YYYY/MM"));
+        assert_eq!(
+            name(&state, "cat.png", None, zero),
+            Some(format!("{}.png", now.format("%Y/%m")))
+        );
+        state.set_value("AnonymiseFileNames", "dateFormat", &json!(""));
+        assert_eq!(name(&state, "cat.png", None, zero), Some(millis));
+        state.set_value("AnonymiseFileNames", "anonymiseByDefault", &json!(false));
+        assert_eq!(name(&state, "cat.png", None, zero), None);
+        assert!(name(&state, "cat.png", Some(true), zero).is_some());
+    }
+
+    #[test]
+    fn one_ping_per_dm_lets_the_oldest_unread_ping() {
+        let state = with_on("OnePingPerDM");
+        let message = |id: u64, author: &str| json!({"id": id.to_string(), "author": {"id": author}, "mentions": [], "mention_everyone": false});
+        // In a DM only the oldest unread message pings; outside DMs everything may.
+        assert!(ping_allowed_in(
+            &state,
+            &message(5, "9"),
+            1,
+            Some(1),
+            Some(5)
+        ));
+        assert!(!ping_allowed_in(
+            &state,
+            &message(6, "9"),
+            1,
+            Some(1),
+            Some(5)
+        ));
+        assert!(ping_allowed_in(&state, &message(6, "9"), 1, None, Some(5)));
+        assert!(ping_allowed_in(
+            &state,
+            &message(6, "9"),
+            1,
+            Some(0),
+            Some(5)
+        ));
+        let mut state = state;
+        state.set_value("OnePingPerDM", "channelToAffect", &json!("group_dm"));
+        assert!(ping_allowed_in(
+            &state,
+            &message(6, "9"),
+            1,
+            Some(1),
+            Some(5)
+        ));
+        assert!(!ping_allowed_in(
+            &state,
+            &message(6, "9"),
+            1,
+            Some(3),
+            Some(5)
+        ));
+        state.set_value("OnePingPerDM", "ignoreUsers", &json!("8, 9"));
+        assert!(ping_allowed_in(
+            &state,
+            &message(6, "9"),
+            1,
+            Some(3),
+            Some(5)
+        ));
+        state.set_value("OnePingPerDM", "ignoreUsers", &json!(""));
+        state.set_value("OnePingPerDM", "allowMentions", &json!(true));
+        let mut mention = message(6, "9");
+        mention["mentions"] = json!([{"id": "1"}]);
+        assert!(ping_allowed_in(&state, &mention, 1, Some(3), Some(5)));
+        state.set_value("OnePingPerDM", "allowEveryone", &json!(true));
+        let mut everyone = message(6, "9");
+        everyone["mention_everyone"] = json!(true);
+        assert!(ping_allowed_in(&state, &everyone, 1, Some(3), Some(5)));
+    }
+
+    #[test]
+    fn fix_images_quality_loads_full_resolution() {
+        let src = "https://media.discordapp.net/attachments/1/2/cat.png?ex=a&is=b&hm=c&width=400&height=300";
+        assert_eq!(
+            fixed_image_url_in(&State::default(), src, (800, 600), false, false),
+            None
+        );
+        let mut state = with_on("FixImagesQuality");
+        assert_eq!(
+            fixed_image_url_in(&state, src, (800, 600), false, false).as_deref(),
+            Some(
+                "https://media.discordapp.net/attachments/1/2/cat.png?ex=a&is=b&hm=c&animated=false"
+            )
+        );
+        // Past 2000 x 1200 the size is scaled down to that many pixels.
+        assert_eq!(
+            fixed_image_url_in(&state, src, (4000, 2400), true, false).as_deref(),
+            Some(
+                "https://media.discordapp.net/attachments/1/2/cat.png?ex=a&is=b&hm=c&animated=true&width=2000&height=1200"
+            )
+        );
+        // The viewer, or the chat with originalImagesInChat, loads the original file.
+        let original =
+            "https://cdn.discordapp.com/attachments/1/2/cat.png?ex=a&is=b&hm=c&animated=true";
+        assert_eq!(
+            fixed_image_url_in(&state, src, (4000, 2400), true, true).as_deref(),
+            Some(original)
+        );
+        state.set_value("FixImagesQuality", "originalImagesInChat", &json!(true));
+        assert_eq!(
+            fixed_image_url_in(&state, src, (4000, 2400), true, false).as_deref(),
+            Some(original)
+        );
+        // A frozen GIF asks for WebP; anything not an attachment is left alone.
+        let gif = "https://media.discordapp.net/attachments/1/2/a.gif";
+        assert_eq!(
+            fixed_image_url_in(&state, gif, (10, 10), false, true).as_deref(),
+            Some("https://cdn.discordapp.com/attachments/1/2/a.gif?animated=false&format=webp")
+        );
+        assert_eq!(
+            fixed_image_url_in(
+                &state,
+                "https://media.discordapp.net/external/x.png",
+                (1, 1),
+                true,
+                true
+            ),
+            None
+        );
     }
 }

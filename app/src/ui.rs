@@ -1403,6 +1403,13 @@ impl Root {
                     // Not in the pinned client: the VoiceStats plugin (`plugin_hooks/voice_stats.rs`).
                     self.voice_stats_observe(cx);
                 }
+                // Not in the pinned client: CallTimer's join times (`plugin_hooks/call_timer.rs`).
+                if matches!(
+                    name.as_str(),
+                    "VOICE_STATE_UPDATE" | "PASSIVE_UPDATE_V1" | "READY" | "GUILD_CREATE"
+                ) {
+                    self.call_timer_observe(cx);
+                }
                 self.official_messages.dispatch(&name, &data);
                 self.gateway_screens_dispatch(&name, &data, cx);
                 self.channel_info_check();
@@ -3219,6 +3226,8 @@ impl Root {
                     .flex_col()
                     .overflow_y_scroll()
                     .track_scroll(&self.member_window.scroll)
+                    // Not in the pinned client: MemberCount's counts (`plugin_hooks/member_count.rs`).
+                    .children(self.member_count_list(cx))
                     .children(self.inventory_section(cx))
                     .when(above > 0., |this| {
                         this.child(div().flex_none().h(px(above)))
@@ -4338,6 +4347,8 @@ impl Root {
                 .items_center()
                 .gap(px(8.))
                 .child(self.home_tile(cx))
+                // Not in the pinned client: ReadAllNotificationsButton (`plugin_hooks/read_all.rs`).
+                .children(self.read_all_button(cx))
                 .children(self.favorites_tile(cx))
                 .children(self.unread_dm_rail(cx))
                 .child(
@@ -8434,6 +8445,16 @@ impl Root {
                         }
                     })))
                 }
+                // Not in the pinned client: QuickMention puts `<@author> ` in the composer (`plugin_hooks.rs`).
+                Button::QuickMention => {
+                    let author = message.author.id;
+                    bar.child(tipped(cx).on_click(cx.listener(move |this, _, _, cx| {
+                        this.tip = None;
+                        let text = plugin_hooks::mention_text(author);
+                        this.composer.update(cx, |composer, cx| composer.insert(&text, cx));
+                        cx.notify();
+                    })))
+                }
                 Button::More => {
                     bar.child(tipped(cx).on_click(cx.listener(move |this, _, _, cx| {
                         let anchor = this.tip_anchors.borrow().get("toolbar-msg_more").copied();
@@ -8850,9 +8871,23 @@ impl Root {
                                     .on_mouse_down(MouseButton::Left, |_, window, _| {
                                         window.prevent_default();
                                     })
-                                    .child(tool("attach", cx).on_click(
-                                        cx.listener(|this, _, _, cx| this.toggle_plus_menu(cx)),
-                                    )),
+                                    // Not in the pinned client: BetterUploadButton uploads on a click and opens the
+                                    // menu on a right click (`plugin_hooks.rs`).
+                                    .when(plugin_hooks::better_upload_button(), |this| {
+                                        this.on_mouse_up(
+                                            MouseButton::Right,
+                                            cx.listener(|this, _: &gpui::MouseUpEvent, _, cx| {
+                                                this.toggle_plus_menu(cx)
+                                            }),
+                                        )
+                                    })
+                                    .child(tool("attach", cx).on_click(cx.listener(|this, _, _, cx| {
+                                        if plugin_hooks::better_upload_button() {
+                                            this.pick_files(cx);
+                                        } else {
+                                            this.toggle_plus_menu(cx);
+                                        }
+                                    }))),
                             )
                             .child(
                                 div()
@@ -10849,6 +10884,12 @@ fn status_dot_inner(status: &str, ring: &str, dot: f32) -> gpui::Div {
         "invisible" | "offline" => "--icon-status-offline",
         _ => "--icon-status-online",
     };
+    // Not in the pinned client: ColorSighted keeps the colour without the shapes cut in it (`plugin_hooks.rs`).
+    let status = if plugin_hooks::color_sighted() {
+        "online"
+    } else {
+        status
+    };
     div()
         .size(px(dot))
         .rounded_full()
@@ -10957,7 +10998,7 @@ fn status_dot_large(status: &str, ring: &str) -> impl IntoElement {
         .flex()
         .items_center()
         .justify_center()
-        .child(if status == "dnd" {
+        .child(if status == "dnd" && !plugin_hooks::color_sighted() {
             div()
                 .size(px(16.))
                 .rounded_full()

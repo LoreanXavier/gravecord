@@ -7,18 +7,22 @@ use serde_json::Value;
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) enum Lit {
     Str(&'static str),
+    /// A number option (the original's enum values, as AnonymiseFileNames' `method`).
+    Int(i64),
 }
 
 impl Lit {
     pub(crate) fn to_value(self) -> Value {
         match self {
             Lit::Str(text) => Value::from(text),
+            Lit::Int(number) => Value::from(number),
         }
     }
 
     pub(crate) fn matches(self, value: &Value) -> bool {
         match self {
             Lit::Str(text) => value.as_str() == Some(text),
+            Lit::Int(number) => value.as_f64() == Some(number as f64),
         }
     }
 }
@@ -241,6 +245,12 @@ pub(crate) const IDLE_SETTINGS: &[(&str, &str, &str)] = &[
         "the app does not show the pinned client's \"Potentially Dangerous Download\" dialog yet (module 432518, opened from module 889558), so there is no dialog to remove",
     ),
     (
+        "CallTimer",
+        "watchLargeGuilds",
+        "the original subscribes to every server's events for it (`GUILD_SUBSCRIPTIONS_FLUSH`); plugin code sends \
+         nothing, so times come from the voice states the app already receives",
+    ),
+    (
         "NoPendingCount",
         "hidePremiumOffersCount",
         "the app's Home badge does not count unseen Nitro offers yet (`getUnacknowledgedOffers`), so there is no count to hide",
@@ -291,11 +301,161 @@ pub(crate) const DEFS: &[Def] = &[
         ],
     },
     Def {
+        id: "AnonymiseFileNames",
+        name: "AnonymiseFileNames",
+        description: "Anonymise uploaded file names.",
+        origin: Origin::Vencord,
+        source: "src/plugins/anonymiseFileNames/index.tsx",
+        default_on: false,
+        settings: &[
+            Setting {
+                key: "anonymiseByDefault",
+                label: "Anonymise by default",
+                description: "Whether to anonymise file names by default.",
+                kind: Kind::Switch { default: true },
+            },
+            Setting {
+                key: "spoilerMessages",
+                label: "Spoiler files",
+                description: "Mark anonymised files as spoilers.",
+                kind: Kind::Switch { default: false },
+            },
+            Setting {
+                key: "method",
+                label: "Anonymising method",
+                description: "How the new name is made.",
+                kind: Kind::Select {
+                    options: &[
+                        ("Random Characters", Lit::Int(0)),
+                        ("Consistent", Lit::Int(1)),
+                        ("Timestamp", Lit::Int(2)),
+                        ("Date", Lit::Int(3)),
+                    ],
+                    default: 0,
+                },
+            },
+            Setting {
+                key: "randomisedLength",
+                label: "Random characters length",
+                description: "How many random characters the name has (Random Characters).",
+                kind: Kind::Number {
+                    default: 7.,
+                    min: 1.,
+                    max: 100.,
+                    step: 1.,
+                },
+            },
+            Setting {
+                key: "consistent",
+                label: "Consistent filename",
+                description: "The name every file gets (Consistent).",
+                kind: Kind::Text {
+                    default: "image",
+                    max_len: 200,
+                },
+            },
+            Setting {
+                key: "dateFormat",
+                label: "Date format",
+                description: "YYYY, MM, DD, HH, mm, ss, SSS are supported (Date).",
+                kind: Kind::Text {
+                    default: "YYYY-MM-DD_HH-mm-ss-SSS",
+                    max_len: 200,
+                },
+            },
+        ],
+    },
+    Def {
+        id: "BetterUploadButton",
+        name: "BetterUploadButton",
+        description: "Upload with a single click, open menu with right click.",
+        origin: Origin::Vencord,
+        source: "src/plugins/betterUploadButton/index.ts",
+        default_on: false,
+        settings: &[],
+    },
+    Def {
+        id: "CallTimer",
+        name: "CallTimer",
+        description: "Add call timers for all users in voice channels and in the connection status.",
+        origin: Origin::Vencord,
+        source: "src/plugins/callTimer/index.tsx",
+        default_on: false,
+        settings: &[
+            Setting {
+                key: "format",
+                label: "Format",
+                description: "Compact or human readable format.",
+                kind: Kind::Select {
+                    options: &[
+                        ("30:23:00:42", Lit::Str("stopwatch")),
+                        ("30d 23h 00m 42s", Lit::Str("human")),
+                    ],
+                    default: 0,
+                },
+            },
+            Setting {
+                key: "allCallTimers",
+                label: "Everyone's timer",
+                description: "Add call timer to all users in a server voice channel.",
+                kind: Kind::Switch { default: false },
+            },
+            Setting {
+                key: "showWithoutHover",
+                label: "Show without hovering",
+                description: "Always show the timer without needing to hover.",
+                kind: Kind::Switch { default: false },
+            },
+            Setting {
+                key: "showRoleColor",
+                label: "Role colour",
+                description: "Show the user's role color.",
+                kind: Kind::Switch { default: false },
+            },
+            Setting {
+                key: "trackSelf",
+                label: "Track yourself",
+                description: "Also track yourself.",
+                kind: Kind::Switch { default: false },
+            },
+            Setting {
+                key: "showSeconds",
+                label: "Show seconds",
+                description: "Show seconds in the timer.",
+                kind: Kind::Switch { default: false },
+            },
+            Setting {
+                key: "watchLargeGuilds",
+                label: "Watch large servers",
+                description: "Track users in large servers.",
+                kind: Kind::Switch { default: false },
+            },
+        ],
+    },
+    Def {
         id: "ClearURLs",
         name: "ClearURLs",
         description: "Removes tracking parameters from links in the messages you send and edit.",
         origin: Origin::Vencord,
         source: "src/plugins/clearURLs/index.ts",
+        default_on: false,
+        settings: &[],
+    },
+    Def {
+        id: "ColorSighted",
+        name: "ColorSighted",
+        description: "Removes the colorblind-friendly icons from statuses, just like 2015-2017 Discord.",
+        origin: Origin::Vencord,
+        source: "src/plugins/colorSighted/index.ts",
+        default_on: false,
+        settings: &[],
+    },
+    Def {
+        id: "CopyUserURLs",
+        name: "CopyUserURLs",
+        description: "Adds a 'Copy User URL' option to the user context menu.",
+        origin: Origin::Vencord,
+        source: "src/plugins/copyUserURLs/index.tsx",
         default_on: false,
         settings: &[],
     },
@@ -309,6 +469,20 @@ pub(crate) const DEFS: &[Def] = &[
         settings: &[],
     },
     Def {
+        id: "FixImagesQuality",
+        name: "FixImagesQuality",
+        description: "Improves quality of images by loading them at their original resolution.",
+        origin: Origin::Vencord,
+        source: "src/plugins/fixImagesQuality/index.tsx",
+        default_on: false,
+        settings: &[Setting {
+            key: "originalImagesInChat",
+            label: "Original images in chat",
+            description: "Also load the original image in chat. Animated images then always play, and it may be slow.",
+            kind: Kind::Switch { default: false },
+        }],
+    },
+    Def {
         id: "GifPaste",
         name: "GifPaste",
         description: "Picking a GIF puts its link in the message box instead of sending it.",
@@ -316,6 +490,34 @@ pub(crate) const DEFS: &[Def] = &[
         source: "src/plugins/gifPaste/index.ts",
         default_on: false,
         settings: &[],
+    },
+    Def {
+        id: "MemberCount",
+        name: "MemberCount",
+        description: "Shows the number of online members, total members, and users in voice channels on the server - in the member list and tooltip.",
+        origin: Origin::Vencord,
+        source: "src/plugins/memberCount/index.tsx",
+        default_on: false,
+        settings: &[
+            Setting {
+                key: "toolTip",
+                label: "In the server tooltip",
+                description: "Show member count on the server tooltip.",
+                kind: Kind::Switch { default: true },
+            },
+            Setting {
+                key: "memberList",
+                label: "In the member list",
+                description: "Show member count in the member list.",
+                kind: Kind::Switch { default: true },
+            },
+            Setting {
+                key: "voiceActivity",
+                label: "Voice activity",
+                description: "Show voice activity with member count in the member list.",
+                kind: Kind::Switch { default: true },
+            },
+        ],
     },
     Def {
         id: "MessageClickActions",
@@ -519,11 +721,93 @@ pub(crate) const DEFS: &[Def] = &[
         settings: &[],
     },
     Def {
+        id: "OnePingPerDM",
+        name: "OnePingPerDM",
+        description: "If unread messages are sent by a user in DMs multiple times, you'll only receive one audio ping. Read the messages to reset the limit.",
+        origin: Origin::Vencord,
+        source: "src/plugins/onePingPerDM/index.ts",
+        default_on: false,
+        settings: &[
+            Setting {
+                key: "channelToAffect",
+                label: "DMs affected",
+                description: "Select the type of DM for the plugin to affect.",
+                kind: Kind::Select {
+                    options: &[
+                        ("Both", Lit::Str("both_dms")),
+                        ("User DMs", Lit::Str("user_dm")),
+                        ("Group DMs", Lit::Str("group_dm")),
+                    ],
+                    default: 0,
+                },
+            },
+            Setting {
+                key: "allowMentions",
+                label: "Ping for mentions",
+                description: "Receive audio pings for @mentions.",
+                kind: Kind::Switch { default: false },
+            },
+            Setting {
+                key: "allowEveryone",
+                label: "Ping for everyone",
+                description: "Receive audio pings for @everyone and @here in group DMs.",
+                kind: Kind::Switch { default: false },
+            },
+            Setting {
+                key: "ignoreUsers",
+                label: "Never throttled",
+                description: "User IDs (comma + space) whose pings should never be throttled.",
+                kind: Kind::Text {
+                    default: "",
+                    max_len: 4000,
+                },
+            },
+            Setting {
+                key: "alwaysPlaySound",
+                label: "Always play the sound",
+                description: "Play the message notification sound even when it is disabled.",
+                kind: Kind::Switch { default: false },
+            },
+        ],
+    },
+    Def {
+        id: "QuickMention",
+        name: "QuickMention",
+        description: "Adds a quick mention button to the message actions bar.",
+        origin: Origin::Vencord,
+        source: "src/plugins/quickMention/index.tsx",
+        default_on: false,
+        settings: &[],
+    },
+    Def {
+        id: "ReadAllNotificationsButton",
+        name: "ReadAllNotificationsButton",
+        description: "Read all server notifications with a single button click!",
+        origin: Origin::Vencord,
+        source: "src/plugins/readAllNotificationsButton/index.tsx",
+        default_on: false,
+        settings: &[Setting {
+            key: "compact",
+            label: "Compact",
+            description: "Show a small text button instead of a server list icon.",
+            kind: Kind::Switch { default: false },
+        }],
+    },
+    Def {
         id: "RevealAllSpoilers",
         name: "RevealAllSpoilers",
         description: "Ctrl-click a spoiler to open every spoiler in its message, Ctrl+Shift-click for the whole channel.",
         origin: Origin::Vencord,
         source: "src/plugins/revealAllSpoilers/index.ts",
+        default_on: false,
+        settings: &[],
+    },
+    Def {
+        id: "ReverseImageSearch",
+        name: "ReverseImageSearch",
+        description: "Adds ImageSearch to image context menus.",
+        origin: Origin::Vencord,
+        source: "src/plugins/reverseImageSearch/index.tsx",
         default_on: false,
         settings: &[],
     },
@@ -545,6 +829,15 @@ pub(crate) const DEFS: &[Def] = &[
                 step: 1.,
             },
         }],
+    },
+    Def {
+        id: "VoiceDownload",
+        name: "VoiceDownload",
+        description: "Adds a download to voice messages. (Opens a new browser tab)",
+        origin: Origin::Vencord,
+        source: "src/plugins/voiceDownload/index.tsx",
+        default_on: false,
+        settings: &[],
     },
     Def {
         id: "VoiceStats",
