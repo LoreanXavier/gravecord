@@ -1935,6 +1935,32 @@ impl Root {
             return "profile demo: no DM open".to_owned();
         };
         let variant = words.first().copied().unwrap_or("themed");
+        // `bio <text>`: the profile answer carries that bio (View Full Bio of module 442228); `failed`: the profile
+        // read failed (module 559506).
+        if variant == "bio" {
+            let key = format!("profile:{user}");
+            let mut body = self
+                .fetched
+                .get(&key)
+                .cloned()
+                .unwrap_or_else(|| serde_json::json!({}));
+            body["user_profile"]["bio"] = Value::from(words[1..].join(" "));
+            self.fetched.insert(key, body);
+            cx.notify();
+            return "profile demo: bio set".to_owned();
+        }
+        if variant == "failed" {
+            let key = format!("profile:{user}");
+            self.fetched.remove(&key);
+            self.fetch_failures.insert(key, std::time::Instant::now());
+            // The DM's person is a friend on the fixture account, for whom the notice never shows; `failed stranger`
+            // forgets the relationship for this run only.
+            if words.get(1) == Some(&"stranger") {
+                self.stores.relationships.remove(&user);
+            }
+            cx.notify();
+            return "profile demo: read failed".to_owned();
+        }
         if variant == "popout" {
             // As if the name at this point of the window had been pressed (`left` opens it to the left).
             let left = words.get(1) == Some(&"left");

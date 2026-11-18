@@ -909,9 +909,9 @@ impl Root {
     /// (`container_0v8Ae1`: 12px inside, `--radius-sm` corners, 8px between the 16px icon and `body-sm/normal`
     /// `text-strong`) once the profile read failed (`UserProfileStore` `fetchError`).
     pub(super) fn profile_fetch_warning(&self, user: Id) -> Option<AnyElement> {
-        let failed = self
-            .fetch_failures
-            .contains_key(&super::profile::profile_key(user));
+        // `fetchError` lasts until a read succeeds: a later answer puts the profile in `fetched`.
+        let key = super::profile::profile_key(user);
+        let failed = self.fetch_failures.contains_key(&key) && !self.fetched.contains_key(&key);
         if !fetch_warning_shown(failed, self.stores.relationships.get(&user).copied()) {
             return None;
         }
@@ -986,7 +986,8 @@ impl Root {
             )
             .when(truncated, |this| {
                 this.child(
-                    div().mt(px(8.)).child(
+                    // The button keeps its own width (`viewFullBio_BcddaK` is a block, the button inline).
+                    div().mt(px(8.)).flex().child(
                         div()
                             .id("view-full-bio")
                             .h(px(32.))
