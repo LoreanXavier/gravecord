@@ -2937,7 +2937,12 @@ impl Root {
         if let Some(colors) = self.role_gradient_of(user)
             && self.name_styles(user, self.guild).is_none()
         {
-            return role_gradient::name(self.guild_display_name(user), colors).into_any_element();
+            // Not in the pinned client: AlwaysAnimate slides it (`plugin_hooks/always_animate.rs`).
+            return role_gradient::name(self.guild_display_name(user), colors)
+                .animate(plugin_hooks::always_animate(
+                    plugin_hooks::AnimatePart::ChatAndMemberGradients,
+                ))
+                .into_any_element();
         }
         let in_dm = self.current_guild().is_none() && self.current_dm().is_some();
         name_styles::name(
@@ -3196,7 +3201,11 @@ impl Root {
                                                             colors,
                                                         )
                                                         .animate(
-                                                            self.hovered_nameplate == Some(user.id),
+                                                            self.hovered_nameplate == Some(user.id)
+                                                                // Not in the pinned client: AlwaysAnimate.
+                                                                || plugin_hooks::always_animate(
+                                                                    plugin_hooks::AnimatePart::ChatAndMemberGradients,
+                                                                ),
                                                         )
                                                         .into_any_element(),
                                                         None => name_styles::name(

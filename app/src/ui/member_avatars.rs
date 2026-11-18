@@ -475,7 +475,8 @@ impl Root {
         let url = super::avatar_play::animated_url(&base, side);
         if !super::avatar_play::should_animate(
             super::motion::window_active(),
-            hovered,
+            // Not in the pinned client: AlwaysAnimate's `icons` (`plugin_hooks/always_animate.rs`).
+            hovered || super::plugin_hooks::always_animate(super::plugin_hooks::AnimatePart::Icons),
             super::motion::reduced(),
             true,
             self.pref_on("animate_gifs", true),

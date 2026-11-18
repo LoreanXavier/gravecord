@@ -1,5 +1,6 @@
 //! Where the built-in plugins (`crate::plugins`) act on the chat. Not part of the pinned client.
 
+mod always_animate;
 mod call_timer;
 mod game_activity_toggle;
 mod member_count;
@@ -11,6 +12,8 @@ mod server_list_indicators;
 mod show_connections;
 mod typing_indicator;
 mod voice_stats;
+
+pub(in crate::ui) use always_animate::{Part as AnimatePart, always_animate};
 
 pub(super) use message_clicks::follow as follow_message_clicks;
 pub(super) use message_peek::Peek;

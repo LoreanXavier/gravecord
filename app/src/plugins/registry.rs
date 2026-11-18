@@ -240,6 +240,17 @@ const fn millis(default: f64) -> Kind {
 /// by the code (a test checks both ways), so a setting can never sit in the page doing nothing unnoticed.
 pub(crate) const IDLE_SETTINGS: &[(&str, &str, &str)] = &[
     (
+        "AlwaysAnimate",
+        "statusEmojis",
+        "the app draws every custom status emoji as a still picture (the pinned client's member list plays an \
+         animated one), so there is nothing playing to force",
+    ),
+    (
+        "AlwaysAnimate",
+        "serverBanners",
+        "the channel list header does not draw the server's banner yet, so there is no banner to play",
+    ),
+    (
         "AlwaysTrust",
         "file",
         "the app does not show the pinned client's \"Potentially Dangerous Download\" dialog yet (module 432518, opened from module 889558), so there is no dialog to remove",
@@ -278,6 +289,46 @@ pub(crate) const SHOWN_WHEN: &[(&str, &str, &str)] = &[(
 
 /// Every plugin, in the order the Plugins page lists them (by name).
 pub(crate) const DEFS: &[Def] = &[
+    Def {
+        id: "AlwaysAnimate",
+        name: "AlwaysAnimate",
+        description: "Animates anything that can be animated",
+        origin: Origin::Vencord,
+        source: "src/plugins/alwaysAnimate/index.ts",
+        default_on: false,
+        settings: &[
+            Setting {
+                key: "icons",
+                label: "Icons",
+                description: "Always animate server icons, avatars, decor and more",
+                kind: Kind::Switch { default: true },
+            },
+            Setting {
+                key: "statusEmojis",
+                label: "Status emojis",
+                description: "Always animate status emojis",
+                kind: Kind::Switch { default: true },
+            },
+            Setting {
+                key: "serverBanners",
+                label: "Server banners",
+                description: "Always animate server banners",
+                kind: Kind::Switch { default: true },
+            },
+            Setting {
+                key: "nameplates",
+                label: "Nameplates",
+                description: "Always animate nameplates",
+                kind: Kind::Switch { default: true },
+            },
+            Setting {
+                key: "roleGradients",
+                label: "Role gradients",
+                description: "Always animate role gradients",
+                kind: Kind::Switch { default: true },
+            },
+        ],
+    },
     Def {
         id: "AlwaysTrust",
         name: "AlwaysTrust",
