@@ -75,6 +75,7 @@ mod context_menu;
 #[cfg(feature = "capture")]
 mod crawl_reset;
 mod create_channel;
+mod dangerous_link;
 mod deep_link_route;
 mod destructive;
 mod dm;
@@ -2002,6 +2003,10 @@ impl Root {
                     self.insights_fetched(&key, cx);
                     return;
                 }
+                if key == dangerous_link::BAD_DOMAINS_KEY {
+                    self.blocked_domains_fetched(&body);
+                    return;
+                }
                 if key.starts_with(server_automod::AUTOMOD_PREFIX) {
                     self.fetched.insert(key.clone(), body.clone());
                     self.automod_fetched(&key, cx);
@@ -2348,6 +2353,7 @@ impl Root {
     }
 
     fn after_ready(&mut self) {
+        self.request_blocked_domains();
         // The app starts where it was closed: the server last shown on the channel it was left on, or Home. A first
         // start, and a server that is gone, open Home as the official client does: opening a server marks its
         // channel read, and nobody chose that server.

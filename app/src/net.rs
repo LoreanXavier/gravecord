@@ -221,6 +221,12 @@ pub enum Request {
         key: String,
         route: String,
     },
+    /// GET a public JSON file (no authorization) and hand it back under `key` as `Update::Fetched`; a failure hands back
+    /// nothing.
+    FetchPublicJson {
+        key: String,
+        url: String,
+    },
     /// Conditionally GET a public CDN JSON list and parse it off the UI thread.
     FetchCdn {
         key: String,
@@ -663,6 +669,7 @@ impl Request {
             Request::Schedule { .. } => "Schedule",
             Request::Fetch { .. } => "Fetch",
             Request::FetchCdn { .. } => "FetchCdn",
+            Request::FetchPublicJson { .. } => "FetchPublicJson",
             Request::Typing { .. } => "Typing",
             Request::React { .. } => "React",
             Request::LoadMessages { .. } => "LoadMessages",
@@ -697,6 +704,7 @@ impl Request {
         match self {
             Request::Fetch { .. }
             | Request::FetchCdn { .. }
+            | Request::FetchPublicJson { .. }
             | Request::LoadMessages { .. }
             | Request::FetchMessages { .. }
             | Request::SoundboardSounds { .. }
@@ -1995,6 +2003,19 @@ pub async fn run(token: Token, updates: mpsc::UnboundedSender<Update>, requests:
                             let body = fetch_failure(&key, &error);
                             let _ = updates.send(Update::Fetched { key, body });
                         }
+                    }
+                });
+            }
+            Request::FetchPublicJson { key, url } => {
+                tokio::spawn(async move {
+                    match client.fetch_public(&url).await {
+                        Ok(bytes) => match serde_json::from_slice::<Value>(&bytes) {
+                            Ok(body) => {
+                                let _ = updates.send(Update::Fetched { key, body });
+                            }
+                            Err(error) => warn!("public json not parsed: {error}"),
+                        },
+                        Err(error) => warn!("public json fetch failed: {error}"),
                     }
                 });
             }
