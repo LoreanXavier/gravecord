@@ -127,6 +127,7 @@ idle = {(a, b): why.replace('\\"', '"') for a, b, why in re.findall(
 
 # How each ported plugin is built here, and its proof.
 PORTED = {
+    'OnePingPerDM': "notifications.rs: in the DMs it affects only the oldest unread message (the first after the channel's ack) plays the sound; ignored users, allowed mentions and @everyone still ping; the desktop notification is left alone; alwaysPlaySound plays the message sound for any message that notifies.",
     'VoiceDownload': "voice_message.rs: a download arrow after a voice message's volume that opens the file in the browser (the original's desktop behaviour).",
     'CallTimer': "plugin_hooks/call_timer.rs: your time under the connection panel's channel line (seconds always, code font); with `allCallTimers` everyone's time by their voice row, as the clock icon with a tooltip or, with `showWithoutHover`, as text under the name. Join times start when the app first sees someone in a channel.",
     'MemberCount': "plugin_hooks/member_count.rs: online, total and in-voice counts with their tooltips at the top of the member list, online and total in the server tooltip. Not ported: the original's gateway requests (`preload` of a server's online count, member list subscriptions while the list is hidden); plugin code sends nothing, so an unopened server shows '?' online until its count arrives.",
@@ -167,6 +168,7 @@ PORTED = {
                      'so the original\'s 200% cap on the sync has nothing to cap.',
 }
 TESTS = {
+    'OnePingPerDM': '`one_ping_per_dm_lets_the_oldest_unread_ping`; no frame (a sound, not a picture)',
     'VoiceDownload': 'frames vd-on/vd-off/vd-pair; plugins-off chat (the voice message is in view)',
     'CallTimer': '`plugin_hooks::call_timer::tests` (3); frames ct-on/ct-all; plugins-off voice-profile',
     'MemberCount': '`plugin_hooks::member_count::tests` (2); frames mc-on/mc-off; plugins-off member-list',
@@ -269,7 +271,6 @@ PLANNED = {
     'NoNitroUpsell': 'every Nitro upsell hidden (the app draws them from the pinned client).',
     'NoPushToTalk': 'voice activity allowed where push to talk is required.',
     'NoUnblockToJump': 'jumping to blocked users\' messages without unblocking.',
-    'OnePingPerDM': 'one notification sound per DM until it is read.',
     'OpenInApp': 'Spotify, Steam and other links opened in their apps.',
     'PermissionFreeWill': 'no client-side limits in channel permission editing.',
     'PermissionsViewer': 'a permission breakdown in profiles and menus.',

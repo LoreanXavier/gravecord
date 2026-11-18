@@ -707,6 +707,56 @@ pub(crate) const DEFS: &[Def] = &[
         settings: &[],
     },
     Def {
+        id: "OnePingPerDM",
+        name: "OnePingPerDM",
+        description: "If unread messages are sent by a user in DMs multiple times, you'll only receive one audio ping. Read the messages to reset the limit.",
+        origin: Origin::Vencord,
+        source: "src/plugins/onePingPerDM/index.ts",
+        default_on: false,
+        settings: &[
+            Setting {
+                key: "channelToAffect",
+                label: "DMs affected",
+                description: "Select the type of DM for the plugin to affect.",
+                kind: Kind::Select {
+                    options: &[
+                        ("Both", Lit::Str("both_dms")),
+                        ("User DMs", Lit::Str("user_dm")),
+                        ("Group DMs", Lit::Str("group_dm")),
+                    ],
+                    default: 0,
+                },
+            },
+            Setting {
+                key: "allowMentions",
+                label: "Ping for mentions",
+                description: "Receive audio pings for @mentions.",
+                kind: Kind::Switch { default: false },
+            },
+            Setting {
+                key: "allowEveryone",
+                label: "Ping for everyone",
+                description: "Receive audio pings for @everyone and @here in group DMs.",
+                kind: Kind::Switch { default: false },
+            },
+            Setting {
+                key: "ignoreUsers",
+                label: "Never throttled",
+                description: "User IDs (comma + space) whose pings should never be throttled.",
+                kind: Kind::Text {
+                    default: "",
+                    max_len: 4000,
+                },
+            },
+            Setting {
+                key: "alwaysPlaySound",
+                label: "Always play the sound",
+                description: "Play the message notification sound even when it is disabled.",
+                kind: Kind::Switch { default: false },
+            },
+        ],
+    },
+    Def {
         id: "QuickMention",
         name: "QuickMention",
         description: "Adds a quick mention button to the message actions bar.",

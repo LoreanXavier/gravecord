@@ -230,6 +230,8 @@ impl Root {
             self.notification_device(),
             chrono::Utc::now(),
         );
+        // Not in the pinned client: OnePingPerDM's one sound per unread DM (`plugin_hooks.rs`).
+        let decision = super::plugin_hooks::one_ping_per_dm(&self.stores, message, decision);
         if let Some(sound) = decision.sound {
             self.notification_sound(sound, cx);
         }

@@ -331,6 +331,99 @@ pub(super) fn voice_download_button(url: &str, salt: usize) -> Option<gpui::AnyE
     )
 }
 
+/// OnePingPerDM (Vencord `src/plugins/onePingPerDM`): `isPrivateChannelRead`, whether a message may ping. Outside
+/// the DMs it affects, from an ignored user, or a mention it allows, yes; else only the channel's oldest unread
+/// message pings (`ReadStateStore.getOldestUnreadMessageId`, here `oldest`, the first message that came after the
+/// channel's ack).
+fn ping_allowed_in(
+    state: &State,
+    message: &Value,
+    me: Id,
+    channel_kind: Option<u64>,
+    oldest: Option<Id>,
+) -> bool {
+    const ID: &str = "OnePingPerDM";
+    let text = |key| state.value(ID, key).as_str().unwrap_or("").to_owned();
+    let flag = |key| state.value(ID, key) == Value::Bool(true);
+    let author = message["author"]["id"].as_str().unwrap_or("");
+    if text("ignoreUsers")
+        .split(", ")
+        .filter(|id| !id.is_empty())
+        .any(|id| id == author)
+    {
+        return true;
+    }
+    let affect = text("channelToAffect");
+    let mentioned = message["mentions"].as_array().is_some_and(|mentions| {
+        mentions
+            .iter()
+            .any(|user| user["id"].as_str() == Some(&me.to_string()))
+    });
+    if !matches!(channel_kind, Some(1 | 3))
+        || (channel_kind == Some(1) && affect == "group_dm")
+        || (channel_kind == Some(3) && affect == "user_dm")
+        || (flag("allowMentions") && mentioned)
+        || (flag("allowEveryone") && message["mention_everyone"].as_bool() == Some(true))
+    {
+        return true;
+    }
+    let id = message["id"].as_str().and_then(|id| id.parse::<Id>().ok());
+    oldest.is_some() && oldest == id
+}
+
+thread_local! {
+    /// Per DM, the first message that arrived after its ack (`_oldestUnreadMessageId`).
+    static OLDEST_UNREAD: std::cell::RefCell<std::collections::HashMap<Id, Id>> =
+        std::cell::RefCell::new(std::collections::HashMap::new());
+}
+
+/// The notification of a message with OnePingPerDM: no sound unless it may ping; with `alwaysPlaySound` the message
+/// sound even where the sound setting is off. The desktop notification itself is left as it was.
+pub(super) fn one_ping_per_dm(
+    stores: &dc_state::Stores,
+    message: &Value,
+    mut decision: dc_state::notifications::Decision,
+) -> dc_state::notifications::Decision {
+    if crate::plugins::bypassed() {
+        return decision;
+    }
+    crate::plugins::with(|state| {
+        if !state.is_on("OnePingPerDM") || !(decision.desktop || decision.sound.is_some()) {
+            return;
+        }
+        let Some(me) = stores.current_user.as_ref().map(|user| user.id) else {
+            return;
+        };
+        let channel = message["channel_id"]
+            .as_str()
+            .and_then(|id| id.parse::<Id>().ok());
+        let id = message["id"].as_str().and_then(|id| id.parse::<Id>().ok());
+        let (Some(channel), Some(id)) = (channel, id) else {
+            return;
+        };
+        let kind = stores
+            .private_channels
+            .iter()
+            .find(|known| known.id == channel)
+            .map(|known| known.kind);
+        let acked = stores.read_states.acked(channel, 0);
+        let oldest = OLDEST_UNREAD.with(|oldest| {
+            let mut oldest = oldest.borrow_mut();
+            let first = oldest.entry(channel).or_insert(id);
+            if *first <= acked {
+                *first = id;
+            }
+            *first
+        });
+        if !ping_allowed_in(state, message, me, kind, Some(oldest)) {
+            decision.sound = None;
+        } else if state.value("OnePingPerDM", "alwaysPlaySound") == Value::Bool(true) {
+            decision.sound = Some("message1");
+        }
+    });
+    decision
+}
+
 /// AlwaysTrust's `noDeleteSafety` and `confirmModal`: how a server is deleted.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum DeleteSafety {
@@ -789,5 +882,67 @@ mod tests {
         state.set_value("AnonymiseFileNames", "anonymiseByDefault", &json!(false));
         assert_eq!(name(&state, "cat.png", None, zero), None);
         assert!(name(&state, "cat.png", Some(true), zero).is_some());
+    }
+
+    #[test]
+    fn one_ping_per_dm_lets_the_oldest_unread_ping() {
+        let state = with_on("OnePingPerDM");
+        let message = |id: u64, author: &str| json!({"id": id.to_string(), "author": {"id": author}, "mentions": [], "mention_everyone": false});
+        // In a DM only the oldest unread message pings; outside DMs everything may.
+        assert!(ping_allowed_in(
+            &state,
+            &message(5, "9"),
+            1,
+            Some(1),
+            Some(5)
+        ));
+        assert!(!ping_allowed_in(
+            &state,
+            &message(6, "9"),
+            1,
+            Some(1),
+            Some(5)
+        ));
+        assert!(ping_allowed_in(&state, &message(6, "9"), 1, None, Some(5)));
+        assert!(ping_allowed_in(
+            &state,
+            &message(6, "9"),
+            1,
+            Some(0),
+            Some(5)
+        ));
+        let mut state = state;
+        state.set_value("OnePingPerDM", "channelToAffect", &json!("group_dm"));
+        assert!(ping_allowed_in(
+            &state,
+            &message(6, "9"),
+            1,
+            Some(1),
+            Some(5)
+        ));
+        assert!(!ping_allowed_in(
+            &state,
+            &message(6, "9"),
+            1,
+            Some(3),
+            Some(5)
+        ));
+        state.set_value("OnePingPerDM", "ignoreUsers", &json!("8, 9"));
+        assert!(ping_allowed_in(
+            &state,
+            &message(6, "9"),
+            1,
+            Some(3),
+            Some(5)
+        ));
+        state.set_value("OnePingPerDM", "ignoreUsers", &json!(""));
+        state.set_value("OnePingPerDM", "allowMentions", &json!(true));
+        let mut mention = message(6, "9");
+        mention["mentions"] = json!([{"id": "1"}]);
+        assert!(ping_allowed_in(&state, &mention, 1, Some(3), Some(5)));
+        state.set_value("OnePingPerDM", "allowEveryone", &json!(true));
+        let mut everyone = message(6, "9");
+        everyone["mention_everyone"] = json!(true);
+        assert!(ping_allowed_in(&state, &everyone, 1, Some(3), Some(5)));
     }
 }

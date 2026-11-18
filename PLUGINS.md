@@ -12,7 +12,7 @@ every setting changed), and with every plugin off, and fails on one differing pi
 The list is the plugins enabled in the owner's Equicord backup of 2026-09-21 (156). Sources were read in the local
 Equicord checkout of 2026-11-14 (`src/plugins` is Vencord's, `src/equicordplugins` Equicord's).
 
-Totals: 20 ported, 3 native, 88 planned, 45 not applicable.
+Totals: 21 ported, 3 native, 87 planned, 45 not applicable.
 
 Status: **ported** works and has its proof; **native** is what gravecord already does without a plugin;
 **planned** is not built yet (an import keeps its settings for when it is); **not applicable** has nothing to
@@ -113,7 +113,7 @@ port in a native client, or was removed upstream.
 | NoTypingAnimation | ported | plugins/noTypingAnimation/index.ts | Disables the CPU-intensive typing dots animation | typing_avatar.rs: every typing indicator draws still dots and asks for no animation frames. | `switch_only_plugins_follow_their_switch_and_the_master`; plugins-off typing |
 | NoUnblockToJump | planned | plugins/noUnblockToJump/index.ts | Allows you to jump to messages of blocked or ignored users and likely spammers without unblocking them | jumping to blocked users' messages without unblocking. |  |
 | NSFWGateBypass | not applicable | (not in the 2026-11-14 checkout) |  | removed from Equicord in 9a3c66ab. |  |
-| OnePingPerDM | planned | plugins/onePingPerDM/index.ts | If unread messages are sent by a user in DMs multiple times, you'll only receive one audio ping. Read the messages to reset the limit | one notification sound per DM until it is read. |  |
+| OnePingPerDM | ported | plugins/onePingPerDM/index.ts | If unread messages are sent by a user in DMs multiple times, you'll only receive one audio ping. Read the messages to reset the limit | notifications.rs: in the DMs it affects only the oldest unread message (the first after the channel's ack) plays the sound; ignored users, allowed mentions and @everyone still ping; the desktop notification is left alone; alwaysPlaySound plays the message sound for any message that notifies. | `one_ping_per_dm_lets_the_oldest_unread_ping`; no frame (a sound, not a picture) |
 | OpenInApp | planned | plugins/openInApp/index.ts | Open links in their respective apps instead of your browser | Spotify, Steam and other links opened in their apps. |  |
 | PermissionFreeWill | planned | plugins/permissionFreeWill/index.ts | Disables the client-side restrictions for channel permission management. | no client-side limits in channel permission editing. |  |
 | PermissionsViewer | planned | plugins/permissionsViewer/index.tsx | View the permissions a user or channel has, and the roles of a server | a permission breakdown in profiles and menus. |  |
@@ -226,5 +226,10 @@ Every setting of each original (`definePluginSettings`), its type and default th
 | NoPendingCount | `hideFriendRequestsCount` | BOOLEAN | `true` | ported |
 | NoPendingCount | `hideMessageRequestsCount` | BOOLEAN | `true` | ported |
 | NoPendingCount | `hidePremiumOffersCount` | BOOLEAN | `true` | nothing to act on yet: the app's Home badge does not count unseen Nitro offers yet (`getUnacknowledgedOffers`), so there is no count to hide |
+| OnePingPerDM | `channelToAffect` | SELECT | `"both_dms"` | ported |
+| OnePingPerDM | `allowMentions` | BOOLEAN | `false` | ported |
+| OnePingPerDM | `allowEveryone` | BOOLEAN | `false` | ported |
+| OnePingPerDM | `ignoreUsers` | STRING | `""` | ported |
+| OnePingPerDM | `alwaysPlaySound` | BOOLEAN | `false` | ported |
 | UnlimitedAccounts | `maxAccounts` | NUMBER | `0` | ported |
 | VolumeBooster | `multiplier` | SLIDER | `2` | ported |
