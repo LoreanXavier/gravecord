@@ -19,6 +19,8 @@ use serde_json::json;
 /// What was right-clicked.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum Target {
+    /// Not in the pinned client: the account panel (AccountPanelServerProfile, `plugin_hooks/account_panel.rs`).
+    AccountPanel,
     InventoryFeed,
     InventoryFeedAtPointer,
     InventoryAuthor {
@@ -206,13 +208,16 @@ pub(super) enum Act {
     AiFixGrammar,
     AiTranslate,
     AiTransforms,
+    /// Not in the pinned client: AccountPanelServerProfile's rows (`plugin_hooks/account_panel.rs`).
+    PluginAlternateProfile,
+    PluginPrioritizeServerProfile,
 }
 
 impl Act {
     /// Every row kind once (`Correction` with its first index). `ordinal` is an exhaustive match, so adding a variant
     /// without listing it here fails the build or the `act_list_is_complete` test.
     #[cfg(test)]
-    pub(super) const ALL: [Act; 105] = [
+    pub(super) const ALL: [Act; 107] = [
         Act::InventoryAbout,
         Act::InventoryHide,
         Act::ReportApp,
@@ -318,6 +323,8 @@ impl Act {
         Act::PinPost,
         Act::UnpinPost,
         Act::ToggleInvitable,
+        Act::PluginAlternateProfile,
+        Act::PluginPrioritizeServerProfile,
     ];
 
     #[cfg(test)]
@@ -428,6 +435,8 @@ impl Act {
             Act::JoinQuiet => 102,
             Act::ReportStage => 103,
             Act::ToggleInvitable => 104,
+            Act::PluginAlternateProfile => 105,
+            Act::PluginPrioritizeServerProfile => 106,
         }
     }
 }
@@ -447,6 +456,7 @@ pub(super) fn status(act: Act) -> Status {
         Act::JoinQuiet | Act::ReportStage => Wired,
         Act::Apps => Wired,
         Act::ModView => Wired,
+        Act::PluginAlternateProfile | Act::PluginPrioritizeServerProfile => Wired,
         Act::InventoryAbout
         | Act::InventoryHide
         | Act::ViewAllActivity
@@ -2563,6 +2573,7 @@ impl Root {
         let omit_mention = std::mem::take(&mut self.context.omit_mention);
         let activity_voice = std::mem::take(&mut self.context.activity_voice);
         let items = match target {
+            Target::AccountPanel => self.account_panel_items(),
             Target::SpotifyActivity { user, popout } => spotify_activity_items(
                 self.stores
                     .current_user
@@ -3128,6 +3139,13 @@ impl Root {
         cx: &mut Context<Self>,
     ) {
         match (act, target) {
+            // Not in the pinned client: AccountPanelServerProfile (`plugin_hooks/account_panel.rs`).
+            (Act::PluginAlternateProfile, Target::AccountPanel) => {
+                self.account_panel_alternate(cx);
+            }
+            (Act::PluginPrioritizeServerProfile, Target::AccountPanel) => {
+                self.account_panel_toggle_prioritize(cx);
+            }
             (
                 Act::ViewAllActivity,
                 Target::SpotifyActivity { user, .. } | Target::GameActivity { user, .. },
@@ -3352,6 +3370,7 @@ impl Root {
                     | Target::GameAddToProfile(id)
                     | Target::PickerSticker(id) => id,
                     Target::ProfileWidget { .. }
+                    | Target::AccountPanel
                     | Target::InventoryFeed
                     | Target::InventoryFeedAtPointer
                     | Target::Composer

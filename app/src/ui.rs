@@ -5615,7 +5615,22 @@ impl Root {
                     .flex_none()
                     .size(px(32.))
                     .cursor_pointer()
-                    .on_click(cx.listener(|this, _, _, cx| this.toggle_status_popout(cx)))
+                    // Not in the pinned client: AccountPanelServerProfile can open the server profile here, and
+                    // the panel takes a right click (`plugin_hooks/account_panel.rs`).
+                    .on_click(cx.listener(|this, _, _, cx| this.account_panel_clicked(cx)))
+                    .when(self.account_panel_menu_on(), |this| {
+                        this.child(self.anchor_probe(plugin_hooks::ACCOUNT_PANEL_ANCHOR))
+                            .on_mouse_down(
+                                gpui::MouseButton::Right,
+                                cx.listener(|this, event: &gpui::MouseDownEvent, _, cx| {
+                                    this.open_context_menu(
+                                        context_menu::Target::AccountPanel,
+                                        event.position,
+                                        cx,
+                                    );
+                                }),
+                            )
+                    })
                     .on_hover(self.avatar_hover("panel-avatar".to_owned(), cx))
                     .children(
                         self.live_avatar(&user, 32., self.avatar_hovered("panel-avatar"), cx)
@@ -5662,7 +5677,19 @@ impl Root {
                     .min_w_0()
                     .overflow_hidden()
                     .cursor_pointer()
-                    .on_click(cx.listener(|this, _, _, cx| this.toggle_status_popout(cx)))
+                    .on_click(cx.listener(|this, _, _, cx| this.account_panel_clicked(cx)))
+                    .when(self.account_panel_menu_on(), |this| {
+                        this.on_mouse_down(
+                            gpui::MouseButton::Right,
+                            cx.listener(|this, event: &gpui::MouseDownEvent, _, cx| {
+                                this.open_context_menu(
+                                    context_menu::Target::AccountPanel,
+                                    event.position,
+                                    cx,
+                                );
+                            }),
+                        )
+                    })
                     .flex()
                     .flex_col()
                     .child(

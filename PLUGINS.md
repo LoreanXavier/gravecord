@@ -12,7 +12,7 @@ every setting changed), and with every plugin off, and fails on one differing pi
 The list is the plugins enabled in the owner's Equicord backup of 2026-09-21 (156). Sources were read in the local
 Equicord checkout of 2026-11-14 (`src/plugins` is Vencord's, `src/equicordplugins` Equicord's).
 
-Totals: 39 ported, 6 native, 66 planned, 45 not applicable.
+Totals: 40 ported, 6 native, 65 planned, 45 not applicable.
 
 Status: **ported** works and has its proof; **native** is what gravecord already does without a plugin;
 **planned** is not built yet (an import keeps its settings for when it is); **not applicable** has nothing to
@@ -20,7 +20,7 @@ port in a native client, or was removed upstream.
 
 | plugin | status | source | what it does (original) | here / what it needs | proof |
 | - | - | - | - | - | - |
-| AccountPanelServerProfile | planned | plugins/accountPanelServerProfile/index.tsx | Right click your account panel in the bottom left to view your profile in the current server | a right-click menu on the account panel that opens the server profile popout. |  |
+| AccountPanelServerProfile | ported | plugins/accountPanelServerProfile/index.tsx | Right click your account panel in the bottom left to view your profile in the current server | plugin_hooks/account_panel.rs: a right click on the account panel opens View Server Profile (your profile popout in the open server, disabled outside one) and the Prioritize Server Profile check; checked, a left click shows the server profile and the row reads View Account Profile. | `the_menu_names_the_other_popout_and_shows_the_check`; frames apsp-menu/apsp-profile; plugins-off account-panel |
 | AltKrispSwitch | planned | equicordplugins/altKrispSwitch/index.tsx | Makes the Noise Suppression Popout switch between None and Krisp instead of Krisp and Standard | Krisp, which is blocked here (its signature check); without it there is nothing to switch to. |  |
 | AlwaysAnimate | ported | plugins/alwaysAnimate/index.ts | Animates anything that can be animated | plugin_hooks/always_animate.rs: icons plays animated avatars (message rows, member list, panel) and server icons on the rail without the pointer and, for server icons, without focus, as canAnimate:!0 does; nameplates play in the member list all the time; roleGradients slides every gradient name, and with the plugin alone (its two patches without a setting) gradient names in chat and the member list slide. Reduced motion still stops gradients. | `each_switch_plays_its_part_and_two_patches_need_none`; frames aa-on/aa-off (avatar report); plugins-off chat, member-list |
 | AlwaysTrust | ported | plugins/alwaysTrust/index.tsx | Removes the annoying untrusted domain and suspicious file popup | links.rs: any link opens without "Leaving Discord" (`domain`); server_settings.rs: Delete Server without the typed name, behind the plugin's own "Delete server?" (`noDeleteSafety`, `confirmModal`). | `always_trust_needs_its_domain_setting`, `always_trust_deletes_servers_by_its_two_settings`; frames trust-off/on, trust-settings |
@@ -183,6 +183,7 @@ Every setting of each original (`definePluginSettings`), its type and default th
 
 | plugin | setting | type | default (original) | here |
 | - | - | - | - | - |
+| AccountPanelServerProfile | `prioritizeServerProfile` | BOOLEAN | `false` | ported |
 | AlwaysAnimate | `icons` | BOOLEAN | `true` | ported |
 | AlwaysAnimate | `statusEmojis` | BOOLEAN | `true` | nothing to act on yet: the app draws every custom status emoji as a still picture (the pinned client's member list plays an animated one), so there is nothing playing to force |
 | AlwaysAnimate | `serverBanners` | BOOLEAN | `true` | nothing to act on yet: the channel list header does not draw the server's banner yet, so there is no banner to play |

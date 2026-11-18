@@ -1,5 +1,6 @@
 //! Where the built-in plugins (`crate::plugins`) act on the chat. Not part of the pinned client.
 
+mod account_panel;
 mod always_animate;
 mod better_role_dot;
 mod call_timer;
@@ -19,6 +20,7 @@ mod typing_tweaks;
 mod voice_stats;
 mod who_reacted;
 
+pub(in crate::ui) use account_panel::ANCHOR as ACCOUNT_PANEL_ANCHOR;
 pub(in crate::ui) use always_animate::{Part as AnimatePart, always_animate};
 pub(in crate::ui) use download_all::{DOWNLOAD_ALL, download_all};
 

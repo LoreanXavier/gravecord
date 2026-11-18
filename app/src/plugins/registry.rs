@@ -290,6 +290,20 @@ pub(crate) const SHOWN_WHEN: &[(&str, &str, &str)] = &[(
 /// Every plugin, in the order the Plugins page lists them (by name).
 pub(crate) const DEFS: &[Def] = &[
     Def {
+        id: "AccountPanelServerProfile",
+        name: "AccountPanelServerProfile",
+        description: "Right click your account panel in the bottom left to view your profile in the current server",
+        origin: Origin::Vencord,
+        source: "src/plugins/accountPanelServerProfile/index.tsx",
+        default_on: false,
+        settings: &[Setting {
+            key: "prioritizeServerProfile",
+            label: "Prioritize Server Profile",
+            description: "Prioritize Server Profile when left clicking your account panel",
+            kind: Kind::Switch { default: false },
+        }],
+    },
+    Def {
         id: "AlwaysAnimate",
         name: "AlwaysAnimate",
         description: "Animates anything that can be animated",
