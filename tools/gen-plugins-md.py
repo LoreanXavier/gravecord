@@ -147,6 +147,7 @@ assert len(idle) == idle_entries, f'IDLE_SETTINGS: read {len(idle)} of {idle_ent
 
 # How each ported plugin is built here, and its proof.
 PORTED = {
+    'MoreCommands': "plugin_hooks/more_commands.rs: its 50 commands in the Built-In section while it is on: system info, uptime, time, choose, dice, coin, ask, random cat/dog/neko/anime-boys pictures (their public APIs), random number, transform (case, repeat, reverse, NFC/NFD/NFKC/NFKD), word count, countdown, ping, echo, lenny, mock, slap, freaky (addFreakyEnding), morse, uwuify, gifroulette (a favourite GIF, refused in the Equicord and Vencord servers), friendcloud (the affinities' avatars drawn into affinities-cloud.png off the UI thread, waiting in the message box) and 22 kaomoji; Clyde answers where the plugin's sendBotMessage does, the Commands API's error text from Equicord otherwise; uwuEveryMessage uwuifies what you send and edit. GAP: /imgtogif always answers No Image specified! (slash commands take no file option here yet), uwuEverything is idle, /systeminfo's network reads 4g and /gettime writes the en-US form.",
     'MuteChannelMentions': "plugin_hooks/mute_channel_mentions.rs + dc-state ReadStates::hidden: the picked channels' mention badges are filtered wherever the app reads a channel's mentions (channel rows, server icons, overlay, keyboard), none at all or with onlyEveryone only your direct mentions since the last read; channel and thread menus get the Hide mention badge check after Mark As Read. Nothing is sent.",
     'AccountPanelServerProfile': "plugin_hooks/account_panel.rs: a right click on the account panel opens View Server Profile (your profile popout in the open server, disabled outside one) and the Prioritize Server Profile check; checked, a left click shows the server profile and the row reads View Account Profile.",
     'FavoriteEmojiFirst': "autocomplete.rs + plugin_hooks.rs favorite_emoji_first: the emoji autocomplete sorts every match, puts your favourite emoji (the picker's Favorites) first and cuts the list where it was. Not 1:1 yet: the alias half (see its settings).",
@@ -229,6 +230,7 @@ PORTED = {
                      'so the original\'s 200% cap on the sync has nothing to cap.',
 }
 TESTS = {
+    'MoreCommands': '`the_text_commands_follow_the_original`, `uwuify_replaces_words_and_keeps_links`, `transform_applies_case_form_reversal_and_repeats`, `the_cloud_follows_the_original_numbers`, `every_command_has_a_distinct_name`; frames pending (live runs held)',
     'MuteChannelMentions': '`ids_parse_as_the_original_splits_them`, dc-state `hidden_channels_show_nothing_or_only_direct_mentions_since_the_ack`; frame mcm-menu; plugins-off channel-menu, chat',
     'AccountPanelServerProfile': '`the_menu_names_the_other_popout_and_shows_the_check`; frames apsp-menu/apsp-profile; plugins-off account-panel',
     'FavoriteEmojiFirst': 'frames fef-on/fef-off/fef-top (:smi with smiling_imp a favourite, demo-favorite); plugins-off emoji-autocomplete',
@@ -389,7 +391,6 @@ PLANNED = {
     'GlobalBadges': 'its third-party badge service.',
     'LimitlessScreenshare': 'resolution and FPS sliders past the tier limits (owner: later, FakeNitro-style).',
     'MessageLogger': 'a store of deleted and edited messages and their red/edited display.',
-    'MoreCommands': 'its slash commands.',
     'PermissionsViewer': 'a permission breakdown in profiles and menus.',
     'Quoter': 'a quote image made from a message.',
     'RelationshipNotifier': 'notices when a friend, group or server removes you (its data store lists are not copied).',

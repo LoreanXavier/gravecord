@@ -178,6 +178,8 @@ impl Root {
                     options,
                 )
             })
+            // MoreCommands' commands (`more_commands.rs`).
+            .chain(self.more_commands())
             .chain(
                 COMMANDS
                     .iter()
@@ -205,6 +207,10 @@ impl Root {
                     channel,
                 );
             }
+            return;
+        }
+        if index & super::more_commands::MORE_BIT != 0 {
+            self.more_commands_run(index & !super::more_commands::MORE_BIT, filled, channel, cx);
             return;
         }
         let Some(command) = COMMANDS.get(usize::from(index)) else {

@@ -235,6 +235,15 @@ pub enum Request {
         key: String,
         url: String,
     },
+    /// Not in the pinned client: MoreCommands' `/friendcloud` picture. Each avatar is fetched (no authorization) and
+    /// drawn round at its place with a grey ring on a transparent `width` by `height` canvas, off the UI thread; the
+    /// PNG lands in a temporary `affinities-cloud.png`, handed back under `key` as `{"path": …}` (`null` on failure).
+    FriendCloud {
+        key: String,
+        width: u32,
+        height: u32,
+        avatars: Vec<CloudAvatar>,
+    },
     /// Conditionally GET a public CDN JSON list and parse it off the UI thread.
     FetchCdn {
         key: String,
@@ -566,6 +575,99 @@ pub(crate) fn login_refused() -> bool {
 /// write arrives while a newer choice is already on screen. Applied, it put the older choice back for a moment (a
 /// theme picked three times in a row walked through all three again). While the count is above zero those answers are
 /// left out, and the answer of the last write brings the server's settings in (`Update::SettingsWritten`).
+/// One avatar of MoreCommands' `/friendcloud`: its picture and its square on the canvas.
+#[derive(Clone, Debug, PartialEq)]
+pub struct CloudAvatar {
+    pub url: String,
+    pub x: f64,
+    pub y: f64,
+    pub size: f64,
+}
+
+/// `/friendcloud`'s canvas: each picture clipped to its circle (`arc` + `clip` + `drawImage`), then a 3px `#808080`
+/// ring 1px outside it; saved as a PNG in a temporary folder of its own.
+fn friend_cloud_png(
+    width: u32,
+    height: u32,
+    pictures: &[(CloudAvatar, Vec<u8>)],
+) -> Option<std::path::PathBuf> {
+    let mut canvas = tiny_skia::Pixmap::new(width.max(1), height.max(1))?;
+    for (avatar, bytes) in pictures {
+        let Ok(decoded) = image::load_from_memory(bytes) else {
+            continue;
+        };
+        let side = avatar.size.round().max(1.) as u32;
+        let resized = decoded
+            .resize_exact(side, side, image::imageops::FilterType::Triangle)
+            .to_rgba8();
+        let mut data = resized.into_raw();
+        // tiny-skia keeps premultiplied colour.
+        for pixel in data.as_chunks_mut::<4>().0 {
+            let alpha = u16::from(pixel[3]);
+            for channel in &mut pixel[..3] {
+                *channel = ((u16::from(*channel) * alpha + 127) / 255) as u8;
+            }
+        }
+        let Some(picture) =
+            tiny_skia::Pixmap::from_vec(data, tiny_skia::IntSize::from_wh(side, side)?)
+        else {
+            continue;
+        };
+        let (cx, cy, radius) = (
+            (avatar.x + avatar.size / 2.) as f32,
+            (avatar.y + avatar.size / 2.) as f32,
+            (avatar.size / 2.) as f32,
+        );
+        let Some(circle) = tiny_skia::PathBuilder::from_circle(cx, cy, radius) else {
+            continue;
+        };
+        let mut mask = tiny_skia::Mask::new(width.max(1), height.max(1))?;
+        mask.fill_path(
+            &circle,
+            tiny_skia::FillRule::Winding,
+            true,
+            tiny_skia::Transform::identity(),
+        );
+        let scale = avatar.size as f32 / side as f32;
+        canvas.draw_pixmap(
+            0,
+            0,
+            picture.as_ref(),
+            &tiny_skia::PixmapPaint {
+                quality: tiny_skia::FilterQuality::Bilinear,
+                ..Default::default()
+            },
+            tiny_skia::Transform::from_row(scale, 0., 0., scale, avatar.x as f32, avatar.y as f32),
+            Some(&mask),
+        );
+        if let Some(ring) = tiny_skia::PathBuilder::from_circle(cx, cy, radius + 1.) {
+            let mut paint = tiny_skia::Paint::default();
+            paint.set_color_rgba8(0x80, 0x80, 0x80, 0xff);
+            paint.anti_alias = true;
+            let stroke = tiny_skia::Stroke {
+                width: 3.,
+                ..Default::default()
+            };
+            canvas.stroke_path(
+                &ring,
+                &paint,
+                &stroke,
+                tiny_skia::Transform::identity(),
+                None,
+            );
+        }
+    }
+    let png = canvas.encode_png().ok()?;
+    let stamp = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |time| time.as_millis());
+    let dir = std::env::temp_dir().join(format!("gravecord-friendcloud-{stamp}"));
+    std::fs::create_dir_all(&dir).ok()?;
+    let path = dir.join("affinities-cloud.png");
+    std::fs::write(&path, png).ok()?;
+    Some(path)
+}
+
 #[derive(Clone)]
 pub struct Requests {
     sender: mpsc::UnboundedSender<Request>,
@@ -709,6 +811,7 @@ impl Request {
             Request::Fetch { .. } => "Fetch",
             Request::FetchCdn { .. } => "FetchCdn",
             Request::FetchPublicJson { .. } => "FetchPublicJson",
+            Request::FriendCloud { .. } => "FriendCloud",
             Request::ResolveRedirect { .. } => "ResolveRedirect",
             Request::Typing { .. } => "Typing",
             Request::React { .. } => "React",
@@ -747,6 +850,7 @@ impl Request {
             Request::Fetch { .. }
             | Request::FetchCdn { .. }
             | Request::FetchPublicJson { .. }
+            | Request::FriendCloud { .. }
             | Request::ResolveRedirect { .. }
             | Request::LoadMessages { .. }
             | Request::PrefetchMessages { .. }
@@ -2339,6 +2443,32 @@ pub async fn run(token: Token, updates: mpsc::UnboundedSender<Update>, requests:
                         }
                     };
                     let _ = updates.send(Update::Fetched { key, body });
+                });
+            }
+            Request::FriendCloud {
+                key,
+                width,
+                height,
+                avatars,
+            } => {
+                tokio::spawn(async move {
+                    let mut pictures = Vec::new();
+                    for avatar in avatars {
+                        // `loadFriendImage`: a picture that fails is left out.
+                        if let Ok(bytes) = client.fetch_public(&avatar.url).await {
+                            pictures.push((avatar, bytes));
+                        }
+                    }
+                    let path = tokio::task::spawn_blocking(move || {
+                        friend_cloud_png(width, height, &pictures)
+                    })
+                    .await
+                    .ok()
+                    .flatten();
+                    let _ = updates.send(Update::Fetched {
+                        key,
+                        body: json!({"path": path.map(|path| path.display().to_string())}),
+                    });
                 });
             }
             Request::FetchCdn { key, url, etag } => {

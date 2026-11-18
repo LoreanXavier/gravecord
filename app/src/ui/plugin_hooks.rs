@@ -19,6 +19,8 @@ mod message_clicks;
 mod message_peek;
 mod message_pronouns;
 mod message_tags;
+mod more_commands;
+pub(crate) use more_commands::outgoing as more_commands_outgoing;
 mod mute_channel_mentions;
 mod new_guild_settings;
 mod open_in_app;

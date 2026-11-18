@@ -240,6 +240,11 @@ const fn millis(default: f64) -> Kind {
 /// by the code (a test checks both ways), so a setting can never sit in the page doing nothing unnoticed.
 pub(crate) const IDLE_SETTINGS: &[(&str, &str, &str)] = &[
     (
+        "MoreCommands",
+        "uwuEverything",
+        "it uwuifies every text node of the interface (a patch of React's element creation); the app's text is drawn          by each view itself and has no single place to pass it through yet",
+    ),
+    (
         "ImageZoom",
         "nearestNeighbour",
         "the renderer samples pictures smoothly and has no pixelated mode yet, so the lens cannot switch to nearest \
@@ -1205,6 +1210,34 @@ pub(crate) const DEFS: &[Def] = &[
         source: "src/plugins/customCommands/index.ts",
         default_on: false,
         settings: &[],
+    },
+    Def {
+        id: "MoreCommands",
+        name: "MoreCommands",
+        description: "Adds various fun and useful commands",
+        origin: Origin::Equicord,
+        source: "src/equicordplugins/moreCommands/index.ts",
+        default_on: false,
+        settings: &[
+            Setting {
+                key: "addFreakyEnding",
+                label: "Add Freaky Ending",
+                description: "Add 👅 or ❤️ at the end",
+                kind: Kind::Switch { default: false },
+            },
+            Setting {
+                key: "uwuEveryMessage",
+                label: "Uwu Every Message",
+                description: "Make every single message uwuified",
+                kind: Kind::Switch { default: false },
+            },
+            Setting {
+                key: "uwuEverything",
+                label: "Uwu Everything",
+                description: "Makes *all* text uwuified - really bad idea",
+                kind: Kind::Switch { default: false },
+            },
+        ],
     },
     Def {
         id: "MuteChannelMentions",

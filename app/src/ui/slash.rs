@@ -19,14 +19,14 @@ use serde_json::{Value, json};
 pub(in crate::ui) const SUB_COMMAND: u64 = 1;
 const SUB_COMMAND_GROUP: u64 = 2;
 pub(in crate::ui) const STRING: u64 = 3;
-const INTEGER: u64 = 4;
+pub(in crate::ui) const INTEGER: u64 = 4;
 pub(in crate::ui) const BOOLEAN: u64 = 5;
 pub(in crate::ui) const USER: u64 = 6;
 const CHANNEL: u64 = 7;
 const ROLE: u64 = 8;
 const MENTIONABLE: u64 = 9;
-const NUMBER: u64 = 10;
-const ATTACHMENT: u64 = 11;
+pub(in crate::ui) const NUMBER: u64 = 10;
+pub(in crate::ui) const ATTACHMENT: u64 = 11;
 
 /// The id the official gives the built-in "application".
 const BUILT_IN_APP: &str = "-1";

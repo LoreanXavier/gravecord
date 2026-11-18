@@ -288,6 +288,7 @@ mod status_menu;
 mod stream_failed;
 mod video_pip;
 #[cfg(feature = "capture")]
+pub(crate) use plugin_hooks::more_commands_outgoing;
 pub(crate) use server_discovery::FORCE_ELIGIBLE;
 mod server_discovery_form;
 mod server_emoji;
@@ -1987,6 +1988,10 @@ impl Root {
                 }
                 // Not in the pinned client: FriendInvites' answers (`plugin_hooks/plugin_commands.rs`).
                 if self.friend_invites_answered(&key, &body) {
+                    return;
+                }
+                // Not in the pinned client: MoreCommands' fetched answers (`plugin_hooks/more_commands.rs`).
+                if self.more_commands_fetched(&key, &body, cx) {
                     return;
                 }
                 // Not in the pinned client: ValidUser's fetched user (`plugin_hooks/valid_user.rs`).

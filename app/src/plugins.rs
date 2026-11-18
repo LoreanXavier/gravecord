@@ -178,6 +178,10 @@ pub(crate) fn outgoing(content: &str) -> String {
     if !bypassed() && on("ClearURLs") {
         content = clear_urls::clean_message(&content);
     }
+    // MoreCommands' `uwuEveryMessage` (its pre-send and pre-edit listeners, after ClearURLs').
+    if !bypassed() {
+        content = crate::ui::more_commands_outgoing(content);
+    }
     content
 }
 

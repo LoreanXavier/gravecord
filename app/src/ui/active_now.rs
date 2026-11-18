@@ -15,7 +15,7 @@ use std::{
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
-const AFFINITIES: &str = "affinities";
+pub(super) const AFFINITIES: &str = "affinities";
 const CACHE: &str = "UserAffinitiesStoreV2";
 
 pub(super) struct State {
@@ -26,6 +26,39 @@ pub(super) struct State {
     pub(super) avatars: Vec<Id>,
     /// The card whose menu is open (`now_playing_menu.rs`), by party id.
     pub(super) menu: Option<String>,
+}
+
+impl State {
+    /// The affinities in the fetched (snake case) form, from the answer or from the cache it was stored in; `None`
+    /// before either. Not in the pinned client's use here: MoreCommands' `/friendcloud` reads them.
+    pub(super) fn affinity_rows(&self) -> Option<Vec<Value>> {
+        if let Some(rows) = self.body["user_affinities"].as_array() {
+            return Some(rows.clone());
+        }
+        let cached = self.body["userAffinities"].as_array()?;
+        let names = [
+            ("otherUserId", "other_user_id"),
+            ("isFriend", "is_friend"),
+            ("dmProbability", "dm_probability"),
+            ("vcProbability", "vc_probability"),
+            ("serverMessageProbability", "server_message_probability"),
+            ("communicationProbability", "communication_probability"),
+        ];
+        Some(
+            cached
+                .iter()
+                .map(|row| {
+                    let mut mapped = serde_json::Map::new();
+                    for (from, to) in names {
+                        if let Some(value) = row.get(from) {
+                            mapped.insert(to.into(), value.clone());
+                        }
+                    }
+                    Value::Object(mapped)
+                })
+                .collect(),
+        )
+    }
 }
 
 impl Default for State {
@@ -262,6 +295,8 @@ impl Root {
             CACHE,
             json!({"userAffinities":users,"lastFetched":self.active_now.fetched_at}),
         );
+        // Not in the pinned client: MoreCommands' `/friendcloud` runs that waited for the affinities.
+        self.more_commands_affinities();
     }
 
     pub(super) fn active_now_visible(&self) -> bool {

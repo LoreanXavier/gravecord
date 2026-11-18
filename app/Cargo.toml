@@ -66,6 +66,8 @@ url.workspace = true
 ttf-parser = { version = "=0.25.1", default-features = false, features = ["std"] }
 resvg = { version = "0.46", default-features = false }
 tiny-skia = { version = "=0.12.0", default-features = false, features = ["std", "simd"] }
+# MoreCommands' /transform normal forms (already in the lock through other crates).
+unicode-normalization = "0.1"
 wuff = "0.2"
 zstd.workspace = true
 
