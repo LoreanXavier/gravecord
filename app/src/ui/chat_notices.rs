@@ -24,6 +24,17 @@ pub(super) const KEY_PREFIX: &str = "thread-step:";
 /// `--radius-sm` of the design system (module 952007): 8px.
 const RADIUS_SM: f32 = 8.;
 
+/// `OPT_IN_CHANNELS_ON` of a server's notification settings flags, `OPT_IN_ENABLED` of a channel override's (module
+/// 395504 `WW`, `vv`).
+const OPT_IN_CHANNELS_ON: u64 = 1 << 14;
+const OPT_IN_ENABLED: u64 = 1 << 12;
+
+/// Module 228098 (without its resource-channel exemption): the server browses picked channels only and neither the
+/// channel nor its category is picked.
+pub(super) fn opt_in_notice_shown(opt_in_on: bool, channel: bool, parent: bool) -> bool {
+    opt_in_on && !channel && !parent
+}
+
 /// `ChannelFlags.PINNED` (module 746080 `lx`).
 pub(super) const PINNED: u64 = 1 << 1;
 
@@ -426,6 +437,91 @@ impl Root {
                 }))
                 .into_any_element(),
         )
+    }
+
+    /// "This channel is not on your channel list." (module 157259, shown by module 626977 when `228098` holds): the
+    /// account browses only the channels it picked (`OPT_IN_CHANNELS_ON` of the server's settings) and neither the
+    /// channel nor its category is picked (`OPT_IN_ENABLED` of their overrides); never for a thread. Module 859937's
+    /// `chatHeaderBar` (`--background-surface-high`, a `--border-muted` rule under it, 8px 16px inside with 28px at the
+    /// start), the line in `body-sm/normal` and a `sm` primary "Add to Channel List" with the plus icon.
+    pub(super) fn opt_in_channel_notice(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
+        let (guild, channel) = (self.guild?, self.channel?);
+        let known = self
+            .stores
+            .guild(guild)?
+            .channels
+            .iter()
+            .find(|known| known.id == channel)?
+            .clone();
+        let settings = self.stores.guild_settings.guilds.get(&guild)?;
+        let picked = |id: Option<Id>| {
+            id.and_then(|id| settings.channels.get(&id))
+                .is_some_and(|own| own.flags & OPT_IN_ENABLED != 0)
+        };
+        // GAP: the Server Guide resource-channel exemption (`IS_GUILD_RESOURCE_CHANNEL` behind `473529 d`) is not read.
+        if !opt_in_notice_shown(
+            settings.flags & OPT_IN_CHANNELS_ON != 0,
+            picked(Some(channel)),
+            picked(known.parent_id),
+        ) {
+            return None;
+        }
+        Some(
+            div()
+                .flex_none()
+                .relative()
+                .py(px(8.))
+                .pr(px(16.))
+                .pl(px(28.))
+                .bg(super::color("--background-surface-high"))
+                .border_b_1()
+                .border_color(super::color("--border-muted"))
+                .flex()
+                .items_center()
+                .justify_between()
+                .child(
+                    div()
+                        .flex_1()
+                        .mr(px(16.))
+                        .text_size(px(14.))
+                        .line_height(px(18.))
+                        .text_color(super::color("--text-default"))
+                        .child(dc_intl::t("iOWmmB")),
+                )
+                .child(
+                    super::dm::small_button(
+                        "opt-in-add-channel",
+                        dc_intl::t("ZtIlQo"),
+                        super::dm::Tone::Primary,
+                        true,
+                    )
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        this.add_to_channel_list(guild, channel);
+                        cx.notify();
+                    })),
+                )
+                .into_any_element(),
+        )
+    }
+
+    /// `AC(guild, channel, true)` of module 816662: the channel's override gains `OPT_IN_ENABLED`, at once and through
+    /// `PATCH /users/@me/guilds/settings`.
+    fn add_to_channel_list(&mut self, guild: Id, channel: Id) {
+        let Some(settings) = self.stores.guild_settings.guilds.get_mut(&guild) else {
+            return;
+        };
+        // A channel without an override inherits its notifications (`INHERIT`), as `from_value` reads one.
+        let own = settings.channels.entry(channel).or_insert_with(|| {
+            dc_state::guild_settings::Override {
+                message_notifications: dc_state::guild_settings::INHERIT,
+                ..Default::default()
+            }
+        });
+        own.flags |= OPT_IN_ENABLED;
+        let flags = own.flags;
+        let _ = self.requests.send(Request::GuildSettings {
+            body: json!({"guilds": {guild.to_string(): {"channel_overrides": {channel.to_string(): {"flags": flags}}}}}),
+        });
     }
 
     /// Runs a context menu thread action; the bodies go one after the other.
@@ -1003,6 +1099,17 @@ pub(super) fn body_text(text: impl Into<gpui::SharedString>) -> AnyElement {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_channel_list_bar_shows_for_an_unpicked_channel_of_an_opt_in_server() {
+        assert!(opt_in_notice_shown(true, false, false));
+        assert!(!opt_in_notice_shown(true, true, false));
+        assert!(!opt_in_notice_shown(true, false, true));
+        assert!(!opt_in_notice_shown(false, false, false));
+        let alert = invite_permission_alert();
+        assert_eq!(alert.title, "Invite permission required");
+        assert_eq!(alert.buttons[0].label, "Got It");
+    }
 
     #[test]
     fn locking_an_archived_thread_unarchives_it_first() {

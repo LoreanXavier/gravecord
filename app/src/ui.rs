@@ -10769,6 +10769,7 @@ impl Render for Root {
                                                 .h_full()
                                                 // Module 626977 over the list: a locked thread's bar.
                                                 .children(self.thread_lock_notice(cx))
+                                                .children(self.opt_in_channel_notice(cx))
                                                 .child(self.regions.place(
                                                     regions::Kind::Messages,
                                                     regions::style_of(regions::Kind::Messages),
