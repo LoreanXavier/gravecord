@@ -235,6 +235,18 @@ fn wait_quiet() -> bool {
     true
 }
 
+/// How long to wait before the next signed-in launch: what is left of the gap since the last one.
+fn launch_gap(last: Option<Instant>) -> Option<Duration> {
+    let gap = std::env::var("GRAVECORD_PERF_GAP_SECS")
+        .ok()
+        .and_then(|value| value.parse().ok())
+        .unwrap_or(60);
+    let since = last?.elapsed();
+    Duration::from_secs(gap)
+        .checked_sub(since)
+        .filter(|left| !left.is_zero())
+}
+
 fn build(repo: &Path, release: bool) -> Result<PathBuf> {
     let mut command = Command::new("cargo");
     command.args([
@@ -535,6 +547,7 @@ pub fn run(repo: &Path, args: &[&str]) -> Result<()> {
     let profile = if options.release { "release" } else { "debug" };
     let mut runs: Vec<BTreeMap<String, f64>> = Vec::new();
     let mut disturbed = false;
+    let mut last_launch: Option<Instant> = None;
     for number in 1..=options.runs {
         if options.wait {
             disturbed |= !wait_quiet();
@@ -546,6 +559,12 @@ pub fn run(repo: &Path, args: &[&str]) -> Result<()> {
         );
         let mut merged = BTreeMap::new();
         for (name, script) in &scripts {
+            // Every run signs the fixture account in; Discord flagged it on 2026-11-18 after bursts of logins, so
+            // launches are spaced (`GRAVECORD_PERF_GAP_SECS`, default 60).
+            if let Some(gap) = launch_gap(last_launch) {
+                sleep(gap);
+            }
+            last_launch = Some(Instant::now());
             let log = run_once(repo, &exe, script, &out, options.timeout)?;
             let file = if scripts.len() == 1 {
                 format!("{}-run{number}.txt", options.label)
