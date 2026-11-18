@@ -297,6 +297,11 @@ pub(in crate::ui) fn permissions_viewer() -> bool {
     !crate::plugins::bypassed() && crate::plugin_on!("PermissionsViewer")
 }
 
+/// Whether the member popout is open (its layer, `keyboard/layers.rs`).
+pub(in crate::ui) fn permissions_viewer_popout_open() -> bool {
+    POPOUT.with(|popout| popout.borrow().is_some())
+}
+
 /// `permissionsSortOrder`: whether the lowest role comes first.
 fn lowest_first() -> bool {
     crate::plugins::with(|state| state.value(ID, "permissionsSortOrder") == serde_json::json!(1))
@@ -346,7 +351,8 @@ impl Root {
                     items.splice(last..last, [Entry::Separator, row()]);
                 }
             }
-            Target::Channel(channel) | Target::Thread(channel) => {
+            // `channel-context` covers categories too; threads have `thread-context`, which the original leaves alone.
+            Target::Channel(channel) | Target::Category(channel) => {
                 if self.guild_of_channel(channel).is_none() {
                     return items;
                 }
@@ -379,7 +385,7 @@ impl Root {
                 user,
                 guild: Some(guild),
             } => self.permissions_for_member(guild, user),
-            Target::Channel(channel) | Target::Thread(channel) => {
+            Target::Channel(channel) | Target::Category(channel) => {
                 self.guild_of_channel(channel).and_then(|guild| {
                     let known = self.stores.guild(guild)?;
                     let channel = known.channels.iter().find(|known| known.id == channel)?;
@@ -1061,15 +1067,21 @@ impl Root {
                     .into_any_element()
             })
             .collect();
+        let card = div()
+            .absolute()
+            .left(px(left))
+            .top(px(top))
+            .w(px(width))
+            .id("permissions-viewer-popout");
+        // A press outside closes it while it is the top layer, as the role picker's does.
+        let card = super::super::keyboard::outside(
+            card,
+            super::super::keyboard::Layer::PluginPermissions,
+            cx,
+        );
         Some(
             gpui::deferred(
-                div()
-                    .absolute()
-                    .left(px(left))
-                    .top(px(top))
-                    .w(px(width))
-                    .id("permissions-viewer-popout")
-                    .occlude()
+                card.occlude()
                     .p(px(16.))
                     .rounded(px(8.))
                     .border_1()
@@ -1082,10 +1094,6 @@ impl Root {
                         spread_radius: px(0.),
                         inset: false,
                     }])
-                    .on_mouse_down_out(cx.listener(|this, _, _, cx| {
-                        this.permissions_viewer_popout_close();
-                        cx.notify();
-                    }))
                     .child(
                         div()
                             .flex()

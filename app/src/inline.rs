@@ -1710,6 +1710,32 @@ mod tests {
         }
     }
 
+    /// A box with an icon and no text (Translate+'s icon before its translation) is placed like any box: the
+    /// segment with no text skips the word split (`seg_text.is_empty()`), and the fragment takes the icon's room.
+    #[test]
+    fn an_empty_boxed_piece_keeps_its_room() {
+        use super::{Laid, place};
+        let mut laid = Laid {
+            lines: 1,
+            ..Default::default()
+        };
+        let mut x = px(0.);
+        place(
+            &mut laid,
+            &mut x,
+            Some(px(200.)),
+            (gpui::ShapedLine::default(), 0, 0),
+            px(0.),
+            px(20.),
+            false,
+        );
+        assert_eq!(laid.fragments.len(), 1);
+        assert_eq!(laid.fragments[0].width, px(20.));
+        assert_eq!(laid.fragments[0].text_offset, px(20.));
+        assert_eq!(x, px(20.));
+        assert!(super::words("").is_empty());
+    }
+
     #[test]
     fn a_ligature_is_divided_evenly() {
         // "fi" as one glyph ending at 8, then "l" ending at 12.

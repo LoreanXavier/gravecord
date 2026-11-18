@@ -45,7 +45,7 @@ mod mute_channel_mentions;
 mod new_guild_settings;
 mod open_in_app;
 mod permissions_viewer;
-pub(in crate::ui) use permissions_viewer::permissions_viewer;
+pub(in crate::ui) use permissions_viewer::{permissions_viewer, permissions_viewer_popout_open};
 mod pin_dms;
 mod platform_indicators;
 mod plugin_commands;

@@ -10477,6 +10477,9 @@ impl Render for Root {
         self.usrbg_prepare();
         // Not in the pinned client: UserPFP's list, once (`plugin_hooks/userpfp.rs`).
         self.userpfp_prepare();
+        // Not in the pinned client: MessageLogger lets go of what it kept once it is off
+        // (`plugin_hooks/message_logger.rs`).
+        self.message_logger_prepare();
         // Not in the pinned client: GlobalBadges' list, at start and every 30 minutes (`plugin_hooks/global_badges.rs`).
         self.global_badges_prepare();
         // Not in the pinned client: SteamStatusSync (`plugin_hooks/steam_status_sync.rs`).

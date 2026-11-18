@@ -18,16 +18,18 @@
 //! never replaces a message by its nonce, so there is nothing to guard. Its `+:emoji:` target fix waits for the base's
 //! own `+:emoji:` rule (BetterPlusReacts' gap).
 //!
-//! GAP: emoji inside a diff get no green or red film over them (the original's `::after`), and a deleted message's
-//! embeds keep their own title colour (`--embed-title`, which the app's embeds do not read).
+//! GAP: emoji inside a diff get no green or red film over them (the original's `::after`); a deleted message's
+//! embeds keep their own title colour (`--embed-title`, which the app's embeds do not read); and only still attachment
+//! pictures turn grey: a deleted message's emoji, stickers, embed images and animated or video tiles keep their
+//! colour, and a deleted message's spoiler warning its own.
 
 use super::super::Root;
 use chrono::{DateTime, Utc};
 use dc_state::{Id, Message};
 use serde_json::Value;
+use std::cell::Cell;
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
-use std::sync::atomic::{AtomicBool, Ordering};
 
 const ID: &str = "MessageLogger";
 /// `MessageFlags.EPHEMERAL`.
@@ -47,11 +49,13 @@ pub(in crate::ui) struct Edit {
 
 #[derive(Default)]
 struct Logged {
-    deleted: HashSet<Id>,
+    /// The kept deleted messages and their channels.
+    deleted: HashMap<Id, Id>,
     history: HashMap<Id, Vec<Edit>>,
     /// `firstEditTimestamp`: the message's edit time (else its time) when it was first seen.
     first_edit: HashMap<Id, DateTime<Utc>>,
-    deleted_attachments: HashSet<Id>,
+    /// The attachments an edit took away, with their message and channel.
+    deleted_attachments: HashMap<Id, (Id, Id)>,
     /// The attachments of the deleted messages, by the message they belong to.
     attachment_owner: HashMap<Id, Id>,
     /// `disabledDiffMessages`.
@@ -70,8 +74,10 @@ thread_local! {
     static LOGGED: RefCell<Logged> = RefCell::new(Logged::default());
 }
 
-/// A deleted message's colours are being drawn (`.messagelogger-deleted` with the text style).
-static SCOPED: AtomicBool = AtomicBool::new(false);
+thread_local! {
+    /// A deleted message's colours are being drawn (`.messagelogger-deleted` with the text style).
+    static SCOPED: Cell<bool> = const { Cell::new(false) };
+}
 
 /// The plugin's settings.
 #[derive(Clone, Debug, Default)]
@@ -137,7 +143,7 @@ fn keep(message: &Message) -> bool {
         let mut logged = logged.borrow_mut();
         let kept = logged.keep.contains(&message.id);
         if kept {
-            logged.deleted.insert(message.id);
+            logged.deleted.insert(message.id, message.channel_id);
             for attachment in &message.attachments {
                 logged.attachment_owner.insert(attachment.id, message.id);
             }
@@ -148,7 +154,7 @@ fn keep(message: &Message) -> bool {
 
 /// A deleted message the plugin keeps.
 pub(in crate::ui) fn message_logger_deleted(message: Id) -> bool {
-    message_logger_on() && LOGGED.with(|logged| logged.borrow().deleted.contains(&message))
+    message_logger_on() && LOGGED.with(|logged| logged.borrow().deleted.contains_key(&message))
 }
 
 /// A deleted message whose highlight is on, and whether it is drawn with the overlay.
@@ -158,7 +164,7 @@ pub(in crate::ui) fn message_logger_highlight(message: Id) -> Option<bool> {
     }
     let lit = LOGGED.with(|logged| {
         let logged = logged.borrow();
-        logged.deleted.contains(&message) && !logged.highlight_off.contains(&message)
+        logged.deleted.contains_key(&message) && !logged.highlight_off.contains(&message)
     });
     lit.then(overlay_style)
 }
@@ -170,19 +176,19 @@ pub(in crate::ui) fn message_logger_attachment_gray(attachment: Id) -> bool {
     }
     LOGGED.with(|logged| {
         let logged = logged.borrow();
-        logged.deleted_attachments.contains(&attachment)
+        logged.deleted_attachments.contains_key(&attachment)
             || logged
                 .attachment_owner
                 .get(&attachment)
                 .is_some_and(|message| {
-                    logged.deleted.contains(message) && !logged.highlight_off.contains(message)
+                    logged.deleted.contains_key(message) && !logged.highlight_off.contains(message)
                 })
     })
 }
 
 /// `doesMessageHaveHistory`.
 fn has_history(logged: &Logged, message: &Message) -> bool {
-    logged.deleted.contains(&message.id)
+    logged.deleted.contains_key(&message.id)
         || logged
             .history
             .get(&message.id)
@@ -190,7 +196,7 @@ fn has_history(logged: &Logged, message: &Message) -> bool {
         || message
             .attachments
             .iter()
-            .any(|attachment| logged.deleted_attachments.contains(&attachment.id))
+            .any(|attachment| logged.deleted_attachments.contains_key(&attachment.id))
 }
 
 /// Whether a message has history while the plugin is on (the hover bar's Clear history, the menus' rows).
@@ -227,7 +233,7 @@ pub(in crate::ui) fn message_logger_menu(message: &Message) -> Option<(bool, Opt
     LOGGED.with(|logged| {
         let logged = logged.borrow();
         Some((
-            logged.deleted.contains(&message.id),
+            logged.deleted.contains_key(&message.id),
             settings
                 .show_edit_diffs
                 .then(|| logged.diff_off.contains(&message.id)),
@@ -237,7 +243,7 @@ pub(in crate::ui) fn message_logger_menu(message: &Message) -> Option<(bool, Opt
 
 /// `--status-danger` and `--red-460` over the tokens `.messagelogger-deleted` sets (`deleteStyleText.css`).
 pub(in crate::ui) fn scoped_token(name: &str) -> Option<&'static str> {
-    if !SCOPED.load(Ordering::Relaxed) {
+    if !SCOPED.get() {
         return None;
     }
     match name {
@@ -253,7 +259,7 @@ pub(in crate::ui) struct Scope(bool);
 impl Drop for Scope {
     fn drop(&mut self) {
         if self.0 {
-            SCOPED.store(false, Ordering::Relaxed);
+            SCOPED.set(false);
         }
     }
 }
@@ -262,7 +268,7 @@ impl Drop for Scope {
 pub(in crate::ui) fn message_logger_scope(message: Id) -> Scope {
     let red = message_logger_highlight(message) == Some(false);
     if red {
-        SCOPED.store(true, Ordering::Relaxed);
+        SCOPED.set(true);
     }
     Scope(red)
 }
@@ -474,11 +480,17 @@ impl Root {
 
     /// Before the stores see a dispatch: what a delete keeps, what an edit replaces.
     pub(in crate::ui) fn message_logger_before(&mut self, name: &str, data: &Value) {
-        let settings = settings();
-        self.stores.keep_deleted = settings.as_ref().map(|_| keep as fn(&Message) -> bool);
-        let Some(settings) = settings else {
+        if !matches!(
+            name,
+            "MESSAGE_DELETE" | "MESSAGE_DELETE_BULK" | "MESSAGE_UPDATE"
+        ) {
+            return;
+        }
+        let Some(settings) = settings() else {
+            self.stores.keep_deleted = None;
             return;
         };
+        self.stores.keep_deleted = Some(keep);
         let channel = data["channel_id"]
             .as_str()
             .and_then(|id| id.parse::<Id>().ok());
@@ -594,31 +606,76 @@ impl Root {
             let window = self.stores.windows.entry(channel).or_default();
             window.update(list, id, |message| message.attachments = merged.clone());
         }
-        LOGGED.with(|logged| logged.borrow_mut().deleted_attachments.extend(gone));
+        LOGGED.with(|logged| {
+            logged.borrow_mut().deleted_attachments.extend(
+                gone.into_iter()
+                    .map(|attachment| (attachment, (id, channel))),
+            );
+        });
+    }
+
+    /// Each frame: with the plugin off, what it kept leaves the stores (as after the restart the original needs).
+    pub(in crate::ui) fn message_logger_prepare(&mut self) {
+        let kept = LOGGED.with(|logged| {
+            let logged = logged.borrow();
+            !logged.deleted.is_empty()
+                || !logged.deleted_attachments.is_empty()
+                || !logged.history.is_empty()
+        });
+        if !kept || message_logger_on() {
+            return;
+        }
+        let logged = LOGGED.with(|logged| std::mem::take(&mut *logged.borrow_mut()));
+        self.stores.keep_deleted = None;
+        for (message, channel) in logged.deleted {
+            self.message_logger_remove(channel, message);
+        }
+        for (attachment, (message, channel)) in logged.deleted_attachments {
+            if let Some(list) = self.stores.messages.get_mut(&channel) {
+                let window = self.stores.windows.entry(channel).or_default();
+                window.update(list, message, |known| {
+                    known.attachments.retain(|kept| kept.id != attachment);
+                });
+            }
+        }
+        self.rebuild_rows();
+    }
+
+    /// A kept deleted message leaves its channel's list and the window's caches (no second `MESSAGE_DELETE`: its
+    /// mentions were counted off when it was deleted).
+    fn message_logger_remove(&mut self, channel: Id, message: Id) {
+        if let Some(list) = self.stores.messages.get_mut(&channel) {
+            let window = self.stores.windows.entry(channel).or_default();
+            window.remove(list, message);
+        }
     }
 
     /// `clearMessageHistory`: a deleted message goes for good, another loses its edits and deleted attachments.
     pub(in crate::ui) fn message_logger_clear(&mut self, channel: Id, message: Id) {
-        let deleted = LOGGED.with(|logged| logged.borrow_mut().deleted.remove(&message));
+        let deleted = LOGGED.with(|logged| logged.borrow_mut().deleted.remove(&message).is_some());
         if deleted {
-            let data = serde_json::json!({
-                "id": message.to_string(),
-                "channel_id": channel.to_string(),
-                "mlDeleted": true,
-            });
-            self.message_logger_before("MESSAGE_DELETE", &data);
-            self.stores.dispatch("MESSAGE_DELETE", &data);
-            self.message_logger_after("MESSAGE_DELETE", &data);
+            // The original dispatches `MESSAGE_DELETE` with `mlDeleted`; its MessageStore drops the message, and the
+            // read state already counted its mentions off at the real delete, so the row simply goes.
+            self.message_logger_remove(channel, message);
             LOGGED.with(|logged| {
                 let mut logged = logged.borrow_mut();
                 logged.history.remove(&message);
                 logged.highlight_off.remove(&message);
             });
         } else {
-            let gone = LOGGED.with(|logged| {
+            let gone: HashSet<Id> = LOGGED.with(|logged| {
                 let mut logged = logged.borrow_mut();
                 logged.history.remove(&message);
-                logged.deleted_attachments.clone()
+                let gone = logged
+                    .deleted_attachments
+                    .iter()
+                    .filter(|(_, (owner, _))| *owner == message)
+                    .map(|(attachment, _)| *attachment)
+                    .collect();
+                logged
+                    .deleted_attachments
+                    .retain(|_, (owner, _)| *owner != message);
+                gone
             });
             if let Some(list) = self.stores.messages.get_mut(&channel) {
                 let window = self.stores.windows.entry(channel).or_default();

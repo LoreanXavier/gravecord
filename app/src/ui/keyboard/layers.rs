@@ -45,6 +45,8 @@ pub(in crate::ui) enum Layer {
     HeaderPopout,
     Profile,
     RolePicker,
+    /// Not in the pinned client: PermissionsViewer's member popout (`plugin_hooks/permissions_viewer.rs`).
+    PluginPermissions,
     FileMenu,
     AudioMenu,
     FriendMenu,
@@ -84,6 +86,7 @@ pub(in crate::ui) const ALL: &[Layer] = &[
     Layer::HeaderPopout,
     Layer::Profile,
     Layer::RolePicker,
+    Layer::PluginPermissions,
     Layer::FileMenu,
     Layer::AudioMenu,
     Layer::FriendMenu,
@@ -123,6 +126,7 @@ impl Layer {
             | Layer::HeaderPopout
             | Layer::Profile
             | Layer::RolePicker
+            | Layer::PluginPermissions
             | Layer::FileMenu
             | Layer::AudioMenu
             | Layer::FriendMenu
@@ -144,6 +148,7 @@ const ESCAPE_HERE: &[Layer] = &[
     Layer::SettingsSelect,
     Layer::HeaderPopout,
     Layer::RolePicker,
+    Layer::PluginPermissions,
     Layer::ComponentSelect,
     Layer::InteractionSelect,
     Layer::FolderMenu,
@@ -201,6 +206,9 @@ impl Root {
             Layer::HeaderPopout => self.header_popout.is_some(),
             Layer::Profile => self.profile.is_some(),
             Layer::RolePicker => self.role_picker.is_some(),
+            Layer::PluginPermissions => {
+                super::super::plugin_hooks::permissions_viewer_popout_open()
+            }
             Layer::FileMenu => self.file_menu.is_some(),
             Layer::AudioMenu => self.audio_menu.is_some(),
             Layer::FriendMenu => self.friend_menu.is_some(),
@@ -252,6 +260,7 @@ impl Root {
             Layer::HeaderPopout => self.close_header_popout(cx),
             Layer::Profile => self.profile = None,
             Layer::RolePicker => self.role_picker = None,
+            Layer::PluginPermissions => self.permissions_viewer_popout_close(),
             Layer::FileMenu => self.file_menu = None,
             Layer::AudioMenu => self.audio_menu = None,
             Layer::FriendMenu => self.friend_menu = None,
@@ -427,7 +436,7 @@ mod tests {
         }
         // `kind`'s match is exhaustive, so a variant left out of `ALL` is the only way to forget one: this is the
         // number of variants.
-        assert_eq!(ALL.len(), 33);
+        assert_eq!(ALL.len(), 34);
     }
 
     #[test]
