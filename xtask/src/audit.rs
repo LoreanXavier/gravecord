@@ -126,7 +126,19 @@ fn passing_tests(repo: &Path) -> Result<BTreeSet<String>> {
 
 fn verified_passing(success: bool, report: &str) -> Result<BTreeSet<String>> {
     if !success {
-        bail!("workspace tests failed; run cargo test --workspace to inspect the failure");
+        // Name the failures: a test that fails only under load is otherwise impossible to identify afterwards.
+        let failed: Vec<&str> = report
+            .lines()
+            .filter(|line| line.starts_with("test ") && line.ends_with("FAILED"))
+            .collect();
+        bail!(
+            "workspace tests failed{}; run cargo test --workspace to inspect the failure",
+            if failed.is_empty() {
+                String::new()
+            } else {
+                format!(":\n{}\n", failed.join("\n"))
+            }
+        );
     }
     Ok(parse_passing(report))
 }
