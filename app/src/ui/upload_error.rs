@@ -3,16 +3,11 @@
 //! A refused batch adds nothing to the row. The limit is module 453771 `m` (the user's, or the guild feature's, at
 //! least 20 MiB, module 409481), the sizes of modules 682901 and 292348.
 
+use super::Root;
 use super::modal::{self, Tone};
 use super::nitro::oklab;
-use super::{Root, color, icon};
-use crate::parity::Parity;
-use crate::ui::motion::Posed as _;
 use dc_state::premium::PremiumType;
-use gpui::{
-    AnyElement, Context, FontWeight, IntoElement, RenderImage, SharedString, deferred, div, img,
-    prelude::*, px, rgba,
-};
+use gpui::{AnyElement, Context, IntoElement, RenderImage, SharedString, div, prelude::*};
 use std::sync::{Arc, OnceLock};
 
 const MIB: u64 = 1024 * 1024;
@@ -205,11 +200,8 @@ impl Root {
         })
     }
 
-    /// `R` of module 16407 in the premium upsell shell (module 831318): a centred header over the Nitro gradient,
-    /// the title and subtitle, "View All Nitro Perks" and the white "Get Nitro".
-    ///
-    /// Not drawn: the header's looping video (`cedc17f0...webm`, 192 by 108 in the capture) and the Rive glow
-    /// round the white button; the space of the video is kept.
+    /// `R` of module 16407 in the premium upsell dialog (module 831318, `premium_upsell.rs`): "Uh oh, this file
+    /// exceeds the size limit.", the limits, View All Nitro Perks and Get Nitro.
     fn upload_upsell(&self, max: u64, cx: &mut Context<Self>) -> AnyElement {
         let subtitle: SharedString = format!(
             "The max file size is {}. Upgrade to Discord Nitro to upload files up to {}.",
@@ -217,149 +209,31 @@ impl Root {
             compact_size(NITRO_LIMIT)
         )
         .into();
-        let perks = modal::footer_button(
-            modal::button(
-                "upload-upsell-perks",
-                dc_intl::tr("View All Nitro Perks"),
-                Tone::Secondary,
-                |this, _, cx| {
+        self.premium_upsell(
+            super::premium_upsell::Spec {
+                id: "upload-upsell",
+                ids: [
+                    "upload-upsell-close",
+                    "upload-upsell-perks",
+                    "upload-upsell-get",
+                ],
+                header: super::premium_upsell::Header::Video,
+                title: dc_intl::tr("Uh oh, this file exceeds the size limit.").into(),
+                subtitle,
+                secondary: dc_intl::tr("View All Nitro Perks").into(),
+                on_secondary: Box::new(|this, _, cx| {
                     this.upload_error = None;
                     this.open_nitro(cx);
-                },
-            ),
+                }),
+                on_primary: Box::new(|this, _, cx| {
+                    this.upload_error = None;
+                    this.open_purchase(false, cx);
+                }),
+                close: Box::new(|this, _, _| this.upload_error = None),
+                priority: 1,
+            },
             cx,
-        );
-        let get_nitro = div()
-            .id("upload-upsell-get")
-            // `expressiveWrapper_F7qvhY` is 202 wide beside the 204 of the secondary button.
-            .flex_none()
-            .w(px(202.))
-            .h(px(40.))
-            .px(px(16.))
-            .rounded(px(8.))
-            .bg(rgba(0xffffffff))
-            .cursor_pointer()
-            .flex()
-            .items_center()
-            .justify_center()
-            .gap(px(4.))
-            .text_size(px(16.))
-            .line_height(px(20.))
-            .font_weight(FontWeight(500.))
-            .text_color(rgba(0x000000ff))
-            .child(icon("nitro_wheel", 20., "--black"))
-            .child(dc_intl::tr("Get Nitro"))
-            .on_click(cx.listener(|this, _, _, cx| {
-                this.upload_error = None;
-                this.open_purchase(false, cx);
-            }));
-        let pose = crate::ui::motion::modal_pose("upload-upsell");
-        let layer = div()
-            .id("upload-upsell-layer")
-            .occlude()
-            .absolute()
-            .inset_0()
-            .bg(pose.dim(rgba(0x000000b8)))
-            .flex()
-            .items_center()
-            .justify_center()
-            .on_click(cx.listener(|this, _, _, cx| {
-                this.upload_error = None;
-                cx.notify();
-            }))
-            .child(
-                div()
-                    .posed(pose)
-                    .parity_with_border("upload-upsell", 1.)
-                    .id("upload-upsell")
-                    .occlude()
-                    .relative()
-                    .overflow_hidden()
-                    .w(px(480.))
-                    .pt(px(8.))
-                    .pb(px(16.))
-                    .rounded(px(12.))
-                    .border_1()
-                    .border_color(color("--border-subtle"))
-                    .bg(color("--background-surface-high"))
-                    .shadow(vec![gpui::BoxShadow {
-                        color: gpui::hsla(0., 0., 0., 0.24),
-                        offset: gpui::point(px(0.), px(12.)),
-                        blur_radius: px(24.),
-                        spread_radius: px(0.),
-                        inset: false,
-                    }])
-                    .flex()
-                    .flex_col()
-                    .child(
-                        div()
-                            .absolute()
-                            .top_0()
-                            .left_0()
-                            .w(px(478.))
-                            .h(px(241.))
-                            .child(img(header_glow(478, 241)).w(px(478.)).h(px(241.))),
-                    )
-                    .child(
-                        div()
-                            .relative()
-                            .px(px(32.))
-                            .pt(px(16.))
-                            .pb(px(16.))
-                            .flex()
-                            .flex_col()
-                            .items_center()
-                            .gap(px(8.))
-                            .child(div().h(px(112.)).w_full())
-                            .child(
-                                div()
-                                    .h(px(32.))
-                                    .text_size(px(24.))
-                                    .line_height(px(32.))
-                                    .font_weight(FontWeight(600.))
-                                    .text_color(color("--text-strong"))
-                                    .child(dc_intl::tr("Uh oh, this file exceeds the size limit.")),
-                            )
-                            .child(
-                                div()
-                                    .h(px(40.))
-                                    .text_size(px(16.))
-                                    .line_height(px(20.))
-                                    .text_center()
-                                    .text_color(color("--text-subtle"))
-                                    .child(subtitle),
-                            )
-                            .child(
-                                div()
-                                    .id("upload-upsell-close")
-                                    .absolute()
-                                    .top(px(0.))
-                                    .right(px(8.))
-                                    .size(px(38.))
-                                    .rounded(px(8.))
-                                    .cursor_pointer()
-                                    .flex()
-                                    .items_center()
-                                    .justify_center()
-                                    .child(icon("modal_close", 20., "--text-strong"))
-                                    .on_click(cx.listener(|this, _, _, cx| {
-                                        this.upload_error = None;
-                                        cx.notify();
-                                    })),
-                            ),
-                    )
-                    .child(
-                        div()
-                            .relative()
-                            .px(px(32.))
-                            .pt(px(16.))
-                            .flex()
-                            .gap(px(8.))
-                            .child(perks)
-                            .child(get_nitro),
-                    ),
-            );
-        deferred(layer).with_priority(1).into_any_element()
+        )
     }
 }
 

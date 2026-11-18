@@ -878,18 +878,12 @@ thread_local! {
     static TRUNCATED_BIOS: std::cell::RefCell<std::collections::HashSet<(Id, u64)>> = Default::default();
 }
 
-/// `descriptionClamp_BcddaK` clamps the bio to three lines; module 442228 marks it truncated when it overflows or its
-/// box is over 57.75px (`maxBioHeight_BcddaK` then caps it at 55px).
-pub(super) const BIO_CLAMP_LINES: f32 = 3.;
-const BIO_LINE_HEIGHT: f32 = 18.;
+/// `descriptionClamp_BcddaK` clamps the bio to three lines; module 442228 marks it truncated when the clamp left
+/// lines out (`scrollHeight - clientHeight > 1`) or its box is over 57.75px (`maxBioHeight_BcddaK` then caps it at
+/// 55px).
+pub(super) const BIO_CLAMP_LINES: usize = 3;
 const BIO_TALL: f32 = 57.75;
 const BIO_MAX_HEIGHT: f32 = 55.;
-
-/// Whether the bio's full height runs past what the clamp shows (`scrollHeight - clientHeight > 1`, or taller than
-/// 57.75px).
-pub(super) fn bio_truncated(full_height: f32) -> bool {
-    full_height - BIO_CLAMP_LINES * BIO_LINE_HEIGHT > 1. || full_height > BIO_TALL
-}
 
 fn bio_key(user: Id, bio: &str) -> (Id, u64) {
     use std::hash::{Hash, Hasher};
@@ -945,10 +939,10 @@ impl Root {
         )
     }
 
-    /// The popout's bio (module 442228): clamped, and with View Full Bio (`viewFullBio_BcddaK`, 8px above, a `sm`
-    /// secondary button in `body-xs/normal`) once it is cut, which opens the full profile.
-    /// GAP: the third line is cut without the ellipsis `-webkit-line-clamp` draws.
-    fn clamped_bio(
+    /// The bio of module 442228 (the popout and the redesigned DM profile): clamped to three lines, the third ending
+    /// in "…", and with View Full Bio (`viewFullBio_BcddaK`, 8px above, a `sm` secondary button in `body-xs/normal`)
+    /// once it is cut, which opens the full profile.
+    pub(super) fn clamped_bio(
         &self,
         user: Id,
         bio: &str,
@@ -959,25 +953,24 @@ impl Root {
         let key = bio_key(user, bio);
         let truncated = TRUNCATED_BIOS.with(|set| set.borrow().contains(&key));
         let root = cx.weak_entity();
-        let clamp = if truncated {
-            BIO_MAX_HEIGHT.min(BIO_CLAMP_LINES * BIO_LINE_HEIGHT)
-        } else {
-            BIO_CLAMP_LINES * BIO_LINE_HEIGHT
-        };
+        let cut = std::rc::Rc::new(std::cell::Cell::new(false));
+        let seen = cut.clone();
         div()
             .flex()
             .flex_col()
             .child(
                 div()
-                    .max_h(px(clamp))
+                    // `maxBioHeight_BcddaK` once the box was found taller than 57.75px.
+                    .when(truncated, |this| this.max_h(px(BIO_MAX_HEIGHT)))
                     .overflow_hidden()
-                    .child(self.bio(bio, strong, cx))
+                    .child(self.bio_clamped(bio, strong, BIO_CLAMP_LINES, cut, cx))
                     .on_children_prepainted(move |bounds, _, cx| {
-                        let Some(full) = bounds.first().map(|bounds| f32::from(bounds.size.height))
+                        let Some(height) =
+                            bounds.first().map(|bounds| f32::from(bounds.size.height))
                         else {
                             return;
                         };
-                        if bio_truncated(full)
+                        if (seen.get() || height > BIO_TALL)
                             && TRUNCATED_BIOS.with(|set| set.borrow_mut().insert(key))
                         {
                             let _ = root.update(cx, |_, cx| cx.notify());
@@ -1028,13 +1021,5 @@ mod bio_tests {
         assert!(!fetch_warning_shown(true, Some(1)));
         assert!(!fetch_warning_shown(true, Some(3)));
         assert!(!fetch_warning_shown(false, None));
-    }
-
-    #[test]
-    fn a_bio_is_cut_past_three_lines_or_when_tall() {
-        assert!(!bio_truncated(54.));
-        assert!(!bio_truncated(55.));
-        assert!(bio_truncated(56.));
-        assert!(bio_truncated(72.));
     }
 }

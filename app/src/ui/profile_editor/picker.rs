@@ -109,6 +109,15 @@ fn sections(open: &Open, kind: Kind, premium: bool) -> (Vec<Entry>, Vec<Entry>, 
     (owned, nitro, shop)
 }
 
+/// Harness only: the first "Exclusive to Nitro" item of a picker.
+#[cfg(feature = "capture")]
+pub(super) fn first_nitro_sku(open: &Open, kind: Kind, premium: bool) -> Option<u64> {
+    sections(open, kind, premium)
+        .1
+        .first()
+        .map(|entry| entry.sku)
+}
+
 fn badge(nitro: bool) -> Div {
     div()
         .absolute()
@@ -464,6 +473,23 @@ impl Root {
             }
             cx.notify();
         });
+        // 50976 and its siblings: without `canUseCollectibles`, a Nitro item puts the upsell of 571827 where Cancel is.
+        let secondary = if locked_nitro {
+            self.picker_nitro_upsell(kind, cx)
+        } else {
+            Some(
+                div()
+                    .w(px(100.))
+                    .flex()
+                    .child(modal::footer_button(cancel, cx))
+                    .into_any_element(),
+            )
+        };
+        let item_upsell = self
+            .profile_editor
+            .as_ref()
+            .and_then(|open| open.item_upsell)
+            .and_then(|kind| self.picker_item_upsell(kind, cx));
         let (width, height) = match kind {
             Kind::Nameplate => (606., 524.),
             Kind::Decoration => (606., 544.),
@@ -532,12 +558,7 @@ impl Root {
                     .justify_end()
                     .items_center()
                     .gap(px(8.))
-                    .child(
-                        div()
-                            .w(px(100.))
-                            .flex()
-                            .child(modal::footer_button(cancel, cx)),
-                    )
+                    .children(secondary)
                     .child(
                         div()
                             .w(px(100.))
@@ -568,11 +589,127 @@ impl Root {
                     .flex()
                     .items_center()
                     .justify_center()
-                    .child(modal.posed(pose)),
+                    .child(modal.posed(pose))
+                    .children(item_upsell),
             )
             .with_priority(3)
             .into_any_element(),
         )
+    }
+
+    /// Module 571827: "Access exclusive Avatar Decorations with Nitro" (`aFR/EI`, Profile Effects `eWNONM`,
+    /// Nameplates `G6b8TF`) in `body-md/medium`, after the 24px Nitro wheel in the tier 2 colour, 6px apart
+    /// (`nitroUpsellContainer_zj5gK9`, pushed to the start of the footer). Decorations and effects leave the wheel out
+    /// in the `2026-10-shop-sku-nitro-upsell-refresh` experiment; frames have no upsell. Its "Nitro" opens 393027.
+    fn picker_nitro_upsell(&self, kind: Kind, cx: &mut Context<Self>) -> Option<AnyElement> {
+        let key = match kind {
+            Kind::Decoration => "aFR/EI",
+            Kind::Effect => "eWNONM",
+            Kind::Nameplate => "G6b8TF",
+            Kind::Frame => return None,
+        };
+        let refresh = matches!(kind, Kind::Decoration | Kind::Effect)
+            && self
+                .stores
+                .experiments
+                .variant("2026-10-shop-sku-nitro-upsell-refresh")
+                == Some(1);
+        let runs = dc_intl::format_runs(key, &[]);
+        let lead: String = runs
+            .iter()
+            .filter(|(_, tag)| tag.as_deref() != Some("$link"))
+            .map(|(text, _)| text.as_str())
+            .collect();
+        let link: String = runs
+            .iter()
+            .filter(|(_, tag)| tag.as_deref() == Some("$link"))
+            .map(|(text, _)| text.as_str())
+            .collect();
+        Some(
+            div()
+                .mr_auto()
+                .flex()
+                .items_center()
+                .when(!refresh, |this| {
+                    this.child(
+                        div().mr(px(6.)).child(
+                            img(crate::ui::go_live::nitro_ribbon_icon())
+                                .flex_none()
+                                .size(px(24.)),
+                        ),
+                    )
+                })
+                .child(
+                    div()
+                        .flex()
+                        .flex_wrap()
+                        .text_size(px(16.))
+                        .line_height(px(20.))
+                        .font_weight(FontWeight(500.))
+                        .text_color(color("--text-default"))
+                        .child(lead)
+                        .child(
+                            div()
+                                .id("picker-nitro-upsell-link")
+                                .cursor_pointer()
+                                .text_color(color("--text-link"))
+                                .hover(|style| style.underline())
+                                .child(link)
+                                .on_click(cx.listener(move |this, _, _, cx| {
+                                    if let Some(open) = this.profile_editor.as_mut() {
+                                        open.item_upsell = Some(kind);
+                                    }
+                                    cx.notify();
+                                })),
+                        ),
+                )
+                .into_any_element(),
+        )
+    }
+
+    /// Module 393027 on the premium upsell dialog (831318) for a picker's kind: the kind's title and body, its
+    /// graphic (a looping video, not drawn), View all Nitro perks closing the picker and opening the Nitro page.
+    fn picker_item_upsell(&self, kind: Kind, cx: &mut Context<Self>) -> Option<AnyElement> {
+        let (title, body) = match kind {
+            Kind::Decoration => ("JI7uhc", "5XvsdZ"),
+            Kind::Effect => ("sYm15X", "Hza+Bu"),
+            Kind::Nameplate => ("k7UN4k", "0/QPxO"),
+            Kind::Frame => return None,
+        };
+        fn close(this: &mut Root) {
+            if let Some(open) = this.profile_editor.as_mut() {
+                open.item_upsell = None;
+            }
+        }
+        Some(self.premium_upsell(
+            crate::ui::premium_upsell::Spec {
+                id: "picker-item-upsell",
+                ids: [
+                    "picker-item-upsell-close",
+                    "picker-item-upsell-perks",
+                    "picker-item-upsell-get",
+                ],
+                // GAP: 49792's graphic is a looping video (a still picture with reduced motion); neither is drawn.
+                header: crate::ui::premium_upsell::Header::Video,
+                title: dc_intl::t(title).into(),
+                subtitle: dc_intl::t(body).into(),
+                secondary: dc_intl::t("PcTCB7").into(),
+                on_secondary: Box::new(|this, _, cx| {
+                    close(this);
+                    if let Some(open) = this.profile_editor.as_mut() {
+                        open.picker = None;
+                    }
+                    this.open_nitro(cx);
+                }),
+                on_primary: Box::new(|this, _, cx| {
+                    close(this);
+                    this.open_purchase(false, cx);
+                }),
+                close: Box::new(|this, _, _| close(this)),
+                priority: 4,
+            },
+            cx,
+        ))
     }
 
     /// The right side of a picker: the choice as it would look.

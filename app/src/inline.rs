@@ -5,8 +5,8 @@ use gpui::{
     App, Background, BorderStyle, Bounds, Corners, CursorStyle, DispatchPhase, Edges, Element,
     ElementId, Font, GlobalElementId, Hitbox, HitboxBehavior, Hsla, Image, InspectorElementId,
     IntoElement, LayoutId, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, Pixels,
-    Point, ShapedLine, SharedString, Size, Style, TextAlign, TextRun, TransformationMatrix,
-    Window, fill, point, px, quad, size,
+    Point, ShapedLine, SharedString, Size, Style, TextAlign, TextRun, TransformationMatrix, Window,
+    fill, point, px, quad, size,
 };
 use std::cell::{Cell, RefCell};
 use std::cmp::{max, min};
@@ -263,10 +263,7 @@ impl Selection {
         }
         let mut cursor = floor_char_boundary(text, offset);
         if cursor == text.len() {
-            cursor = text
-                .char_indices()
-                .last()
-                .map_or(0, |(idx, _)| idx);
+            cursor = text.char_indices().last().map_or(0, |(idx, _)| idx);
         }
         let Some(pivot) = text[cursor..].chars().next() else {
             return (0, 0);
@@ -331,6 +328,55 @@ pub struct Laid {
     fragments: Vec<Fragment>,
     lines: usize,
     width: Pixels,
+    /// A line clamp left lines out.
+    cut: bool,
+}
+
+/// `-webkit-line-clamp`: the lines past `lines` are left out and the last kept line ends in an ellipsis, cut further
+/// until the ellipsis fits. An emoji or a boxed piece at the end of that line goes, since the ellipsis follows text.
+fn clamp_lines(
+    laid: &mut Laid,
+    lines: usize,
+    pieces: &[Piece],
+    max_width: Option<Pixels>,
+    window: &Window,
+) {
+    if lines == 0 || laid.lines <= lines {
+        return;
+    }
+    laid.cut = true;
+    laid.fragments.retain(|fragment| fragment.line < lines);
+    laid.lines = lines;
+    let limit = max_width.unwrap_or(laid.width);
+    while let Some(last) = laid
+        .fragments
+        .iter()
+        .rposition(|fragment| fragment.line == lines - 1)
+    {
+        let fragment = &laid.fragments[last];
+        let piece = &pieces[fragment.piece];
+        if piece.image.is_some() || piece.boxed.is_some() {
+            laid.fragments.remove(last);
+            continue;
+        }
+        let text = fragment.shaped.text.trim_end().to_owned();
+        let ellipsis = shape(piece, "\u{2026}", window).width;
+        let room = limit - fragment.x;
+        let shaped = if fragment.shaped.x_for_index(text.len()) + ellipsis <= room {
+            shape(piece, &format!("{text}\u{2026}"), window)
+        } else {
+            shorten_text(piece, &text, &fragment.shaped, room, window)
+        };
+        let fragment = &mut laid.fragments[last];
+        fragment.width = shaped.width;
+        fragment.shaped = shaped;
+        break;
+    }
+    laid.width = laid
+        .fragments
+        .iter()
+        .map(|fragment| fragment.x + fragment.width)
+        .fold(px(0.), Pixels::max);
 }
 
 /// Splits after each run of whitespace, so a fragment is a word with its trailing spaces.
@@ -680,6 +726,8 @@ pub struct Inline {
     selectable: Option<Selectable>,
     fill_width: bool,
     truncate: bool,
+    /// `-webkit-line-clamp`, and where to say whether lines were left out.
+    clamp: Option<(usize, Rc<std::cell::Cell<bool>>)>,
     on_piece_click: Option<PieceClick>,
     on_piece_click_at: Option<PieceClickAt>,
     on_piece_hover: Option<PieceHover>,
@@ -726,7 +774,8 @@ fn press_matches_release(
     has_selection: bool,
 ) -> bool {
     !has_selection
-        && pressed.is_some_and(|press| press.target == current_target && press.piece == release_piece)
+        && pressed
+            .is_some_and(|press| press.target == current_target && press.piece == release_piece)
 }
 
 pub fn inline(pieces: Vec<Piece>, line_height: Pixels) -> Inline {
@@ -737,6 +786,7 @@ pub fn inline(pieces: Vec<Piece>, line_height: Pixels) -> Inline {
         selectable: None,
         fill_width: false,
         truncate: false,
+        clamp: None,
         on_piece_click: None,
         on_piece_click_at: None,
         on_piece_hover: None,
@@ -779,6 +829,13 @@ impl Inline {
         handler: impl Fn(usize, Point<Pixels>, &mut Window, &mut App) + 'static,
     ) -> Self {
         self.on_piece_context = Some(Rc::new(handler));
+        self
+    }
+
+    /// At most `lines` lines, the last one ending in an ellipsis when more text follows (`-webkit-line-clamp`).
+    /// `cut` is set after each layout to whether lines were left out.
+    pub fn line_clamp(mut self, lines: usize, cut: Rc<std::cell::Cell<bool>>) -> Self {
+        self.clamp = Some((lines, cut));
         self
     }
 
@@ -953,7 +1010,10 @@ impl Inline {
                     return;
                 }
                 if !hitbox.is_hovered(window) {
-                    if ACTIVE_PRESS.get().is_some_and(|press| press.target == target) {
+                    if ACTIVE_PRESS
+                        .get()
+                        .is_some_and(|press| press.target == target)
+                    {
                         ACTIVE_PRESS.set(None);
                     }
                     return;
@@ -1099,13 +1159,18 @@ impl Element for Inline {
         let line_height = self.line_height;
         let fill_width = self.fill_width;
         let truncate = self.truncate;
+        let clamp = self.clamp.clone();
         let id =
             window.request_measured_layout(Style::default(), move |known, available, window, _| {
                 let limit = known.width.or(match available.width {
                     gpui::AvailableSpace::Definite(width) => Some(width),
                     _ => None,
                 });
-                let result = lay_out(&pieces, limit, truncate, window);
+                let mut result = lay_out(&pieces, limit, truncate, window);
+                if let Some((lines, cut)) = &clamp {
+                    clamp_lines(&mut result, *lines, &pieces, limit, window);
+                    cut.set(result.cut);
+                }
                 let width = if fill_width {
                     limit.map_or(result.width, |w| result.width.max(w))
                 } else {
@@ -1700,18 +1765,13 @@ mod tests {
         let slices = super::split_long_word_slices(ascii, 50., |s| s.chars().count() as f32 * 10.);
         assert!(slices.len() > 1);
         assert!(slices.iter().all(|(_, s)| s.chars().count() <= 5));
-        assert_eq!(
-            slices.iter().map(|(_, s)| *s).collect::<String>(),
-            ascii
-        );
+        assert_eq!(slices.iter().map(|(_, s)| *s).collect::<String>(), ascii);
 
         let turkish = "ğüşiöçĞÜŞİÖÇğüşiöç";
-        let slices = super::split_long_word_slices(turkish, 25., |s| s.chars().count() as f32 * 10.);
+        let slices =
+            super::split_long_word_slices(turkish, 25., |s| s.chars().count() as f32 * 10.);
         assert!(slices.iter().all(|(_, s)| s.chars().count() <= 2));
-        assert_eq!(
-            slices.iter().map(|(_, s)| *s).collect::<String>(),
-            turkish
-        );
+        assert_eq!(slices.iter().map(|(_, s)| *s).collect::<String>(), turkish);
     }
 
     #[test]
@@ -1796,6 +1856,7 @@ mod tests {
                 }],
                 lines: 1,
                 width: px(text.len() as f32 * 10.),
+                cut: false,
             }))
         };
 

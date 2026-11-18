@@ -32,7 +32,8 @@ const REFRESH: Duration = Duration::from_millis(1000);
 /// `GUILD_BOOSTING_PINK` (module 646514): the Nitro wheel beside the premium choices.
 const BOOSTING_PINK: u32 = 0xff73faff;
 
-fn nitro_ribbon_icon() -> Arc<gpui::Image> {
+/// The Nitro wheel in the `PREMIUM_TIER_2` gradient of module 404374.
+pub(in crate::ui) fn nitro_ribbon_icon() -> Arc<gpui::Image> {
     static IMAGE: std::sync::LazyLock<Arc<gpui::Image>> = std::sync::LazyLock::new(|| {
         Arc::new(gpui::Image::from_bytes(
             gpui::ImageFormat::Svg,
@@ -2092,155 +2093,39 @@ impl Root {
             .into_any_element()
     }
 
-    /// The streaming upsell (module 826789 in the premium upsell shell, module 831318): "Unlock HD streaming in 4k at
-    /// 60 fps", View All Nitro Perks and Get Nitro. Not drawn: the header's looping video; its space is kept.
+    /// The streaming upsell (module 826789 in the premium upsell dialog, module 831318, `premium_upsell.rs`):
+    /// "Unlock HD streaming in 4k at 60 fps", View All Nitro Perks and Get Nitro.
     fn stream_upsell(&self, cx: &mut Context<Self>) -> AnyElement {
-        let perks = super::modal::footer_button(
-            super::modal::button(
-                "stream-upsell-perks",
-                dc_intl::tr("View All Nitro Perks"),
-                super::modal::Tone::Secondary,
-                |this, _, cx| {
+        self.premium_upsell(
+            super::premium_upsell::Spec {
+                id: "stream-upsell",
+                ids: [
+                    "stream-upsell-close",
+                    "stream-upsell-perks",
+                    "stream-upsell-get",
+                ],
+                header: super::premium_upsell::Header::Video,
+                title: dc_intl::tr("Unlock HD streaming in 4k at 60 fps").into(),
+                subtitle: dc_intl::tr(
+                    "Stream your clutchest moments in 4k resolution with Nitro. Or stream funny cat videos, we don't judge.",
+                )
+                .into(),
+                secondary: dc_intl::tr("View All Nitro Perks").into(),
+                on_secondary: Box::new(|this, _, cx| {
                     UPSELL.with(|upsell| upsell.set(None));
                     this.close_go_live(cx);
                     this.open_nitro(cx);
-                },
-            ),
+                }),
+                on_primary: Box::new(|this, _, cx| {
+                    UPSELL.with(|upsell| upsell.set(None));
+                    this.close_go_live(cx);
+                    this.open_purchase(false, cx);
+                }),
+                close: Box::new(|this, _, cx| this.close_stream_upsell(cx)),
+                priority: 3,
+            },
             cx,
-        );
-        let get_nitro = div()
-            .id("stream-upsell-get")
-            .flex_none()
-            .w(px(202.))
-            .h(px(40.))
-            .px(px(16.))
-            .rounded(px(8.))
-            .bg(rgba(0xffffffff))
-            .cursor_pointer()
-            .flex()
-            .items_center()
-            .justify_center()
-            .gap(px(4.))
-            .text_size(px(16.))
-            .line_height(px(20.))
-            .font_weight(FontWeight(500.))
-            .text_color(rgba(0x000000ff))
-            .child(icon("nitro_wheel", 20., "--black"))
-            .child(dc_intl::tr("Get Nitro"))
-            .on_click(cx.listener(|this, _, _, cx| {
-                UPSELL.with(|upsell| upsell.set(None));
-                this.close_go_live(cx);
-                this.open_purchase(false, cx);
-            }));
-        let pose = crate::ui::motion::modal_pose("stream-upsell");
-        let layer = div()
-            .id("stream-upsell-layer")
-            .occlude()
-            .absolute()
-            .inset_0()
-            .bg(pose.dim(rgba(0x000000b8)))
-            .flex()
-            .items_center()
-            .justify_center()
-            .on_click(cx.listener(|this, _, _, cx| this.close_stream_upsell(cx)))
-            .child(
-                div()
-                    .posed(pose)
-                    .id("stream-upsell")
-                    .occlude()
-                    .relative()
-                    .overflow_hidden()
-                    .w(px(480.))
-                    .pt(px(8.))
-                    .pb(px(16.))
-                    .rounded(px(12.))
-                    .border_1()
-                    .border_color(color("--border-subtle"))
-                    .bg(color("--background-surface-high"))
-                    .shadow(vec![gpui::BoxShadow {
-                        color: gpui::hsla(0., 0., 0., 0.24),
-                        offset: gpui::point(px(0.), px(12.)),
-                        blur_radius: px(24.),
-                        spread_radius: px(0.),
-                        inset: false,
-                    }])
-                    .on_click(|_, _, cx| cx.stop_propagation())
-                    .flex()
-                    .flex_col()
-                    .child(
-                        div()
-                            .absolute()
-                            .top_0()
-                            .left_0()
-                            .w(px(478.))
-                            .h(px(241.))
-                            .child(
-                                gpui::img(super::upload_error::header_glow(478, 241))
-                                    .w(px(478.))
-                                    .h(px(241.)),
-                            ),
-                    )
-                    .child(
-                        div()
-                            .relative()
-                            .px(px(32.))
-                            .pt(px(16.))
-                            .pb(px(16.))
-                            .flex()
-                            .flex_col()
-                            .items_center()
-                            .gap(px(8.))
-                            .child(div().h(px(112.)).w_full())
-                            .child(
-                                div()
-                                    .text_size(px(24.))
-                                    .line_height(px(32.))
-                                    .font_weight(FontWeight(600.))
-                                    .text_center()
-                                    .text_color(color("--text-strong"))
-                                    .child(dc_intl::tr("Unlock HD streaming in 4k at 60 fps")),
-                            )
-                            .child(
-                                div()
-                                    .text_size(px(16.))
-                                    .line_height(px(20.))
-                                    .text_center()
-                                    .text_color(color("--text-subtle"))
-                                    .child(dc_intl::tr(
-                                        "Stream your clutchest moments in 4k resolution with Nitro. Or stream funny cat videos, we don't judge.",
-                                    )),
-                            )
-                            .child(
-                                div()
-                                    .id("stream-upsell-close")
-                                    .absolute()
-                                    .top(px(0.))
-                                    .right(px(8.))
-                                    .size(px(38.))
-                                    .rounded(px(8.))
-                                    .cursor_pointer()
-                                    .flex()
-                                    .items_center()
-                                    .justify_center()
-                                    .child(icon("modal_close", 20., "--text-strong"))
-                                    .on_click(cx.listener(|this, _, _, cx| {
-                                        cx.stop_propagation();
-                                        this.close_stream_upsell(cx);
-                                    })),
-                            ),
-                    )
-                    .child(
-                        div()
-                            .relative()
-                            .px(px(32.))
-                            .pt(px(16.))
-                            .flex()
-                            .gap(px(8.))
-                            .child(perks)
-                            .child(get_nitro),
-                    ),
-            );
-        deferred(layer).with_priority(3).into_any_element()
+        )
     }
 
     /// Capture only: the picker's state for scripts (`golive state`), and `golive open`, `golive close`.

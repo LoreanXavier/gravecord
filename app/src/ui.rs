@@ -95,6 +95,7 @@ mod file_actions;
 mod files;
 mod forward;
 mod friend_nickname;
+mod friend_request_notice;
 mod friends;
 mod full_profile;
 mod game_add_to_profile;
@@ -136,6 +137,7 @@ mod message_kinds;
 mod message_requests;
 mod message_tips;
 mod platform_presence;
+mod premium_upsell;
 mod presence;
 mod provider_player;
 mod role_dot;
@@ -235,6 +237,7 @@ mod popout_roles;
 mod profile;
 mod profile_art;
 mod profile_board;
+mod profile_commands;
 mod profile_editor;
 pub(crate) mod profile_effects;
 mod profile_frames;
@@ -795,6 +798,8 @@ pub struct Root {
     launcher_collections_at: Option<i64>,
     /// The dialog of a refused upload (too large, too many, empty).
     upload_error: Option<upload_error::UploadError>,
+    /// "Reimagine your profile with Nitro" (module 536015) is open.
+    try_it_out_upsell: bool,
     /// The pencil or trash of a sent attachment's hover group (`sent_attachment.rs`).
     sent_edit: Option<sent_attachment::SentEdit>,
     snooze_menu: Option<(Id, Id, bool, gpui::Point<gpui::Pixels>)>,
@@ -1238,6 +1243,7 @@ impl Root {
             game_communities_filter: Default::default(),
             launcher_collections_at: None,
             upload_error: None,
+            try_it_out_upsell: false,
             sent_edit: None,
             snooze_menu: None,
             click_at: gpui::Point::default(),
@@ -1578,6 +1584,7 @@ impl Root {
                 if name.starts_with("RELATIONSHIP_") {
                     self.blocked_relationship_changed(&data, cx);
                 }
+                self.friend_notice_event(&name, &data);
                 if name == "VOICE_STATE_UPDATE" {
                     self.ended_stream_voice_state();
                     self.stage_invite_check(&data, cx);
@@ -2084,11 +2091,15 @@ impl Root {
                 }
                 if key.starts_with("presence-app:") {
                     self.live_application_fetched(&body);
+                    self.public_application_answered(&key, &body);
                     self.fetched.insert(key, body);
                     cx.notify();
                     return;
                 }
                 if self.screening_fetched(&key, &body, cx) {
+                    return;
+                }
+                if self.game_request_answered(&key, &body, cx) {
                     return;
                 }
                 if self.join_request_answered(&key, &body, cx) {
@@ -11334,6 +11345,7 @@ impl Render for Root {
             .children(self.report_issue_modal(cx))
             .children(self.game_profile_layer(cx))
             .children(self.upload_error_modal(cx))
+            .children(self.try_it_out_upsell(cx))
             .children(self.sent_edit_modal(cx))
             .children(self.snooze_layer(cx))
             .children(self.poll_modal(cx))
