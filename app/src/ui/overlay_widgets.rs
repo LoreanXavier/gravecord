@@ -339,11 +339,13 @@ impl Root {
         id: String,
         name: &'static str,
         active: bool,
+        label: String,
         on_click: impl Fn(&mut Root, &mut Context<Root>) + 'static,
         cx: &mut Context<Self>,
     ) -> AnyElement {
-        div()
-            .id(gpui::SharedString::from(id))
+        // Module 968898: each button carries its label as a tooltip (`c.m`), drawn in the overlay window.
+        let button = div()
+            .id(gpui::SharedString::from(id.clone()))
             .size(px(24.))
             .flex_none()
             .flex()
@@ -371,8 +373,17 @@ impl Root {
                 } else {
                     onyx("--interactive-text-active")
                 },
-            ))
-            .into_any_element()
+            ));
+        self.with_tip(
+            format!("{id}-tip"),
+            super::tooltip::Tip::body(
+                super::tooltip::Body::Text(label.into()),
+                super::tooltip::Side::Top,
+            ),
+            button,
+            cx,
+        )
+        .into_any_element()
     }
 
     /// `J` of module 427830 inside `extras_yjvjn7`: the title, the widget's own buttons and Hide widget.
@@ -394,12 +405,33 @@ impl Root {
         let id = widget.id.clone();
         let pin_id = id.clone();
         let hide_id = id.clone();
-        // `renderButtons`: the voice and notifications widgets have Settings and the pin; quick actions and chat none.
+        // `renderButtons`: the voice, notifications, video and Go Live widgets have Settings and the pin (Go Live also
+        // "View all streams" between them, module 968898 `GQ`); quick actions and chat none.
         let menu = match widget.kind.as_str() {
             layout::VOICE => Some(dc_overlay::menus::Menu::Voice),
             layout::NOTIFICATIONS => Some(dc_overlay::menus::Menu::Notifications),
+            layout::VIDEO => Some(dc_overlay::menus::Menu::Video),
+            layout::GO_LIVE => Some(dc_overlay::menus::Menu::GoLive),
             _ => None,
         };
+        let streams_id = id.clone();
+        let show_all = widget.show_all_streams();
+        let streams_button = (widget.kind == layout::GO_LIVE).then(|| {
+            // `GQ`: the screen icon, brand-coloured while every stream is listed; its tooltip says what a click does.
+            self.overlay_extras_button(
+                format!("overlay-streams-{id}"),
+                "overlay_screen",
+                show_all,
+                dc_intl::t(if show_all { "q2B3rh" } else { "JKGi6o" }).to_owned(),
+                move |this, _| {
+                    let id = streams_id.clone();
+                    this.overlay_change_layout(|layout| {
+                        layout.set_meta(&id, "showAllStreams", serde_json::Value::Bool(!show_all))
+                    });
+                },
+                cx,
+            )
+        });
         let row = div()
             .flex()
             .flex_row()
@@ -430,13 +462,16 @@ impl Root {
                     format!("overlay-settings-{id}"),
                     "overlay_settings",
                     false,
+                    dc_intl::t("3D5yo/").to_owned(),
                     move |this, _| this.overlay_open_menu(menu),
                     cx,
                 ))
+                .children(streams_button)
                 .child(self.overlay_extras_button(
                     format!("overlay-pin-{id}"),
                     "overlay_pin",
                     widget.pinned,
+                    dc_intl::t(if widget.pinned { "cSu80j" } else { "cM8Vnm" }).to_owned(),
                     move |this, _| {
                         let id = pin_id.clone();
                         this.overlay_change_layout(|layout| layout.set_pinned(&id, None));
@@ -448,6 +483,7 @@ impl Root {
                 format!("overlay-hide-{id}"),
                 "overlay_eye_slash",
                 false,
+                dc_intl::tr("Hide widget").to_owned(),
                 move |this, _| {
                     let id = hide_id.clone();
                     this.overlay_change_layout(|layout| layout.set_hidden(&[id], true));

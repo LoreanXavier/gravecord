@@ -397,6 +397,23 @@ impl Widget {
     pub fn meta(&self, key: &str) -> Option<&Value> {
         self.raw.get("meta").and_then(|meta| meta.get(key))
     }
+
+    /// `meta.horizontal`: the video widget is horizontal unless it is `false` (`"boolean"!=typeof ...||...`, module
+    /// 415173 `iS`), the Go Live widget only when it is `true` (`t.meta.horizontal??!1`).
+    pub fn horizontal(&self) -> bool {
+        let stored = self.meta("horizontal").and_then(Value::as_bool);
+        match self.kind.as_str() {
+            VIDEO => stored != Some(false),
+            _ => stored == Some(true),
+        }
+    }
+
+    /// `meta.showAllStreams` of the Go Live widget (`?? true`).
+    pub fn show_all_streams(&self) -> bool {
+        self.meta("showAllStreams")
+            .and_then(Value::as_bool)
+            .unwrap_or(true)
+    }
 }
 
 /// The stored `LayoutStore` object, with the overlay's layout read out.
@@ -630,6 +647,29 @@ impl Layout {
     pub fn reset(&mut self, new_id: &mut dyn FnMut() -> String) {
         let widgets = Self::defaults(new_id);
         self.put(widgets, true);
+    }
+
+    /// `LAYOUT_SET_WIDGET_META`: the keys given are merged into the widget's `meta`.
+    pub fn set_meta(&mut self, id: &str, key: &str, value: Value) -> bool {
+        self.change(id, |widget| {
+            let mut meta = widget
+                .raw
+                .get("meta")
+                .and_then(Value::as_object)
+                .cloned()
+                .unwrap_or_default();
+            meta.insert(key.into(), value);
+            widget.raw.insert("meta".into(), Value::Object(meta));
+        })
+    }
+
+    /// `LAYOUT_UPDATE_WIDGET` with an `opacity` (the Opacity slider of the video and Go Live widgets, module 871648).
+    pub fn set_opacity(&mut self, id: &str, opacity: f32) -> bool {
+        let opacity = opacity.clamp(0., 1.);
+        self.change(id, |widget| {
+            widget.opacity = opacity;
+            widget.raw.insert("opacity".into(), json!(opacity));
+        })
     }
 
     /// `voiceStatesMaxShown` of the voice widget: -1 (no limit, "Off") or the count.

@@ -999,6 +999,18 @@ pub async fn run(
                 };
                 let _ = writeln!(output, "{line}");
             }
+            // `overlay move <x> <y>`: the pointer moves there in the overlay window (a hover, a tooltip).
+            ["overlay", "move", x, y] => {
+                let handle = root.read_with(cx, |root, _| root.overlay_window());
+                let line = match (handle, at(x, y)) {
+                    (Some(overlay), Some(point)) => {
+                        cx.update(|cx| dispatch(cx, overlay, moved(point, None)));
+                        format!("overlay move: {x},{y}")
+                    }
+                    _ => "overlay move: no overlay window".to_owned(),
+                };
+                let _ = writeln!(output, "{line}");
+            }
             // `overlay key <stroke>`: a key press sent to the overlay window (Enter in the Chat widget's composer).
             ["overlay", "key", stroke] => {
                 let handle = root.read_with(cx, |root, _| root.overlay_window());

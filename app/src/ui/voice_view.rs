@@ -693,7 +693,7 @@ impl Root {
     }
 
     /// `useAvatarColor`: the avatar's dominant colour, `--primary-800` while it is unknown.
-    fn tile_color(&self, user: &User) -> Rgba {
+    pub(super) fn tile_color(&self, user: &User) -> Rgba {
         let (key, _) = super::avatar_source(user);
         let found = *self
             .vv

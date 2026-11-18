@@ -374,6 +374,67 @@ impl Root {
 
     /// One choice of a menu: the store it belongs to is written, as the page does it.
     pub(super) fn overlay_menu_action(&mut self, action: Action) {
+        // The video and Go Live menus' rows act on their own widget (modules 915908, 871648, 575079).
+        let kind = match self.overlay.menu.as_ref().map(|menu| menu.kind) {
+            Some(Menu::Video) => Some(dc_overlay::layout::VIDEO),
+            Some(Menu::GoLive) => Some(dc_overlay::layout::GO_LIVE),
+            _ => None,
+        };
+        match action {
+            Action::ShowOwnCamera => {
+                // GAP: hiding our own camera asks first in the official client (module 513963) unless that alert was
+                // turned off; the app's own "Show My Own Camera" rows do not ask either.
+                super::voice_view::toggle_call_setting(super::voice_view::SHOW_OWN_CAMERA);
+                return;
+            }
+            Action::Horizontal | Action::Opacity(_) => {
+                if let Some(widget) = kind.and_then(|kind| self.overlay_layout().widget(kind)) {
+                    let window = self.overlay.size;
+                    self.overlay_change_layout(|layout| {
+                        let changed = menus::apply_widget(layout, &widget.id, action);
+                        // `iS`'s layout effect: the video widget turned takes the size that suits it (`iE`).
+                        if changed
+                            && action == Action::Horizontal
+                            && widget.kind == dc_overlay::layout::VIDEO
+                        {
+                            let (width, height) = dc_overlay::drag::requested_size(
+                                widget.size.pixels(window.0, window.1),
+                                widget.min_size,
+                            );
+                            let size = (
+                                width.unwrap_or(widget.min_size.0),
+                                height.unwrap_or(widget.min_size.1),
+                            );
+                            let inset = 2. * (dc_overlay::drag::PADDING + dc_overlay::drag::BORDER);
+                            let content = ((size.0 - inset).max(0.), (size.1 - inset).max(0.));
+                            if let Some((width, height)) = dc_overlay::video::video_reoriented(
+                                !widget.horizontal(),
+                                size,
+                                content,
+                                window,
+                            ) {
+                                layout.update_widget(
+                                    &widget.id,
+                                    None,
+                                    Some(dc_overlay::layout::Size {
+                                        width: dc_overlay::layout::Extent::Value(width),
+                                        height: dc_overlay::layout::Extent::Value(height),
+                                        fixed: true,
+                                    }),
+                                );
+                            }
+                        }
+                        changed
+                    });
+                }
+                // `Z_`: Horizontal Layout closes the menu.
+                if action == Action::Horizontal {
+                    self.overlay.menu = None;
+                }
+                return;
+            }
+            _ => {}
+        }
         let settings = self.overlay_settings();
         if let Some(next) = menus::apply_settings(&settings, action) {
             self.set_overlay_settings(&next);
@@ -399,8 +460,12 @@ impl Root {
             .copied();
         if let Some(bounds) = track {
             let width = f32::from(bounds.size.width).max(1.);
-            let value = menus::max_users_at((x - f32::from(bounds.origin.x)) / width);
-            self.overlay_menu_action(Action::MaxUsers(value));
+            let fraction = ((x - f32::from(bounds.origin.x)) / width).clamp(0., 1.);
+            let action = match self.overlay.menu.as_ref().map(|menu| menu.kind) {
+                Some(Menu::Video | Menu::GoLive) => Action::Opacity(fraction * menus::OPACITY_MAX),
+                _ => Action::MaxUsers(menus::max_users_at(fraction)),
+            };
+            self.overlay_menu_action(action);
         }
     }
 
@@ -581,6 +646,37 @@ impl Root {
                     cx,
                 ));
             }
+            // Modules 662554 and 543824: Show My Own Camera (video only), Horizontal Layout, Opacity.
+            Menu::Video | Menu::GoLive => {
+                let kind = if menu.kind == Menu::Video {
+                    dc_overlay::layout::VIDEO
+                } else {
+                    dc_overlay::layout::GO_LIVE
+                };
+                let widget = self.overlay_layout().widget(kind);
+                if menu.kind == Menu::Video {
+                    let on = super::voice_view::call_setting(super::voice_view::SHOW_OWN_CAMERA);
+                    items.push(self.overlay_menu_row(
+                        "self-video-hide".to_owned(),
+                        dc_intl::t("MH8ESU").to_owned(),
+                        checkbox(on),
+                        Action::ShowOwnCamera,
+                        cx,
+                    ));
+                }
+                let horizontal = widget.as_ref().is_some_and(|widget| widget.horizontal());
+                items.push(self.overlay_menu_row(
+                    "widget-layout-type".to_owned(),
+                    dc_intl::t("XQQQFE").to_owned(),
+                    checkbox(horizontal),
+                    Action::Horizontal,
+                    cx,
+                ));
+                items.push(self.overlay_opacity_slider(
+                    widget.as_ref().map_or(1., |widget| widget.opacity),
+                    cx,
+                ));
+            }
         }
         let measured = self
             .overlay
@@ -611,6 +707,23 @@ impl Root {
                 }])
                 .occlude()
                 .on_mouse_down(gpui::MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                // The menu occludes the window under it: a slider held inside the menu follows the pointer here.
+                .on_mouse_move(cx.listener(|this, event: &gpui::MouseMoveEvent, _, cx| {
+                    if this.overlay.menu.as_ref().is_some_and(|menu| menu.sliding)
+                        && event.dragging()
+                    {
+                        this.overlay_menu_slide(f32::from(event.position.x));
+                        cx.notify();
+                    }
+                }))
+                .on_mouse_up(
+                    gpui::MouseButton::Left,
+                    cx.listener(|this, _, _, _| {
+                        if let Some(menu) = this.overlay.menu.as_mut() {
+                            menu.sliding = false;
+                        }
+                    }),
+                )
                 .on_mouse_down_out(cx.listener(|this, _, _, cx| {
                     if this.overlay.menu.as_ref().is_some_and(|menu| !menu.sliding) {
                         this.overlay.menu = None;
@@ -635,6 +748,34 @@ impl Root {
             Some(count) => count.to_string(),
             None => dc_intl::t!("nrUzFL").to_owned(),
         };
+        self.overlay_slider_row(
+            "voice-widget-max-users-displayed",
+            dc_intl::t!("X/Uyzc").to_owned(),
+            fraction,
+            value,
+            cx,
+        )
+    }
+
+    /// Opacity (module 871648, `opacity`): the same slider row, 0 to 100.
+    fn overlay_opacity_slider(&self, opacity: f32, cx: &mut Context<Self>) -> AnyElement {
+        self.overlay_slider_row(
+            "opacity",
+            dc_intl::t("OVovCb").to_owned(),
+            menus::opacity_fraction(opacity),
+            menus::opacity_label(opacity).to_string(),
+            cx,
+        )
+    }
+
+    fn overlay_slider_row(
+        &self,
+        id: &'static str,
+        label: String,
+        fraction: f32,
+        value: String,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
         let active = self.overlay.menu.as_ref().is_some_and(|menu| menu.sliding);
         let (bar, grabber) = super::menu_slider::track_layers(
             "overlay-max-users-slider",
@@ -706,13 +847,8 @@ impl Root {
                     }),
             )
             .into_any_element();
-        super::menu_slider::row_frame(
-            "voice-widget-max-users-displayed",
-            dc_intl::t!("X/Uyzc").to_owned(),
-            super::menu_slider::ThemePalette::Onyx,
-            slider,
-        )
-        .into_any_element()
+        super::menu_slider::row_frame(id, label, super::menu_slider::ThemePalette::Onyx, slider)
+            .into_any_element()
     }
 
     /// The toolbar's Report button (`OKmenM`).

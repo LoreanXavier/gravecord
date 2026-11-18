@@ -15,6 +15,14 @@
 //!   with, on the right 16px apart, the stream's settings (our own stream), Pop Out, Stop Streaming or Stop Watching
 //!   (a stream), or Disconnect (a camera). The controls fade out 1.8 seconds after the pointer stopped over the
 //!   window (`idle_qOjco6`).
+//! - Moved and resized as module 457864 does it: a press anywhere starts a drag once the pointer has gone over 3 px
+//!   (the squared distance above 9); the window follows the pointer inside the app's window; on release the corner is
+//!   the quarter the pointer would reach in 200 ms at its speed (`calculateDecayingPosition`), and the window docks
+//!   there at the corner's edge offsets (`PICTURE_IN_PICTURE_MOVE`). The 20 px handle at the corner facing the
+//!   window's middle (stylesheet 155819 `resizeHandle*`, 7 px outside the window) resizes it sideways, between 200 and
+//!   980 px while held and snapped to 40 px (200 to 960) on release (`T`, `PICTURE_IN_PICTURE_RESIZE`), never wider
+//!   than the window allows (`ensureWidth`). Corner and width are kept as `PictureInPictureStore` keeps them
+//!   (`openPosition`, `pipWidths`).
 
 use super::lottie_icon::{self, Anim};
 use super::tooltip::{Side, Tip};
@@ -28,14 +36,150 @@ use gpui::{
 };
 use std::time::{Duration, Instant};
 
-/// `fG[VIDEO]` and the 16:9 of `pictureInPictureVideo_qOjco6`.
+/// `fG[VIDEO]` (module 806931), the default width; the height is the 16:9 of `pictureInPictureVideo_qOjco6`.
 const WIDTH: f32 = 320.;
-const HEIGHT: f32 = 180.;
-/// `I` of module 457864: the edge offsets of the default corner.
-const RIGHT: f32 = 80.;
+/// `mn[VIDEO]` and `cF[VIDEO]` (module 806931): the resize limits.
+const MIN_WIDTH: f32 = 200.;
+const MAX_WIDTH: f32 = 960.;
+/// `I` of module 457864: the edge offsets of the corners.
+const TOP: f32 = 80.;
 const BOTTOM: f32 = 132.;
+const LEFT: f32 = 80.;
+const RIGHT: f32 = 80.;
+/// `resizeHandle_69M0s9`: 20 px, 7 px outside the window.
+const HANDLE: f32 = 20.;
+const HANDLE_OUT: f32 = 7.;
 /// `timeout: 1800` of the idle wrapper.
 const IDLE: Duration = Duration::from_millis(1800);
+/// `persistKey` of `PictureInPictureStore` (module 334463).
+const STORE: &str = "PictureInPictureStore";
+
+/// `CUs` of module 652215: where the window docks.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub(super) enum Corner {
+    TopLeft,
+    TopRight,
+    BottomLeft,
+    #[default]
+    BottomRight,
+}
+
+impl Corner {
+    fn wire(self) -> &'static str {
+        match self {
+            Corner::TopLeft => "top-left",
+            Corner::TopRight => "top-right",
+            Corner::BottomLeft => "bottom-left",
+            Corner::BottomRight => "bottom-right",
+        }
+    }
+
+    fn from_wire(value: &str) -> Option<Self> {
+        Some(match value {
+            "top-left" => Corner::TopLeft,
+            "top-right" => Corner::TopRight,
+            "bottom-left" => Corner::BottomLeft,
+            "bottom-right" => Corner::BottomRight,
+            _ => return None,
+        })
+    }
+
+    fn right(self) -> bool {
+        matches!(self, Corner::TopRight | Corner::BottomRight)
+    }
+
+    fn top(self) -> bool {
+        matches!(self, Corner::TopLeft | Corner::TopRight)
+    }
+}
+
+/// `T` of module 457864: a width snapped to 40 px inside the limits.
+pub(super) fn snap_width(width: f32) -> f32 {
+    ((width / 40.).round() * 40.).clamp(MIN_WIDTH, MAX_WIDTH)
+}
+
+/// `ensureWidth`: the widest the window may be in an app window `max_x` wide.
+pub(super) fn widest(max_x: f32) -> f32 {
+    snap_width(max_x - (LEFT + RIGHT))
+}
+
+/// `getPosition`: the window's top left corner docked at a corner of a `max_x` by `max_y` area.
+pub(super) fn docked(corner: Corner, size: (f32, f32), max: (f32, f32)) -> (f32, f32) {
+    let top = TOP.round();
+    let bottom = (max.1 - BOTTOM - size.1).round();
+    let left = LEFT.round();
+    let right = (max.0 - RIGHT - size.0).round();
+    match corner {
+        Corner::TopLeft => (left, top),
+        Corner::BottomLeft => (left, bottom),
+        Corner::TopRight => (right, top),
+        Corner::BottomRight => (right, bottom),
+    }
+}
+
+/// `translate` of the draggable: the window kept inside the area.
+pub(super) fn kept_inside(at: (f32, f32), size: (f32, f32), max: (f32, f32)) -> (f32, f32) {
+    let x = if at.0 < 0. {
+        0.
+    } else if at.0 > max.0 - size.0 {
+        max.0 - size.0
+    } else {
+        at.0
+    };
+    let y = if at.1 < 0. {
+        0.
+    } else if at.1 > max.1 - size.1 {
+        max.1 - size.1
+    } else {
+        at.1
+    };
+    (x, y)
+}
+
+/// `handleDragEnd`: the corner of the quarter the pointer reaches in 200 ms at its speed (px per ms).
+pub(super) fn settle(release: (f32, f32), velocity: (f32, f32), max: (f32, f32)) -> Corner {
+    let x = release.0 + 200. * velocity.0;
+    let y = release.1 + 200. * velocity.1;
+    match (y <= max.1 / 2., x <= max.0 / 2.) {
+        (true, true) => Corner::TopLeft,
+        (true, false) => Corner::TopRight,
+        (false, true) => Corner::BottomLeft,
+        (false, false) => Corner::BottomRight,
+    }
+}
+
+/// The width while the handle is held (module 761929 with `maxDimension: maxWidth + 20`): a right corner's handle is
+/// on the window's left, so moving left widens it.
+pub(super) fn resized(corner: Corner, start_width: f32, start_x: f32, x: f32) -> f32 {
+    let delta = if corner.right() {
+        start_x - x
+    } else {
+        x - start_x
+    };
+    (start_width + delta).clamp(MIN_WIDTH, MAX_WIDTH + 20.)
+}
+
+/// A press on the window, until it is let go.
+#[derive(Clone, Copy, Debug)]
+struct Drag {
+    start: (f32, f32),
+    /// The pointer's offset from the window's corner.
+    offset: (f32, f32),
+    /// Where the window is drawn while dragged.
+    at: (f32, f32),
+    /// Past the 3 px threshold.
+    dragging: bool,
+    last: (f32, f32, Instant),
+    velocity: (f32, f32),
+}
+
+/// The resize handle held.
+#[derive(Clone, Copy, Debug)]
+struct Resize {
+    start_x: f32,
+    start_width: f32,
+    width: f32,
+}
 
 /// The window's state between frames.
 #[derive(Default)]
@@ -46,6 +190,10 @@ pub(super) struct VideoPip {
     switcher: bool,
     /// An idle check is waiting.
     idle_check: bool,
+    /// `openPosition` and `pipWidths[VIDEO]`, read from storage the first time.
+    place: Option<(Corner, f32)>,
+    drag: Option<Drag>,
+    resize: Option<Resize>,
 }
 
 /// What the window shows (`participantOnScreen`).
@@ -150,6 +298,119 @@ impl Root {
         cx.notify();
     }
 
+    /// `openPosition` and the video width of `PictureInPictureStore` (the defaults when nothing is stored).
+    fn video_pip_place(&self) -> (Corner, f32) {
+        if let Some(place) = self.video_pip.place {
+            return place;
+        }
+        let stored = crate::storage::get(STORE).unwrap_or(serde_json::Value::Null);
+        let corner = stored["openPosition"]
+            .as_str()
+            .and_then(Corner::from_wire)
+            .unwrap_or_default();
+        let width = stored["pipWidths"]["0"]
+            .as_f64()
+            .map_or(WIDTH, |w| w as f32);
+        (corner, width)
+    }
+
+    fn video_pip_store(&mut self, corner: Corner, width: f32) {
+        self.video_pip.place = Some((corner, width));
+        let stored = crate::storage::get(STORE).unwrap_or(serde_json::Value::Null);
+        let camera = stored["pipWidths"]["1"].as_f64().unwrap_or(160.);
+        crate::storage::set(
+            STORE,
+            serde_json::json!({
+                "openPosition": corner.wire(),
+                "pipWidths": {"0": width, "1": camera},
+            }),
+        );
+    }
+
+    /// The window's size and top left corner in an app window of `max`.
+    fn video_pip_rect(&self, max: (f32, f32)) -> ((f32, f32), (f32, f32)) {
+        let (corner, stored) = self.video_pip_place();
+        let width = match self.video_pip.resize {
+            Some(resize) => resize.width,
+            None => stored.min(widest(max.0)),
+        };
+        let size = (width, (width * 9. / 16.).round());
+        let at = match self.video_pip.drag.filter(|drag| drag.dragging) {
+            Some(drag) => drag.at,
+            None => docked(corner, size, max),
+        };
+        (size, at)
+    }
+
+    /// The press on the window (`handleMouseDown` with `dragAnywhere`).
+    fn video_pip_press(&mut self, pointer: (f32, f32), max: (f32, f32)) {
+        let (_, at) = self.video_pip_rect(max);
+        self.video_pip.drag = Some(Drag {
+            start: pointer,
+            offset: (pointer.0 - at.0, pointer.1 - at.1),
+            at,
+            dragging: false,
+            last: (pointer.0, pointer.1, Instant::now()),
+            velocity: (0., 0.),
+        });
+    }
+
+    /// A move with the button held: the drag starts past 3 px, then the window follows; the handle resizes.
+    fn video_pip_drag_to(&mut self, pointer: (f32, f32), max: (f32, f32)) -> bool {
+        let (corner, _) = self.video_pip_place();
+        if let Some(resize) = self.video_pip.resize.as_mut() {
+            resize.width = resized(corner, resize.start_width, resize.start_x, pointer.0);
+            return true;
+        }
+        let (size, _) = self.video_pip_rect(max);
+        let Some(drag) = self.video_pip.drag.as_mut() else {
+            return false;
+        };
+        let distance = (pointer.0 - drag.start.0).powi(2) + (pointer.1 - drag.start.1).powi(2);
+        if !drag.dragging && distance > 9. {
+            drag.dragging = true;
+            drag.velocity = (0., 0.);
+            drag.last = (pointer.0, pointer.1, Instant::now());
+        }
+        if !drag.dragging {
+            return false;
+        }
+        // `handleDrag`: the speed between two moves, in px per ms.
+        let now = Instant::now();
+        let elapsed = now.duration_since(drag.last.2).as_secs_f32() * 1000.;
+        if elapsed > 0. {
+            drag.velocity = (
+                (pointer.0 - drag.last.0) / elapsed,
+                (pointer.1 - drag.last.1) / elapsed,
+            );
+            drag.last = (pointer.0, pointer.1, now);
+        }
+        // GAP: the official window follows on a spring (tension 80, friction 8) and glides into its corner; here it
+        // follows the pointer directly and docks at once.
+        drag.at = kept_inside(
+            (pointer.0 - drag.offset.0, pointer.1 - drag.offset.1),
+            size,
+            max,
+        );
+        true
+    }
+
+    /// The button let go: a drag docks at its corner, a resize snaps to 40 px.
+    fn video_pip_release(&mut self, pointer: (f32, f32), max: (f32, f32)) {
+        let (corner, width) = self.video_pip_place();
+        if let Some(resize) = self.video_pip.resize.take() {
+            let width = snap_width(resize.width).min(widest(max.0));
+            self.video_pip_store(corner, width);
+            return;
+        }
+        if let Some(drag) = self.video_pip.drag.take()
+            && drag.dragging
+        {
+            let next = settle(pointer, drag.velocity, max);
+            self.video_pip_store(next, width);
+        }
+    }
+
     /// Open in Theater (`handleJumpToChannel`): the call's channel, with the stream on screen selected.
     fn video_pip_jump(&mut self, on_screen: OnScreen, cx: &mut Context<Self>) {
         let Some(call) = self.call.as_ref() else {
@@ -244,10 +505,9 @@ impl Root {
         let idle = self.video_pip_idle() && !self.video_pip.switcher;
         let own_stream = on_screen == OnScreen::Stream(me);
         let size = window.viewport_size();
-        let (x, y) = (
-            f32::from(size.width) - RIGHT - WIDTH,
-            f32::from(size.height) - BOTTOM - HEIGHT,
-        );
+        let max = (f32::from(size.width), f32::from(size.height));
+        let ((width, height), (x, y)) = self.video_pip_rect(max);
+        let (corner, _) = self.video_pip_place();
         // The picture, or the person's 80px avatar (module 806911 renders the video component's avatar fallback).
         let content = match picture {
             Some(picture) => img(picture)
@@ -409,7 +669,7 @@ impl Root {
                     .left_0()
                     .right_0()
                     .bottom_0()
-                    .h(px(HEIGHT * 0.4))
+                    .h(px(height * 0.4))
                     .bg(gpui::linear_gradient(
                         180.,
                         gpui::linear_color_stop(gpui::hsla(0., 0., 0., 0.), 0.),
@@ -460,7 +720,7 @@ impl Root {
                 .id("video-pip-switch-menu")
                 .occlude()
                 .absolute()
-                .left(px(x + WIDTH - 196.))
+                .left(px(x + width - 196.))
                 .top(px(y + 36.))
                 .w(px(188.))
                 .p(px(8.))
@@ -470,6 +730,66 @@ impl Root {
                 .bg(color("--background-surface-higher"))
                 .children(rows)
         });
+        let point = |event_position: gpui::Point<gpui::Pixels>| {
+            (f32::from(event_position.x), f32::from(event_position.y))
+        };
+        // `resizeHandle*`: at the window's corner that faces the middle of the app's window.
+        let handle = div()
+            .id("video-pip-resize")
+            .absolute()
+            .size(px(HANDLE))
+            .when(corner.top(), |this| this.bottom(px(-HANDLE_OUT)))
+            .when(!corner.top(), |this| this.top(px(-HANDLE_OUT)))
+            .when(corner.right(), |this| this.left(px(-HANDLE_OUT)))
+            .when(!corner.right(), |this| this.right(px(-HANDLE_OUT)))
+            .cursor(if corner.top() == corner.right() {
+                gpui::CursorStyle::ResizeUpRightDownLeft
+            } else {
+                gpui::CursorStyle::ResizeUpLeftDownRight
+            })
+            .on_mouse_down(
+                gpui::MouseButton::Left,
+                cx.listener(move |this, event: &gpui::MouseDownEvent, _, cx| {
+                    cx.stop_propagation();
+                    this.video_pip.drag = None;
+                    this.video_pip.resize = Some(Resize {
+                        start_x: f32::from(event.position.x),
+                        start_width: width,
+                        width,
+                    });
+                    cx.notify();
+                }),
+            );
+        // `.pictureInPicture.dragging`: while dragged or resized the layer covers the app's window and takes the
+        // pointer, so the moves and the release reach it wherever they are.
+        let held = self.video_pip.resize.is_some()
+            || self.video_pip.drag.is_some_and(|drag| drag.dragging);
+        let catcher = held.then(|| {
+            div()
+                .id("video-pip-dragging")
+                .occlude()
+                .absolute()
+                .inset_0()
+                .cursor(if self.video_pip.resize.is_some() {
+                    gpui::CursorStyle::ResizeLeftRight
+                } else {
+                    gpui::CursorStyle::ClosedHand
+                })
+                .on_mouse_move(
+                    cx.listener(move |this, event: &gpui::MouseMoveEvent, _, cx| {
+                        if this.video_pip_drag_to(point(event.position), max) {
+                            cx.notify();
+                        }
+                    }),
+                )
+                .on_mouse_up(
+                    gpui::MouseButton::Left,
+                    cx.listener(move |this, event: &gpui::MouseUpEvent, _, cx| {
+                        this.video_pip_release(point(event.position), max);
+                        cx.notify();
+                    }),
+                )
+        });
         Some(
             deferred(
                 div()
@@ -477,29 +797,62 @@ impl Root {
                     .inset_0()
                     .child(
                         div()
-                            .id("video-pip")
-                            .occlude()
                             .absolute()
                             .left(px(x))
                             .top(px(y))
-                            .w(px(WIDTH))
-                            .h(px(HEIGHT))
-                            .rounded(px(8.))
-                            .overflow_hidden()
-                            .bg(color("--primary-800"))
-                            .cursor_pointer()
-                            .on_mouse_move(cx.listener(|this, _: &gpui::MouseMoveEvent, _, cx| {
-                                this.video_pip_moved(cx);
-                            }))
-                            .on_click(cx.listener(move |this, event: &gpui::ClickEvent, _, cx| {
-                                if event.click_count() >= 2 {
-                                    this.video_pip_jump(on_screen, cx);
-                                }
-                            }))
-                            .child(content)
-                            .child(controls),
+                            .w(px(width))
+                            .h(px(height))
+                            .child(
+                                div()
+                                    .id("video-pip")
+                                    .occlude()
+                                    .size_full()
+                                    .rounded(px(8.))
+                                    .overflow_hidden()
+                                    .bg(color("--primary-800"))
+                                    .cursor(gpui::CursorStyle::OpenHand)
+                                    .on_mouse_down(
+                                        gpui::MouseButton::Left,
+                                        cx.listener(
+                                            move |this, event: &gpui::MouseDownEvent, _, _| {
+                                                this.video_pip_press(point(event.position), max);
+                                            },
+                                        ),
+                                    )
+                                    .on_mouse_move(cx.listener(
+                                        move |this, event: &gpui::MouseMoveEvent, _, cx| {
+                                            this.video_pip_moved(cx);
+                                            if event.dragging()
+                                                && this
+                                                    .video_pip_drag_to(point(event.position), max)
+                                            {
+                                                cx.notify();
+                                            }
+                                        },
+                                    ))
+                                    .on_mouse_up(
+                                        gpui::MouseButton::Left,
+                                        cx.listener(
+                                            move |this, event: &gpui::MouseUpEvent, _, cx| {
+                                                this.video_pip_release(point(event.position), max);
+                                                cx.notify();
+                                            },
+                                        ),
+                                    )
+                                    .on_click(cx.listener(
+                                        move |this, event: &gpui::ClickEvent, _, cx| {
+                                            if event.click_count() >= 2 {
+                                                this.video_pip_jump(on_screen, cx);
+                                            }
+                                        },
+                                    ))
+                                    .child(content)
+                                    .child(controls),
+                            )
+                            .child(handle),
                     )
-                    .children(menu),
+                    .children(menu)
+                    .children(catcher),
             )
             .into_any_element(),
         )
@@ -537,7 +890,14 @@ impl Root {
                 self.video_pip_moved(cx);
                 "controls shown".to_owned()
             }
-            _ => "usage: pip state|wake".to_owned(),
+            // `pip place <w> <h>`: the corner, the stored width and the window's rect in an app window that size.
+            ["place", w, h] => {
+                let max = (w.parse().unwrap_or(1280.), h.parse().unwrap_or(720.));
+                let (corner, width) = self.video_pip_place();
+                let (size, at) = self.video_pip_rect(max);
+                format!("pip place {corner:?} width {width} rect {at:?} {size:?}")
+            }
+            _ => "usage: pip state|wake|place <w> <h>".to_owned(),
         }
     }
 }
@@ -571,5 +931,42 @@ mod tests {
         );
         // Only our own camera: ourselves.
         assert_eq!(speaker(None, &[], &[1], quiet, me), OnScreen::Camera(1));
+    }
+
+    #[test]
+    fn the_window_docks_at_the_corner_its_throw_reaches() {
+        let max = (1280., 720.);
+        assert_eq!(docked(Corner::BottomRight, (320., 180.), max), (880., 408.));
+        assert_eq!(docked(Corner::TopLeft, (320., 180.), max), (80., 80.));
+        assert_eq!(docked(Corner::TopRight, (320., 180.), max), (880., 80.));
+        assert_eq!(docked(Corner::BottomLeft, (320., 180.), max), (80., 408.));
+        // Released left of the middle and still: the left; a fast throw to the right crosses it.
+        assert_eq!(settle((300., 200.), (0., 0.), max), Corner::TopLeft);
+        assert_eq!(settle((600., 200.), (0.5, 0.), max), Corner::TopRight);
+        assert_eq!(settle((640., 360.), (0., 0.), max), Corner::TopLeft);
+        assert_eq!(settle((900., 600.), (0., 0.), max), Corner::BottomRight);
+        assert_eq!(settle((100., 500.), (0., -1.), max), Corner::TopLeft);
+        assert_eq!(kept_inside((-5., 900.), (320., 180.), max), (0., 540.));
+        assert_eq!(kept_inside((1100., 10.), (320., 180.), max), (960., 10.));
+    }
+
+    #[test]
+    fn the_width_snaps_to_40_px_inside_its_limits() {
+        assert_eq!(snap_width(339.), 320.);
+        assert_eq!(snap_width(341.), 360.);
+        assert_eq!(snap_width(150.), 200.);
+        assert_eq!(snap_width(2000.), 960.);
+        // Held, the handle goes to 980; a right corner's handle widens to the left.
+        assert_eq!(resized(Corner::BottomRight, 320., 500., 400.), 420.);
+        assert_eq!(resized(Corner::BottomLeft, 320., 500., 400.), 220.);
+        assert_eq!(resized(Corner::TopLeft, 320., 0., 2000.), 980.);
+        assert_eq!(resized(Corner::TopRight, 320., 0., 2000.), 200.);
+        assert_eq!(widest(1280.), 960.);
+        assert_eq!(widest(600.), 440.);
+        assert_eq!(
+            Corner::from_wire(Corner::TopRight.wire()),
+            Some(Corner::TopRight)
+        );
+        assert_eq!(Corner::from_wire("x"), None);
     }
 }

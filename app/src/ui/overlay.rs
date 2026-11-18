@@ -70,7 +70,11 @@ pub(super) fn gate() -> bool {
     *GATE.get_or_init(|| {
         let env = std::env::var("GRAVECORD_OVERLAY").ok();
         let inert_or_test = cfg!(test) || crate::inert::on();
-        gate_on(crate::storage::is_capture_run(), inert_or_test, env.as_deref())
+        gate_on(
+            crate::storage::is_capture_run(),
+            inert_or_test,
+            env.as_deref(),
+        )
     })
 }
 
@@ -110,6 +114,7 @@ impl Render for OverlayView {
         // A panic while the overlay's elements are built closes the overlay window for the rest of the session; the
         // app goes on. It is caught inside the update so the app's state is handed back.
         let mut failed = false;
+        let id = window.window_handle().window_id();
         let body = self.root.upgrade().and_then(|root| {
             root.update(cx, |root, cx| {
                 if root.overlay.failed {
@@ -118,7 +123,15 @@ impl Render for OverlayView {
                 }
                 root.overlay.scale = window.scale_factor();
                 match guarded(|| root.overlay_body(width, height, cx)) {
-                    Some(body) => Some((body, root.overlay.animating)),
+                    // The widgets' button tooltips (module 968898) are drawn in this window.
+                    Some(body) => Some((
+                        div()
+                            .size_full()
+                            .child(body)
+                            .children(root.tip_layer_in(Some(id)))
+                            .into_any_element(),
+                        root.overlay.animating,
+                    )),
                     None => {
                         root.overlay_failed();
                         failed = true;
@@ -2039,8 +2052,19 @@ impl Root {
                         self.overlay_text_chat(&widget, frame.width, frame.height, cx),
                     )
                 }
-                // Activity, Video, Streams and Friends are not built (BLOCKED.md). They have no render gate, so the
-                // official empty state does not count them as gone either.
+                // Video and Streams (`iS`, `e2` of module 415173): with nothing to draw the frame stays, empty.
+                layout::VIDEO => (
+                    dc_intl::tr("Video"),
+                    self.overlay_video_content(&widget, locked, show_empty, (width, height), cx)
+                        .unwrap_or_else(|| div().into_any_element()),
+                ),
+                layout::GO_LIVE => (
+                    dc_intl::tr("Streams"),
+                    self.overlay_go_live_content(&widget, locked, show_empty, (width, height), cx)
+                        .unwrap_or_else(|| div().into_any_element()),
+                ),
+                // Activity and Friends are not built (BLOCKED.md). They have no render gate, so the official empty
+                // state does not count them as gone either.
                 _ => continue,
             };
             widgets.push(self.overlay_widget_frame(&widget, title, content, &frame, cx));
@@ -2147,6 +2171,8 @@ impl Root {
             "notifications" => Some(layout::NOTIFICATIONS),
             "quick" => Some(layout::QUICK_ACTIONS),
             "chat" => Some(layout::TEXT_CHAT),
+            "video" => Some(layout::VIDEO),
+            "golive" => Some(layout::GO_LIVE),
             _ => None,
         };
         match words {
@@ -2386,13 +2412,15 @@ impl Root {
                     .iter()
                     .map(|widget| {
                         format!(
-                            "{} anchor={:?} size={:?} pinned={} hidden={} z={}",
+                            "{} anchor={:?} size={:?} pinned={} hidden={} z={} opacity={} horizontal={}",
                             widget.kind,
                             widget.anchor,
                             widget.size,
                             widget.pinned,
                             widget.hidden,
-                            widget.z_index
+                            widget.z_index,
+                            widget.opacity,
+                            widget.horizontal()
                         )
                     })
                     .collect();
@@ -2413,7 +2441,10 @@ impl Root {
                 self.overlay.pointer = (x.parse().unwrap_or(0.), y.parse().unwrap_or(0.));
                 let menu = match *kind {
                     "voice" => dc_overlay::menus::Menu::Voice,
-                    _ => dc_overlay::menus::Menu::Notifications,
+                    "video" => dc_overlay::menus::Menu::Video,
+                    "golive" => dc_overlay::menus::Menu::GoLive,
+                    "notifications" => dc_overlay::menus::Menu::Notifications,
+                    _ => return "overlay menu voice|notifications|video|golive <x> <y>".to_owned(),
                 };
                 self.overlay.menu = None;
                 self.overlay_open_menu(menu);

@@ -17,6 +17,7 @@
 //!   589051).
 //! - [`menus`]: the voice and notifications widgets' Settings menus (modules 51444, 320490).
 //! - [`text_chat`]: `Overlay-v3-Text-Chat-Store` (module 288641), the Chat widget's chats.
+//! - [`video`]: the Video and Go Live widgets' tiles and lists (module 415173 `iS`, `e2`; module 163432).
 //! - `platform` (Windows): the window styles, the foreground watcher, the click-through switch and the desktop check.
 
 pub mod decision;
@@ -28,6 +29,7 @@ pub mod notify;
 pub mod platform;
 pub mod store;
 pub mod text_chat;
+pub mod video;
 pub mod voice;
 pub mod widgets;
 pub mod zones;
