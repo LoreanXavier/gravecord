@@ -541,6 +541,7 @@ impl Root {
             .flex()
             .flex_col()
             .gap(px(12.))
+            .children(self.profile_fetch_warning(id))
             .child(names)
             .when(friends > 0 || servers > 0, |this| this.child(mutuals))
             // Module 348434: the private notice (501193 in the profile's `Overlay`) sits after the mutuals and
@@ -550,7 +551,9 @@ impl Root {
                     super::profile_board::private_notice(&display_name, &palette),
                 ))
             })
-            .when_some(bio, |this, bio| this.child(self.bio(&bio, strong, cx)))
+            .when_some(bio, |this, bio| {
+                this.child(self.clamped_bio(id, &bio, strong, &palette, cx))
+            })
             .children(self.live_activity_cards(
                 id,
                 super::live_activity::Surface::Popout,
@@ -867,5 +870,170 @@ mod tests {
             ordered_roles(&stores.guilds[0], stores.members.get(100, 200).unwrap()),
             [102, 103, 101, 104]
         );
+    }
+}
+
+thread_local! {
+    /// The bios (by user and text) whose laid-out height went past the clamp, so View Full Bio shows under them.
+    static TRUNCATED_BIOS: std::cell::RefCell<std::collections::HashSet<(Id, u64)>> = Default::default();
+}
+
+/// `descriptionClamp_BcddaK` clamps the bio to three lines; module 442228 marks it truncated when it overflows or its
+/// box is over 57.75px (`maxBioHeight_BcddaK` then caps it at 55px).
+pub(super) const BIO_CLAMP_LINES: f32 = 3.;
+const BIO_LINE_HEIGHT: f32 = 18.;
+const BIO_TALL: f32 = 57.75;
+const BIO_MAX_HEIGHT: f32 = 55.;
+
+/// Whether the bio's full height runs past what the clamp shows (`scrollHeight - clientHeight > 1`, or taller than
+/// 57.75px).
+pub(super) fn bio_truncated(full_height: f32) -> bool {
+    full_height - BIO_CLAMP_LINES * BIO_LINE_HEIGHT > 1. || full_height > BIO_TALL
+}
+
+fn bio_key(user: Id, bio: &str) -> (Id, u64) {
+    use std::hash::{Hash, Hasher};
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    bio.hash(&mut hasher);
+    (user, hasher.finish())
+}
+
+/// Module 559506 shows its warning for a failed profile read unless the user is a friend or asked to be one
+/// (module 83931 `W`: `FRIEND` or `PENDING_INCOMING`).
+pub(super) fn fetch_warning_shown(failed: bool, relationship: Option<u64>) -> bool {
+    failed && !matches!(relationship, Some(1) | Some(3))
+}
+
+impl Root {
+    /// "Unable to load parts of profile" (module 559506): the `warning` inline notice of module 683071
+    /// (`container_0v8Ae1`: 12px inside, `--radius-sm` corners, 8px between the 16px icon and `body-sm/normal`
+    /// `text-strong`) once the profile read failed (`UserProfileStore` `fetchError`).
+    pub(super) fn profile_fetch_warning(&self, user: Id) -> Option<AnyElement> {
+        let failed = self
+            .fetch_failures
+            .contains_key(&super::profile::profile_key(user));
+        if !fetch_warning_shown(failed, self.stores.relationships.get(&user).copied()) {
+            return None;
+        }
+        Some(
+            div()
+                .p(px(12.))
+                .rounded(px(8.))
+                .border_1()
+                .border_color(color("--inlinenotice-border-warning"))
+                .bg(color("--background-feedback-mod-warning"))
+                .flex()
+                .gap(px(8.))
+                .child(
+                    div()
+                        .flex_none()
+                        .h(px(18.))
+                        .flex()
+                        .items_center()
+                        .child(icon("warning_triangle", 16., "--icon-feedback-warning")),
+                )
+                .child(
+                    div()
+                        .flex_1()
+                        .min_w(px(0.))
+                        .text_size(px(14.))
+                        .line_height(px(18.))
+                        .text_color(color("--text-strong"))
+                        .child(dc_intl::t("L9wE7H")),
+                )
+                .into_any_element(),
+        )
+    }
+
+    /// The popout's bio (module 442228): clamped, and with View Full Bio (`viewFullBio_BcddaK`, 8px above, a `sm`
+    /// secondary button in `body-xs/normal`) once it is cut, which opens the full profile.
+    /// GAP: the third line is cut without the ellipsis `-webkit-line-clamp` draws.
+    fn clamped_bio(
+        &self,
+        user: Id,
+        bio: &str,
+        strong: Hsla,
+        palette: &super::dm_profile::Palette,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let key = bio_key(user, bio);
+        let truncated = TRUNCATED_BIOS.with(|set| set.borrow().contains(&key));
+        let root = cx.weak_entity();
+        let clamp = if truncated {
+            BIO_MAX_HEIGHT.min(BIO_CLAMP_LINES * BIO_LINE_HEIGHT)
+        } else {
+            BIO_CLAMP_LINES * BIO_LINE_HEIGHT
+        };
+        div()
+            .flex()
+            .flex_col()
+            .child(
+                div()
+                    .max_h(px(clamp))
+                    .overflow_hidden()
+                    .child(self.bio(bio, strong, cx))
+                    .on_children_prepainted(move |bounds, _, cx| {
+                        let Some(full) = bounds.first().map(|bounds| f32::from(bounds.size.height))
+                        else {
+                            return;
+                        };
+                        if bio_truncated(full)
+                            && TRUNCATED_BIOS.with(|set| set.borrow_mut().insert(key))
+                        {
+                            let _ = root.update(cx, |_, cx| cx.notify());
+                        }
+                    }),
+            )
+            .when(truncated, |this| {
+                this.child(
+                    div().mt(px(8.)).child(
+                        div()
+                            .id("view-full-bio")
+                            .h(px(32.))
+                            .px(px(11.))
+                            .rounded(px(8.))
+                            .border_1()
+                            .border_color(palette.token("--control-secondary-border-default"))
+                            .bg(palette.token("--control-secondary-background-default"))
+                            .hover(|style| {
+                                style.bg(palette.token("--control-secondary-background-hover"))
+                            })
+                            .flex()
+                            .items_center()
+                            .justify_center()
+                            .cursor_pointer()
+                            .text_size(px(12.))
+                            .line_height(px(16.))
+                            .text_color(palette.token("--control-secondary-text-default"))
+                            .child(dc_intl::t("YDiPq8"))
+                            .on_click(cx.listener(move |this, _, window, cx| {
+                                this.open_full_profile(user, window, cx);
+                            })),
+                    ),
+                )
+            })
+            .into_any_element()
+    }
+}
+
+#[cfg(test)]
+mod bio_tests {
+    use super::*;
+
+    #[test]
+    fn the_fetch_warning_skips_friends_and_incoming_requests() {
+        assert!(fetch_warning_shown(true, None));
+        assert!(fetch_warning_shown(true, Some(4)));
+        assert!(!fetch_warning_shown(true, Some(1)));
+        assert!(!fetch_warning_shown(true, Some(3)));
+        assert!(!fetch_warning_shown(false, None));
+    }
+
+    #[test]
+    fn a_bio_is_cut_past_three_lines_or_when_tall() {
+        assert!(!bio_truncated(54.));
+        assert!(!bio_truncated(55.));
+        assert!(bio_truncated(56.));
+        assert!(bio_truncated(72.));
     }
 }

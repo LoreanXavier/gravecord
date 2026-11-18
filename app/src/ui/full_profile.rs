@@ -91,6 +91,31 @@ pub(super) fn mutual_counts(body: Option<&Value>) -> (Option<usize>, Option<usiz
     (friends, body["mutual_guilds"].as_array().map(Vec::len))
 }
 
+/// `MU` of module 427262: a status as the screen reader says it (`UNKNOWN` says nothing).
+pub(super) fn status_label(status: &str, mobile: bool) -> Option<&'static str> {
+    Some(dc_intl::t(match status {
+        "online" if mobile => "9hghLD",
+        "online" => "WbGtnH",
+        "offline" => "Vv0abJ",
+        "idle" => "qWbtVU",
+        "dnd" => "jaNpQH",
+        "invisible" => "bg24HO",
+        "streaming" => "XKYej5",
+        _ => return None,
+    }))
+}
+
+/// Module 503062's row name: `9Gofqp` with the presence, else `fGlxFS`.
+pub(super) fn mutual_friend_label(name: &str, presence: Option<&str>) -> String {
+    match presence {
+        Some(presence) => dc_intl::format(
+            "9Gofqp",
+            &[("name", name.into()), ("presence", presence.into())],
+        ),
+        None => dc_intl::format("fGlxFS", &[("name", name.into())]),
+    }
+}
+
 /// Module 837531: Mutual Friends while unknown, No Mutual Friends at none, else the count.
 pub(super) fn mutual_friends_label(count: Option<usize>) -> String {
     match count {
@@ -1860,20 +1885,20 @@ impl Root {
         )
     }
 
-    /// The Board (`a5` of module 927071): themed widget cards populated from the user's saved `widgets`, or the
-    /// official empty state (`oqalC+`) on own profile.
-    fn full_profile_board(
+    /// The Board's cards for `widgets` (`nR` of module 720060 in the card of module 40989), as the full profile draws
+    /// them; the Remove Widget dialog (module 380035) shows one of them, not interactive.
+    pub(super) fn board_widget_cards(
         &self,
         user: Id,
         me: bool,
+        widgets: Vec<super::profile_editor::save::UserWidget>,
         palette: &super::dm_profile::Palette,
         window: &mut Window,
         cx: &mut Context<Self>,
-    ) -> AnyElement {
+    ) -> Vec<AnyElement> {
         let strong: Hsla = palette.token("--text-strong").into();
         let default: Hsla = palette.token("--text-default").into();
         let subtle: Hsla = palette.token("--text-subtle").into();
-        let body = self.fetched.get(&format!("profile:{user}"));
         let records = self.profile_game_records(user);
         let game = |id: &str| {
             records
@@ -1905,9 +1930,7 @@ impl Root {
                     str::to_owned,
                 )
         };
-        let widgets: Vec<AnyElement> = body
-            .map(parse_widgets)
-            .unwrap_or_default()
+        widgets
             .into_iter()
             .filter(|widget| widget.data.is_valid())
             .enumerate()
@@ -2160,7 +2183,32 @@ impl Root {
                     cx,
                 )
             })
-            .collect();
+            .collect()
+    }
+
+    /// The Board (`a5` of module 927071): themed widget cards populated from the user's saved `widgets`, or the
+    /// official empty state (`oqalC+`) on own profile.
+    fn full_profile_board(
+        &self,
+        user: Id,
+        me: bool,
+        palette: &super::dm_profile::Palette,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let strong: Hsla = palette.token("--text-strong").into();
+        let default: Hsla = palette.token("--text-default").into();
+        let widgets = self.board_widget_cards(
+            user,
+            me,
+            self.fetched
+                .get(&format!("profile:{user}"))
+                .map(parse_widgets)
+                .unwrap_or_default(),
+            palette,
+            window,
+            cx,
+        );
         if widgets.is_empty() {
             let secondary_bg = palette.token("--control-secondary-background-default");
             let secondary_hover = palette.token("--control-secondary-background-hover");
@@ -3413,6 +3461,13 @@ impl Root {
                         .into_any_element();
                     let friend_id = friend.id;
                     let tag = friend.tag.clone();
+                    // Module 503062: "{name}, {presence}, view profile" (no presence for a bot that is not a user).
+                    let label = mutual_friend_label(
+                        friend.display_name(),
+                        (!friend.bot)
+                            .then(|| status_label(&status, false))
+                            .flatten(),
+                    );
                     self.mutual_row(
                         SharedString::from(format!("full-profile-friend-{friend_id}")),
                         leading,
@@ -3420,6 +3475,7 @@ impl Root {
                         strong,
                         row_hover,
                     )
+                    .aria_label(label)
                     .children(
                         tag.as_ref()
                             .map(|tag| self.profile_server_tag_pill(tag, &palette)),
@@ -3738,9 +3794,9 @@ mod tests {
     use super::{
         ConnectionMeta, STEAM_DOTA2_ICON, STEAM_TF2_ICON, Tab, activity_empty_text,
         connection_metadata, full_profile_modal_geometry, initial_tab, mutual_counts,
-        mutual_empty_text, mutual_friends_label, mutual_servers_label, parse_connected_accounts,
-        parse_custom_status, profile_date, profile_route, profile_tabs, should_apply_guild_member,
-        time_ago, wishlist_is_private,
+        mutual_empty_text, mutual_friend_label, mutual_friends_label, mutual_servers_label,
+        parse_connected_accounts, parse_custom_status, profile_date, profile_route, profile_tabs,
+        should_apply_guild_member, status_label, time_ago, wishlist_is_private,
     };
 
     /// ShowConnections reads the theme's SVG and `verified` from the same table and parser as the profile.
@@ -3849,6 +3905,12 @@ mod tests {
         assert_eq!(mutual_counts(Some(&none)), (Some(0), Some(2)));
         assert_eq!(mutual_counts(None), (None, None));
         assert_eq!(mutual_friends_label(Some(0)), "No Mutual Friends");
+        assert_eq!(
+            mutual_friend_label("Wren", status_label("dnd", false)),
+            "Wren, Do Not Disturb, view profile"
+        );
+        assert_eq!(mutual_friend_label("Bot", None), "Bot, view profile");
+        assert_eq!(status_label("online", true), Some("Online via mobile"));
         assert_eq!(mutual_servers_label(Some(0)), "No Mutual Servers");
         assert_eq!(mutual_servers_label(Some(2)), "2 Mutual Servers");
         assert_eq!(mutual_friends_label(None), "Mutual Friends");

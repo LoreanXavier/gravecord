@@ -220,7 +220,16 @@ impl Root {
                 } else {
                     urls.iter().filter_map(|url| self.shop_img(url)).collect()
                 };
+                // Module 395744 on a frame (`role: img`): "Profile Frame Preview: {label}".
+                let frame_label = (product.kind == data::KIND_PROFILE_FRAME)
+                    .then(|| item.map(|item| frame_preview_label(&item.label)))
+                    .flatten();
                 div()
+                    .id(gpui::SharedString::from(format!(
+                        "shop-card-preview-{}",
+                        product.sku_id
+                    )))
+                    .when_some(frame_label, |preview, label| preview.aria_label(label))
                     .relative()
                     .size_full()
                     .overflow_hidden()
@@ -878,6 +887,22 @@ mod tests {
         assert_eq!(
             super::gift_button_label("Burnice White"),
             "Send a gift, Burnice White"
+        );
+    }
+}
+
+/// `DT/PwH` of module 395744: the frame preview's accessible name.
+pub(super) fn frame_preview_label(label: &str) -> String {
+    dc_intl::format("DT/PwH", &[("a11y_text", label.into())])
+}
+
+#[cfg(test)]
+mod frame_label_tests {
+    #[test]
+    fn the_frame_preview_is_named_after_its_label() {
+        assert_eq!(
+            super::frame_preview_label("Cozy Vines"),
+            "Profile Frame Preview: Cozy Vines"
         );
     }
 }

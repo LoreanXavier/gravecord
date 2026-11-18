@@ -21,7 +21,7 @@ pub(crate) struct Popout {
     pub message: Option<super::profile_other::PopoutMessage>,
 }
 
-fn profile_key(user: Id) -> String {
+pub(super) fn profile_key(user: Id) -> String {
     format!("profile:{user}")
 }
 

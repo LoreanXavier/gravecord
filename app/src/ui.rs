@@ -90,6 +90,7 @@ mod embed_demo;
 mod embed_layout;
 mod emoji_popout;
 mod emoticons;
+mod family_center;
 mod file_actions;
 mod files;
 mod forward;
@@ -781,6 +782,7 @@ pub struct Root {
     game_profile: Option<game_profile::GameProfile>,
     game_communities_layout: game_communities::Layout,
     game_announcements_scroll: f32,
+    family_center: family_center::State,
     library: library::Library,
     provider_player: Option<provider_player::ProviderPlayer>,
     web_frames: web_frames::WebFrames,
@@ -1225,6 +1227,7 @@ impl Root {
             game_profile: None,
             game_communities_layout: Default::default(),
             game_announcements_scroll: 0.,
+            family_center: Default::default(),
             library: Default::default(),
             provider_player: None,
             web_frames: web_frames::WebFrames::default(),
@@ -11266,6 +11269,7 @@ impl Render for Root {
             .children(self.not_friend_modal(cx))
             .children(self.favorites_full_modal(cx))
             .children(self.chat_alert_modal(cx))
+            .children(self.disable_family_center_modal(cx))
             .children(self.graphic_dialog(cx))
             .children(self.birthday_layers(window, cx))
             .children(self.library_remove_modal(cx))

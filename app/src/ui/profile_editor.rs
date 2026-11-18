@@ -885,7 +885,7 @@ impl Root {
             .children(self.profile_editor_tag_select_popout(cx))
             .children(self.profile_editor_game_picker_popout(cx))
             .children(self.profile_editor_widget_modal(cx))
-            .children(self.profile_editor_remove_widget_modal(cx));
+            .children(self.profile_editor_remove_widget_modal(window, cx));
         // Over the whole window, not only the editor's box.
         let guild_upsell = self.profile_editor_guild_upsell_layer(cx);
         let layer = deferred(
@@ -1289,6 +1289,32 @@ impl Root {
                 if let Ok(idx) = index.parse::<usize>() {
                     self.profile_editor_remove_widget_now(idx, cx);
                 }
+            }
+            // `confirm-remove <index>`: Remove Widget (module 380035) for that Board widget, as its trash button opens it.
+            ["confirm-remove", index] => {
+                if let (Ok(idx), Some(open)) =
+                    (index.parse::<usize>(), self.profile_editor.as_mut())
+                {
+                    open.widget_confirm_remove = Some(idx);
+                }
+                cx.notify();
+            }
+            // `avatar-standin <hash>`: the account's avatar hash for this run only (the fixture account has none), so the
+            // tile's delete button can be framed.
+            ["avatar-standin", hash] => {
+                if let Some(me) = self.stores.current_user.as_mut() {
+                    me.avatar = Some((*hash).to_owned());
+                }
+                cx.notify();
+            }
+            // `avatar` prints the avatar tile's delete button (module 487233): none, remove or reset.
+            ["avatar"] => {
+                let shown = match self.profile_editor_avatar_affordance() {
+                    None => "none",
+                    Some(true) => "reset",
+                    Some(false) => "remove",
+                };
+                return format!("profile-editor: avatar affordance {shown}");
             }
             ["save"] => self.profile_editor_save(cx),
             ["reset"] => self.profile_editor_reset(cx),

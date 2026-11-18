@@ -364,6 +364,18 @@ impl Root {
         cx.notify();
     }
 
+    /// `openUserSettings(FAMILY_CENTER_PANEL)` (module 371158's link): the Account page with its Family Center panel.
+    pub(in crate::ui) fn open_family_center_panel(&mut self, cx: &mut Context<Self>) {
+        self.open_settings_page("account", cx);
+        self.account_panel_open(super::account_panels::Panel::Family, cx);
+    }
+
+    /// `familyCenterEnabledV2` changed outside the panel (Disable Family Center of module 371158).
+    pub(in crate::ui) fn set_family_center_enabled(&mut self, on: bool) {
+        self.setting_choices.insert(FAMILY_ENABLED, Choice::On(on));
+        self.pref_changed(FAMILY_ENABLED, on, 0);
+    }
+
     /// The back button or the "Account" crumb.
     pub(in crate::ui) fn account_panel_back(&mut self, cx: &mut Context<Self>) {
         self.settings_extra.panel = None;
