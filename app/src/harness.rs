@@ -865,6 +865,22 @@ pub async fn run(
                     composer.replace_text_in_range(None, text, window, cx);
                 });
             }
+            // The file dialog of an image upload site answers with this file (the dialog is never opened in a capture
+            // run): the cropper of module 142630 opens over it.
+            ["image-pick", path] => {
+                let path = std::path::PathBuf::from(*path);
+                root.update(cx, |root, cx| root.crop_file_picked(&path, cx));
+            }
+            // `image-crop state`: the open image dialogs, the cropper's transform and its last announcement.
+            ["image-crop", "state"] => {
+                let line = root.update(cx, |root, _| root.image_crop_state());
+                let _ = writeln!(output, "{line}");
+            }
+            // `image-crop open <purpose>`: the select image modal of a site whose button is not on a reachable page.
+            ["image-crop", "open", purpose] => {
+                let purpose = purpose.to_string();
+                root.update(cx, |root, cx| root.harness_open_image_select(&purpose, cx));
+            }
             // Puts a file in the composer's upload area, as the file dialog or a drop does.
             ["attach", path] => {
                 let path = std::path::PathBuf::from(*path);

@@ -177,6 +177,7 @@ mod guild_guide;
 mod guild_navigation;
 mod hover_bar;
 pub(crate) mod image_cache;
+mod image_crop;
 pub(crate) mod image_fit;
 mod image_retry;
 mod inline_video;
@@ -544,6 +545,8 @@ pub struct Root {
     requested: HashSet<String>,
     /// Retry state of the pictures asked for through `request_image`.
     image_retries: image_retry::Retries,
+    /// The select image and image crop modals (`image_crop`).
+    image_crop: image_crop::State,
     badge_modal: Option<badge_modal::BadgeModal>,
     spotify_actions: spotify_activity::Actions,
     /// Animated avatar files a frame found missing, asked for by `prepare_live_avatars`.
@@ -1006,6 +1009,7 @@ impl Root {
             images: HashMap::new(),
             requested: HashSet::new(),
             image_retries: image_retry::Retries::default(),
+            image_crop: Default::default(),
             badge_modal: None,
             spotify_actions: spotify_activity::Actions::default(),
             avatar_wants: std::cell::RefCell::new(Vec::new()),
@@ -1763,6 +1767,9 @@ impl Root {
                 if self.spotify_metadata_fetched(&key, &body, cx) {
                     return;
                 }
+                if self.image_crop_fetched(&key, &body, cx) {
+                    return;
+                }
                 self.active_now_fetched(&key, &body);
                 if key.starts_with(chat_notices::KEY_PREFIX) {
                     self.thread_step_fetched(&key, &body);
@@ -2346,10 +2353,14 @@ impl Root {
                 } else if key.starts_with(inline_video::PREFIX) {
                     self.inline_video_failed(&key);
                     cx.notify();
+                } else if self.image_crop_full_failed(&key, cx) {
                 } else {
                     // Every other picture is asked for again.
                     self.image_retry_after_failure(key, cx);
                 }
+            }
+            Update::Image { key, bytes } if key.starts_with(image_crop::FULL_PREFIX) => {
+                self.image_crop_full_fetched(&key, bytes, cx);
             }
             Update::Image { key, bytes } if key.starts_with(profile_effects::ART_PREFIX) => {
                 self.profile_effect_art_fetched(&key, bytes, cx);
@@ -9720,6 +9731,7 @@ impl Render for Root {
             }),
         )
         .size_full();
+        let image_crop_layers = self.image_crop_layers(window, cx);
         let element = div()
             .id("root")
             .track_focus(&self.focus)
@@ -9772,6 +9784,10 @@ impl Render for Root {
             .capture_key_down(cx.listener(|this, event: &KeyDownEvent, window, cx| {
                 let keys = &event.keystroke;
                 if !event.is_held && this.voice_key_down(keys, cx) {
+                    cx.stop_propagation();
+                    return;
+                }
+                if this.image_crop_key(keys, window, cx) {
                     cx.stop_propagation();
                     return;
                 }
@@ -10880,6 +10896,7 @@ impl Render for Root {
             .children(self.folder_picker_layer(cx))
             .children(self.folder_menu_layer(cx))
             .children(self.settings_dialogs(cx))
+            .children(image_crop_layers)
             .children(self.modify_attachment_modal(cx))
             .children(self.report_issue_modal(cx))
             .children(self.game_profile_layer(cx))

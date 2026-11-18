@@ -3233,7 +3233,7 @@ impl Root {
     }
 
     /// `ex.A.saveGuild(id, { homeHeader })`.
-    fn onboarding_home_header(&mut self, uri: Option<String>, cx: &mut Context<Self>) {
+    pub(super) fn onboarding_home_header(&mut self, uri: Option<String>, cx: &mut Context<Self>) {
         let Some(guild) = self.onboarding().map(|state| state.guild) else {
             return;
         };
@@ -6452,10 +6452,7 @@ impl Root {
                         )
                         .w_auto()
                         .on_click(cx.listener(|this, _, _, cx| {
-                            this.onboarding_pick_picture(
-                                |this, uri, cx| this.onboarding_home_header(Some(uri), cx),
-                                cx,
-                            );
+                            this.pick_crop_file(super::image_crop::Purpose::HomeHeader, cx);
                         }))
                     } else {
                         div()
@@ -6515,10 +6512,7 @@ impl Root {
                     )
                     .on_click(cx.listener(move |this, _, _, cx| {
                         if unlocked {
-                            this.onboarding_pick_picture(
-                                |this, uri, cx| this.onboarding_home_header(Some(uri), cx),
-                                cx,
-                            );
+                            this.pick_crop_file(super::image_crop::Purpose::HomeHeader, cx);
                         } else {
                             boost(this, cx);
                         }

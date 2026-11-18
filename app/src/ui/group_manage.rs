@@ -20,11 +20,10 @@ use super::{Root, color, context_menu, editor_style, icon, modal};
 use crate::editor::{Editor, EditorEvent};
 use crate::net::Request;
 use crate::parity::Parity;
-use base64::Engine;
 use dc_state::{Id, PrivateChannel};
 use gpui::{
-    AnyElement, Context, Entity, FocusHandle, Focusable, FontWeight, IntoElement,
-    PathPromptOptions, SharedString, Subscription, Window, div, img, prelude::*, px,
+    AnyElement, Context, Entity, FocusHandle, Focusable, FontWeight, IntoElement, SharedString,
+    Subscription, Window, div, img, prelude::*, px,
 };
 use serde_json::json;
 use std::sync::Arc;
@@ -45,9 +44,6 @@ pub(super) fn set_solo(channel: Id) {
 
 /// `maxLength` of the name field.
 const NAME_LIMIT: usize = 100;
-/// The upload modal's file size limit (module 478644).
-const MAX_ICON_BYTES: usize = 0xa0_0000;
-
 /// A chosen icon: the data URI the API takes and the decoded picture for the preview.
 pub(super) struct Picked {
     uri: String,
@@ -74,29 +70,6 @@ pub(super) struct Leave {
 fn member_count_text(channel: &PrivateChannel) -> String {
     let count = channel.recipients.len() + 1;
     format!("{count} Member{}", if count == 1 { "" } else { "s" })
-}
-
-/// The data URI of an icon file, or why it is refused. `None` for a file type the API does not take.
-fn read_icon(path: &std::path::Path) -> Option<Result<Picked, String>> {
-    let extension = path.extension()?.to_str()?.to_ascii_lowercase();
-    let (mime, format) = match extension.as_str() {
-        "png" => ("image/png", gpui::ImageFormat::Png),
-        "jpg" | "jpeg" => ("image/jpeg", gpui::ImageFormat::Jpeg),
-        "gif" => ("image/gif", gpui::ImageFormat::Gif),
-        "webp" => ("image/webp", gpui::ImageFormat::Webp),
-        _ => return None,
-    };
-    let bytes = std::fs::read(path).ok()?;
-    if bytes.len() > MAX_ICON_BYTES {
-        return Some(Err("The file is too large".to_owned()));
-    }
-    Some(Ok(Picked {
-        uri: format!(
-            "data:{mime};base64,{}",
-            base64::engine::general_purpose::STANDARD.encode(&bytes)
-        ),
-        image: Arc::new(gpui::Image::from_bytes(format, bytes)),
-    }))
 }
 
 /// The body of `PATCH /channels/{id}` for the edits: `name` when it changed, `icon` when it was set or removed.
@@ -927,28 +900,23 @@ impl Root {
         true
     }
 
+    /// `F5` of module 396787: the select image modal titled "Change Icon" (8 MiB, no recent avatars), then the
+    /// cropper with `AVATAR` (module 142630).
     fn pick_group_icon(&mut self, cx: &mut Context<Self>) {
-        let picked = cx.prompt_for_paths(PathPromptOptions {
-            files: true,
-            directories: false,
-            multiple: false,
-            prompt: None,
-        });
-        cx.spawn(async move |this, cx| {
-            let Ok(Ok(Some(paths))) = picked.await else {
-                return;
-            };
-            let Some(Some(Ok(picked))) = paths.first().map(|path| read_icon(path)) else {
-                return;
-            };
-            let _ = this.update(cx, |this, cx| {
-                if let Some(open) = this.group_edit.as_mut() {
-                    open.icon = Some(Some(picked));
-                }
-                cx.notify();
-            });
-        })
-        .detach();
+        self.open_image_select(super::image_crop::Purpose::GroupIcon, cx);
+    }
+
+    /// `onComplete`: the cropped picture is the pending icon (`setIcon` on Save).
+    pub(super) fn group_icon_cropped(
+        &mut self,
+        uri: String,
+        image: Arc<gpui::Image>,
+        cx: &mut Context<Self>,
+    ) {
+        if let Some(open) = self.group_edit.as_mut() {
+            open.icon = Some(Some(Picked { uri, image }));
+        }
+        cx.notify();
     }
 
     fn group_edit_changes(&self, cx: &Context<Self>) -> Option<serde_json::Value> {
@@ -1405,6 +1373,7 @@ impl Root {
                 if channel == 0 || !self.start_group_edit(channel, cx) {
                     return "no solo group".to_owned();
                 }
+                use base64::Engine as _;
                 let png = synthetic_png();
                 let uri = format!(
                     "data:image/png;base64,{}",
@@ -1498,11 +1467,5 @@ mod tests {
         assert_eq!(member_count_text(&channel), "3 Members");
         channel.recipients.clear();
         assert_eq!(member_count_text(&channel), "1 Member");
-    }
-
-    #[test]
-    fn only_png_jpeg_gif_and_webp_files_are_icons() {
-        assert!(read_icon(std::path::Path::new("x.txt")).is_none());
-        assert!(read_icon(std::path::Path::new("noextension")).is_none());
     }
 }
