@@ -51,6 +51,7 @@ mod call_background;
 mod call_menus;
 mod call_popout;
 mod call_volume;
+mod camera_failed;
 #[cfg(feature = "capture")]
 pub(crate) mod callsim;
 mod carousel;
@@ -101,6 +102,7 @@ mod gateway_screens;
 mod gifs;
 mod go_live;
 mod go_live_game;
+mod graphic_modal;
 mod group_dm;
 mod group_manage;
 mod guild_menu;
@@ -138,6 +140,7 @@ mod schedule_message;
 mod sent_attachment;
 mod spotify_activity;
 mod stage;
+mod stage_requests;
 mod sticker_player;
 mod sticker_popout;
 mod stickers;
@@ -201,6 +204,7 @@ mod official_messages;
 mod overlay;
 mod overlay_chat;
 mod overlay_panel;
+mod overlay_survey;
 mod overlay_widgets;
 mod paste;
 #[cfg(feature = "capture")]
@@ -297,6 +301,7 @@ mod video_stats;
 mod video_tiles;
 mod voice;
 mod voice_alerts;
+mod voice_blocked;
 mod voice_panel;
 mod voice_sounds;
 mod voice_video;
@@ -606,6 +611,18 @@ pub struct Root {
     /// The open voice, Stage or stream alert (`voice_alerts`), and the streams whose "Stream is Full" was shown.
     voice_alert: Option<voice_alerts::VoiceAlert>,
     stream_full_seen: std::collections::HashSet<String>,
+    /// Blocked and ignored people in voice channels, and when warnings about them were dismissed (`voice_blocked`).
+    blocked_in_voice: voice_blocked::BlockedInVoice,
+    warning_dismissals: voice_blocked::WarningDismissals,
+    /// The Stage's Requests to Speak sidebar is open, and the Stages whose full video notice was dismissed
+    /// (`stage_requests`).
+    stage_requests_open: bool,
+    stage_video_upsell_dismissed: std::collections::HashSet<Id>,
+    /// Videos waiting for their first picture, and the ones that never showed (`camera_failed`).
+    video_ready: std::cell::RefCell<camera_failed::VideoReady>,
+    /// The survey after the overlay was switched off, and its opening at the next frame (`overlay_survey`).
+    overlay_survey: Option<overlay_survey::OverlaySurvey>,
+    overlay_survey_pending: bool,
     /// The menu over a speaker's or audience member's tile (module 106401 and 237749's rows), where it was opened.
     stage_tile_menu: Option<stage::TileMenu>,
     /// Stage instances whose Live Now card was closed with its X.
@@ -1035,6 +1052,13 @@ impl Root {
             stage_end_confirm: None,
             voice_alert: None,
             stream_full_seen: Default::default(),
+            blocked_in_voice: Default::default(),
+            warning_dismissals: voice_blocked::WarningDismissals::load(),
+            stage_requests_open: false,
+            stage_video_upsell_dismissed: Default::default(),
+            video_ready: Default::default(),
+            overlay_survey: None,
+            overlay_survey_pending: false,
             stage_tile_menu: None,
             live_now_closed: Vec::new(),
             publish_confirm: None,
@@ -1380,6 +1404,17 @@ impl Root {
                 }
                 let voice_before = (name == "VOICE_STATE_UPDATE")
                     .then(|| (self.others_in_call(), self.streamers_in_call()));
+                // The person's channel before this state (`oldChannelId`), for `voice_blocked`.
+                let voice_mover = (name == "VOICE_STATE_UPDATE")
+                    .then(|| {
+                        let user = data["user_id"].as_str()?.parse::<Id>().ok()?;
+                        let guild = data["guild_id"]
+                            .as_str()
+                            .and_then(|id| id.parse::<Id>().ok())
+                            .unwrap_or(0);
+                        Some((guild, user, self.voice_channel_of(guild, user)))
+                    })
+                    .flatten();
                 let ready_prev_place = (name == "READY"
                     && (self.hydrated_from_cache || self.stores.current_user.is_some()))
                 .then_some((self.guild, self.channel));
@@ -1399,7 +1434,19 @@ impl Root {
                 self.stores.dispatch(&name, &data);
                 self.spotify_devices_changed(cx);
                 self.spotify_loading_changed();
+                if name == "READY" {
+                    self.blocked_in_voice.reset();
+                }
+                if let Some((guild, user, old)) = voice_mover {
+                    let new = self.voice_channel_of(guild, user);
+                    self.blocked_voice_state(user, old, new, cx);
+                }
+                if name.starts_with("RELATIONSHIP_") {
+                    self.blocked_relationship_changed(&data, cx);
+                }
                 if name == "VOICE_STATE_UPDATE" {
+                    self.ended_stream_voice_state();
+                    self.stage_invite_check(&data, cx);
                     self.voice_state_of_other_session(&data, cx);
                     // Not in the pinned client: the VoiceStats plugin (`plugin_hooks/voice_stats.rs`).
                     self.voice_stats_observe(cx);
@@ -9366,6 +9413,7 @@ impl Render for Root {
         #[cfg(feature = "capture")]
         crate::perf::RENDERS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         self.interaction_modal_frame(window, cx);
+        self.open_pending_overlay_survey(cx);
         #[cfg(feature = "capture")]
         let _build = crate::perf::Timer::build();
         // The motion clock for this frame; reduced motion as module 775602 decides it.
@@ -9804,6 +9852,18 @@ impl Render for Root {
                     return;
                 }
                 if keys.key == "escape" && this.close_boost_apply() {
+                    cx.notify();
+                    cx.stop_propagation();
+                    return;
+                }
+                // A voice alert closes as its own close does (the blocked warnings' close joins or stays).
+                if keys.key == "escape" && this.voice_alert.is_some() {
+                    this.dismiss_voice_alert(cx);
+                    cx.notify();
+                    cx.stop_propagation();
+                    return;
+                }
+                if keys.key == "escape" && this.overlay_survey.take().is_some() {
                     cx.notify();
                     cx.stop_propagation();
                     return;
@@ -10652,6 +10712,7 @@ impl Render for Root {
             .children(self.stage_welcome_modal(cx))
             .children(self.stage_end_modal(cx))
             .children(self.voice_alert_modal(cx))
+            .children(self.overlay_survey_modal(cx))
             .children(self.publish_modal(cx))
             .children(self.guild_events_layer(window, cx))
             .children(self.guild_menu_layer(cx))

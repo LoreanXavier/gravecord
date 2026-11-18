@@ -45,6 +45,79 @@ pub(super) enum VoiceAlert {
     StageEndOnLeave {
         channel: Id,
     },
+    /// "Channel is full" (module 361698).
+    ChannelFull,
+    /// "Join voice?" (module 525828, `voice_blocked`).
+    JoinBlocked {
+        guild: Id,
+        channel: Id,
+        blocked: Vec<Id>,
+        ignored: Vec<Id>,
+    },
+    /// "Leave voice?" (module 552258, `voice_blocked`).
+    BlockedJoined {
+        channel: Id,
+        user: Id,
+    },
+    /// "You have been invited to speak." (module 427412).
+    InvitedToSpeak {
+        channel: Id,
+    },
+    /// "Ready to start a call?" (module 502054), with its "Don't ask again" box.
+    CallConfirm {
+        target: CallTarget,
+        dont_ask: bool,
+    },
+}
+
+/// Whom the confirmed call of module 502054 goes to: a person's menu, or a DM row's.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum CallTarget {
+    User(Id),
+    Dm(Id),
+}
+
+/// The picture of "You have been invited to speak." (module 973324), 288 by 192.
+const INVITED_ART: super::graphic_modal::Graphic = super::graphic_modal::Graphic {
+    url: "https://cdn.discordapp.com/assets/content/ef7fa86f8c519fe9764867c1ba473ee1939292fddb2c897885aab732e3bd31d2.svg",
+    width: 288.,
+    height: 192.,
+};
+
+/// `Pd` of module 147036 for a voice channel that is not a Stage: full when it has video and as many people as the
+/// guild's video seats (one more for a `mover`, someone who may move members and connect: `c`), or as many as its
+/// `user_limit` unless this account is such a mover (`E && !c`).
+pub(super) fn voice_channel_full(
+    present: u64,
+    user_limit: u64,
+    has_video: bool,
+    video_seats: u64,
+    mover: bool,
+) -> bool {
+    let video_full = has_video && video_seats > 0 && present >= video_seats + u64::from(mover);
+    let limit_full = user_limit > 0 && present >= user_limit;
+    video_full || (limit_full && !mover)
+}
+
+/// `disableCallUserConfirmationPrompt` of `UnsyncedUserSettingsStore` (module 964404), off until ticked.
+pub(super) fn call_confirmation_disabled() -> bool {
+    crate::storage::get("UnsyncedUserSettingsStore")
+        .and_then(|store| store.get("disableCallUserConfirmationPrompt")?.as_bool())
+        .unwrap_or(false)
+}
+
+fn disable_call_confirmation() {
+    let mut store = crate::storage::get("UnsyncedUserSettingsStore")
+        .filter(serde_json::Value::is_object)
+        .unwrap_or_else(|| serde_json::json!({}));
+    store["disableCallUserConfirmationPrompt"] = serde_json::json!(true);
+    crate::storage::set("UnsyncedUserSettingsStore", store);
+}
+
+/// `eY` of module 105530 is `REQUESTED_TO_SPEAK_AND_AWAITING_USER_ACK`: no longer suppressed, but the hand is still
+/// up (a moderator invited this person).
+pub(super) fn invited_to_speak(suppress: bool, requested: bool) -> bool {
+    !suppress && requested
 }
 
 /// What module 291453 says and offers for a full video Stage: the subtitle's key and whether Boost is offered
@@ -112,9 +185,8 @@ pub(super) fn last_speaking_moderator(
 /// `T` of module 90386, the line the blocked-people warnings of a call put beside their avatars: "{a} is here",
 /// "{a} and {b} are here", "... and 1 other person is here", "... and {n} other people are here". `names` are the
 /// first two people's names (`getName`) and `count` how many there are; each name is its own run, tagged with its
-/// hook, for the `body-md/semibold` inline name (`username_OObHCR`).
-// Its callers, the blocked-people warnings before joining or leaving a call and leaving a group, are still to port.
-#[allow(dead_code)]
+/// hook, for the `body-md/semibold` inline name (`username_OObHCR`). Used by "Join voice?" and "Leave voice?"
+/// (`voice_blocked`).
 pub(super) fn here_runs(names: &[String], count: usize) -> Vec<(String, Option<Box<str>>)> {
     let first = names.first().cloned().unwrap_or_default();
     let second = names.get(1).cloned().unwrap_or_default();
@@ -212,7 +284,7 @@ impl Root {
         let states = self.stores.voice_members(guild, channel);
         let video = states
             .iter()
-            .any(|state| state.self_video || state.self_stream);
+            .any(|state| state.self_video || (state.self_stream && !state.suppress));
         let seats = known.max_stage_video_channel_users;
         video && seats > 0 && states.len() as u64 >= seats
     }
@@ -282,6 +354,139 @@ impl Root {
         }
     }
 
+    /// `Pd` of module 147036 for a channel that is not a Stage (`voice_channel_full`).
+    pub(super) fn voice_channel_is_full(&self, guild: Id, channel: Id) -> bool {
+        let Some(known) = self.stores.guild(guild) else {
+            return false;
+        };
+        let Some(target) = known.channels.iter().find(|known| known.id == channel) else {
+            return false;
+        };
+        if target.kind == STAGE {
+            return false;
+        }
+        let Some(me) = self.stores.me() else {
+            return false;
+        };
+        let can = |bit| permissions::can_in_channel(known, target, me, bit);
+        let states = self.stores.voice_members(guild, channel);
+        voice_channel_full(
+            states.len() as u64,
+            target.user_limit,
+            states.iter().any(|state| state.self_video),
+            known.max_video_channel_users,
+            can(permissions::MOVE_MEMBERS) && can(permissions::CONNECT),
+        )
+    }
+
+    /// Module 596339's watcher of this session's own voice state (`b4`, modal key `STAGE_INVITED_TO_SPEAK_MODAL`):
+    /// invited to speak in a Stage, "You have been invited to speak." opens once; leaving voice closes it.
+    pub(super) fn stage_invite_check(&mut self, data: &serde_json::Value, cx: &mut Context<Self>) {
+        let Some(me) = self.stores.current_user.as_ref().map(|me| me.id) else {
+            return;
+        };
+        if data["user_id"].as_str() != Some(me.to_string().as_str())
+            || data["session_id"].as_str() != self.stores.session_id.as_deref()
+        {
+            return;
+        }
+        let open = matches!(self.voice_alert, Some(VoiceAlert::InvitedToSpeak { .. }));
+        let Some(channel) = data["channel_id"]
+            .as_str()
+            .and_then(|id| id.parse::<Id>().ok())
+        else {
+            if open {
+                self.voice_alert = None;
+                cx.notify();
+            }
+            return;
+        };
+        let Some(guild) = self.guild_of_channel(channel) else {
+            return;
+        };
+        if !self.is_stage_voice_channel(guild, channel) || open {
+            return;
+        }
+        let suppress = data["suppress"].as_bool().unwrap_or(false);
+        let requested = !data["request_to_speak_timestamp"].is_null();
+        if invited_to_speak(suppress, requested) {
+            self.request_graphic(INVITED_ART);
+            self.voice_alert = Some(VoiceAlert::InvitedToSpeak { channel });
+            cx.notify();
+        }
+    }
+
+    /// `e7` of module 849736 (`p`): the answer to an invitation to speak, `PATCH /guilds/<id>/voice-states/@me` with
+    /// `suppress` (true declines) and the hand put down.
+    fn answer_speak_invite(&mut self, channel: Id, decline: bool) {
+        self.voice_alert = None;
+        let Some(guild) = self.guild_of_channel(channel) else {
+            return;
+        };
+        let _ = self.requests.send(Request::Rest {
+            key: None,
+            method: reqwest::Method::PATCH,
+            route: format!("/guilds/{guild}/voice-states/@me"),
+            body: Some(serde_json::json!({
+                "suppress": decline,
+                "request_to_speak_timestamp": null,
+                "channel_id": channel.to_string(),
+            })),
+        });
+    }
+
+    /// The "Start a Call" rows (`runVoiceCallAction` of module 949674): "Ready to start a call?" first, unless
+    /// `disableCallUserConfirmationPrompt` of the unsynced settings is on.
+    pub(super) fn start_call_or_ask(&mut self, target: CallTarget, cx: &mut Context<Self>) {
+        if call_confirmation_disabled() {
+            self.start_confirmed_call(target, cx);
+        } else {
+            self.voice_alert = Some(VoiceAlert::CallConfirm {
+                target,
+                dont_ask: false,
+            });
+            cx.notify();
+        }
+    }
+
+    fn start_confirmed_call(&mut self, target: CallTarget, cx: &mut Context<Self>) {
+        match target {
+            CallTarget::User(user) => self.start_dm_call_with(user, false, cx),
+            CallTarget::Dm(channel) => {
+                self.select_home(Some(channel));
+                let active = self.stores.calls.is_call_active(channel, None);
+                self.start_call(channel, false, !active, cx);
+            }
+        }
+    }
+
+    /// The dialog's `onClose`: a ticked "Don't ask again" is kept (`updatedUnsyncedSettings`).
+    fn close_call_confirm(&mut self) {
+        if let Some(VoiceAlert::CallConfirm { dont_ask: true, .. }) = self.voice_alert {
+            disable_call_confirmation();
+        }
+        self.voice_alert = None;
+    }
+
+    /// The alert's own close: what Escape, the close button and the scrim do.
+    pub(super) fn dismiss_voice_alert(&mut self, cx: &mut Context<Self>) {
+        match self.voice_alert.clone() {
+            Some(VoiceAlert::JoinBlocked {
+                guild,
+                channel,
+                blocked,
+                ignored,
+            }) => {
+                let people = blocked.into_iter().chain(ignored).collect();
+                self.join_past_blocked(guild, channel, people, cx);
+            }
+            Some(VoiceAlert::BlockedJoined { user, .. }) => self.stay_past_blocked(user),
+            Some(VoiceAlert::InvitedToSpeak { channel }) => self.answer_speak_invite(channel, true),
+            Some(VoiceAlert::CallConfirm { .. }) => self.close_call_confirm(),
+            _ => self.voice_alert = None,
+        }
+    }
+
     /// `handleStreamDelete` of module 505293 with `reason: stream_full`: the alert, once per stream.
     pub(super) fn stream_was_full(&mut self, key: String, cx: &mut Context<Self>) {
         if self.stream_full_seen.insert(key) {
@@ -309,8 +514,43 @@ impl Root {
 
     pub(super) fn voice_alert_modal(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
         let alert = self.voice_alert.clone()?;
+        match &alert {
+            VoiceAlert::JoinBlocked {
+                guild,
+                channel,
+                blocked,
+                ignored,
+            } => return Some(self.join_blocked_modal(*guild, *channel, blocked, ignored, cx)),
+            VoiceAlert::BlockedJoined { channel, user } => {
+                return Some(self.blocked_joined_modal(*channel, *user, cx));
+            }
+            VoiceAlert::InvitedToSpeak { channel } => {
+                return Some(self.invited_to_speak_modal(*channel, cx));
+            }
+            VoiceAlert::CallConfirm { target, dont_ask } => {
+                return Some(self.call_confirm_modal(*target, *dont_ask, cx));
+            }
+            _ => {}
+        }
         let close = || -> modal::Handler { Box::new(|this, _, _| this.voice_alert = None) };
         let spec = match alert {
+            VoiceAlert::JoinBlocked { .. }
+            | VoiceAlert::BlockedJoined { .. }
+            | VoiceAlert::InvitedToSpeak { .. }
+            | VoiceAlert::CallConfirm { .. } => return None,
+            VoiceAlert::ChannelFull => modal::Spec {
+                id: "channel-full-modal",
+                title: dc_intl::t("elyVbv").into(),
+                subtitle: Some(div().child(dc_intl::t("nIeRep")).into_any_element()),
+                body: None,
+                buttons: vec![modal::button(
+                    "channel-full-okay",
+                    dc_intl::t("BddRzS"),
+                    modal::Tone::Primary,
+                    |this, _, _| this.voice_alert = None,
+                )],
+                close: close(),
+            },
             VoiceAlert::StreamFull => modal::Spec {
                 id: "stream-full-modal",
                 title: dc_intl::t("GzjdO5").into(),
@@ -466,6 +706,116 @@ impl Root {
         Some(modal::render_small(spec, cx))
     }
 
+    /// Module 427412 on the dialog with a header graphic: "Join the speakers in" the Stage's icon (14px,
+    /// `channelIcon_mNVMq4`: 2px after it) and name; Not Now (secondary) and Accept (`active`). Its close declines.
+    fn invited_to_speak_modal(&self, channel: Id, cx: &mut Context<Self>) -> AnyElement {
+        let name = self
+            .guild_of_channel(channel)
+            .and_then(|guild| self.stores.guild(guild))
+            .and_then(|guild| guild.channels.iter().find(|known| known.id == channel))
+            .map(|known| known.name.clone())
+            .unwrap_or_default();
+        let lead = dc_intl::format_runs("Z+3bWy", &[("stageChannelHook", String::new().into())])
+            .into_iter()
+            .filter(|(_, hook)| hook.is_none())
+            .map(|(text, _)| text)
+            .collect::<String>();
+        let subtitle = div()
+            .flex()
+            .flex_wrap()
+            .items_center()
+            .justify_center()
+            .child(lead)
+            .child(
+                div()
+                    .mr(px(2.))
+                    .child(super::icon("stage_channel", 14., "--text-subtle")),
+            )
+            .child(name);
+        self.graphic_modal(
+            super::graphic_modal::Spec {
+                id: "stage-invited-to-speak-modal",
+                graphic: Some(INVITED_ART),
+                title: dc_intl::t("Ul1RJQ").into(),
+                subtitle: Some(subtitle.into_any_element()),
+                body: None,
+                buttons: vec![
+                    modal::button(
+                        "stage-invited-not-now",
+                        dc_intl::t("L5eIZ2"),
+                        modal::Tone::Secondary,
+                        |this, _, _| this.voice_alert = None,
+                    ),
+                    modal::button(
+                        "stage-invited-accept",
+                        dc_intl::t("MMlhsr"),
+                        modal::Tone::Active,
+                        move |this, _, _| this.answer_speak_invite(channel, false),
+                    ),
+                ],
+                close: Box::new(move |this, _, _| this.answer_speak_invite(channel, true)),
+            },
+            cx,
+        )
+    }
+
+    /// Module 502054 on the alert of module 732159 (`variant: "active"`): Cancel and Start Call, "Don't ask again" in
+    /// the action bar (the checkbox of module 568385, `labelType: "secondary"`: `body-md/normal`, `text-subtle`, 12px
+    /// after the box).
+    fn call_confirm_modal(
+        &self,
+        target: CallTarget,
+        dont_ask: bool,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let checkbox = div()
+            .id("call-confirm-dont-ask")
+            .flex()
+            .items_start()
+            .gap(px(12.))
+            .cursor_pointer()
+            .child(super::server_onboarding::checkbox(dont_ask, false))
+            .child(
+                div()
+                    .text_size(px(16.))
+                    .line_height(px(20.))
+                    .text_color(color("--text-subtle"))
+                    .child(dc_intl::t("JdIQ/Y")),
+            )
+            .on_click(cx.listener(|this, _, _, cx| {
+                if let Some(VoiceAlert::CallConfirm { dont_ask, .. }) = this.voice_alert.as_mut() {
+                    *dont_ask = !*dont_ask;
+                }
+                cx.notify();
+            }))
+            .into_any_element();
+        let spec = modal::Spec {
+            id: "call-confirm-modal",
+            title: dc_intl::t("HlAPoq").into(),
+            subtitle: Some(div().child(dc_intl::t("cRW4D/")).into_any_element()),
+            body: None,
+            buttons: vec![
+                modal::button(
+                    "call-confirm-cancel",
+                    dc_intl::t("ETE/oC"),
+                    modal::Tone::Secondary,
+                    |this, _, _| this.close_call_confirm(),
+                ),
+                modal::button(
+                    "call-confirm-start",
+                    dc_intl::t("rimG2R"),
+                    modal::Tone::Active,
+                    move |this, _, cx| {
+                        this.close_call_confirm();
+                        this.start_confirmed_call(target, cx);
+                    },
+                ),
+            ],
+            close: Box::new(|this, _, _| this.close_call_confirm()),
+        };
+        modal::render_small_with_input(spec, checkbox, cx)
+    }
+
     /// `k` of module 918192 with `showStatus` (`user_jBt7uB`: 8px padding; the 32px avatar; `userInfo` 12px after it):
     /// the name and `#discriminator` (`body-md/normal`, the tag `text-subtle`), then Blocked (`text-feedback-critical`)
     /// or Ignored and `| Speaker`, `| Stage Moderator` or `| Audience` (`body-xs/normal`, `text-muted`).
@@ -596,6 +946,27 @@ mod tests {
             blocked_texts(0, 3).0,
             dc_intl::format("wvygk8", &[("number", 3i64.into())])
         );
+    }
+
+    #[test]
+    fn a_voice_channel_is_full_by_its_limit_or_its_video_seats() {
+        // 5 of a limit of 5: full, unless this account may move members.
+        assert!(voice_channel_full(5, 5, false, 25, false));
+        assert!(!voice_channel_full(5, 5, false, 25, true));
+        assert!(!voice_channel_full(4, 5, false, 25, false));
+        // No limit: only video seats count, and only while someone shows video.
+        assert!(!voice_channel_full(25, 0, false, 25, false));
+        assert!(voice_channel_full(25, 0, true, 25, false));
+        // A member mover gets one seat more.
+        assert!(!voice_channel_full(25, 0, true, 25, true));
+        assert!(voice_channel_full(26, 0, true, 25, true));
+    }
+
+    #[test]
+    fn an_invitation_to_speak_is_an_unsuppressed_raised_hand() {
+        assert!(invited_to_speak(false, true));
+        assert!(!invited_to_speak(true, true));
+        assert!(!invited_to_speak(false, false));
     }
 
     #[test]

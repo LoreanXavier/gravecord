@@ -2147,6 +2147,7 @@ impl Root {
             })
             .cloned();
         let (pressed, previewed, starred) = (sound.clone(), sound.clone(), sound.clone());
+        let labels = sound_labels(sound.emoji_name.as_deref(), &sound.name, favorite);
         let secondary = |id: String| {
             div()
                 .id(SharedString::from(id))
@@ -2178,6 +2179,7 @@ impl Root {
                     .justify_between()
                     .child(
                         secondary(format!("sb-preview-{key}"))
+                            .aria_label(labels.preview.clone())
                             .on_click(cx.listener(move |this, _, _, cx| {
                                 cx.stop_propagation();
                                 this.soundboard_preview(&previewed);
@@ -2201,6 +2203,7 @@ impl Root {
                     }))
                     .child(
                         secondary(format!("sb-star-{key}"))
+                            .aria_label(labels.favorite.clone())
                             .on_click(cx.listener(move |this, _, _, cx| {
                                 cx.stop_propagation();
                                 this.soundboard.toggle_favorite(&starred.id);
@@ -2219,6 +2222,7 @@ impl Root {
             );
         let body = div()
             .id(SharedString::from(format!("sb-button-{key}")))
+            .aria_label(labels.play)
             .group(group)
             .relative()
             .w(px(BUTTON_WIDTH))
@@ -2306,6 +2310,32 @@ impl Root {
     }
 }
 
+/// The accessible names of a sound button and its two small buttons (module 533491): "Play", "Preview" and
+/// "Favorite" or "Unfavorite", each with the sound's emoji and name.
+pub(super) struct SoundLabels {
+    pub play: SharedString,
+    pub preview: SharedString,
+    pub favorite: SharedString,
+}
+
+pub(super) fn sound_labels(emoji: Option<&str>, name: &str, favorite: bool) -> SoundLabels {
+    let text = |key: &str| -> SharedString {
+        dc_intl::format(
+            key,
+            &[
+                ("emojiName", emoji.unwrap_or_default().to_owned().into()),
+                ("soundName", name.to_owned().into()),
+            ],
+        )
+        .into()
+    };
+    SoundLabels {
+        play: text("tuMUJ2"),
+        preview: text("/8fYO5"),
+        favorite: text(if favorite { "lQLsjc" } else { "Y5DOs4" }),
+    }
+}
+
 fn search_section(ctx: &Ctx, query: &str, guilds: &[(Id, String)], board: &Board) -> Section {
     search(ctx, query, guilds, &board.guilds, &board.defaults)
 }
@@ -2313,6 +2343,18 @@ fn search_section(ctx: &Ctx, query: &str, guilds: &[(Id, String)], board: &Board
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn sound_buttons_are_named_with_the_emoji_and_the_sound() {
+        let labels = sound_labels(Some("🦆"), "quack", false);
+        assert_eq!(labels.play.as_ref(), "Play 🦆 quack");
+        assert_eq!(labels.preview.as_ref(), "Preview 🦆 quack");
+        assert_eq!(labels.favorite.as_ref(), "Favorite 🦆 quack");
+        assert_eq!(
+            sound_labels(Some("🦆"), "quack", true).favorite.as_ref(),
+            "Unfavorite 🦆 quack"
+        );
+    }
 
     fn sound(id: &str, guild: &str, name: &str) -> Sound {
         Sound {

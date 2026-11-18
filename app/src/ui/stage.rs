@@ -163,7 +163,12 @@ mod before_tests {
 /// The Stage page's top bar (`topControls_rTsZa_` of stage-ann/stage-live-hover and stage-after-end): the channel's
 /// glyph, the topic (the channel's name while no Stage is live), the speaking and audience counts, and the hand and
 /// chat icons. Hidden until the pointer is over the page (`group` "stage-live").
-fn stage_header(title: String, speaking: usize, audience: usize) -> gpui::Div {
+fn stage_header(
+    title: String,
+    speaking: usize,
+    audience: usize,
+    requests: Option<AnyElement>,
+) -> gpui::Div {
     div()
         .flex_none()
         .h(px(49.))
@@ -228,7 +233,8 @@ fn stage_header(title: String, speaking: usize, audience: usize) -> gpui::Div {
                 .flex()
                 .items_center()
                 .gap(px(24.))
-                .child(icon("system_hand", 24., "--interactive-icon-default"))
+                // The requests toggle of module 482877 (`stage_requests`), for someone with Mute Members.
+                .children(requests)
                 .child(icon("voice_view_chat", 24., "--interactive-icon-default")),
         )
 }
@@ -343,6 +349,7 @@ impl Root {
                         channel.name.clone(),
                         here.len() - audience,
                         audience,
+                        None,
                     )),
             )
             .child(
@@ -531,6 +538,10 @@ impl Root {
                 speakers.push(user);
             }
         }
+        let requests = self.stage_requests_toggle(channel, hands.len(), cx);
+        let video_full =
+            self.video_stage_full_notice(channel, (speakers.len() + audience.len()) as u64, cx);
+        let sidebar = self.stage_requests_sidebar(channel, cx);
         let tile = |user: &dc_state::User, is_speaker: bool| {
             let picture = self.images.get(&super::avatar_source(user).0).cloned();
             let person = user.id;
@@ -682,7 +693,7 @@ impl Root {
         };
         // stage-live and stage-live-hover: at rest the page shows neither the header nor the controls; the pointer over
         // the page brings both (`visible`).
-        let header = stage_header(topic, speakers.len(), audience.len());
+        let header = stage_header(topic, speakers.len(), audience.len(), requests);
         let round = |id: &'static str, glyph: &'static str| {
             div()
                 .id(id)
@@ -954,7 +965,7 @@ impl Root {
                         .child("Confirm age"),
                 )
         });
-        div()
+        let view = div()
             .parity("stage-view")
             .group("stage-live")
             .relative()
@@ -965,6 +976,10 @@ impl Root {
             .flex()
             .flex_col()
             .child(header)
+            // Module 366265 under the header (`eA` of module 482877).
+            .children(
+                video_full.map(|notice| div().flex_none().px(px(16.)).pt(px(8.)).child(notice)),
+            )
             .child(
                 div()
                     .flex_1()
@@ -1004,8 +1019,19 @@ impl Root {
             }))
             .child(controls)
             .children(leave_menu)
-            .children(self.tile_menu_layer(cx))
-            .into_any_element()
+            .children(self.tile_menu_layer(cx));
+        match sidebar {
+            // The requests sidebar of module 374873 at the Stage's right.
+            Some(sidebar) => div()
+                .flex_1()
+                .min_w(px(0.))
+                .h_full()
+                .flex()
+                .child(view)
+                .child(sidebar)
+                .into_any_element(),
+            None => view.into_any_element(),
+        }
     }
 
     /// The people in the open Stage channel, whose pictures the tiles draw.

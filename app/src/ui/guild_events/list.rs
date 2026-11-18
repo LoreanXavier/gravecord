@@ -2,6 +2,7 @@
 //! line, the three action buttons, the creator's avatar and the interested toggle. Measured in the `events-list-*`
 //! captures.
 
+use super::super::tooltip::{Side, Tip};
 use super::super::{Root, avatar_source, color, icon};
 use super::schedule::{self, Status, Tone};
 use super::{CREATE_EVENTS, MANAGE_EVENTS};
@@ -9,7 +10,7 @@ use crate::net::Request;
 use crate::parity::Parity;
 use chrono::NaiveDateTime;
 use dc_state::{
-    Id, User, permissions,
+    ChannelKind, Id, User, permissions,
     scheduled_events::{
         ENTITY_EXTERNAL, ENTITY_STAGE_INSTANCE, EventUser, RESPONSE_INTERESTED, STATUS_CANCELED,
         STATUS_COMPLETED, ScheduledEvent,
@@ -578,28 +579,104 @@ impl Root {
         if first {
             status_line = status_line.parity("events-card-status");
         }
+        // Module 567550 `S`: a channel the viewer may enter is a link (`channelContainerEnabled__wH91U`: underlined,
+        // `--interactive-text-active` on hover) that joins it (`onJoinClick` of module 482857, given while the viewer
+        // may connect); a private one tells event managers who can see the event (tooltip on the icon).
+        let place_channel = event.channel_id.and_then(|id| {
+            self.stores
+                .guild(event.guild_id)
+                .and_then(|known| known.channels.iter().find(|channel| channel.id == id))
+        });
+        // Events take place in voice channels and Stages, the only channels `onJoinClick` enters.
+        let joinable = place_channel.filter(|channel| {
+            matches!(channel.kind, ChannelKind::Voice | ChannelKind::Other(13))
+                && self.my_permission(event.guild_id, Some(channel), permissions::CONNECT)
+        });
+        let private_note = joinable.is_some_and(|channel| {
+            let manager = self
+                .stores
+                .me()
+                .zip(self.stores.guild(event.guild_id))
+                .is_some_and(|(me, known)| can_manage(known, me, event));
+            manager
+                && self
+                    .stores
+                    .guild(event.guild_id)
+                    .is_some_and(|known| permissions::is_private(known, channel))
+        });
+        let join_target = joinable.map(|channel| (event.guild_id, channel.id));
+        // A pending member (membership screening, `H` of module 51758) who may not connect: the row still answers a
+        // click with the screening (`Ze`), under "Missing permission to connect." (`channelContainerDisabled__wH91U`).
+        let screening_only = joinable.is_none()
+            && place_channel.is_some()
+            && self
+                .stores
+                .guild(event.guild_id)
+                .is_some_and(permissions::pending_gate);
+        let place_icon_element = div().child(icon(place_icon, 20., "--text-default"));
+        let place_icon_element = if private_note {
+            self.with_tip(
+                format!("event-card-private-tip-{id}"),
+                Tip::text(dc_intl::t("48WXaW"), Side::Top),
+                place_icon_element,
+                cx,
+            )
+            .into_any_element()
+        } else {
+            place_icon_element.into_any_element()
+        };
+        let place_row = div()
+            .id(("event-card-place", id))
+            .flex()
+            .items_center()
+            .gap(px(4.))
+            .min_w(px(0.))
+            .text_color(color("--text-default"))
+            .when_some(join_target, |this, (guild, channel)| {
+                this.cursor_pointer()
+                    .hover(|style| {
+                        style
+                            .text_color(color("--interactive-text-active"))
+                            .underline()
+                    })
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        cx.stop_propagation();
+                        this.request_join_voice(guild, channel, cx);
+                    }))
+            })
+            .when(screening_only, |this| {
+                this.cursor_not_allowed()
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        cx.stop_propagation();
+                        this.open_screening(cx);
+                    }))
+            })
+            .child(place_icon_element)
+            .child(
+                div()
+                    .truncate()
+                    .text_size(px(14.))
+                    .line_height(px(18.))
+                    .child(place),
+            );
+        let place_row = if screening_only {
+            self.with_tip(
+                format!("event-card-connect-tip-{id}"),
+                Tip::text(dc_intl::t("nHjY9C"), Side::Top),
+                place_row,
+                cx,
+            )
+            .into_any_element()
+        } else {
+            place_row.into_any_element()
+        };
         let footer = div()
             .mt(px(12.))
             .h(px(32.))
             .flex()
             .items_center()
             .justify_between()
-            .child(
-                div()
-                    .flex()
-                    .items_center()
-                    .gap(px(4.))
-                    .min_w(px(0.))
-                    .child(icon(place_icon, 20., "--text-default"))
-                    .child(
-                        div()
-                            .truncate()
-                            .text_size(px(14.))
-                            .line_height(px(18.))
-                            .text_color(color("--text-default"))
-                            .child(place),
-                    ),
-            )
+            .child(place_row)
             .child(
                 div()
                     .flex()

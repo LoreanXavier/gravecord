@@ -226,6 +226,10 @@ pub(super) struct Video {
     /// Own stream queued to restart after Change Stream / Stream Quality / Share Stream Audio once `STREAM_DELETE`
     /// completes (or the short fallback timer fires).
     pending_restart: Option<PendingRestart>,
+    /// The focused stream we watched, which its owner ended: `ApplicationStreamingStore` keeps it `ENDED` (module
+    /// 616356 closes every other ended stream at once), and its tile says "This stream has ended." (module 566331)
+    /// until Close Stream.
+    pub(super) ended_focus: Option<StreamKey>,
 }
 
 impl Video {
@@ -685,14 +689,15 @@ impl Root {
                 self.guild_of_channel(id).map(|guild| (guild, id))
             }) {
                 Some((guild, channel)) => {
-                    self.join_voice(guild, channel, cx);
+                    self.request_join_voice(guild, channel, cx);
                     format!("join {channel}: alert {:?}", self.voice_alert)
                 }
                 None => "no such channel".to_owned(),
             },
             // Our own voice state in a channel, as the gateway would send it after a join (`speaker` or `audience`,
-            // a Stage's `suppress`), fed to the stores only.
-            ["self-in", id, role @ ("speaker" | "audience")] => {
+            // a Stage's `suppress`; `invited`: a moderator's invitation to speak, unsuppressed with the hand still
+            // up), fed to the stores only.
+            ["self-in", id, role @ ("speaker" | "audience" | "invited")] => {
                 let (Some(channel), Some(me)) = (
                     id.parse::<u64>().ok(),
                     self.stores.current_user.as_ref().map(|me| me.id),
@@ -712,6 +717,11 @@ impl Root {
                             "user_id": me.to_string(),
                             "session_id": session,
                             "suppress": *role == "audience",
+                            "request_to_speak_timestamp": if *role == "invited" {
+                                serde_json::json!("2026-11-18T04:00:00.000000+00:00")
+                            } else {
+                                serde_json::Value::Null
+                            },
                         }),
                     },
                     cx,
@@ -742,6 +752,13 @@ impl Root {
                 crate::notifications::set_switch("streamer_mode_hide_personal_information", true, me);
                 cx.notify();
                 format!("streamer mode on, hides personal information={}", self.streamer_hides_personal())
+            }
+            // The Stage's Requests to Speak sidebar, as its header toggle opens it.
+            ["stage-requests", "open"] => {
+                self.stage_requests_open = true;
+                self.request_stage_requests_art();
+                cx.notify();
+                "stage requests open".to_owned()
             }
             ["participants", "open"] => {
                 self.vv.participants_open = true;
@@ -957,11 +974,40 @@ impl Root {
     pub(crate) fn streams_stop_all(&mut self, cx: &mut Context<Self>) {
         self.video.pending_watch = None;
         self.video.pending_restart = None;
+        self.video.ended_focus = None;
         self.video.watched_owners.clear();
         let keys: Vec<StreamKey> = self.video.streams.keys().copied().collect();
         for key in keys {
             self.stream_stop_key(key, cx);
         }
+    }
+
+    /// After a voice state: the ended stream is forgotten once its owner streams again or leaves the channel, so a
+    /// later end of a stream never watched does not bring its tile back.
+    pub(super) fn ended_stream_voice_state(&mut self) {
+        let Some(key) = self.video.ended_focus else {
+            return;
+        };
+        let streaming = self
+            .stores
+            .voice_members(key.guild().unwrap_or(0), key.channel())
+            .iter()
+            .find(|state| state.user_id == key.owner())
+            .map(|state| state.self_stream);
+        if streaming != Some(false) {
+            self.video.ended_focus = None;
+        }
+    }
+
+    /// Close Stream of the ended stream's tile (`Xi` of module 401843, `STREAM_CLOSE`): the tile goes, and the view
+    /// with it.
+    pub(super) fn close_ended_stream(&mut self, cx: &mut Context<Self>) {
+        if let Some(key) = self.video.ended_focus.take()
+            && self.vv.focus.tile == Some((key.owner(), super::video_tiles::TileKind::Stream))
+        {
+            self.vv.focus.tile = None;
+        }
+        cx.notify();
     }
 
     /// Ends the stream we send, if any (op 19 and the connection).
@@ -1445,6 +1491,21 @@ impl Root {
                 self.stream_was_full(key.to_string(), cx);
             }
             if let Some(live) = self.video.streams.remove(&key) {
+                // `STREAM_DELETE` (module 616356): ENDED unless unavailable or unauthorized; kept only for the
+                // stream on screen (`b !== r && w(r)`), and never in a Stage (module 566331 closes it there).
+                let focused =
+                    self.vv.focus.tile == Some((key.owner(), super::video_tiles::TileKind::Stream));
+                if !tell_gateway
+                    && live.last.role == Role::Watch
+                    && focused
+                    && matches!(
+                        reason,
+                        EndReason::UserRequested | EndReason::Other | EndReason::RateLimited
+                    )
+                    && !self.is_stage_voice_channel(key.guild().unwrap_or(0), key.channel())
+                {
+                    self.video.ended_focus = Some(key);
+                }
                 live.controls.stop();
                 if tell_gateway && reason != EndReason::StreamFull {
                     let _ = self.requests.send(Request::StreamOp {
