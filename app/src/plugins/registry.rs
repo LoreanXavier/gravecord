@@ -245,6 +245,12 @@ pub(crate) const IDLE_SETTINGS: &[(&str, &str, &str)] = &[
         "the app does not show the pinned client's \"Potentially Dangerous Download\" dialog yet (module 432518, opened from module 889558), so there is no dialog to remove",
     ),
     (
+        "CallTimer",
+        "watchLargeGuilds",
+        "the original subscribes to every server's events for it (`GUILD_SUBSCRIPTIONS_FLUSH`); plugin code sends \
+         nothing, so times come from the voice states the app already receives",
+    ),
+    (
         "NoPendingCount",
         "hidePremiumOffersCount",
         "the app's Home badge does not count unseen Nitro offers yet (`getUnacknowledgedOffers`), so there is no count to hide",
@@ -367,6 +373,64 @@ pub(crate) const DEFS: &[Def] = &[
         source: "src/plugins/betterUploadButton/index.ts",
         default_on: false,
         settings: &[],
+    },
+    Def {
+        id: "CallTimer",
+        name: "CallTimer",
+        description: "Add call timers for all users in voice channels and in the connection status.",
+        origin: Origin::Vencord,
+        source: "src/plugins/callTimer/index.tsx",
+        default_on: false,
+        settings: &[
+            Setting {
+                key: "format",
+                label: "Format",
+                description: "Compact or human readable format.",
+                kind: Kind::Select {
+                    options: &[
+                        ("30:23:00:42", Lit::Str("stopwatch")),
+                        ("30d 23h 00m 42s", Lit::Str("human")),
+                    ],
+                    default: 0,
+                },
+            },
+            Setting {
+                key: "allCallTimers",
+                label: "Everyone's timer",
+                description: "Add call timer to all users in a server voice channel.",
+                kind: Kind::Switch { default: false },
+            },
+            Setting {
+                key: "showWithoutHover",
+                label: "Show without hovering",
+                description: "Always show the timer without needing to hover.",
+                kind: Kind::Switch { default: false },
+            },
+            Setting {
+                key: "showRoleColor",
+                label: "Role colour",
+                description: "Show the user's role color.",
+                kind: Kind::Switch { default: false },
+            },
+            Setting {
+                key: "trackSelf",
+                label: "Track yourself",
+                description: "Also track yourself.",
+                kind: Kind::Switch { default: false },
+            },
+            Setting {
+                key: "showSeconds",
+                label: "Show seconds",
+                description: "Show seconds in the timer.",
+                kind: Kind::Switch { default: false },
+            },
+            Setting {
+                key: "watchLargeGuilds",
+                label: "Watch large servers",
+                description: "Track users in large servers.",
+                kind: Kind::Switch { default: false },
+            },
+        ],
     },
     Def {
         id: "ClearURLs",

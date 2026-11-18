@@ -127,6 +127,7 @@ idle = {(a, b): why.replace('\\"', '"') for a, b, why in re.findall(
 
 # How each ported plugin is built here, and its proof.
 PORTED = {
+    'CallTimer': "plugin_hooks/call_timer.rs: your time under the connection panel's channel line (seconds always, code font); with `allCallTimers` everyone's time by their voice row, as the clock icon with a tooltip or, with `showWithoutHover`, as text under the name. Join times start when the app first sees someone in a channel.",
     'MemberCount': "plugin_hooks/member_count.rs: online, total and in-voice counts with their tooltips at the top of the member list, online and total in the server tooltip. Not ported: the original's gateway requests (`preload` of a server's online count, member list subscriptions while the list is hidden); plugin code sends nothing, so an unopened server shows '?' online until its count arrives.",
     'AnonymiseFileNames': "uploads.rs: files are renamed as they are sent, by the original's four methods; a switch first in each upload card's bar turns it off for that file. A spoilered file stays one. Its /Spoiler command is not ported: the app runs no client-side slash commands of plugins.",
     'ReverseImageSearch': 'menu.rs: "Search Image" at the end of the link group when a picture is right-clicked; a '
@@ -165,6 +166,7 @@ PORTED = {
                      'so the original\'s 200% cap on the sync has nothing to cap.',
 }
 TESTS = {
+    'CallTimer': '`plugin_hooks::call_timer::tests` (3); frames ct-on/ct-all; plugins-off voice-profile',
     'MemberCount': '`plugin_hooks::member_count::tests` (2); frames mc-on/mc-off; plugins-off member-list',
     'AnonymiseFileNames': '`anonymised_names_follow_each_method`; frames anon-on/anon-off; plugins-off upload-card',
     'ReverseImageSearch': '`image_search_opens_each_engine_with_the_encoded_address`; frame ris-on; plugins-off image-menu',
@@ -237,7 +239,6 @@ PLANNED = {
     'BetterRoleDot': 'copy a role colour on its dot; dots and coloured names together.',
     'BiggerStreamPreview': 'a larger stream preview popout.',
     'BypassStatus': 'notification and sound rules that pass Do Not Disturb for chosen users, channels and servers.',
-    'CallTimer': 'a timer per user in voice channels and in the connection panel.',
     'CancelFriendRequest': 'a cancel button for outgoing friend requests in profiles.',
     'ClipsEnhancements': 'more clip FPS and duration options in the clips settings.',
     'ClipUpload': 'a button to upload a local video as a clip.',

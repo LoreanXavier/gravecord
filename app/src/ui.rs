@@ -1387,6 +1387,13 @@ impl Root {
                     // Not in the pinned client: the VoiceStats plugin (`plugin_hooks/voice_stats.rs`).
                     self.voice_stats_observe(cx);
                 }
+                // Not in the pinned client: CallTimer's join times (`plugin_hooks/call_timer.rs`).
+                if matches!(
+                    name.as_str(),
+                    "VOICE_STATE_UPDATE" | "PASSIVE_UPDATE_V1" | "READY" | "GUILD_CREATE"
+                ) {
+                    self.call_timer_observe(cx);
+                }
                 self.official_messages.dispatch(&name, &data);
                 self.gateway_screens_dispatch(&name, &data, cx);
                 self.channel_info_check();

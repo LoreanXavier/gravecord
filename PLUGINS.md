@@ -12,7 +12,7 @@ every setting changed), and with every plugin off, and fails on one differing pi
 The list is the plugins enabled in the owner's Equicord backup of 2026-09-21 (156). Sources were read in the local
 Equicord checkout of 2026-11-14 (`src/plugins` is Vencord's, `src/equicordplugins` Equicord's).
 
-Totals: 18 ported, 3 native, 90 planned, 45 not applicable.
+Totals: 19 ported, 3 native, 89 planned, 45 not applicable.
 
 Status: **ported** works and has its proof; **native** is what gravecord already does without a plugin;
 **planned** is not built yet (an import keeps its settings for when it is); **not applicable** has nothing to
@@ -43,7 +43,7 @@ port in a native client, or was removed upstream.
 | BetterUploadButton | ported | plugins/betterUploadButton/index.ts | Upload with a single click, open menu with right click | ui.rs: the composer plus opens the file picker on a click and its menu on a right click. | `copy_user_urls_and_quick_mention_write_what_the_originals_write` (off); frame bub-on; plugins-off plus-click |
 | BiggerStreamPreview | planned | plugins/biggerStreamPreview/index.tsx | This plugin allows you to enlarge stream previews | a larger stream preview popout. |  |
 | BypassStatus | planned | equicordplugins/bypassStatus/index.tsx | Still get notifications from specific sources when in do not disturb mode. Right-click on users/channels/guilds to set them to bypass do not disturb mode. | notification and sound rules that pass Do Not Disturb for chosen users, channels and servers. |  |
-| CallTimer | planned | plugins/callTimer/index.tsx | Add call timers for all users in voice channels and in the connection status. | a timer per user in voice channels and in the connection panel. |  |
+| CallTimer | ported | plugins/callTimer/index.tsx | Add call timers for all users in voice channels and in the connection status. | plugin_hooks/call_timer.rs: your time under the connection panel's channel line (seconds always, code font); with `allCallTimers` everyone's time by their voice row, as the clock icon with a tooltip or, with `showWithoutHover`, as text under the name. Join times start when the app first sees someone in a channel. | `plugin_hooks::call_timer::tests` (3); frames ct-on/ct-all; plugins-off voice-profile |
 | CancelFriendRequest | planned | equicordplugins/pendingFriendRequest/index.tsx | Adds a way to cancel outgoing friend requests from profiles. | a cancel button for outgoing friend requests in profiles. |  |
 | ChatInputButtonAPI | not applicable | plugins/_api/chatButtons.ts | API to add buttons to the chat input | client-mod plumbing (an API for other plugins), nothing to port. |  |
 | ClearURLs | ported | plugins/clearURLs/index.ts | Automatically removes tracking elements from URLs you send | plugins/clear_urls.rs: the ClearURLs rules, bundled; messages sent and edited. | `plugins::clear_urls::tests` (6); frames clearurls-off/on; plugins-off send-link |
@@ -193,6 +193,13 @@ Every setting of each original (`definePluginSettings`), its type and default th
 | AnonymiseFileNames | `randomisedLength` | NUMBER | `7` | ported |
 | AnonymiseFileNames | `consistent` | STRING | `"image"` | ported |
 | AnonymiseFileNames | `dateFormat` | STRING | `"YYYY-MM-DD_HH-mm-ss-SSS"` | ported |
+| CallTimer | `format` | SELECT | `"stopwatch"` | ported |
+| CallTimer | `allCallTimers` | BOOLEAN | `false` | ported |
+| CallTimer | `showWithoutHover` | BOOLEAN | `false` | ported |
+| CallTimer | `showRoleColor` | BOOLEAN | `false` | ported |
+| CallTimer | `trackSelf` | BOOLEAN | `false` | ported |
+| CallTimer | `showSeconds` | BOOLEAN | `false` | ported |
+| CallTimer | `watchLargeGuilds` | BOOLEAN | `false` | ported |
 | MemberCount | `toolTip` | BOOLEAN | `true` | ported |
 | MemberCount | `memberList` | BOOLEAN | `true` | ported |
 | MemberCount | `voiceActivity` | BOOLEAN | `true` | ported |
