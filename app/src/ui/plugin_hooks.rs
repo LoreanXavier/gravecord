@@ -1,6 +1,7 @@
 //! Where the built-in plugins (`crate::plugins`) act on the chat. Not part of the pinned client.
 
 mod always_animate;
+mod better_role_dot;
 mod call_timer;
 mod download_all;
 mod game_activity_toggle;

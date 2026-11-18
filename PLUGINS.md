@@ -12,7 +12,7 @@ every setting changed), and with every plugin off, and fails on one differing pi
 The list is the plugins enabled in the owner's Equicord backup of 2026-09-21 (156). Sources were read in the local
 Equicord checkout of 2026-11-14 (`src/plugins` is Vencord's, `src/equicordplugins` Equicord's).
 
-Totals: 36 ported, 6 native, 69 planned, 45 not applicable.
+Totals: 37 ported, 6 native, 68 planned, 45 not applicable.
 
 Status: **ported** works and has its proof; **native** is what gravecord already does without a plugin;
 **planned** is not built yet (an import keeps its settings for when it is); **not applicable** has nothing to
@@ -38,7 +38,7 @@ port in a native client, or was removed upstream.
 | BetterPlusReacts | planned | equicordplugins/betterPlusReacts/index.ts | The amount of plus before :emoji: is the message to add it to | "+:emoji:" reacting to the Nth message above, in the composer's send path. |  |
 | BetterQuickReact | planned | plugins/moreQuickReactions/index.ts | Improves the quick react buttons in the message context menu. | now MoreQuickReactions upstream. more quick reaction buttons in the message context menu. |  |
 | BetterRoleContext | planned | plugins/betterRoleContext/index.tsx | Adds options to copy role color / edit role / view role icon when right clicking roles in the user profile or in the member list | role context menu rows (copy colour, edit role, view icon). |  |
-| BetterRoleDot | planned | plugins/betterRoleDot/index.ts | Copy role colour on RoleDot (accessibility setting) click. Also allows using both RoleDot and coloured names simultaneously | copy a role colour on its dot; dots and coloured names together. |  |
+| BetterRoleDot | ported | plugins/betterRoleDot/index.ts | Copy role colour on RoleDot (accessibility setting) click. Also allows using both RoleDot and coloured names simultaneously | plugin_hooks/better_role_dot.rs: a click on the role dot (chat, member list, and the popout's dots) copies #rrggbb with the success toast; bothStyles makes every In names / Next to names test true (names, role mentions and dots together); copyRoleColorInProfilePopout draws the popout's roles with dots. | `colours_copy_as_color_strings_and_switches_read`; frame brd-both; plugins-off chat, member-list, profile-popout |
 | BetterSettings | not applicable | plugins/betterSettings/index.tsx | Enhances your settings-menu-opening experience | settings are native here: no crossfade or lazy loading to remove. |  |
 | BetterUploadButton | ported | plugins/betterUploadButton/index.ts | Upload with a single click, open menu with right click | ui.rs: the composer plus opens the file picker on a click and its menu on a right click. | `copy_user_urls_and_quick_mention_write_what_the_originals_write` (off); frame bub-on; plugins-off plus-click |
 | BiggerStreamPreview | planned | plugins/biggerStreamPreview/index.tsx | This plugin allows you to enlarge stream previews | a larger stream preview popout. |  |
@@ -198,6 +198,8 @@ Every setting of each original (`definePluginSettings`), its type and default th
 | AnonymiseFileNames | `randomisedLength` | NUMBER | `7` | ported |
 | AnonymiseFileNames | `consistent` | STRING | `"image"` | ported |
 | AnonymiseFileNames | `dateFormat` | STRING | `"YYYY-MM-DD_HH-mm-ss-SSS"` | ported |
+| BetterRoleDot | `bothStyles` | BOOLEAN | `false` | ported |
+| BetterRoleDot | `copyRoleColorInProfilePopout` | BOOLEAN | `false` | ported |
 | CallTimer | `format` | SELECT | `"stopwatch"` | ported |
 | CallTimer | `allCallTimers` | BOOLEAN | `false` | ported |
 | CallTimer | `showWithoutHover` | BOOLEAN | `false` | ported |

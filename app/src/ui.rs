@@ -2915,7 +2915,8 @@ impl Root {
     }
 
     fn guild_author_color(&self, user: Id, fallback: &str) -> Rgba {
-        if self.pref_index("role_style", 0) != 0 {
+        // Not in the pinned client: BetterRoleDot's `bothStyles` (`plugin_hooks/better_role_dot.rs`).
+        if !self.role_names_colored() {
             return color(fallback);
         }
         self.current_guild()
@@ -2967,7 +2968,7 @@ impl Root {
     /// The gradient pair of the user's colour role in the open server, when names show role colours in the name
     /// ("Role Colors" default) and the server has the enhanced styles (modules 967144, 463930).
     fn role_gradient_of(&self, user: &User) -> Option<dc_state::RoleColors> {
-        if self.pref_index("role_style", 0) != 0 {
+        if !self.role_names_colored() {
             return None;
         }
         self.role_gradient_by_id(user.id)
@@ -3167,7 +3168,7 @@ impl Root {
                                         // "Next to names" (`roleStyle` "dot"): the role's dot before the name, 4px
                                         // clear of it (`.roleDot` 790340).
                                         .children(
-                                            (self.pref_index("role_style", 0) == 1)
+                                            self.role_dots_shown()
                                                 .then(|| self.role_color_of(user.id))
                                                 .flatten()
                                                 .map(|rgb| {
@@ -3180,7 +3181,14 @@ impl Root {
                                                         .flex()
                                                         .items_center()
                                                         .justify_center()
-                                                        .child(self.role_dot_of(user.id, rgb))
+                                                        // Not in the pinned client: BetterRoleDot copies
+                                                        // the colour (`plugin_hooks/better_role_dot.rs`).
+                                                        .child(self.role_dot_copy(
+                                                            format!("member-{}", user.id),
+                                                            rgb,
+                                                            self.role_dot_of(user.id, rgb),
+                                                            cx,
+                                                        ))
                                                 }),
                                         )
                                         .child(
@@ -6660,7 +6668,7 @@ impl Root {
         // its text and the colour at .1 (.3 on hover) behind it (332173); the enhanced styles draw the text in the
         // gradient (`roleColors` of the same module, gated by `X_` of 967144).
         let role_look = match span.kind {
-            Kind::Role(id) if self.pref_index("role_style", 0) == 0 => {
+            Kind::Role(id) if self.role_names_colored() => {
                 self.current_guild().and_then(|guild| {
                     let info = guild.role_info.get(&id).filter(|info| info.color != 0)?;
                     Some((info.color, guild.role_colors_of(id)))
@@ -8190,7 +8198,7 @@ impl Root {
                                     .items_center()
                                     // "Next to names": a dot in the role's colour before the name (`roleStyle`).
                                     .children(
-                                        (self.pref_index("role_style", 0) == 1)
+                                        self.role_dots_shown()
                                             .then(|| self.role_color_of(message.author.id))
                                             .flatten()
                                             .map(|rgb| {
@@ -8203,7 +8211,14 @@ impl Root {
                                                     .flex()
                                                     .items_center()
                                                     .justify_center()
-                                                    .child(self.role_dot_of(message.author.id, rgb))
+                                                    // Not in the pinned client: BetterRoleDot copies the
+                                                    // colour (`plugin_hooks/better_role_dot.rs`).
+                                                    .child(self.role_dot_copy(
+                                                        format!("message-{id}"),
+                                                        rgb,
+                                                        self.role_dot_of(message.author.id, rgb),
+                                                        cx,
+                                                    ))
                                             }),
                                     )
                                     .child(

@@ -429,6 +429,28 @@ pub(crate) const DEFS: &[Def] = &[
         ],
     },
     Def {
+        id: "BetterRoleDot",
+        name: "BetterRoleDot",
+        description: "Copy role colour on RoleDot (accessibility setting) click. Also allows using both RoleDot and                       coloured names simultaneously",
+        origin: Origin::Vencord,
+        source: "src/plugins/betterRoleDot/index.ts",
+        default_on: false,
+        settings: &[
+            Setting {
+                key: "bothStyles",
+                label: "Both styles",
+                description: "Show both role dot and coloured names",
+                kind: Kind::Switch { default: false },
+            },
+            Setting {
+                key: "copyRoleColorInProfilePopout",
+                label: "Copy in profile popout",
+                description: "Allow click on role dot in profile popout to copy role color",
+                kind: Kind::Switch { default: false },
+            },
+        ],
+    },
+    Def {
         id: "BetterUploadButton",
         name: "BetterUploadButton",
         description: "Upload with a single click, open menu with right click.",
