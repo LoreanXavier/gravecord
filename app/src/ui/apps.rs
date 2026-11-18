@@ -9,7 +9,7 @@ use gpui::{AnyElement, Context, IntoElement, SharedString, img, prelude::*};
 use serde_json::{Value, json};
 
 impl Root {
-    fn command_index_key(&self) -> Option<String> {
+    pub(super) fn command_index_key(&self) -> Option<String> {
         match (self.guild, self.channel) {
             (Some(guild), _) => Some(format!("command-index:guild:{guild}")),
             (None, Some(channel)) => Some(format!("command-index:channel:{channel}")),

@@ -240,6 +240,11 @@ const fn millis(default: f64) -> Kind {
 /// by the code (a test checks both ways), so a setting can never sit in the page doing nothing unnoticed.
 pub(crate) const IDLE_SETTINGS: &[(&str, &str, &str)] = &[
     (
+        "BetterCommands",
+        "autoFillArguments",
+        "the app's command flow already asks every option in turn, optional ones too, so there is nothing more to fill",
+    ),
+    (
         "PinDMs",
         "friendsSidebarGroupDms",
         "it lists pinned group DMs in the friends sidebar's pinned sections, and the app has no friends sidebar yet",
@@ -461,6 +466,20 @@ pub(crate) const DEFS: &[Def] = &[
                 },
             },
         ],
+    },
+    Def {
+        id: "BetterCommands",
+        name: "BetterCommands",
+        description: "Enhances the command system with miscellaneous improvements.",
+        origin: Origin::Equicord,
+        source: "src/equicordplugins/betterCommands/index.ts",
+        default_on: false,
+        settings: &[Setting {
+            key: "autoFillArguments",
+            label: "Auto Fill Arguments",
+            description: "Automatically fill command with all arguments instead of just required ones.",
+            kind: Kind::Switch { default: true },
+        }],
     },
     Def {
         id: "BetterRoleContext",

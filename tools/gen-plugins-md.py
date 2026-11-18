@@ -154,6 +154,7 @@ PORTED = {
     'BetterRoleDot': "plugin_hooks/better_role_dot.rs: a click on the role dot (chat, member list, and the popout's dots) copies #rrggbb with the success toast; bothStyles makes every In names / Next to names test true (names, role mentions and dots together); copyRoleColorInProfilePopout draws the popout's roles with dots.",
     'NoNitroUpsell': "plugin_hooks.rs premium_type_override, nitro.rs premium_wire: while on, the account's tier reads as Nitro (premiumTypeOverride 2) everywhere the app asks for it, so the upsells that depend on it are left out, as the original tricks the client; the server still applies the real tier.",
     'WhoReacted': "plugin_hooks/who_reacted.rs: after each reaction's count up to five avatars at 90% (four and +N past five), from GET reactions?limit=100&type=0 queued one per 250 ms newest first and merged into the users; nothing on a message with over ten reactions; clickableAvatars opens the profile popout instead of reacting. Super reactions (type 1) are not fetched: the app draws no burst pills.",
+    'BetterCommands': "plugin_hooks/plugin_commands.rs: /refresh among the built-in commands fetches the open channel's or server's command index again, with Clyde's before and after lines; autoFillArguments is idle (the app's command flow already asks every option). GAP: the user option's per-application index.",
     'BetterRoleContext': "plugin_hooks/better_role_context.rs: a right click on a member list role header opens the role menu: Edit Role (Manage Roles: Server Settings on Roles with the role open), Copy Role Color (#rrggbb), View Role Icon (role-icons/<id>/<icon>.<roleIconFileFormat> at 128 in the viewer, without sender or Forward), View Role Members (the role's member popout) and Copy Role ID, with the original's icons. GAP: the dev-context rows of a profile's role chip (the chips open no menu here).",
     'BiggerStreamPreview': "plugin_hooks/bigger_stream_preview.rs: a streaming person's user menu ends with a separator and View Stream Preview (screen icon), opening the stream preview picture at 1280x720 in the viewer (fetched first when not cached, opened on arrival). GAP: the row on a stream tile's own menu.",
     'ClipsEnhancements': "plugin_hooks/clips_enhancements.rs: Clips settings list 3-30 minute lengths, 240p/360p/2160p/4320p and 45-240 FPS beside the pinned client's choices, sorted (Source last), and the recorder keeps those rates; a clip's game is tagged with your own playing activity's application by richPresenceTagging (always, when the name's first or last word matches, never). GAP: the recorder's 384 MB video cap still bounds a long clip.",
@@ -231,6 +232,7 @@ TESTS = {
     'BetterRoleDot': '`colours_copy_as_color_strings_and_switches_read`; frame brd-both; plugins-off chat, member-list, profile-popout',
     'NoNitroUpsell': '`no_nitro_upsell_reads_as_nitro_only_while_on`; frames nnu-on/nnu-off (Appearance: Color Themes as Nitro); plugins-off gif-picker, settings-appearance',
     'WhoReacted': '`five_at_most_with_the_rest_counted`; frame wr-on (demo-reactors); plugins-off reactions, chat',
+    'BetterCommands': 'command table test (`every_plugin_with_commands_is_defined`); frames pending (fixture token answers 401)',
     'BetterRoleContext': '`rows_follow_what_the_role_offers_in_the_original_order`, `colors_copy_as_css_hex_and_the_format_defaults_to_png`; frames brc-menu, brc-members, brc-icon, brc-edit (synthetic hoisted role); plugins-off role-header',
     'BiggerStreamPreview': 'frame bsp-menu (callsim peer live, row at the end of the voice row menu); plugins-off user-volume, voice-profile',
     'ClipsEnhancements': '`tagging_matches_by_the_name_s_ends`, `labels_follow_the_messages`; frame ce-length (with NoNitroUpsell: the Clips page needs Nitro in a capture run, so plugins-off has no Clips scenario; the plugin-off lists are the clips label tests)',
@@ -310,6 +312,10 @@ SKIPPED_SETTINGS = {
 
 # Already what gravecord does without a plugin.
 NATIVE = {
+    'PermissionFreeWill': "the channel permission editor here has neither the pinned client's lockout guard (\"Pretty sure "
+                          "you don't want to do this\", STAGE_CHANNEL_CANNOT_OVERWRITE_PERMISSION) nor its onboarding "
+                          "threshold warning yet (GAP: main app), so both edits already go through; when the app adds "
+                          "them, lockout and onboarding need their hooks there.",
     'LimitMiddleClickPaste': "a middle click in the app neither pastes (no primary-selection paste in its text boxes) nor "
                              "opens a link or a picture (a middle press starts the pinned client's autoscroll instead), "
                              "which is what pasteScope and openScope ask for; the pinned client's own middle-click link "
@@ -359,7 +365,6 @@ PLANNED = {
     'BetterActivities': 'activity icons in member list rows and every activity in the profile popout.',
     'BetterAudioPlayer': 'a spectrograph and oscilloscope in the audio attachment player (needs the decoded samples).',
     'BetterBlockedUsers': 'search in the blocked list, selectable names, no blocked-profile prompt, grouped blocked messages.',
-    'BetterCommands': 'changes to the slash command UI.',
     'BetterFolders': 'a second server sidebar for folders.',
     'BetterForwards': 'forward dialog tweaks.',
     'BetterGifAltText': "a place where alt text shows: the original changes the `alt` that screen readers read, and the app draws images without an accessibility tree.",
@@ -377,7 +382,6 @@ PLANNED = {
     'LimitlessScreenshare': 'resolution and FPS sliders past the tier limits (owner: later, FakeNitro-style).',
     'MessageLogger': 'a store of deleted and edited messages and their red/edited display.',
     'MoreCommands': 'its slash commands.',
-    'PermissionFreeWill': 'no client-side limits in channel permission editing.',
     'PermissionsViewer': 'a permission breakdown in profiles and menus.',
     'PreviewMessage': 'a preview of the message before sending.',
     'Quoter': 'a quote image made from a message.',

@@ -9,7 +9,11 @@
 //!   invites (`GET`) and /revoke friend invites (`DELETE`), each answered by Clyde with the invites' links, expiry and
 //!   uses.
 //!
-//! GAP: SpotifyShareCommands' "Failed to find the track on spotify." for a local file: the app's Spotify store keeps
+//! - BetterCommands (Equicord `src/equicordplugins/betterCommands`): /refresh fetches the open channel's (or server's)
+//!   application command index again, Clyde saying so before and after.
+//!
+//! GAP: BetterCommands' `user` option asks for a bot's own application index, which the app does not fetch (it keeps
+//! the channel and server indexes). SpotifyShareCommands' "Failed to find the track on spotify." for a local file: the app's Spotify store keeps
 //! no player for a track without an id, so a local file reads as no music. Not part of the pinned client.
 
 use super::super::Root;
@@ -29,6 +33,8 @@ enum Does {
     RevokeInvites,
     /// MessageTags' `/tags`; the tags' own commands are `TAG_BIT` and their place (`message_tags.rs`).
     Tags,
+    /// BetterCommands' `/refresh`.
+    Refresh,
 }
 
 struct Command {
@@ -56,6 +62,12 @@ const COMMANDS: &[Command] = &[
         name: "artist",
         description: "Share your current Spotify artist in chat",
         does: Does::Artist,
+    },
+    Command {
+        plugin: "BetterCommands",
+        name: "refresh",
+        description: "Refreshes the specified applications commands locally",
+        does: Does::Refresh,
     },
     Command {
         plugin: "MessageTags",
@@ -150,6 +162,12 @@ impl Root {
                     Does::Track | Does::Album | Does::Artist => {
                         vec![message_option("Your message", false)]
                     }
+                    Does::Refresh => vec![super::super::slash::Opt::new(
+                        "user",
+                        super::super::slash::USER,
+                        "specific user to try and refresh",
+                        false,
+                    )],
                     _ => Vec::new(),
                 };
                 built_in(
@@ -224,6 +242,15 @@ impl Root {
                 self.send(share_text(&string_value(filled, "message"), &link));
             }
             Does::Tags => self.message_tags_manage(filled, channel, cx),
+            Does::Refresh => {
+                // `APPLICATION_COMMAND_INDEX_FETCH_REQUEST` for the channel's (or server's) index, fetched again.
+                self.clyde_says(channel, "Refreshing application commands...", "Clyde");
+                if let Some(key) = self.command_index_key() {
+                    self.requested.remove(&key);
+                }
+                self.request_command_index();
+                self.clyde_says(channel, "Commands refreshed successfully!", "Clyde");
+            }
             Does::CreateInvite | Does::ViewInvites | Does::RevokeInvites => {
                 let (method, body, tag) = match command.does {
                     Does::CreateInvite => (reqwest::Method::POST, Some(json!({})), "create"),
