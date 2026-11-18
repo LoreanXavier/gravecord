@@ -12,7 +12,7 @@ every setting changed), and with every plugin off, and fails on one differing pi
 The list is the plugins enabled in the owner's Equicord backup of 2026-09-21 (156). Sources were read in the local
 Equicord checkout of 2026-11-14 (`src/plugins` is Vencord's, `src/equicordplugins` Equicord's).
 
-Totals: 53 ported, 7 native, 51 planned, 45 not applicable.
+Totals: 54 ported, 8 native, 49 planned, 45 not applicable.
 
 Status: **ported** works and has its proof; **native** is what gravecord already does without a plugin;
 **planned** is not built yet (an import keeps its settings for when it is); **not applicable** has nothing to
@@ -85,7 +85,7 @@ port in a native client, or was removed upstream.
 | IloveSpam | native | (not in the 2026-11-14 checkout) |  | the app does not hide the messages of users flagged as likely spammers (the user flag 1<<20 that the pinned client's message list checks) yet (GAP: main app), so they already show as any other; when the app adds the rule, this plugin needs its hook there. |  |
 | ImageZoom | planned | plugins/imageZoom/index.tsx | Lets you zoom in to images and gifs. Use scroll wheel to zoom in and shift + scroll wheel to increase lens radius / size | a zoom lens in the image viewer. |  |
 | LimitlessScreenshare | planned | (not in the 2026-11-14 checkout) |  | resolution and FPS sliders past the tier limits (owner: later, FakeNitro-style). |  |
-| LimitMiddleClickPaste | planned | equicordplugins/middleClickTweaks/index.ts | Various middle click tweaks, such as with pasting and link opening. | now MiddleClickTweaks upstream. middle-click paste only into a focused text box, and middle-click link opening. |  |
+| LimitMiddleClickPaste | native | (not in the 2026-11-14 checkout) |  | a middle click in the app neither pastes (no primary-selection paste in its text boxes) nor opens a link or a picture (a middle press starts the pinned client's autoscroll instead), which is what pasteScope and openScope ask for; the pinned client's own middle-click link opening is not ported yet (GAP: main app), and when it is, openScope needs its hook there. |  |
 | MemberCount | ported | plugins/memberCount/index.tsx | Shows the number of online members, total members, and users in voice channels on the server - in the member list and tooltip. | plugin_hooks/member_count.rs: online, total and in-voice counts with their tooltips at the top of the member list, online and total in the server tooltip. Not ported: the original's gateway requests (`preload` of a server's online count, member list subscriptions while the list is hidden); plugin code sends nothing, so an unopened server shows '?' online until its count arrives. | `plugin_hooks::member_count::tests` (2); frames mc-on/mc-off; plugins-off member-list |
 | MemberListDecoratorsAPI | not applicable | plugins/_api/memberListDecorators/index.tsx | API to add decorators to member list (both in servers and DMs) | client-mod plumbing (an API for other plugins), nothing to port. |  |
 | MenuItemDemanglerAPI | not applicable | (not in the 2026-11-14 checkout) |  | client-mod plumbing (an API for other plugins), nothing to port. |  |
@@ -114,7 +114,7 @@ port in a native client, or was removed upstream.
 | NoUnblockToJump | native | plugins/noUnblockToJump/index.ts | Allows you to jump to messages of blocked or ignored users and likely spammers without unblocking them | the app has no 'unblock to jump' dialog yet, so jumping to a blocked or ignored user's message already works; when the app adds the dialog, this plugin needs its hook there. |  |
 | NSFWGateBypass | not applicable | (not in the 2026-11-14 checkout) |  | removed from Equicord in 9a3c66ab. |  |
 | OnePingPerDM | ported | plugins/onePingPerDM/index.ts | If unread messages are sent by a user in DMs multiple times, you'll only receive one audio ping. Read the messages to reset the limit | notifications.rs: in the DMs it affects only the oldest unread message (the first after the channel's ack) plays the sound; ignored users, allowed mentions and @everyone still ping; the desktop notification is left alone; alwaysPlaySound plays the message sound for any message that notifies. | `one_ping_per_dm_lets_the_oldest_unread_ping`; no frame (a sound, not a picture) |
-| OpenInApp | planned | plugins/openInApp/index.ts | Open links in their respective apps instead of your browser | Spotify, Steam and other links opened in their apps. |  |
+| OpenInApp | ported | plugins/openInApp/index.ts | Open links in their respective apps instead of your browser | plugin_hooks/open_in_app.rs: links of Spotify, Steam, Epic, Tidal, Apple Music, VRChat and Telegram open in their apps (each behind its switch) before the trust checks, with the success toast; spotify.link and s.team are resolved by HEAD requests off the UI thread (Request::ResolveRedirect, five redirects) and open in the app or the browser; a profile's Spotify or Steam connection opens the account in its app. | `links_become_the_apps_addresses`, `every_switch_defaults_on`; plugins-off send-link, masked-link |
 | PermissionFreeWill | planned | plugins/permissionFreeWill/index.ts | Disables the client-side restrictions for channel permission management. | no client-side limits in channel permission editing. |  |
 | PermissionsViewer | planned | plugins/permissionsViewer/index.tsx | View the permissions a user or channel has, and the roles of a server | a permission breakdown in profiles and menus. |  |
 | PinDMs | ported | plugins/pinDms/index.tsx | Allows you to pin private channels to the top of your DM list. To pin/unpin or re-order pins, right click DMs | plugin_hooks/pin_dms.rs: categories at the top of the DM list (header in the category colour with a chevron, a click folds it, the open conversation stays), pinned conversations leave the plain list; pinOrder by recent message or custom; canCollapseDmSection folds the plain list from its title (dmSectionCollapsed hidden). Pin DMs submenu in the DM/user menus (Add Category, categories; Unpin DM, Move Up/Down), category menu (Edit, Move Up/Down, Delete), New/Edit Category dialog in the folder dialog's layout without the default swatch. Categories per account in storage. GAP: the friends sidebar, the quick switcher order, submenu row tints. | `categories_round_trip_and_order_by_recency_or_as_kept`, `the_pin_menu_offers_categories_or_unpin_and_moves`, `swaps_stay_inside_the_list_and_settings_default_off`; frames pd-menu, pd-sub, pd-dialog, pd-list, pd-folded, pd-catmenu; plugins-off dm-list, user-menu |
@@ -260,6 +260,13 @@ Every setting of each original (`definePluginSettings`), its type and default th
 | OnePingPerDM | `allowEveryone` | BOOLEAN | `false` | ported |
 | OnePingPerDM | `ignoreUsers` | STRING | `""` | ported |
 | OnePingPerDM | `alwaysPlaySound` | BOOLEAN | `false` | ported |
+| OpenInApp | `spotify` | BOOLEAN | `true` | ported |
+| OpenInApp | `steam` | BOOLEAN | `true` | ported |
+| OpenInApp | `epic` | BOOLEAN | `true` | ported |
+| OpenInApp | `tidal` | BOOLEAN | `true` | ported |
+| OpenInApp | `itunes` | BOOLEAN | `true` | ported |
+| OpenInApp | `vrcx` | BOOLEAN | `true` | ported |
+| OpenInApp | `telegram` | BOOLEAN | `true` | ported |
 | PinDMs | `pinOrder` | SELECT | `PinOrder.LastMessage` | ported |
 | PinDMs | `canCollapseDmSection` | BOOLEAN | `false` | ported |
 | PinDMs | `dmSectionCollapsed` | BOOLEAN | `false` | ported |

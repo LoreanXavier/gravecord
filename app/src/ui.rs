@@ -1978,6 +1978,10 @@ impl Root {
                 if self.image_crop_fetched(&key, &body, cx) {
                     return;
                 }
+                // Not in the pinned client: OpenInApp's resolved short link (`plugin_hooks/open_in_app.rs`).
+                if self.open_in_app_resolved(&key, &body, cx) {
+                    return;
+                }
                 // Not in the pinned client: FriendInvites' answers (`plugin_hooks/plugin_commands.rs`).
                 if self.friend_invites_answered(&key, &body) {
                     return;

@@ -1126,6 +1126,58 @@ pub(crate) const DEFS: &[Def] = &[
         ],
     },
     Def {
+        id: "OpenInApp",
+        name: "OpenInApp",
+        description: "Open links in their respective apps instead of your browser",
+        origin: Origin::Vencord,
+        source: "src/plugins/openInApp/index.ts",
+        default_on: false,
+        settings: &[
+            Setting {
+                key: "spotify",
+                label: "Spotify",
+                description: "Open Spotify links in the Spotify app",
+                kind: Kind::Switch { default: true },
+            },
+            Setting {
+                key: "steam",
+                label: "Steam",
+                description: "Open Steam links in the Steam app",
+                kind: Kind::Switch { default: true },
+            },
+            Setting {
+                key: "epic",
+                label: "Epic",
+                description: "Open Epic Games links in the Epic Games Launcher",
+                kind: Kind::Switch { default: true },
+            },
+            Setting {
+                key: "tidal",
+                label: "Tidal",
+                description: "Open Tidal links in the Tidal app",
+                kind: Kind::Switch { default: true },
+            },
+            Setting {
+                key: "itunes",
+                label: "iTunes",
+                description: "Open Apple Music links in the iTunes app",
+                kind: Kind::Switch { default: true },
+            },
+            Setting {
+                key: "vrcx",
+                label: "Vrcx",
+                description: "Open VRChat links in the VRCX app",
+                kind: Kind::Switch { default: true },
+            },
+            Setting {
+                key: "telegram",
+                label: "Telegram",
+                description: "Open Telegram links in the Telegram app",
+                kind: Kind::Switch { default: true },
+            },
+        ],
+    },
+    Def {
         id: "PinDMs",
         name: "PinDMs",
         description: "Allows you to pin private channels to the top of your DM list. To pin/unpin or re-order pins, right click DMs",

@@ -21,7 +21,6 @@ enabled = sorted((k for k, v in backup['settings']['plugins'].items() if v.get('
 RENAMED = {
     'BetterQuickReact': 'MoreQuickReactions',
     'ExpressionCloner': 'ExpressionManager',
-    'LimitMiddleClickPaste': 'MiddleClickTweaks',
     'MessageTags': 'CustomCommands',
     'TenorGifSearch': 'GifProviderSwitcher',
 }
@@ -114,6 +113,14 @@ for dp, dn, fn in os.walk(ROOT):
                         s = re.search(r'definePluginSettings\(\{', holder)
                         if s:
                             break
+            # Settings made from a table of switches (`definePluginSettings(Object.entries(Rules).reduce(...))`,
+            # OpenInApp): one BOOLEAN per key of the table, default true.
+            computed = re.search(r'definePluginSettings\(\s*Object\.entries\((\w+)\)', text)
+            if not s and computed:
+                table = re.search(r'const\s+' + computed.group(1) + r'[^=]*=\s*\{', text)
+                if table:
+                    for key, _ in top_level_entries(balanced(text, table.end() - 1)):
+                        settings.append((key, 'BOOLEAN', 'true'))
             if s:
                 for key, body in top_level_entries(balanced(holder, s.end() - 1)):
                     kind = re.search(r'type:\s*OptionType\.(\w+)', body)
@@ -152,6 +159,7 @@ PORTED = {
     'ClipsEnhancements': "plugin_hooks/clips_enhancements.rs: Clips settings list 3-30 minute lengths, 240p/360p/2160p/4320p and 45-240 FPS beside the pinned client's choices, sorted (Source last), and the recorder keeps those rates; a clip's game is tagged with your own playing activity's application by richPresenceTagging (always, when the name's first or last word matches, never). GAP: the clipsLink button; the recorder's 384 MB video cap still bounds a long clip.",
     'FriendInvites': "plugin_hooks/plugin_commands.rs: /create friend invite, /view friend invites and /revoke friend invites among the built-in commands (POST/GET/DELETE /users/@me/invites, the pinned client's FRIEND_INVITES route), answered privately by Clyde with discord.gg links, <t:…:R> expiry and uses; a failed request says nothing, as the original's rejected promise.",
     'SpotifyShareCommands': "plugin_hooks/plugin_commands.rs: /track, /album and /artist among the built-in commands send open.spotify.com links of what your Spotify plays (album and first artist kept from the player state), after the optional message; without music Clyde says \"You're not listening to any music.\". GAP: a local file reads as no music.",
+    'OpenInApp': "plugin_hooks/open_in_app.rs: links of Spotify, Steam, Epic, Tidal, Apple Music, VRChat and Telegram open in their apps (each behind its switch) before the trust checks, with the success toast; spotify.link and s.team are resolved by HEAD requests off the UI thread (Request::ResolveRedirect, five redirects) and open in the app or the browser; a profile's Spotify or Steam connection opens the account in its app.",
     'PinDMs': "plugin_hooks/pin_dms.rs: categories at the top of the DM list (header in the category colour with a chevron, a click folds it, the open conversation stays), pinned conversations leave the plain list; pinOrder by recent message or custom; canCollapseDmSection folds the plain list from its title (dmSectionCollapsed hidden). Pin DMs submenu in the DM/user menus (Add Category, categories; Unpin DM, Move Up/Down), category menu (Edit, Move Up/Down, Delete), New/Edit Category dialog in the folder dialog's layout without the default swatch. Categories per account in storage. GAP: the friends sidebar, the quick switcher order, submenu row tints.",
     'SuperReactionTweaks': "plugin_hooks/super_reaction_tweaks.rs: superReactByDefault opens the reaction picker with its Super Reactions toggle on, for an account with real Nitro (not the plugins' override). The two playing-limit settings are idle (no super reaction effects play in the app yet).",
     'ServerInfo': "plugin_hooks/server_info.rs: Server Info after Edit Per-server Profile in the server menu opens the dialog: icon (or acronym), name and description, the banner on the first tab, tabs Server Info / Friends / Mutual Users / Blocked Users / Ignored Users with counts once shown; the info grid (owner, created, joined, vanity, locale, verification, boosts, channels, roles); relationship lists of members (missing ones asked for once by GUILD_MEMBERS_REQUEST) sorted by sorting; mutual users with up to three server icons and +n; rows open the profile, icon and banner the viewer. GAP: the row in the server header dropdown.",
@@ -225,6 +233,7 @@ TESTS = {
     'ClipsEnhancements': '`tagging_matches_by_the_name_s_ends`, `labels_follow_the_messages`; frame ce-length (with NoNitroUpsell: the Clips page needs Nitro in a capture run, so plugins-off has no Clips scenario; the plugin-off lists are the clips label tests)',
     'FriendInvites': '`answers_read_as_the_original_writes_them`, `every_plugin_with_commands_is_defined`; frame ssc-commands (the three commands among Built-In); plugins-off slash-list',
     'SpotifyShareCommands': '`answers_read_as_the_original_writes_them`; frames ssc-commands, ssc-none (Clyde: not listening); plugins-off slash-list',
+    'OpenInApp': '`links_become_the_apps_addresses`, `every_switch_defaults_on`; plugins-off send-link, masked-link',
     'PinDMs': '`categories_round_trip_and_order_by_recency_or_as_kept`, `the_pin_menu_offers_categories_or_unpin_and_moves`, `swaps_stay_inside_the_list_and_settings_default_off`; frames pd-menu, pd-sub, pd-dialog, pd-list, pd-folded, pd-catmenu; plugins-off dm-list, user-menu',
     'SuperReactionTweaks': '`super_reactions_start_on_only_with_the_switch`; plugins-off reactions',
     'ServerInfo': '`acronyms_and_levels_follow_the_original`, `sorting_defaults_to_display_names`; frames si-menu, si-info, si-friends, si-mutual; plugins-off guild-menu',
@@ -291,6 +300,10 @@ SKIPPED_SETTINGS = {
 
 # Already what gravecord does without a plugin.
 NATIVE = {
+    'LimitMiddleClickPaste': "a middle click in the app neither pastes (no primary-selection paste in its text boxes) nor "
+                             "opens a link or a picture (a middle press starts the pinned client's autoscroll instead), "
+                             "which is what pasteScope and openScope ask for; the pinned client's own middle-click link "
+                             "opening is not ported yet (GAP: main app), and when it is, openScope needs its hook there.",
     'IloveSpam': "the app does not hide the messages of users flagged as likely spammers (the user flag 1<<20 that the "
                  "pinned client's message list checks) yet (GAP: main app), so they already show as any other; when the "
                  "app adds the rule, this plugin needs its hook there.",
@@ -356,7 +369,6 @@ PLANNED = {
     'MessageLogger': 'a store of deleted and edited messages and their red/edited display.',
     'MoreCommands': 'its slash commands.',
     'NewGuildSettings': 'notification defaults applied when joining a server.',
-    'OpenInApp': 'Spotify, Steam and other links opened in their apps.',
     'PermissionFreeWill': 'no client-side limits in channel permission editing.',
     'PermissionsViewer': 'a permission breakdown in profiles and menus.',
     'PreviewMessage': 'a preview of the message before sending.',

@@ -223,6 +223,12 @@ pub enum Request {
         key: String,
         route: String,
     },
+    /// Not in the pinned client: OpenInApp's short link resolved by HEAD requests (no authorization, five redirects at
+    /// most), handed back under `key` as `Update::Fetched` with `{"url": <final address>}`.
+    ResolveRedirect {
+        key: String,
+        url: String,
+    },
     /// GET a public JSON file (no authorization) and hand it back under `key` as `Update::Fetched`; a failure hands back
     /// `null`.
     FetchPublicJson {
@@ -694,6 +700,7 @@ impl Request {
             Request::Fetch { .. } => "Fetch",
             Request::FetchCdn { .. } => "FetchCdn",
             Request::FetchPublicJson { .. } => "FetchPublicJson",
+            Request::ResolveRedirect { .. } => "ResolveRedirect",
             Request::Typing { .. } => "Typing",
             Request::React { .. } => "React",
             Request::LoadMessages { .. } => "LoadMessages",
@@ -731,6 +738,7 @@ impl Request {
             Request::Fetch { .. }
             | Request::FetchCdn { .. }
             | Request::FetchPublicJson { .. }
+            | Request::ResolveRedirect { .. }
             | Request::LoadMessages { .. }
             | Request::PrefetchMessages { .. }
             | Request::FetchMessages { .. }
@@ -2296,6 +2304,15 @@ pub async fn run(token: Token, updates: mpsc::UnboundedSender<Update>, requests:
                     }
                 });
             }
+            Request::ResolveRedirect { key, url } => {
+                tokio::spawn(async move {
+                    let resolved = resolve_redirect(&url).await;
+                    let _ = updates.send(Update::Fetched {
+                        key,
+                        body: json!({"url": resolved}),
+                    });
+                });
+            }
             Request::FetchPublicJson { key, url } => {
                 tokio::spawn(async move {
                     let body = match client.fetch_public(&url).await {
@@ -3551,4 +3568,33 @@ async fn webhook_demo(client: &dc_http::Client, channel: u64) -> Value {
         .request(reqwest::Method::DELETE, &format!("/webhooks/{id}"), None)
         .await;
     json!({"ok": true, "ids": ids})
+}
+
+/// OpenInApp's `getRedirect`: HEAD requests that follow `Location` five times at most; the last address reached, or
+/// the one given when a request fails.
+async fn resolve_redirect(url: &str) -> String {
+    let Ok(client) = reqwest::Client::builder()
+        .redirect(reqwest::redirect::Policy::none())
+        .build()
+    else {
+        return url.to_owned();
+    };
+    let mut current = url.to_owned();
+    for _ in 0..5 {
+        let Ok(response) = client.head(&current).send().await else {
+            break;
+        };
+        let Some(next) = response
+            .headers()
+            .get(reqwest::header::LOCATION)
+            .and_then(|value| value.to_str().ok())
+        else {
+            break;
+        };
+        current = match reqwest::Url::parse(&current).and_then(|base| base.join(next)) {
+            Ok(joined) => joined.to_string(),
+            Err(_) => break,
+        };
+    }
+    current
 }

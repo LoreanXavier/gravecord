@@ -15,6 +15,7 @@ mod member_count;
 mod message_clicks;
 mod message_peek;
 mod message_pronouns;
+mod open_in_app;
 mod mute_channel_mentions;
 mod pin_dms;
 mod platform_indicators;
