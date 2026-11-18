@@ -622,6 +622,8 @@ impl Root {
     /// `closePrivateChannel(id, _, silent)`: the channel goes at once, then the service is told (`silent` leaves a group
     /// without a system message).
     pub(super) fn close_dm_with(&mut self, channel: Id, silent: bool, cx: &mut Context<Self>) {
+        // Not in the pinned client: RelationshipNotifier keeps quiet about a group you leave.
+        super::plugin_hooks::relationship_removed_by_you(None, None, Some(channel));
         self.stores
             .private_channels
             .retain(|known| known.id != channel);

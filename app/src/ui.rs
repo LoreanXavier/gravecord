@@ -1507,6 +1507,8 @@ impl Root {
             }
             Update::OverlayFocus(foreground) => self.overlay_focus_changed(foreground, cx),
             Update::Rpc(event) => self.rpc_event(event, cx),
+            // Not in the pinned client: a plugin's desktop notification (`plugin_hooks/plugin_notifications.rs`).
+            Update::NotificationClicked(channel) if self.plugin_notification_clicked(channel, cx) => {}
             Update::NotificationClicked(channel) => self.open_notification_channel(channel, cx),
             Update::Tray(action) => self.tray_action(action, cx),
             Update::Updater => cx.notify(),
@@ -1729,6 +1731,9 @@ impl Root {
                 // Not in the pinned client: NewGuildSettings on a server just joined
                 // (`plugin_hooks/new_guild_settings.rs`).
                 self.new_guild_settings_dispatch(&name, &data);
+                // Not in the pinned client: RelationshipNotifier's flux handlers
+                // (`plugin_hooks/relationship_notifier.rs`).
+                self.relationship_notifier_dispatch(&name, &data, cx);
                 if name == "CHANNEL_PINS_UPDATE" {
                     self.ack_open_pins();
                 }
@@ -1988,6 +1993,10 @@ impl Root {
                 }
                 // Not in the pinned client: FriendInvites' answers (`plugin_hooks/plugin_commands.rs`).
                 if self.friend_invites_answered(&key, &body) {
+                    return;
+                }
+                // Not in the pinned client: RelationshipNotifier's person lookups (`plugin_hooks/relationship_notifier.rs`).
+                if self.relationship_notifier_fetched(&key, &body, cx) {
                     return;
                 }
                 // Not in the pinned client: ZipPreview's archive arrived (`plugin_hooks/zip_preview.rs`).
@@ -11718,6 +11727,8 @@ impl Render for Root {
             .children(self.clips_card_menu_layer(cx))
             .children(self.toast_layer())
             .children(self.app_toast_layer())
+            // Not in the pinned client: the plugins' notification card (`plugin_hooks/plugin_notifications.rs`).
+            .children(self.plugin_notification_layer(window, cx))
             .children(self.picker_layer(window, cx))
             .children(self.soundboard_gift_picker(window, cx))
             // Module 738876: the drop area over everything (`z-index: 2000`) while files are dragged in.

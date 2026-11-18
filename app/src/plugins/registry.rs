@@ -1610,6 +1610,52 @@ pub(crate) const DEFS: &[Def] = &[
         }],
     },
     Def {
+        id: "RelationshipNotifier",
+        name: "RelationshipNotifier",
+        description: "Notifies you when a friend, group chat, or server removes you.",
+        origin: Origin::Vencord,
+        source: "src/plugins/relationshipNotifier/index.ts",
+        default_on: false,
+        settings: &[
+            Setting {
+                key: "notices",
+                label: "Notices",
+                description: "Also show a notice at the top of your screen when removed (use this if you don't want to miss any notifications).",
+                kind: Kind::Switch { default: false },
+            },
+            Setting {
+                key: "offlineRemovals",
+                label: "Offline Removals",
+                description: "Notify you when starting discord if you were removed while offline.",
+                kind: Kind::Switch { default: true },
+            },
+            Setting {
+                key: "friends",
+                label: "Friends",
+                description: "Notify when a friend removes you",
+                kind: Kind::Switch { default: true },
+            },
+            Setting {
+                key: "friendRequestCancels",
+                label: "Friend Request Cancels",
+                description: "Notify when a friend request is cancelled",
+                kind: Kind::Switch { default: true },
+            },
+            Setting {
+                key: "servers",
+                label: "Servers",
+                description: "Notify when removed from a server",
+                kind: Kind::Switch { default: true },
+            },
+            Setting {
+                key: "groups",
+                label: "Groups",
+                description: "Notify when removed from a group chat",
+                kind: Kind::Switch { default: true },
+            },
+        ],
+    },
+    Def {
         id: "RevealAllSpoilers",
         name: "RevealAllSpoilers",
         description: "Ctrl-click a spoiler to open every spoiler in its message, Ctrl+Shift-click for the whole channel.",

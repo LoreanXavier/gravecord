@@ -152,6 +152,10 @@ impl Root {
 
     /// The bar, when a notice holds.
     pub(super) fn notice_bar(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
+        // Not in the pinned client: a plugin's `GENERIC` notice, first in the table (`plugin_hooks/plugin_notifications.rs`).
+        if let Some(bar) = self.plugin_notice_bar(cx) {
+            return Some(bar);
+        }
         // `VIEWING_ROLES` comes before `VOICE_DISABLED` in the table (`ui/view_as_role.rs`).
         if let Some(bar) = self.view_as_role_bar(cx) {
             return Some(bar);

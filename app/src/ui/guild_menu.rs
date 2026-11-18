@@ -473,6 +473,8 @@ impl Root {
 
 /// The request behind Leave Server (`GUILD_LEAVE`, module 652215; `leaveGuild` sends `lurking`).
 pub(super) fn leave_request(guild: Id) -> Request {
+    // Not in the pinned client: RelationshipNotifier keeps quiet about a server you leave.
+    super::plugin_hooks::relationship_removed_by_you(None, Some(guild), None);
     Request::Rest {
         key: None,
         method: reqwest::Method::DELETE,
