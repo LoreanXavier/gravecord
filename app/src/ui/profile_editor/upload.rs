@@ -149,16 +149,87 @@ impl Root {
         &self,
         user: &dc_state::User,
     ) -> Option<Arc<gpui::Image>> {
-        self.profile_editor
+        if let Some(image) = self
+            .profile_editor
             .as_ref()
             .and_then(|open| open.avatar_image.clone())
-            .or_else(|| self.images.get(&crate::ui::avatar_source(user).0).cloned())
+        {
+            return Some(image);
+        }
+        self.images
+            .get(&self.profile_editor_avatar_source(user).0)
+            .cloned()
     }
+
+    /// The avatar's key and address once the pending change is applied: a removed avatar is the default one, or the
+    /// main profile's for a server profile (`rM(null, ...)` of module 468450).
+    pub(super) fn profile_editor_avatar_source(&self, user: &dc_state::User) -> (String, String) {
+        let removed = self
+            .profile_editor
+            .as_ref()
+            .is_some_and(|open| matches!(open.pending.avatar, Some(None)));
+        let in_guild = self
+            .profile_editor
+            .as_ref()
+            .is_some_and(|open| open.guild.is_some());
+        if removed && !in_guild {
+            let mut plain = user.clone();
+            plain.avatar = None;
+            return crate::ui::avatar_source(&plain);
+        }
+        crate::ui::avatar_source(user)
+    }
+
+    /// The avatar tile's delete button (module 487233 `C`): shown while there is an avatar to drop (`z5` of module
+    /// 919395: the pending one once changed, else the current one); `Some(true)` is Reset (a server profile whose
+    /// main profile has an avatar), `Some(false)` is Remove.
+    pub(super) fn profile_editor_avatar_affordance(&self) -> Option<bool> {
+        let open = self.profile_editor.as_ref()?;
+        let me = self.stores.current_user.as_ref()?;
+        let current = match open.guild {
+            Some(guild) => self
+                .stores
+                .members
+                .get(guild, me.id)
+                .and_then(|member| member.avatar.clone()),
+            None => me.avatar.clone(),
+        };
+        let shown = avatar_affordance_shown(
+            open.pending.avatar.as_ref().map(Option::is_some),
+            current.is_some(),
+        );
+        shown.then_some(open.guild.is_some() && me.avatar.is_some())
+    }
+
+    /// The delete button's click: the pending avatar becomes none (`rM(null, ...)`).
+    pub(super) fn profile_editor_drop_avatar(&mut self, cx: &mut Context<Self>) {
+        if let Some(open) = self.profile_editor.as_mut() {
+            open.pending.avatar = Some(None);
+            open.avatar_image = None;
+        }
+        let user = self.profile_editor_user();
+        let (key, url) = self.profile_editor_avatar_source(&user);
+        self.request_image(key, url);
+        cx.notify();
+    }
+}
+
+/// `z5` of module 919395: with no pending change the current avatar decides, else the pending one.
+pub(super) fn avatar_affordance_shown(pending: Option<bool>, current: bool) -> bool {
+    pending.unwrap_or(current)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_avatar_delete_button_follows_the_pending_avatar_first() {
+        assert!(avatar_affordance_shown(None, true));
+        assert!(!avatar_affordance_shown(None, false));
+        assert!(avatar_affordance_shown(Some(true), false));
+        assert!(!avatar_affordance_shown(Some(false), true));
+    }
 
     #[test]
     fn the_description_is_the_file_name_and_a_nameless_banner_is_banner_image() {

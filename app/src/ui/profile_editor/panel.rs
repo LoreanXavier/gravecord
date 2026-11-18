@@ -260,11 +260,54 @@ impl Root {
             }
             stack
         };
+        // Module 487233's affordance on the tile of module 930349: `deleteButtonWrapper_HhFoZE` 4px from the top and
+        // the end, shown on hover (`resetButton_HhFoZE`: always), an `sm` `overlay-secondary` icon button with the
+        // trash (Remove) or retry (Reset to Default) icon and that tooltip.
+        let affordance = self.profile_editor_avatar_affordance().map(|reset| {
+            let (glyph, tip, label) = if reset {
+                ("clips_retry", dc_intl::t("wgIPss"), dc_intl::t("Y0mxy1"))
+            } else {
+                ("clips_trash", dc_intl::t("N86XcP"), dc_intl::t("twB3fz"))
+            };
+            self.with_tip(
+                "profile-editor-avatar-delete",
+                crate::ui::tooltip::Tip::text(tip, crate::ui::tooltip::Side::Top),
+                div()
+                    .id("profile-editor-avatar-delete-button")
+                    .aria_label(label)
+                    .size(px(28.))
+                    .rounded_full()
+                    .bg(color("--control-overlay-secondary-background-default"))
+                    .hover(|style| style.bg(color("--control-overlay-secondary-background-hover")))
+                    .cursor_pointer()
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .child(icon(glyph, 16., "--control-overlay-secondary-text-default"))
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        cx.stop_propagation();
+                        this.profile_editor_drop_avatar(cx);
+                    })),
+                cx,
+            )
+            .absolute()
+            .top(px(4.))
+            .right(px(4.))
+            .when(!reset, |button| {
+                button
+                    .opacity(0.)
+                    .group_hover("profile-editor-tile-avatar-group", |style| {
+                        style.opacity(1.)
+                    })
+            })
+        });
         let avatar_tile = tile("profile-editor-tile-avatar", 100., 100.)
+            .group("profile-editor-tile-avatar-group")
             .flex()
             .items_center()
             .justify_center()
             .child(avatar(false))
+            .children(affordance)
             .on_click(cx.listener(|this, _, _, cx| {
                 this.profile_editor_pick_image(super::upload::Target::Avatar, cx);
             }));

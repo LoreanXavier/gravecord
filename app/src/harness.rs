@@ -1754,6 +1754,12 @@ pub async fn run(
             }
             // The profile editor: `profile-editor open`, `nitro`, `preset <name>`, `pick <kind> [sku]`, ... (see
             // `script_profile_editor`).
+            // Capture only: `family-center on` turns the Family Center tab setting on locally (nothing is sent in an
+            // inert run), `family-center disable` opens Disable Family Center (module 371158).
+            ["family-center", which] => {
+                let line = root.update(cx, |root, cx| root.script_family_center(which, cx));
+                let _ = writeln!(output, "{line}");
+            }
             ["profile-editor", rest @ ..] => {
                 let line = root.update(cx, |root, cx| root.script_profile_editor(rest, cx));
                 let _ = writeln!(output, "{line}");

@@ -82,7 +82,7 @@ fn blend(base: Rgba, overlay: Rgba) -> Rgba {
 }
 
 impl Root {
-    fn profile_editor_palette(&self) -> dm_profile::Palette {
+    pub(super) fn profile_editor_palette(&self) -> dm_profile::Palette {
         match self.profile_editor_theme() {
             Some([primary, secondary]) => {
                 let viewer = super::super::theme();

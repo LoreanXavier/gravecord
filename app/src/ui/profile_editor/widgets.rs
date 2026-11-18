@@ -2518,91 +2518,63 @@ impl Root {
         )
     }
 
+    /// Remove Widget (module 380035 on the dialog of module 189213, `md` as it has children): the title, `x+djI4`, the
+    /// widget as the profile shows it (`widgetPreview_VEvtF1`: 2px wider on each side, not interactive), the shift
+    /// protip (`hintText_VEvtF1`, 24px above, `body-sm/normal` in `text-subtle`), Cancel and the critical Remove
+    /// Widget.
     pub(super) fn profile_editor_remove_widget_modal(
         &mut self,
+        window: &mut gpui::Window,
         cx: &mut Context<Self>,
     ) -> Option<AnyElement> {
-        let index = self.profile_editor.as_ref()?.widget_confirm_remove?;
-        let dialog = div()
-            .id("profile-editor-remove-widget-dialog")
-            .occlude()
-            .w(px(420.))
-            .p(px(20.))
-            .rounded(px(12.))
-            .bg(color("--background-base-lower"))
-            .border_1()
-            .border_color(color("--border-subtle"))
+        let open = self.profile_editor.as_ref()?;
+        let index = open.widget_confirm_remove?;
+        let widget = open.board_widgets.get(index)?.clone();
+        let user = self.stores.current_user.as_ref()?.id;
+        let palette = self.profile_editor_palette();
+        let preview = self
+            .board_widget_cards(user, true, vec![widget], &palette, window, cx)
+            .into_iter()
+            .next();
+        let body = div()
             .flex()
             .flex_col()
-            .gap(px(14.))
-            .on_click(|_, _, cx| cx.stop_propagation())
-            .child(text(dc_intl::t!("Mm07Yc"), 18., 22., 600., "--text-strong"))
-            .child(text(dc_intl::t!("bQNGeT"), 13., 18., 400., "--text-muted"))
+            .children(preview.map(|card| div().mx(px(-2.)).child(card)))
             .child(
                 div()
-                    .flex()
-                    .justify_end()
-                    .gap(px(8.))
-                    .child(
-                        div()
-                            .id("widget-remove-cancel")
-                            .h(px(34.))
-                            .px(px(14.))
-                            .rounded(px(8.))
-                            .bg(color("--control-secondary-background-default"))
-                            .hover(|style| style.bg(color("--control-secondary-background-hover")))
-                            .flex()
-                            .items_center()
-                            .cursor_pointer()
-                            .child(text(
-                                dc_intl::t!("ETE/oC"),
-                                14.,
-                                18.,
-                                500.,
-                                "--control-secondary-text-default",
-                            ))
-                            .on_click(cx.listener(|this, _, _, cx| {
-                                if let Some(open) = this.profile_editor.as_mut() {
-                                    open.widget_confirm_remove = None;
-                                }
-                                cx.notify();
-                            })),
-                    )
-                    .child(
-                        div()
-                            .id("widget-remove-confirm")
-                            .h(px(34.))
-                            .px(px(14.))
-                            .rounded(px(8.))
-                            .bg(color("--status-danger"))
-                            .flex()
-                            .items_center()
-                            .cursor_pointer()
-                            .child(text(dc_intl::t!("Mm07Yc"), 14., 18., 500., "--white"))
-                            .on_click(cx.listener(move |this, _, _, cx| {
-                                this.profile_editor_remove_widget_now(index, cx);
-                            })),
-                    ),
+                    .pt(px(24.))
+                    .text_size(px(14.))
+                    .line_height(px(18.))
+                    .text_color(color("--text-subtle"))
+                    .child(dc_intl::t("bQNGeT")),
             );
-
-        Some(
-            div()
-                .id("profile-editor-remove-widget-backdrop")
-                .absolute()
-                .inset_0()
-                .bg(color("--background-scrim"))
-                .flex()
-                .items_center()
-                .justify_center()
-                .on_click(cx.listener(|this, _, _, cx| {
-                    if let Some(open) = this.profile_editor.as_mut() {
-                        open.widget_confirm_remove = None;
-                    }
-                    cx.notify();
-                }))
-                .child(dialog)
-                .into_any_element(),
-        )
+        let close = |this: &mut Root| {
+            if let Some(open) = this.profile_editor.as_mut() {
+                open.widget_confirm_remove = None;
+            }
+        };
+        let spec = crate::ui::modal::Spec {
+            id: "profile-editor-remove-widget",
+            title: dc_intl::t("Mm07Yc").into(),
+            subtitle: Some(div().child(dc_intl::t("x+djI4")).into_any_element()),
+            body: Some(body.into_any_element()),
+            buttons: vec![
+                crate::ui::modal::button(
+                    "widget-remove-cancel",
+                    dc_intl::t("ETE/oC"),
+                    crate::ui::modal::Tone::Secondary,
+                    move |this, _, _| close(this),
+                ),
+                crate::ui::modal::button(
+                    "widget-remove-confirm",
+                    dc_intl::t("Mm07Yc"),
+                    crate::ui::modal::Tone::Critical,
+                    move |this, _, cx| this.profile_editor_remove_widget_now(index, cx),
+                ),
+            ],
+            close: Box::new(move |this, _, _| close(this)),
+        };
+        Some(crate::ui::modal::render_over_layers(spec, cx))
     }
 
     pub(super) fn profile_editor_widgets(

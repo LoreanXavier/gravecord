@@ -761,6 +761,23 @@ impl Root {
                         )
                     }),
             )
+            // `ID` of module 596339 after the Shop (`shouldShowFamilyCenterRow`); its close button opens module 371158.
+            // GAP: the row opens the Family Center panel of User Settings, not the `/family-center` page (`lU` of
+            // module 890623), which is not built.
+            .children(self.family_center_row_shown().then(|| {
+                self.home_link("family-center", "roles_group", dc_intl::t("Rkdixs"), false)
+                    .group("family-center-row")
+                    .cursor_pointer()
+                    .on_click(cx.listener(|this, _, _, cx| this.open_family_center_panel(cx)))
+                    .child(
+                        div()
+                            .absolute()
+                            .right(px(8.))
+                            .top(px(11.))
+                            .child(self.family_center_close_button("family-center-row", cx)),
+                    )
+                    .relative()
+            }))
             .child(
                 self.home_link(
                     "quests",
