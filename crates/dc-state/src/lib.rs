@@ -135,6 +135,16 @@ impl ServerTag {
 }
 
 impl User {
+    /// `isNonUserBot` of module 619019: the system account, or a bot whose tag is `0000`.
+    pub fn non_user_bot(&self) -> bool {
+        self.system || (self.bot && self.discriminator == "0000")
+    }
+
+    /// `isVerifiedBot` of module 619019: the system account, or `VERIFIED_BOT` (1 << 16) in the user's flags.
+    pub fn verified_bot(&self) -> bool {
+        self.system || (self.flags | self.public_flags) & (1 << 16) != 0
+    }
+
     pub fn from_value(value: &Value) -> Option<Self> {
         Some(Self {
             id: id(&value["id"])?,
@@ -4107,6 +4117,17 @@ impl Stores {
         }
     }
 
+    /// `isSystemDM` of the channel record (module 95701): a 1:1 DM whose first recipient is the system account
+    /// (`system: true`; there can be more than one such channel).
+    pub fn is_system_dm(&self, channel: &PrivateChannel) -> bool {
+        channel.kind == 1
+            && channel
+                .recipients
+                .first()
+                .and_then(|id| self.users.get(id))
+                .is_some_and(|user| user.system)
+    }
+
     pub fn insert_message(&mut self, message: Message) {
         let list = self.messages.entry(message.channel_id).or_default();
         message_window::insert_in_order(list, message);
@@ -5362,6 +5383,15 @@ mod tests {
         };
         assert!(system(41));
         assert!(!system(42));
+        let channel = |id: Id| {
+            stores
+                .private_channels
+                .iter()
+                .find(|known| known.id == id)
+                .unwrap()
+        };
+        assert!(stores.is_system_dm(channel(41)));
+        assert!(!stores.is_system_dm(channel(42)));
     }
 
     #[test]

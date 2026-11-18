@@ -116,6 +116,9 @@ impl Root {
             return Some(self.group_welcome(channel, cx));
         }
         let user = self.stores.dm_recipient(channel)?.clone();
+        // Module 891522 `a_`: a system DM is `sh` with the official line (`Rzvnig`) as its description, and no
+        // username line, mutual servers or buttons.
+        let system = self.stores.is_system_dm(channel);
         let avatar = self.images.get(&avatar_source(&user).0).cloned();
         let mutual = self
             .fetched
@@ -179,71 +182,90 @@ impl Root {
                                     },
                                 )),
                         )
-                        .child(
-                            div()
-                                .mt(px(8.))
-                                .text_size(px(24.))
-                                .line_height(px(32.))
-                                .font_weight(FontWeight(500.))
-                                .text_color(color("--text-strong"))
-                                .child(user.username.clone()),
-                        )
-                        .child(
-                            div()
-                                .mt(px(20.))
-                                .flex()
-                                .text_size(px(16.))
-                                .line_height(px(20.))
-                                .text_color(color("--text-default"))
-                                // `Qvg+6+`: the text, the bold name, the full stop.
-                                .child(super::bold_message(
-                                    "Qvg+6+",
-                                    &[("username", (&name).into())],
-                                    FontWeight(600.),
-                                )),
-                        )
-                        .child(
-                            div()
-                                .mt(px(8.))
-                                .h(px(32.))
-                                .flex()
-                                .items_center()
-                                .when(mutual > 0, |this| {
-                                    this.child(
-                                        div()
-                                            .flex()
-                                            .items_center()
-                                            .gap(px(8.))
-                                            .child(
-                                                div()
-                                                    .size(px(24.))
-                                                    .rounded(px(8.))
-                                                    .overflow_hidden()
-                                                    .children(
-                                                        first_mutual.map(|picture| {
+                        // `header_w6h4R2` (`margin: 8px 0`) over `description_w6h4R2` (`body-md/normal`, 16px / 20px,
+                        // `--text-default`).
+                        .when(system, |this| {
+                            this.child(
+                                div()
+                                    .mt(px(8.))
+                                    .text_size(px(16.))
+                                    .line_height(px(20.))
+                                    .text_color(color("--text-default"))
+                                    .child(dc_intl::t("Rzvnig")),
+                            )
+                        })
+                        .when(!system, |this| {
+                            this.child(
+                                div()
+                                    .mt(px(8.))
+                                    .text_size(px(24.))
+                                    .line_height(px(32.))
+                                    .font_weight(FontWeight(500.))
+                                    .text_color(color("--text-strong"))
+                                    .child(user.username.clone()),
+                            )
+                        })
+                        .when(!system, |this| {
+                            this.child(
+                                div()
+                                    .mt(px(20.))
+                                    .flex()
+                                    .text_size(px(16.))
+                                    .line_height(px(20.))
+                                    .text_color(color("--text-default"))
+                                    // `Qvg+6+`: the text, the bold name, the full stop.
+                                    .child(super::bold_message(
+                                        "Qvg+6+",
+                                        &[("username", (&name).into())],
+                                        FontWeight(600.),
+                                    )),
+                            )
+                        })
+                        .when(!system, |this| {
+                            this.child(
+                                div()
+                                    .mt(px(8.))
+                                    .h(px(32.))
+                                    .flex()
+                                    .items_center()
+                                    .when(mutual > 0, |this| {
+                                        this.child(
+                                            div()
+                                                .flex()
+                                                .items_center()
+                                                .gap(px(8.))
+                                                .child(
+                                                    div()
+                                                        .size(px(24.))
+                                                        .rounded(px(8.))
+                                                        .overflow_hidden()
+                                                        .children(first_mutual.map(|picture| {
                                                             img(picture).size(px(24.))
-                                                        }),
-                                                    ),
-                                            )
-                                            .child(
-                                                div()
-                                                    .text_size(px(14.))
-                                                    .line_height(px(18.))
-                                                    .text_color(color("--text-subtle"))
-                                                    .child(dc_intl::t!("E215W7", count = mutual)),
-                                            )
-                                            // The dot between the servers and the buttons.
-                                            .child(
-                                                div()
-                                                    .mx(px(4.))
-                                                    .size(px(4.))
-                                                    .rounded_full()
-                                                    .bg(color("--background-mod-strong")),
-                                            ),
-                                    )
-                                })
-                                .child(div().ml(px(4.)).flex().gap(px(8.)).children(buttons)),
-                        ),
+                                                        })),
+                                                )
+                                                .child(
+                                                    div()
+                                                        .text_size(px(14.))
+                                                        .line_height(px(18.))
+                                                        .text_color(color("--text-subtle"))
+                                                        .child(dc_intl::t!(
+                                                            "E215W7",
+                                                            count = mutual
+                                                        )),
+                                                )
+                                                // The dot between the servers and the buttons.
+                                                .child(
+                                                    div()
+                                                        .mx(px(4.))
+                                                        .size(px(4.))
+                                                        .rounded_full()
+                                                        .bg(color("--background-mod-strong")),
+                                                ),
+                                        )
+                                    })
+                                    .child(div().ml(px(4.)).flex().gap(px(8.)).children(buttons)),
+                            )
+                        }),
                 )
                 .into_any_element(),
         )

@@ -276,6 +276,31 @@ impl Root {
                 };
                 (menu.anchor, row.into_iter().collect())
             }
+            // Module 35241 (`non-user-bot-profile-overflow-menu`): a non-user bot's "..." holds only Copy User ID
+            // (`/AXYnE`, module 50268), which the button is not drawn without.
+            Which::Overflow
+                if self
+                    .stores
+                    .users
+                    .get(&user)
+                    .is_some_and(|known| known.non_user_bot()) =>
+            {
+                let row = self
+                    .profile_row(
+                        "copy-user-id",
+                        dc_intl::t("/AXYnE").into(),
+                        false,
+                        false,
+                        cx,
+                    )
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        this.profile_menu = None;
+                        cx.write_to_clipboard(gpui::ClipboardItem::new_string(user.to_string()));
+                        cx.notify();
+                    }))
+                    .into_any_element();
+                (menu.anchor, vec![row])
+            }
             Which::Overflow => {
                 let mut first: Vec<AnyElement> = vec![
                     self.profile_row("share-profile", "Share Profile".into(), false, false, cx)
@@ -532,8 +557,13 @@ impl Root {
         };
         // An outgoing request has no actions: the button is disabled.
         // Not in the pinned client: with CancelFriendRequest it cancels the request (`plugin_hooks.rs`).
-        let cancel = relationship == Some(RELATIONSHIP_OUTGOING) && super::plugin_hooks::cancel_friend_request();
-        let tip = if cancel { super::plugin_hooks::CANCEL_FRIEND_REQUEST } else { tip };
+        let cancel = relationship == Some(RELATIONSHIP_OUTGOING)
+            && super::plugin_hooks::cancel_friend_request();
+        let tip = if cancel {
+            super::plugin_hooks::CANCEL_FRIEND_REQUEST
+        } else {
+            tip
+        };
         let disabled = !cancel
             && matches!(
                 relationship,

@@ -299,6 +299,8 @@ impl Root {
         // Blocked or ignored people carry their mark where the close button would be.
         let marked = self.is_blocked(recipient.id) || self.stores.is_ignored(recipient.id);
         let id = channel.id;
+        // 181254 `eY`: `t.isSystemDM()` (the system account's DM).
+        let system = self.stores.is_system_dm(channel);
         let timer = self
             .call
             .as_ref()
@@ -420,14 +422,17 @@ impl Root {
                                         })
                                     },
                                 ))
-                                .child(super::typing_avatar::status_corner(
-                                    &status,
-                                    typing,
-                                    "--background-base-lowest",
-                                    32.,
-                                    motion::key(&("dm-row-avatar", id)),
-                                    super::typing_avatar::css_dots(&self.stores.experiments),
-                                )),
+                                // `r.isSystemUser() || (n = ...)`: the system account's avatar has no status.
+                                .when(!system || typing, |this| {
+                                    this.child(super::typing_avatar::status_corner(
+                                        &status,
+                                        typing,
+                                        "--background-base-lowest",
+                                        32.,
+                                        motion::key(&("dm-row-avatar", id)),
+                                        super::typing_avatar::css_dots(&self.stores.experiments),
+                                    ))
+                                }),
                         )
                         .child(
                             div()
@@ -473,20 +478,58 @@ impl Root {
                                         .children(recipient.tag.as_ref().map(|tag| {
                                             self.server_tag_chip(tag)
                                                 .when(look.dimmed, |chip| chip.opacity(0.3))
-                                        })),
+                                        }))
+                                        // `decorators`: the `SYSTEM_DM` tag (module 709066, `verified`) in
+                                        // `decorator_zln_tS` (4px on).
+                                        .when(system, |this| {
+                                            this.child(
+                                                self.app_tag_px(
+                                                    super::message_header::AppTag::Official,
+                                                    format!("dm-row-official-{id}"),
+                                                    cx,
+                                                )
+                                                .ml(px(4.)),
+                                            )
+                                        }),
                                 )
                                 // `activityStatusText_zln_tS` is `color: inherit`: the line takes the row's text colour.
                                 // Not in the pinned client: MessagePeek's last message in its place
                                 // (`plugin_hooks/message_peek.rs`).
-                                .children({
-                                    let presence = self
-                                        .presence_line_with(&recipient, None, true, 16., look.text);
-                                    match self.message_peek(channel, presence.is_some()) {
-                                        super::plugin_hooks::Peek::Keep => presence,
-                                        super::plugin_hooks::Peek::Empty => None,
-                                        super::plugin_hooks::Peek::Line(line) => Some(line),
-                                    }
-                                }),
+                                // `subText` of a system DM: `body-xs/medium` (12px / 16px, 500) in the row's colour,
+                                // `subtext_zln_tS` cut with an ellipsis: "Discord Product Updates" (`FL5T01`) for the DM
+                                // of the product-updates account (module 343328, `tL` of module 559868), else "Official
+                                // Discord Message" (`NnY5lc`).
+                                .when(system, |this| {
+                                    this.child(
+                                        div()
+                                            .min_w(px(0.))
+                                            .overflow_hidden()
+                                            .whitespace_nowrap()
+                                            .text_ellipsis()
+                                            .text_size(px(12.))
+                                            .line_height(px(16.))
+                                            .font_weight(FontWeight(500.))
+                                            .child(if recipient.id == PRODUCT_UPDATES_USER {
+                                                dc_intl::t("FL5T01")
+                                            } else {
+                                                dc_intl::t("NnY5lc")
+                                            }),
+                                    )
+                                })
+                                .children(
+                                    (!system)
+                                        .then(|| {
+                                            let presence = self.presence_line_with(
+                                                &recipient, None, true, 16., look.text,
+                                            );
+                                            match self.message_peek(channel, presence.is_some()) {
+                                                super::plugin_hooks::Peek::Keep => presence,
+                                                super::plugin_hooks::Peek::Empty => None,
+                                                super::plugin_hooks::Peek::Line(line) => Some(line),
+                                            }
+                                        })
+                                        .flatten(),
+                                ),
                         )
                         // `callDuration_zln_tS` in `iconsContainer_zln_tS` (4px before, 8px after): the running call's
                         // time, `body-xs/normal` 12px / 16px in the code font, `--text-feedback-positive`.
@@ -879,6 +922,9 @@ fn no_private_channels_art() -> impl IntoElement {
                 )
         }))
 }
+
+/// `tL` of module 559868: the account whose DM is "Discord Product Updates" (module 343328).
+const PRODUCT_UPDATES_USER: Id = 1_232_523_165_893_132_288;
 
 /// How a row of the DM list looks (module 181254 `eY` and its stylesheets 834050, 884848 and 121046).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

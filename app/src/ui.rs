@@ -250,6 +250,7 @@ mod report_issue;
 mod rtc_channel;
 mod running_game_panel;
 mod running_games;
+mod safety_notice;
 mod saved;
 mod screening;
 mod search;
@@ -6121,6 +6122,10 @@ impl Root {
             .current_dm()
             .filter(|channel| channel.kind == 3)
             .cloned();
+        // 849205: a system DM's title has no avatar; 289287 `renderHeaderToolbar` gives it no toolbar at all.
+        let system_dm = self
+            .current_dm()
+            .is_some_and(|channel| self.stores.is_system_dm(channel));
         // Module 187360: the bell is slashed while the channel is muted or its resolved level is not All Messages.
         let muted = self.channel_bell_slashed();
         // Module 586944: "Search in DMs" (`m7OrlR`) in the every-DM context, else "Search {name}" (`LDZtFO`) with the
@@ -6308,7 +6313,7 @@ impl Root {
                     ),
                 )
             })
-            .when_some(dm_user.clone(), |this, user| {
+            .when_some(dm_user.clone().filter(|_| !system_dm), |this, user| {
                 // `avatar_z_gUBg`: 20px with the status cut into its corner (`svg-mask-avatar-status-round-20`).
                 let presence = self.stores.status(user.id).to_owned();
                 let picture = self.images.get(&avatar_source(&user).0).cloned();
@@ -6360,7 +6365,14 @@ impl Root {
                 title.style().flex_shrink = Some(0.001);
                 this.child(
                     title
-                        .ml(px(if dm_user.is_some() { 8. } else { 9. }))
+                        // Without the avatar a system DM's title takes its place.
+                        .ml(px(if system_dm {
+                            1.
+                        } else if dm_user.is_some() {
+                            8.
+                        } else {
+                            9.
+                        }))
                         .min_w(px(0.))
                         .overflow_hidden()
                         .whitespace_nowrap()
@@ -6429,7 +6441,7 @@ impl Root {
                     }),
                 )
             }))
-            .when(dm_user.is_some(), |this| {
+            .when(dm_user.is_some() && !system_dm, |this| {
                 let shown = self.show_dm_profile;
                 // `l2` of module 289287: the button is disabled while the call panel shows, joined or not, and in a
                 // window narrower than 1132px, and then says so (`iconDisabled_ybUK7Z`, opacity .6).
@@ -7807,6 +7819,8 @@ impl Root {
             self.message_components(message, cx),
             self.invite_cards(message, cx),
             self.poll_card(message, cx),
+            // `renderSafetySystemNotification` (module 679636): last of the accessories.
+            self.safety_system_notice(message, cx),
         ]
         .into_iter()
         .flatten()
