@@ -343,6 +343,8 @@ pub(crate) const IDLE_SETTINGS: &[(&str, &str, &str)] = &[
 /// Settings shown only while a switch of the same plugin is on (`hidden` in the original); an empty switch is never
 /// on, so its setting is never listed (`hidden: true`).
 pub(crate) const SHOWN_WHEN: &[(&str, &str, &str)] = &[
+    // `hidden: () => !settings.store.resendOnFail`.
+    ("BetterForwards", "forwardPreface", "resendOnFail"),
     (
         "MessageClickActions",
         "additionalReactEmojis",
@@ -600,6 +602,43 @@ pub(crate) const DEFS: &[Def] = &[
             description: "Automatically fill command with all arguments instead of just required ones.",
             kind: Kind::Switch { default: true },
         }],
+    },
+    Def {
+        id: "BetterForwards",
+        name: "BetterForwards",
+        description: "Message forward utilities including NSFW bypass and UI improvements.",
+        origin: Origin::Equicord,
+        source: "src/equicordplugins/betterForwards/index.tsx",
+        default_on: false,
+        settings: &[
+            Setting {
+                key: "resendOnFail",
+                label: "Resend On Fail",
+                description: "This will attempt to resend a forwarded message if the forward fails. Could cause unintentional pings or text spam. Bypasses NSFW restrictions.",
+                kind: Kind::Switch { default: true },
+            },
+            Setting {
+                key: "forwardPreface",
+                label: "Forward Preface",
+                description: "What should the forwarded message be prefaced with",
+                kind: Kind::Select {
+                    options: &[(">", Lit::Str(">")), ("-#", Lit::Str("-#"))],
+                    default: 0,
+                },
+            },
+            Setting {
+                key: "dontFollowForwards",
+                label: "Don't Follow Forwards",
+                description: "After forwarding a single message, don't jump to it. Hold shift to ignore this behavior.",
+                kind: Kind::Switch { default: false },
+            },
+            Setting {
+                key: "selfForward",
+                label: "Self Forward",
+                description: "Show the current channel in the forward list popup.",
+                kind: Kind::Switch { default: false },
+            },
+        ],
     },
     Def {
         id: "BetterQuickReact",
@@ -932,6 +971,34 @@ pub(crate) const DEFS: &[Def] = &[
             description: "Also download non-media attachments. Only enable this if you trust what people send you.",
             kind: Kind::Switch { default: false },
         }],
+    },
+    Def {
+        id: "ExpressionCloner",
+        name: "ExpressionManager",
+        description: "Clone Emotes & Stickers. Adds context menu options to quickly clone, edit, or delete them. Also adds Copy & Save options for stickers",
+        origin: Origin::Vencord,
+        source: "src/plugins/expressionManager/index.tsx",
+        default_on: false,
+        settings: &[
+            Setting {
+                key: "editAndDelete",
+                label: "Edit And Delete",
+                description: "Add \"Edit\" and \"Delete\" options to the expression picker context menu",
+                kind: Kind::Switch { default: true },
+            },
+            Setting {
+                key: "stickerCopyAndOpen",
+                label: "Sticker Copy And Open",
+                description: "Add \"Copy Sticker Link\" and \"Open Sticker Link\" options to the sticker context menu",
+                kind: Kind::Switch { default: true },
+            },
+            Setting {
+                key: "recents",
+                label: "Recents",
+                description: "Add \"Remove from Recents\" option to the context menu of frequently used expressions",
+                kind: Kind::Switch { default: true },
+            },
+        ],
     },
     Def {
         id: "FavoriteEmojiFirst",

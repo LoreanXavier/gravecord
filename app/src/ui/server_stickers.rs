@@ -398,6 +398,8 @@ impl Root {
                     self.request_image(format!("sticker:{id}"), url);
                 }
             }
+            // Not in the pinned client: ExpressionManager's Edit Sticker opens the dialog once the list is here.
+            self.expression_manager_stickers_listed(guild, cx);
         }
         cx.notify();
     }
@@ -463,7 +465,12 @@ impl Root {
     }
 
     /// The pencil: the same dialog with the sticker's values and its file fixed.
-    fn edit_sticker(&mut self, guild: Id, sticker: &Value, cx: &mut Context<Self>) {
+    pub(in crate::ui) fn edit_sticker(
+        &mut self,
+        guild: Id,
+        sticker: &Value,
+        cx: &mut Context<Self>,
+    ) {
         self.open_sticker_dialog(cx);
         let name = sticker["name"].as_str().unwrap_or_default().to_owned();
         let description = sticker["description"]

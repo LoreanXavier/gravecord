@@ -12,7 +12,7 @@ every setting changed), and with every plugin off, and fails on one differing pi
 The list is the plugins enabled in the owner's Equicord backup of 2026-09-21 (156). Sources were read in the local
 Equicord checkout of 2026-11-14 (`src/plugins` is Vencord's, `src/equicordplugins` Equicord's).
 
-Totals: 82 ported, 9 native, 20 planned, 45 not applicable.
+Totals: 84 ported, 9 native, 18 planned, 45 not applicable.
 
 Status: **ported** works and has its proof; **native** is what gravecord already does without a plugin;
 **planned** is not built yet (an import keeps its settings for when it is); **not applicable** has nothing to
@@ -32,7 +32,7 @@ port in a native client, or was removed upstream.
 | BetterBlockedUsers | ported | equicordplugins/betterBlockedUsers/index.tsx | Allows you to search in blocked users list, make names selectable in settings, skips blocked profile prompt, and groups blocked / ignored messages. | plugin_hooks.rs (merge_hidden_messages, skip_blocked_prompt): every blocked and every ignored message of a hidden stretch folds into its kind's first row (no split by an ignored run), and a blocked person's profile opens without Show Profile? (an ignored person's question stays). GAP: the search field and Show User Profile buttons of the settings' blocked users list, which the app does not have. | plugins-off chat, dm-list (the hooks return false off); frames pending (fixture token answers 401) |
 | BetterCommands | ported | equicordplugins/betterCommands/index.ts | Enhances the command system with miscellaneous improvements. | plugin_hooks/plugin_commands.rs: /refresh among the built-in commands fetches the open channel's or server's command index again, with Clyde's before and after lines; autoFillArguments is idle (the app's command flow already asks every option). GAP: the user option's per-application index. | command table test (`every_plugin_with_commands_is_defined`); frames pending (fixture token answers 401) |
 | BetterFolders | planned | plugins/betterFolders/index.tsx | Shows server folders on dedicated sidebar and adds folder related improvements | a second server sidebar for folders. |  |
-| BetterForwards | planned | equicordplugins/betterForwards/index.tsx | Message forward utilities including NSFW bypass and UI improvements. | forward dialog tweaks. |  |
+| BetterForwards | ported | equicordplugins/betterForwards/index.tsx | Message forward utilities including NSFW bypass and UI improvements. | plugin_hooks/better_forwards.rs + plugins/better_forwards.rs: the forward dialog of a message with attachments or embeds gets Forward everything (InfoIcon tooltip) and, in place of the file line, TagGroup pickers of its attachments (kind icons) and embeds (title over a tag per embed and extra image), sent as message_reference.forward_only (empty choice as attachment 0, embed indices sorted); resendOnFail sends failed forwards again as forwardPreface-quoted text with file links five to a message and the note last instead of Forward Failed; dontFollowForwards stays put unless Shift is held on Send; selfForward lists the current channel; a forward's footer becomes the server (other server: picture or acronym, name, opens the profile card), the channel (picture, name or italic unknown, goes to the message) and the time. | `resends_read_as_the_original_writes_them`, `embeds_split_as_the_original_splits_them`; frames pending (live runs held) |
 | BetterGifAltText | planned | plugins/betterGifAltText/index.ts | Change GIF alt text from simply being 'GIF' to containing the gif tags / filename | a place where alt text shows: the original changes the `alt` that screen readers read, and the app draws images without an accessibility tree. |  |
 | BetterNotesBox | not applicable | (not in the 2026-11-14 checkout) |  | removed from Equicord (last seen in dbca8ef2); the private note box is the client's own here. |  |
 | BetterPlusReacts | planned | equicordplugins/betterPlusReacts/index.ts | The amount of plus before :emoji: is the message to add it to | the pinned client's own `+:emoji:` rule first: a message `+:emoji:` reacts to the last message (the send path's reaction shortcut and its autocomplete), which the port does not have yet (GAP: main app); BetterPlusReacts only lets more pluses pick an older message. |  |
@@ -64,7 +64,7 @@ port in a native client, or was removed upstream.
 | DynamicImageModalAPI | not applicable | plugins/_api/dynamicImageModalApi.ts | Allows you to omit either width or height when opening an image modal | client-mod plumbing (an API for other plugins), nothing to port. |  |
 | EquicordHelper | not applicable | equicordplugins/equicordHelper/index.tsx | Used to provide support and fix discord caused crashes. | workarounds for Discord web crashes in the mod. |  |
 | Experiments | planned | plugins/experiments/index.tsx | Enable Access to Experiments & other dev-only features in Discord! | the experiments and developer pages. |  |
-| ExpressionCloner | planned | plugins/expressionManager/index.tsx | Clone Emotes & Stickers. Adds context menu options to quickly clone, edit, or delete them. Also adds Copy & Save options for stickers | now ExpressionManager upstream. menu rows that clone, edit and delete emoji and stickers into your servers. |  |
+| ExpressionCloner | ported | plugins/expressionManager/index.tsx | Clone Emotes & Stickers. Adds context menu options to quickly clone, edit, or delete them. Also adds Copy & Save options for stickers | plugin_hooks/expression_manager.rs (now ExpressionManager upstream): sticker menus in the picker and in messages get Clone Sticker (name field with the original's 2..30 check, server tiles with picture or acronym and tooltip, the sticker fetched from the media proxy at the largest size under 512 KiB and posted to the server, success or failure toast), Edit Sticker and Delete Sticker where you manage expressions (editAndDelete; delete after the original's confirmation), Copy/Open Sticker Link in place of Copy Sticker Image Link (stickerCopyAndOpen); custom emoji in the picker get Delete Emoji, a default emoji's Copy Emoji its CopyIcon; recents adds Remove From Recents after the favourite row of a frecent emoji or sticker (the frecency proto sent back without the entry; no confirmation in the reaction picker or with Shift). GAP: Clone Emoji, Edit Emoji and Upload as Emoji need the Emoji Studio the app has not got yet. | `stickers_follow_the_originals_tables`, dc-proto `an_entry_leaves_its_map_and_the_rest_stays`; frames pending (live runs held) |
 | ExtraContextMenusAPI | not applicable | (not in the 2026-11-14 checkout) |  | client-mod plumbing (an API for other plugins), nothing to port. |  |
 | FavoriteEmojiFirst | ported | plugins/favEmojiFirst/index.tsx | Puts your favorite emoji first in the emoji autocomplete and also has emoji alias. | autocomplete.rs + plugin_hooks.rs favorite_emoji_first: the emoji autocomplete sorts every match, puts your favourite emoji (the picker's Favorites) first and cuts the list where it was. Not 1:1 yet: the alias half (see its settings). | frames fef-on/fef-off/fef-top (:smi with smiling_imp a favourite, demo-favorite); plugins-off emoji-autocomplete |
 | FavoriteGifSearch | not applicable | (not in the 2026-11-14 checkout) |  | removed from Equicord in 0001bab8: "now a default Discord feature". |  |
@@ -209,6 +209,10 @@ Every setting of each original (`definePluginSettings`), its type and default th
 | BetterActivities | `hideTooltip` | BOOLEAN | `true` | ported |
 | BetterActivities | `allActivitiesStyle` | SELECT | `true` | ported |
 | BetterCommands | `autoFillArguments` | BOOLEAN | `true` | nothing to act on yet: the app's command flow already asks every option in turn, optional ones too, so there is nothing more to fill |
+| BetterForwards | `resendOnFail` | BOOLEAN | `true` | ported |
+| BetterForwards | `forwardPreface` | SELECT | `">"` | ported |
+| BetterForwards | `dontFollowForwards` | BOOLEAN | `false` | ported |
+| BetterForwards | `selfForward` | BOOLEAN | `false` | ported |
 | BetterQuickReact | `reactionCount` | NUMBER | `5` | ported |
 | BetterQuickReact | `frequentEmojis` | BOOLEAN | `true` | ported |
 | BetterQuickReact | `rows` | SLIDER | `2` | ported |
@@ -235,6 +239,9 @@ Every setting of each original (`definePluginSettings`), its type and default th
 | ClipsEnhancements | `richPresenceTagging` | SELECT | `"whenMatched"` | ported |
 | ClipsEnhancements | `clipsLink` | COMPONENT | `` | ported as the plugin card's own section: the button that opens Clips settings, not a setting. |
 | DownloadAllAttachments | `downloadAllFileTypes` | BOOLEAN | `false` | ported |
+| ExpressionCloner | `editAndDelete` | BOOLEAN | `true` | ported |
+| ExpressionCloner | `stickerCopyAndOpen` | BOOLEAN | `true` | ported |
+| ExpressionCloner | `recents` | BOOLEAN | `true` | ported |
 | FavoriteEmojiFirst | `aliases` | COMPONENT | `` | not ported: not ported yet: the emoji alias editor (Set Alias in the emoji menus, this list, `:alias:` written out on send and offered in the autocomplete) is the next step of this port. |
 | FavoriteEmojiFirst | `clearAll` | COMPONENT | `` | not ported: not ported yet: comes with the alias editor (see aliases). |
 | FixImagesQuality | `originalImagesInChat` | BOOLEAN | `false` | ported |

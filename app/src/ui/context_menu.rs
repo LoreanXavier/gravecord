@@ -336,13 +336,20 @@ pub(super) enum Act {
     PluginViewPermissions,
     /// Not in the pinned client: MessageLogger's Clear Message Log (`plugin_hooks/message_logger.rs`).
     PluginClearMessageLog,
+    /// Not in the pinned client: ExpressionManager's rows (`plugin_hooks/expression_manager.rs`).
+    PluginCloneSticker,
+    PluginEditExpression,
+    PluginDeleteExpression,
+    PluginCopyStickerLink,
+    PluginOpenStickerLink,
+    PluginRemoveFromRecents,
 }
 
 impl Act {
     /// Every row kind once (`Correction` with its first index). `ordinal` is an exhaustive match, so adding a variant
     /// without listing it here fails the build or the `act_list_is_complete` test.
     #[cfg(test)]
-    pub(super) const ALL: [Act; 144] = [
+    pub(super) const ALL: [Act; 150] = [
         Act::InventoryAbout,
         Act::InventoryHide,
         Act::ReportApp,
@@ -492,6 +499,12 @@ impl Act {
         Act::PluginCopyBadgeLink,
         Act::PluginViewPermissions,
         Act::PluginClearMessageLog,
+        Act::PluginCloneSticker,
+        Act::PluginEditExpression,
+        Act::PluginDeleteExpression,
+        Act::PluginCopyStickerLink,
+        Act::PluginOpenStickerLink,
+        Act::PluginRemoveFromRecents,
     ];
 
     #[cfg(test)]
@@ -646,6 +659,12 @@ impl Act {
             Act::PluginCopyBadgeLink => 141,
             Act::PluginViewPermissions => 142,
             Act::PluginClearMessageLog => 143,
+            Act::PluginCloneSticker => 144,
+            Act::PluginEditExpression => 145,
+            Act::PluginDeleteExpression => 146,
+            Act::PluginCopyStickerLink => 147,
+            Act::PluginOpenStickerLink => 148,
+            Act::PluginRemoveFromRecents => 149,
         }
     }
 }
@@ -697,7 +716,13 @@ pub(super) fn status(act: Act) -> Status {
         | Act::PluginCopyBadgeName
         | Act::PluginCopyBadgeLink
         | Act::PluginViewPermissions
-        | Act::PluginClearMessageLog => Wired,
+        | Act::PluginClearMessageLog
+        | Act::PluginCloneSticker
+        | Act::PluginEditExpression
+        | Act::PluginDeleteExpression
+        | Act::PluginCopyStickerLink
+        | Act::PluginOpenStickerLink
+        | Act::PluginRemoveFromRecents => Wired,
         Act::InventoryAbout
         | Act::InventoryHide
         | Act::ViewAllActivity
@@ -3545,6 +3570,8 @@ impl Root {
         let items = self.with_permissions_viewer_row(items, target);
         // Not in the pinned client: MessageLogger's Clear Message Log (`plugin_hooks/message_logger.rs`).
         let items = self.with_message_logger_row(items, target);
+        // Not in the pinned client: ExpressionManager's expression rows (`plugin_hooks/expression_manager.rs`).
+        let items = self.with_expression_manager_rows(items, target);
         self.close_all_context_menus();
         self.menu_scroll.set_offset(gpui::point(px(0.), px(0.)));
         let at = flip_above(at, menu_height(&items), self.viewport.1);
@@ -3772,6 +3799,19 @@ impl Root {
             (Act::PluginCopyBadgeName, Target::PluginBadge) => self.global_badge_copy(false, cx),
             // Not in the pinned client: PermissionsViewer (`plugin_hooks/permissions_viewer.rs`).
             (Act::PluginViewPermissions, target) => self.permissions_viewer_open(target, cx),
+            // Not in the pinned client: ExpressionManager (`plugin_hooks/expression_manager.rs`).
+            (
+                Act::PluginCloneSticker
+                | Act::PluginEditExpression
+                | Act::PluginDeleteExpression
+                | Act::PluginCopyStickerLink
+                | Act::PluginOpenStickerLink
+                | Act::PluginRemoveFromRecents,
+                target,
+            ) => {
+                let shift = window.modifiers().shift;
+                self.expression_manager_act(act, target, shift, cx);
+            }
             // Not in the pinned client: MessageLogger (`plugin_hooks/message_logger.rs`).
             (Act::PluginClearMessageLog, target) => {
                 if let Some(channel) = self.message_logger_menu_channel(target) {

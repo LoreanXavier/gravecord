@@ -3,6 +3,10 @@
 mod account_panel;
 mod always_animate;
 mod better_activities;
+mod better_forwards;
+pub(in crate::ui) use better_forwards::{
+    better_forwards_follow, better_forwards_on, better_forwards_self_forward, better_forwards_send_pressed,
+};
 mod better_role_context;
 pub(in crate::ui) use better_role_context::role_icon_format_setting;
 mod better_role_dot;
@@ -11,6 +15,8 @@ mod bypass_status;
 mod call_timer;
 pub(in crate::ui) mod clips_enhancements;
 mod download_all;
+mod expression_manager;
+pub(crate) use expression_manager::sticker_url as expression_sticker_url;
 mod fix_youtube_embeds;
 pub(in crate::ui) use fix_youtube_embeds::{
     VideoDescription, toggle_video_description, video_description,

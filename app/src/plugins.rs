@@ -12,6 +12,7 @@
 //! place it acts, so a switch takes effect on the next frame without a restart.
 
 mod backup;
+pub(crate) mod better_forwards;
 pub(crate) mod clear_urls;
 pub(crate) mod gif_provider;
 mod registry;

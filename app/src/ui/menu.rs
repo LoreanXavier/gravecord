@@ -100,6 +100,10 @@ pub(super) enum Action {
     SearchImage,
     /// Not in the pinned client: Translate+'s "Translate" (`plugin_hooks/translate_plus.rs`).
     PluginTranslate,
+    /// Not in the pinned client: ExpressionManager's sticker rows (`plugin_hooks/expression_manager.rs`).
+    PluginCloneSticker,
+    PluginCopyStickerLink,
+    PluginOpenStickerLink,
     /// Not in the pinned client: MessageLogger's rows (`plugin_hooks/message_logger.rs`).
     PluginToggleDeletedHighlight,
     PluginToggleDiffView,
@@ -158,6 +162,9 @@ pub(super) struct SavedState {
     pub search_image: bool,
     /// Not in the pinned client: Translate+ offers "Translate" for a message with text.
     pub translate: bool,
+    /// Not in the pinned client: ExpressionManager's rows for the sticker under the pointer, and whether its links
+    /// come too (`stickerCopyAndOpen`).
+    pub clone_sticker: Option<bool>,
     /// Not in the pinned client: MessageLogger's state of a message with history: deleted, and the diff toggle
     /// (whether it is off) while diffs are shown.
     pub logged: Option<(bool, Option<bool>)>,
@@ -526,6 +533,15 @@ pub(super) fn message_items_saved(own: bool, saved: SavedState) -> Vec<Item> {
         )),
         None => {}
     }
+    // Not in the pinned client: ExpressionManager puts Clone Sticker first in the favourite group.
+    if saved.clone_sticker.is_some() {
+        pictures.push(Item::Entry(
+            "Clone Sticker",
+            "plugin_plus",
+            Action::PluginCloneSticker,
+            false,
+        ));
+    }
     match saved.favorite_sticker {
         Some(true) => pictures.push(Item::Entry(
             "Unfavorite Sticker",
@@ -540,6 +556,22 @@ pub(super) fn message_items_saved(own: bool, saved: SavedState) -> Vec<Item> {
             false,
         )),
         None => {}
+    }
+    // Not in the pinned client: ExpressionManager's sticker links, after a separator in the same group.
+    if saved.clone_sticker == Some(true) {
+        pictures.push(Item::Separator);
+        pictures.push(Item::Entry(
+            "Copy Sticker Link",
+            "plugin_link",
+            Action::PluginCopyStickerLink,
+            false,
+        ));
+        pictures.push(Item::Entry(
+            "Open Sticker Link",
+            "plugin_link",
+            Action::PluginOpenStickerLink,
+            false,
+        ));
     }
     if saved.image {
         pictures.push(Item::Entry(
@@ -808,6 +840,10 @@ impl Root {
         let translate =
             found.is_some_and(|known| super::plugin_hooks::translate_plus(&known.content));
         let logged = found.and_then(super::plugin_hooks::message_logger_menu);
+        let clone_sticker = match &self.menu_extra.hit {
+            Some(Hit::Sticker { id }) => self.expression_manager_message_sticker(*id),
+            _ => None,
+        };
         let pinned = found.is_some_and(|known| known.pinned);
         let reacted = found.is_some_and(|known| !known.reactions.is_empty());
         let channel = self.current_channel();
@@ -823,6 +859,7 @@ impl Root {
             speaking: self.speaking_message == Some(message),
             empty,
             translate,
+            clone_sticker,
             logged,
             pinned,
             reacted,
@@ -971,6 +1008,25 @@ impl Root {
             Action::Reply => self.begin_reply(found, window, cx),
             // Not in the pinned client: Translate+ (`plugin_hooks/translate_plus.rs`).
             Action::PluginTranslate => self.translate_plus_start(message, found.content.clone()),
+            // Not in the pinned client: ExpressionManager (`plugin_hooks/expression_manager.rs`).
+            Action::PluginCloneSticker => self.expression_manager_act(
+                super::context_menu::Act::PluginCloneSticker,
+                super::context_menu::Target::Composer,
+                false,
+                cx,
+            ),
+            Action::PluginCopyStickerLink => self.expression_manager_act(
+                super::context_menu::Act::PluginCopyStickerLink,
+                super::context_menu::Target::Composer,
+                false,
+                cx,
+            ),
+            Action::PluginOpenStickerLink => self.expression_manager_act(
+                super::context_menu::Act::PluginOpenStickerLink,
+                super::context_menu::Target::Composer,
+                false,
+                cx,
+            ),
             // Not in the pinned client: MessageLogger (`plugin_hooks/message_logger.rs`).
             Action::PluginToggleDeletedHighlight => {
                 self.message_logger_toggle_highlight(message);
@@ -1508,7 +1564,10 @@ impl Root {
                 .child(
                     if matches!(
                         run,
-                        Action::PluginTranslate
+                        Action::PluginCloneSticker
+                            | Action::PluginCopyStickerLink
+                            | Action::PluginOpenStickerLink
+                            | Action::PluginTranslate
                             | Action::PluginToggleDeletedHighlight
                             | Action::PluginToggleDiffView
                             | Action::PluginClearMessageHistory

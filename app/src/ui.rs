@@ -289,6 +289,7 @@ mod stream_failed;
 mod video_pip;
 pub(crate) use plugin_hooks::more_commands_outgoing;
 pub(crate) use plugin_hooks::spotify_premium_forced;
+pub(crate) use plugin_hooks::expression_sticker_url;
 #[cfg(feature = "capture")]
 pub(crate) use server_discovery::FORCE_ELIGIBLE;
 mod server_discovery_form;
@@ -2015,6 +2016,11 @@ impl Root {
                 }
                 // Not in the pinned client: Translate+'s translations (`plugin_hooks/translate_plus.rs`).
                 if self.translate_plus_fetched(&key, &body, cx) {
+                    return;
+                }
+                // Not in the pinned client: ExpressionManager's clone and delete answers
+                // (`plugin_hooks/expression_manager.rs`).
+                if self.expression_manager_fetched(&key, &body, cx) {
                     return;
                 }
                 // Not in the pinned client: UserPFP's list (`plugin_hooks/userpfp.rs`).
@@ -8174,7 +8180,10 @@ impl Root {
                             |this| this.child(self.content(&copy)),
                         )
                         .children(self.accessories(&copy, cx))
-                        .children(footer.map(|footer| {
+                        // Not in the pinned client: BetterForwards' footer in place of the base's
+                        // (`plugin_hooks/better_forwards.rs`).
+                        .children(self.better_forwards_footer(message, cx))
+                        .children(footer.filter(|_| !plugin_hooks::better_forwards_on()).map(|footer| {
                             div()
                                 .id(SharedString::from(format!(
                                     "forwarded-footer-{}",
@@ -11790,6 +11799,9 @@ impl Render for Root {
             .children(self.permissions_viewer_dialog(window, cx))
             // Not in the pinned client: MessageLogger's edit history (`plugin_hooks/message_logger.rs`).
             .children(self.message_logger_dialog(cx))
+            // Not in the pinned client: ExpressionManager's clone dialog and confirmations
+            // (`plugin_hooks/expression_manager.rs`).
+            .children(self.expression_manager_dialogs(cx))
             .children(self.not_friend_modal(cx))
             .children(self.favorites_full_modal(cx))
             .children(self.chat_alert_modal(cx))

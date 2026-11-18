@@ -244,6 +244,18 @@ pub enum Request {
         height: u32,
         avatars: Vec<CloudAvatar>,
     },
+    /// Not in the pinned client: ExpressionManager's Clone Sticker (`doClone`): the sticker's picture from the media proxy
+    /// at the largest size under 512 KiB (4096 halving to 16), posted to the server as a new sticker. The answer comes
+    /// under `key` as `Update::Fetched` with `{ok, name, message}`.
+    PluginCloneSticker {
+        key: String,
+        guild: u64,
+        sticker: u64,
+        format: u64,
+        name: String,
+        tags: String,
+        description: String,
+    },
     /// Not in the pinned client: Translate+'s translation of a message's text (`plugins::translate_plus`): Google
     /// Translate, the Toki Pona translator and the two dictionaries, none with authorization. The answer comes under
     /// `key` as `Update::Fetched` (`{src, text}`, or `null` when the Toki Pona call failed, as the original then shows
@@ -858,6 +870,7 @@ impl Request {
             Request::FetchZip { .. } => "FetchZip",
             Request::GifProvider { .. } => "GifProvider",
             Request::PluginTranslate { .. } => "PluginTranslate",
+            Request::PluginCloneSticker { .. } => "PluginCloneSticker",
             Request::ResolveRedirect { .. } => "ResolveRedirect",
             Request::Typing { .. } => "Typing",
             Request::React { .. } => "React",
@@ -900,6 +913,7 @@ impl Request {
             | Request::FetchZip { .. }
             | Request::GifProvider { .. }
             | Request::PluginTranslate { .. }
+            | Request::PluginCloneSticker { .. }
             | Request::ResolveRedirect { .. }
             | Request::LoadMessages { .. }
             | Request::PrefetchMessages { .. }
@@ -1442,6 +1456,14 @@ async fn send_local(
             "message_id": message.to_string(),
             "type": 1,
         });
+        // Not in the pinned client: BetterForwards' choice of attachments and embeds (`forward_only`, which module
+        // 138399 sends for `forwardOptions`; `plugins/better_forwards.rs`).
+        if let Some((attachment_ids, embed_indices)) = crate::plugins::better_forwards::take(nonce) {
+            body["message_reference"]["forward_only"] = json!({
+                "attachment_ids": attachment_ids,
+                "embed_indices": embed_indices,
+            });
+        }
     }
     if !files.is_empty() {
         let cancel = crate::upload_flow::register(nonce);
@@ -2530,6 +2552,20 @@ pub async fn run(token: Token, updates: mpsc::UnboundedSender<Update>, requests:
                     });
                 });
             }
+            Request::PluginCloneSticker {
+                key,
+                guild,
+                sticker,
+                format,
+                name,
+                tags,
+                description,
+            } => {
+                tokio::spawn(async move {
+                    let body = clone_sticker(&client, guild, sticker, format, &name, &tags, &description).await;
+                    let _ = updates.send(Update::Fetched { key, body });
+                });
+            }
             Request::PluginTranslate {
                 key,
                 text,
@@ -3348,6 +3384,80 @@ fn guild_member_requests(guilds: &[u64], query: &str, limit: u64, user_ids: &[u6
             json!({"guild_id": ids, "user_ids": users, "presences": true})
         })
         .collect()
+}
+
+/// Not in the pinned client: ExpressionManager's `doClone` (`plugin_hooks/expression_manager.rs`).
+async fn clone_sticker(
+    client: &Client,
+    guild: u64,
+    sticker: u64,
+    format: u64,
+    name: &str,
+    tags: &str,
+    description: &str,
+) -> Value {
+    const MAX_BYTES: usize = 512 * 1024;
+    let failed = |message: String| json!({"ok": false, "name": name, "message": message});
+    // `fetchSticker`: what the store did not have.
+    let (mut tags, mut description) = (tags.to_owned(), description.to_owned());
+    if tags.is_empty()
+        && let Ok(known) = client.get(&format!("/stickers/{sticker}")).await
+    {
+        tags = known["tags"].as_str().unwrap_or_default().to_owned();
+        if description.is_empty() {
+            description = known["description"].as_str().unwrap_or_default().to_owned();
+        }
+    }
+    // `fetchBlob`: the largest size within the limit.
+    let mut file = None;
+    let mut size = 4096;
+    while size >= 16 {
+        let url = crate::ui::expression_sticker_url(sticker, format, size);
+        match client.fetch_public_limited(&url, MAX_BYTES).await {
+            Ok(dc_http::LimitedGet::Body(bytes)) => {
+                file = Some(bytes);
+                break;
+            }
+            Ok(dc_http::LimitedGet::TooLarge) => size /= 2,
+            Ok(dc_http::LimitedGet::Status(status, _)) => {
+                return failed(format!("Failed to fetch {url}: {status}"));
+            }
+            Err(error) => return failed(error.to_string()),
+        }
+    }
+    let Some(file) = file else {
+        return failed(format!(
+            "Failed to fetch sticker within size limit of {}KiB",
+            MAX_BYTES / 1024
+        ));
+    };
+    let file_type = match format {
+        4 => "image/gif",
+        3 => "application/json",
+        _ => "image/png",
+    };
+    let form = dc_http::Form {
+        fields: vec![
+            ("name".to_owned(), name.to_owned()),
+            (
+                "tags".to_owned(),
+                if tags.is_empty() { "\u{1f47b}".to_owned() } else { tags },
+            ),
+            ("description".to_owned(), description),
+        ],
+        file_field: "file".to_owned(),
+        file_name: "blob".to_owned(),
+        file_type: file_type.to_owned(),
+        file,
+        headers: Vec::new(),
+    };
+    match client.post_form(&format!("/guilds/{guild}/stickers"), &form).await {
+        Ok(_) => json!({"ok": true, "name": name}),
+        Err(dc_http::Error::Status { body, .. }) => {
+            failed(body["message"].as_str().unwrap_or("Something went wrong (check console!)").to_owned())
+        }
+        Err(error) => failed(error.to_string()),
+    }
 }
 
 /// Not in the pinned client: Translate+'s `translate` (`plugins::translate_plus`). The dictionaries are kept once
