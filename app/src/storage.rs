@@ -39,6 +39,17 @@ pub fn data_dir() -> Option<PathBuf> {
     std::env::var_os("LOCALAPPDATA").map(|dir| PathBuf::from(dir).join(folder(is_capture_run())))
 }
 
+/// Where the start cache and the picture cache live: the data folder, or in a capture build the folder
+/// `GRAVECORD_CACHE_DIR` names, so a harness run that measures warm starts keeps its caches apart from other runs.
+pub fn cache_dir() -> Option<PathBuf> {
+    if cfg!(feature = "capture")
+        && let Some(dir) = std::env::var_os("GRAVECORD_CACHE_DIR")
+    {
+        return Some(PathBuf::from(dir));
+    }
+    data_dir()
+}
+
 fn path() -> Option<PathBuf> {
     std::env::var_os("LOCALAPPDATA").map(|dir| file_in(Path::new(&dir), is_capture_run()))
 }

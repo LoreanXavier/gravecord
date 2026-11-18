@@ -55,6 +55,22 @@ impl Member {
         })
     }
 
+    /// The member as a gateway member object that `from_value` reads back: what the start cache keeps of the open
+    /// channel's authors. The decoration and the name styles are left out; the live member brings them.
+    pub fn to_cache_value(&self) -> Value {
+        let roles: Vec<String> = self.roles.iter().map(Id::to_string).collect();
+        serde_json::json!({
+            "user": self.user.to_cache_value(),
+            "nick": self.nick,
+            "avatar": self.avatar,
+            "roles": roles,
+            "joined_at": self.joined_at,
+            "pending": self.pending,
+            "communication_disabled_until": self.timeout_until,
+            "flags": self.flags,
+        })
+    }
+
     /// `GUILD_MEMBER_AVATAR`, module 486020. No override means use the user's global avatar.
     pub fn avatar_url(&self, guild: Id) -> Option<String> {
         let hash = self.avatar.as_ref()?;
@@ -170,7 +186,15 @@ impl GuildMembers {
         };
         match name {
             "GUILD_CREATE" => self.apply_list(guild, &data["members"]),
-            "GUILD_MEMBERS_CHUNK" => self.apply_list(guild, &data["members"]),
+            "GUILD_MEMBERS_CHUNK" => {
+                self.apply_list(guild, &data["members"]);
+                // Asked for by id and not a member (any more): what was known of them is gone.
+                for user in data["not_found"].as_array().into_iter().flatten() {
+                    if let Some(user) = id(user) {
+                        self.remove(guild, user);
+                    }
+                }
+            }
             "GUILD_MEMBER_ADD" | "GUILD_MEMBER_UPDATE" => {
                 self.apply_member(guild, data, None);
             }
@@ -210,6 +234,32 @@ mod tests {
             &json!({"guild_id": "9", "user": {"id": "1", "username": "ann"}, "roles": []}),
         );
         assert!(store.of(9)[0].roles.is_empty());
+    }
+
+    #[test]
+    fn a_kept_member_reads_back_and_a_not_found_one_is_dropped() {
+        let mut store = GuildMembers::default();
+        store.dispatch(
+            "GUILD_MEMBERS_CHUNK",
+            &json!({"guild_id": "9", "members": [
+                {"user": {"id": "1", "username": "ann"}, "roles": ["5", "6"], "nick": "A", "avatar": "h", "pending": true},
+            ]}),
+        );
+        let kept = store.get(9, 1).unwrap().clone();
+        let mut fresh = GuildMembers::default();
+        fresh.apply_member(9, &kept.to_cache_value(), None);
+        let back = fresh.get(9, 1).unwrap();
+        assert_eq!(
+            (&back.nick, &back.avatar, &back.roles, back.pending),
+            (&kept.nick, &kept.avatar, &kept.roles, kept.pending)
+        );
+        assert_eq!(back.user.id, 1);
+        // Asked for again by id: the server no longer has them as a member.
+        fresh.dispatch(
+            "GUILD_MEMBERS_CHUNK",
+            &json!({"guild_id": "9", "members": [], "not_found": ["1"]}),
+        );
+        assert!(fresh.get(9, 1).is_none());
     }
 
     #[test]

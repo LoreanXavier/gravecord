@@ -9,7 +9,7 @@ use dc_proto::secrets::Token;
 use serde_json::{Value, json};
 use std::sync::Arc;
 use tokio::sync::mpsc;
-use tracing::warn;
+use tracing::{debug, warn};
 
 pub enum Update {
     SpotifyReply {
@@ -252,6 +252,13 @@ pub enum Request {
     LoadMessages {
         channel: u64,
     },
+    /// The newest page of the channel the app is about to open, asked for the moment the login is known (the start
+    /// cache or the saved place names it), before the window and the gateway. Its answer is an ordinary
+    /// `Update::Messages`; the view's own `LoadMessages` of that channel before READY is answered by it instead of a
+    /// second request (`StartPage`). After READY every load goes to the server again.
+    PrefetchMessages {
+        channel: u64,
+    },
     /// `fetchMessages` for a page `before` or `after` the window, or `around` a message (`jumpToMessage`).
     FetchMessages {
         spec: dc_state::message_window::FetchSpec,
@@ -449,7 +456,7 @@ fn injected_image_failure(key: &str) -> bool {
 /// forty stickers starts forty threads that each render a frame.
 static IMAGE_DRAWS: tokio::sync::Semaphore = tokio::sync::Semaphore::const_new(6);
 /// Content-addressed CDN assets cached raw on disk under `img-cache` when the start cache is active.
-fn disk_cacheable_raw_image(key: &str, url: &str) -> bool {
+pub(crate) fn disk_cacheable_raw_image(key: &str, url: &str) -> bool {
     crate::ui::start_cache::enabled()
         && !url.starts_with("data:")
         && (key.starts_with("avatar:")
@@ -688,6 +695,7 @@ impl Request {
             Request::Typing { .. } => "Typing",
             Request::React { .. } => "React",
             Request::LoadMessages { .. } => "LoadMessages",
+            Request::PrefetchMessages { .. } => "PrefetchMessages",
             Request::FetchMessages { .. } => "FetchMessages",
             Request::Send { .. } => "Send",
             Request::SendLocal { .. } => "SendLocal",
@@ -722,6 +730,7 @@ impl Request {
             | Request::FetchCdn { .. }
             | Request::FetchPublicJson { .. }
             | Request::LoadMessages { .. }
+            | Request::PrefetchMessages { .. }
             | Request::FetchMessages { .. }
             | Request::SoundboardSounds { .. }
             | Request::GuildMembers { .. }
@@ -1389,6 +1398,150 @@ pub fn close_gateway_at_exit() {
     }
 }
 
+/// The page asked for at the start (`Request::PrefetchMessages`), from the request to its one use.
+#[derive(Debug, Default, PartialEq)]
+enum StartPage {
+    /// Nothing was asked for yet.
+    #[default]
+    None,
+    /// On its way; nobody has asked for it yet.
+    InFlight(u64),
+    /// On its way, and the view's load of that channel waits for it.
+    Claimed(u64),
+    /// Arrived (and was delivered) before the view asked: the page, kept for that ask.
+    Done {
+        channel: u64,
+        page: Value,
+        started_ms: u64,
+    },
+    /// Used, failed or superseded: every load goes to the server.
+    Spent,
+}
+
+/// What a `LoadMessages` of `channel` does with the start page.
+#[derive(Debug, PartialEq)]
+enum StartPageUse {
+    /// The page is on its way and will be delivered: no request.
+    Wait,
+    /// The page arrived before: deliver it again (the view now has the channel open), no request.
+    Deliver { page: Value, started_ms: u64 },
+    /// Ask the server.
+    Fetch,
+}
+
+impl StartPage {
+    /// A `LoadMessages` of `channel` arrived. Only a load before READY uses the page: what was posted between the
+    /// page and READY never reaches the gateway's events, so a load after READY always asks the server.
+    fn claim(&mut self, channel: u64, ready_seen: bool) -> StartPageUse {
+        if ready_seen {
+            if !matches!(self, StartPage::None) {
+                *self = StartPage::Spent;
+            }
+            return StartPageUse::Fetch;
+        }
+        match std::mem::take(self) {
+            StartPage::InFlight(asked) if asked == channel => {
+                *self = StartPage::Claimed(asked);
+                StartPageUse::Wait
+            }
+            StartPage::Done {
+                channel: asked,
+                page,
+                started_ms,
+            } if asked == channel => {
+                *self = StartPage::Spent;
+                StartPageUse::Deliver { page, started_ms }
+            }
+            other => {
+                *self = other;
+                StartPageUse::Fetch
+            }
+        }
+    }
+
+    /// The page came in: whether it is delivered. A page nobody asked for yet is kept for the ask; one a load waits
+    /// for goes out; one superseded by a load after READY is dropped, so it can never land after the newer page.
+    fn arrived(&mut self, page: &Value, started_ms: u64) -> bool {
+        let (next, deliver) = match std::mem::take(self) {
+            StartPage::InFlight(channel) => (
+                StartPage::Done {
+                    channel,
+                    page: page.clone(),
+                    started_ms,
+                },
+                true,
+            ),
+            StartPage::Claimed(_) => (StartPage::Spent, true),
+            _ => (StartPage::Spent, false),
+        };
+        *self = next;
+        deliver
+    }
+
+    /// The page failed. A load that waited for it must now ask the server: the channel is returned for that.
+    fn failed(&mut self) -> Option<u64> {
+        match std::mem::replace(self, StartPage::Spent) {
+            StartPage::Claimed(channel) => Some(channel),
+            _ => None,
+        }
+    }
+}
+
+/// `GET /channels/{id}/messages`, the newest page, delivered as `Update::Messages` (or `MessagesFailed`).
+async fn load_messages(
+    client: &Client,
+    channel: u64,
+    updates: &mpsc::UnboundedSender<Update>,
+) -> bool {
+    crate::start_trace::mark("msgs_req");
+    let started_ms = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|elapsed| elapsed.as_millis() as u64)
+        .unwrap_or_default();
+    let route = format!("/channels/{channel}/messages?limit={MESSAGE_PAGE}");
+    match client.get(&route).await {
+        Ok(page) => {
+            crate::start_trace::mark("msgs_recv");
+            let _ = updates.send(Update::Messages {
+                channel,
+                page,
+                started_ms,
+            });
+            true
+        }
+        Err(error) => {
+            warn!("loading messages failed: {error}");
+            // The channel the app reopened may be one this account lost access to: the loading
+            // screen must not wait for a page that will never come.
+            let _ = updates.send(Update::MessagesFailed { channel });
+            false
+        }
+    }
+}
+
+/// The network session of one login, started as soon as the login is known: before the window exists at a start
+/// with a stored login, so the gateway and the first requests do not wait for the window and the fonts.
+pub struct Session {
+    pub updates: mpsc::UnboundedSender<Update>,
+    pub update_rx: mpsc::UnboundedReceiver<Update>,
+    pub requests: Requests,
+    pub task: tokio::task::JoinHandle<()>,
+}
+
+impl Session {
+    pub fn start(handle: &tokio::runtime::Handle, token: Token) -> Self {
+        let (updates, update_rx) = mpsc::unbounded_channel();
+        let (requests, queue) = request_channel();
+        let task = handle.spawn(run(token, updates.clone(), queue));
+        Self {
+            updates,
+            update_rx,
+            requests,
+            task,
+        }
+    }
+}
+
 struct Shutdown(mpsc::UnboundedSender<Command>);
 
 impl Drop for Shutdown {
@@ -1398,6 +1551,7 @@ impl Drop for Shutdown {
 }
 
 pub async fn run(token: Token, updates: mpsc::UnboundedSender<Update>, requests: RequestQueue) {
+    crate::start_trace::mark("net_run");
     let RequestQueue {
         receiver: mut requests,
         settings_writes,
@@ -1436,6 +1590,9 @@ pub async fn run(token: Token, updates: mpsc::UnboundedSender<Update>, requests:
     // Dropping this future (logging out) closes the gateway.
     let _gateway = Shutdown(commands.clone());
     let forward = updates.clone();
+    let start_page = Arc::new(std::sync::Mutex::new(StartPage::None));
+    let ready_seen = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let saw_ready = ready_seen.clone();
     tokio::spawn(async move {
         while let Some(event) = events.recv().await {
             match event {
@@ -1443,7 +1600,15 @@ pub async fn run(token: Token, updates: mpsc::UnboundedSender<Update>, requests:
                     if let Some(observer) = &spotify_observer {
                         observer.event(&name, &data);
                     }
+                    match name.as_str() {
+                        "READY" => crate::start_trace::mark("gw_ready_recv"),
+                        "READY_SUPPLEMENTAL" => crate::start_trace::mark("gw_supp_recv"),
+                        _ => {}
+                    }
                     let connected = matches!(name.as_str(), "READY" | "RESUMED");
+                    if connected {
+                        saw_ready.store(true, std::sync::atomic::Ordering::SeqCst);
+                    }
                     let _ = forward.send(Update::Dispatch { name, data });
                     if connected {
                         let _ = forward.send(Update::GatewayConnected(true));
@@ -1457,7 +1622,7 @@ pub async fn run(token: Token, updates: mpsc::UnboundedSender<Update>, requests:
                     warn!("gateway reconnecting in {delay:?}");
                     let _ = forward.send(Update::GatewayConnected(false));
                 }
-                Event::Connected => {}
+                Event::Connected => crate::start_trace::mark("gw_hello"),
                 Event::Closed { .. } => {
                     let _ = forward.send(Update::GatewayConnected(false));
                 }
@@ -1493,28 +1658,69 @@ pub async fn run(token: Token, updates: mpsc::UnboundedSender<Update>, requests:
                 }
             }
             Request::LoadMessages { channel } => {
-                tokio::spawn(async move {
-                    let started_ms = std::time::SystemTime::now()
-                        .duration_since(std::time::UNIX_EPOCH)
-                        .map(|elapsed| elapsed.as_millis() as u64)
-                        .unwrap_or_default();
-                    let route = format!("/channels/{channel}/messages?limit={MESSAGE_PAGE}");
-                    match client.get(&route).await {
-                        Ok(page) => {
-                            let _ = updates.send(Update::Messages {
-                                channel,
-                                page,
-                                started_ms,
-                            });
-                        }
-                        Err(error) => {
-                            warn!("loading messages failed: {error}");
-                            // The channel the app reopened may be one this account lost access to: the loading
-                            // screen must not wait for a page that will never come.
-                            let _ = updates.send(Update::MessagesFailed { channel });
-                        }
+                let ready = ready_seen.load(std::sync::atomic::Ordering::SeqCst);
+                let used = start_page
+                    .lock()
+                    .map(|mut page| page.claim(channel, ready))
+                    .unwrap_or(StartPageUse::Fetch);
+                match used {
+                    StartPageUse::Wait => {}
+                    StartPageUse::Deliver { page, started_ms } => {
+                        let _ = updates.send(Update::Messages {
+                            channel,
+                            page,
+                            started_ms,
+                        });
                     }
+                    StartPageUse::Fetch => {
+                        tokio::spawn(async move {
+                            load_messages(&client, channel, &updates).await;
+                        });
+                    }
+                }
+            }
+            Request::PrefetchMessages { channel } => {
+                let first = start_page.lock().is_ok_and(|mut page| {
+                    let first = *page == StartPage::None;
+                    if first {
+                        *page = StartPage::InFlight(channel);
+                    }
+                    first
                 });
+                if first {
+                    crate::start_trace::mark("msgs_prefetch");
+                    let start_page = start_page.clone();
+                    tokio::spawn(async move {
+                        let started_ms = std::time::SystemTime::now()
+                            .duration_since(std::time::UNIX_EPOCH)
+                            .map(|elapsed| elapsed.as_millis() as u64)
+                            .unwrap_or_default();
+                        let route = format!("/channels/{channel}/messages?limit={MESSAGE_PAGE}");
+                        match client.get(&route).await {
+                            Ok(page) => {
+                                crate::start_trace::mark("msgs_recv");
+                                let deliver = start_page
+                                    .lock()
+                                    .is_ok_and(|mut slot| slot.arrived(&page, started_ms));
+                                if deliver {
+                                    let _ = updates.send(Update::Messages {
+                                        channel,
+                                        page,
+                                        started_ms,
+                                    });
+                                }
+                            }
+                            Err(error) => {
+                                debug!("the start page did not load: {error}");
+                                let waiting =
+                                    start_page.lock().ok().and_then(|mut slot| slot.failed());
+                                if let Some(channel) = waiting {
+                                    load_messages(&client, channel, &updates).await;
+                                }
+                            }
+                        }
+                    });
+                }
             }
             Request::FetchMessages { spec } => {
                 tokio::spawn(async move {
@@ -2333,6 +2539,7 @@ pub async fn run(token: Token, updates: mpsc::UnboundedSender<Update>, requests:
             }
             Request::Image { key, url } => {
                 let flight = InFlight::start();
+                crate::start_trace::mark("img_first_req");
                 tokio::spawn(async move {
                     let _flight = flight;
                     // A Shop or CDN picture kept on disk is drawn at once; a stale one is fetched again behind it.
@@ -3057,6 +3264,64 @@ fn preview_body(jpeg: &[u8]) -> Value {
     use base64::Engine;
     let encoded = base64::engine::general_purpose::STANDARD.encode(jpeg);
     json!({"thumbnail": format!("data:image/jpeg;base64,{encoded}")})
+}
+
+#[cfg(test)]
+mod start_page_tests {
+    use super::{StartPage, StartPageUse};
+    use serde_json::json;
+
+    #[test]
+    fn a_load_before_ready_waits_for_the_page_on_its_way() {
+        let mut page = StartPage::InFlight(7);
+        assert_eq!(page.claim(7, false), StartPageUse::Wait);
+        // The page arrives: it goes out once, to the load that waited, and is not kept.
+        assert!(page.arrived(&json!([{"id": "1"}]), 5));
+        assert_eq!(page, StartPage::Spent);
+        assert_eq!(page.claim(7, false), StartPageUse::Fetch);
+    }
+
+    #[test]
+    fn a_page_that_came_first_is_handed_to_the_load_once() {
+        let mut page = StartPage::InFlight(7);
+        assert!(page.arrived(&json!([{"id": "1"}]), 5));
+        assert_eq!(
+            page.claim(7, false),
+            StartPageUse::Deliver {
+                page: json!([{"id": "1"}]),
+                started_ms: 5
+            }
+        );
+        assert_eq!(page.claim(7, false), StartPageUse::Fetch);
+    }
+
+    #[test]
+    fn another_channel_and_any_load_after_ready_ask_the_server() {
+        let mut page = StartPage::InFlight(7);
+        assert_eq!(page.claim(8, false), StartPageUse::Fetch);
+        assert_eq!(page, StartPage::InFlight(7), "another channel leaves it");
+        // After READY the page could miss what was posted before the gateway's events began.
+        assert_eq!(page.claim(7, true), StartPageUse::Fetch);
+        assert_eq!(page, StartPage::Spent);
+        // A page superseded that way is dropped when it lands, never shown over the newer one.
+        assert!(!page.arrived(&json!([]), 5));
+        let mut kept = StartPage::InFlight(7);
+        assert!(kept.arrived(&json!([]), 5));
+        assert_eq!(kept.claim(7, true), StartPageUse::Fetch);
+        assert_eq!(kept, StartPage::Spent);
+    }
+
+    #[test]
+    fn a_failed_page_sends_the_waiting_load_to_the_server() {
+        let mut waited = StartPage::InFlight(7);
+        assert_eq!(waited.claim(7, false), StartPageUse::Wait);
+        assert_eq!(waited.failed(), Some(7));
+        let mut unasked = StartPage::InFlight(7);
+        assert_eq!(unasked.failed(), None);
+        assert_eq!(unasked.claim(7, false), StartPageUse::Fetch);
+        // Nothing asked for at all: loads go to the server.
+        assert_eq!(StartPage::None.claim(7, false), StartPageUse::Fetch);
+    }
 }
 
 #[cfg(test)]

@@ -142,6 +142,12 @@ impl Client {
             .default_headers(fixed_headers(&identity)?)
             .tcp_nodelay(true)
             .pool_max_idle_per_host(32)
+            // Every request to a host rides one HTTP/2 connection: one that stops answering (a sleep, a changed
+            // network) is found by its pings and dropped, so the next requests open a new one instead of waiting on it.
+            .connect_timeout(std::time::Duration::from_secs(10))
+            .http2_keep_alive_interval(std::time::Duration::from_secs(20))
+            .http2_keep_alive_timeout(std::time::Duration::from_secs(10))
+            .http2_keep_alive_while_idle(true)
             .build()?;
         Ok(Self {
             http,

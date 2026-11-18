@@ -39,6 +39,8 @@ struct Options {
     wait: bool,
     idle_secs: u64,
     timeout: Duration,
+    /// `--exe <path>`: measure this build instead of the one in `target` (a kept copy of a base build, say).
+    exe: Option<PathBuf>,
 }
 
 fn parse(args: &[&str]) -> Result<Options> {
@@ -52,6 +54,7 @@ fn parse(args: &[&str]) -> Result<Options> {
         wait: true,
         idle_secs: 30,
         timeout: Duration::from_secs(40 * 60),
+        exe: None,
     };
     let mut rest = args.iter();
     while let Some(flag) = rest.next() {
@@ -59,9 +62,14 @@ fn parse(args: &[&str]) -> Result<Options> {
             "--release" => options.release = true,
             "--no-build" => options.build = false,
             "--no-wait" => options.wait = false,
-            "--runs" | "--laps" | "--scenario" | "--label" | "--idle-secs" | "--timeout-min" => {
+            "--runs" | "--laps" | "--scenario" | "--label" | "--idle-secs" | "--timeout-min"
+            | "--exe" => {
                 let value = rest.next().copied().context("flag without a value")?;
                 match *flag {
+                    "--exe" => {
+                        options.exe = Some(PathBuf::from(value));
+                        options.build = false;
+                    }
                     "--runs" => options.runs = value.parse()?,
                     "--laps" => options.laps = value.parse()?,
                     "--scenario" => options.scenario = value.to_owned(),
@@ -71,7 +79,7 @@ fn parse(args: &[&str]) -> Result<Options> {
                 }
             }
             other => bail!(
-                "usage: cargo xtask perf [--release] [--runs N] [--laps N] [--scenario all|start|idle|typing|scroll|soak|stickers|hitch|anim] [--label L] [--no-build] [--no-wait] [--idle-secs N] [--timeout-min N], got {other}"
+                "usage: cargo xtask perf [--release] [--runs N] [--laps N] [--scenario all|start|idle|typing|scroll|soak|stickers|hitch|anim] [--label L] [--no-build] [--no-wait] [--idle-secs N] [--timeout-min N] [--exe PATH], got {other}"
             ),
         }
     }
@@ -122,6 +130,8 @@ fn script(options: &Options) -> String {
     let mut steps = String::from(
         "perf start; perf sample start; perf caches start; perf heap; perf ws; perf badge; ",
     );
+    // The stages that come after the first content (the pictures, the member list), before anything is clicked.
+    steps.push_str("wait 3000; perf timeline; ");
     if all || options.scenario == "stickers" {
         // The first paint of a channel with stickers (the fixture's text channel is open at the start), then the picker
         // opening for the first time and a second time.
@@ -234,7 +244,7 @@ fn build(repo: &Path, release: bool) -> Result<PathBuf> {
         "--features",
         "capture",
         "-j",
-        "6",
+        "4",
         "--quiet",
     ]);
     if release {
@@ -310,7 +320,14 @@ fn metrics(log: &str) -> BTreeMap<String, f64> {
     let mut samples: BTreeMap<String, BTreeMap<String, f64>> = BTreeMap::new();
     let mb = |bytes: f64| bytes / 1024. / 1024.;
     for line in log.lines() {
-        if let Some(rest) = line.strip_prefix("perf start:") {
+        if let Some(rest) = line.strip_prefix("perf timeline:") {
+            // The start stages (`app/src/start_trace.rs`) as `cp_st_<stage>_ms`, the first moment each was reached.
+            for (key, value) in fields(rest) {
+                if let Some(name) = key.strip_prefix("cp_") {
+                    out.insert(format!("start.{name}"), value);
+                }
+            }
+        } else if let Some(rest) = line.strip_prefix("perf start:") {
             let values = fields(rest);
             for key in [
                 "fonts_ms",
@@ -475,7 +492,12 @@ fn median(values: &[f64]) -> f64 {
 /// The budget of a metric: its limit and its target, if it has one.
 fn budget(name: &str) -> Option<(f64, Option<f64>)> {
     match name {
-        "start.splash_done_ms" => Some((BUDGET_START_MS, Some(TARGET_START_MS))),
+        // The loading screen no longer shows (it starts done), so `splash_done_ms` stays 0. What the user waits for
+        // is the open channel's live page with its pictures, and its first messages (from the cache when it is on).
+        "start.splash_done_ms"
+        | "start.st_frame_messages_ms"
+        | "start.st_frame_live_messages_ms"
+        | "start.st_frame_pictures_ms" => Some((BUDGET_START_MS, Some(TARGET_START_MS))),
         "idle1.rss_mb" | "idle2.rss_mb" | "home1.rss_mb" => {
             Some((BUDGET_IDLE_RSS_MB, Some(TARGET_IDLE_RSS_MB)))
         }
@@ -490,7 +512,9 @@ fn budget(name: &str) -> Option<(f64, Option<f64>)> {
 
 pub fn run(repo: &Path, args: &[&str]) -> Result<()> {
     let options = parse(args)?;
-    let exe = if options.build {
+    let exe = if let Some(exe) = options.exe.clone() {
+        exe
+    } else if options.build {
         build(repo, options.release)?
     } else {
         exe_of(repo, options.release)

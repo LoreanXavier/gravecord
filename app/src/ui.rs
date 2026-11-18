@@ -886,6 +886,12 @@ pub struct Root {
     copied_code: HashSet<(u64, u32)>,
     pub ready: bool,
     hydrated_from_cache: bool,
+    /// Members the start cache brought (server, user): asked for again once the gateway is up, so none stays as the
+    /// last run knew it.
+    start_members: Vec<(Id, Id)>,
+    /// Pictures of the screen kept for the next start that are not in yet: each is written to the start's folder
+    /// when it comes in (`start_cache::kept_for_the_start`).
+    start_keep: HashSet<String>,
     /// The connecting screen, up until the first content is in.
     splash: splash::Splash,
     forums: HashMap<Id, forums::Forum>,
@@ -1262,6 +1268,8 @@ impl Root {
             copied_code: HashSet::new(),
             ready: false,
             hydrated_from_cache: false,
+            start_members: Vec::new(),
+            start_keep: HashSet::new(),
             splash: splash::Splash::new(),
             forums: HashMap::new(),
             regions: regions::Regions::default(),
@@ -1364,7 +1372,28 @@ impl Root {
     }
 
     pub fn update(&mut self, update: Update, cx: &mut Context<Self>) {
+        let stage = match &update {
+            Update::Dispatch { name, .. } if name == "READY" => Some("ready_applied"),
+            Update::Dispatch { name, .. } if name == "READY_SUPPLEMENTAL" => Some("supp_applied"),
+            Update::Dispatch { name, .. } if name == "GUILD_MEMBER_LIST_UPDATE" => {
+                Some("members_applied")
+            }
+            Update::Messages { channel, .. } if Some(*channel) == self.channel => {
+                Some("msgs_applied")
+            }
+            Update::Image { .. } => Some("img_first_recv"),
+            _ => None,
+        };
+        let applying = std::time::Instant::now();
         self.apply_update(update, cx);
+        if let Some(stage) = stage {
+            crate::start_trace::mark(stage);
+            match stage {
+                "ready_applied" => crate::start_trace::took("dur_ready_total", applying),
+                "msgs_applied" => crate::start_trace::took("dur_msgs_apply", applying),
+                _ => {}
+            }
+        }
         self.data_revision += 1;
         self.splash_check();
         // Native indicators must update even while the window is hidden and not rendering.
@@ -1475,8 +1504,16 @@ impl Root {
                 if name == "MESSAGE_CREATE" {
                     self.send_echo(&data);
                 }
+                let dispatching = std::time::Instant::now();
                 self.stores.dispatch(&name, &data);
                 self.unread_notice_event(&name, &data);
+                match name.as_str() {
+                    "READY" => crate::start_trace::took("dur_ready_dispatch", dispatching),
+                    "READY_SUPPLEMENTAL" => {
+                        crate::start_trace::took("dur_supp_dispatch", dispatching)
+                    }
+                    _ => {}
+                }
                 self.urgent_message_event(&name);
                 self.spotify_devices_changed(cx);
                 self.spotify_loading_changed();
@@ -1648,14 +1685,16 @@ impl Root {
                         &self.stores.experiments,
                     );
                     self.hydrated_from_cache = false;
+                    self.refresh_start_members();
                     if let Some((prev_guild, prev_channel)) = ready_prev_place {
                         self.reconcile_after_ready(prev_guild, prev_channel);
                     } else {
                         self.after_ready();
                     }
-                    if let Some(mut trimmed) =
-                        start_cache::trim_ready(&data, self.cache_guild().as_deref())
-                    {
+                    let trimming = std::time::Instant::now();
+                    let trimmed = start_cache::trim_ready(&data, self.cache_guild().as_deref());
+                    crate::start_trace::took("dur_ready_trim", trimming);
+                    if let Some(mut trimmed) = trimmed {
                         if !self.stores.private_channels.is_empty() {
                             start_cache::sync_private_channels(&mut trimmed, &self.stores);
                         }
@@ -1740,15 +1779,26 @@ impl Root {
                 self.stores.load_messages_since(channel, &page, started_ms);
                 self.reinsert_local_sends(channel);
                 if Some(channel) == self.channel {
-                    start_cache::save_messages(channel, &page);
-                }
-                if Some(channel) == self.channel {
                     self.read_current_channel();
                 }
                 self.rebuild_rows();
                 self.restore_scroll_anchor(anchor);
                 self.request_images();
-                self.ready = true;
+                if Some(channel) == self.channel {
+                    let pictures = self.start_pictures();
+                    self.keep_start_pictures(&pictures);
+                    start_cache::save_messages(
+                        self.stores.current_user.as_ref().map(|me| me.id),
+                        channel,
+                        &page,
+                        &pictures,
+                        self.start_members_to_keep(),
+                    );
+                }
+                // A page asked for at the start can land before READY, with nothing else to draw it with yet.
+                if Some(channel) == self.channel || self.stores.current_user.is_some() {
+                    self.ready = true;
+                }
                 self.kb_sync_hooks();
             }
             Update::MessagesLoaded { spec, page } => self.window_loaded(spec, page, cx),
@@ -2429,24 +2479,11 @@ impl Root {
                 cx.notify();
             }
             Update::Image { key, bytes } => {
-                let format = if key.starts_with("emoji:")
-                    || key.starts_with("filekind:")
-                    || bytes.starts_with(b"<svg")
-                    || bytes.starts_with(b"<?xml")
-                {
-                    ImageFormat::Svg
-                } else if bytes.starts_with(b"\x89PNG") {
-                    ImageFormat::Png
-                } else if bytes.starts_with(b"RIFF") {
-                    ImageFormat::Webp
-                } else if bytes.starts_with(b"GIF8") {
-                    ImageFormat::Gif
-                } else {
-                    ImageFormat::Jpeg
-                };
+                let format = image_format(&key, &bytes);
                 self.image_retries.arrived(&key);
-                self.images
-                    .insert(key, Arc::new(Image::from_bytes(format, bytes)));
+                let image = Arc::new(Image::from_bytes(format, bytes));
+                self.start_picture_arrived(&key, &image);
+                self.images.insert(key, image);
             }
             #[cfg(feature = "capture")]
             Update::Spinner(clip) => self.splash_clip(clip),
@@ -9605,6 +9642,25 @@ fn window_controls() -> impl IntoElement {
         .child(control("close", "close", WindowControlArea::Close))
 }
 
+/// How a downloaded picture is decoded: by its key for the vector kinds, else by its first bytes.
+fn image_format(key: &str, bytes: &[u8]) -> ImageFormat {
+    if key.starts_with("emoji:")
+        || key.starts_with("filekind:")
+        || bytes.starts_with(b"<svg")
+        || bytes.starts_with(b"<?xml")
+    {
+        ImageFormat::Svg
+    } else if bytes.starts_with(b"\x89PNG") {
+        ImageFormat::Png
+    } else if bytes.starts_with(b"RIFF") {
+        ImageFormat::Webp
+    } else if bytes.starts_with(b"GIF8") {
+        ImageFormat::Gif
+    } else {
+        ImageFormat::Jpeg
+    }
+}
+
 fn avatar_source(user: &User) -> (String, String) {
     match &user.avatar {
         // Clyde's local notices: the bot's own image, a client asset (`/assets/9380e4b5bd8d267c.png` in the row of
@@ -9671,6 +9727,7 @@ impl Render for Root {
         );
         self.sync_focus(window, cx);
         self.pump_window(window);
+        self.trace_start_frame(window, cx);
         self.request_rail_dm_images();
         self.request_group_images();
         self.rail_folders_frame(cx);

@@ -126,6 +126,12 @@ impl Root {
         cx.notify();
     }
 
+    /// The illustration of the notice shown now, if one is: a picture of the first screen (`start_cache`).
+    pub(super) fn channel_notice_picture(&self) -> Option<&'static str> {
+        self.channel_notice_guild()
+            .map(|(_, notice)| notice.picture())
+    }
+
     /// The illustration, asked for when a server is opened.
     pub(super) fn channel_notice_wanted(&mut self) {
         if let Some((_, notice)) = self.channel_notice_guild()

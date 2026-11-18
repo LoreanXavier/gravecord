@@ -38,6 +38,7 @@ mod speech;
 mod spellcheck;
 mod spinner;
 mod spotify;
+mod start_trace;
 mod storage;
 mod text_buffer;
 mod tray;
@@ -335,6 +336,15 @@ fn main() -> std::process::ExitCode {
 }
 
 fn run() -> Result<()> {
+    start_trace::init();
+    // The en-US strings, which every frame reads and which take about 40 ms to decompress and parse, load on their own
+    // thread while the window opens, not on the UI thread inside the first frame.
+    let _ = std::thread::Builder::new()
+        .name("preload".to_owned())
+        .spawn(|| {
+            dc_intl::preload();
+            start_trace::mark("intl_loaded");
+        });
     inert::init();
     #[cfg(feature = "capture")]
     perf::start_heap_profile();
@@ -393,12 +403,37 @@ fn run() -> Result<()> {
     #[cfg(feature = "capture")]
     perf::checkpoint("pre_runtime");
     let start = initial_start();
-    let cache_task =
-        matches!(start, shell::Start::Token(_)).then(|| std::thread::spawn(ui::start_cache::load));
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .worker_threads(2)
         .build()?;
+    // With a stored login the network starts now, beside the fonts and the window: the gateway's connection, its
+    // READY and the open channel's page do not wait for the first frame.
+    let session = match &start {
+        shell::Start::Token(token) => Some(net::Session::start(runtime.handle(), token.clone())),
+        _ => None,
+    };
+    let saved_channel = ui::start_cache::saved_channel();
+    let cache_task = match &start {
+        shell::Start::Token(token) => {
+            let account = ui::start_cache::token_account(token.expose());
+            let requests = session.as_ref().map(|session| session.requests.clone());
+            Some(std::thread::spawn(move || {
+                let cached = ui::start_cache::load(account);
+                // The page of the channel the app opens on is asked for as soon as that channel is known: the
+                // one the cache kept (it is the place last shown), else the saved place's.
+                let channel = cached
+                    .as_ref()
+                    .and_then(|cached| cached.messages.as_ref().map(|(channel, _)| *channel))
+                    .or(saved_channel);
+                if let (Some(channel), Some(requests)) = (channel, requests) {
+                    let _ = requests.send(net::Request::PrefetchMessages { channel });
+                }
+                cached
+            }))
+        }
+        _ => None,
+    };
     let faces = match fonts::load_cached() {
         Some(faces) => faces,
         None => {
@@ -407,6 +442,7 @@ fn run() -> Result<()> {
             runtime.block_on(fonts::load(&font_client))?
         }
     };
+    start_trace::mark("fonts_read");
     #[cfg(feature = "capture")]
     perf::mark(&perf::FONTS_MS);
     #[cfg(feature = "capture")]
@@ -453,8 +489,10 @@ fn run() -> Result<()> {
                     },
                     move |window, cx| {
                         notifications::observe_window(window);
+                        start_trace::mark("window_created");
                         let cached = cache_task.and_then(|task| task.join().ok()).flatten();
-                        cx.new(|cx| shell::Shell::new(handle, start, cached, window, cx))
+                        start_trace::mark("cache_joined");
+                        cx.new(|cx| shell::Shell::new(handle, start, cached, session, window, cx))
                     },
                 )
                 .expect("the window must open");
@@ -470,12 +508,39 @@ fn run() -> Result<()> {
                 })
                 .detach();
             }
+            start_trace::mark("shell_built");
             #[cfg(feature = "capture")]
             perf::mark(&perf::WINDOW_MS);
             #[cfg(feature = "capture")]
             perf::checkpoint("window");
             if fonts_added.join().is_err() {
                 panic!("gg sans must load");
+            }
+            start_trace::mark("fonts_added");
+            // Capture runs only: `GRAVECORD_START_FRAMES=<folder>` saves the window at fixed moments after the
+            // process started (`start-<ms>.png`), to see what the first seconds show.
+            #[cfg(feature = "capture")]
+            if let Some(folder) = std::env::var_os("GRAVECORD_START_FRAMES").map(PathBuf::from) {
+                cx.spawn(async move |cx| {
+                    for at in [0u64, 100, 250, 500, 1000, 1500, 2000, 3000] {
+                        let now = start_trace::now_ms();
+                        if at > now {
+                            cx.background_executor()
+                                .timer(std::time::Duration::from_millis(at - now))
+                                .await;
+                        }
+                        let taken = start_trace::now_ms();
+                        cx.update(|cx| {
+                            write_capture(
+                                cx,
+                                window.into(),
+                                &folder.join(format!("start-{at}.png")),
+                            )
+                        });
+                        tracing::debug!(target: "gravecord::start", at, taken, "start frame");
+                    }
+                })
+                .detach();
             }
             let shell = window.entity(cx).expect("the shell exists");
             if hidden {
