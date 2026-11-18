@@ -29,9 +29,118 @@ const SWATCHES: [u32; 20] = [
     1752220, 3066993, 3447003, 0x9b59b6, 0xe91e63, 0xf1c40f, 0xe67e22, 0xe74c3c, 9807270, 6323595,
     1146986, 2067276, 2123412, 7419530, 0xad1457, 0xc27c0e, 0xa84300, 0x992d22, 9936031, 5533306,
 ];
-/// A role without a colour shows `rgb(153, 170, 181)` (`roleCircle_7RsUnm`).
+/// A role without a colour shows `rgb(153, 170, 181)` (`roleCircle_7RsUnm`); module 652215 `TGz`, the default.
 const NO_COLOR: u32 = 0x99aab5;
 const ADMINISTRATOR: u64 = 8;
+/// Module 178758 `Oz`: the gradient presets (fire, golddust, emerald, diamond, blurple, cupid, rosegold, desert, moss,
+/// platinum, plum, rose), the first six in the top row.
+const GRADIENT_PRESETS: [[u32; 2]; 12] = [
+    [0xaa3b3b, 0xff4848],
+    [0xd4843d, 0xffde90],
+    [3577974, 7471006],
+    [5025232, 0xb2f9ff],
+    [0x9e6bff, 0x9fc1ff],
+    [0xff5dd6, 0xff9cbf],
+    [9467253, 0xffcec6],
+    [0x9b8666, 0xffe1b4],
+    [7640178, 0xb3e1b9],
+    [8886702, 0xf1f7ff],
+    [8547266, 0xb7a7f1],
+    [9854847, 0xffaadc],
+];
+/// Module 178758 `lO`: the Gradient style's own colours.
+const GRADIENT_DEFAULT: [u32; 2] = [0x9e6bff, 0x9fc1ff];
+/// Module 178758 `jl`: the Holographic style's colours (they cannot be picked).
+const HOLOGRAPHIC: [u32; 3] = [0xa9c9ff, 0xffbbec, 0xffc3a0];
+/// Module 144273: the preview message's avatar in the style cards.
+const PREVIEW_AVATAR: &str = "https://cdn.discordapp.com/assets/content/2532e8cd0600ccfbc61ff81c21959bde90a6645d0e71644a92f6cde5bfc48439.png";
+const ENHANCED_ROLE_COLORS: &str = "ENHANCED_ROLE_COLORS";
+
+/// The role styles of Enhanced Role Styles (store 396816 `y`, the cards of module 512031 `wE`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum RoleStyle {
+    Solid,
+    Gradient,
+    Holographic,
+}
+
+impl RoleStyle {
+    const ALL: [RoleStyle; 3] = [
+        RoleStyle::Solid,
+        RoleStyle::Gradient,
+        RoleStyle::Holographic,
+    ];
+
+    /// `8Qyahn`, `XpWmJz`, `QTKppe`.
+    fn label(self) -> &'static str {
+        dc_intl::t(match self {
+            RoleStyle::Solid => "8Qyahn",
+            RoleStyle::Gradient => "XpWmJz",
+            RoleStyle::Holographic => "QTKppe",
+        })
+    }
+
+    /// The card's preview colours (`wE`): the default colour, `lO`, `jl`.
+    fn preview(self) -> dc_state::RoleColors {
+        match self {
+            RoleStyle::Solid => dc_state::RoleColors {
+                primary: NO_COLOR,
+                secondary: None,
+                tertiary: None,
+            },
+            RoleStyle::Gradient => dc_state::RoleColors {
+                primary: GRADIENT_DEFAULT[0],
+                secondary: Some(GRADIENT_DEFAULT[1]),
+                tertiary: None,
+            },
+            RoleStyle::Holographic => dc_state::RoleColors {
+                primary: HOLOGRAPHIC[0],
+                secondary: Some(HOLOGRAPHIC[1]),
+                tertiary: Some(HOLOGRAPHIC[2]),
+            },
+        }
+    }
+}
+
+/// What each style held last for a role, so switching back restores it (store 396816 `styleColors`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) struct StyleColors {
+    solid: u32,
+    gradient: [u32; 2],
+}
+
+impl StyleColors {
+    /// Store 396816 `z`: every style on its default (`TGz`, `lO`), the role's own style on the role's colours.
+    fn seed(draft: &Draft, enhanced: bool) -> Self {
+        let style = draft.style(enhanced);
+        StyleColors {
+            solid: if style == RoleStyle::Solid {
+                draft.color
+            } else {
+                NO_COLOR
+            },
+            gradient: if style == RoleStyle::Gradient {
+                draft.gradient_pair()
+            } else {
+                GRADIENT_DEFAULT
+            },
+        }
+    }
+}
+
+/// `OK` of module 317097: how dark a colour is (1 minus its luma).
+fn darkness(value: u32) -> f32 {
+    let r = ((value >> 16) & 0xff) as f32;
+    let g = ((value >> 8) & 0xff) as f32;
+    let b = (value & 0xff) as f32;
+    1. - (0.299 * r + 0.587 * g + 0.114 * b) / 255.
+}
+
+/// Module 508274 `L`/`sk` and module 48736 `q`: the Custom Color button shows the role's colour when it is neither
+/// the default nor one of the swatches.
+fn custom_color(value: u32) -> Option<u32> {
+    (value != 0 && value != NO_COLOR && !SWATCHES.contains(&value)).then_some(value)
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
 pub(super) enum RoleTab {
@@ -46,7 +155,12 @@ pub(super) enum RoleTab {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(super) struct Draft {
     pub name: String,
+    /// `color`, which is also `colors.primary_color`.
     pub color: u32,
+    /// `colors.secondary_color`: a gradient's second stop (and the holographic style's second colour).
+    pub secondary: Option<u32>,
+    /// `colors.tertiary_color`: only the holographic style has one.
+    pub tertiary: Option<u32>,
     pub hoist: bool,
     pub mentionable: bool,
     pub permissions: u64,
@@ -54,9 +168,13 @@ pub(super) struct Draft {
 
 impl Draft {
     fn from_role(role: &Value) -> Self {
+        let colors = &role["colors"];
+        let part = |key: &str| colors[key].as_u64().map(|value| value as u32);
         Draft {
             name: role["name"].as_str().unwrap_or_default().to_owned(),
             color: role["color"].as_u64().unwrap_or(0) as u32,
+            secondary: part("secondary_color"),
+            tertiary: part("tertiary_color"),
             hoist: role["hoist"].as_bool().unwrap_or(false),
             mentionable: role["mentionable"].as_bool().unwrap_or(false),
             permissions: role["permissions"]
@@ -66,15 +184,84 @@ impl Draft {
         }
     }
 
-    /// `updateRole`'s body for this draft.
-    fn body(&self, role: &Value) -> Value {
+    /// Store 396816 `z`: a third colour is Holographic, a second one Gradient, but only in a server with
+    /// `ENHANCED_ROLE_COLORS` (module 676608); otherwise the editor shows Solid (`xG`).
+    fn style(&self, enhanced: bool) -> RoleStyle {
+        if !enhanced {
+            RoleStyle::Solid
+        } else if self.tertiary.is_some() {
+            RoleStyle::Holographic
+        } else if self.secondary.is_some() {
+            RoleStyle::Gradient
+        } else {
+            RoleStyle::Solid
+        }
+    }
+
+    /// The gradient strip's two stops (`xT`: `[color, colors.secondary_color ?? TGz]`).
+    fn gradient_pair(&self) -> [u32; 2] {
+        [self.color, self.secondary.unwrap_or(NO_COLOR)]
+    }
+
+    /// A solid colour (module 636042 `ZH`, `GUILD_SETTINGS_ROLES_UPDATE_COLOR`): the default is saved as 0, the
+    /// other colours go; picking the colour the role already has changes nothing.
+    fn set_solid(&mut self, value: u32) {
+        let is_default = |colour: u32| colour == 0 || colour == NO_COLOR;
+        if self.color == value || (is_default(value) && is_default(self.color)) {
+            return;
+        }
+        self.color = if value == NO_COLOR { 0 } else { value };
+        self.secondary = None;
+        self.tertiary = None;
+    }
+
+    /// Two gradient stops (module 636042 `uc` with `{e[0], e[1], null}`).
+    fn set_gradient(&mut self, pair: [u32; 2]) {
+        self.color = pair[0];
+        self.secondary = Some(pair[1]);
+        self.tertiary = None;
+    }
+
+    /// Another style (module 636042 `C5`, `GUILD_SETTINGS_ROLES_ROLE_STYLE_UPDATE`): the style left keeps what it
+    /// had, the style taken gets what it held last.
+    fn switch_style(&mut self, memory: &mut StyleColors, enhanced: bool, to: RoleStyle) {
+        match self.style(enhanced) {
+            RoleStyle::Solid => memory.solid = self.color,
+            RoleStyle::Gradient => memory.gradient = self.gradient_pair(),
+            RoleStyle::Holographic => {}
+        }
+        match to {
+            RoleStyle::Solid => {
+                self.color = memory.solid;
+                self.secondary = None;
+                self.tertiary = None;
+            }
+            RoleStyle::Gradient => self.set_gradient(memory.gradient),
+            RoleStyle::Holographic => {
+                self.color = HOLOGRAPHIC[0];
+                self.secondary = Some(HOLOGRAPHIC[1]);
+                self.tertiary = Some(HOLOGRAPHIC[2]);
+            }
+        }
+    }
+
+    /// `updateRole`'s body for this draft (module 636042 `JY`): `color` and `colors` as the store holds them.
+    fn body(&self) -> Value {
         serde_json::json!({
             "name": self.name,
             "permissions": self.permissions.to_string(),
             "color": self.color,
-            "colors": {"primary_color": self.color, "secondary_color": role["colors"]["secondary_color"], "tertiary_color": role["colors"]["tertiary_color"]},
+            "colors": self.colors_value(),
             "hoist": self.hoist,
             "mentionable": self.mentionable,
+        })
+    }
+
+    fn colors_value(&self) -> Value {
+        serde_json::json!({
+            "primary_color": self.color,
+            "secondary_color": self.secondary,
+            "tertiary_color": self.tertiary,
         })
     }
 }
@@ -98,6 +285,10 @@ pub(crate) struct RolesState {
     duplicating: Option<Value>,
     /// "Add members": its search field and the members ticked so far.
     pub(super) adding: Option<(Entity<Editor>, Vec<Id>, Subscription)>,
+    /// What each role's styles held last (store 396816 `styleColors`), seeded when a style first changes.
+    styles: HashMap<Id, StyleColors>,
+    /// The colour popout of the Custom Color button or a gradient stop (module 48736 `k`, 508274 `VN`).
+    pub(super) picking: Option<super::profile_editor::colour::State>,
     _events: Vec<Subscription>,
 }
 
@@ -132,7 +323,149 @@ impl Root {
         };
         state.confirm_delete.take().is_some()
             || state.adding.take().is_some()
+            || state.picking.take().is_some()
             || state.menu.take().is_some()
+    }
+
+    /// The server has Enhanced Role Styles (module 676608 `jV`).
+    fn enhanced_role_colors(&self, guild: Id) -> bool {
+        self.stores
+            .guilds
+            .iter()
+            .find(|known| known.id == guild)
+            .is_some_and(|known| {
+                known
+                    .features
+                    .iter()
+                    .any(|feature| feature == ENHANCED_ROLE_COLORS)
+            })
+    }
+
+    /// A Role Style card was pressed (module 989433 `x_`, then 636042 `C5`).
+    fn pick_role_style(&mut self, guild: Id, role: Id, to: RoleStyle, cx: &mut Context<Self>) {
+        let enhanced = self.enhanced_role_colors(guild);
+        let Some(mut draft) = self.draft(guild, role) else {
+            return;
+        };
+        let Some(state) = self
+            .server_settings
+            .as_mut()
+            .and_then(|open| open.roles.as_mut())
+        else {
+            return;
+        };
+        let memory = state
+            .styles
+            .entry(role)
+            .or_insert_with(|| StyleColors::seed(&draft, enhanced));
+        draft.switch_style(memory, enhanced, to);
+        state.picking = None;
+        state.drafts.insert(role, draft);
+        cx.notify();
+    }
+
+    /// Opens (or closes, when it is open) the colour popout of the Custom Color button or a gradient stop.
+    fn toggle_role_colour(
+        &mut self,
+        target: super::profile_editor::colour::Target,
+        initial: u32,
+        cx: &mut Context<Self>,
+    ) {
+        let open_now = self
+            .server_settings
+            .as_ref()
+            .and_then(|open| open.roles.as_ref())
+            .and_then(|state| state.picking.as_ref())
+            .is_some_and(|picking| picking.target == target);
+        let picking =
+            (!open_now).then(|| super::profile_editor::colour::State::new(target, initial, cx));
+        if let Some(state) = self
+            .server_settings
+            .as_mut()
+            .and_then(|open| open.roles.as_mut())
+        {
+            state.picking = picking;
+        }
+        cx.notify();
+    }
+
+    /// The colour popout changed a role colour: the Custom Color is a solid pick (`X`), a stop changes one colour
+    /// of the pair (`Q`, then `uc`).
+    pub(super) fn role_colour_picked(
+        &mut self,
+        target: super::profile_editor::colour::Target,
+        rgb: u32,
+        cx: &mut Context<Self>,
+    ) {
+        use super::profile_editor::colour::Target;
+        let Some(open) = self.server_settings.as_ref() else {
+            return;
+        };
+        let guild = open.guild;
+        let Some(role) = open.role else {
+            return;
+        };
+        match target {
+            Target::RoleCustom => self.edit_draft(guild, role, |draft| draft.set_solid(rgb), cx),
+            Target::RoleStop(index) => self.edit_draft(
+                guild,
+                role,
+                |draft| {
+                    let mut pair = draft.gradient_pair();
+                    if let Some(stop) = pair.get_mut(index) {
+                        *stop = rgb;
+                    }
+                    draft.set_gradient(pair);
+                },
+                cx,
+            ),
+            Target::Banner | Target::Style(_) => {}
+        }
+    }
+
+    /// The open role colour popout, to the right of its button (`customPickerPosition: "right"`), and the click-away
+    /// layer that closes it.
+    pub(super) fn role_colour_layer(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
+        use super::profile_editor::colour::Target;
+        let open = self.server_settings.as_ref()?;
+        open.role?;
+        let state = open.roles.as_ref()?;
+        let picking = state.picking.as_ref()?;
+        let key: SharedString = match picking.target {
+            Target::RoleCustom => "server-role-colour-custom".into(),
+            Target::RoleStop(index) => format!("server-role-colour-stop-{index}").into(),
+            Target::Banner | Target::Style(_) => return None,
+        };
+        let anchor = self.tip_anchors.borrow().get(&key).copied()?;
+        // GAP: the popout's 8px offset and its clamp to the window are not measured (no capture of it open).
+        // GAP: the colour applies while dragging; the official one (`eagerUpdate` off) applies on release.
+        // GAP: the away layer does not occlude, so pressing the open button again may close and reopen it.
+        let left = (f32::from(anchor.right()) + 8.)
+            .min(self.viewport.0 - 264.)
+            .max(8.);
+        let top = f32::from(anchor.top()).min(self.viewport.1 - 300.).max(8.);
+        let popout = self.profile_editor_colour_popout(left, top, cx)?;
+        Some(
+            gpui::deferred(
+                div()
+                    .id("server-role-colour-away")
+                    .absolute()
+                    .inset_0()
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        if let Some(state) = this
+                            .server_settings
+                            .as_mut()
+                            .and_then(|open| open.roles.as_mut())
+                        {
+                            state.picking = None;
+                        }
+                        cx.notify();
+                    }))
+                    .child(popout),
+            )
+            .with_priority(2)
+            .into_any_element(),
+        )
     }
 
     pub(super) fn request_roles(&mut self, guild: Id, cx: &mut Context<Self>) {
@@ -183,6 +516,8 @@ impl Root {
                 confirm_delete: None,
                 duplicating: None,
                 adding: None,
+                styles: HashMap::new(),
+                picking: None,
                 _events: events,
             });
         }
@@ -309,7 +644,7 @@ impl Root {
                 key: Some(format!("{SAVED_PREFIX}{guild}")),
                 method: reqwest::Method::PATCH,
                 route: format!("/guilds/{guild}/roles/{role}"),
-                body: Some(draft.body(&saved)),
+                body: Some(draft.body()),
             });
             // The reply refetches; until then the list shows the draft as saved.
             if let Some(list) = self
@@ -322,6 +657,7 @@ impl Root {
             {
                 known["name"] = Value::String(draft.name.clone());
                 known["color"] = Value::from(draft.color);
+                known["colors"] = draft.colors_value();
                 known["hoist"] = Value::Bool(draft.hoist);
                 known["mentionable"] = Value::Bool(draft.mentionable);
                 known["permissions"] = Value::String(draft.permissions.to_string());
@@ -333,6 +669,8 @@ impl Root {
             .and_then(|open| open.roles.as_mut())
         {
             state.drafts.clear();
+            state.styles.clear();
+            state.picking = None;
         }
         cx.notify();
     }
@@ -345,6 +683,8 @@ impl Root {
         let role = open.role;
         if let Some(state) = open.roles.as_mut() {
             state.drafts.clear();
+            state.styles.clear();
+            state.picking = None;
         }
         if let Some(role) = role {
             let name = self
@@ -396,6 +736,7 @@ impl Root {
             open.role = Some(role);
             if let Some(state) = open.roles.as_mut() {
                 state.name = Some((role, field, events));
+                state.picking = None;
                 // @everyone opens on its permissions, as in the capture.
                 state.tab = if role == guild {
                     RoleTab::Permissions
@@ -706,6 +1047,8 @@ impl Root {
         let draft = self.draft(guild, role).unwrap_or(Draft {
             name: String::new(),
             color: 0,
+            secondary: None,
+            tertiary: None,
             hoist: false,
             mentionable: false,
             permissions: 0,
@@ -984,7 +1327,7 @@ impl Root {
         else {
             return false;
         };
-        let body = Draft::from_role(&held).body(&held);
+        let body = Draft::from_role(&held).body();
         let _ = self.requests.send(Request::Rest {
             key: Some(format!("{SAVED_PREFIX}{guild}")),
             method: reqwest::Method::PATCH,
@@ -1070,6 +1413,30 @@ impl Root {
                             cx.notify();
                         })),
                     )
+                    // Module 292024, behind `canImpersonateRole` (`ui/view_as_role.rs`).
+                    .when(self.can_view_as_role(guild, role), |this| {
+                        this.child(div().my(px(8.)).h(px(1.)).bg(color("--border-subtle")))
+                            .child(
+                                item(
+                                    "server-role-view-as",
+                                    dc_intl::t("arFPfJ"),
+                                    "discover_arrow_right",
+                                    "--interactive-text-default",
+                                )
+                                .on_click(cx.listener(
+                                    move |this, _, _, cx| {
+                                        if let Some(state) = this
+                                            .server_settings
+                                            .as_mut()
+                                            .and_then(|open| open.roles.as_mut())
+                                        {
+                                            state.menu = None;
+                                        }
+                                        this.start_view_as_role(guild, role, cx);
+                                    },
+                                )),
+                            )
+                    })
                     .child(div().my(px(8.)).h(px(1.)).bg(color("--border-subtle")))
                     .child(
                         item(
@@ -1247,7 +1614,470 @@ impl Root {
             .into_any_element()
     }
 
-    /// Display (`xG`): Role name, Role color (default, then the 20 swatches), the two switches.
+    /// The checkmark of a selected swatch (module 508274 `$`): white on a colour darker than 0.2, else black.
+    fn swatch_check(value: u32, size: f32) -> gpui::Svg {
+        let check = icon("select_check", size, "--white");
+        if darkness(value) > 0.2 {
+            check
+        } else {
+            check.text_color(rgb(0x000000))
+        }
+    }
+
+    /// Role Style (module 989433 `x_`): the Solid, Gradient and Holographic cards, each a preview message in its
+    /// style; without `ENHANCED_ROLE_COLORS` Gradient and Holographic are disabled and the boosting upsell shows.
+    /// Measured in `design/dom/settings/guild-role-display-darker-cozy.json` (`roleStyleContainer_cXmH6r`).
+    fn role_style_picker(
+        &self,
+        guild: Id,
+        role: Id,
+        selected: RoleStyle,
+        enhanced: bool,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        self.want_image(PREVIEW_AVATAR.to_owned(), PREVIEW_AVATAR.to_owned(), cx);
+        let avatar = self.images.get(PREVIEW_AVATAR).cloned();
+        // GAP: the "new" badge on the title (`GUILD_SETTINGS_ROLE_STYLES_NEW_BADGE`), the role icon after the name
+        // and the clipped timestamp of the preview message are not drawn.
+        let cards = RoleStyle::ALL.map(|style| {
+            let disabled = !enhanced && style != RoleStyle::Solid;
+            let chosen = style == selected;
+            let preview = style.preview();
+            let name: AnyElement = if style == RoleStyle::Solid {
+                div()
+                    .text_color(rgb(preview.primary))
+                    .child(dc_intl::t("cqpybK"))
+                    .into_any_element()
+            } else {
+                super::role_gradient::name(dc_intl::t("cqpybK"), preview).into_any_element()
+            };
+            div()
+                .id(SharedString::from(format!("server-role-style-{style:?}")))
+                .flex_none()
+                .w(px(142.))
+                .h(px(94.))
+                .rounded(px(8.))
+                .border_2()
+                .border_color(if chosen {
+                    color("--brand-500")
+                } else {
+                    gpui::transparent_black().into()
+                })
+                .bg(if chosen {
+                    color("--background-mod-subtle")
+                } else {
+                    color("--background-base-low")
+                })
+                .overflow_hidden()
+                .flex()
+                .flex_col()
+                .when(disabled, |this| this.opacity(0.3))
+                .when(!disabled, |this| this.cursor_pointer())
+                .child(
+                    // `roleStyleMessageContainer_cXmH6r`: the preview message, clipped, fading out on the right.
+                    div()
+                        .relative()
+                        .flex_none()
+                        .w(px(142.))
+                        .h(px(62.))
+                        .bg(color("--background-base-lowest"))
+                        .overflow_hidden()
+                        .child(
+                            div()
+                                .absolute()
+                                .left(px(12.))
+                                .top(px(12.))
+                                .size(px(40.))
+                                .rounded_full()
+                                .overflow_hidden()
+                                .children(avatar.clone().map(|picture| {
+                                    gpui::img(picture).size(px(40.)).rounded_full()
+                                })),
+                        )
+                        .child(
+                            div()
+                                .absolute()
+                                .left(px(60.5))
+                                .top(px(10.))
+                                .w(px(200.))
+                                .text_size(px(16.))
+                                .line_height(px(22.))
+                                .font_weight(FontWeight(500.))
+                                .whitespace_nowrap()
+                                .child(name),
+                        )
+                        .child(
+                            div()
+                                .absolute()
+                                .left(px(62.5))
+                                .top(px(32.))
+                                .w(px(200.))
+                                .text_size(px(16.))
+                                .line_height(px(22.))
+                                .whitespace_nowrap()
+                                .text_color(color("--text-default"))
+                                .child(dc_intl::t("Mi9Kbe")),
+                        )
+                        .child(
+                            div()
+                                .absolute()
+                                .top_0()
+                                .bottom_0()
+                                .right(px(0.))
+                                .w(px(40.))
+                                .bg(gpui::linear_gradient(
+                                    90.,
+                                    gpui::linear_color_stop(gpui::transparent_black(), 0.),
+                                    gpui::linear_color_stop(color("--background-base-lowest"), 1.),
+                                )),
+                        ),
+                )
+                .child(
+                    // `roleStyleLabel_cXmH6r`.
+                    div()
+                        .flex_none()
+                        .h(px(28.))
+                        .pt(px(6.))
+                        .bg(if chosen {
+                            color("--background-mod-subtle")
+                        } else {
+                            color("--background-surface-higher")
+                        })
+                        .text_color(if chosen {
+                            color("--interactive-text-active")
+                        } else {
+                            color("--text-subtle")
+                        })
+                        .text_size(px(14.))
+                        .line_height(px(18.))
+                        .font_weight(FontWeight(500.))
+                        .flex()
+                        .justify_center()
+                        .child(style.label()),
+                )
+                .on_click(cx.listener(move |this, _, _, cx| {
+                    if !disabled {
+                        this.pick_role_style(guild, role, style, cx);
+                    }
+                }))
+        });
+        let upsell = (!enhanced).then(|| {
+            // `VpEDJc` puts the gradient word `+/IHLl` (module 989433 `xv`, the holographic colours) in its sentence.
+            let sentence = dc_intl::format("VpEDJc", &[("magical", "\u{1}".into())]);
+            let (before, after) = sentence
+                .split_once('\u{1}')
+                .unwrap_or((sentence.as_str(), ""));
+            let holo = RoleStyle::Holographic.preview();
+            // GAP: the expressive button's Rive background; its press does not open the server's boosts page
+            // (`/channels/{id}/guild-boosts`, not built), it closes the settings (`LAYER_POP`).
+            div()
+                .mt(px(4.))
+                .p(px(12.))
+                .rounded(px(8.))
+                .border_1()
+                .border_color(color("--border-muted"))
+                .bg(color("--background-mod-subtle"))
+                .flex()
+                .items_center()
+                .justify_between()
+                .gap(px(14.))
+                .child(
+                    div()
+                        .flex()
+                        .flex_col()
+                        // GAP: `button-outline-primary-text` is white in the dark capture; no light-theme measure.
+                        .text_color(color("--white"))
+                        .child(
+                            div()
+                                .flex()
+                                .text_size(px(14.))
+                                .line_height(px(18.))
+                                .font_weight(FontWeight(600.))
+                                .child(before.to_owned())
+                                .child(
+                                    super::role_gradient::name(dc_intl::t("+/IHLl"), holo)
+                                        .animate(true),
+                                )
+                                .child(after.to_owned()),
+                        )
+                        .child(
+                            div()
+                                .text_size(px(12.))
+                                .line_height(px(16.))
+                                .font_weight(FontWeight(500.))
+                                .child(dc_intl::t("FJZeZF")),
+                        ),
+                )
+                .child(
+                    div()
+                        .id("server-role-style-upsell")
+                        .flex_none()
+                        .h(px(40.))
+                        .px(px(15.))
+                        .rounded(px(8.))
+                        .border_1()
+                        .border_color(color("--control-expressive-border-default"))
+                        .bg(color("--control-expressive-background-default"))
+                        .text_color(color("--control-expressive-text-default"))
+                        .cursor_pointer()
+                        .flex()
+                        .items_center()
+                        .gap(px(4.))
+                        .child(
+                            icon("boost_gem", 20., "--white")
+                                .text_color(color("--control-expressive-text-default")),
+                        )
+                        .child(
+                            div()
+                                .text_size(px(16.))
+                                .line_height(px(20.))
+                                .font_weight(FontWeight(500.))
+                                .child(dc_intl::t("+7XY31")),
+                        )
+                        .on_click(cx.listener(|this, _, _, cx| {
+                            this.server_settings = None;
+                            cx.notify();
+                        })),
+                )
+        });
+        div()
+            .flex()
+            .flex_col()
+            .child(Self::field_title(dc_intl::t("9wVJRB"), false))
+            .child(div().pb(px(8.)).flex().gap(px(8.)).children(cards))
+            .children(upsell)
+            .into_any_element()
+    }
+
+    /// Module 48736's gradient strip (`U`): the two stops on a 90deg gradient bar, each a ringed circle with the
+    /// eye-dropper that opens the colour popout; then module 508274 `sk`'s twelve presets in two rows (180deg).
+    /// GAP: no DOM capture of a server with `ENHANCED_ROLE_COLORS`; the sizes are the stylesheet's
+    /// (`gradientButtonContainer_6C7JFt`, `circleGradientPicker_6C7JFt`, `gradientPreset_BorJ2C`).
+    fn role_gradient_picker(
+        &self,
+        draft: &Draft,
+        guild: Id,
+        role: Id,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        use super::profile_editor::colour::Target;
+        use super::tooltip::{Side, Tip};
+        let pair = draft.gradient_pair();
+        let stops = pair.iter().enumerate().map(|(index, value)| {
+            let value = *value;
+            // `n`: a colour darker than 0.1 has the white ring and a white dropper, a near-white one black.
+            let dark = darkness(value) > 0.1;
+            let ring = if dark { rgb(0xffffff) } else { rgb(0x000000) };
+            let label = dc_intl::t(if index == 0 { "apbXbH" } else { "JaVq1b" });
+            let circle = div()
+                .id(SharedString::from(format!(
+                    "server-role-gradient-stop-{index}"
+                )))
+                .size(px(34.))
+                .rounded_full()
+                .bg(ring)
+                .cursor_pointer()
+                .flex()
+                .items_center()
+                .justify_center()
+                .child(
+                    div()
+                        .size(px(32.))
+                        .rounded_full()
+                        .bg(rgb(value))
+                        .shadow(vec![
+                            gpui::BoxShadow {
+                                color: gpui::hsla(0., 0., 0., 0.05),
+                                offset: gpui::point(px(0.), px(0.)),
+                                blur_radius: px(2.),
+                                spread_radius: px(0.),
+                                inset: false,
+                            },
+                            gpui::BoxShadow {
+                                color: gpui::hsla(0., 0., 0., 0.15),
+                                offset: gpui::point(px(0.), px(0.)),
+                                blur_radius: px(13.),
+                                spread_radius: px(0.),
+                                inset: false,
+                            },
+                        ])
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .child(
+                            gpui::svg()
+                                .path("icons/profile_editor_eyedropper.svg")
+                                .size(px(14.))
+                                .text_color(ring),
+                        ),
+                )
+                .on_click(cx.listener(move |this, _, _, cx| {
+                    this.toggle_role_colour(Target::RoleStop(index), value, cx);
+                }));
+            self.with_tip(
+                format!("server-role-colour-stop-{index}"),
+                Tip::text(label, Side::Bottom),
+                circle,
+                cx,
+            )
+        });
+        let strip = div()
+            .relative()
+            .flex_none()
+            .w(px(154.))
+            .h(px(50.))
+            .mr(px(10.))
+            .child(div().size_full().rounded(px(4.)).bg(gpui::linear_gradient(
+                90.,
+                gpui::linear_color_stop(rgb(pair[0]), 0.),
+                gpui::linear_color_stop(rgb(pair[1]), 1.),
+            )))
+            .child(
+                div()
+                    .absolute()
+                    .inset_0()
+                    .px(px(8.))
+                    .flex()
+                    .items_center()
+                    .justify_between()
+                    .children(stops.collect::<Vec<_>>()),
+            );
+        let preset = |colors: [u32; 2], cx: &mut Context<Self>| {
+            let chosen = colors == pair;
+            div()
+                .id(SharedString::from(format!(
+                    "server-role-gradient-{:06x}-{:06x}",
+                    colors[0], colors[1]
+                )))
+                .flex_none()
+                .w(px(40.))
+                .h(px(20.))
+                .mr(px(8.))
+                .rounded(px(8.))
+                .bg(gpui::linear_gradient(
+                    180.,
+                    gpui::linear_color_stop(rgb(colors[0]), 0.),
+                    gpui::linear_color_stop(rgb(colors[1]), 1.),
+                ))
+                .cursor_pointer()
+                .flex()
+                .items_center()
+                .justify_center()
+                .when(chosen, |this| {
+                    this.child(Self::swatch_check(colors[0], 16.))
+                })
+                .on_click(cx.listener(move |this, _, _, cx| {
+                    this.edit_draft(guild, role, |draft| draft.set_gradient(colors), cx)
+                }))
+        };
+        let mut rows = div().flex().flex_col().gap(px(10.));
+        for row in GRADIENT_PRESETS.chunks(6) {
+            rows = rows.child(
+                div()
+                    .h(px(20.))
+                    .flex()
+                    .children(row.iter().map(|colors| preset(*colors, cx))),
+            );
+        }
+        div().flex().child(strip).child(rows).into_any_element()
+    }
+
+    /// Module 508274 `sk` without a gradient: Default, Custom Color (`nJ`, its popout to the right), then the 20
+    /// swatches in two rows.
+    fn role_solid_picker(
+        &self,
+        draft: &Draft,
+        guild: Id,
+        role: Id,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        use super::profile_editor::colour::Target;
+        use super::tooltip::{Side, Tip};
+        let swatch = |value: u32, size: f32, cx: &mut Context<Self>| {
+            // The default (`A`) is also chosen when the role holds the default colour itself.
+            let selected = draft.color == value || (value == 0 && draft.color == NO_COLOR);
+            let shown = if value == 0 { NO_COLOR } else { value };
+            div()
+                .id(SharedString::from(format!("server-role-color-{value}")))
+                .size(px(size))
+                .rounded(px(8.))
+                .bg(rgb(shown))
+                .cursor_pointer()
+                .flex()
+                .items_center()
+                .justify_center()
+                .when(selected, |this| {
+                    // `38%` of the 66px Default button, 16px on a swatch.
+                    this.child(Self::swatch_check(
+                        shown,
+                        if size > 30. { 25. } else { 16. },
+                    ))
+                })
+                .on_click(cx.listener(move |this, _, _, cx| {
+                    this.edit_draft(guild, role, |draft| draft.set_solid(value), cx)
+                }))
+        };
+        let mut swatch_rows = div().flex().flex_col().gap(px(10.));
+        for row in SWATCHES.chunks(10) {
+            swatch_rows = swatch_rows.child(
+                div()
+                    .flex()
+                    .gap(px(10.))
+                    .children(row.iter().map(|value| swatch(*value, 20., cx))),
+            );
+        }
+        let custom = custom_color(draft.color);
+        let initial = draft.color;
+        // `L`: chosen while the role's colour is the custom one; the pencil is white until then.
+        let custom_button = div()
+            .id("server-role-color-custom")
+            .relative()
+            .w(px(66.))
+            .h(px(50.))
+            .rounded(px(8.))
+            .border_1()
+            .cursor_pointer()
+            .flex()
+            .items_center()
+            .justify_center()
+            .map(|this| match custom {
+                Some(value) => this.border_color(gpui::transparent_black()).bg(rgb(value)),
+                // GAP: `.theme-dark`'s border; the light theme's `hsl(var(--primary-500-hsl)/.1)` is not used.
+                None => this.border_color(color("--opacity-white-8")),
+            })
+            .child(
+                div().absolute().top(px(4.)).right(px(4.)).child(
+                    icon("clips_pencil", 14., "--white")
+                        .when(custom.is_some_and(|value| darkness(value) <= 0.2), |this| {
+                            this.text_color(rgb(0x000000))
+                        }),
+                ),
+            )
+            .children(custom.map(|value| Self::swatch_check(value, 25.)))
+            .on_click(cx.listener(move |this, _, _, cx| {
+                this.toggle_role_colour(Target::RoleCustom, initial, cx);
+            }));
+        div()
+            .flex()
+            .gap(px(10.))
+            .child(self.with_tip(
+                "server-role-colour-default",
+                Tip::text(dc_intl::t("bBvAEH"), Side::Bottom),
+                swatch(0, 66., cx).w(px(66.)).h(px(50.)),
+                cx,
+            ))
+            .child(self.with_tip(
+                "server-role-colour-custom",
+                Tip::text(dc_intl::t("FHBa/1"), Side::Bottom),
+                custom_button,
+                cx,
+            ))
+            .child(swatch_rows)
+            .into_any_element()
+    }
+
+    /// Display (`xG`): Role name, Role Style, Role color (solid swatches or the gradient strip; none for
+    /// Holographic, which shows its note), the two switches.
     fn role_display(
         &self,
         guild: Id,
@@ -1263,37 +2093,47 @@ impl Root {
             .and_then(|state| state.name.as_ref())
             .filter(|(id, _, _)| *id == role)
             .map(|(_, field, _)| field.clone());
-        let swatch = |value: u32, size: f32, cx: &mut Context<Self>| {
-            let selected = draft.color == value;
+        let enhanced = self.enhanced_role_colors(guild);
+        let style = draft.style(enhanced);
+        // GAP: a locked or managed role (`g` of `xG`) does not disable the cards, swatches and stops.
+        let (style_picker, colour_picker) = if everyone {
+            (None, None)
+        } else {
+            (
+                Some(self.role_style_picker(guild, role, style, enhanced, cx)),
+                match style {
+                    RoleStyle::Solid => Some(self.role_solid_picker(draft, guild, role, cx)),
+                    RoleStyle::Gradient => Some(self.role_gradient_picker(draft, guild, role, cx)),
+                    RoleStyle::Holographic => None,
+                },
+            )
+        };
+        let holographic_note = (style == RoleStyle::Holographic).then(|| {
+            // Module 546385 `A` (look "info", `root_vb4RFD`/`info_vb4RFD`) with `tBhCyr`.
             div()
-                .id(SharedString::from(format!("server-role-color-{value}")))
-                .size(px(size))
+                .mt(px(8.))
+                .p(px(8.))
                 .rounded(px(4.))
-                .bg(rgb(if value == 0 { NO_COLOR } else { value }))
-                .cursor_pointer()
+                .border_1()
+                .border_color(color("--icon-feedback-info"))
+                .bg(color("--background-feedback-mod-info"))
                 .flex()
                 .items_center()
-                .justify_center()
-                .when(selected, |this| {
-                    this.child(icon(
-                        "select_check",
-                        if size > 30. { 32. } else { 16. },
-                        "--white",
-                    ))
-                })
-                .on_click(cx.listener(move |this, _, _, cx| {
-                    this.edit_draft(guild, role, |draft| draft.color = value, cx)
-                }))
-        };
-        let mut swatch_rows = div().flex().flex_col().gap(px(10.));
-        for row in SWATCHES.chunks(10) {
-            swatch_rows = swatch_rows.child(
-                div()
-                    .flex()
-                    .gap(px(10.))
-                    .children(row.iter().map(|value| swatch(*value, 20., cx))),
-            );
-        }
+                .child(
+                    div()
+                        .mr(px(10.))
+                        .child(icon("circle_info", 24., "--icon-feedback-info")),
+                )
+                .child(
+                    div()
+                        .flex_1()
+                        .text_size(px(14.))
+                        .line_height(px(18.))
+                        .font_weight(FontWeight(500.))
+                        .text_color(color("--text-default"))
+                        .child(dc_intl::t("tBhCyr")),
+                )
+        });
         let hoist = draft.hoist;
         let mentionable = draft.mentionable;
         div()
@@ -1315,16 +2155,28 @@ impl Root {
                             .child(div().w_full().children(field)),
                     )
                     .child(div().my(px(24.)).h(px(1.)).bg(color("--border-subtle")))
-                    .child(Self::field_title("Role color", true))
-                    .child(
-                        div()
-                            .mb(px(8.))
-                            .text_size(px(14.))
-                            .line_height(px(18.))
-                            .text_color(color("--text-subtle"))
-                            .child("Members use the color of the highest role they have on the roles list."),
-                    )
-                    .child(div().flex().gap(px(16.)).child(swatch(0, 66., cx).w(px(66.)).h(px(50.))).child(swatch_rows))
+                    .children(style_picker)
+                    .when_some(colour_picker, |this, picker| {
+                        // `colorPicker_cXmH6r`: 24px under the styles.
+                        this.child(
+                            div()
+                                .mt(px(24.))
+                                .flex()
+                                .flex_col()
+                                .child(Self::field_title("Role color", true))
+                                .child(
+                                    div()
+                                        .mt(px(-4.))
+                                        .mb(px(8.))
+                                        .text_size(px(14.))
+                                        .line_height(px(18.))
+                                        .text_color(color("--text-subtle"))
+                                        .child(dc_intl::t("9UCxlf")),
+                                )
+                                .child(picker),
+                        )
+                    })
+                    .children(holographic_note)
                     .child(div().mt(px(24.)).h(px(1.)).bg(color("--border-subtle")))
                     .child(Self::toggle_row("server-role-hoist", "Display role members separately from online members", None, hoist, cx, move |this, cx| {
                         this.edit_draft(guild, role, |draft| draft.hoist = !draft.hoist, cx)
@@ -1934,7 +2786,7 @@ mod tests {
         let mut draft = Draft::from_role(&role);
         assert_eq!(draft.permissions, 1024);
         draft.color = SWATCHES[0];
-        let body = draft.body(&role);
+        let body = draft.body();
         assert_eq!(body["permissions"], "1024");
         assert_eq!(body["colors"]["primary_color"], 1752220);
         assert_eq!(body["mentionable"], true);
@@ -1945,5 +2797,108 @@ mod tests {
                 .sum::<usize>(),
             49
         );
+    }
+
+    fn role_with(color: u32, secondary: Option<u32>, tertiary: Option<u32>) -> Value {
+        serde_json::json!({"id": "2", "name": "r", "color": color, "permissions": "0",
+            "colors": {"primary_color": color, "secondary_color": secondary, "tertiary_color": tertiary}})
+    }
+
+    #[test]
+    fn role_style_follows_the_colours_and_the_feature() {
+        let gradient = Draft::from_role(&role_with(0xaa3b3b, Some(0xff4848), None));
+        assert_eq!(gradient.style(true), RoleStyle::Gradient);
+        assert_eq!(gradient.style(false), RoleStyle::Solid);
+        assert_eq!(gradient.gradient_pair(), [0xaa3b3b, 0xff4848]);
+        let holo = Draft::from_role(&role_with(
+            HOLOGRAPHIC[0],
+            Some(HOLOGRAPHIC[1]),
+            Some(HOLOGRAPHIC[2]),
+        ));
+        assert_eq!(holo.style(true), RoleStyle::Holographic);
+        let solid = Draft::from_role(&role_with(0x1abc9c, None, None));
+        assert_eq!(solid.style(true), RoleStyle::Solid);
+        // A role without `colors` is solid.
+        let bare = Draft::from_role(&serde_json::json!({"color": 5}));
+        assert_eq!((bare.secondary, bare.tertiary), (None, None));
+    }
+
+    #[test]
+    fn gradient_body_is_uc_and_a_solid_pick_drops_the_stops() {
+        let role = role_with(0x1abc9c, None, None);
+        let mut draft = Draft::from_role(&role);
+        draft.set_gradient(GRADIENT_PRESETS[0]);
+        let body = draft.body();
+        assert_eq!(body["color"], 0xaa3b3b);
+        assert_eq!(
+            body["colors"],
+            serde_json::json!({"primary_color": 0xaa3b3b, "secondary_color": 0xff4848, "tertiary_color": null})
+        );
+        draft.set_solid(0x3498db);
+        let body = draft.body();
+        assert_eq!(
+            body["colors"],
+            serde_json::json!({"primary_color": 0x3498db, "secondary_color": null, "tertiary_color": null})
+        );
+        // The Default button saves 0.
+        draft.set_solid(NO_COLOR);
+        assert_eq!(draft.color, 0);
+        assert_eq!(draft.body()["colors"]["primary_color"], 0);
+        // Picking the colour the role has changes nothing (`ZH`), so a kept second colour stays.
+        let mut kept = Draft::from_role(&role_with(0x123456, Some(0x654321), None));
+        kept.set_solid(0x123456);
+        assert_eq!(kept.secondary, Some(0x654321));
+    }
+
+    #[test]
+    fn switching_styles_restores_what_each_held() {
+        let saved = Draft::from_role(&role_with(0x1abc9c, None, None));
+        let mut memory = StyleColors::seed(&saved, true);
+        assert_eq!(
+            memory,
+            StyleColors {
+                solid: 0x1abc9c,
+                gradient: GRADIENT_DEFAULT
+            }
+        );
+        let mut draft = saved.clone();
+        draft.switch_style(&mut memory, true, RoleStyle::Gradient);
+        assert_eq!(draft.gradient_pair(), GRADIENT_DEFAULT);
+        assert_eq!(draft.style(true), RoleStyle::Gradient);
+        // A stop edit (`Q`), then Holographic, then back: the gradient is the edited one.
+        draft.set_gradient([0x111111, GRADIENT_DEFAULT[1]]);
+        draft.switch_style(&mut memory, true, RoleStyle::Holographic);
+        assert_eq!(
+            (draft.color, draft.secondary, draft.tertiary),
+            (HOLOGRAPHIC[0], Some(HOLOGRAPHIC[1]), Some(HOLOGRAPHIC[2]))
+        );
+        draft.switch_style(&mut memory, true, RoleStyle::Gradient);
+        assert_eq!(draft.gradient_pair(), [0x111111, GRADIENT_DEFAULT[1]]);
+        draft.switch_style(&mut memory, true, RoleStyle::Solid);
+        assert_eq!(draft, saved);
+        // A gradient role starts Solid on the default colour (`z`).
+        let gradient = Draft::from_role(&role_with(0xaa3b3b, Some(0xff4848), None));
+        let mut memory = StyleColors::seed(&gradient, true);
+        let mut draft = gradient.clone();
+        draft.switch_style(&mut memory, true, RoleStyle::Solid);
+        assert_eq!((draft.color, draft.secondary), (NO_COLOR, None));
+        // The Default button (value 0) on the default colour changes nothing (`ZH`).
+        draft.set_solid(0);
+        assert_eq!(draft.color, NO_COLOR);
+        draft.switch_style(&mut memory, true, RoleStyle::Gradient);
+        assert_eq!(draft, gradient);
+    }
+
+    #[test]
+    fn swatch_marks_follow_the_bundle() {
+        assert!(darkness(0x000000) > 0.99);
+        assert!(darkness(0xffffff) < 0.01);
+        // `platinum`'s light stop takes the black check, `fire`'s dark one the white.
+        assert!(darkness(0xf1f7ff) <= 0.2);
+        assert!(darkness(0xaa3b3b) > 0.2);
+        assert_eq!(custom_color(0), None);
+        assert_eq!(custom_color(NO_COLOR), None);
+        assert_eq!(custom_color(SWATCHES[3]), None);
+        assert_eq!(custom_color(0x123456), Some(0x123456));
     }
 }

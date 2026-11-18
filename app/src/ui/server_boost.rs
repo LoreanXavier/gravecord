@@ -19,6 +19,8 @@ use gpui::{
 use serde_json::{Value, json};
 
 pub(super) const BOOST_PREFIX: &str = "guild-boost:";
+/// `ChevronSmallDownIcon` (module 847374).
+const CHEVRON_DOWN: &str = "automod_chevron_down";
 const VANITY_PREFIX: &str = "guild-boost:vanity:";
 const SAVED_PREFIX: &str = "guild-boost:saved:";
 /// The dark theme's picture of the bar in a channel list.
@@ -120,6 +122,20 @@ pub(crate) struct BoostState {
     vanity_field: Option<(Entity<Editor>, Subscription)>,
     error: Option<String>,
     pub(super) dialog: Option<Perks>,
+    /// The banner the dialog previews (module 13808's `headerProps`): the picture and whether it is a GIF.
+    pub(super) preview: Option<(gpui::ImageSource, bool)>,
+}
+
+/// The level a banner needs (`Ys` of module 473145: `BANNER` comes at Level 2, `ANIMATED_BANNER` at Level 3), named
+/// as `gb` names it.
+pub(super) fn banner_level_name(gif: bool) -> &'static str {
+    dc_intl::t(if gif { "BfF6ED" } else { "h33/uW" })
+}
+
+/// Whether the server may show this banner, else module 58767's preview bar and 13808's upsell stand in.
+pub(super) fn banner_allowed(features: &[String], gif: bool) -> bool {
+    let has = |feature: &str| features.iter().any(|known| known == feature);
+    has("ANIMATED_BANNER") || (!gif && has("BANNER"))
 }
 
 impl Root {
@@ -267,6 +283,7 @@ impl Root {
             && state.dialog.is_some()
         {
             state.dialog = None;
+            state.preview = None;
             return true;
         }
         false
@@ -302,11 +319,40 @@ impl Root {
     }
 
     /// `onCrop` of the server banner: the cropped picture is the pending banner.
-    pub(super) fn boost_banner_cropped(&mut self, uri: String, cx: &mut Context<Self>) {
+    /// `Eq` of module 989433: a banner the server's level does not allow opens module 13808 over the cropped picture
+    /// instead of being kept.
+    pub(super) fn boost_banner_cropped(
+        &mut self,
+        uri: String,
+        picture: std::sync::Arc<gpui::Image>,
+        cx: &mut Context<Self>,
+    ) {
+        let gif = uri.starts_with("data:image/gif");
+        let allowed = self
+            .server_settings
+            .as_ref()
+            .and_then(|open| self.stores.guild(open.guild))
+            .is_none_or(|guild| banner_allowed(&guild.features, gif));
+        if !allowed {
+            self.open_banner_upsell(Some((gpui::ImageSource::from(picture), gif)), cx);
+            return;
+        }
         if let Some(state) = self.boost_mut() {
             state.now.banner = Some(uri);
         }
         cx.notify();
+    }
+
+    /// Module 13808 with the banner it previews, or without one the plain banner perks of module 631305.
+    pub(super) fn open_banner_upsell(
+        &mut self,
+        preview: Option<(gpui::ImageSource, bool)>,
+        cx: &mut Context<Self>,
+    ) {
+        if let Some(state) = self.boost_mut() {
+            state.preview = preview;
+        }
+        self.open_perks(Perks::Banner, cx);
     }
 
     /// `EY.u`: the white button with its gem.
@@ -810,7 +856,15 @@ impl Root {
 
     /// Module 331617.
     pub(super) fn boost_perks_modal(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
-        let perks = self.server_settings.as_ref()?.boost.dialog?;
+        let open = self.server_settings.as_ref()?;
+        let perks = open.boost.dialog?;
+        let preview = open.boost.preview.clone();
+        let has_preview = preview.is_some();
+        let guild_name = self
+            .stores
+            .guild(open.guild)
+            .map(|guild| guild.name.clone())
+            .unwrap_or_default();
         let art = self.images.get(PERKS_ART).cloned();
         let close = cx.listener(|this, _: &ClickEvent, _, cx| {
             this.close_perks();
@@ -820,8 +874,12 @@ impl Root {
             this.close_perks();
             cx.notify();
         });
-        let rows: Vec<AnyElement> = perks
-            .list()
+        // Module 13808's perks: the banner list, or for an animated banner the animated icon's (`Pf`).
+        let list = match &preview {
+            Some((_, true)) => INVITE_PERKS,
+            _ => perks.list(),
+        };
+        let rows: Vec<AnyElement> = list
             .into_iter()
             .map(|(glyph, text)| {
                 div()
@@ -854,6 +912,8 @@ impl Root {
                     .flex()
                     .items_center()
                     .justify_center()
+                    // `outerContainer`: 56px above and below; a taller dialog scrolls its body.
+                    .py(px(56.))
                     .on_click(close_scrim)
                     .child(
                         div()
@@ -861,6 +921,9 @@ impl Root {
                             .id("boost-perks")
                             .occlude()
                             .relative()
+                            .max_h_full()
+                            .flex()
+                            .flex_col()
                             .w(px(480.))
                             .rounded(px(12.))
                             .border_1()
@@ -912,17 +975,96 @@ impl Root {
                                             .line_height(px(32.))
                                             .font_weight(FontWeight(600.))
                                             .text_color(color("--text-strong"))
-                                            .child("Unlock perks for everyone with Boosts"),
-                                    ),
+                                            .child(if has_preview {
+                                                dc_intl::t("rv2H+1").to_owned()
+                                            } else {
+                                                "Unlock perks for everyone with Boosts".to_owned()
+                                            }),
+                                    )
+                                    // `headerSubtitle` (module 20742): body-md/normal in `text-subtle`, 8px under.
+                                    .children(preview.as_ref().map(|(_, gif)| {
+                                        div()
+                                            .mt(px(8.))
+                                            .text_center()
+                                            .text_size(px(16.))
+                                            .line_height(px(20.))
+                                            .text_color(color("--text-subtle"))
+                                            .child(dc_intl::format(
+                                                if *gif { "TR/Uyt" } else { "B253V6" },
+                                                &[(
+                                                    "targetLevelOrPlan",
+                                                    banner_level_name(*gif).into(),
+                                                )],
+                                            ))
+                                    })),
                             )
                             .child(
                                 div()
+                                    .id("boost-perks-body")
+                                    .flex_1()
+                                    .min_h(px(0.))
+                                    .overflow_y_scroll()
                                     .mt(px(32.))
                                     .px(px(32.))
                                     .flex()
                                     .flex_col()
-                                    .gap(px(12.))
-                                    .children(rows),
+                                    .gap(px(16.))
+                                    // Module 13808 `p`: the banner (`guildBanner_RybCSC`, 320x180, 4px corners, cover)
+                                    // under the server's 48px header (`guildHeader_RybCSC`: the name in
+                                    // heading-sm/semibold and the closed dropdown chevron, both white).
+                                    .children(preview.map(|(picture, _)| {
+                                        div().flex().justify_center().child(
+                                            div()
+                                                .relative()
+                                                .w(px(320.))
+                                                .h(px(180.))
+                                                .rounded(px(4.))
+                                                .overflow_hidden()
+                                                .child(
+                                                    img(picture)
+                                                        .absolute()
+                                                        .top_0()
+                                                        .left_0()
+                                                        .size_full()
+                                                        .object_fit(gpui::ObjectFit::Cover),
+                                                )
+                                                .child(
+                                                    div()
+                                                        .absolute()
+                                                        .top_0()
+                                                        .left_0()
+                                                        .right_0()
+                                                        .h(px(48.))
+                                                        .px(px(16.))
+                                                        .flex()
+                                                        .items_center()
+                                                        .child(
+                                                            div()
+                                                                .flex_1()
+                                                                .min_w(px(0.))
+                                                                .overflow_hidden()
+                                                                .whitespace_nowrap()
+                                                                .text_ellipsis()
+                                                                .text_size(px(16.))
+                                                                .line_height(px(20.))
+                                                                .font_weight(FontWeight(600.))
+                                                                .text_color(gpui::rgb(0xffffff))
+                                                                .child(guild_name.clone()),
+                                                        )
+                                                        .child(icon(CHEVRON_DOWN, 16., "--white")),
+                                                ),
+                                        )
+                                    }))
+                                    .when(has_preview, |this| {
+                                        this.child(
+                                            div()
+                                                .text_size(px(16.))
+                                                .line_height(px(20.))
+                                                .text_color(color("--text-default"))
+                                                .child(dc_intl::t("ZuItcI")),
+                                        )
+                                    })
+                                    .child(div().flex().flex_col().gap(px(12.)).children(rows)),
                             )
                             .child(
                                 div().mt(px(32.)).px(px(32.)).pb(px(32.)).child(
@@ -991,7 +1133,8 @@ impl Root {
                             ),
                     ),
             )
-            .with_priority(1)
+            // Over the image cropper when its Boosting preview bar opened it (module 58767).
+            .with_priority(if self.image_crop.crop.is_some() { 5 } else { 1 })
             .into_any_element(),
         )
     }

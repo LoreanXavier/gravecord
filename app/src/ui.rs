@@ -33,6 +33,7 @@ mod active_now;
 mod activity_host;
 mod activity_launch;
 mod activity_shelf;
+mod activity_sync;
 mod add_server;
 mod alt_text;
 mod announcements;
@@ -45,6 +46,7 @@ mod autocomplete;
 mod autoscroll;
 mod badge_modal;
 mod badge_paths;
+mod birthday;
 mod blocked;
 mod boost_apply;
 mod call_background;
@@ -179,6 +181,7 @@ mod graphic_dialogs;
 mod guild_events;
 mod guild_guide;
 mod guild_navigation;
+mod guild_stack;
 mod hover_bar;
 pub(crate) mod image_cache;
 mod image_crop;
@@ -189,6 +192,7 @@ mod jump;
 mod launcher_home;
 mod media_image;
 mod member_avatars;
+mod member_onboarding;
 pub(crate) mod memory_trim;
 mod menu;
 mod menu_slider;
@@ -278,6 +282,7 @@ mod server_games;
 mod server_insights;
 mod server_landing;
 mod server_welcome;
+pub(crate) mod server_welcome_new;
 #[cfg(feature = "capture")]
 pub(crate) use server_landing::FORCE_LANDING;
 mod dm_call;
@@ -305,6 +310,7 @@ mod stream_volume;
 mod tag_badges;
 mod threads;
 mod tooltip;
+mod tutorial_tips;
 mod unread;
 mod unread_notice;
 mod upload_area;
@@ -314,6 +320,7 @@ mod uploads;
 mod video_player;
 mod video_stats;
 mod video_tiles;
+mod view_as_role;
 mod voice;
 mod voice_alerts;
 mod voice_blocked;
@@ -466,6 +473,8 @@ pub struct Root {
     guild: Option<Id>,
     channel: Option<Id>,
     screening: Option<screening::Screening>,
+    /// View Server As Role's popout state (`ui/view_as_role.rs`; the viewed roles are on the guild).
+    view_as_role: view_as_role::State,
     /// Reapply of a pending member (module 267): the server whose verification form opens once its old request is gone.
     reapply_after_remove: Option<Id>,
     slowmode: dc_state::slowmode::SlowmodeStore,
@@ -596,6 +605,8 @@ pub struct Root {
     search: Option<search::Search>,
     search_filters: Option<search_filters::SearchFilters>,
     add_server: Option<add_server::AddServer>,
+    /// The account's date-of-birth state and the age gate dialogs (`birthday.rs`).
+    birthday: birthday::State,
     file_menu: Option<file_actions::FileMenu>,
     file_wrap: HashSet<Id>,
     file_language: HashMap<Id, String>,
@@ -723,6 +734,8 @@ pub struct Root {
     command_mentions: Vec<(u64, String)>,
     /// Images this client draws itself (invite banners), by key.
     generated_images: std::cell::RefCell<HashMap<String, std::sync::Arc<gpui::Image>>>,
+    /// The server icon stack's mask pictures being drawn (module 692617).
+    guild_stack_pending: std::cell::RefCell<HashSet<String>>,
     /// The voice message players: loaded clips, each pill's position and bars, the shared speed and volume.
     voice_hub: std::rc::Rc<std::cell::RefCell<voice_message::Hub>>,
     voice_rec: std::rc::Rc<std::cell::RefCell<voice_message::RecState>>,
@@ -785,6 +798,8 @@ pub struct Root {
     destructive: Option<destructive::Pending>,
     /// "Trying to reorder channels?" (module 354643): whether its "Don't show again" box is ticked.
     reorder_hint: Option<bool>,
+    /// The tutorial tips (`tutorial_tips`, module 179913).
+    tutorial_tips: tutorial_tips::TutorialTips,
     /// The Log Out confirmation of the settings sidebar.
     logout_confirm: bool,
     poll: Option<composer_plus::PollForm>,
@@ -981,6 +996,7 @@ impl Root {
             guild: None,
             channel: None,
             screening: None,
+            view_as_role: Default::default(),
             reapply_after_remove: None,
             slowmode: Default::default(),
             slowmode_ticking: false,
@@ -1075,6 +1091,7 @@ impl Root {
             search: None,
             search_filters: None,
             add_server: None,
+            birthday: birthday::State::default(),
             file_menu: None,
             file_wrap: HashSet::new(),
             file_language: HashMap::new(),
@@ -1167,6 +1184,7 @@ impl Root {
             requested_invites: HashSet::new(),
             command_mentions: Vec::new(),
             generated_images: std::cell::RefCell::new(HashMap::new()),
+            guild_stack_pending: std::cell::RefCell::new(HashSet::new()),
             voice_hub: std::rc::Rc::new(std::cell::RefCell::new(voice_message::Hub::new())),
             voice_rec: std::rc::Rc::new(std::cell::RefCell::new(voice_message::RecState::new())),
             #[cfg(feature = "capture")]
@@ -1212,6 +1230,7 @@ impl Root {
             leave_guild: None,
             destructive: None,
             reorder_hint: None,
+            tutorial_tips: tutorial_tips::TutorialTips::default(),
             logout_confirm: false,
             poll: None,
             components: components::State::default(),
@@ -1414,6 +1433,7 @@ impl Root {
     fn apply_update(&mut self, update: Update, cx: &mut Context<Self>) {
         match update {
             Update::GatewayConnected(connected) => {
+                self.tutorial_connection(connected);
                 self.inventory_connection_changed(connected, cx);
                 self.detect_connection_changed(connected, cx);
             }
@@ -1553,6 +1573,8 @@ impl Root {
                     self.call_timer_observe(cx);
                 }
                 self.official_messages.dispatch(&name, &data);
+                self.birthday_dispatch(&name, &data);
+                self.tutorial_tips.dispatch(&name, &data);
                 self.gateway_screens_dispatch(&name, &data, cx);
                 self.channel_info_check();
                 // Another session changed the status or the custom status: the account's own presence follows.
@@ -2046,6 +2068,9 @@ impl Root {
                     return;
                 }
                 if self.invite_accept_answered(&key, &body, cx) {
+                    return;
+                }
+                if self.birthday_answered(&key, &body, cx) {
                     return;
                 }
                 if self.thread_browser_fetched(&key, &body, cx) {
@@ -4599,7 +4624,9 @@ impl Root {
                         cx,
                     )
                     .cursor_pointer()
-                    .on_click(cx.listener(|this, _, window, cx| this.open_add_server(window, cx))),
+                    .on_click(cx.listener(|this, _, window, cx| this.open_add_server(window, cx)))
+                    // The Create Your Own Server tip (`tutorial_tips`).
+                    .children(self.tutorial_rail_tip(cx)),
                 )
                 .child(self.discover_tile(cx));
         // wrapper_5dqHTG reserves the observed panel border-box height + 8px - 16px.
@@ -4774,6 +4801,8 @@ impl Root {
                             )
                         }),
                 )
+                // These are your channels! (`tutorial_tips`).
+                .children(self.tutorial_channel_tip(channel, cx))
                 .into_any_element();
         }
         let selected = self.channel == Some(channel.id)
@@ -5108,6 +5137,8 @@ impl Root {
                         .flatten(),
                 ),
             )
+            // The voice channels tip (`tutorial_tips`).
+            .children(self.tutorial_channel_tip(channel, cx))
             .into_any_element()
     }
 
@@ -5157,6 +5188,7 @@ impl Root {
             2.
         };
         let mut sidebar_items: Vec<(f32, f32, bool, bool)> = Vec::new();
+        self.tutorial_sidebar_begin();
         let rows: Vec<AnyElement> = guild
             .map(|guild| {
                 let collapsed = |category: Option<Id>| {
@@ -5190,6 +5222,7 @@ impl Root {
                 for row in ordered
                     .into_iter()
                     .filter(|row| self.followed_sidebar_row(guild, row))
+                    .filter(|row| self.view_as_role_shows(guild, row))
                     // Selected channels and mentions precede mute/collapse filtering (791513.eA).
                     .filter(|row| {
                         !self.hide_muted(guild.id)
@@ -7888,7 +7921,8 @@ impl Root {
             Row::Welcome => if self.voice_view_open() {
                 self.voice_welcome()
             } else if self.current_dm().is_none() {
-                self.channel_welcome(cx)
+                self.new_server_welcome(cx)
+                    .or_else(|| self.channel_welcome(cx))
             } else {
                 self.dm_welcome(cx)
             }
@@ -10211,7 +10245,11 @@ impl Render for Root {
                     return;
                 }
                 if keys.key == "escape" && this.invite.is_some() {
-                    this.invite = None;
+                    // An open select closes first (module 873200's Escape).
+                    match this.invite.as_mut() {
+                        Some(invite) if invite.open_select.is_some() => invite.open_select = None,
+                        _ => this.invite = None,
+                    }
                     cx.notify();
                     cx.stop_propagation();
                     return;
@@ -10342,7 +10380,9 @@ impl Render for Root {
                 }
                 // A dialog over the settings page (Failed to upload files) closes before the page does.
                 if keys.key == "escape"
-                    && (this.chat_alert_escape() || this.graphic_dialog_escape())
+                    && (this.chat_alert_escape()
+                        || this.graphic_dialog_escape()
+                        || this.birthday_escape())
                 {
                     cx.notify();
                     cx.stop_propagation();
@@ -10773,10 +10813,13 @@ impl Render for Root {
             .children(self.server_games_dropdown(window, cx))
             .children(self.ban_dialog(cx))
             .children(self.role_menu_layer(cx))
+            .children(self.view_as_role_picker(cx))
             .children(self.role_delete_modal(cx))
             .children(self.role_add_members_modal(cx))
+            .children(self.role_colour_layer(cx))
             .children(self.template_delete_modal(cx))
             .children(self.members_sort_layer(cx))
+            .children(self.members_join_layer(window, cx))
             .children(self.members_prune_modal(cx))
             .children(self.engagement_select_layer(window, cx))
             .children(self.sound_dialog_modal(cx))
@@ -10887,6 +10930,12 @@ impl Render for Root {
                     .is_some_and(|view| Some(view.guild) == self.guild)
                 {
                     self.member_safety_view(cx)
+                } else if !self.guild_guide_open
+                    && !self.channel_browser_open
+                    && self.onboarding_blocked()
+                {
+                    // Module 140354 in place of the channel, header included (`gk` of 596339).
+                    self.onboarding_blocked_page(cx)
                 } else if self.voice_view_open() {
                     self.voice_view(window, cx)
                 } else if self.stage_view_open() {
@@ -11051,6 +11100,7 @@ impl Render for Root {
             .children(self.search_filters_modal(cx))
             .children(self.add_server_modal(cx))
             .children(self.invite_modal(cx))
+            .children(self.invite_select_layer(cx))
             .children(self.guild_notifications_modal(cx))
             .children(self.create_channel_modal(cx))
             .children(self.channel_status_modal(window, cx))
@@ -11074,6 +11124,7 @@ impl Render for Root {
             .children(self.favorites_full_modal(cx))
             .children(self.chat_alert_modal(cx))
             .children(self.graphic_dialog(cx))
+            .children(self.birthday_layers(window, cx))
             .children(self.library_remove_modal(cx))
             .children(self.composer_ai_modal(cx))
             .children(self.friend_nickname_layer(window, cx))
@@ -11110,6 +11161,7 @@ impl Render for Root {
             .children(self.leave_modal(cx))
             .children(self.destructive_modal(cx))
             .children(self.reorder_hint_modal(cx))
+            .children(self.tutorial_layer(cx))
             .children(self.logout_modal(cx))
             .children(self.manage_accounts_modal(cx))
             .children(self.add_account_modal(cx))

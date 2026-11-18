@@ -390,6 +390,12 @@ fn plain(text: &str) -> AnyElement {
 }
 
 impl Root {
+    /// The capture step `voice-silence-dialog`.
+    #[cfg(feature = "capture")]
+    pub(crate) fn script_voice_silence_dialog(&mut self) {
+        self.voice.extra.dialog = Some(Dialog::Silence { dont_show: false });
+    }
+
     /// A generated switch of this module changed (`setting_choices` already holds the new value).
     pub(in crate::ui) fn extra_setting_changed(&mut self, key: &'static str, on: bool) -> bool {
         if !owns(key) {

@@ -47,6 +47,10 @@ impl State {
 impl Root {
     /// The bar, when a notice holds.
     pub(super) fn notice_bar(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
+        // `VIEWING_ROLES` comes before `VOICE_DISABLED` in the table (`ui/view_as_role.rs`).
+        if let Some(bar) = self.view_as_role_bar(cx) {
+            return Some(bar);
+        }
         let Notice::VoiceDisabled(guild, channel) = self.vv.notices.shown()?;
         let text = color("--notice-text-warning");
         Some(

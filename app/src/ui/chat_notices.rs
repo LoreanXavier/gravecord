@@ -86,6 +86,12 @@ pub(super) enum Then {
     Reapply {
         guild: Id,
     },
+    /// The confirm of modules 32167 and 413201 (`gF` of module 365258, after 413201 sets the activity default).
+    SyncActivity {
+        restricting: bool,
+        guilds: Vec<Id>,
+        activity: Option<u64>,
+    },
 }
 
 /// Module 987176 as module 190857 opens it before a message request is accepted: the title, its subtitle, Cancel and
@@ -244,6 +250,13 @@ pub(super) enum Content {
     FailedDestinations(Vec<Destination>),
     /// Module 228855: "This change affects" over the server's row.
     AffectedGuild(Id),
+    /// Module 929120: the card of the servers an activity change touches; `clickable` (module 413201) opens
+    /// Activity Privacy.
+    AffectedGuilds {
+        guilds: Vec<Id>,
+        restricting: bool,
+        clickable: bool,
+    },
     /// Module 940372: the files of a bulk emoji upload that failed, a row each (`errors_qy2FFG`, 8px apart).
     EmojiUploadErrors(Vec<(super::server_emoji::UploadError, String)>),
     /// Module 29681: the Open Soundboard (Hold) keybind being edited; `original` is its shortcut when the modal
@@ -791,6 +804,11 @@ impl Root {
                 destinations,
             } => self.retry_forward(*message, destinations, window, cx),
             Then::DmsOff { guild } => self.turn_off_guild_dms(guild, cx),
+            Then::SyncActivity {
+                restricting,
+                guilds,
+                activity,
+            } => self.sync_activity(restricting, &guilds, activity, cx),
             Then::UploadLogs => self.voice_upload_logs(cx),
             Then::SaveSoundboardKeybind => self.soundboard_keybind_save(),
             Then::AcceptMessageRequest { channel } => self.mr_accept_now(channel, cx),
@@ -940,6 +958,11 @@ impl Root {
                     .into_any_element()
             }
             Content::AffectedGuild(guild) => self.affected_guild(guild),
+            Content::AffectedGuilds {
+                guilds,
+                restricting,
+                clickable,
+            } => self.affected_guilds_card(&guilds, restricting, clickable, cx),
             Content::RejectionReason(reason) => div()
                 .flex()
                 .flex_wrap()
@@ -1283,6 +1306,117 @@ impl Root {
     /// Module 228855's children: "This change affects" (`body-md/medium`, `text-muted`), 8px above the server's box
     /// (`guildContainer_wWIOj0`: `--background-mod-subtle`, a `--border-subtle` edge, `--radius-sm` corners, 16px
     /// inside) with its 30px icon (`SMALL`) 12px from its name (`body-md/semibold`).
+    /// Module 929120 (`card_k0Unn4`): on `--background-mod-subtle` with `--radius-md`, 16px in, the count of servers
+    /// (body-md/semibold) over "Sharing" (`text-feedback-positive`) or "Not Sharing" and "• {first} and others" in
+    /// body-sm/medium, the icon stack of module 926418 at the end (with a chevron when it opens Activity Privacy).
+    fn affected_guilds_card(
+        &self,
+        guilds: &[Id],
+        restricting: bool,
+        clickable: bool,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        // GAP: `AB` of module 365258 orders the servers by frecency, which is not kept; they stay newest joined first.
+        let first = guilds
+            .first()
+            .and_then(|guild| self.stores.guild(*guild))
+            .map(|guild| guild.name.clone())
+            .unwrap_or_default();
+        let summary = dc_intl::format(
+            if guilds.len() > 1 { "8ZLbvR" } else { "+NoTYm" },
+            &[("guildName", first.into())],
+        );
+        // The stack lies on the card's `--background-mod-subtle` over the dialog's surface.
+        let under = super::modal::over(
+            super::color("--background-mod-subtle"),
+            super::color("--background-surface-high"),
+        );
+        let stack = self.guild_stack(guilds, under, cx);
+        div()
+            .id("activity-sync-card")
+            .flex()
+            .items_center()
+            .gap(px(12.))
+            .p(px(16.))
+            .rounded(px(12.))
+            .bg(super::color("--background-mod-subtle"))
+            .when(clickable, |this| {
+                this.cursor_pointer()
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        // `L7` of module 481045: Activity Privacy.
+                        this.chat_extra.alert = None;
+                        if let Some(open) = this.settings.as_mut() {
+                            *open =
+                                super::settings::Open::new(super::settings::Page::ActivityPrivacy);
+                        }
+                        cx.notify();
+                    }))
+            })
+            .child(
+                div()
+                    .flex()
+                    .flex_col()
+                    .flex_grow(1.)
+                    .min_w(px(0.))
+                    .child(
+                        div()
+                            .text_size(px(16.))
+                            .line_height(px(20.))
+                            .font_weight(FontWeight(600.))
+                            .text_color(super::color("--text-strong"))
+                            .child(dc_intl::format(
+                                "0fkj8J",
+                                &[("count", (guilds.len() as i64).into())],
+                            )),
+                    )
+                    .child(
+                        div()
+                            .flex()
+                            .items_center()
+                            .gap(px(4.))
+                            .overflow_hidden()
+                            .whitespace_nowrap()
+                            .text_size(px(14.))
+                            .line_height(px(18.))
+                            .font_weight(FontWeight(500.))
+                            .child(
+                                div()
+                                    .flex_none()
+                                    .text_color(super::color(if restricting {
+                                        "--text-feedback-positive"
+                                    } else {
+                                        "--text-muted"
+                                    }))
+                                    .child(dc_intl::t(if restricting {
+                                        "e6Kpa7"
+                                    } else {
+                                        "cy4G4y"
+                                    })),
+                            )
+                            .child(
+                                div()
+                                    .min_w(px(0.))
+                                    .overflow_hidden()
+                                    .text_ellipsis()
+                                    .text_color(super::color("--text-muted"))
+                                    .child(summary),
+                            ),
+                    ),
+            )
+            .child(
+                div()
+                    .flex()
+                    .flex_none()
+                    .items_center()
+                    .gap(px(4.))
+                    .children(stack)
+                    .when(clickable, |this| {
+                        this.child(super::icon("settings_chevron", 12., "--text-subtle"))
+                    }),
+            )
+            .into_any_element()
+    }
+
     fn affected_guild(&self, guild: Id) -> AnyElement {
         let known = self.stores.guilds.iter().find(|known| known.id == guild);
         let name = known.map(|known| known.name.clone()).unwrap_or_default();

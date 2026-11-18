@@ -627,6 +627,7 @@ impl Root {
                 )
         };
         let code_owned = code.to_owned();
+        let nsfw_level = guild["nsfw_level"].as_u64().unwrap_or(0);
         // Each part is erased on its own: one long builder chain here overflows the code generator.
         let avatar: AnyElement = div()
             .mt(px(-34.))
@@ -720,6 +721,10 @@ impl Root {
             .on_click(cx.listener(move |this, _, _, cx| {
                 if joined {
                     this.select(id, None);
+                } else if this.birthday_invite_gate(nsfw_level, joined) {
+                    // `N` of module 963055: an age-restricted server asks an account without a date of birth for one
+                    // (module 189282, `NSFW_SERVER_INVITE_EMBED`); nothing is joined.
+                    this.open_birthday_modal(super::birthday::Source::NsfwServerInviteEmbed, cx);
                 } else {
                     // `acceptInvite`: POST /invites/{code}, then the server opens when it arrives.
                     let _ = this.requests.send(Request::Rest {

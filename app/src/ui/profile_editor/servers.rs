@@ -15,6 +15,17 @@ use gpui::{
 /// The local-storage key of the dismissed per-server notice (`per-server-profile-editing-notice-dismissed`).
 const NOTICE_KEY: &str = "per-server-profile-editing-notice-dismissed";
 
+/// The art of the per-server profile upsell (`artURL` of module 63473).
+const GUILD_UPSELL_ART: &str = "https://cdn.discordapp.com/assets/content/cebaa07ffa781bd4cb680a3dcfeb8fe4a6efc48bfb7fc4c80068e875049e2961.png";
+const GUILD_UPSELL_ART_KEY: &str = "profile-editor:guild-upsell-art";
+
+/// Whether a click on the preview's avatar opens the per-server profile upsell (module 63473): `E` of module 641318
+/// sends it to `onUpsellClick` when a server profile is edited (`guild != null`) by an account that cannot use premium
+/// profile customization; the main profile, or an account with Nitro, gets the avatar menu instead.
+pub(super) fn guild_upsell_opens(guild: Option<Id>, premium: bool) -> bool {
+    guild.is_some() && !premium
+}
+
 /// A row of the select: `None` is "Main Profile".
 pub(super) struct Choice {
     pub guild: Option<Id>,
@@ -262,6 +273,228 @@ impl Root {
         )
     }
 
+    /// Opens the per-server profile upsell (module 63473) when [`guild_upsell_opens`] says so.
+    pub(super) fn profile_editor_open_guild_upsell(&mut self, cx: &mut Context<Self>) {
+        let premium = self.profile_editor_premium();
+        let Some(open) = self.profile_editor.as_mut() else {
+            return;
+        };
+        if !guild_upsell_opens(open.guild, premium) {
+            return;
+        }
+        open.guild_upsell = true;
+        self.request_image(GUILD_UPSELL_ART_KEY.to_owned(), GUILD_UPSELL_ART.to_owned());
+        cx.notify();
+    }
+
+    /// Closes the per-server profile upsell. True when it was open.
+    pub(super) fn profile_editor_close_guild_upsell(&mut self, cx: &mut Context<Self>) -> bool {
+        let Some(open) = self.profile_editor.as_mut() else {
+            return false;
+        };
+        if !std::mem::take(&mut open.guild_upsell) {
+            return false;
+        }
+        cx.notify();
+        true
+    }
+
+    /// Module 63473: the premium upsell modal of module 945240 (`PREMIUM_GUILD_IDENTITY_MODAL`, classes of module
+    /// 777133) with the art (`artContainer_PwiJiV`: 225 wide, 8px corners, 48px above the box and 24px over the text,
+    /// `artContainerBoxShadow_PwiJiV`), "Express yourself fully with per-server profiles" (`kOEBKP`,
+    /// `heading-xl/semibold`, 24px under it), the `WMO9po` body whose "Discord Nitro!" link (`onAndMore`) closes the
+    /// modal and opens User Settings on the Nitro page (module 87719 `e`), then the tier 2 subscribe button (green,
+    /// small) and Back (`13/7kX`).
+    /// GAP: the trial / discount variant of 945240 (module 811611, `nh`) is not drawn.
+    pub(super) fn profile_editor_guild_upsell_layer(
+        &self,
+        cx: &mut Context<Self>,
+    ) -> Option<AnyElement> {
+        if !self.profile_editor.as_ref()?.guild_upsell {
+            return None;
+        }
+        let art = self
+            .images
+            .get(GUILD_UPSELL_ART_KEY)
+            .cloned()
+            .map(|image| img(image).w(px(225.)).into_any_element());
+        let runs = dc_intl::format_runs("WMO9po", &[("onAndMore", dc_intl::Arg::from(true))]);
+        // `root_PwiJiV` is `text-align: center`: one centred paragraph with the `$link` run in the link colour.
+        let mut body_text = String::new();
+        let mut link = None;
+        for (run, tag) in runs {
+            let start = body_text.len();
+            body_text.push_str(&run);
+            if tag.as_deref().is_some_and(|tag| tag.starts_with('$')) {
+                link = Some(start..body_text.len());
+            }
+        }
+        let highlights: Vec<_> = link
+            .iter()
+            .map(|range| {
+                (
+                    range.clone(),
+                    gpui::HighlightStyle {
+                        color: Some(color("--text-link").into()),
+                        ..Default::default()
+                    },
+                )
+            })
+            .collect();
+        let entity = cx.entity().downgrade();
+        // `subHeader_PwiJiV`: 32px either side.
+        let body = div()
+            .w_full()
+            .px(px(32.))
+            .text_center()
+            .text_size(px(16.))
+            .line_height(px(20.))
+            .text_color(color("--text-default"))
+            .child(
+                gpui::InteractiveText::new(
+                    "profile-editor-guild-upsell-body",
+                    gpui::StyledText::new(body_text).with_highlights(highlights),
+                )
+                .on_click(link.into_iter().collect(), move |_, _, cx| {
+                    // `onAndMore`: `c()` closes the modal, `(0, n.e)()` opens settings on the Nitro panel. The editor
+                    // is drawn over settings, so it closes too.
+                    let _ = entity.update(cx, |this, cx| {
+                        this.profile_editor = None;
+                        this.open_settings_page("nitro", cx);
+                    });
+                }),
+            );
+        let cta = self.subscribe_cta(Some(dc_state::premium::sku::TIER_2));
+        let disabled = cta.disabled;
+        let subscribe = div()
+            .id("profile-editor-guild-upsell-subscribe")
+            .h(px(32.))
+            .px(px(16.))
+            .rounded(px(8.))
+            // `Colors.GREEN` (module 725807 for tier 2 without the gradient).
+            .bg(color("--control-connected-background-default"))
+            .flex()
+            .items_center()
+            .gap(px(8.))
+            .text_size(px(14.))
+            .line_height(px(16.))
+            .font_weight(FontWeight(500.))
+            .text_color(color("--control-connected-text-default"))
+            .when(!disabled, |this| this.cursor_pointer())
+            .when(disabled, |this| this.opacity(0.5))
+            .child(crate::ui::settings::mask_icon(
+                "nitro_wheel",
+                16.,
+                "--control-connected-text-default",
+            ))
+            .child(dc_intl::tr(cta.text))
+            .on_click(cx.listener(move |this, _, _, cx| {
+                if disabled {
+                    return;
+                }
+                this.profile_editor_close_guild_upsell(cx);
+                this.open_purchase(false, cx);
+            }));
+        let back = div()
+            .id("profile-editor-guild-upsell-back")
+            .h(px(32.))
+            .px(px(16.))
+            .rounded(px(8.))
+            .bg(color("--control-secondary-background-default"))
+            .flex()
+            .items_center()
+            .cursor_pointer()
+            .text_size(px(14.))
+            .line_height(px(16.))
+            .font_weight(FontWeight(500.))
+            .text_color(color("--control-secondary-text-default"))
+            .child(dc_intl::t("13/7kX"))
+            .on_click(cx.listener(|this, _, _, cx| {
+                this.profile_editor_close_guild_upsell(cx);
+            }));
+        Some(
+            deferred(
+                div()
+                    .id("profile-editor-guild-upsell-layer")
+                    .occlude()
+                    .absolute()
+                    .inset_0()
+                    .bg(gpui::rgba(0x000000b8))
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        this.profile_editor_close_guild_upsell(cx);
+                    }))
+                    .child(
+                        div()
+                            .id("profile-editor-guild-upsell")
+                            .occlude()
+                            .on_click(|_, _, cx| cx.stop_propagation())
+                            .relative()
+                            .w(px(440.))
+                            .mt(px(48.))
+                            .rounded(px(12.))
+                            .border_1()
+                            .border_color(color("--border-subtle"))
+                            .bg(color("--background-surface-high"))
+                            .flex()
+                            .flex_col()
+                            .items_center()
+                            .child(
+                                div()
+                                    .mt(px(-48.))
+                                    .mb(px(24.))
+                                    .w(px(225.))
+                                    .rounded(px(8.))
+                                    // `--elevation-medium`: 0 4px 4px `--opacity-black-16`.
+                                    // GAP: light themes use `--opacity-black-8`.
+                                    .shadow(vec![gpui::BoxShadow {
+                                        color: gpui::hsla(0., 0., 0., 0.16),
+                                        offset: gpui::point(px(0.), px(4.)),
+                                        blur_radius: px(4.),
+                                        spread_radius: px(0.),
+                                        inset: false,
+                                    }])
+                                    .children(art),
+                            )
+                            .child(
+                                div()
+                                    .px(px(16.))
+                                    .mb(px(32.))
+                                    .flex()
+                                    .flex_col()
+                                    .items_center()
+                                    .child(
+                                        div()
+                                            .mb(px(24.))
+                                            .text_center()
+                                            .text_size(px(20.))
+                                            .line_height(px(24.))
+                                            .font_weight(FontWeight(600.))
+                                            .text_color(color("--text-strong"))
+                                            .child(dc_intl::t("kOEBKP")),
+                                    )
+                                    .child(body),
+                            )
+                            .child(
+                                div()
+                                    .w_full()
+                                    .p(px(16.))
+                                    .flex()
+                                    .flex_row_reverse()
+                                    .items_center()
+                                    .justify_between()
+                                    .child(subscribe)
+                                    .child(back),
+                            ),
+                    ),
+            )
+            .with_priority(4)
+            .into_any_element(),
+        )
+    }
+
     /// The top of a server profile's panel: the dismissible notice with Nitro (`lA`), the upsell without
     /// (`lI`, with the lock divider below it).
     pub(super) fn profile_editor_server_intro(
@@ -441,5 +674,28 @@ mod tests {
         assert_eq!(names, ["Main Profile", "Two", "One", "Three"]);
         assert_eq!(list[0].guild, None);
         assert_eq!(list[3].nick.as_deref(), Some("Nick"));
+    }
+
+    #[test]
+    fn the_guild_upsell_opens_only_for_a_server_profile_without_nitro() {
+        assert!(guild_upsell_opens(Some(1), false));
+        assert!(!guild_upsell_opens(Some(1), true));
+        assert!(!guild_upsell_opens(None, false));
+        assert!(!guild_upsell_opens(None, true));
+    }
+
+    #[test]
+    fn the_guild_upsell_strings_are_the_official_ones() {
+        assert_eq!(
+            dc_intl::t("kOEBKP"),
+            "Express yourself fully with per-server profiles"
+        );
+        let runs = dc_intl::format_runs("WMO9po", &[("onAndMore", dc_intl::Arg::from(true))]);
+        let link: Vec<_> = runs
+            .iter()
+            .filter(|(_, tag)| tag.as_deref().is_some_and(|tag| tag.starts_with('$')))
+            .map(|(run, _)| run.as_str())
+            .collect();
+        assert_eq!(link, ["Discord Nitro!"]);
     }
 }

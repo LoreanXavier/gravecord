@@ -1948,6 +1948,17 @@ impl Root {
                 {"game_id": "1004"}, {"game_id": "1005"}, {"game_id": "1001"}]}}
         ]);
         body["wishlist_settings"] = serde_json::json!({"demo-wishlist": {"privacy": 0}});
+        // `profile demo connections`: the Verified Connection mark of module 46937 on a verified account, the Twitter
+        // colour on a verified X account, and none on an unverified one.
+        if variant == "connections" {
+            body["connected_accounts"] = serde_json::json!([
+                {"type": "github", "id": "1", "name": "octocat", "verified": true,
+                    "metadata": {"created_at": "2016-04-01T00:00:00+00:00"}},
+                {"type": "twitter", "id": "2", "name": "discord", "verified": true,
+                    "metadata": {"verified": "1", "followers_count": "100", "statuses_count": "10"}},
+                {"type": "steam", "id": "76561198000000000", "name": "Gordon", "verified": false}
+            ]);
+        }
         self.fetched.insert(format!("profile:{user}"), body);
         if frame.is_some() {
             self.request_profile_frame(user);

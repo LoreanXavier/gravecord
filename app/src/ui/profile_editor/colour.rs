@@ -1,6 +1,7 @@
 //! The colour picker popout (module 508274, `T`): a saturation and brightness box, a hue slider, a hex field with
-//! its "#" and the eyedropper, and the suggested swatches. Used by the banner colour and by the colour swatches of
-//! the display name style editor.
+//! its "#" and the eyedropper, and the suggested swatches. Used by the banner colour, by the colour swatches of
+//! the display name style editor, and by the role editor's Custom Color button and gradient stops (module 48736
+//! renders `VN` without suggestions or eyedropper there).
 
 use super::text;
 use crate::editor::{Editor, EditorEvent};
@@ -16,17 +17,28 @@ use std::rc::Rc;
 
 /// What the colour being picked is for.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(super) enum Target {
+pub(in crate::ui) enum Target {
     Banner,
     /// The nth colour of the name style being edited.
     Style(usize),
+    /// The role editor's solid Custom Color button (module 508274 `nJ`).
+    RoleCustom,
+    /// The nth stop of the role editor's gradient strip (module 48736 `k`).
+    RoleStop(usize),
+}
+
+impl Target {
+    /// A role editor colour: the popout of module 48736, without suggestions or eyedropper.
+    pub(in crate::ui) fn is_role(self) -> bool {
+        matches!(self, Target::RoleCustom | Target::RoleStop(_))
+    }
 }
 
 /// The five suggestions of the popout, in the order of the capture (`suggestedColors` of module 927071 are taken
 /// from the avatar; the default avatar's are fixed).
 pub(super) const SUGGESTED: [u32; 5] = [0x5c64f4, 0xd2d5fc, 0x5cf4a0, 0xf4ec5c, 0xf45cb0];
 
-pub(super) struct State {
+pub(in crate::ui) struct State {
     pub target: Target,
     pub hue: f32,
     pub saturation: f32,
@@ -73,7 +85,7 @@ pub(super) fn from_hsv(hue: f32, saturation: f32, value: f32) -> u32 {
 }
 
 impl State {
-    pub(super) fn new(target: Target, initial: u32, cx: &mut Context<Root>) -> Self {
+    pub(in crate::ui) fn new(target: Target, initial: u32, cx: &mut Context<Root>) -> Self {
         let hex = cx.new(|cx| {
             let mut editor = Editor::new(crate::ui::editor_style(), cx);
             editor.set_single_line(true);
@@ -168,25 +180,14 @@ fn hue_bar(cx: &mut Context<Root>, slider: Rc<Cell<Bounds<Pixels>>>, hue: f32) -
 
 impl Root {
     /// The popout, placed at `left`/`top` of the editor.
-    pub(super) fn profile_editor_colour_popout(
-        &mut self,
+    pub(in crate::ui) fn profile_editor_colour_popout(
+        &self,
         left: f32,
         top: f32,
         cx: &mut Context<Self>,
     ) -> Option<AnyElement> {
-        let state = self
-            .profile_editor
-            .as_ref()?
-            .banner_color
-            .as_ref()
-            .or_else(|| {
-                self.profile_editor
-                    .as_ref()?
-                    .styles
-                    .as_ref()?
-                    .picking
-                    .as_ref()
-            })?;
+        let state = self.colour_state_ref()?;
+        let role = state.target.is_role();
         let (hue, saturation, value) = (state.hue, state.saturation, state.value);
         let hex = state.hex.clone();
         let boxed = state.boxed.clone();
@@ -273,13 +274,22 @@ impl Root {
                 .top(px(top))
                 .w(px(256.))
                 .p(px(16.))
-                .rounded(px(8.))
                 .border_1()
                 .border_color(color("--border-subtle"))
-                .bg(color("--background-surface-high"))
                 .flex()
                 .flex_col()
-                .gap(px(12.))
+                // `customColorPicker_BorJ2C` for the role editor: base-low, 4px corners, 16px gaps.
+                // GAP: the role popout's inner spacing is the profile capture's; it has no DOM capture of its own.
+                .when(role, |this| {
+                    this.rounded(px(4.))
+                        .bg(color("--background-base-low"))
+                        .gap(px(16.))
+                })
+                .when(!role, |this| {
+                    this.rounded(px(8.))
+                        .bg(color("--background-surface-high"))
+                        .gap(px(12.))
+                })
                 .child(saturation_box)
                 .child(div().mt(px(-4.)).child(hue_bar(cx, slider, hue)))
                 .child(
@@ -296,14 +306,18 @@ impl Root {
                         .gap(px(4.))
                         .child(text("#", 16., 20., 400., "--text-muted"))
                         .child(div().flex_1().child(hex))
-                        .child(
-                            svg()
-                                .path("icons/profile_editor_eyedropper.svg")
-                                .size(px(16.))
-                                .text_color(color("--icon-default")),
-                        ),
+                        .when(!role, |this| {
+                            this.child(
+                                svg()
+                                    .path("icons/profile_editor_eyedropper.svg")
+                                    .size(px(16.))
+                                    .text_color(color("--icon-default")),
+                            )
+                        }),
                 )
-                .child(div().mt(px(4.)).flex().gap(px(8.)).children(swatches))
+                .when(!role, |this| {
+                    this.child(div().mt(px(4.)).flex().gap(px(8.)).children(swatches))
+                })
                 .into_any_element(),
         )
     }
@@ -352,17 +366,78 @@ impl Root {
         self.profile_editor_colour_applied(rgb, cx);
     }
 
-    fn profile_editor_colour_state(&mut self) -> Option<&mut State> {
-        let open = self.profile_editor.as_mut()?;
-        if open.banner_color.is_some() {
-            open.banner_color.as_mut()
-        } else {
-            open.styles.as_mut()?.picking.as_mut()
+    /// The popout being shown: the banner's, the name style's, or else the role editor's.
+    fn colour_state_ref(&self) -> Option<&State> {
+        if let Some(open) = self.profile_editor.as_ref() {
+            if let Some(state) = open.banner_color.as_ref() {
+                return Some(state);
+            }
+            if let Some(state) = open
+                .styles
+                .as_ref()
+                .and_then(|styles| styles.picking.as_ref())
+            {
+                return Some(state);
+            }
         }
+        self.server_settings
+            .as_ref()?
+            .roles
+            .as_ref()?
+            .picking
+            .as_ref()
     }
 
-    /// The colour changed: the banner colour is a pending change, a style colour edits the style being built.
+    fn profile_editor_colour_state(&mut self) -> Option<&mut State> {
+        if let Some(open) = self.profile_editor.as_mut() {
+            if open.banner_color.is_some() {
+                return open.banner_color.as_mut();
+            }
+            if open
+                .styles
+                .as_ref()
+                .is_some_and(|styles| styles.picking.is_some())
+            {
+                return open.styles.as_mut()?.picking.as_mut();
+            }
+        }
+        self.server_settings
+            .as_mut()?
+            .roles
+            .as_mut()?
+            .picking
+            .as_mut()
+    }
+
+    /// The colour changed: the banner colour is a pending change, a style colour edits the style being built, a
+    /// role colour edits the role's draft.
     fn profile_editor_colour_applied(&mut self, rgb: u32, cx: &mut Context<Self>) {
+        let profile_picking = self.profile_editor.as_ref().is_some_and(|open| {
+            open.banner_color.is_some()
+                || open
+                    .styles
+                    .as_ref()
+                    .is_some_and(|styles| styles.picking.is_some())
+        });
+        if !profile_picking {
+            let Some(state) = self
+                .server_settings
+                .as_ref()
+                .and_then(|open| open.roles.as_ref())
+                .and_then(|roles| roles.picking.as_ref())
+            else {
+                return;
+            };
+            let hex = state.hex.clone();
+            let target = state.target;
+            let shown = hex.read(cx).text().to_owned();
+            if shown.len() != 6 || u32::from_str_radix(&shown, 16).ok() != Some(rgb) {
+                hex.update(cx, |editor, _| editor.set_text(&format!("{rgb:06x}")));
+            }
+            self.role_colour_picked(target, rgb, cx);
+            cx.notify();
+            return;
+        }
         let saved_hex = self
             .profile_editor
             .as_ref()

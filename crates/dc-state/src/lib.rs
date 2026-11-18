@@ -469,6 +469,9 @@ pub struct Guild {
     pub my_flags: u64,
     /// Their timeout's end in epoch milliseconds (`communication_disabled_until`).
     pub my_timeout_until: Option<i64>,
+    /// View Server As Role (ImpersonateStore, module 164956 `getViewingRoles`): while set, permissions here are
+    /// computed as a non-owner holding @everyone and only these roles. Purely local; nothing is sent.
+    pub viewing_roles: Option<Vec<Id>>,
     /// 1 when moderation needs 2FA (`mfa_level` ELEVATED).
     pub mfa_level: u64,
     pub vanity_url_code: Option<String>,
@@ -856,6 +859,7 @@ impl Guild {
             my_pending: false,
             my_flags: 0,
             my_timeout_until: None,
+            viewing_roles: None,
             mfa_level: properties["mfa_level"].as_u64().unwrap_or(0),
             vanity_url_code: text(&properties["vanity_url_code"]),
             features: properties["features"]
@@ -2568,6 +2572,10 @@ impl Stores {
                             .collect(),
                     );
                     self.unavailable_guilds.remove(&guild.id);
+                    // ImpersonateStore (164956) keeps a View Server As Role preview across a guild's replacement.
+                    if let Some(prior) = self.guilds.iter().find(|known| known.id == guild.id) {
+                        guild.viewing_roles = prior.viewing_roles.clone();
+                    }
                     self.guilds.retain(|known| known.id != guild.id);
                     self.guilds.push(guild);
                     self.note_guild_scheduled_events(data);
@@ -2633,6 +2641,10 @@ impl Stores {
                     guild.role_info.remove(&role);
                     guild.role_icons.remove(&role);
                     guild.my_roles.retain(|known| *known != role);
+                    // 164956 `GUILD_ROLE_DELETE`: the role leaves a View Server As Role preview too.
+                    if let Some(viewing) = guild.viewing_roles.as_mut() {
+                        viewing.retain(|known| *known != role);
+                    }
                 }
             }
             "GUILD_MEMBER_UPDATE" => {
@@ -3528,10 +3540,25 @@ impl Stores {
             self.private_channels
                 .sort_by_key(|channel| std::cmp::Reverse(channel.last_message_id));
         }
+        // ImpersonateStore (164956) does not listen to READY: a View Server As Role preview survives a reconnect of
+        // the same account (never handed to another one).
+        let viewing: Vec<(Id, Vec<Id>)> = if same_account {
+            self.guilds
+                .iter()
+                .filter_map(|guild| Some((guild.id, guild.viewing_roles.clone()?)))
+                .collect()
+        } else {
+            Vec::new()
+        };
         self.guilds = data["guilds"]
             .as_array()
             .map(|guilds| guilds.iter().filter_map(Guild::from_value).collect())
             .unwrap_or_default();
+        for (id, roles) in viewing {
+            if let Some(guild) = self.guilds.iter_mut().find(|guild| guild.id == id) {
+                guild.viewing_roles = Some(roles);
+            }
+        }
         // `merged_members` lines up with `guilds`: the current user's member object in each.
         let me = self.current_user.as_ref().map(|user| user.id);
         let merged: Vec<Option<Value>> = data["guilds"]
@@ -4954,6 +4981,7 @@ mod tests {
             my_pending: false,
             my_flags: 0,
             my_timeout_until: None,
+            viewing_roles: None,
             mfa_level: 0,
             vanity_url_code: None,
             invites_disabled_until: None,

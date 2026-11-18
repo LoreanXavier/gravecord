@@ -136,6 +136,16 @@ fn half_over(top: gpui::Rgba, base: gpui::Rgba) -> gpui::Rgba {
     }
 }
 
+/// `top` laid over the opaque `base`, as one opaque colour.
+pub(super) fn over(top: gpui::Rgba, base: gpui::Rgba) -> gpui::Rgba {
+    gpui::Rgba {
+        r: top.r * top.a + base.r * (1. - top.a),
+        g: top.g * top.a + base.g * (1. - top.a),
+        b: top.b * top.a + base.b * (1. - top.a),
+        a: 1.,
+    }
+}
+
 /// `color` at half its alpha.
 fn half(color: gpui::Rgba) -> gpui::Rgba {
     gpui::Rgba {
@@ -233,11 +243,9 @@ fn footer_button_shape(
         .when(fill, |this| this.flex_1())
         .when(!fill, |this| this.px(px(if small { 11. } else { 15. })))
         .when(small, |this| this.min_w(px(60.)))
-        // A secondary button beside an action bar input is 100 wide (Cancel in Filters).
-        .when(
-            !small && !fill && (spec.tone == Tone::Secondary || spec.id == "voice-dialog-confirm"),
-            |this| this.min_w(px(100.)),
-        )
+        // A button beside an action bar input is at least 100 wide (Cancel in Filters; Okay of "We can't hear you!",
+        // measured on the live dialog).
+        .when(!small && !fill, |this| this.min_w(px(100.)))
         .h(px(if small { 32. } else { 40. }))
         .rounded(px(8.))
         .border_1()
@@ -428,6 +436,8 @@ fn render_sized_at(
     // The scrim and the dialog fade in on the official spring (modules 462824 and 150591).
     let pose = super::motion::modal_pose(spec.id);
     let body_opacity = pose.opacity;
+    // `bodySpacerTop`/`bodySpacerBottom` exist only around a body: without one the action bar follows the header.
+    let has_body = spec.body.is_some();
     let modal = div()
         .parity_with_border(spec.id, 1.)
         .id(spec.id)
@@ -523,7 +533,9 @@ fn render_sized_at(
         .when(!buttons.is_empty(), |this| {
             let bar = div()
                 // The small dialog's action bar follows its header directly.
-                .when(width > 400. && !voice_switch, |this| this.mt(px(8.)))
+                .when(width > 400. && !voice_switch && has_body, |this| {
+                    this.mt(px(8.))
+                })
                 .when(voice_switch, |bar| bar.parity("voice-switch-actions"))
                 .pt(px(16.))
                 .px(px(24.))

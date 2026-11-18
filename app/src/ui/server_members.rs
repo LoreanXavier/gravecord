@@ -5,7 +5,10 @@
 //! request repeats after `retry_after`. Measured in `design/dom/settings/guild-members-darker-cozy.json`.
 //! Sort reorders by `sort` in the same request (module 70738's orders); Prune opens module 749872's dialog: the count
 //! from `GET /guilds/{id}/prune`, then `POST` with `compute_prune_count: false`.
-//! Not drawn yet: the column filters, row selection, Add Roles, Open Mod View and More Options.
+//! The Join Method column's filter opens module 311567's `members-table-join-method-menu`: invite code search, All,
+//! the server's invites and the Other Join Methods view, which narrow the search by `source_invite_code` /
+//! `join_source_type` (module 406318's search state, sent by module 636496).
+//! Not drawn yet: the other column filters, row selection, Add Roles, Open Mod View and More Options.
 
 use super::motion::{PopKind, PopSide, Popout as _};
 use super::{Root, avatar_source, color, icon};
@@ -13,12 +16,20 @@ use crate::editor::{Editor, EditorEvent};
 use crate::net::Request;
 use dc_state::{Id, User};
 use gpui::{
-    AnyElement, Context, Entity, FontWeight, IntoElement, SharedString, Subscription, div, img,
-    prelude::*, px,
+    AnyElement, App, Context, Entity, FontWeight, IntoElement, SharedString, Subscription, div,
+    img, prelude::*, px,
 };
 use serde_json::Value;
 
 pub(super) const MEMBERS_PREFIX: &str = "guild-members-search:";
+/// `GET /guilds/{id}/invites` for the join-method menu's invite rows.
+const INVITES_PREFIX: &str = "guild-members-search:invites:";
+/// `MANAGE_GUILD`: module 920360 only gives the column headers their filters with it.
+const MANAGE_GUILD: u64 = 1 << 5;
+/// `P` of module 311567: the Other Join Methods view, in its order (Integration and Server Invite are not listed).
+const OTHER_JOIN_TYPES: [u64; 6] = [3, 6, 1, 4, 7, 8];
+/// The anchor of the Join Method header, under which the menu opens.
+const JOIN_HEADER: &str = "server-members-join-method";
 const MODERATION_FEATURE: &str = "ENABLED_MODERATION_EXPERIENCE_FOR_NON_COMMUNITY";
 const PAGE_SIZE: u64 = 250;
 const PRUNE_PREFIX: &str = "guild-members-search:prune:";
@@ -44,7 +55,162 @@ pub(crate) struct MembersState {
     sort: u64,
     sort_open: bool,
     prune: Option<Prune>,
+    /// Module 406318's `selectedSourceInviteCode` / `selectedJoinSourceType`.
+    join: JoinFilter,
+    /// The join-method menu is open, and on its Other Join Methods view (`h` of module 311567).
+    join_open: bool,
+    join_other: bool,
+    /// The menu's invite code box.
+    join_search: Entity<Editor>,
+    /// Bumped by each keystroke in the box and by closing the menu, so only the last keystroke's 300ms settle applies
+    /// (the debounce is cancelled when the menu unmounts).
+    join_typed: u64,
+    /// The server's invite codes, newest first.
+    invites: Vec<String>,
     _events: Subscription,
+    _join_events: Subscription,
+}
+
+/// The join filter of module 406318's search state; JS `null` and `undefined` are both `None` (every reader tests
+/// `== null`).
+#[derive(Clone, Debug, Default, PartialEq)]
+pub(super) struct JoinFilter {
+    code: Option<String>,
+    kind: Option<u64>,
+}
+
+impl JoinFilter {
+    /// `k` of module 311567, an invite row, and the box's settle after 300ms: the code trimmed, none when empty, and
+    /// any join type cleared.
+    fn invite(code: &str) -> Self {
+        let code = code.trim();
+        Self {
+            code: (!code.is_empty()).then(|| code.to_owned()),
+            kind: None,
+        }
+    }
+
+    /// `O`: the box's text as typed, untrimmed (an empty box still sends `""` until it settles).
+    fn typed(text: &str) -> Self {
+        Self {
+            code: Some(text.to_owned()),
+            kind: None,
+        }
+    }
+
+    /// `D`: a join type row, `None` for All; the type already checked clears both.
+    fn pick(&self, kind: Option<u64>) -> Self {
+        if kind == self.kind {
+            Self::default()
+        } else {
+            Self { code: None, kind }
+        }
+    }
+
+    /// The header's filtered look (`A || M` in module 920360): a non-empty code or a type.
+    fn filtered(&self) -> bool {
+        self.code.as_deref().is_some_and(|code| !code.is_empty()) || self.kind.is_some()
+    }
+
+    /// All is checked when neither is set.
+    fn all(&self) -> bool {
+        self.code.is_none() && self.kind.is_none()
+    }
+
+    /// The type shown under Other Join Methods (`C`: set and not `UNSPECIFIED`).
+    fn shown_kind(&self) -> Option<u64> {
+        self.kind.filter(|kind| *kind != 0)
+    }
+}
+
+/// The invite codes of `GET /guilds/{id}/invites`, newest `created_at` first as module 311567 sorts them.
+fn invite_codes(body: &Value) -> Vec<String> {
+    let mut invites: Vec<(i64, String)> = body
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|invite| {
+            let code = invite["code"].as_str()?.to_owned();
+            let at = invite["created_at"]
+                .as_str()
+                .and_then(|at| chrono::DateTime::parse_from_rfc3339(at).ok())
+                .map_or(0, |at| at.timestamp_millis());
+            Some((at, code))
+        })
+        .collect();
+    invites.sort_by_key(|(at, _)| std::cmp::Reverse(*at));
+    invites.into_iter().map(|(_, code)| code).collect()
+}
+
+/// `CI` of module 11541 with the server's vanity code: the label of a join type; Streamer Mode's Hide Invite Links
+/// hides the vanity code.
+fn join_type_label(kind: u64, vanity: Option<&str>, hide: bool) -> String {
+    let key = match kind {
+        1 => "HumZAi",
+        2 => "gmCUFw",
+        3 => "Ql/e9Y",
+        4 => "Op8B3O",
+        5 => "/3vIRd",
+        6 => match vanity {
+            Some(vanity) if !hide => {
+                return dc_intl::format("EIUjRy", &[("vanityUrl", vanity.into())]);
+            }
+            _ => "dGiD1O",
+        },
+        7 => "vdu7oS",
+        8 => "9/ZreX",
+        _ => "DvMBkS",
+    };
+    dc_intl::t(key).to_owned()
+}
+
+/// `w` of module 311567: the 16px icon before a join type's label.
+fn join_type_icon(kind: u64) -> Option<&'static str> {
+    match kind {
+        1 => Some("oauth_entry_robot"),
+        2 => Some("integrations_webhook"),
+        3 => Some("discover"),
+        4 => Some("discover_hub"),
+        5 | 6 => Some("member_invite_link"),
+        // GAP: Manual Verification's icon (module 509402, a pencil in a box) has no asset in app/assets/icons yet.
+        7 => None,
+        8 => Some("system_game_controller"),
+        _ => None,
+    }
+}
+
+/// A row of the join-method menu (`labelContainer_M3qk4j`, the sort menu's measured 36px rows).
+fn join_row(id: SharedString) -> gpui::Stateful<gpui::Div> {
+    div()
+        .id(id)
+        .flex_none()
+        .min_h(px(36.))
+        .p(px(8.))
+        .rounded(px(2.))
+        .cursor_pointer()
+        .hover(|style| {
+            style
+                .bg(color("--interactive-background-hover"))
+                .rounded(px(4.))
+        })
+        .flex()
+        .items_center()
+        .justify_between()
+        .text_size(px(14.))
+        .line_height(px(18.))
+        .font_weight(FontWeight(500.))
+        .text_color(color("--text-strong"))
+}
+
+/// `w`: a join type's icon and label; `labelWithIconContainer_vPFJvh` with the icon's 4px margin.
+fn join_label(kind: u64, text: String) -> gpui::Div {
+    div()
+        .flex_1()
+        .flex()
+        .items_center()
+        .whitespace_nowrap()
+        .children(join_type_icon(kind).map(|name| icon(name, 16., "--text-strong").mr(px(4.))))
+        .child(text)
 }
 
 /// The Prune Members dialog.
@@ -84,8 +250,9 @@ pub(super) fn from_now(seconds: i64) -> String {
     }
 }
 
-/// Module 636496's query: the words as usernames, numeric ids as user ids; one character is no query yet.
-fn search_body(query: &str, sort: u64) -> Value {
+/// Module 636496's query: the words as usernames, numeric ids as user ids; one character is no query yet. The join
+/// filter adds `source_invite_code` and `join_source_type`, each as a one-value `or_query`.
+fn search_body(query: &str, sort: u64, join: &JoinFilter) -> Value {
     let mut and_query = serde_json::Map::new();
     if query.chars().count() > 1 {
         let (words, ids) = super::server_settings_pages::split_query(query);
@@ -95,6 +262,18 @@ fn search_body(query: &str, sort: u64) -> Value {
         if !ids.is_empty() {
             and_query.insert("user_id".into(), serde_json::json!({"or_query": ids}));
         }
+    }
+    if let Some(code) = &join.code {
+        and_query.insert(
+            "source_invite_code".into(),
+            serde_json::json!({"or_query": [code]}),
+        );
+    }
+    if let Some(kind) = join.kind {
+        and_query.insert(
+            "join_source_type".into(),
+            serde_json::json!({"or_query": [kind]}),
+        );
     }
     serde_json::json!({"or_query": {}, "and_query": and_query, "limit": PAGE_SIZE, "sort": sort})
 }
@@ -110,6 +289,10 @@ impl Root {
                 return true;
             }
             state.prune = None;
+            return true;
+        }
+        if std::mem::take(&mut state.join_open) {
+            state.join_typed += 1;
             return true;
         }
         std::mem::take(&mut state.sort_open)
@@ -140,6 +323,28 @@ impl Root {
             }
             cx.notify();
         });
+        let join_search = cx.new(|cx| {
+            let mut editor = Editor::new(super::editor_style(), cx);
+            editor.set_placeholder(dc_intl::t("YwJnGz").to_owned());
+            editor
+        });
+        let join_events = cx.subscribe(
+            &join_search,
+            move |this, editor, event: &EditorEvent, cx| match event {
+                EditorEvent::Edited => {
+                    let text = editor.read(cx).text().to_owned();
+                    this.type_invite_code(guild, text, cx);
+                }
+                EditorEvent::Cancel => {
+                    this.close_join_menu();
+                    cx.notify();
+                }
+                EditorEvent::Submit(text) => {
+                    let text = text.clone();
+                    editor.update(cx, |editor, _| editor.set_text(&text));
+                }
+            },
+        );
         MembersState {
             search,
             last_body: Value::Null,
@@ -147,7 +352,14 @@ impl Root {
             sort: 1,
             sort_open: false,
             prune: None,
+            join: JoinFilter::default(),
+            join_open: false,
+            join_other: false,
+            join_search,
+            join_typed: 0,
+            invites: Vec::new(),
             _events: events,
+            _join_events: join_events,
         }
     }
 
@@ -212,8 +424,12 @@ impl Root {
     }
 
     fn search_members(&mut self, guild: Id, query: &str) {
-        let sort = self.members_state().map_or(1, |state| state.sort);
-        let body = search_body(query, sort);
+        let (sort, join) = self
+            .members_state()
+            .map_or((1, JoinFilter::default()), |state| {
+                (state.sort, state.join.clone())
+            });
+        let body = search_body(query, sort, &join);
         if let Some(state) = self.members_state_mut() {
             state.last_body = body.clone();
         }
@@ -225,10 +441,115 @@ impl Root {
         });
     }
 
+    /// The search again with the table's current text, after the join filter changed (`MEMBER_SAFETY_SEARCH_STATE_UPDATE`
+    /// sends module 636496's request at once).
+    fn research_members(&mut self, guild: Id, cx: &App) {
+        let query = self
+            .members_state()
+            .map(|state| state.search.read(cx).text().to_owned())
+            .unwrap_or_default();
+        self.search_members(guild, &query);
+    }
+
+    /// The menu closes; a pending settle of the box is dropped with it.
+    fn close_join_menu(&mut self) {
+        if let Some(state) = self.members_state_mut() {
+            state.join_open = false;
+            state.join_other = false;
+            state.join_typed += 1;
+        }
+    }
+
+    /// The Join Method header: the menu opens on its main view with the box showing the code, and the server's invites
+    /// are asked for again (module 311567 fetches them on each mount).
+    fn toggle_join_menu(&mut self, guild: Id, cx: &mut Context<Self>) {
+        let Some(state) = self.members_state_mut() else {
+            return;
+        };
+        if state.join_open {
+            self.close_join_menu();
+            cx.notify();
+            return;
+        }
+        state.join_open = true;
+        state.join_other = false;
+        let code = state.join.code.clone().unwrap_or_default();
+        let editor = state.join_search.clone();
+        editor.update(cx, |editor, _| editor.set_text(&code));
+        let _ = self.requests.send(Request::Fetch {
+            key: format!("{INVITES_PREFIX}{guild}"),
+            route: format!("/guilds/{guild}/invites"),
+        });
+        cx.notify();
+    }
+
+    /// A row of the menu was picked: the filter is stored and the search goes out. Radio items stay open (module
+    /// 165862's `radio` rows get no `onClose`); `D` returns to the main view, and the box follows the stored code.
+    fn pick_join_filter(&mut self, guild: Id, filter: JoinFilter, cx: &mut Context<Self>) {
+        let Some(state) = self.members_state_mut() else {
+            return;
+        };
+        let shown = filter.code.clone().unwrap_or_default();
+        state.join = filter;
+        state.join_other = false;
+        let editor = state.join_search.clone();
+        editor.update(cx, |editor, _| editor.set_text(&shown));
+        self.research_members(guild, cx);
+        cx.notify();
+    }
+
+    /// `O` of module 311567: each keystroke searches with the raw text, and 300ms after the last one the trimmed text
+    /// replaces it (searching again only when that changes the filter).
+    fn type_invite_code(&mut self, guild: Id, text: String, cx: &mut Context<Self>) {
+        let Some(state) = self.members_state_mut() else {
+            return;
+        };
+        state.join = JoinFilter::typed(&text);
+        state.join_typed += 1;
+        let typed = state.join_typed;
+        self.research_members(guild, cx);
+        cx.spawn(async move |this, cx| {
+            cx.background_executor()
+                .timer(std::time::Duration::from_millis(300))
+                .await;
+            let _ = this.update(cx, |this, cx| {
+                let Some(state) = this.members_state_mut() else {
+                    return;
+                };
+                if state.join_typed != typed {
+                    return;
+                }
+                let settled = JoinFilter::invite(&text);
+                if state.join == settled {
+                    return;
+                }
+                // The box is bound to the stored code (`query: m ?? ""`), so it shows the trimmed text too.
+                let shown = settled.code.clone().unwrap_or_default();
+                state.join = settled;
+                if shown != text {
+                    let editor = state.join_search.clone();
+                    editor.update(cx, |editor, _| editor.set_text(&shown));
+                }
+                this.research_members(guild, cx);
+                cx.notify();
+            });
+        })
+        .detach();
+        cx.notify();
+    }
+
     pub(super) fn members_fetched(&mut self, key: &str, cx: &mut Context<Self>) {
         let Some(rest) = key.strip_prefix(MEMBERS_PREFIX) else {
             return;
         };
+        if key.starts_with(INVITES_PREFIX) {
+            let codes = self.fetched.get(key).map(invite_codes).unwrap_or_default();
+            if let Some(state) = self.members_state_mut() {
+                state.invites = codes;
+            }
+            cx.notify();
+            return;
+        }
         if key.starts_with(PRUNE_PREFIX) {
             let count = self
                 .fetched
@@ -577,7 +898,7 @@ impl Root {
                                             .child(column(195.).child(head("Name")))
                                             .child(column(100.).child(head("Member Since")))
                                             .child(column(100.).child(head("Joined Discord")))
-                                            .child(column(100.).child(head("Join Method")))
+                                            .child(column(100.).child(self.members_join_header(guild, cx)))
                                             .child(column(190.).child(head("Roles")))
                                             .child(column(100.).child(head("Signals"))),
                                     )
@@ -675,6 +996,275 @@ impl Root {
             .child("Prune")
             .on_click(cx.listener(move |this, _, _, cx| this.open_prune(guild, cx)))
             .into_any_element()
+    }
+
+    /// The Join Method header (`eM` of module 920360, `tableHeaderCell_JHplLf tableHeaderCellWithFilter_JHplLf` in
+    /// `design/dom/settings/guild-members-darker-cozy.json`): the 14/18 medium label, `text-strong` while filtered, and
+    /// the 16px filter icon turned 90 degrees, brand while filtered. Without Manage Server it is the bare label.
+    pub(super) fn members_join_header(&self, guild: Id, cx: &mut Context<Self>) -> AnyElement {
+        let filtered = self
+            .members_state()
+            .is_some_and(|state| state.join.filtered());
+        let label = div()
+            .flex_1()
+            .min_w(px(0.))
+            .text_size(px(14.))
+            .line_height(px(18.))
+            .font_weight(FontWeight(500.))
+            .text_color(color(if filtered {
+                "--text-strong"
+            } else {
+                "--text-default"
+            }))
+            .child(dc_intl::t("yn0w1+"));
+        if !self.my_permission(guild, None, MANAGE_GUILD) {
+            return div().flex().child(label).into_any_element();
+        }
+        div()
+            .id(JOIN_HEADER)
+            .relative()
+            .child(self.anchor_probe(JOIN_HEADER))
+            .cursor_pointer()
+            .flex()
+            .items_center()
+            .gap(px(4.))
+            .child(label)
+            // `filterIconButton_JHplLf`: 16 wide with 2px of padding, the icon overflowing it.
+            .child(
+                div().size(px(16.)).flex_none().pl(px(2.)).child(
+                    icon(
+                        "member_filter",
+                        16.,
+                        if filtered {
+                            "--control-brand-foreground"
+                        } else {
+                            "--text-muted"
+                        },
+                    )
+                    .with_transformation(gpui::Transformation::rotate(gpui::percentage(0.25))),
+                ),
+            )
+            .on_click(cx.listener(move |this, _, _, cx| this.toggle_join_menu(guild, cx)))
+            .into_any_element()
+    }
+
+    /// Module 311567's `members-table-join-method-menu` ("Server Join Method Options"), under the Join Method header
+    /// (position bottom, align left, spacing 4). The main view: the invite code box, All, the server's invites (none under
+    /// Streamer Mode's Hide Invite Links) and Other Join Methods with the picked type as its subtext; that row swaps in
+    /// the second view: back, then the types of `P`. Picking a row keeps it open.
+    pub(super) fn members_join_layer(
+        &self,
+        window: &gpui::Window,
+        cx: &mut Context<Self>,
+    ) -> Option<AnyElement> {
+        let state = self.members_state()?;
+        if !state.join_open {
+            return None;
+        }
+        let guild = self.members_guild()?;
+        let anchor = self.tip_anchors.borrow().get(JOIN_HEADER).copied()?;
+        let hide = self.streamer_hides_invites();
+        let vanity = self
+            .stores
+            .guilds
+            .iter()
+            .find(|known| known.id == guild)
+            .and_then(|known| known.vanity_url_code.clone());
+        let join = state.join.clone();
+        let separator = || {
+            div()
+                .my(px(8.))
+                .h(px(1.))
+                .flex_none()
+                .bg(color("--border-subtle"))
+                .into_any_element()
+        };
+        let radio = |checked: bool| super::create_channel::radio(checked).ml(px(8.));
+        let other = || dc_intl::t("Kz/cho");
+        let mut rows: Vec<AnyElement> = Vec::new();
+        if state.join_other {
+            rows.push(
+                join_row("server-members-join-back".into())
+                    .justify_start()
+                    .child(icon("chevron_small_left", 20., "--interactive-text-default").mr(px(8.)))
+                    .child(div().flex_1().whitespace_nowrap().child(other()))
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        if let Some(state) = this.members_state_mut() {
+                            state.join_other = false;
+                        }
+                        cx.notify();
+                    }))
+                    .into_any_element(),
+            );
+            for kind in OTHER_JOIN_TYPES {
+                let filter = join.pick(Some(kind));
+                rows.push(
+                    join_row(format!("join-source-type-option-{kind}").into())
+                        .child(join_label(
+                            kind,
+                            join_type_label(kind, vanity.as_deref(), hide),
+                        ))
+                        .child(radio(join.kind == Some(kind)))
+                        .on_click(cx.listener(move |this, _, _, cx| {
+                            this.pick_join_filter(guild, filter.clone(), cx)
+                        }))
+                        .into_any_element(),
+                );
+            }
+        } else {
+            // `members-table-invite-code-search`: the table's own small SearchBar.
+            // GAP: the menu control item's own padding around the box is not in the CSS or a capture.
+            rows.push(
+                div()
+                    .id("members-table-invite-code-search")
+                    .flex_none()
+                    .h(px(32.))
+                    .rounded(px(8.))
+                    .border_1()
+                    .border_color(color("--input-border-default"))
+                    .bg(color("--input-background-default"))
+                    .pl(px(8.))
+                    .pr(px(8.))
+                    .flex()
+                    .items_center()
+                    .gap(px(8.))
+                    .child(icon("picker_search", 14., "--input-text-default"))
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w(px(0.))
+                            .child(state.join_search.clone()),
+                    )
+                    .into_any_element(),
+            );
+            rows.push(separator());
+            let all = join.pick(None);
+            rows.push(
+                join_row("join-source-type-option-all".into())
+                    .child(
+                        div()
+                            .flex_1()
+                            .whitespace_nowrap()
+                            .child(dc_intl::t("an9Ry3")),
+                    )
+                    .child(radio(join.all()))
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        this.pick_join_filter(guild, all.clone(), cx)
+                    }))
+                    .into_any_element(),
+            );
+            if !hide {
+                for code in &state.invites {
+                    let filter = JoinFilter::invite(code);
+                    rows.push(
+                        join_row(format!("join-source-type-option-{code}").into())
+                            .child(join_label(5, code.clone()))
+                            .child(radio(join.code.as_deref() == Some(code.as_str())))
+                            .on_click(cx.listener(move |this, _, _, cx| {
+                                this.pick_join_filter(guild, filter.clone(), cx)
+                            }))
+                            .into_any_element(),
+                    );
+                }
+            }
+            rows.push(separator());
+            let subtext = join
+                .shown_kind()
+                .map(|kind| join_type_label(kind, vanity.as_deref(), hide));
+            rows.push(
+                join_row("other-join-methods".into())
+                    .child(
+                        div()
+                            .flex_1()
+                            .flex()
+                            .flex_col()
+                            .child(div().whitespace_nowrap().child(other()))
+                            .children(subtext.map(|text| {
+                                // `subtext_M3qk4j`: 2px under the label, `text-muted`.
+                                div()
+                                    .mt(px(2.))
+                                    .text_size(px(12.))
+                                    .line_height(px(16.))
+                                    .font_weight(FontWeight(400.))
+                                    .text_color(color("--text-muted"))
+                                    .child(text)
+                            })),
+                    )
+                    // GAP: the trailing chevron's colour is not measured; the context menu's caret colour is used.
+                    .child(
+                        icon("inventory_chevron_right", 20., "--interactive-text-default")
+                            .ml(px(8.)),
+                    )
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        if let Some(state) = this.members_state_mut() {
+                            state.join_other = true;
+                        }
+                        cx.notify();
+                    }))
+                    .into_any_element(),
+            );
+        }
+        Some(
+            gpui::deferred(
+                div()
+                    .id("members-table-join-method-menu")
+                    .popout(
+                        "members-table-join-method-menu",
+                        PopKind::Fade,
+                        PopSide::Bottom,
+                    )
+                    .occlude()
+                    .absolute()
+                    .left(anchor.left())
+                    .top(anchor.bottom() + px(4.))
+                    // `menu_M3qk4j flexible_M3qk4j`: 188 to 320 wide, as wide as its rows.
+                    .min_w(px(188.))
+                    .max_w(px(320.))
+                    .p(px(8.))
+                    .rounded(px(8.))
+                    .border_1()
+                    .border_color(color("--border-subtle"))
+                    .bg(color("--background-surface-higher"))
+                    .shadow(vec![gpui::BoxShadow {
+                        color: gpui::hsla(0., 0., 0., 0.24),
+                        offset: gpui::point(px(0.), px(12.)),
+                        blur_radius: px(24.),
+                        spread_radius: px(0.),
+                        inset: false,
+                    }])
+                    // GAP: the layer's `--reference-position-layer-max-height` is not measured; the menu stops 16px
+                    // (`--custom-menu-viewport-padding`) short of the window's bottom and its rows scroll.
+                    .max_h(px((f32::from(window.viewport_size().height)
+                        - f32::from(anchor.bottom())
+                        - 20.)
+                        .max(120.)))
+                    .flex()
+                    .flex_col()
+                    .on_mouse_down_out(cx.listener(|this, event: &gpui::MouseDownEvent, _, cx| {
+                        // A press on the header is its own toggle.
+                        let on_header = this
+                            .tip_anchors
+                            .borrow()
+                            .get(JOIN_HEADER)
+                            .is_some_and(|bounds| bounds.contains(&event.position));
+                        if !on_header {
+                            this.close_join_menu();
+                            cx.notify();
+                        }
+                    }))
+                    .child(
+                        div()
+                            .id("members-table-join-method-scroll")
+                            .min_h(px(0.))
+                            .overflow_y_scroll()
+                            .flex()
+                            .flex_col()
+                            .children(rows),
+                    ),
+            )
+            .with_priority(2)
+            .into_any_element(),
+        )
     }
 
     fn request_prune_count(&mut self, guild: Id) {
@@ -1062,17 +1652,108 @@ mod tests {
     fn searches_build_module_636496s_query() {
         assert_eq!(from_now(12 * 3600), "12 hrs ago");
         assert_eq!(from_now(3 * 365 * 86400), "3 years ago");
-        assert_eq!(search_body("", 1)["sort"], 1);
-        assert_eq!(search_body("", 1)["and_query"], serde_json::json!({}));
-        assert_eq!(search_body("a", 1)["and_query"], serde_json::json!({}));
+        let none = JoinFilter::default();
+        assert_eq!(search_body("", 1, &none)["sort"], 1);
         assert_eq!(
-            search_body("ono", 1)["and_query"]["usernames"]["or_query"],
+            search_body("", 1, &none)["and_query"],
+            serde_json::json!({})
+        );
+        assert_eq!(
+            search_body("a", 1, &none)["and_query"],
+            serde_json::json!({})
+        );
+        assert_eq!(
+            search_body("ono", 1, &none)["and_query"]["usernames"]["or_query"],
             serde_json::json!(["ono"])
         );
         assert_eq!(
-            search_body("903573240566399026", 1)["and_query"]["user_id"]["or_query"],
+            search_body("903573240566399026", 1, &none)["and_query"]["user_id"]["or_query"],
             serde_json::json!(["903573240566399026"])
         );
+    }
+
+    #[test]
+    fn the_join_filter_joins_module_636496s_and_query() {
+        use serde_json::json;
+        let code = JoinFilter::invite(" abc ");
+        assert_eq!(
+            search_body("", 1, &code)["and_query"],
+            json!({"source_invite_code": {"or_query": ["abc"]}})
+        );
+        let kind = JoinFilter::default().pick(Some(3));
+        assert_eq!(
+            search_body("ono", 2, &kind)["and_query"],
+            json!({"usernames": {"or_query": ["ono"]}, "join_source_type": {"or_query": [3]}})
+        );
+        // While typing, the raw text goes out, an empty box as `""`.
+        assert_eq!(
+            search_body("", 1, &JoinFilter::typed(""))["and_query"],
+            json!({"source_invite_code": {"or_query": [""]}})
+        );
+    }
+
+    #[test]
+    fn the_join_menu_rows_set_module_406318s_search_state() {
+        let none = JoinFilter::default();
+        assert!(none.all() && !none.filtered());
+        // A type row sets the type and clears the code; the checked one clears both.
+        let typed = JoinFilter::typed("ab");
+        let bot = typed.pick(Some(1));
+        assert_eq!(
+            bot,
+            JoinFilter {
+                code: None,
+                kind: Some(1)
+            }
+        );
+        assert!(bot.filtered() && !bot.all());
+        assert_eq!(bot.pick(Some(1)), none);
+        // All clears both, whatever was set.
+        assert_eq!(bot.pick(None), none);
+        assert_eq!(typed.pick(None), none);
+        // An invite row or the settled box: the trimmed code, the type cleared; blank is no filter.
+        assert_eq!(
+            JoinFilter::invite(" gf "),
+            JoinFilter {
+                code: Some("gf".into()),
+                kind: None
+            }
+        );
+        assert_eq!(JoinFilter::invite("   "), none);
+        // An empty box is not "filtered" yet, but All is not checked until it settles.
+        let empty = JoinFilter::typed("");
+        assert!(!empty.filtered() && !empty.all());
+        // Other Join Methods' subtext skips UNSPECIFIED.
+        assert_eq!(
+            JoinFilter {
+                code: None,
+                kind: Some(0)
+            }
+            .shown_kind(),
+            None
+        );
+        assert_eq!(bot.shown_kind(), Some(1));
+    }
+
+    #[test]
+    fn invites_list_newest_first_and_types_read_like_ci() {
+        use serde_json::json;
+        let body = json!([
+            {"code": "old", "created_at": "2024-01-01T00:00:00+00:00"},
+            {"code": "new", "created_at": "2025-06-01T12:00:00.000000+00:00"},
+            {"code": "mid", "created_at": "2024-08-01T00:00:00+00:00"},
+            {"created_at": "2025-01-01T00:00:00+00:00"}
+        ]);
+        assert_eq!(invite_codes(&body), vec!["new", "mid", "old"]);
+        assert!(invite_codes(&json!({"message": "Missing Access"})).is_empty());
+        assert_eq!(join_type_label(1, None, false), "Bot Invite");
+        assert_eq!(join_type_label(3, None, false), "Server Discovery");
+        assert_eq!(join_type_label(6, Some("gf"), false), "gf (Vanity)");
+        assert_eq!(join_type_label(6, Some("gf"), true), "Vanity URL");
+        assert_eq!(join_type_label(6, None, false), "Vanity URL");
+        assert_eq!(join_type_label(8, None, false), "Linked Channel");
+        assert_eq!(join_type_label(42, None, false), "Unknown");
+        assert_eq!(OTHER_JOIN_TYPES, [3, 6, 1, 4, 7, 8]);
     }
 
     #[test]

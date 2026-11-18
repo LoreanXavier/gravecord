@@ -33,6 +33,125 @@ pub(crate) struct Invite {
     pub sent: HashSet<Id>,
     /// The invite could not be made (`networkError` of module 312556).
     pub error: Option<InviteError>,
+    /// `currentPage` of module 137811's modal state.
+    pub page: InvitePage,
+    /// `maxAge`, `maxUses`, `temporary` and `roleIds` of the modal state: what the link has, and on the settings page
+    /// what Generate a New Link asks for.
+    pub max_age: u64,
+    pub max_uses: u64,
+    pub temporary: bool,
+    pub roles: Vec<Id>,
+    /// The settings page's open select.
+    pub open_select: Option<InviteSelect>,
+}
+
+/// `eZ.QR` of module 172799.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum InvitePage {
+    Main,
+    Settings,
+}
+
+/// The selects of the settings page (`eA` of module 137811).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum InviteSelect {
+    MaxAge,
+    MaxUses,
+    Roles,
+}
+
+/// `MAX_AGE_OPTIONS` of module 558213 as `getMaxAgeOptions` (module 735547) keeps them: 14, 30 and 60 days only when
+/// the guild's default-expiration experiment names them. The recorded default is 30 days (`MAX_AGE`), so 30 days
+/// stays and 14 and 60 go.
+pub(super) const MAX_AGE_OPTIONS: [u64; 8] =
+    [1800, 3600, 21_600, 43_200, 86_400, 604_800, MAX_AGE, 0];
+/// `MAX_USES_OPTIONS` of module 558213.
+pub(super) const MAX_USES_OPTIONS: [u64; 7] = [0, 1, 5, 10, 25, 50, 100];
+
+/// An Expire After option's label (module 558213: `iXLF9W` minutes, `xCjYxK` hours, `k2UNz+` days, `PqEzn8` Never).
+pub(super) fn max_age_label(seconds: u64) -> String {
+    match seconds {
+        0 => dc_intl::t("PqEzn8").to_owned(),
+        s if s < 3600 => dc_intl::format("iXLF9W", &[("minutes", ((s / 60) as i64).into())]),
+        s if s < 86_400 => dc_intl::format("xCjYxK", &[("hours", ((s / 3600) as i64).into())]),
+        s => dc_intl::format("k2UNz+", &[("days", ((s / 86_400) as i64).into())]),
+    }
+}
+
+/// A Max Number of Uses option's label (`r/IcuP`: "No limit", "1 use", "5 uses").
+pub(super) fn max_uses_label(uses: u64) -> String {
+    dc_intl::format("r/IcuP", &[("maxUses", (uses as i64).into())])
+}
+
+/// `Be` of module 735547: "Your invite link expires in 7 days, or after 5 uses." and its kin.
+pub(super) fn expiry_line(max_age: u64, max_uses: u64) -> String {
+    let uses: dc_intl::Arg = (max_uses as i64).into();
+    let unlimited = max_uses == 0;
+    match max_age {
+        0 if unlimited => dc_intl::t("QrHBnC").to_owned(),
+        0 => dc_intl::format("yJnTxI", &[("numUses", uses)]),
+        s if s < 3600 && unlimited => dc_intl::t("/WbTXD").to_owned(),
+        s if s < 3600 => dc_intl::format("eDRWJK", &[("numUses", uses)]),
+        s if s < 86_400 => {
+            let hours: dc_intl::Arg = ((s / 3600) as i64).into();
+            if unlimited {
+                dc_intl::format("ZVdJMy", &[("numHours", hours)])
+            } else {
+                dc_intl::format("NgZgAB", &[("numHours", hours), ("numUses", uses)])
+            }
+        }
+        s => {
+            let days: dc_intl::Arg = ((s / 86_400) as i64).into();
+            if unlimited {
+                dc_intl::format("T96qss", &[("numDays", days)])
+            } else {
+                dc_intl::format("TfuB9B", &[("numDays", days), ("numUses", uses)])
+            }
+        }
+    }
+}
+
+/// The body Generate a New Link posts (`eQ` of module 137811 through `createInvite` of module 574332, which drops an
+/// empty `role_ids`; `target_user_id` and `target_application_id` are undefined for a server invite and never sent).
+pub(super) fn generate_body(max_age: u64, max_uses: u64, temporary: bool, roles: &[Id]) -> Value {
+    let mut body = json!({
+        "max_age": max_age,
+        "max_uses": max_uses,
+        "target_type": null,
+        "temporary": temporary,
+        "flags": 0,
+    });
+    if !roles.is_empty() {
+        body["role_ids"] = roles.iter().map(|role| role.to_string()).collect();
+    }
+    body
+}
+
+/// The roles an invite may hand out (`ek` of module 137811): none without Manage Roles; never @everyone, a managed
+/// role or a linked-roles one; the owner may give any other, anyone else only roles under their highest
+/// (`wO` of module 488926), highest first (`getSortedRoles`).
+pub(super) fn assignable_roles(guild: &dc_state::Guild, me: Id, manage_roles: bool) -> Vec<Id> {
+    if !manage_roles {
+        return Vec::new();
+    }
+    let owner = guild.owner_id == Some(me);
+    let position = |role: &Id| guild.role_info.get(role).map_or(0, |info| info.position);
+    let highest = guild.my_roles.iter().map(position).max();
+    let mut roles: Vec<Id> = guild
+        .roles
+        .keys()
+        .copied()
+        .filter(|role| *role != guild.id)
+        .filter(|role| {
+            guild
+                .role_info
+                .get(role)
+                .is_none_or(|info| !info.managed && !info.guild_connection)
+        })
+        .filter(|role| owner || highest.is_some_and(|top| top > position(role)))
+        .collect();
+    roles.sort_by_key(|role| (std::cmp::Reverse(position(role)), *role));
+    roles
 }
 
 // GAP: Bypass Join Applications and the custom invite link line of the invite settings (module 312556) are not drawn.
@@ -115,8 +234,108 @@ impl Root {
             code: previous,
             sent: HashSet::new(),
             error: None,
+            page: InvitePage::Main,
+            max_age: MAX_AGE,
+            max_uses: 0,
+            temporary: false,
+            roles: Vec::new(),
+            open_select: None,
         });
         cx.notify();
+    }
+
+    /// Generate a New Link (`eQ` of module 137811), then back to the main page (`handleDone`). With no limit, no expiry
+    /// and no temporary membership, someone who cannot create invites is shown the server's custom link instead.
+    fn generate_invite(&mut self, cx: &mut Context<Self>) {
+        let vanity = self.invite_shows_vanity();
+        let can_create = self.invite_can_create();
+        let temporary = self.invite_temporary();
+        let Some(invite) = self.invite.as_mut() else {
+            return;
+        };
+        invite.page = InvitePage::Main;
+        invite.open_select = None;
+        if invite.max_uses == 0 && invite.max_age == 0 && !temporary && vanity {
+            invite.error = None;
+            cx.notify();
+            return;
+        }
+        if !can_create {
+            cx.notify();
+            return;
+        }
+        invite.error = None;
+        let body = generate_body(invite.max_age, invite.max_uses, temporary, &invite.roles);
+        let _ = self.requests.send(Request::Rest {
+            key: Some(CREATE_KEY.to_owned()),
+            method: reqwest::Method::POST,
+            route: format!("/channels/{}/invites", invite.channel),
+            body: Some(body),
+        });
+        cx.notify();
+    }
+
+    fn invite_guild(&self) -> Option<&dc_state::Guild> {
+        let channel = self.invite.as_ref()?.channel;
+        let guild = self.guild_of_channel(channel)?;
+        self.stores.guild(guild)
+    }
+
+    /// `ea` of module 137811: Create Invite in the invite's channel.
+    fn invite_can_create(&self) -> bool {
+        let Some(invite) = self.invite.as_ref() else {
+            return false;
+        };
+        let Some(guild) = self.invite_guild() else {
+            return false;
+        };
+        let Some(channel) = guild
+            .channels
+            .iter()
+            .find(|known| known.id == invite.channel)
+        else {
+            return false;
+        };
+        self.my_permission(
+            guild.id,
+            Some(channel),
+            dc_state::permissions::CREATE_INSTANT_INVITE,
+        )
+    }
+
+    /// `ef` of module 137811: the custom link stands in when the person cannot make invites and the server has one.
+    fn invite_shows_vanity(&self) -> bool {
+        !self.invite_can_create()
+            && self
+                .invite_guild()
+                .and_then(|guild| guild.vanity_url_code.as_ref())
+                .is_some_and(|code| !code.is_empty())
+    }
+
+    /// `eG` of module 137811: a manual-approval server hides Grant temporary membership (the guest voice invite
+    /// experiment, the other cause, defaults off).
+    fn invite_hides_temporary(&self) -> bool {
+        self.invite_guild().is_some_and(|guild| {
+            let has = |feature: &str| guild.features.iter().any(|known| known == feature);
+            has("MEMBER_VERIFICATION_MANUAL_APPROVAL") && has("MEMBER_VERIFICATION_GATE_ENABLED")
+        })
+    }
+
+    /// `eL`: the temporary switch counts only while it is shown.
+    fn invite_temporary(&self) -> bool {
+        !self.invite_hides_temporary()
+            && self.invite.as_ref().is_some_and(|invite| invite.temporary)
+    }
+
+    fn invite_roles(&self) -> Vec<Id> {
+        let Some(guild) = self.invite_guild() else {
+            return Vec::new();
+        };
+        let Some(me) = self.stores.me() else {
+            return Vec::new();
+        };
+        let manage = self.my_permission(guild.id, None, dc_state::permissions::MANAGE_ROLES);
+        assignable_roles(guild, me.id, manage)
     }
 
     pub(super) fn invite_created(&mut self, report: &Value, cx: &mut Context<Self>) {
@@ -133,6 +352,19 @@ impl Root {
         if let Some(invite) = self.invite.as_mut() {
             self.invite_codes.insert(invite.channel, code.clone());
             invite.code = Some(code);
+            // The modal state starts from the store's invite (`ev`, `ex`, `eI` of module 137811).
+            let body = &report["body"];
+            if invite.page == InvitePage::Main {
+                if let Some(age) = body["max_age"].as_u64() {
+                    invite.max_age = age;
+                }
+                if let Some(uses) = body["max_uses"].as_u64() {
+                    invite.max_uses = uses;
+                }
+                if let Some(temporary) = body["temporary"].as_bool() {
+                    invite.temporary = temporary;
+                }
+            }
         } else if let Some(channel) = self.group_dm.as_ref().and_then(|picker| picker.channel) {
             // "Or, send an invite link" of the group picker.
             self.invite_codes.insert(channel, code);
@@ -326,8 +558,459 @@ impl Root {
         }
     }
 
+    /// A select of the settings page (`890497`, `selectField`): a 40px field on `--input-background-default`, the
+    /// choice 12px in at 16/20 (or the placeholder), the 20px chevron in a 36px button. Measured on the live dialog.
+    fn invite_select_field(
+        &self,
+        which: InviteSelect,
+        content: AnyElement,
+        disabled: bool,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let key = match which {
+            InviteSelect::MaxAge => "invite-select-age",
+            InviteSelect::MaxUses => "invite-select-uses",
+            InviteSelect::Roles => "invite-select-roles",
+        };
+        let open = self
+            .invite
+            .as_ref()
+            .is_some_and(|invite| invite.open_select == Some(which));
+        div()
+            .id(key)
+            .relative()
+            .child(self.anchor_probe(key))
+            .min_h(px(40.))
+            .rounded(px(8.))
+            .border_1()
+            .border_color(if open {
+                color("--input-border-active")
+            } else {
+                color("--input-border-default")
+            })
+            .bg(color("--input-background-default"))
+            .when(disabled, |this| this.opacity(0.5).cursor_not_allowed())
+            .when(!disabled, |this| this.cursor_pointer())
+            .flex()
+            .items_center()
+            .child(div().flex_1().min_w(px(0.)).child(content))
+            .child(
+                div().w(px(36.)).pr(px(4.)).flex().justify_center().child(
+                    gpui::svg()
+                        .path("icons/combo_chevron.svg")
+                        .size(px(20.))
+                        .text_color(color("--text-strong"))
+                        .with_transformation(gpui::Transformation::rotate(gpui::percentage(
+                            if open { 0.5 } else { 0. },
+                        ))),
+                ),
+            )
+            .on_click(cx.listener(move |this, _, _, cx| {
+                if !disabled && let Some(invite) = this.invite.as_mut() {
+                    invite.open_select = if invite.open_select == Some(which) {
+                        None
+                    } else {
+                        Some(which)
+                    };
+                }
+                cx.notify();
+            }))
+            .into_any_element()
+    }
+
+    /// A FormItem (module 452027): the label (body-md/medium, `--text-strong`) 8px over its control.
+    fn invite_labelled(label: &str, control: AnyElement) -> AnyElement {
+        div()
+            .flex()
+            .flex_col()
+            .child(
+                div()
+                    .mb(px(8.))
+                    .text_size(px(16.))
+                    .line_height(px(20.))
+                    .font_weight(FontWeight(500.))
+                    .text_color(color("--text-strong"))
+                    .child(label.to_owned()),
+            )
+            .child(control)
+            .into_any_element()
+    }
+
+    /// The role dot of a role option and tag (module 545442), centred in 20px.
+    fn invite_role_dot(&self, role: Id) -> AnyElement {
+        let colour = self
+            .invite_guild()
+            .and_then(|guild| guild.role_info.get(&role))
+            .map_or(0, |info| info.color);
+        div()
+            .size(px(20.))
+            .flex()
+            .items_center()
+            .justify_center()
+            .child(super::role_dot::dot(if colour == 0 {
+                0x99aab5
+            } else {
+                colour
+            }))
+            .into_any_element()
+    }
+
+    fn invite_role_name(&self, role: Id) -> String {
+        self.invite_guild()
+            .and_then(|guild| guild.roles.get(&role).cloned())
+            .unwrap_or_default()
+    }
+
+    /// Server invite link settings (`em` and `eA` of module 137811 on the dialog of module 189213): Expire After, Max
+    /// Number of Uses, Roles (Optional) when the person may hand some out, and Grant temporary membership; Cancel and
+    /// Generate a New Link both return to the main page.
+    fn invite_settings_modal(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
+        let invite = self.invite.as_ref()?;
+        let single = |text: String| {
+            div()
+                .pl(px(12.))
+                .text_size(px(16.))
+                .line_height(px(20.))
+                .text_color(color("--text-strong"))
+                .child(text)
+                .into_any_element()
+        };
+        let age = self.invite_select_field(
+            InviteSelect::MaxAge,
+            single(max_age_label(invite.max_age)),
+            false,
+            cx,
+        );
+        let uses = self.invite_select_field(
+            InviteSelect::MaxUses,
+            single(max_uses_label(invite.max_uses)),
+            false,
+            cx,
+        );
+        let temporary = self.invite_temporary();
+        let mut body = div()
+            .flex()
+            .flex_col()
+            .gap(px(20.))
+            .child(Self::invite_labelled(dc_intl::t("60qw2x"), age))
+            .child(Self::invite_labelled(dc_intl::t("jDqWHW"), uses));
+        if !self.invite_roles().is_empty() {
+            // The multiple select: a tag per chosen role (`tag_` 30px on the secondary control colours, 4px 4px 4px
+            // 8px, the dot, body-sm and a remove cross), else the "Select Roles" placeholder.
+            let tags: Vec<AnyElement> = invite
+                .roles
+                .iter()
+                .map(|role| {
+                    let role = *role;
+                    div()
+                        .flex()
+                        .items_center()
+                        .gap(px(4.))
+                        .h(px(30.))
+                        .pl(px(8.))
+                        .pr(px(4.))
+                        .py(px(4.))
+                        .rounded(px(4.))
+                        .border_1()
+                        .border_color(color("--control-secondary-border-default"))
+                        .bg(color("--control-secondary-background-default"))
+                        .child(self.invite_role_dot(role))
+                        .child(
+                            div()
+                                .text_size(px(14.))
+                                .line_height(px(18.))
+                                .text_color(color("--control-secondary-text-default"))
+                                .child(self.invite_role_name(role)),
+                        )
+                        .child(
+                            div()
+                                .id(SharedString::from(format!("invite-tag-{role}")))
+                                .size(px(18.))
+                                .rounded(px(4.))
+                                .cursor_pointer()
+                                .flex()
+                                .items_center()
+                                .justify_center()
+                                .child(icon(
+                                    "clips_x_small",
+                                    16.,
+                                    "--control-secondary-text-default",
+                                ))
+                                .on_click(cx.listener(move |this, _, _, cx| {
+                                    if !this.invite_temporary()
+                                        && let Some(invite) = this.invite.as_mut()
+                                    {
+                                        invite.roles.retain(|known| *known != role);
+                                    }
+                                    cx.stop_propagation();
+                                    cx.notify();
+                                })),
+                        )
+                        .into_any_element()
+                })
+                .collect();
+            let content = if tags.is_empty() {
+                div()
+                    .pl(px(12.))
+                    .text_size(px(16.))
+                    .line_height(px(20.))
+                    .text_color(color("--input-placeholder-text-default"))
+                    .child(dc_intl::t("/djIh7"))
+                    .into_any_element()
+            } else {
+                div()
+                    .py(px(3.))
+                    .pl(px(4.))
+                    .flex()
+                    .flex_wrap()
+                    .gap(px(8.))
+                    .children(tags)
+                    .into_any_element()
+            };
+            let roles = self.invite_select_field(InviteSelect::Roles, content, temporary, cx);
+            body = body.child(Self::invite_labelled(dc_intl::t("rPYJxL"), roles));
+        }
+        if !self.invite_hides_temporary() {
+            let locked = !invite.roles.is_empty();
+            body = body.child(
+                div()
+                    .id("invite-temporary")
+                    .flex()
+                    .items_start()
+                    .gap(px(24.))
+                    .when(!locked, |this| this.cursor_pointer())
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        if !locked && let Some(invite) = this.invite.as_mut() {
+                            invite.temporary = !invite.temporary;
+                        }
+                        cx.notify();
+                    }))
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w(px(0.))
+                            .flex()
+                            .flex_col()
+                            .gap(px(4.))
+                            .child(
+                                div()
+                                    .text_size(px(16.))
+                                    .line_height(px(20.))
+                                    .font_weight(FontWeight(500.))
+                                    .text_color(color("--text-strong"))
+                                    .child(dc_intl::t("wE+9dr")),
+                            )
+                            .child(
+                                div()
+                                    .text_size(px(14.))
+                                    .line_height(px(18.))
+                                    .text_color(color("--text-subtle"))
+                                    .child(dc_intl::t("UN5IRX").replace('\n', " ")),
+                            ),
+                    )
+                    .child(if locked {
+                        super::create_channel::switch_dimmed(
+                            invite.temporary,
+                            "--background-surface-high",
+                        )
+                    } else {
+                        super::create_channel::switch(invite.temporary)
+                    }),
+            );
+        }
+        // GAP: the roles select does not filter as one types (the combobox query of module 873200); Invite a Guest
+        // (2023-02_guest_voice_invites, off by default) is not drawn.
+        let back = |this: &mut Root| {
+            if let Some(invite) = this.invite.as_mut() {
+                invite.page = InvitePage::Main;
+                invite.open_select = None;
+            }
+        };
+        Some(modal::render(
+            modal::Spec {
+                id: "invite-settings-modal",
+                title: dc_intl::t("Atdlyu").into(),
+                subtitle: None,
+                body: Some(body.into_any_element()),
+                buttons: vec![
+                    modal::button(
+                        "invite-settings-cancel",
+                        dc_intl::t("ETE/oC"),
+                        modal::Tone::Secondary,
+                        move |this, _, _| back(this),
+                    ),
+                    modal::button(
+                        "invite-settings-generate",
+                        dc_intl::t("pz1lRG"),
+                        modal::Tone::Primary,
+                        |this, _, cx| this.generate_invite(cx),
+                    ),
+                ],
+                close: Box::new(|this, _, _| this.invite = None),
+            },
+            cx,
+        ))
+    }
+
+    /// The open list of a settings select (`maxOptionsVisible` 5: 40px rows in a 4px padded list, at most 208 high),
+    /// 4px under the field; single choices tick the chosen row, the roles list checks a box per role.
+    pub(super) fn invite_select_layer(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
+        let invite = self.invite.as_ref()?;
+        if invite.page != InvitePage::Settings {
+            return None;
+        }
+        let which = invite.open_select?;
+        let key = match which {
+            InviteSelect::MaxAge => "invite-select-age",
+            InviteSelect::MaxUses => "invite-select-uses",
+            InviteSelect::Roles => "invite-select-roles",
+        };
+        let field = self.tip_anchors.borrow().get(key).copied()?.dilate(px(1.));
+        let rows: Vec<AnyElement> = match which {
+            InviteSelect::MaxAge | InviteSelect::MaxUses => {
+                let (options, current): (Vec<u64>, u64) = if which == InviteSelect::MaxAge {
+                    (MAX_AGE_OPTIONS.to_vec(), invite.max_age)
+                } else {
+                    (MAX_USES_OPTIONS.to_vec(), invite.max_uses)
+                };
+                options
+                    .into_iter()
+                    .map(|value| {
+                        let label = if which == InviteSelect::MaxAge {
+                            max_age_label(value)
+                        } else {
+                            max_uses_label(value)
+                        };
+                        div()
+                            .id(SharedString::from(format!("{key}-{value}")))
+                            .flex_none()
+                            .h(px(40.))
+                            .pl(px(8.))
+                            .pr(px(4.))
+                            .rounded(px(4.))
+                            .cursor_pointer()
+                            .hover(|style| style.bg(color("--background-mod-normal")))
+                            .flex()
+                            .items_center()
+                            .child(
+                                div()
+                                    .flex_1()
+                                    .text_size(px(16.))
+                                    .line_height(px(20.))
+                                    .text_color(color("--text-strong"))
+                                    .child(label),
+                            )
+                            .when(value == current, |this| {
+                                this.child(div().px(px(4.)).child(icon(
+                                    "select_check",
+                                    16.,
+                                    "--text-brand",
+                                )))
+                            })
+                            .on_click(cx.listener(move |this, _, _, cx| {
+                                if let Some(invite) = this.invite.as_mut() {
+                                    if which == InviteSelect::MaxAge {
+                                        invite.max_age = value;
+                                    } else {
+                                        invite.max_uses = value;
+                                    }
+                                    invite.open_select = None;
+                                }
+                                cx.notify();
+                            }))
+                            .into_any_element()
+                    })
+                    .collect()
+            }
+            InviteSelect::Roles => self
+                .invite_roles()
+                .into_iter()
+                .map(|role| {
+                    let chosen = invite.roles.contains(&role);
+                    div()
+                        .id(SharedString::from(format!("{key}-{role}")))
+                        .flex_none()
+                        .h(px(40.))
+                        .rounded(px(4.))
+                        .cursor_pointer()
+                        .hover(|style| style.bg(color("--background-mod-normal")))
+                        .flex()
+                        .items_center()
+                        .child(
+                            div()
+                                .w(px(32.))
+                                .mr(px(4.))
+                                .flex()
+                                .justify_center()
+                                .child(self.invite_role_dot(role)),
+                        )
+                        .child(
+                            div()
+                                .flex_1()
+                                .text_size(px(16.))
+                                .line_height(px(20.))
+                                .text_color(color("--text-strong"))
+                                .child(self.invite_role_name(role)),
+                        )
+                        .child(
+                            div()
+                                .px(px(4.))
+                                .child(super::server_onboarding::checkbox(chosen, false)),
+                        )
+                        // `closeOnSelect: false`: the list stays open.
+                        .on_click(cx.listener(move |this, _, _, cx| {
+                            if let Some(invite) = this.invite.as_mut() {
+                                if invite.roles.contains(&role) {
+                                    invite.roles.retain(|known| *known != role);
+                                } else {
+                                    invite.roles.push(role);
+                                }
+                            }
+                            cx.notify();
+                        }))
+                        .into_any_element()
+                })
+                .collect(),
+        };
+        let height = (rows.len().min(5) as f32) * 40. + 8.;
+        Some(
+            gpui::deferred(
+                div()
+                    .id("invite-select-layer")
+                    .occlude()
+                    .absolute()
+                    .left(field.left())
+                    .top(field.bottom() + px(4.))
+                    .w(field.size.width)
+                    .h(px(height + 2.))
+                    .p(px(4.))
+                    .rounded(px(8.))
+                    .border_1()
+                    .border_color(color("--border-subtle"))
+                    .bg(color("--background-surface-higher"))
+                    .overflow_y_scroll()
+                    .on_mouse_down_out(cx.listener(
+                        move |this, event: &gpui::MouseDownEvent, _, cx| {
+                            if !field.contains(&event.position)
+                                && let Some(invite) = this.invite.as_mut()
+                            {
+                                invite.open_select = None;
+                            }
+                            cx.notify();
+                        },
+                    ))
+                    .child(div().flex().flex_col().children(rows)),
+            )
+            .with_priority(2)
+            .into_any_element(),
+        )
+    }
+
     pub(super) fn invite_modal(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
         let invite = self.invite.as_ref()?;
+        if invite.page == InvitePage::Settings {
+            return self.invite_settings_modal(cx);
+        }
         let guild_name = self
             .current_guild()
             .map(|guild| guild.name.clone())
@@ -482,15 +1165,23 @@ impl Root {
                             .flex()
                             .text_size(px(12.))
                             .line_height(px(16.))
+                            .child(div().text_color(color("--text-muted")).child(format!(
+                                "{}\u{a0}",
+                                expiry_line(invite.max_age, invite.max_uses)
+                            )))
                             .child(
                                 div()
-                                    .text_color(color("--text-muted"))
-                                    .child("Your invite link expires in 30 days.\u{a0}"),
-                            )
-                            .child(
-                                div()
+                                    .id("invite-edit-link")
+                                    .cursor_pointer()
+                                    .hover(|style| style.underline())
                                     .text_color(color("--text-link"))
-                                    .child("Edit invite link."),
+                                    .on_click(cx.listener(|this, _, _, cx| {
+                                        if let Some(invite) = this.invite.as_mut() {
+                                            invite.page = InvitePage::Settings;
+                                        }
+                                        cx.notify();
+                                    }))
+                                    .child(dc_intl::t("VNe8P/")),
                             ),
                     )
                     .children(
@@ -532,6 +1223,108 @@ pub(super) const DM_KEY: &str = "invite-dm:";
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_link_settings_offer_the_official_options_and_words() {
+        let ages: Vec<String> = MAX_AGE_OPTIONS
+            .iter()
+            .map(|age| max_age_label(*age))
+            .collect();
+        assert_eq!(
+            ages,
+            [
+                "30 minutes",
+                "1 hour",
+                "6 hours",
+                "12 hours",
+                "1 day",
+                "7 days",
+                "30 days",
+                "Never"
+            ]
+        );
+        let uses: Vec<String> = MAX_USES_OPTIONS
+            .iter()
+            .map(|uses| max_uses_label(*uses))
+            .collect();
+        assert_eq!(
+            uses,
+            [
+                "No limit", "1 use", "5 uses", "10 uses", "25 uses", "50 uses", "100 uses"
+            ]
+        );
+        assert_eq!(
+            expiry_line(MAX_AGE, 0),
+            "Your invite link expires in 30 days."
+        );
+        assert_eq!(
+            expiry_line(86_400, 1),
+            "Your invite link expires in 1 day, or after 1 use."
+        );
+        assert_eq!(
+            expiry_line(21_600, 0),
+            "Your invite link expires in 6 hours."
+        );
+        assert_eq!(
+            expiry_line(3600, 5),
+            "Your invite link expires in 1 hour, or after 5 uses."
+        );
+        assert_eq!(
+            expiry_line(1800, 0),
+            "Your invite link expires in 30 minutes."
+        );
+        assert_eq!(
+            expiry_line(1800, 10),
+            "Your invite link expires in 30 minutes, or after 10 uses."
+        );
+        assert_eq!(expiry_line(0, 0), "Your invite link will never expire.");
+        assert_eq!(
+            expiry_line(0, 25),
+            "Your invite link expires after 25 uses."
+        );
+    }
+
+    #[test]
+    fn generate_posts_the_chosen_settings_and_drops_empty_roles() {
+        assert_eq!(
+            generate_body(604_800, 5, true, &[]),
+            json!({"max_age": 604800, "max_uses": 5, "target_type": null, "temporary": true, "flags": 0})
+        );
+        assert_eq!(
+            generate_body(0, 0, false, &[7, 9])["role_ids"],
+            json!(["7", "9"])
+        );
+    }
+
+    #[test]
+    fn only_roles_under_ones_highest_can_be_handed_out() {
+        let mut guild = dc_state::Guild {
+            id: 1,
+            owner_id: Some(50),
+            my_roles: vec![3],
+            ..Default::default()
+        };
+        for (role, position, managed) in [
+            (1, 0, false),
+            (2, 1, false),
+            (3, 2, false),
+            (4, 3, false),
+            (5, 1, true),
+        ] {
+            guild.roles.insert(role, format!("r{role}"));
+            guild.role_info.insert(
+                role,
+                dc_state::RoleInfo {
+                    position,
+                    managed,
+                    ..Default::default()
+                },
+            );
+        }
+        assert_eq!(assignable_roles(&guild, 60, true), vec![2]);
+        assert_eq!(assignable_roles(&guild, 60, false), Vec::<Id>::new());
+        assert_eq!(assignable_roles(&guild, 50, true), vec![4, 3, 2]);
+    }
 
     #[test]
     fn a_failed_invite_says_why_as_the_modal_does() {
