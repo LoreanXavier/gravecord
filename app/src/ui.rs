@@ -11548,6 +11548,8 @@ impl Render for Root {
             .children(self.remove_friend_modal(cx))
             // Not in the pinned client: ServerInfo's dialog (`plugin_hooks/server_info.rs`).
             .children(self.server_info_layer(cx))
+            // Not in the pinned client: MessageTags' tag dialog (`plugin_hooks/message_tags.rs`).
+            .children(self.message_tags_dialog(cx))
             .children(self.not_friend_modal(cx))
             .children(self.favorites_full_modal(cx))
             .children(self.chat_alert_modal(cx))

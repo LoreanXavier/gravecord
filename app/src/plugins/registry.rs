@@ -1025,6 +1025,15 @@ pub(crate) const DEFS: &[Def] = &[
         }],
     },
     Def {
+        id: "MessageTags",
+        name: "MessageTags",
+        description: "Allows you to create custom slash commands / tags",
+        origin: Origin::Vencord,
+        source: "src/plugins/customCommands/index.ts",
+        default_on: false,
+        settings: &[],
+    },
+    Def {
         id: "MuteChannelMentions",
         name: "MuteChannelMentions",
         description: "Hides mention badges from the channels you pick, both on the channel and on the server icon.                       Nothing is sent to Discord.",

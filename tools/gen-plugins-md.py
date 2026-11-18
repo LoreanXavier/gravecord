@@ -21,8 +21,8 @@ enabled = sorted((k for k, v in backup['settings']['plugins'].items() if v.get('
 RENAMED = {
     'BetterQuickReact': 'MoreQuickReactions',
     'ExpressionCloner': 'ExpressionManager',
-    'MessageTags': 'CustomCommands',
     'TenorGifSearch': 'GifProviderSwitcher',
+    'MessageTags': 'CustomCommands',
 }
 # Plugins removed upstream since the backup, with the commit that says why.
 REMOVED = {
@@ -156,9 +156,10 @@ PORTED = {
     'WhoReacted': "plugin_hooks/who_reacted.rs: after each reaction's count up to five avatars at 90% (four and +N past five), from GET reactions?limit=100&type=0 queued one per 250 ms newest first and merged into the users; nothing on a message with over ten reactions; clickableAvatars opens the profile popout instead of reacting. Super reactions (type 1) are not fetched: the app draws no burst pills.",
     'BetterRoleContext': "plugin_hooks/better_role_context.rs: a right click on a member list role header opens the role menu: Edit Role (Manage Roles: Server Settings on Roles with the role open), Copy Role Color (#rrggbb), View Role Icon (role-icons/<id>/<icon>.<roleIconFileFormat> at 128 in the viewer, without sender or Forward), View Role Members (the role's member popout) and Copy Role ID, with the original's icons. GAP: the dev-context rows of a profile's role chip (the chips open no menu here).",
     'BiggerStreamPreview': "plugin_hooks/bigger_stream_preview.rs: a streaming person's user menu ends with a separator and View Stream Preview (screen icon), opening the stream preview picture at 1280x720 in the viewer (fetched first when not cached, opened on arrival). GAP: the row on a stream tile's own menu.",
-    'ClipsEnhancements': "plugin_hooks/clips_enhancements.rs: Clips settings list 3-30 minute lengths, 240p/360p/2160p/4320p and 45-240 FPS beside the pinned client's choices, sorted (Source last), and the recorder keeps those rates; a clip's game is tagged with your own playing activity's application by richPresenceTagging (always, when the name's first or last word matches, never). GAP: the clipsLink button; the recorder's 384 MB video cap still bounds a long clip.",
+    'ClipsEnhancements': "plugin_hooks/clips_enhancements.rs: Clips settings list 3-30 minute lengths, 240p/360p/2160p/4320p and 45-240 FPS beside the pinned client's choices, sorted (Source last), and the recorder keeps those rates; a clip's game is tagged with your own playing activity's application by richPresenceTagging (always, when the name's first or last word matches, never). GAP: the recorder's 384 MB video cap still bounds a long clip.",
     'FriendInvites': "plugin_hooks/plugin_commands.rs: /create friend invite, /view friend invites and /revoke friend invites among the built-in commands (POST/GET/DELETE /users/@me/invites, the pinned client's FRIEND_INVITES route), answered privately by Clyde with discord.gg links, <t:…:R> expiry and uses; a failed request says nothing, as the original's rejected promise.",
     'SpotifyShareCommands': "plugin_hooks/plugin_commands.rs: /track, /album and /artist among the built-in commands send open.spotify.com links of what your Spotify plays (album and first artist kept from the player state), after the optional message; without music Clyde says \"You're not listening to any music.\". GAP: a local file reads as no music.",
+    'MessageTags': "plugin_hooks/message_tags.rs: each saved tag is a built-in slash command with an option per {{argument}} (required without a default) and ephemeral (Clyde says it to you); /tags create opens the Create New Tag dialog (name, response, detected arguments, the reserved/overwrite notice, the arguments guide), /tags list and /tags delete answer through Clyde; the plugin card shows Registered Tags with Edit, Delete and Create Tag. Tags kept under plugin-message-tags.",
     'NewGuildSettings': "plugin_hooks/new_guild_settings.rs: a server you join (its GUILD_CREATE carries your joined_at from the last two minutes: invite, Discovery or an approved join request; a lurked server has none) gets the defaults in one settings patch (muted, mobile push, @everyone/roles suppressed, highlights, events, the level unless Server default), Show All Channels in a Community server that shows picked channels, and voice names hidden; Apply NewGuildSettings in the server menu's privacy group and Apply NewGuildSettings to Folder (250 ms apart). GAP: the CogWheel row of the server header dropdown.",
     'OpenInApp': "plugin_hooks/open_in_app.rs: links of Spotify, Steam, Epic, Tidal, Apple Music, VRChat and Telegram open in their apps (each behind its switch) before the trust checks, with the success toast; spotify.link and s.team are resolved by HEAD requests off the UI thread (Request::ResolveRedirect, five redirects) and open in the app or the browser; a profile's Spotify or Steam connection opens the account in its app.",
     'PinDMs': "plugin_hooks/pin_dms.rs: categories at the top of the DM list (header in the category colour with a chevron, a click folds it, the open conversation stays), pinned conversations leave the plain list; pinOrder by recent message or custom; canCollapseDmSection folds the plain list from its title (dmSectionCollapsed hidden). Pin DMs submenu in the DM/user menus (Add Category, categories; Unpin DM, Move Up/Down), category menu (Edit, Move Up/Down, Delete), New/Edit Category dialog in the folder dialog's layout without the default swatch. Categories per account in storage. GAP: the friends sidebar, the quick switcher order, submenu row tints.",
@@ -235,6 +236,7 @@ TESTS = {
     'ClipsEnhancements': '`tagging_matches_by_the_name_s_ends`, `labels_follow_the_messages`; frame ce-length (with NoNitroUpsell: the Clips page needs Nitro in a capture run, so plugins-off has no Clips scenario; the plugin-off lists are the clips label tests)',
     'FriendInvites': '`answers_read_as_the_original_writes_them`, `every_plugin_with_commands_is_defined`; frame ssc-commands (the three commands among Built-In); plugins-off slash-list',
     'SpotifyShareCommands': '`answers_read_as_the_original_writes_them`; frames ssc-commands, ssc-none (Clyde: not listening); plugins-off slash-list',
+    'MessageTags': '`arguments_and_responses_follow_the_original`; frames pending (fixture token answers 401 since 17:51)',
     'NewGuildSettings': '`defaults_follow_the_switches`, `only_a_recent_join_counts`; frame ngs-menu; plugins-off guild-menu',
     'OpenInApp': '`links_become_the_apps_addresses`, `every_switch_defaults_on`; plugins-off send-link, masked-link',
     'PinDMs': '`categories_round_trip_and_order_by_recency_or_as_kept`, `the_pin_menu_offers_categories_or_unpin_and_moves`, `swaps_stay_inside_the_list_and_settings_default_off`; frames pd-menu, pd-sub, pd-dialog, pd-list, pd-folded, pd-catmenu; plugins-off dm-list, user-menu',
@@ -285,8 +287,12 @@ TESTS = {
 }
 # Original settings a port does not have, with why (none today).
 SKIPPED_SETTINGS = {
+    'MessageTags': {
+        'tagsList': 'kept apart from the settings (storage key plugin-message-tags), written by the tag dialog and /tags delete.',
+        'tagComponent': 'ported as the plugin card\'s own section (Registered Tags with Edit, Delete, Create Tag), not as a setting.',
+    },
     'ClipsEnhancements': {
-        'clipsLink': 'a button that opens Clips settings; the plugin page here lists settings, and the extra choices are in Clips settings itself.',
+        'clipsLink': 'ported as the plugin card\'s own section: the button that opens Clips settings, not a setting.',
     },
     'PinDMs': {
         'userBasedCategoryList': 'kept apart from the settings (storage key plugin-pin-dms, per account), written by the Pin DMs menus and the category dialog.',
@@ -357,7 +363,7 @@ PLANNED = {
     'BetterFolders': 'a second server sidebar for folders.',
     'BetterForwards': 'forward dialog tweaks.',
     'BetterGifAltText': "a place where alt text shows: the original changes the `alt` that screen readers read, and the app draws images without an accessibility tree.",
-    'BetterPlusReacts': '"+:emoji:" reacting to the Nth message above, in the composer\'s send path.',
+    'BetterPlusReacts': "the pinned client's own `+:emoji:` rule first: a message `+:emoji:` reacts to the last message (the send path's reaction shortcut and its autocomplete), which the port does not have yet (GAP: main app); BetterPlusReacts only lets more pluses pick an older message.",
     'BypassStatus': 'notification and sound rules that pass Do Not Disturb for chosen users, channels and servers.',
     'ClipUpload': 'a button to upload a local video as a clip.',
     'CustomRPC': 'a custom rich presence editor and its activity.',
@@ -377,7 +383,7 @@ PLANNED = {
     'Quoter': 'a quote image made from a message.',
     'RelationshipNotifier': 'notices when a friend, group or server removes you (its data store lists are not copied).',
     'SearchFix': 'its search request fix.',
-    'SedEnhanced': '`s/a/b/` editing the last message, in the send path.',
+    'SedEnhanced': "the pinned client's own sed rule first: a message `s/a/b` edits your last message (the `searchReplace` rule of the send path, module 857069), which the port does not have yet (GAP: main app); SedEnhanced only widens that rule's syntax and regex.",
     'ShowHiddenThings': "the pinned client's own pieces first: the chat timeout icon by a timed-out member's name (showCommunicationDisabledStyles) and the invites-paused tooltip on the server rail are not drawn by the port yet (GAPs in the official UI), so showTimeouts and showInvitesPaused would unlock nothing; showModView lifts the user menu's Open in Mod View permission check, which the port does not apply yet either (it shows the row in every server).",
     'SilentMessageToggle': "the pinned client's `@silent` prefix first: its send path strips it and sets SUPPRESS_NOTIFICATIONS (the `silentPrefix` rule and the sends of modules 857069 and 92961); the app sends the text as typed, so the plugin's prefix would reach people as words.",
     'SpotifyCrack': 'listen along without Premium and no Spotify pause on voice.',
@@ -396,7 +402,6 @@ PLANNED = {
     'ExpressionCloner': 'menu rows that clone, edit and delete emoji and stickers into your servers.',
     'IloveSpam': 'messages of users flagged as likely spammers shown as any other.',
     'LimitMiddleClickPaste': 'middle-click paste only into a focused text box, and middle-click link opening.',
-    'MessageTags': 'saved tags sent as custom slash commands.',
     'TenorGifSearch': 'Tenor or Giphy as the GIF search instead of the default provider.',
 }
 
@@ -417,7 +422,8 @@ for name in enabled:
                 why = idle.get((name, key))
                 state = f'nothing to act on yet: {why}' if why else 'ported'
             elif key in SKIPPED_SETTINGS.get(name, {}):
-                state = 'not ported: ' + SKIPPED_SETTINGS[name][key]
+                why = SKIPPED_SETTINGS[name][key]
+                state = why if why.startswith('ported as') else 'not ported: ' + why
             else:
                 errors.append(f'{name}.{key} of the original is missing and has no reason')
                 state = 'MISSING'

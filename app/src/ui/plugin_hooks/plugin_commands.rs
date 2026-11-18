@@ -27,6 +27,8 @@ enum Does {
     CreateInvite,
     ViewInvites,
     RevokeInvites,
+    /// MessageTags' `/tags`; the tags' own commands are `TAG_BIT` and their place (`message_tags.rs`).
+    Tags,
 }
 
 struct Command {
@@ -54,6 +56,12 @@ const COMMANDS: &[Command] = &[
         name: "artist",
         description: "Share your current Spotify artist in chat",
         does: Does::Artist,
+    },
+    Command {
+        plugin: "MessageTags",
+        name: "tags",
+        description: "Manage all custom commands",
+        does: Does::Tags,
     },
     Command {
         plugin: "FriendInvites",
@@ -136,7 +144,7 @@ impl Root {
         COMMANDS
             .iter()
             .enumerate()
-            .filter(|(_, command)| crate::plugins::on(command.plugin))
+            .filter(|(_, command)| command.does != Does::Tags && crate::plugins::on(command.plugin))
             .map(|(index, command)| {
                 let options = match command.does {
                     Does::Track | Does::Album | Does::Artist => {
@@ -152,6 +160,13 @@ impl Root {
                     options,
                 )
             })
+            .chain(
+                COMMANDS
+                    .iter()
+                    .position(|command| command.does == Does::Tags)
+                    .map(|index| self.message_tags_commands(index as u16))
+                    .unwrap_or_default(),
+            )
             .collect()
     }
 
@@ -161,8 +176,19 @@ impl Root {
         index: u16,
         filled: &[Filled],
         channel: Id,
-        _cx: &mut Context<Self>,
+        cx: &mut Context<Self>,
     ) {
+        // MessageTags' tag commands.
+        if index & super::message_tags::TAG_BIT != 0 {
+            if crate::plugins::on("MessageTags") && !crate::plugins::bypassed() {
+                self.message_tags_run(
+                    usize::from(index & !super::message_tags::TAG_BIT),
+                    filled,
+                    channel,
+                );
+            }
+            return;
+        }
         let Some(command) = COMMANDS.get(usize::from(index)) else {
             return;
         };
@@ -197,6 +223,7 @@ impl Root {
                 self.last_typing_sent = None;
                 self.send(share_text(&string_value(filled, "message"), &link));
             }
+            Does::Tags => self.message_tags_manage(filled, channel, cx),
             Does::CreateInvite | Does::ViewInvites | Does::RevokeInvites => {
                 let (method, body, tag) = match command.does {
                     Does::CreateInvite => (reqwest::Method::POST, Some(json!({})), "create"),

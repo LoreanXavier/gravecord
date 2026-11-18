@@ -16,6 +16,7 @@ mod member_count;
 mod message_clicks;
 mod message_peek;
 mod message_pronouns;
+mod message_tags;
 mod mute_channel_mentions;
 mod new_guild_settings;
 mod open_in_app;
@@ -652,6 +653,47 @@ pub(super) fn all_spoilers_revealed(
     message: Id,
 ) -> bool {
     !crate::plugins::bypassed() && revealed.contains(&(message, ALL_OF_MESSAGE.0, ALL_OF_MESSAGE.1))
+}
+
+/// Plugins whose settings page has a section of their own (the original's `OptionType.COMPONENT`).
+pub(in crate::ui) fn has_own_section(id: &str) -> bool {
+    matches!(id, "MessageTags" | "ClipsEnhancements")
+}
+
+impl super::Root {
+    /// A plugin's own section on its card: MessageTags' Registered Tags (`SettingsTagList`), ClipsEnhancements'
+    /// `clipsLink` button to Clips settings.
+    pub(in crate::ui) fn plugin_own_section(
+        &self,
+        id: &str,
+        cx: &mut gpui::Context<Self>,
+    ) -> Option<gpui::AnyElement> {
+        use gpui::{
+            InteractiveElement, IntoElement, ParentElement, StatefulInteractiveElement, Styled,
+        };
+        match id {
+            "MessageTags" => Some(self.message_tags_settings(cx)),
+            "ClipsEnhancements" => Some(
+                gpui::div()
+                    .id("clips-enhancements-link")
+                    .h(gpui::px(38.))
+                    .px(gpui::px(16.))
+                    .rounded(gpui::px(8.))
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .cursor_pointer()
+                    .bg(super::color("--control-primary-background-default"))
+                    .hover(|style| style.bg(super::color("--control-primary-background-hover")))
+                    .text_size(gpui::px(14.))
+                    .text_color(super::color("--white"))
+                    .child("Change FPS and duration options in Clips settings!")
+                    .on_click(cx.listener(|this, _, _, cx| this.open_settings_section("Clips", cx)))
+                    .into_any_element(),
+            ),
+            _ => None,
+        }
+    }
 }
 
 #[cfg(test)]

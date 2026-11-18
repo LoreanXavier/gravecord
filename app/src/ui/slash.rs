@@ -16,11 +16,11 @@ use gpui::{
 use serde_json::{Value, json};
 
 /// `ApplicationCommandOptionType`.
-const SUB_COMMAND: u64 = 1;
+pub(in crate::ui) const SUB_COMMAND: u64 = 1;
 const SUB_COMMAND_GROUP: u64 = 2;
-const STRING: u64 = 3;
+pub(in crate::ui) const STRING: u64 = 3;
 const INTEGER: u64 = 4;
-const BOOLEAN: u64 = 5;
+pub(in crate::ui) const BOOLEAN: u64 = 5;
 const USER: u64 = 6;
 const CHANNEL: u64 = 7;
 const ROLE: u64 = 8;
@@ -67,7 +67,7 @@ pub(super) struct Opt {
 }
 
 impl Opt {
-    fn new(name: &str, kind: u64, description: &str, required: bool) -> Self {
+    pub(in crate::ui) fn new(name: &str, kind: u64, description: &str, required: bool) -> Self {
         Self {
             name: name.to_owned(),
             description: description.to_owned(),
