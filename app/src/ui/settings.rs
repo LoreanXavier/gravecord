@@ -42,6 +42,7 @@ mod search_terms;
 mod server_boost_page;
 mod soundboard;
 mod streamer;
+mod streamer_cover;
 mod tester;
 pub(crate) use render::radio_dot;
 mod high_contrast_tokens;
@@ -2319,6 +2320,8 @@ impl Root {
         if open.page == Page::Appearance {
             body.insert(0, self.icon_set_picker(cx));
         }
+        // Streamer Mode hiding personal information: the panel is the notice of module 369143.
+        let cover = self.streamer_cover(open.page, cx);
         // A nested panel's header is a back button and the breadcrumb (`contentHeaderLeft_3Rvb29`).
         let nested = (open.page == Page::Account)
             .then_some(self.settings_extra.panel)
@@ -2413,6 +2416,17 @@ impl Root {
                             // with, which adds that pixel to the scrollable height.
                             .child(div().w_full().h(px(1.))),
                     )
+                    .when_some(cover, |this, cover| {
+                        this.child(
+                            div()
+                                .id("settings-streamer-cover")
+                                .occlude()
+                                .absolute()
+                                .inset_0()
+                                .bg(client_theme::solid("--background-base-low"))
+                                .child(cover),
+                        )
+                    })
                     .when(open.page == Page::Accessibility, |this| {
                         this.child(self.accessibility_preview(window))
                     })

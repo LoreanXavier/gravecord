@@ -383,12 +383,19 @@ impl Root {
 
     /// A forward of `message` (of `source_channel`, in `guild` if any) into `channel`: an empty message that points at
     /// the source with `message_reference` type 1.
-    pub(super) fn start_local_forward(&mut self, channel: Id, source: (Option<Id>, Id, Id)) {
+    /// Returns the send's nonce, which its `Update::SendResult` carries.
+    pub(super) fn start_local_forward(
+        &mut self,
+        channel: Id,
+        source: (Option<Id>, Id, Id),
+    ) -> String {
         let parts = Parts {
             forward: Some(source),
             ..Parts::default()
         };
-        self.send_with_nonce(channel, crate::net::nonce(), parts);
+        let nonce = crate::net::nonce();
+        self.send_with_nonce(channel, nonce.clone(), parts);
+        nonce
     }
 
     fn send_with_nonce(&mut self, channel: Id, nonce: String, parts: Parts) {
@@ -523,6 +530,7 @@ impl Root {
         outcome: Outcome,
         cx: &mut Context<Self>,
     ) {
+        self.forward_send_ended(nonce, matches!(outcome, Outcome::Sent(_)), cx);
         let resolved = self.send_ui.id_of_nonce(nonce).or_else(|| id_of(nonce));
         self.send_ui.ended_for(resolved, nonce);
         let Some(id) = resolved else {
@@ -602,9 +610,18 @@ impl Root {
     /// `MESSAGE_SEND_FAILED` and what the failure asks besides (module 138399).
     fn send_failed(&mut self, channel: Id, id: Id, failure: &Failure, cx: &mut Context<Self>) {
         let mut failed = vec![id];
-        failed.extend(self.send_ui.cancel_waiting(channel));
+        let waiting = self.send_ui.cancel_waiting(channel);
+        // A forward that waited behind this one fails with it: the forward modal's batch hears of it (module 181622).
+        let waiting_nonces: Vec<String> = waiting
+            .iter()
+            .filter_map(|id| self.send_ui.sends.get(id).map(|send| send.nonce.clone()))
+            .collect();
+        failed.extend(waiting);
         for id in failed {
             self.mark_failed(channel, id);
+        }
+        for nonce in waiting_nonces {
+            self.forward_send_ended(&nonce, false, cx);
         }
         // Polls, forwards and inventory sends never get a notice; the composer sends none of them.
         match send_policy::followup(failure, false) {
@@ -624,8 +641,32 @@ impl Root {
                     send_policy::explicit_media_notice(facts.is_dm, self.is_group_dm(channel));
                 self.clyde_says(channel, &notice.text, &notice.name);
             }
-            Followup::Automod | Followup::PowermodeDisabled | Followup::Nothing => {}
+            // `MESSAGE_SEND_FAILED_AUTOMOD`: the message keeps AutoMod's reason (module 469759 draws it). The store's key
+            // is the send's nonce, which is the message's id in the official client; here it is the row's own id.
+            Followup::Automod => {
+                let reason =
+                    send_policy::automod_notice(failure, self.automod_place(channel), false);
+                self.stores.automod_failed(id.to_string(), false, reason);
+            }
+            Followup::PowermodeDisabled | Followup::Nothing => {}
         }
+    }
+
+    /// What `PD` of module 753738 asks of the channel: a thread first, then a forum or media channel.
+    pub(super) fn automod_place(&self, channel: Id) -> send_policy::AutomodPlace {
+        let guilds = self.stores.guilds.iter();
+        let mut place = send_policy::AutomodPlace::Other;
+        for guild in guilds {
+            if guild.threads.iter().any(|thread| thread.id == channel) {
+                return send_policy::AutomodPlace::Thread;
+            }
+            if guild.channels.iter().any(|known| {
+                known.id == channel && matches!(known.kind, dc_state::ChannelKind::Other(15 | 16))
+            }) {
+                place = send_policy::AutomodPlace::Post;
+            }
+        }
+        place
     }
 
     fn mark_failed(&mut self, channel: Id, id: Id) {
@@ -835,12 +876,15 @@ impl Root {
             .border_color(color("--background-mod-subtle"))
             .flex()
             .items_center()
-            .child({
-                let target = button(cx, "msg_retry", dc_intl::tr("Retry"), "toolbar-retry");
-                target.on_click(cx.listener(move |this, _, _, cx| {
-                    this.tip = None;
-                    this.retry_send(id, cx);
-                }))
+            // `nf`: no Retry while AutoMod's notice is on the message.
+            .when(!self.automod_blocked(id), |this| {
+                this.child({
+                    let target = button(cx, "msg_retry", dc_intl::tr("Retry"), "toolbar-retry");
+                    target.on_click(cx.listener(move |this, _, _, cx| {
+                        this.tip = None;
+                        this.retry_send(id, cx);
+                    }))
+                })
             })
             .child({
                 let target = button(
@@ -856,7 +900,7 @@ impl Root {
             })
     }
 
-    /// Capture only: `send hold|release|ack|order|fail [<status> [<code> [<retry after>]]]|state`.
+    /// Capture only: `send hold|release|ack|order|fail [<status> [<code> [<retry after>]]]|edit-fail <status> <code>|state`.
     #[cfg(feature = "capture")]
     pub(crate) fn script_send(&mut self, words: &[&str], cx: &mut Context<Self>) -> String {
         match words {
@@ -913,7 +957,14 @@ impl Root {
                     .and_then(|channel| self.stores.messages.get(&channel))
                     .into_iter()
                     .flatten()
-                    .map(|message| format!("{} {:?}", message.id, message.state))
+                    .map(|message| {
+                        let automod = if self.automod_blocked(message.id) {
+                            " AutoMod"
+                        } else {
+                            ""
+                        };
+                        format!("{} {:?}{automod}", message.id, message.state)
+                    })
                     .collect::<Vec<_>>()
                     .join("; ");
                 format!("send order: {order}")
@@ -958,7 +1009,38 @@ impl Root {
                 };
                 let nonce = self.send_ui.sends[&id].nonce.clone();
                 self.send_finished(channel, &nonce, Outcome::Failed(failure), cx);
-                format!("send: failed {nonce}")
+                let automod = if self.automod_blocked(id) {
+                    " (AutoMod notice)"
+                } else {
+                    ""
+                };
+                format!("send: failed {nonce} (message {id}){automod}")
+            }
+            // `send edit-fail <status> <code> [<message>]`: the open channel's latest message (or the one named) answers
+            // an edit as the server would (nothing is sent), for the blocked-edit notice of module 469759.
+            ["edit-fail", status, code, rest @ ..] => {
+                let Some(channel) = self.channel else {
+                    return "send: no channel open".to_owned();
+                };
+                let chosen = rest.first().and_then(|id| id.parse::<Id>().ok());
+                let Some(id) = chosen.or_else(|| {
+                    self.stores
+                        .messages
+                        .get(&channel)
+                        .and_then(|list| list.iter().map(|message| message.id).max())
+                }) else {
+                    return "send: no message to edit".to_owned();
+                };
+                let status = status.parse::<u64>().unwrap_or(400);
+                let body = serde_json::json!({"ok": false, "status": status,
+                    "body": {"code": code.parse::<u64>().unwrap_or(0)}});
+                self.edit_answered(&format!("{channel}:{id}"), &body, cx);
+                let note = if self.automod_blocked_edit(id) {
+                    " (blocked edit notice)"
+                } else {
+                    ""
+                };
+                format!("send: edit of {id} refused{note}")
             }
             // The notice of design/golden/windows/failed-message/clyde-notice-darker-cozy@1.png.
             ["clyde"] => {

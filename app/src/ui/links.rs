@@ -19,6 +19,8 @@ pub(crate) struct Leaving {
     pub protocol: bool,
     /// The "Trust … from now on" checkbox.
     pub trust: bool,
+    /// A known abusive domain: "Dangerous Website Ahead" (module 443198) in place of the modal.
+    pub dangerous: bool,
 }
 
 /// The parts the modal draws: `protocol` + `//`, the host in semibold, the rest muted (`m.u` in module 60888).
@@ -174,6 +176,26 @@ impl Root {
                 return;
             }
         }
+        // `isBlockedDomain`: a known abusive domain never opens, whatever is trusted (module 443198).
+        if super::dangerous_link::blocked_domain(url).is_some() {
+            self.leaving = Some(Leaving {
+                url: url.to_owned(),
+                protocol: false,
+                trust: false,
+                dangerous: true,
+            });
+            cx.notify();
+            return;
+        }
+        // A file kind that can harm the device asks first (module 432518, "Potential Dangerous Download" of 574563).
+        if super::graphic_dialogs::dangerous_extension(url).is_some() {
+            self.chat_extra.graphic =
+                Some(super::graphic_dialogs::GraphicDialog::DangerousDownload {
+                    url: url.to_owned(),
+                });
+            cx.notify();
+            return;
+        }
         // `W`: the text being the address trusts it, except in a DM with someone who is not a friend.
         let friendly = self
             .current_dm()
@@ -193,6 +215,7 @@ impl Root {
                 url: url.to_owned(),
                 protocol,
                 trust: false,
+                dangerous: false,
             });
         }
         cx.notify();
@@ -202,6 +225,10 @@ impl Root {
         let Some(leaving) = self.leaving.take() else {
             return;
         };
+        if leaving.dangerous {
+            cx.notify();
+            return;
+        }
         if leaving.trust {
             if leaving.protocol {
                 remember("trustedProtocols", protocol_of(&leaving.url));
@@ -215,6 +242,9 @@ impl Root {
 
     pub(super) fn leaving_modal(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
         let leaving = self.leaving.as_ref()?;
+        if leaving.dangerous {
+            return Some(self.dangerous_link_modal(&leaving.url, cx));
+        }
         let parts = split(&leaving.url);
         let (lead, lead_weight, host_color, host_weight) = if leaving.protocol {
             ("--text-default", 600., "--text-muted", 400.)

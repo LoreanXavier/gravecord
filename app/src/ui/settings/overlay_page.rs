@@ -138,6 +138,11 @@ impl Root {
     /// One of the two global switches, from its card.
     fn overlay_set_global(&mut self, key: &str, on: bool) {
         let mut global = self.overlay_global();
+        // `a` of the Enable Overlay and Enable Legacy Overlay cards (158935): switching one off asks why (387101).
+        let was = if key == OOP { global.oop } else { global.legacy };
+        if was && !on {
+            self.overlay_switched_off();
+        }
         if key == OOP {
             global.oop = on;
         } else {
@@ -910,6 +915,10 @@ impl Root {
         checked: bool,
     ) {
         use dc_overlay::decision::{SwitchScope, current_game_scope};
+        // The current game's switch going off asks why the overlay was turned off (387101 via `pT` of 158935).
+        if checked && !on {
+            self.overlay_switched_off();
+        }
         let scope = current_game_scope(
             on,
             checked,

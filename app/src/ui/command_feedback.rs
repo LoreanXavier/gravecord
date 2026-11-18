@@ -7,6 +7,10 @@
 //!   carries the LOADING flag.
 //! * `376767`: a private reply (flag 64) ends with "Only you can see this • Dismiss message"; Dismiss deletes it
 //!   here only, as `dismissAutomatedMessage` does.
+//! * `469759`: a message AutoMod refused to post keeps its text in `--text-default` with the shield, the reason and
+//!   that private line plus "• Learn more" under it. A blocked edit (`MESSAGE_EDIT_FAILED_AUTOMOD` from the edit's
+//!   answer, `editMessage` of module 138399) keeps the old text with "(reverted)" after it and the edit reason;
+//!   its Dismiss only drops the notice (`REMOVE_AUTOMOD_MESSAGE_NOTICE`).
 
 use super::components::dots;
 use super::{Root, color, icon};
@@ -20,6 +24,8 @@ use serde_json::{Value, json};
 const REPLY_TIMEOUT_MS: i64 = 15 * 60 * 1000;
 /// Discord's epoch, for the time a message id carries.
 const DISCORD_EPOCH_MS: i64 = 1_420_070_400_000;
+/// `getArticleURL(GUILD_AUTOMOD_BLOCKED_MESSAGE)` (module 652215), Learn more under a blocked message.
+const AUTOMOD_BLOCKED_ARTICLE: &str = "https://support.discord.com/hc/en-us/articles/4421269296535";
 
 /// The message a command shows before the application has replied.
 #[derive(Clone, Debug)]
@@ -243,7 +249,8 @@ impl Root {
         message: &Message,
         cx: &mut Context<Self>,
     ) -> Option<AnyElement> {
-        if message.flags & FLAG_EPHEMERAL == 0 {
+        // A message AutoMod blocked draws this line inside its notice (module 469759) instead.
+        if message.flags & FLAG_EPHEMERAL == 0 || self.automod_blocked(message.id) {
             return None;
         }
         let (channel, id) = (message.channel_id, message.id);
@@ -274,6 +281,165 @@ impl Root {
                 )
                 .into_any_element(),
         )
+    }
+
+    /// Whether AutoMod blocked this message (GuildAutomodMessageStore `getMessage`, module 93474): its hover bar has no
+    /// Retry and module 469759 draws its reason.
+    pub(super) fn automod_blocked(&self, message: Id) -> bool {
+        self.stores.automod_message(&message.to_string()).is_some()
+    }
+
+    /// Module 469759 under a message AutoMod blocked (`blockedNoticeContainer_REFxkR`, 8px down, 4px gaps): the 16px
+    /// shield in `--text-feedback-critical` and the reason (body-sm, `--interactive-text-default`), then the private
+    /// line of module 376767 4px higher (`ephemeralAccessories_REFxkR`) with "• Learn more" 3px after Dismiss. Dismiss
+    /// deletes the message here only.
+    pub(super) fn automod_blocked_notice(
+        &self,
+        message: &Message,
+        compact: bool,
+        cx: &mut Context<Self>,
+    ) -> Option<AnyElement> {
+        let failed = self.stores.automod_message(&message.id.to_string())?;
+        let reason = match &failed.error_message {
+            Value::String(text) => text.clone(),
+            _ => dc_intl::t("zQ69pv").to_owned(),
+        };
+        let (channel, id) = (message.channel_id, message.id);
+        Some(
+            div()
+                .w_full()
+                .flex()
+                .flex_col()
+                .child(
+                    div()
+                        .w_full()
+                        .mt(px(8.))
+                        .when(compact, |this| this.ml(px(-8.)))
+                        .flex()
+                        .flex_row()
+                        .items_center()
+                        .gap(px(4.))
+                        .child(icon("oauth_entry_shield", 16., "--text-feedback-critical"))
+                        .child(
+                            div()
+                                .flex_1()
+                                .min_w(px(0.))
+                                .text_size(px(14.))
+                                .line_height(px(18.))
+                                .text_color(color("--interactive-text-default"))
+                                .child(reason),
+                        ),
+                )
+                .child(
+                    div()
+                        .mt(px(-4.))
+                        .when(compact, |this| this.ml(px(-8.)))
+                        .child(
+                            div()
+                                .mt(px(4.))
+                                .flex()
+                                .items_center()
+                                .text_size(px(12.))
+                                .line_height(px(16.))
+                                .text_color(color("--text-muted"))
+                                .child(div().mr(px(4.)).child(icon(
+                                    "clips_eye",
+                                    16.,
+                                    "--text-muted",
+                                )))
+                                .child("Only you can see this \u{2022} ")
+                                .child(
+                                    div()
+                                        .id(SharedString::from(format!("automod-dismiss-{id}")))
+                                        .cursor_pointer()
+                                        .text_color(color("--text-link"))
+                                        .hover(|style| style.underline())
+                                        .child("Dismiss message")
+                                        .on_click(cx.listener(move |this, _, _, cx| {
+                                            this.dismiss_automod_blocked(channel, id, cx);
+                                        })),
+                                )
+                                .child(
+                                    div().ml(px(3.)).flex().child("\u{2022} ").child(
+                                        div()
+                                            .id(SharedString::from(format!("automod-learn-{id}")))
+                                            .cursor_pointer()
+                                            .text_color(color("--text-link"))
+                                            .hover(|style| style.underline())
+                                            .child(dc_intl::tr("Learn more"))
+                                            .on_click(|_, _, cx| {
+                                                cx.open_url(AUTOMOD_BLOCKED_ARTICLE)
+                                            }),
+                                    ),
+                                ),
+                        ),
+                )
+                .into_any_element(),
+        )
+    }
+
+    /// Whether the message's notice is a blocked edit's (`isBlockedEdit`, module 469759).
+    pub(super) fn automod_blocked_edit(&self, message: Id) -> bool {
+        self.stores
+            .automod_message(&message.to_string())
+            .is_some_and(|failed| failed.is_blocked_edit)
+    }
+
+    /// The answer of an edit (`editMessage` of module 138399), under `message-edit:{channel}:{message}`: a refusal
+    /// with one of AutoMod's codes dispatches `MESSAGE_EDIT_FAILED_AUTOMOD` with `PD`'s reason (module 753738), and
+    /// `MESSAGE_END_EDIT {response}` drops the notice of an edit the server took.
+    pub(super) fn edit_answered(&mut self, rest: &str, body: &Value, cx: &mut Context<Self>) {
+        let mut parts = rest.split(':').map(|part| part.parse::<Id>().ok());
+        let (Some(Some(channel)), Some(Some(message))) = (parts.next(), parts.next()) else {
+            return;
+        };
+        let status = body["status"].as_u64().unwrap_or(0) as u16;
+        let response = &body["body"];
+        // `!n.hasErr`: a transport failure (no status) never counts as AutoMod's.
+        if status != 0 && !body["ok"].as_bool().unwrap_or(false) {
+            use crate::send_policy::{
+                AUTOMOD_INVALID_RUST_SERVICE_RESPONSE, AUTOMOD_MESSAGE_BLOCKED,
+                AUTOMOD_TITLE_BLOCKED,
+            };
+            let failure = crate::send_policy::Failure::from_response(status, response);
+            // `v.yf` of module 753738.
+            if matches!(
+                failure.code,
+                Some(
+                    AUTOMOD_MESSAGE_BLOCKED
+                        | AUTOMOD_TITLE_BLOCKED
+                        | AUTOMOD_INVALID_RUST_SERVICE_RESPONSE
+                )
+            ) {
+                let reason =
+                    crate::send_policy::automod_notice(&failure, self.automod_place(channel), true);
+                self.stores.automod_edit_failed(channel, message, reason);
+            }
+        }
+        if status != 0 {
+            self.stores.automod_edit_ended(response);
+        }
+        self.rebuild_rows();
+        cx.notify();
+    }
+
+    /// Dismiss under a blocked message: a blocked edit only drops its notice (`REMOVE_AUTOMOD_MESSAGE_NOTICE`); a
+    /// send is `deleteMessage(channel, id, true)`, which is local, and the notice goes with it.
+    fn dismiss_automod_blocked(&mut self, channel: Id, id: Id, cx: &mut Context<Self>) {
+        let blocked_edit = self.automod_blocked_edit(id);
+        self.stores.automod_notice_removed(&id.to_string());
+        if blocked_edit {
+            self.rebuild_rows();
+            cx.notify();
+            return;
+        }
+        self.delete_failed(id, cx);
+        // A blocked message that is not a failed send of this run is only local.
+        if let Some(list) = self.stores.messages.get_mut(&channel) {
+            list.retain(|known| known.id != id);
+        }
+        self.rebuild_rows();
+        cx.notify();
     }
 
     /// `dismissAutomatedMessage`: the message leaves this client only.

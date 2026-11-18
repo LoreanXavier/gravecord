@@ -21,7 +21,7 @@ impl Root {
             .channels
             .iter()
             .find(|channel| channel.id == state.channel_id)?;
-        if channel.kind != ChannelKind::Voice {
+        if !matches!(channel.kind, ChannelKind::Voice | ChannelKind::Other(13)) {
             return None;
         }
         let person = self
@@ -42,6 +42,11 @@ impl Root {
         let can_set = self.in_voice_channel(channel.id) && self.can_set_voice_status(channel);
         let (guild_name, channel_name, target) =
             (guild.name.clone(), channel.name.clone(), channel.id);
+        // Module 70963: the button needs Connect; it opens the channel this client is in and joins any other.
+        let joined = self.in_voice_channel(channel.id);
+        let can_connect = self.can_in_channel(channel, dc_state::permissions::CONNECT);
+        let stage = channel.kind == ChannelKind::Other(13);
+        let label = voice_button_label(joined, stage);
         let strong = color("--text-strong");
         let subtle = color("--text-subtle");
         let line = |text: String, tint: gpui::Rgba| {
@@ -136,7 +141,11 @@ impl Root {
                                                         .font_weight(FontWeight(600.))
                                                         .text_color(strong)
                                                         .child(icon(
-                                                            "channel_type_voice",
+                                                            if stage {
+                                                                "stage_channel"
+                                                            } else {
+                                                                "channel_type_voice"
+                                                            },
                                                             12.,
                                                             "--text-strong",
                                                         ))
@@ -159,32 +168,62 @@ impl Root {
                                         }),
                                 ),
                         )
-                        // `actions_Bu4Al8`: the 4px-margin button row, "Open Voice" goes to the channel.
-                        .child(
-                            div().mt(px(4.)).child(
-                                div()
-                                    .id(SharedString::from(format!("popout-open-voice-{target}")))
-                                    .cursor_pointer()
-                                    .h(px(32.))
-                                    .rounded(px(8.))
-                                    .bg(color("--control-secondary-background-default"))
-                                    .flex()
-                                    .items_center()
-                                    .justify_center()
-                                    .text_size(px(14.))
-                                    .line_height(px(18.))
-                                    .font_weight(FontWeight(500.))
-                                    .text_color(color("--control-secondary-text-default"))
-                                    .child("Open Voice")
-                                    .on_click(cx.listener(move |this, _, _, cx| {
-                                        this.profile = None;
-                                        this.select(guild_id, Some(target));
-                                        cx.notify();
-                                    })),
-                            ),
-                        ),
+                        // `actions_Bu4Al8`: the 4px-margin button row (module 70963): Open Voice/Stage for the
+                        // channel this client is in, Join Voice/Stage for another; none without Connect.
+                        .when(can_connect, |this| {
+                            this.child(
+                                div().mt(px(4.)).child(
+                                    div()
+                                        .id(SharedString::from(format!(
+                                            "popout-open-voice-{target}"
+                                        )))
+                                        .cursor_pointer()
+                                        .h(px(32.))
+                                        .rounded(px(8.))
+                                        .bg(color("--control-secondary-background-default"))
+                                        .flex()
+                                        .items_center()
+                                        .justify_center()
+                                        .text_size(px(14.))
+                                        .line_height(px(18.))
+                                        .font_weight(FontWeight(500.))
+                                        .text_color(color("--control-secondary-text-default"))
+                                        .child(label)
+                                        .on_click(cx.listener(move |this, _, _, cx| {
+                                            this.profile = None;
+                                            if joined {
+                                                this.select(guild_id, Some(target));
+                                            } else {
+                                                this.join_voice(guild_id, target, cx);
+                                            }
+                                            cx.notify();
+                                        })),
+                                ),
+                            )
+                        }),
                 )
                 .into_any_element(),
         )
+    }
+}
+
+/// The label of module 70963 outside a modal: Open or Join, Voice or Stage (a guild channel here; DMs say Call).
+fn voice_button_label(joined: bool, stage: bool) -> &'static str {
+    match (joined, stage) {
+        (true, false) => dc_intl::t("BXxdl7"),
+        (true, true) => dc_intl::t("Acqcot"),
+        (false, false) => dc_intl::t("96ANUN"),
+        (false, true) => dc_intl::t("7vb2cc"),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn the_button_opens_the_channel_this_client_is_in_and_joins_another() {
+        assert_eq!(super::voice_button_label(true, false), "Open Voice");
+        assert_eq!(super::voice_button_label(false, false), "Join Voice");
+        assert_eq!(super::voice_button_label(true, true), "Open Stage");
+        assert_eq!(super::voice_button_label(false, true), "Join Stage");
     }
 }

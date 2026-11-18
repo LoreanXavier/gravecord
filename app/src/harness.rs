@@ -509,6 +509,15 @@ pub async fn run(
                 crate::ui::composer_ai::AS_STAFF.store(true, std::sync::atomic::Ordering::Relaxed);
                 let _ = writeln!(output, "composer-ai: staff");
             }
+            // `limited-access`: a request refused for limited access, as `net` reports it (module 218642).
+            ["limited-access"] => {
+                cx.update(|cx| {
+                    root.update(cx, |root, cx| {
+                        root.update(crate::net::Update::LimitedAccess, cx)
+                    })
+                });
+                let _ = writeln!(output, "limited-access: reported");
+            }
             ["gw", name, json @ ..] => {
                 let text = json.join(" ");
                 let note = match serde_json::from_str(&text) {
@@ -1056,6 +1065,10 @@ pub async fn run(
                 let line = root.update(cx, |root, cx| root.script_go_live(rest, cx));
                 let _ = writeln!(output, "golive: {line}");
             }
+            ["connect-error", kind] => {
+                let line = root.update(cx, |root, cx| root.script_connect_error(kind, cx));
+                let _ = writeln!(output, "{line}");
+            }
             ["dmcall", rest @ ..] => {
                 let line = root.update(cx, |root, cx| root.script_dmcall(rest, cx));
                 let _ = writeln!(output, "dmcall: {line}");
@@ -1160,10 +1173,24 @@ pub async fn run(
                 let _ = writeln!(output, "clips: {line}");
             }
             // The calls the text-to-speech engine received (a capture build never speaks aloud).
-            // `search last` / `search answer <total>`: the open search's request, and an answer to it.
+            // `graphic urgent | download <url>`: the dialogs of `ui/graphic_dialogs.rs`.
+            ["graphic", rest @ ..] => {
+                let line = root.update(cx, |root, cx| root.script_graphic(rest, cx));
+                let _ = writeln!(output, "{line}");
+            }
+            // `emoji bulk-errors`: "Failed to upload files" with one row of each kind (`ui/server_emoji.rs`).
+            ["emoji", "bulk-errors"] => {
+                let line = root.update(cx, |root, cx| root.script_emoji_bulk_errors(cx));
+                let _ = writeln!(output, "{line}");
+            }
+            // `search last` / `search answer <total>`: the open search's request, and an answer to it;
+            // `search page <n>`: the pager turns to page n.
             ["search", rest @ ..] => {
                 let line = root.update(cx, |root, cx| {
-                    let line = root.script_search(rest);
+                    let line = match rest {
+                        ["page", page] => root.script_search_page(page.parse().unwrap_or(1), cx),
+                        _ => root.script_search(rest),
+                    };
                     cx.notify();
                     line
                 });
@@ -1312,7 +1339,8 @@ pub async fn run(
                 let line = root.update(cx, |root, cx| root.script_interaction(rest, cx));
                 let _ = writeln!(output, "{line}");
             }
-            // Capture only: `send hold|release|fail [<status> [<code> [<retry after>]]]|state` (`ui/send_state.rs`).
+            // Capture only: `send hold|release|fail [<status> [<code> [<retry after>]]]|edit-fail <status> <code>|state`
+            // (`ui/send_state.rs`).
             ["send", rest @ ..] => {
                 let line = root.update(cx, |root, cx| root.script_send(rest, cx));
                 let _ = writeln!(output, "{line}");

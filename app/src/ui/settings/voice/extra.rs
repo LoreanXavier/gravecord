@@ -26,7 +26,6 @@ use std::path::PathBuf;
 /// Why a voice channel cannot be entered.
 enum VoiceBlock {
     Locked,
-    Full,
 }
 
 pub(in crate::ui) const SILENCE: &str = "voice_silence_warning_setting";
@@ -694,11 +693,29 @@ impl Root {
                 self.open_voice_view(guild, channel, cx);
                 return;
             }
-            Some(VoiceBlock::Full) => {
-                self.put_app_toast(dc_intl::tr("This channel is full.").to_owned(), false, cx);
-                return;
-            }
             None => {}
+        }
+        // Blocked or ignored people are here: "Join voice?" first (module 525828, `handleVoiceConnect` of module
+        // 262763); a Stage asks its own question (module 200629) when it is selected. A full channel is answered by
+        // the select ("Channel is full", module 361698).
+        if !self.is_stage_voice_channel(guild, channel)
+            && let Some(alert) = self.join_blocked_alert(guild, channel)
+        {
+            for user in match &alert {
+                crate::ui::voice_alerts::VoiceAlert::JoinBlocked {
+                    blocked, ignored, ..
+                } => blocked.iter().chain(ignored).copied().collect::<Vec<_>>(),
+                _ => Vec::new(),
+            } {
+                if let Some(known) = self.stores.users.get(&user).cloned() {
+                    let (key, url) = crate::ui::avatar_source(&known);
+                    self.request_image(key, url);
+                }
+            }
+            self.request_graphic(crate::ui::voice_blocked::WARNING_ART);
+            self.voice_alert = Some(alert);
+            cx.notify();
+            return;
         }
         if self.switch_channel_asks(guild, channel) {
             let name = self
@@ -752,8 +769,8 @@ impl Root {
         }
     }
 
-    /// Whether this account can enter the channel: Connect, and room under `user_limit` unless it may move members
-    /// (`Pd` in module 147036). The call already in this channel is never blocked.
+    /// Whether this account can enter the channel: Connect (`locked`). The call already in this channel is never
+    /// blocked; a full channel is the select's question (`Pd` of module 147036, `voice_channel_is_full`).
     fn voice_join_block(&self, guild: Id, channel: Id) -> Option<VoiceBlock> {
         if self
             .call
@@ -769,14 +786,7 @@ impl Root {
             .iter()
             .find(|known| known.id == channel)?;
         let can = |bit| dc_state::permissions::can_in_channel(guild_data, target, me, bit);
-        if !can(dc_state::permissions::CONNECT) {
-            return Some(VoiceBlock::Locked);
-        }
-        let present = self.stores.voice_members(guild, channel).len() as u64;
-        (target.user_limit > 0
-            && present >= target.user_limit
-            && !can(dc_state::permissions::MOVE_MEMBERS))
-        .then_some(VoiceBlock::Full)
+        (!can(dc_state::permissions::CONNECT)).then_some(VoiceBlock::Locked)
     }
 
     fn switch_channel_asks(&self, guild: Id, channel: Id) -> bool {

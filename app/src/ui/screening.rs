@@ -150,7 +150,7 @@ impl Root {
         self.current_guild().is_some_and(|guild| guild.my_pending)
     }
 
-    fn open_screening(&mut self, cx: &mut Context<Self>) {
+    pub(super) fn open_screening(&mut self, cx: &mut Context<Self>) {
         let Some(guild) = self.guild else { return };
         self.screening = Some(Screening {
             guild,

@@ -12,7 +12,10 @@ use tokio::sync::mpsc;
 use tracing::warn;
 
 pub enum Update {
-    SpotifyReply { request: u64, reply: crate::spotify::Reply },
+    SpotifyReply {
+        request: u64,
+        reply: crate::spotify::Reply,
+    },
     GatewayConnected(bool),
     /// The local RPC server: a game connected, set or cleared its activity, or left (`dc-rpc`).
     Rpc(dc_rpc::Event),
@@ -133,10 +136,15 @@ pub enum Update {
     },
     /// The gateway closed with 4004 or a request came back 401: the stored login is dead.
     AuthFailed,
+    /// A request was refused because the account has limited access (module 218642).
+    LimitedAccess,
     /// `PATCH /users/@me` answered with a new token (a password change): the shell keeps it where the login is
     /// kept (`UPDATE_TOKEN`, module 631670 `KD`).
     TokenRenewed(Token),
 }
+
+/// The key of a message edit's answer: `message-edit:{channel}:{message}`.
+pub const EDIT_KEY: &str = "message-edit:";
 
 pub enum Request {
     Spotify(crate::spotify::Command),
@@ -216,6 +224,12 @@ pub enum Request {
         key: String,
         route: String,
     },
+    /// GET a public JSON file (no authorization) and hand it back under `key` as `Update::Fetched`; a failure hands back
+    /// `null`.
+    FetchPublicJson {
+        key: String,
+        url: String,
+    },
     /// Conditionally GET a public CDN JSON list and parse it off the UI thread.
     FetchCdn {
         key: String,
@@ -274,6 +288,8 @@ pub enum Request {
         waveform: String,
         reply: Option<(Option<u64>, u64, bool)>,
     },
+    /// `PATCH /channels/{channel}/messages/{message}`; the answer comes back as `Update::Fetched` under
+    /// [`EDIT_KEY`]`{channel}:{message}`.
     Edit {
         channel: u64,
         message: u64,
@@ -658,6 +674,7 @@ impl Request {
             Request::Schedule { .. } => "Schedule",
             Request::Fetch { .. } => "Fetch",
             Request::FetchCdn { .. } => "FetchCdn",
+            Request::FetchPublicJson { .. } => "FetchPublicJson",
             Request::Typing { .. } => "Typing",
             Request::React { .. } => "React",
             Request::LoadMessages { .. } => "LoadMessages",
@@ -692,6 +709,7 @@ impl Request {
         match self {
             Request::Fetch { .. }
             | Request::FetchCdn { .. }
+            | Request::FetchPublicJson { .. }
             | Request::LoadMessages { .. }
             | Request::FetchMessages { .. }
             | Request::SoundboardSounds { .. }
@@ -812,7 +830,10 @@ pub(crate) fn inert_refuses(request: &Request, updates: &mpsc::UnboundedSender<U
         let _ = updates.send(Update::Fetched { key, body });
     }
     if let Request::Spotify(crate::spotify::Command::Perform { request, .. }) = request {
-        let _ = updates.send(Update::SpotifyReply { request: *request, reply: crate::spotify::Reply::Refused });
+        let _ = updates.send(Update::SpotifyReply {
+            request: *request,
+            reply: crate::spotify::Reply::Refused,
+        });
     }
     // A send the view shows as a row ends as a failed message, as one whose request never got an answer does.
     if let Request::SendLocal { nonce, channel, .. } = request {
@@ -1363,10 +1384,15 @@ pub async fn run(token: Token, updates: mpsc::UnboundedSender<Update>, requests:
     } = requests;
     let identity = Identity::new();
     let dead = updates.clone();
+    let limited = updates.clone();
     let client = match Client::new(token.clone(), identity.clone()).map(|client| {
-        client.on_unauthorized(move || {
-            let _ = dead.send(Update::AuthFailed);
-        })
+        client
+            .on_unauthorized(move || {
+                let _ = dead.send(Update::AuthFailed);
+            })
+            .on_limited_access(move || {
+                let _ = limited.send(Update::LimitedAccess);
+            })
     }) {
         Ok(client) => Arc::new(client),
         Err(error) => {
@@ -1440,7 +1466,10 @@ pub async fn run(token: Token, updates: mpsc::UnboundedSender<Update>, requests:
                 if let Some(worker) = &spotify {
                     worker.request(command);
                 } else if let crate::spotify::Command::Perform { request, .. } = command {
-                    let _ = updates.send(Update::SpotifyReply { request, reply: crate::spotify::Reply::Refused });
+                    let _ = updates.send(Update::SpotifyReply {
+                        request,
+                        reply: crate::spotify::Reply::Refused,
+                    });
                 }
             }
             Request::LoadMessages { channel } => {
@@ -1593,15 +1622,29 @@ pub async fn run(token: Token, updates: mpsc::UnboundedSender<Update>, requests:
                 message,
                 content,
             } => {
+                // The answer comes back (`MESSAGE_END_EDIT {response}` and `MESSAGE_EDIT_FAILED_AUTOMOD` of
+                // `editMessage`, module 138399) under `message-edit:{channel}:{message}`, shaped like `Request::Rest`'s.
                 tokio::spawn(async move {
                     let route = format!("/channels/{channel}/messages/{message}");
                     let body = json!({"content": content});
-                    if let Err(error) = client
+                    let report = match client
                         .request(reqwest::Method::PATCH, &route, Some(&body))
                         .await
                     {
-                        warn!("editing failed: {error}");
-                    }
+                        Ok(value) => json!({"ok": true, "status": 200, "body": value}),
+                        Err(dc_http::Error::Status { status, body, .. }) => {
+                            warn!("editing failed: {status}");
+                            json!({"ok": false, "status": status.as_u16(), "body": body})
+                        }
+                        Err(error) => {
+                            warn!("editing failed: {error}");
+                            json!({"ok": false, "status": 0, "body": null})
+                        }
+                    };
+                    let _ = updates.send(Update::Fetched {
+                        key: format!("{EDIT_KEY}{channel}:{message}"),
+                        body: report,
+                    });
                 });
             }
             Request::Delete { channel, message } => {
@@ -1980,6 +2023,23 @@ pub async fn run(token: Token, updates: mpsc::UnboundedSender<Update>, requests:
                             let _ = updates.send(Update::Fetched { key, body });
                         }
                     }
+                });
+            }
+            Request::FetchPublicJson { key, url } => {
+                tokio::spawn(async move {
+                    let body = match client.fetch_public(&url).await {
+                        Ok(bytes) => {
+                            serde_json::from_slice::<Value>(&bytes).unwrap_or_else(|error| {
+                                warn!("public json not parsed: {error}");
+                                Value::Null
+                            })
+                        }
+                        Err(error) => {
+                            warn!("public json fetch failed: {error}");
+                            Value::Null
+                        }
+                    };
+                    let _ = updates.send(Update::Fetched { key, body });
                 });
             }
             Request::FetchCdn { key, url, etag } => {

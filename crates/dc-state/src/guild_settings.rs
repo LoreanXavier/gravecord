@@ -161,6 +161,15 @@ impl GuildSettingsStore {
         })
     }
 
+    /// `resolvedMessageNotifications(channel)`: the channel's own level unless it inherits, then its category's, then
+    /// the server's.
+    pub fn resolved(&self, guild: Id, channel: Id, category: Option<Id>) -> u64 {
+        match self.channel(guild, channel).message_notifications {
+            INHERIT => self.inherited(guild, category),
+            level => level,
+        }
+    }
+
     pub fn channel_muted(&self, guild: Id, channel: Id, now: DateTime<Utc>) -> bool {
         let own = self.channel(guild, channel);
         mute_active(own.muted, own.mute_end, now)
@@ -185,6 +194,10 @@ mod tests {
         }));
         assert_eq!(store.channel(1, 5).message_notifications, 1);
         assert_eq!(store.inherited(1, None), ALL_MESSAGES);
+        // `resolvedMessageNotifications`: own level, else the category's, else the server's.
+        assert_eq!(store.resolved(1, 5, None), 1);
+        assert_eq!(store.resolved(1, 7, None), ALL_MESSAGES);
+        assert_eq!(store.resolved(1, 7, Some(5)), 1);
         assert_eq!(store.inherited(1, Some(5)), ONLY_MENTIONS);
         let before = DateTime::parse_from_rfc3339("2026-11-08T01:40:00Z")
             .unwrap()

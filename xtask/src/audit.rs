@@ -213,7 +213,7 @@ fn dump_sources(dumps: &Path) -> Result<Vec<String>> {
     Ok(sources)
 }
 
-pub fn run(repo: &Path) -> Result<()> {
+pub fn run(repo: &Path, update_ledger: bool) -> Result<()> {
     let text = fs::read_to_string(repo.join("FEATURES.md"))?;
     let current = rows(&text)?;
     let mut errors = check_rows(&current);
@@ -252,6 +252,7 @@ pub fn run(repo: &Path) -> Result<()> {
     }
     let done = done_rows.len();
     println!("{} rows, {done} done", current.len());
+    errors.extend(crate::coverage::errors(repo, update_ledger)?);
     let missing: Vec<&str> = REQUIRED_DUMPS
         .into_iter()
         .filter(|name| {

@@ -212,16 +212,81 @@ const KNOWN_GAMES: &[KnownGameMeta] = &[
     },
 ];
 
-/// Module 761915 preset tags exposed on Favorite Game / Games in Rotation cards.
-pub(in crate::ui) fn tag_choices() -> [(&'static str, &'static str); 5] {
+/// One group of `Pb` (module 126601) as the tag picker of module 55999 lists it: its label, whether it is one choice
+/// (`radio`, with a "None" row) or several (`checkbox`), and its tags in order.
+pub(in crate::ui) struct TagGroup {
+    pub label: &'static str,
+    pub radio: bool,
+    pub tags: &'static [&'static str],
+}
+
+/// `Pb` of module 126601 over the tag ids of module 761915: Skill level (one of four), Rating and Looking for (any of five
+/// each).
+pub(in crate::ui) fn tag_groups() -> [TagGroup; 3] {
     [
-        ("casual", dc_intl::t!("YY79oH")),
-        ("master", dc_intl::t!("AHqj6c")),
-        ("obsessed", dc_intl::t!("isPJDu")),
-        ("open_to_play", dc_intl::t!("q30PoH")),
-        ("looking_for_group", dc_intl::t!("DWWAAQ")),
+        TagGroup {
+            label: dc_intl::t!("MKqADM"),
+            radio: true,
+            tags: &["casual", "intermediate", "expert", "better_than_you"],
+        },
+        TagGroup {
+            label: dc_intl::t!("7/umul"),
+            radio: false,
+            tags: &[
+                "obsessed",
+                "love_it",
+                "kind_of_love_it",
+                "kind_of_hate_it",
+                "rage_quitting",
+            ],
+        },
+        TagGroup {
+            label: dc_intl::t!("5Dez17"),
+            radio: false,
+            tags: &[
+                "looking_for_group",
+                "open_to_play",
+                "looking_for_tips",
+                "open_to_teach",
+                "looking_to_discuss",
+            ],
+        },
     ]
 }
+
+/// `pK` of module 126601: a radio group's tag replaces the group's other tag (and stays chosen when chosen again), a
+/// check box tag is added or taken away; the others keep their order.
+pub(in crate::ui) fn toggle_tag(tags: &[String], tag: &str) -> Vec<String> {
+    let groups = tag_groups();
+    match groups.iter().find(|group| group.tags.contains(&tag)) {
+        Some(group) if group.radio => {
+            let mut next = clear_tags(tags, group.tags);
+            next.push(tag.to_owned());
+            next
+        }
+        _ if tags.iter().any(|existing| existing == tag) => tags
+            .iter()
+            .filter(|existing| *existing != tag)
+            .cloned()
+            .collect(),
+        _ => {
+            let mut next = tags.to_vec();
+            next.push(tag.to_owned());
+            next
+        }
+    }
+}
+
+/// `LQ` of module 126601 (the radio group's "None"): the group's tags taken away.
+pub(in crate::ui) fn clear_tags(tags: &[String], group: &[&str]) -> Vec<String> {
+    tags.iter()
+        .filter(|existing| !group.contains(&existing.as_str()))
+        .cloned()
+        .collect()
+}
+
+/// The id the skill level's "None" row stands for in `profile_editor_toggle_game_tag`.
+const SKILL_NONE: &str = "none:skill_level";
 
 pub(in crate::ui) fn featured_app(id: &str) -> Option<(&'static str, String)> {
     FEATURED
@@ -826,11 +891,11 @@ impl Root {
                 .iter_mut()
                 .find(|existing| existing.game_id == game_id)
         {
-            if let Some(pos) = game.tags.iter().position(|existing| existing == tag_id) {
-                game.tags.remove(pos);
-            } else if game.tags.len() < 3 {
-                game.tags.push(tag_id.to_owned());
-            }
+            game.tags = if tag_id == SKILL_NONE {
+                clear_tags(&game.tags, tag_groups()[0].tags)
+            } else {
+                toggle_tag(&game.tags, tag_id)
+            };
         }
         self.profile_editor_sync_widgets_pending();
         cx.notify();
@@ -1348,15 +1413,43 @@ impl Root {
                                                 .border_color(palette.token("--border-muted"))
                                                 .child(comment_ed),
                                         )
-                                        .child(
+                                        // The picker of module 55999 lists the groups of `Pb` (module 126601) under
+                                        // their labels; the skill level is one choice with a None row.
+                                        .children(tag_groups().into_iter().map(|group| {
+                                            let chosen = |tag: &str| active_tags.iter().any(|t| t == tag);
+                                            let none = group.radio.then(|| {
+                                                (
+                                                    SKILL_NONE,
+                                                    dc_intl::t!("PoWNfe"),
+                                                    !group.tags.iter().any(|tag| chosen(tag)),
+                                                )
+                                            });
+                                            let rows: Vec<(&'static str, &'static str, bool)> = none
+                                                .into_iter()
+                                                .chain(group.tags.iter().filter_map(|tag| {
+                                                    let (label, _) =
+                                                        crate::ui::profile_board::game_tag(tag)?;
+                                                    Some((*tag, label, chosen(tag)))
+                                                }))
+                                                .collect();
+                                            div()
+                                                .flex()
+                                                .flex_col()
+                                                .gap(px(4.))
+                                                .child(
+                                                    div()
+                                                        .text_size(px(12.))
+                                                        .line_height(px(16.))
+                                                        .font_weight(FontWeight(500.))
+                                                        .text_color(palette.token("--text-muted"))
+                                                        .child(group.label),
+                                                )
+                                                .child(
                                             div()
                                                 .flex()
                                                 .flex_wrap()
                                                 .gap(px(6.))
-                                                .children(tag_choices().into_iter().map(|(tag_id, label)| {
-                                                    let selected = active_tags
-                                                        .iter()
-                                                        .any(|t| t == tag_id);
+                                                .children(rows.into_iter().map(|(tag_id, label, selected)| {
                                                     let tag_owned = tag_id.to_owned();
                                                     let gid = gid_tag.clone();
                                                     div()
@@ -1400,7 +1493,8 @@ impl Root {
                                                             },
                                                         ))
                                                 })),
-                                        ),
+                                                )
+                                        })),
                                 ),
                         )
                         .into_any_element()

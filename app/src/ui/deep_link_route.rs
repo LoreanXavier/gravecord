@@ -8,6 +8,9 @@ use crate::deep_link::{self, Route};
 use dc_state::ChannelKind;
 use gpui::Context;
 
+/// The key of the fetch that checks a linked channel this client has not loaded: `{guild}:{channel}:{message or 0}`.
+pub(crate) const CHANNEL_CHECK_KEY: &str = "link-channel-check:";
+
 /// What a link did.
 #[derive(Debug, PartialEq, Eq)]
 pub(crate) enum Outcome {
@@ -107,7 +110,7 @@ impl Root {
         if deep_link::parse_protocol(url).is_none() && matches!(route, Route::Other(_)) {
             return false;
         }
-        let outcome = self.open_route(route, cx);
+        let outcome = self.open_routed(route, cx);
         tracing::info!(outcome = %outcome.label(), "link opened in the app");
         cx.notify();
         true
@@ -119,7 +122,7 @@ impl Root {
         let Some(link) = deep_link::parse(url) else {
             return "link: not a link of the app".to_owned();
         };
-        let outcome = self.open_route(deep_link::route(&link), cx);
+        let outcome = self.open_routed(deep_link::route(&link), cx);
         cx.notify();
         format!(
             "link: {} (guild={:?} channel={:?})",
@@ -183,6 +186,103 @@ impl Root {
                 root.update(cx, |root, cx| open(root, window, cx));
             });
         });
+    }
+
+    /// `open_route`, then what module 362280 does when the place is not there: a server the account is not in, or a
+    /// channel, thread or DM it cannot see, shows "You don't have access to this link." (module 763969, `kind`
+    /// "channel" through `showInaccessibleLinkModal` of 9588).
+    fn open_routed(&mut self, route: Route, cx: &mut Context<Self>) -> Outcome {
+        // A channel of a known server that is not loaded may be a thread the list does not hold yet: like
+        // `loadThread`, it is fetched first, and only a failed fetch shows the dialog.
+        let unloaded = match &route {
+            Route::Channel {
+                guild: Some(guild),
+                channel,
+                message,
+            } if self.knows_guild(*guild) && self.guild_holding(*channel).is_none() => {
+                Some((*guild, *channel, *message))
+            }
+            Route::Thread {
+                guild,
+                thread,
+                message,
+                ..
+            } if self.knows_guild(*guild) && self.guild_holding(*thread).is_none() => {
+                Some((*guild, *thread, *message))
+            }
+            _ => None,
+        };
+        if let Some((guild, channel, message)) = unloaded {
+            let _ = self.requests.send(crate::net::Request::Fetch {
+                key: format!(
+                    "{CHANNEL_CHECK_KEY}{guild}:{channel}:{}",
+                    message.unwrap_or(0)
+                ),
+                route: format!("/channels/{channel}"),
+            });
+            return Outcome::Missing("channel (asked the server)");
+        }
+        let routed_place = matches!(
+            route,
+            Route::Guild(_)
+                | Route::Channel { .. }
+                | Route::Thread { .. }
+                | Route::GuildPage { .. }
+        );
+        let outcome = self.open_route(route, cx);
+        if routed_place && matches!(outcome, Outcome::Missing(_)) {
+            self.show_inaccessible_link(false);
+        }
+        outcome
+    }
+
+    /// The answer about a linked channel that was not loaded: a thread of that server joins the list and the link
+    /// opens it; anything else is a place the account cannot see.
+    pub(super) fn link_channel_checked(
+        &mut self,
+        rest: &str,
+        body: &serde_json::Value,
+        cx: &mut Context<Self>,
+    ) {
+        let mut parts = rest.split(':').map(|part| part.parse::<Id>().ok());
+        let (Some(Some(guild)), Some(Some(channel)), Some(Some(message))) =
+            (parts.next(), parts.next(), parts.next())
+        else {
+            return;
+        };
+        let thread = body["fetch_failed"].as_bool() != Some(true)
+            && body["guild_id"].as_str() == Some(guild.to_string().as_str())
+            && matches!(body["type"].as_u64(), Some(10..=12));
+        if thread {
+            self.stores.dispatch("THREAD_CREATE", body);
+            let message = (message != 0).then_some(message);
+            match message {
+                Some(message) => self.jump_to_message_id(channel, message, true, None),
+                None => self.select(guild, Some(channel)),
+            }
+        } else {
+            self.show_inaccessible_link(false);
+        }
+        cx.notify();
+    }
+
+    /// Module 763969: the title, the subtitle for a user or for a server or channel, and Okay.
+    pub(super) fn show_inaccessible_link(&mut self, user: bool) {
+        self.chat_extra.alert = Some(super::chat_notices::Alert::show(
+            "inaccessible-link",
+            dc_intl::tr("You don't have access to this link."),
+            Some(
+                dc_intl::tr(if user {
+                    "This link is to a user you don't have access to."
+                } else {
+                    "This link is to a server or channel you don't have access to."
+                })
+                .to_owned(),
+            ),
+            None,
+            None,
+            super::chat_notices::Then::Close,
+        ));
     }
 
     fn open_route(&mut self, route: Route, cx: &mut Context<Self>) -> Outcome {

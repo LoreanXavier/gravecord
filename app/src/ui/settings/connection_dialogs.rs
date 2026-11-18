@@ -262,6 +262,14 @@ fn landing(kind: &str) -> Landing {
     }
 }
 
+/// The error slide's picture (module 478474: `illustration_N-Y7ZJ`, module 332633, 254 by 127).
+const ERROR_ART: (&str, &str, f32, f32) = (
+    "conn-error",
+    "https://discord.com/assets/a37490430fba083d.png",
+    254.,
+    127.,
+);
+
 /// Every picture the info dialogs draw, as `(name, url)`: requested when a dialog opens.
 fn art_of(kind: &str) -> Vec<(&'static str, &'static str)> {
     let l = landing(kind);
@@ -269,6 +277,7 @@ fn art_of(kind: &str) -> Vec<(&'static str, &'static str)> {
         (l.art.0, l.art.1),
         (l.connect.0.0, l.connect.0.1),
         (l.waiting.0.0, l.waiting.0.1),
+        (ERROR_ART.0, ERROR_ART.1),
     ]
 }
 
@@ -335,6 +344,22 @@ fn new_editor(
 }
 
 impl Root {
+    /// Harness only: `connect-error <xbox|playstation|crunchyroll>` opens that dialog with its authorize request
+    /// failed, as a refused `GET /connections/<type>/authorize` leaves it (the error slide of module 478474).
+    #[cfg(feature = "capture")]
+    pub(crate) fn script_connect_error(&mut self, kind: &str, cx: &mut Context<Self>) -> String {
+        let kind: &'static str = match kind {
+            "xbox" => "xbox",
+            "playstation" => "playstation",
+            "crunchyroll" => "crunchyroll",
+            _ => return "usage: connect-error xbox|playstation|crunchyroll".to_owned(),
+        };
+        self.open_settings_page("connections", cx);
+        self.open_connection_dialog(kind, cx);
+        self.connection_authorized(false, cx);
+        format!("connect-error: {kind} on its error slide")
+    }
+
     /// A connection button whose first step is a dialog of its own (module 80320).
     pub(in crate::ui) fn open_connection_dialog(
         &mut self,
@@ -1064,12 +1089,15 @@ impl Root {
                 let (spec, heading, text) = match slide {
                     Slide::Connect => data.connect,
                     Slide::Waiting => data.waiting,
-                    _ => (data.art, data.error.0, data.error.1),
+                    _ => (ERROR_ART, data.error.0, data.error.1),
                 };
                 let waiting = slide == Slide::Waiting;
+                // The error slide (module 478474) offers "Try Again" with the window launch icon, back to the
+                // pre-connect slide (`gotoNext` of module 670404 from ERROR).
                 let label = match slide {
                     Slide::Waiting => dc_intl::tr("Retry"),
-                    Slide::Error => dc_intl::tr("Continue"),
+                    // `4X7vPo`: "Try Again " and the icon's hook.
+                    Slide::Error => dc_intl::tr("Try Again"),
                     _ => dc_intl::tr("Continue"),
                 };
                 let start: fn(&mut Root, &mut Context<Root>) = |this, cx| {
@@ -1124,6 +1152,14 @@ impl Root {
                         .into_any_element(),
                     primary("settings-connect-start", label, start)
                         .w_full()
+                        // `launchIcon_N-Y7ZJ`: the 16px WindowLaunchIcon after the text's space, 1px up.
+                        .when(slide == Slide::Error, |this| {
+                            this.child(div().ml(px(4.)).mt(px(-1.)).child(mask_icon(
+                                "access_launch",
+                                16.,
+                                "--white",
+                            )))
+                        })
                         // `variant: n ? "secondary" : "primary"` (module 873885): Retry is the secondary button.
                         .when(waiting, |this| {
                             this.border_color(color("--border-muted"))

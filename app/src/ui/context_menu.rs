@@ -40,6 +40,8 @@ pub(super) enum Target {
     Category(Id),
     Thread(Id),
     Dm(Id),
+    /// A `#channel` mention in a message (`channel-mention-context`, module 223998).
+    ChannelMention(Id),
     User {
         user: Id,
         guild: Option<Id>,
@@ -100,11 +102,24 @@ pub(super) enum Act {
     PinChannel,
     Favorite,
     OpenChat,
+    /// "Join Without Entrance Sound" (module 217563 `join-muted-custom-join-sound`).
+    JoinQuiet,
+    /// "Report Stage" (module 304694): a live Stage's report.
+    ReportStage,
     HideNames,
     /// "Clear Channel Status" (module 671483 `clear-status`): `updateVoiceChannelStatus(id, "")`.
     ClearStatus,
     CloseThread,
+    /// "Open Thread" / "Open Post" of an archived thread (module 182061 `unarchiveThread`).
+    OpenThread,
     LockThread,
+    /// "Unlock Thread" / "Unlock post" (module 707792 `unlockThread`).
+    UnlockThread,
+    /// "Pin Post" / "Unpin Post" of a forum post (module 41402).
+    PinPost,
+    UnpinPost,
+    /// "Anyone can invite" of a private thread (module 707653 `toggle-thread-invitable`).
+    ToggleInvitable,
     LeaveThread,
     /// "Join Thread" (module 660273): `joinThread`, shown for a thread the account has not joined.
     JoinThread,
@@ -197,7 +212,7 @@ impl Act {
     /// Every row kind once (`Correction` with its first index). `ordinal` is an exhaustive match, so adding a variant
     /// without listing it here fails the build or the `act_list_is_complete` test.
     #[cfg(test)]
-    pub(super) const ALL: [Act; 98] = [
+    pub(super) const ALL: [Act; 105] = [
         Act::InventoryAbout,
         Act::InventoryHide,
         Act::ReportApp,
@@ -223,6 +238,8 @@ impl Act {
         Act::PinChannel,
         Act::Favorite,
         Act::OpenChat,
+        Act::JoinQuiet,
+        Act::ReportStage,
         Act::HideNames,
         Act::ClearStatus,
         Act::CloseThread,
@@ -296,6 +313,11 @@ impl Act {
         Act::AiTranslate,
         Act::AiTransforms,
         Act::ReportWidget,
+        Act::OpenThread,
+        Act::UnlockThread,
+        Act::PinPost,
+        Act::UnpinPost,
+        Act::ToggleInvitable,
     ];
 
     #[cfg(test)]
@@ -399,6 +421,13 @@ impl Act {
             Act::AiTranslate => 95,
             Act::AiTransforms => 96,
             Act::ReportWidget => 97,
+            Act::OpenThread => 98,
+            Act::UnlockThread => 99,
+            Act::PinPost => 100,
+            Act::UnpinPost => 101,
+            Act::JoinQuiet => 102,
+            Act::ReportStage => 103,
+            Act::ToggleInvitable => 104,
         }
     }
 }
@@ -415,6 +444,7 @@ pub(super) fn status(act: Act) -> Status {
     use Status::Wired;
     match act {
         Act::PinDm | Act::Favorite | Act::MoveTo | Act::PinChannel | Act::HideNames => Wired,
+        Act::JoinQuiet | Act::ReportStage => Wired,
         Act::Apps => Wired,
         Act::ModView => Wired,
         Act::InventoryAbout
@@ -452,7 +482,12 @@ pub(super) fn status(act: Act) -> Status {
         | Act::CollapseAll
         | Act::OpenChat
         | Act::CloseThread
+        | Act::OpenThread
         | Act::LockThread
+        | Act::UnlockThread
+        | Act::PinPost
+        | Act::UnpinPost
+        | Act::ToggleInvitable
         | Act::LeaveThread
         | Act::JoinThread
         | Act::Profile
@@ -972,6 +1007,11 @@ pub(super) struct ChannelFacts {
     pub hide_names: bool,
     /// A voice channel with a status that the manager, outside the channel, may clear (module 671483).
     pub clear_status: bool,
+    /// Join Without Entrance Sound (module 217563): a voice or Stage channel the account may connect to and is not in,
+    /// with an entrance sound set for this guild or everywhere.
+    pub join_quiet: bool,
+    /// Report Stage (module 304694): a Stage channel whose Stage is live.
+    pub report_stage: bool,
 }
 
 pub(super) fn channel_items(facts: ChannelFacts, level: &str) -> Vec<Entry> {
@@ -997,8 +1037,13 @@ pub(super) fn channel_items(facts: ChannelFacts, level: &str) -> Vec<Entry> {
     share.push(Row::new(Act::CopyLink, dc_intl::tr("Copy Link")));
     group(&mut out, share);
     if facts.voice {
-        // The status row sits between Open Chat and Hide Names (`voice-actions` of module 428631).
-        let mut voice = vec![Row::new(Act::OpenChat, dc_intl::tr("Open Chat"))];
+        // `voice-actions` of module 428631: Join Without Entrance Sound, Open Chat, the status row, Hide Names, then
+        // Report Stage.
+        let mut voice = Vec::new();
+        if facts.join_quiet {
+            voice.push(Row::new(Act::JoinQuiet, dc_intl::t("saLMWc")));
+        }
+        voice.push(Row::new(Act::OpenChat, dc_intl::tr("Open Chat")));
         if facts.clear_status {
             voice.push(Row::new(
                 Act::ClearStatus,
@@ -1006,6 +1051,13 @@ pub(super) fn channel_items(facts: ChannelFacts, level: &str) -> Vec<Entry> {
             ));
         }
         voice.push(Row::new(Act::HideNames, dc_intl::tr("Hide Names")).check(facts.hide_names));
+        if facts.report_stage {
+            voice.push(
+                Row::new(Act::ReportStage, dc_intl::t("JGj6Ci"))
+                    .icon("menu_flag")
+                    .danger(),
+            );
+        }
         group(&mut out, voice);
     }
     // A voice channel's menu has no Notification Settings (its capture, `voice-row`).
@@ -1049,7 +1101,63 @@ pub(super) fn channel_items(facts: ChannelFacts, level: &str) -> Vec<Entry> {
     tidy(out)
 }
 
+/// Module 113255 (`CHANNEL_ACTIVITY_FEED_VOICE_MENU`, "Channel Actions"): a voice channel's menu in Active Now. Edit
+/// Channel; Invite to Voice, Duplicate Channel, Create Voice Channel; Delete Channel; Copy Channel ID (the hooks of
+/// modules 317910, 475777, 533957, 477190, 307623 and 50268, each behind its own permission).
+pub(super) fn activity_voice_items(
+    can_manage: bool,
+    can_invite: bool,
+    developer: bool,
+) -> Vec<Entry> {
+    let mut out = Vec::new();
+    if can_manage {
+        group(
+            &mut out,
+            vec![Row::new(Act::EditChannel, dc_intl::tr("Edit Channel"))],
+        );
+    }
+    let mut actions = Vec::new();
+    if can_invite {
+        actions.push(Row::new(Act::Invite, dc_intl::tr("Invite to Voice")));
+    }
+    if can_manage {
+        actions.push(Row::new(Act::Duplicate, dc_intl::tr("Duplicate Channel")));
+        actions.push(Row::new(
+            Act::CreateChannel,
+            dc_intl::tr("Create Voice Channel"),
+        ));
+    }
+    group(&mut out, actions);
+    if can_manage {
+        group(
+            &mut out,
+            vec![Row::new(Act::DeleteChannel, dc_intl::tr("Delete Channel")).danger()],
+        );
+    }
+    if developer {
+        group(
+            &mut out,
+            vec![Row::new(Act::CopyId, dc_intl::tr("Copy Channel ID"))],
+        );
+    }
+    tidy(out)
+}
+
 /// The menu of the Favorites star (frame menus2/favorites-rail-menu).
+/// `channel-mention-context` (module 223998): Copy Link with the link icon, then the developer Copy Channel ID.
+pub(super) fn channel_mention_items(developer: bool) -> Vec<Entry> {
+    let mut out = vec![Entry::Row(
+        Row::new(Act::CopyLink, dc_intl::tr("Copy Link")).icon("menu_copy_message_link"),
+    )];
+    if developer {
+        group(
+            &mut out,
+            vec![Row::new(Act::CopyId, dc_intl::tr("Copy Channel ID")).icon("menu_id")],
+        );
+    }
+    tidy(out)
+}
+
 pub(super) fn favorites_items() -> Vec<Entry> {
     let mut out = vec![Entry::Row(
         Row::new(Act::FavoritesSettings, dc_intl::tr("Thread Settings")).icon("menu_create_thread"),
@@ -1146,14 +1254,55 @@ pub(super) fn category_items(
     tidy(out)
 }
 
-pub(super) fn thread_items(
-    unread: bool,
-    manage: bool,
-    owner: bool,
-    joined: bool,
-    developer: bool,
-    level: &str,
-) -> Vec<Entry> {
+/// What the thread menu (`thread-context`, module 949488) depends on.
+#[derive(Clone, Copy, Debug, Default)]
+pub(super) struct ThreadFacts {
+    pub unread: bool,
+    /// MANAGE_THREADS in the parent.
+    pub manage: bool,
+    pub owner: bool,
+    pub joined: bool,
+    pub developer: bool,
+    pub archived: bool,
+    pub locked: bool,
+    /// The parent is a forum or media channel (`isForumPost`): the rows say "Post" instead of "Thread".
+    pub forum_post: bool,
+    /// The post carries the PINNED flag (`1 << 1`).
+    pub pinned: bool,
+    /// SEND_MESSAGES and SEND_MESSAGES_IN_THREADS in the thread and its parent (`L` of module 406704).
+    pub can_send: bool,
+    /// A post of a media channel (`isMediaThread`): it never offers Open.
+    pub media: bool,
+    /// A private thread (type 12) and its `thread_metadata.invitable`.
+    pub private_thread: bool,
+    pub invitable: bool,
+}
+
+/// `lK` of module 406704 (`R(thread, canSend, manage)`): an archived thread may be opened again by whoever can send in
+/// it, a locked one only with MANAGE_THREADS; never a media post.
+fn can_unarchive(facts: ThreadFacts) -> bool {
+    !facts.media
+        && if facts.locked {
+            facts.manage
+        } else {
+            facts.can_send
+        }
+}
+
+/// `label` for a thread, or `post` for a forum post (`isForumPost()` of the thread menu's rows).
+fn post_or(facts: ThreadFacts, post: &str, thread: &str) -> String {
+    if facts.forum_post { post } else { thread }.to_owned()
+}
+
+pub(super) fn thread_items(facts: ThreadFacts, level: &str) -> Vec<Entry> {
+    let ThreadFacts {
+        unread,
+        manage,
+        owner,
+        joined,
+        developer,
+        ..
+    } = facts;
     let mut out = vec![Entry::Row(
         Row::new(Act::MarkRead, dc_intl::tr("Mark As Read")).disabled(!unread),
     )];
@@ -1163,43 +1312,116 @@ pub(super) fn thread_items(
     );
     let mut own = Vec::new();
     if !joined {
-        own.push(Row::new(Act::JoinThread, dc_intl::tr("Join Thread")));
+        // Module 660273: "Follow Post" for a forum post.
+        own.push(Row::new(
+            Act::JoinThread,
+            post_or(
+                facts,
+                dc_intl::tr("Follow Post"),
+                dc_intl::tr("Join Thread"),
+            ),
+        ));
     }
-    if manage || owner {
-        own.push(Row::new(Act::CloseThread, dc_intl::tr("Close Thread")));
+    // Module 182061: an archived thread opens again (`unarchiveThread`, gated by `lK`), an active one closes
+    // (`archiveThread`, gated by `NI`: Manage Threads or the thread's owner).
+    if facts.archived && can_unarchive(facts) {
+        own.push(Row::new(
+            Act::OpenThread,
+            post_or(facts, dc_intl::tr("Open Post"), dc_intl::tr("Open Thread")),
+        ));
+    } else if !facts.archived && (manage || owner) {
+        own.push(Row::new(
+            Act::CloseThread,
+            post_or(
+                facts,
+                dc_intl::tr("Close Post"),
+                dc_intl::tr("Close Thread"),
+            ),
+        ));
     }
     if manage {
-        own.push(Row::new(Act::LockThread, dc_intl::tr("Lock Thread")));
+        // Module 707792: Lock or Unlock by `isLockedThread()`.
+        own.push(if facts.locked {
+            Row::new(
+                Act::UnlockThread,
+                post_or(
+                    facts,
+                    dc_intl::tr("Unlock post"),
+                    dc_intl::tr("Unlock Thread"),
+                ),
+            )
+        } else {
+            Row::new(
+                Act::LockThread,
+                post_or(facts, dc_intl::tr("Lock Post"), dc_intl::tr("Lock Thread")),
+            )
+        });
     }
     if manage || owner {
-        own.push(Row::new(Act::EditChannel, dc_intl::tr("Edit Thread")));
+        // Module 200273.
+        own.push(Row::new(
+            Act::EditChannel,
+            post_or(facts, dc_intl::tr("Edit Post"), dc_intl::tr("Edit Thread")),
+        ));
     }
     own.push(Row::new(Act::CopyLink, dc_intl::tr("Copy Link")));
     group(&mut out, own);
+    let mute = post_or(facts, dc_intl::tr("Mute Post"), dc_intl::tr("Mute Thread"));
     group(
         &mut out,
         vec![
             // `mute-disabled` (module 57907) until the account has joined the thread.
             if joined {
-                Row::new(Act::Mute, dc_intl::tr("Mute Thread")).caret()
+                Row::new(Act::Mute, mute).caret()
             } else {
-                Row::new(Act::Mute, dc_intl::tr("Mute Thread")).disabled(true)
+                Row::new(Act::Mute, mute).disabled(true)
             },
             Row::new(Act::Notifications, dc_intl::tr("Notification Settings"))
                 .sub(level)
                 .caret(),
         ],
     );
-    if manage || owner {
-        group(
-            &mut out,
-            vec![Row::new(Act::DeleteChannel, dc_intl::tr("Delete Thread")).danger()],
+    // `admin-actions`: Anyone can invite (module 707653: a private thread, with MANAGE_THREADS), Pin Post (module
+    // 41402: a post of a forum, with MANAGE_THREADS), then Delete (307623).
+    let mut admin = Vec::new();
+    if facts.private_thread && manage {
+        admin.push(
+            Row::new(Act::ToggleInvitable, dc_intl::tr("Anyone can invite")).check(facts.invitable),
         );
     }
+    if facts.forum_post && manage {
+        admin.push(if facts.pinned {
+            Row::new(Act::UnpinPost, dc_intl::tr("Unpin Post"))
+        } else {
+            Row::new(Act::PinPost, dc_intl::tr("Pin Post"))
+        });
+    }
+    if manage || owner {
+        admin.push(
+            Row::new(
+                Act::DeleteChannel,
+                post_or(
+                    facts,
+                    dc_intl::tr("Delete Post"),
+                    dc_intl::tr("Delete Thread"),
+                ),
+            )
+            .danger(),
+        );
+    }
+    group(&mut out, admin);
     if joined {
+        // Module 804006: "Unfollow Post" for a forum post.
         group(
             &mut out,
-            vec![Row::new(Act::LeaveThread, dc_intl::tr("Leave Thread"))],
+            vec![Row::new(
+                Act::LeaveThread,
+                post_or(
+                    facts,
+                    dc_intl::tr("Unfollow Post"),
+                    dc_intl::tr("Leave Thread"),
+                ),
+            )],
         );
     }
     if developer {
@@ -1679,6 +1901,8 @@ pub(super) struct State {
     pub voice_row: bool,
     /// Module 107632 `showStageChannelItems: true` (Stage speaker or audience tile).
     pub stage_channel_items: bool,
+    /// The next channel menu is Active Now's voice channel menu (module 113255).
+    pub activity_voice: bool,
     /// Module 107632 `showChatItems: false` (Stage audience tile).
     pub omit_mention: bool,
     /// The game of the card whose "..." is open (`detected` of the Report Issue dialog).
@@ -2010,7 +2234,7 @@ impl Root {
     }
 
     /// The guild a channel belongs to.
-    fn guild_of_channel(&self, channel: Id) -> Option<Id> {
+    pub(super) fn guild_of_channel(&self, channel: Id) -> Option<Id> {
         self.stores.guilds.iter().find_map(|guild| {
             (guild.channels.iter().any(|known| known.id == channel)
                 || guild.threads.iter().any(|known| known.id == channel))
@@ -2308,6 +2532,11 @@ impl Root {
         self.context.voice_row = true;
     }
 
+    /// Marks the next `open_context_menu` of a channel as Active Now's (`handleChannelContextMenu`, module 113255).
+    pub(super) fn context_activity_voice(&mut self) {
+        self.context.activity_voice = true;
+    }
+
     /// Marks the next `open_context_menu` as opened for a Stage speaker tile (`showStageChannelItems: true`).
     pub(super) fn context_stage_tile(&mut self) {
         self.context.voice_row = true;
@@ -2332,6 +2561,7 @@ impl Root {
         let from_voice_row = std::mem::take(&mut self.context.voice_row);
         let stage_channel_items = std::mem::take(&mut self.context.stage_channel_items);
         let omit_mention = std::mem::take(&mut self.context.omit_mention);
+        let activity_voice = std::mem::take(&mut self.context.activity_voice);
         let items = match target {
             Target::SpotifyActivity { user, popout } => spotify_activity_items(
                 self.stores
@@ -2386,6 +2616,7 @@ impl Root {
             Target::GameAddToProfile(game) => self.game_widget_items(game),
             Target::ProfileWidget { .. } => profile_widget_items(),
             Target::Favorites => favorites_items(),
+            Target::ChannelMention(_) => channel_mention_items(developer),
             Target::PickerSticker(sticker) => {
                 picker_sticker_items(self.sticker_favorited(sticker), developer)
             }
@@ -2451,6 +2682,12 @@ impl Root {
                             })
                     });
                     category_items(unread, collapsed, can_manage, developer, level)
+                } else if activity_voice {
+                    activity_voice_items(
+                        can_manage,
+                        self.my_permission(guild, Some(&known), CREATE_INSTANT_INVITE),
+                        developer,
+                    )
                 } else if self.in_favorites() {
                     favorite_channel_items(self.has_unread_or_mentions(id), level)
                 } else {
@@ -2471,6 +2708,14 @@ impl Root {
                         can_invite: self.my_permission(guild, Some(&known), CREATE_INSTANT_INVITE),
                         developer,
                         hide_names: false,
+                        join_quiet: matches!(
+                            known.kind,
+                            ChannelKind::Voice | ChannelKind::Other(13)
+                        ) && !in_channel
+                            && self.my_permission(guild, Some(&known), permissions::CONNECT)
+                            && self.stores.join_sound_set(guild),
+                        report_stage: known.kind == ChannelKind::Other(13)
+                            && self.stores.stage_instances.get_by_channel(id).is_some(),
                     };
                     channel_items(facts, level)
                 }
@@ -2503,11 +2748,28 @@ impl Root {
                 let owner = thread.owner_id.is_some()
                     && thread.owner_id == self.stores.current_user.as_ref().map(|me| me.id);
                 thread_items(
-                    self.has_unread_or_mentions(id),
-                    manage,
-                    owner,
-                    thread.joined,
-                    developer,
+                    ThreadFacts {
+                        unread: self.has_unread_or_mentions(id),
+                        manage,
+                        owner,
+                        joined: thread.joined,
+                        developer,
+                        archived: thread.archived,
+                        locked: thread.locked,
+                        forum_post: parent.as_ref().is_some_and(Channel::is_forum),
+                        pinned: thread.pinned(),
+                        can_send: parent.as_ref().is_some_and(|parent| {
+                            self.my_permission(guild, Some(parent), permissions::SEND_MESSAGES)
+                                && self.my_permission(
+                                    guild,
+                                    Some(parent),
+                                    permissions::SEND_MESSAGES_IN_THREADS,
+                                )
+                        }),
+                        media: parent.as_ref().is_some_and(Channel::is_media),
+                        private_thread: thread.kind == 12,
+                        invitable: thread.invitable,
+                    },
                     level_label(
                         THREAD_LEVELS
                             .iter()
@@ -2565,6 +2827,8 @@ impl Root {
                 }
             }
             Target::User { user, guild } => {
+                // The Apps submenu lists the user commands of the channel's index (module 173500).
+                self.request_command_index();
                 let Some(known) = self
                     .stores
                     .users
@@ -3049,8 +3313,16 @@ impl Root {
                     self.open_create_channel(false, window, cx);
                 }
             }
+            (Act::CopyLink, Target::ChannelMention(channel)) => {
+                let guild = self.guild_of_channel(channel);
+                cx.write_to_clipboard(ClipboardItem::new_string(
+                    super::chat_notices::channel_link(guild, channel, None),
+                ));
+            }
             // Not in the pinned client: CopyUserURLs' "Copy User URL" (`plugin_hooks.rs`).
-            (Act::CopyLink, Target::User { user, .. }) => super::plugin_hooks::copy_user_url(user, cx),
+            (Act::CopyLink, Target::User { user, .. }) => {
+                super::plugin_hooks::copy_user_url(user, cx)
+            }
             (Act::CopyLink, Target::Dm(channel)) => {
                 if let Some(user) = self.dm_user(channel) {
                     super::plugin_hooks::copy_user_url(user, cx);
@@ -3068,7 +3340,8 @@ impl Root {
                     | Target::Channel(id)
                     | Target::Category(id)
                     | Target::Thread(id)
-                    | Target::Dm(id) => id,
+                    | Target::Dm(id)
+                    | Target::ChannelMention(id) => id,
                     Target::User { user, .. }
                     | Target::InventoryAuthor { user }
                     | Target::SpotifyActivity { user, .. }
@@ -3174,22 +3447,54 @@ impl Root {
                     }
                 }
             }
+            // Module 217563: the entrance sound is skipped (`SOUNDBOARD_MUTE_JOIN_SOUND`) and the channel joined. This
+            // client plays no entrance sounds, so the join is the plain one.
+            (Act::JoinQuiet, Target::Channel(channel)) => {
+                if let Some(guild) = self.guild_of_channel(channel) {
+                    self.join_voice(guild, channel, cx);
+                }
+            }
+            (Act::ReportStage, Target::Channel(channel)) => self.open_report_stage(channel, cx),
             (Act::OpenChat, Target::Channel(channel)) => {
                 if let Some(guild) = self.guild_of_channel(channel) {
                     self.select(guild, Some(channel));
                 }
             }
-            (Act::CloseThread | Act::LockThread, Target::Thread(thread)) => {
-                let field = if act == Act::CloseThread {
-                    "archived"
-                } else {
-                    "locked"
+            // Modules 182061 (close / open), 707792 (lock / unlock) and 41402 (pin / unpin), as module 7909 sends them.
+            (
+                Act::CloseThread
+                | Act::OpenThread
+                | Act::LockThread
+                | Act::UnlockThread
+                | Act::UnpinPost,
+                Target::Thread(thread),
+            ) => {
+                use super::chat_notices::ThreadStep;
+                let step = match act {
+                    Act::CloseThread => ThreadStep::Close,
+                    Act::OpenThread => ThreadStep::Open,
+                    Act::LockThread => ThreadStep::Lock,
+                    Act::UnlockThread => ThreadStep::Unlock,
+                    _ => ThreadStep::Unpin,
                 };
+                self.run_thread_step(thread, step);
+            }
+            (Act::PinPost, Target::Thread(thread)) => self.pin_post(thread),
+            // Module 707653: `setInvitable(thread, !invitable)`, `PATCH /channels/:id {invitable}` (module 7909); the
+            // gateway's THREAD_UPDATE brings the new value back.
+            (Act::ToggleInvitable, Target::Thread(thread)) => {
+                let invitable = self
+                    .stores
+                    .guilds
+                    .iter()
+                    .flat_map(|guild| guild.threads.iter())
+                    .find(|known| known.id == thread)
+                    .is_none_or(|known| known.invitable);
                 let _ = self.requests.send(Request::Rest {
                     key: None,
                     method: reqwest::Method::PATCH,
                     route: format!("/channels/{thread}"),
-                    body: Some(json!({ field: true })),
+                    body: Some(serde_json::json!({ "invitable": !invitable })),
                 });
             }
             // `joinThread` (module 7909): `POST /channels/:id/thread-members/@me?location=Context Menu`; the gateway's
@@ -3232,13 +3537,14 @@ impl Root {
                 }
             }
             // "Start a Call" of the DM row's menu (`dm-row-context.json`): a voice call that rings.
+            // Both ask "Ready to start a call?" first (module 502054, `runVoiceCallAction` of module 949674).
             (Act::Call, Target::Dm(channel)) => {
-                self.select_home(Some(channel));
-                let active = self.stores.calls.is_call_active(channel, None);
-                self.start_call(channel, false, !active, cx);
+                self.start_call_or_ask(super::voice_alerts::CallTarget::Dm(channel), cx)
             }
             // "Start a Call" of a person's menu: their DM opens and the voice call rings there.
-            (Act::Call, Target::User { user, .. }) => self.start_dm_call_with(user, false, cx),
+            (Act::Call, Target::User { user, .. }) => {
+                self.start_call_or_ask(super::voice_alerts::CallTarget::User(user), cx)
+            }
             // 313998: `ring(channel, [user], "user_context_menu")` and `stopRinging(channel, [user])`.
             (Act::RingUser | Act::StopRinging, Target::Dm(channel)) => {
                 self.toggle_ring_channel(channel, cx);
@@ -3751,12 +4057,25 @@ impl Root {
                 } => self.role_sub_rows(guild, user),
                 _ => Vec::new(),
             },
-            // The apps' commands are not listed yet: every person shows the official empty state.
-            Act::Apps => vec![SubRow {
-                label: dc_intl::tr("No Commands Available").to_owned(),
-                disabled: true,
-                ..SubRow::default()
-            }],
+            // Module 173500 for a person: the user commands of the loaded index, else "No Commands Available".
+            Act::Apps => {
+                let commands = self.user_commands();
+                if commands.is_empty() {
+                    vec![SubRow {
+                        label: dc_intl::tr("No Commands Available").to_owned(),
+                        disabled: true,
+                        ..SubRow::default()
+                    }]
+                } else {
+                    commands
+                        .into_iter()
+                        .map(|(command, _)| SubRow {
+                            label: command["name"].as_str().unwrap_or_default().to_owned(),
+                            ..SubRow::default()
+                        })
+                        .collect()
+                }
+            }
             Act::MoveMember => match target {
                 Target::User {
                     user,
@@ -4098,6 +4417,14 @@ impl Root {
                         "channel_id",
                         json!(row.id.to_string()),
                     ));
+                }
+                return;
+            }
+            Act::Apps => {
+                if let (Some(_), Target::User { user, .. }) = (row, target)
+                    && let Some((command, _)) = self.user_commands().into_iter().nth(index)
+                {
+                    self.run_user_command(&command, user);
                 }
                 return;
             }
@@ -5013,6 +5340,61 @@ mod tests {
     }
 
     #[test]
+    fn the_active_now_voice_menu_is_the_channel_actions_of_module_113255() {
+        assert_eq!(
+            labels(&activity_voice_items(true, true, true)),
+            [
+                "Edit Channel",
+                "-",
+                "Invite to Voice",
+                "Duplicate Channel",
+                "Create Voice Channel",
+                "-",
+                "Delete Channel",
+                "-",
+                "Copy Channel ID"
+            ]
+        );
+        assert_eq!(
+            labels(&activity_voice_items(false, true, false)),
+            ["Invite to Voice"]
+        );
+    }
+
+    #[test]
+    fn join_without_entrance_sound_leads_and_report_stage_ends_the_voice_actions() {
+        let all = labels(&channel_items(
+            ChannelFacts {
+                voice: true,
+                join_quiet: true,
+                report_stage: true,
+                ..ChannelFacts::default()
+            },
+            "All Messages",
+        ));
+        let quiet = all
+            .iter()
+            .position(|label| label == "Join Without Entrance Sound")
+            .unwrap();
+        assert_eq!(all[quiet + 1], "Open Chat");
+        assert_eq!(all[quiet + 2], "Hide Names");
+        assert_eq!(all[quiet + 3], "Report Stage");
+        let plain = labels(&channel_items(
+            ChannelFacts {
+                voice: true,
+                ..ChannelFacts::default()
+            },
+            "All Messages",
+        ));
+        assert!(
+            !plain
+                .iter()
+                .any(|label| label == "Join Without Entrance Sound")
+        );
+        assert!(!plain.iter().any(|label| label == "Report Stage"));
+    }
+
+    #[test]
     fn a_text_channel_menu_for_a_manager_is_the_captured_list() {
         let items = channel_items(
             ChannelFacts {
@@ -5205,25 +5587,86 @@ mod tests {
 
     #[test]
     fn a_thread_offers_join_or_leave_by_the_joined_store() {
-        let joined = labels(&thread_items(false, false, false, true, false, "x"));
+        let joined = labels(&thread_items(
+            ThreadFacts {
+                joined: true,
+                ..ThreadFacts::default()
+            },
+            "x",
+        ));
         assert!(joined.contains(&"Leave Thread".to_owned()));
         assert!(!joined.contains(&"Join Thread".to_owned()));
-        let apart = labels(&thread_items(false, false, false, false, false, "x"));
+        let apart = labels(&thread_items(ThreadFacts::default(), "x"));
         assert!(apart.contains(&"Join Thread".to_owned()));
         assert!(!apart.contains(&"Leave Thread".to_owned()));
+    }
+
+    #[test]
+    fn anyone_can_invite_is_a_checkbox_of_private_threads_for_managers() {
+        let row = |facts: ThreadFacts| {
+            thread_items(facts, "x")
+                .into_iter()
+                .find_map(|entry| match entry {
+                    Entry::Row(row) if row.act == Act::ToggleInvitable => Some(row),
+                    _ => None,
+                })
+        };
+        let private = ThreadFacts {
+            manage: true,
+            private_thread: true,
+            invitable: true,
+            ..ThreadFacts::default()
+        };
+        let shown = row(private).unwrap();
+        assert_eq!(shown.label, "Anyone can invite");
+        assert_eq!(shown.check, Some(true));
+        assert_eq!(
+            row(ThreadFacts {
+                invitable: false,
+                ..private
+            })
+            .unwrap()
+            .check,
+            Some(false)
+        );
+        // A public thread, or no Manage Threads: no row.
+        assert!(
+            row(ThreadFacts {
+                private_thread: false,
+                ..private
+            })
+            .is_none()
+        );
+        assert!(
+            row(ThreadFacts {
+                manage: false,
+                ..private
+            })
+            .is_none()
+        );
+        // It leads the admin group, before Delete.
+        let labels = labels(&thread_items(private, "x"));
+        let at = |label: &str| labels.iter().position(|known| known == label).unwrap();
+        assert!(at("Anyone can invite") < at("Delete Thread"));
     }
 
     #[test]
     fn mute_thread_waits_for_the_account_to_join() {
         // `mute-disabled` of module 57907: no durations until the thread is joined.
         let mute_row = |joined: bool| {
-            thread_items(false, false, false, joined, false, "x")
-                .into_iter()
-                .find_map(|entry| match entry {
-                    Entry::Row(row) if row.act == Act::Mute => Some(row),
-                    _ => None,
-                })
-                .unwrap()
+            thread_items(
+                ThreadFacts {
+                    joined,
+                    ..ThreadFacts::default()
+                },
+                "x",
+            )
+            .into_iter()
+            .find_map(|entry| match entry {
+                Entry::Row(row) if row.act == Act::Mute => Some(row),
+                _ => None,
+            })
+            .unwrap()
         };
         let apart = mute_row(false);
         assert!(apart.disabled && !apart.caret);
@@ -5233,12 +5676,101 @@ mod tests {
 
     #[test]
     fn a_thread_owner_without_manage_threads_can_still_close_and_edit_it() {
-        let items = thread_items(false, false, true, true, false, "x");
+        let items = thread_items(
+            ThreadFacts {
+                owner: true,
+                joined: true,
+                ..ThreadFacts::default()
+            },
+            "x",
+        );
         let shown = labels(&items);
         assert!(shown.contains(&"Close Thread".to_owned()));
         assert!(shown.contains(&"Edit Thread".to_owned()));
         assert!(!shown.contains(&"Lock Thread".to_owned()));
         assert!(shown.contains(&"Leave Thread".to_owned()));
+        assert!(!shown.contains(&"Pin Post".to_owned()));
+    }
+
+    #[test]
+    fn a_forum_post_says_post_and_can_be_pinned_by_a_moderator() {
+        // Modules 182061, 200273, 41402, 707792, 307623, 804006, 57907 name a forum post a post.
+        let facts = ThreadFacts {
+            manage: true,
+            joined: true,
+            forum_post: true,
+            ..ThreadFacts::default()
+        };
+        let shown = labels(&thread_items(facts, "x"));
+        for label in [
+            "Close Post",
+            "Lock Post",
+            "Edit Post",
+            "Mute Post",
+            "Pin Post",
+            "Delete Post",
+            "Unfollow Post",
+        ] {
+            assert!(shown.contains(&label.to_owned()), "{label} in {shown:?}");
+        }
+        // Pin Post sits with Delete in `admin-actions`, just before it.
+        let pin = shown.iter().position(|label| label == "Pin Post").unwrap();
+        assert_eq!(shown[pin + 1], "Delete Post");
+        let shown = labels(&thread_items(
+            ThreadFacts {
+                archived: true,
+                locked: true,
+                pinned: true,
+                ..facts
+            },
+            "x",
+        ));
+        // Locked: only Manage Threads opens it again.
+        assert!(shown.contains(&"Open Post".to_owned()));
+        assert!(shown.contains(&"Unlock post".to_owned()));
+        assert!(shown.contains(&"Unpin Post".to_owned()));
+        // An archived thread that is not locked opens for whoever can send in it, manager or not.
+        let shown = labels(&thread_items(
+            ThreadFacts {
+                archived: true,
+                can_send: true,
+                ..ThreadFacts::default()
+            },
+            "x",
+        ));
+        assert!(shown.contains(&"Open Thread".to_owned()));
+        let locked_member = labels(&thread_items(
+            ThreadFacts {
+                archived: true,
+                locked: true,
+                can_send: true,
+                ..ThreadFacts::default()
+            },
+            "x",
+        ));
+        assert!(!locked_member.contains(&"Open Thread".to_owned()));
+        let media = labels(&thread_items(
+            ThreadFacts {
+                archived: true,
+                can_send: true,
+                manage: true,
+                media: true,
+                forum_post: true,
+                ..ThreadFacts::default()
+            },
+            "x",
+        ));
+        assert!(!media.contains(&"Open Post".to_owned()));
+        let shown = labels(&thread_items(
+            ThreadFacts {
+                archived: true,
+                manage: true,
+                ..ThreadFacts::default()
+            },
+            "x",
+        ));
+        assert!(shown.contains(&"Join Thread".to_owned()));
+        assert!(!shown.contains(&"Pin Post".to_owned()));
     }
 
     #[test]

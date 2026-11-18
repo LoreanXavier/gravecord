@@ -118,6 +118,50 @@ fn short_date(ms: i64) -> String {
         .unwrap_or_default()
 }
 
+/// `hL(t, JOINED_AT)` of module 157347 over module 469881: how long ago, "just now" under a minute (a moment still
+/// ahead counts as under a minute too), then minutes, hours, days, months of 30 days and years of 360.
+fn signal_age(seconds: i64) -> String {
+    if seconds < 60 {
+        dc_intl::t!("FsBhl/").to_owned()
+    } else if seconds < 3_600 {
+        dc_intl::t!("4d1mgT", count = seconds / 60)
+    } else if seconds < 86_400 {
+        dc_intl::t!("2wkczD", count = seconds / 3_600)
+    } else if seconds < 2_592_000 {
+        dc_intl::t!("ocdS+f", count = seconds / 86_400)
+    } else if seconds < 31_104_000 {
+        dc_intl::t!("az14+h", count = seconds / 2_592_000)
+    } else {
+        dc_intl::t!("5Gk1ns", count = seconds / 31_104_000)
+    }
+}
+
+/// The countdown of module 576470 with `showUnits` and `stopAtOneSec` (`Tf` of module 5377): days (left out at none),
+/// hours, minutes and seconds, two digits each with its unit; one second once less than 1.2 seconds are left.
+fn timeout_left(now_ms: i64, deadline_ms: i64) -> String {
+    let mut parts = [0i64, 0, 0, 1];
+    if now_ms + 1_200 <= deadline_ms {
+        let mut left = deadline_ms - now_ms;
+        for (part, unit) in parts.iter_mut().zip([86_400_000, 3_600_000, 60_000, 1_000]) {
+            *part = left / unit;
+            left -= *part * unit;
+        }
+    }
+    let units = [
+        dc_intl::t!("QJyuxY"),
+        dc_intl::t!("1LyF1h"),
+        dc_intl::t!("n7dksO"),
+        dc_intl::t!("6m/6nM"),
+    ];
+    let skip = usize::from(parts[0] == 0);
+    parts[skip..]
+        .iter()
+        .zip(&units[skip..])
+        .map(|(value, unit)| format!("{value:02}{unit}"))
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
 /// The panel's tones, sampled from the capture (the user's profile theme tints the official panel).
 const FRAME_TOP: (u8, u8, u8) = (37, 40, 98);
 const FRAME_BOTTOM: (u8, u8, u8) = (82, 84, 100);
@@ -743,6 +787,60 @@ impl Root {
                 .into_any_element(),
         );
 
+        // Signals (`tM` of module 956972): Unusual DM Activity (`unusualDMActivityUntil`, how long ago) and Timed Out
+        // (the timeout's countdown), shown when either applies.
+        let now = chrono::Utc::now().timestamp_millis();
+        let at = |value: Option<&str>| {
+            value
+                .and_then(|value| chrono::DateTime::parse_from_rfc3339(value).ok())
+                .map(|time| time.timestamp_millis())
+        };
+        let unusual = at(member.and_then(|member| member.unusual_dm_activity_until.as_deref()));
+        let timed_out = at(member.and_then(|member| member.timeout_until.as_deref()))
+            .filter(|until| *until > now);
+        let strong_text = |value: String| {
+            div()
+                .text_size(px(14.))
+                .line_height(px(18.))
+                .font_weight(FontWeight(600.))
+                .text_color(color("--text-default"))
+                .child(value)
+                .into_any_element()
+        };
+        let signals = (unusual.is_some() || timed_out.is_some()).then(|| {
+            let mut rows = Vec::new();
+            if let Some(since) = unusual {
+                rows.push((
+                    "mod_info_chat_warning",
+                    dc_intl::t!("ZRnON3"),
+                    signal_age((now - since).div_euclid(1_000)),
+                ));
+            }
+            if let Some(until) = timed_out {
+                rows.push((
+                    "mod_info_clock_warning",
+                    dc_intl::t!("TJ8/tE"),
+                    timeout_left(now, until),
+                ));
+            }
+            let count = rows.len();
+            let list = rows.into_iter().enumerate().fold(
+                div().flex().flex_col(),
+                |list, (index, (glyph_name, name, value))| {
+                    let edge = u8::from(index == 0) | (u8::from(index + 1 == count) << 1);
+                    list.child(self.mod_view_item(
+                        glyph(glyph_name),
+                        name,
+                        strong_text(value),
+                        600.,
+                        false,
+                        edge,
+                    ))
+                },
+            );
+            Self::mod_view_section(dc_intl::t!("7V3759"), list.into_any_element())
+        });
+
         // The "Mod View" card: its 48px header with the refresh button and the Esc key, then the scroller.
         let refresh = move |this: &mut Self, cx: &mut Context<Self>| {
             this.request_mod_view(guild_id, user_id);
@@ -823,6 +921,7 @@ impl Root {
             .pt(px(12.))
             .pb(px(12.))
             .bg(tone(SCROLLER))
+            .children(signals)
             .child(activity)
             .child(permissions_section)
             .child(roles_section)
@@ -876,6 +975,24 @@ impl Root {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn signals_read_as_the_official_relative_time_and_countdown() {
+        assert_eq!(signal_age(-500), "just now");
+        assert_eq!(signal_age(59), "just now");
+        assert_eq!(signal_age(60), "1 min ago");
+        assert_eq!(signal_age(7_300), "2 hrs ago");
+        assert_eq!(signal_age(3 * 86_400), "3 days ago");
+        assert_eq!(signal_age(2_592_000), "1 month ago");
+        assert_eq!(signal_age(31_104_000 * 2), "2 years ago");
+        let hour = 3_600_000;
+        assert_eq!(
+            timeout_left(0, 2 * hour + 3 * 60_000 + 4_000),
+            "02h 03m 04s"
+        );
+        assert_eq!(timeout_left(0, 26 * hour), "01d 02h 00m 00s");
+        assert_eq!(timeout_left(0, 1_000), "00h 00m 01s");
+    }
 
     #[test]
     fn counts_group_thousands() {

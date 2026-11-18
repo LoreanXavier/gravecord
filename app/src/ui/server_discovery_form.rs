@@ -5,6 +5,7 @@
 use super::server_discovery::{
     DEFAULT_SPLASH, Select, all_categories, popular_tags, primary_categories, splash_url,
 };
+use super::tooltip::{Side, Tip};
 use super::{Root, color, icon};
 use dc_state::Id;
 use gpui::{
@@ -293,7 +294,7 @@ impl Root {
                     ),
             );
 
-        let full = discovery.meta.keywords.len() >= 10;
+        let full = discovery.meta.keywords.len() >= super::server_discovery::MAX_TAGS;
         let tags = div()
             .flex()
             .flex_col()
@@ -372,7 +373,14 @@ impl Root {
                                         .text_color(color("--text-subtle"))
                                         .child(tag);
                                     if full {
-                                        pill.opacity(0.5).into_any_element()
+                                        // A disabled pill says why on hover (`tooltipText`, module 513521's string).
+                                        self.with_tip(
+                                            format!("discovery-popular-tip-{tag}"),
+                                            Tip::text(dc_intl::t("Xx7XeB"), Side::Top),
+                                            pill.opacity(0.5),
+                                            cx,
+                                        )
+                                        .into_any_element()
                                     } else {
                                         pill.cursor_pointer()
                                             .hover(|style| {

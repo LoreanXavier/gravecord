@@ -85,8 +85,19 @@ pub struct Client {
     identity: Identity,
     /// Called when Discord answers 401: the session is gone (`401` in `interceptResponse`, module 596339).
     unauthorized: Option<Arc<dyn Fn() + Send + Sync>>,
+    /// Called for a 4xx answer whose code says the account has limited access (module 30076: 340000 to 349999).
+    limited_access: Option<Arc<dyn Fn() + Send + Sync>>,
     /// Where routes are sent; a test points it at a local server.
     api_base: String,
+}
+
+/// Module 30076 `O`: a 4xx answer with a code from `USER_LIMITED_ACCESS_DEFAULT` (340000) to `USER_LIMITED_ACCESS_MAX`
+/// (349999).
+fn is_limited_access(status: StatusCode, body: &Value) -> bool {
+    status.is_client_error()
+        && body["code"]
+            .as_u64()
+            .is_some_and(|code| (340_000..=349_999).contains(&code))
 }
 
 /// The header set every request of the pinned client carries, shared with the login client (`dc-auth`).
@@ -137,6 +148,7 @@ impl Client {
             token: std::sync::RwLock::new(token),
             identity,
             unauthorized: None,
+            limited_access: None,
             api_base: pin::API_BASE.to_owned(),
         })
     }
@@ -167,7 +179,19 @@ impl Client {
         self
     }
 
+    /// Runs `hook` when a request comes back refused because the account has limited access (module 596339's
+    /// `interceptResponse` opens the notice of module 218642 then).
+    pub fn on_limited_access(mut self, hook: impl Fn() + Send + Sync + 'static) -> Self {
+        self.limited_access = Some(Arc::new(hook));
+        self
+    }
+
     fn note_status(&self, status: StatusCode, body: &Value) {
+        if is_limited_access(status, body)
+            && let Some(hook) = &self.limited_access
+        {
+            hook();
+        }
         // Only the plain answer to a token the server no longer accepts (`{"message": "401: Unauthorized",
         // "code": 0}`, or no code at all) ends the login. A 401 with any other code is about that one request (a
         // step-up, a route's own refusal) and must not throw away the stored login of the account.
@@ -586,6 +610,30 @@ mod tests {
         let safe = transport_error(error, route);
         assert!(!format!("{safe:?}").contains("fixture-cursor"));
         assert!(!format!("{safe}").contains("fixture-cursor"));
+    }
+
+    #[test]
+    fn limited_access_is_a_4xx_with_a_code_in_its_range() {
+        assert!(is_limited_access(
+            StatusCode::FORBIDDEN,
+            &json!({"code": 340000})
+        ));
+        assert!(is_limited_access(
+            StatusCode::BAD_REQUEST,
+            &json!({"code": 349999})
+        ));
+        assert!(!is_limited_access(
+            StatusCode::FORBIDDEN,
+            &json!({"code": 350000})
+        ));
+        assert!(!is_limited_access(
+            StatusCode::FORBIDDEN,
+            &json!({"code": 50013})
+        ));
+        assert!(!is_limited_access(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            &json!({"code": 340001})
+        ));
     }
 
     #[test]

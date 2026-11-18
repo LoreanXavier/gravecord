@@ -88,6 +88,8 @@ pub struct User {
     /// `primary_guild`: the server tag shown after the name, when the user turned it on.
     pub tag: Option<ServerTag>,
     pub bot: bool,
+    /// `system`: an official Discord account; a DM with one is a system DM (`isSystemDM`, module 95701).
+    pub system: bool,
     pub nameplate: Option<collectibles::Nameplate>,
     pub avatar_decoration: Option<Box<collectibles::AvatarDecoration>>,
     /// `flags` and `public_flags` of the user object; 619019's `hasFlag` reads both.
@@ -142,6 +144,7 @@ impl User {
             tag: ServerTag::from_value(&value["primary_guild"])
                 .or_else(|| ServerTag::from_value(&value["clan"])),
             bot: value["bot"].as_bool().unwrap_or(false),
+            system: value["system"].as_bool().unwrap_or(false),
             nameplate: collectibles::Nameplate::from_value(&value["collectibles"]["nameplate"]),
             avatar_decoration: collectibles::AvatarDecoration::from_value(
                 &value["avatar_decoration_data"],
@@ -477,6 +480,8 @@ pub struct Guild {
     pub premium_subscription_count: u64,
     /// Stage video is available only when the guild's advertised capacity is positive (module 279250).
     pub max_stage_video_channel_users: u64,
+    /// `max_video_channel_users`: the video seats of a voice channel (`maxVideoChannelUsers`, `Pd` of module 147036).
+    pub max_video_channel_users: u64,
     /// `premium_progress_bar_enabled`: the boost progress bar in the channel list.
     pub premium_progress_bar_enabled: bool,
     /// `system_channel_flags`: which system messages the guild silences (SUPPRESS_JOIN_NOTIFICATION_REPLIES is
@@ -525,6 +530,8 @@ pub struct Thread {
     pub flags: u64,
     pub total_message_sent: u64,
     pub locked: bool,
+    /// `thread_metadata.invitable` of a private thread: members other than moderators may add people (absent: true).
+    pub invitable: bool,
     /// The current user's thread member flags (`member.flags`: 2 all messages, 4 only mentions, 8 nothing). `None`
     /// when no member data arrived: JoinedThreadsStore `flags()` is then null.
     pub member_flags: Option<u64>,
@@ -604,6 +611,9 @@ impl Thread {
             locked: value["thread_metadata"]["locked"]
                 .as_bool()
                 .unwrap_or(false),
+            invitable: value["thread_metadata"]["invitable"]
+                .as_bool()
+                .unwrap_or(true),
             auto_archive_duration: value["thread_metadata"]["auto_archive_duration"]
                 .as_u64()
                 .unwrap_or(0),
@@ -866,6 +876,10 @@ impl Guild {
                 .as_u64()
                 .or(properties["max_stage_video_channel_users"].as_u64())
                 .unwrap_or(0),
+            max_video_channel_users: value["max_video_channel_users"]
+                .as_u64()
+                .or(properties["max_video_channel_users"].as_u64())
+                .unwrap_or(0),
             premium_progress_bar_enabled: value["premium_progress_bar_enabled"]
                 .as_bool()
                 .or(properties["premium_progress_bar_enabled"].as_bool())
@@ -912,6 +926,9 @@ impl Guild {
         self.max_stage_video_channel_users = value["max_stage_video_channel_users"]
             .as_u64()
             .unwrap_or(self.max_stage_video_channel_users);
+        self.max_video_channel_users = value["max_video_channel_users"]
+            .as_u64()
+            .unwrap_or(self.max_video_channel_users);
         self.premium_progress_bar_enabled = value["premium_progress_bar_enabled"]
             .as_bool()
             .unwrap_or(self.premium_progress_bar_enabled);
@@ -2024,7 +2041,10 @@ impl PrivateChannel {
         out.insert("name".to_owned(), json!(self.name));
         out.insert("icon".to_owned(), json!(self.icon));
         if let Some(application_id) = self.application_id {
-            out.insert("application_id".to_owned(), json!(application_id.to_string()));
+            out.insert(
+                "application_id".to_owned(),
+                json!(application_id.to_string()),
+            );
         }
         if let Some(owner_id) = self.owner_id {
             out.insert("owner_id".to_owned(), json!(owner_id.to_string()));
@@ -2475,15 +2495,16 @@ impl Stores {
                         guild.my_timeout_until = prior.my_timeout_until;
                     }
                     let me = self.current_user.as_ref().map(|user| user.id);
-                    if let Some(member) = data["members"]
-                        .as_array()
-                        .into_iter()
-                        .flatten()
-                        .find(|member| {
-                            me.is_some()
-                                && (id(&member["user"]["id"]) == me
-                                    || id(&member["user_id"]) == me)
-                        })
+                    if let Some(member) =
+                        data["members"]
+                            .as_array()
+                            .into_iter()
+                            .flatten()
+                            .find(|member| {
+                                me.is_some()
+                                    && (id(&member["user"]["id"]) == me
+                                        || id(&member["user_id"]) == me)
+                            })
                     {
                         guild.set_my_member(member);
                         self.my_members_by_guild.insert(guild.id, member.clone());
@@ -2837,9 +2858,7 @@ impl Stores {
                 }
             }
             "GUILD_SCHEDULED_EVENT_CREATE" => {
-                if let (Some(guild), Some(event_id)) =
-                    (id(&data["guild_id"]), id(&data["id"]))
-                {
+                if let (Some(guild), Some(event_id)) = (id(&data["guild_id"]), id(&data["id"])) {
                     let me = self.current_user.as_ref().map(|u| u.id);
                     let creator = id(&data["creator_id"]);
                     let mute_events = self
@@ -3231,6 +3250,11 @@ impl Stores {
         settings::content_dismissed(&self.settings_raw, content)
     }
 
+    /// The account has an entrance sound for this guild, or one for every guild (module 984813 `mz`).
+    pub fn join_sound_set(&self, guild: Id) -> bool {
+        settings::join_sound_set(&self.settings_raw, guild)
+    }
+
     /// Empty until the account's settings have arrived, as `set_pref`.
     pub fn dismiss_content(&mut self, content: u16) -> String {
         if !self.settings_loaded {
@@ -3455,11 +3479,7 @@ impl Stores {
         self.my_members_by_guild.clear();
         for (guild_id, member) in guild_ids.into_iter().zip(merged) {
             if let (Some(guild_id), Some(member)) = (guild_id, member) {
-                if let Some(guild) = self
-                    .guilds
-                    .iter_mut()
-                    .find(|guild| guild.id == guild_id)
-                {
+                if let Some(guild) = self.guilds.iter_mut().find(|guild| guild.id == guild_id) {
                     guild.set_my_member(&member);
                 }
                 self.my_members_by_guild.insert(guild_id, member);
@@ -3824,10 +3844,7 @@ impl Stores {
         }
         if let Some(mentions) = data["mentions"].as_array() {
             known.mentions = mentions.len();
-            known.mention_user_ids = mentions
-                .iter()
-                .filter_map(|user| id(&user["id"]))
-                .collect();
+            known.mention_user_ids = mentions.iter().filter_map(|user| id(&user["id"])).collect();
         }
         if let Some(roles) = data["mention_roles"].as_array() {
             known.mention_roles = roles.len();
@@ -4231,12 +4248,10 @@ impl Stores {
             if let Some(last) = id(&entry["last_message_id"]) {
                 let latest = self.read_states.latest.entry(channel_id).or_insert(0);
                 *latest = (*latest).max(last);
-                if let Some(guild) = guild_id.and_then(|gid| {
-                    self.guilds.iter_mut().find(|known| known.id == gid)
-                }) {
-                    if let Some(channel) =
-                        guild.channels.iter_mut().find(|c| c.id == channel_id)
-                    {
+                if let Some(guild) =
+                    guild_id.and_then(|gid| self.guilds.iter_mut().find(|known| known.id == gid))
+                {
+                    if let Some(channel) = guild.channels.iter_mut().find(|c| c.id == channel_id) {
                         if channel.last_message_id.is_none_or(|prev| last > prev) {
                             channel.last_message_id = Some(last);
                         }
@@ -4856,6 +4871,7 @@ mod tests {
             premium_tier: 0,
             premium_subscription_count: 0,
             max_stage_video_channel_users: 0,
+            max_video_channel_users: 0,
             premium_progress_bar_enabled: false,
             system_channel_flags: 0,
             emojis: Vec::new(),
@@ -5206,6 +5222,28 @@ mod tests {
         assert!(stores.guilds[0].channels.is_empty());
         stores.dispatch("CHANNEL_DELETE", &json!({"id": "40", "type": 1}));
         assert!(stores.private_channels.is_empty());
+    }
+
+    #[test]
+    fn a_dm_with_an_official_account_knows_it_is_a_system_dm() {
+        let mut stores = Stores::default();
+        stores.dispatch(
+            "CHANNEL_CREATE",
+            &json!({"id": "41", "type": 1, "recipients": [{"id": "643945264868098049", "username": "discord", "system": true}]}),
+        );
+        stores.dispatch(
+            "CHANNEL_CREATE",
+            &json!({"id": "42", "type": 1, "recipients": [{"id": "31", "username": "someone"}]}),
+        );
+        let system = |channel: Id| {
+            let known = stores
+                .private_channels
+                .iter()
+                .find(|known| known.id == channel);
+            stores.users[&known.unwrap().recipients[0]].system
+        };
+        assert!(system(41));
+        assert!(!system(42));
     }
 
     #[test]
@@ -6229,10 +6267,7 @@ mod tests {
         );
         assert_eq!(stores.read_states.mentions(20), 1);
         assert_eq!(stores.read_states.latest.get(&20), Some(&201));
-        stores.dispatch(
-            "MESSAGE_DELETE",
-            &json!({"id": "201", "channel_id": "20"}),
-        );
+        stores.dispatch("MESSAGE_DELETE", &json!({"id": "201", "channel_id": "20"}));
         assert_eq!(stores.read_states.mentions(20), 0);
         assert_eq!(stores.read_states.latest.get(&20), Some(&200));
 

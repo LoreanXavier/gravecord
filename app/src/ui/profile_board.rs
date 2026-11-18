@@ -105,6 +105,36 @@ pub(super) fn drawn_tags(game: &WidgetGame) -> Vec<(&'static str, TagIcon)> {
     game.tags.iter().filter_map(|tag| game_tag(tag)).collect()
 }
 
+/// `commentIcon_2y0Mhw` floats at the start of the comment (`float: inline-start`, 3px down, 4px after it): the first
+/// line runs beside the 12px quote and every later line starts under it at the left edge. Splits `text` into that
+/// first line (whole words that fit `first` px, as the browser breaks it) and the rest, which wraps at full width.
+pub(super) fn float_first_line(
+    text: &str,
+    first: f32,
+    mut measure: impl FnMut(&str) -> f32,
+) -> (String, String) {
+    let mut end = 0;
+    for (at, _) in text
+        .char_indices()
+        .filter(|(_, c)| c.is_whitespace())
+        .chain(std::iter::once((text.len(), ' ')))
+    {
+        if measure(text[..at].trim_end()) <= first {
+            end = at;
+        } else {
+            break;
+        }
+    }
+    if end == 0 {
+        // Not even the first word fits beside the quote: the line goes below it, all at full width.
+        return (String::new(), text.to_owned());
+    }
+    (
+        text[..end].trim_end().to_owned(),
+        text[end..].trim_start().to_owned(),
+    )
+}
+
 /// A tag pill's width for a label `text` px wide: 1px edges, 6px before the 12px icon, 4px, the label, 8px after.
 pub(super) fn tag_width(text: f32) -> f32 {
     1. + 6. + 12. + 4. + text + 8. + 1.
@@ -183,6 +213,7 @@ impl Root {
         widget_id: Option<&str>,
         title: gpui::SharedString,
         visitor: bool,
+        embedded: bool,
         body: AnyElement,
         palette: &Palette,
         cx: &mut Context<Self>,
@@ -230,6 +261,28 @@ impl Root {
                     }
                 }))
         });
+        if embedded {
+            // `widgetContainer_zEJODa` (an application widget): no padding, the content edge to edge and the menu in
+            // `containerHeader_zEJODa`, 12px down and 16px in over it.
+            return div()
+                .relative()
+                .rounded(px(16.))
+                .border_1()
+                .border_color(palette.token("--border-muted"))
+                .bg(palette.token("--user-profile-overlay-background"))
+                .child(body)
+                .child(
+                    div()
+                        .absolute()
+                        .top(px(12.))
+                        .left(px(16.))
+                        .right(px(16.))
+                        .flex()
+                        .justify_end()
+                        .children(more),
+                )
+                .into_any_element();
+        }
         div()
             .flex()
             .flex_col()
@@ -335,12 +388,19 @@ impl Root {
     ) -> AnyElement {
         let (cover_width, _) = cover_size(content_width);
         let (_, gap) = game_grid(content_width);
+        // `details_2y0Mhw` takes the card's width after the cover column; the quote (12px and 4px after it) floats at
+        // the start of the comment's first line.
+        let details_width = content_width - cover_width - gap;
         let comment = game
             .comment
             .as_deref()
             .map(str::trim)
             .filter(|text| !text.is_empty())
-            .map(str::to_owned);
+            .map(|text| {
+                float_first_line(text, details_width - 16., |part| {
+                    super::threads::measure_text(window, part, 14., 400.)
+                })
+            });
         let tags = drawn_tags(game);
         let widths: Vec<f32> = tags
             .iter()
@@ -424,29 +484,37 @@ impl Root {
                             .text_color(palette.token("--text-default"))
                             .child(name),
                     )
-                    .when_some(comment, |this, comment| {
+                    .when_some(comment, |this, (first, rest)| {
+                        let line = || {
+                            div()
+                                .text_size(px(14.))
+                                .line_height(px(18.))
+                                .text_color(muted_text)
+                        };
                         this.child(
                             div()
                                 .flex()
-                                .items_start()
-                                .child(
-                                    svg()
-                                        .path("icons/widget_quote.svg")
-                                        .flex_none()
-                                        .size(px(12.))
-                                        .mt(px(3.))
-                                        .mr(px(4.))
-                                        .text_color(muted_icon),
-                                )
+                                .flex_col()
                                 .child(
                                     div()
-                                        .flex_1()
-                                        .min_w(px(0.))
-                                        .text_size(px(14.))
-                                        .line_height(px(18.))
-                                        .text_color(muted_text)
-                                        .child(comment),
-                                ),
+                                        .flex()
+                                        .items_start()
+                                        .child(
+                                            svg()
+                                                .path("icons/widget_quote.svg")
+                                                .flex_none()
+                                                .size(px(12.))
+                                                .mt(px(3.))
+                                                .mr(px(4.))
+                                                .text_color(muted_icon),
+                                        )
+                                        .when(!first.is_empty(), |row| {
+                                            row.child(line().whitespace_nowrap().child(first))
+                                        }),
+                                )
+                                .when(!rest.is_empty(), |column| {
+                                    column.child(line().min_w(px(0.)).child(rest))
+                                }),
                         )
                     })
                     .when(!tags.is_empty(), |this| {
@@ -528,10 +596,29 @@ impl Root {
 #[cfg(test)]
 mod tests {
     use super::{
-        FULL_PROFILE_CARD_CONTENT, TagIcon, cover_size, drawn_tags, game_grid, game_tag,
-        grid_column,
+        FULL_PROFILE_CARD_CONTENT, TagIcon, cover_size, drawn_tags, float_first_line, game_grid,
+        game_tag, grid_column,
     };
     use crate::ui::profile_editor::save::WidgetGame;
+
+    #[test]
+    fn a_comment_runs_beside_the_quote_for_one_line_then_under_it() {
+        // Ten pixels a character: 60px beside the quote hold "first words" no further than "first ".
+        let measure = |text: &str| text.chars().count() as f32 * 10.;
+        assert_eq!(
+            float_first_line("first words then the rest", 110., measure),
+            ("first words".to_owned(), "then the rest".to_owned())
+        );
+        assert_eq!(
+            float_first_line("short", 110., measure),
+            ("short".to_owned(), String::new())
+        );
+        // Not even one word fits beside it: everything goes under the quote.
+        assert_eq!(
+            float_first_line("unbreakable words", 50., measure),
+            (String::new(), "unbreakable words".to_owned())
+        );
+    }
 
     #[test]
     fn the_full_profile_card_lays_games_on_four_columns_sixteen_apart() {

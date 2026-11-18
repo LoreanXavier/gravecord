@@ -226,6 +226,10 @@ pub(super) struct Video {
     /// Own stream queued to restart after Change Stream / Stream Quality / Share Stream Audio once `STREAM_DELETE`
     /// completes (or the short fallback timer fires).
     pending_restart: Option<PendingRestart>,
+    /// The focused stream we watched, which its owner ended: `ApplicationStreamingStore` keeps it `ENDED` (module
+    /// 616356 closes every other ended stream at once), and its tile says "This stream has ended." (module 566331)
+    /// until Close Stream.
+    pub(super) ended_focus: Option<StreamKey>,
 }
 
 impl Video {
@@ -673,6 +677,94 @@ impl Root {
         const FIXTURE_VOICE: u64 = 1_568_692_565_136_375_901;
         match words {
             ["pending-watch"] => format!("pending watch {:?}; call {:?}",self.video.pending_watch,self.call.as_ref().map(|call|(call.guild,call.channel))),
+            // "Show Non-Video Participants" of the call's More menu, as its row sets it.
+            ["non-video", value @ ("on" | "off")] => {
+                super::voice_view::set_call_setting(super::voice_view::SHOW_NON_VIDEO, *value == "on");
+                cx.notify();
+                format!("show non-video participants={value}")
+            }
+            // A channel joined by id, through the same questions a click on its row asks (a Stage injected with `gw`
+            // in an inert run: the voice state is refused, so the call only exists here).
+            ["join-channel", id] => match id.parse::<u64>().ok().and_then(|id| {
+                self.guild_of_channel(id).map(|guild| (guild, id))
+            }) {
+                Some((guild, channel)) => {
+                    self.request_join_voice(guild, channel, cx);
+                    format!("join {channel}: alert {:?}", self.voice_alert)
+                }
+                None => "no such channel".to_owned(),
+            },
+            // Our own voice state in a channel, as the gateway would send it after a join (`speaker` or `audience`,
+            // a Stage's `suppress`; `invited`: a moderator's invitation to speak, unsuppressed with the hand still
+            // up), fed to the stores only.
+            ["self-in", id, role @ ("speaker" | "audience" | "invited")] => {
+                let (Some(channel), Some(me)) = (
+                    id.parse::<u64>().ok(),
+                    self.stores.current_user.as_ref().map(|me| me.id),
+                ) else {
+                    return "no channel or user".to_owned();
+                };
+                let Some(guild) = self.guild_of_channel(channel) else {
+                    return "no such channel".to_owned();
+                };
+                let session = self.stores.session_id.clone().unwrap_or_default();
+                self.update(
+                    crate::net::Update::Dispatch {
+                        name: "VOICE_STATE_UPDATE".to_owned(),
+                        data: serde_json::json!({
+                            "guild_id": guild.to_string(),
+                            "channel_id": channel.to_string(),
+                            "user_id": me.to_string(),
+                            "session_id": session,
+                            "suppress": *role == "audience",
+                            "request_to_speak_timestamp": if *role == "invited" {
+                                serde_json::json!("2026-11-18T04:00:00.000000+00:00")
+                            } else {
+                                serde_json::Value::Null
+                            },
+                        }),
+                    },
+                    cx,
+                );
+                format!("in {channel} as {role}")
+            }
+            // The Stage view's leave button.
+            ["leave-stage"] => match self.call.as_ref().map(|call| (call.guild, call.channel)) {
+                Some((guild, channel)) => {
+                    self.leave_stage_or_ask(guild, channel, cx);
+                    format!("leave: alert {:?}", self.voice_alert)
+                }
+                None => "not in a call".to_owned(),
+            },
+            // "Show My Screen Share" of the call's More menu, off or on, for the call's channel.
+            ["own-stream-hidden", value @ ("on" | "off")] => match self.call.as_ref().map(|call| call.channel) {
+                Some(channel) => {
+                    super::call_menus::set_own_stream_hidden(channel, *value == "on");
+                    cx.notify();
+                    format!("own stream hidden={value}")
+                }
+                None => "not in a call".to_owned(),
+            },
+            // Streamer Mode with Hide Personal Information, as their switches set them, on this run's storage.
+            ["streamer", "on"] => {
+                let me = self.stores.current_user.as_ref().map(|me| me.id);
+                crate::notifications::set_switch("streaming_enable_streamer_mode", true, me);
+                crate::notifications::set_switch("streamer_mode_hide_personal_information", true, me);
+                cx.notify();
+                format!("streamer mode on, hides personal information={}", self.streamer_hides_personal())
+            }
+            // The Stage's Requests to Speak sidebar, as its header toggle opens it.
+            ["stage-requests", "open"] => {
+                self.stage_requests_open = true;
+                self.request_stage_requests_art();
+                cx.notify();
+                "stage requests open".to_owned()
+            }
+            ["participants", "open"] => {
+                self.vv.participants_open = true;
+                cx.notify();
+                "participants popout open".to_owned()
+            }
             ["ptt-mode", value @ ("on" | "off")] => {
                 if self.kb_push_to_talk() != (*value == "on") {
                     self.kb_toggle_voice_mode();
@@ -882,11 +974,40 @@ impl Root {
     pub(crate) fn streams_stop_all(&mut self, cx: &mut Context<Self>) {
         self.video.pending_watch = None;
         self.video.pending_restart = None;
+        self.video.ended_focus = None;
         self.video.watched_owners.clear();
         let keys: Vec<StreamKey> = self.video.streams.keys().copied().collect();
         for key in keys {
             self.stream_stop_key(key, cx);
         }
+    }
+
+    /// After a voice state: the ended stream is forgotten once its owner streams again or leaves the channel, so a
+    /// later end of a stream never watched does not bring its tile back.
+    pub(super) fn ended_stream_voice_state(&mut self) {
+        let Some(key) = self.video.ended_focus else {
+            return;
+        };
+        let streaming = self
+            .stores
+            .voice_members(key.guild().unwrap_or(0), key.channel())
+            .iter()
+            .find(|state| state.user_id == key.owner())
+            .map(|state| state.self_stream);
+        if streaming != Some(false) {
+            self.video.ended_focus = None;
+        }
+    }
+
+    /// Close Stream of the ended stream's tile (`Xi` of module 401843, `STREAM_CLOSE`): the tile goes, and the view
+    /// with it.
+    pub(super) fn close_ended_stream(&mut self, cx: &mut Context<Self>) {
+        if let Some(key) = self.video.ended_focus.take()
+            && self.vv.focus.tile == Some((key.owner(), super::video_tiles::TileKind::Stream))
+        {
+            self.vv.focus.tile = None;
+        }
+        cx.notify();
     }
 
     /// Ends the stream we send, if any (op 19 and the connection).
@@ -1366,7 +1487,25 @@ impl Root {
         info!(status = ?update.status, viewers = update.viewers, "stream status");
         let key = update.key;
         if let StreamStatus::Ended(reason) = update.status {
+            if reason == EndReason::StreamFull {
+                self.stream_was_full(key.to_string(), cx);
+            }
             if let Some(live) = self.video.streams.remove(&key) {
+                // `STREAM_DELETE` (module 616356): ENDED unless unavailable or unauthorized; kept only for the
+                // stream on screen (`b !== r && w(r)`), and never in a Stage (module 566331 closes it there).
+                let focused =
+                    self.vv.focus.tile == Some((key.owner(), super::video_tiles::TileKind::Stream));
+                if !tell_gateway
+                    && live.last.role == Role::Watch
+                    && focused
+                    && matches!(
+                        reason,
+                        EndReason::UserRequested | EndReason::Other | EndReason::RateLimited
+                    )
+                    && !self.is_stage_voice_channel(key.guild().unwrap_or(0), key.channel())
+                {
+                    self.video.ended_focus = Some(key);
+                }
                 live.controls.stop();
                 if tell_gateway && reason != EndReason::StreamFull {
                     let _ = self.requests.send(Request::StreamOp {

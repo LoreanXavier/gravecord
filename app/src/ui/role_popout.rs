@@ -412,6 +412,7 @@ mod tests {
             pending: false,
             display_name_styles: None,
             timeout_until: None,
+            unusual_dm_activity_until: None,
             flags: 0,
         }
     }

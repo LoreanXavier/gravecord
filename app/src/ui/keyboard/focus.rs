@@ -324,6 +324,7 @@ impl Root {
                 self.start_stage.is_some(),
                 self.stage_welcome.is_some(),
                 self.stage_end_confirm.is_some(),
+                self.voice_alert.is_some(),
                 self.publish_confirm.is_some(),
                 self.full_profile.is_some(),
                 self.custom_status.is_some(),

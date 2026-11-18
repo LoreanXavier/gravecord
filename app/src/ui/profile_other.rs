@@ -438,8 +438,9 @@ impl Root {
                     .text_size(px(14.))
                     .line_height(px(18.))
                     .text_color(strong)
-                    .child(
-                        div()
+                    .child({
+                        let (shown, concealed) = self.profile_username(&user);
+                        let line = div()
                             .id("popout-username")
                             .cursor_pointer()
                             .hover(|style| style.underline())
@@ -447,8 +448,23 @@ impl Root {
                                 this.profile = None;
                                 this.open_full_profile(id, window, cx);
                             }))
-                            .child(user.username.clone()),
-                    )
+                            .child(shown);
+                        // Module 297413: a concealed name carries "Streamer Mode Enabled".
+                        if concealed {
+                            self.with_tip(
+                                "popout-username-streamer",
+                                super::tooltip::Tip::text(
+                                    dc_intl::t("Br1ls3"),
+                                    super::tooltip::Side::Top,
+                                ),
+                                line,
+                                cx,
+                            )
+                            .into_any_element()
+                        } else {
+                            line.into_any_element()
+                        }
+                    })
                     .when_some(pronouns, |this, pronouns| {
                         this.child(div().size(px(4.)).rounded_full().bg(strong))
                             .child(pronouns)
@@ -517,21 +533,21 @@ impl Root {
             .gap(px(12.))
             .child(names)
             .when(friends > 0 || servers > 0, |this| this.child(mutuals))
-            .when_some(bio, |this, bio| this.child(self.bio(&bio, strong, cx)))
+            // Module 348434: the private notice (501193 in the profile's `Overlay`) sits after the mutuals and
+            // before the bio.
             .when(private, |this| {
-                this.child(
-                    div()
-                        .parity("private-profile-notice")
-                        .p(px(12.))
-                        .rounded(px(8.))
-                        .bg(palette.token("--background-mod-normal"))
-                        .text_size(px(14.))
-                        .line_height(px(18.))
-                        .text_color(strong)
-                        .child(super::profile_board::private_text(&display_name)),
-                )
+                this.child(div().parity("private-profile-notice").child(
+                    super::profile_board::private_notice(&display_name, &palette),
+                ))
             })
-            .children(self.live_activity_cards(id, super::live_activity::Surface::Popout, strong, subtle, cx))
+            .when_some(bio, |this, bio| this.child(self.bio(&bio, strong, cx)))
+            .children(self.live_activity_cards(
+                id,
+                super::live_activity::Surface::Popout,
+                strong,
+                subtle,
+                cx,
+            ))
             .children(self.popout_voice_card(id, cx))
             .children(self.profile_role_chips(id, strong, cx))
             // Not in the pinned client: ShowConnections (`plugin_hooks/show_connections.rs`).
@@ -582,6 +598,14 @@ impl Root {
                 )
                 .into_any_element()
         });
+        // The frame of module 744808 over the popout (`user-profile-popout`), when the window is taller than 480px.
+        let (frame_back, frame_front) = self.profile_frame_layers(
+            id,
+            304.,
+            None,
+            super::profile_frames::FrameSurface::Popout,
+            f32::from(window.viewport_size().height),
+        );
         let card = div()
             .parity("user-popout")
             .id("profile-popout")
@@ -589,9 +613,11 @@ impl Root {
                 this.profile_effect_hover("popout", *inside, cx);
             }))
             .occlude()
+            .relative()
             .w(px(304.))
             .max_h(window.viewport_size().height - px(20.))
             .p(px(2.))
+            .children(frame_back)
             .rounded(px(8.))
             .bg(linear_gradient(
                 180.,
@@ -624,13 +650,30 @@ impl Root {
                     .flex()
                     .flex_col()
                     .gap(px(8.))
+                    // `banner_B_p0HC` of module 312381 in the popout: 8px around the lock and Private Profile in
+                    // `--text-default`, 8px pulled under the header; `--background-surface-higher`, or on a themed
+                    // profile the top of the theme's gradient (primary to secondary over 600px).
                     .when(private, |this| {
+                        let text = palette.token("--text-default");
                         this.child(
                             div()
                                 .parity("private-profile-heading")
                                 .h(px(32.))
                                 .flex_none()
                                 .mb(px(-8.))
+                                .rounded_t(px(6.))
+                                .map(|band| match palette.theme.as_ref() {
+                                    Some(theme) => {
+                                        let (top, bottom) =
+                                            super::profile_theme::popout_private_band(theme, 32.);
+                                        band.bg(gpui::linear_gradient(
+                                            180.,
+                                            gpui::linear_color_stop(top, 0.),
+                                            gpui::linear_color_stop(bottom, 1.),
+                                        ))
+                                    }
+                                    None => band.bg(color("--background-surface-higher")),
+                                })
                                 .flex()
                                 .items_center()
                                 .justify_center()
@@ -639,15 +682,15 @@ impl Root {
                                     gpui::svg()
                                         .path("icons/access_lock.svg")
                                         .size(px(16.))
-                                        .text_color(palette.token("--text-strong")),
+                                        .text_color(text),
                                 )
                                 .child(
                                     div()
                                         .text_size(px(14.))
                                         .line_height(px(16.))
                                         .font_weight(FontWeight(600.))
-                                        .text_color(strong)
-                                        .child("Private Profile"),
+                                        .text_color(text)
+                                        .child(dc_intl::t!("KPnd2O")),
                                 ),
                         )
                     })
@@ -662,7 +705,8 @@ impl Root {
                     .children(message.map(|message| div().flex_none().child(message)))
                     .children(effect)
                     .child(actions),
-            );
+            )
+            .children(frame_front);
         let at: Point<Pixels> = if popout.left {
             point(popout.anchor.left() - px(320.), popout.anchor.top())
         } else {

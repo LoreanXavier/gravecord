@@ -63,6 +63,8 @@ impl Root {
                 cx.notify();
             }
             "GUILD_BAN_ADD" | "GUILD_BAN_REMOVE" => cx.notify(),
+            "AUTO_MODERATION_CONTENT_DELETED" => self.automod_content_deleted(data, cx),
+            "DM_SETTINGS_UPSELL_SHOW" => self.dm_settings_upsell(data, cx),
             "MESSAGE_UPDATE" | "MESSAGE_DELETE" | "MESSAGE_DELETE_BULK" => {
                 self.pins_message_event(name, data, cx)
             }

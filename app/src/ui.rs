@@ -51,6 +51,7 @@ mod call_background;
 mod call_menus;
 mod call_popout;
 mod call_volume;
+mod camera_failed;
 #[cfg(feature = "capture")]
 pub(crate) mod callsim;
 mod carousel;
@@ -62,6 +63,7 @@ pub(crate) mod channel_notice;
 mod channel_settings;
 mod channel_settings_pages;
 mod channel_status;
+mod chat_notices;
 mod clips;
 mod code_copy;
 mod command_feedback;
@@ -74,6 +76,7 @@ mod context_menu;
 #[cfg(feature = "capture")]
 mod crawl_reset;
 mod create_channel;
+mod dangerous_link;
 mod deep_link_route;
 mod destructive;
 mod dm;
@@ -99,6 +102,7 @@ mod gateway_screens;
 mod gifs;
 mod go_live;
 mod go_live_game;
+mod graphic_modal;
 mod group_dm;
 mod group_manage;
 mod guild_menu;
@@ -129,7 +133,6 @@ mod message_requests;
 mod message_tips;
 mod presence;
 mod provider_player;
-mod web_frames;
 mod role_dot;
 pub(crate) mod role_gradient;
 mod role_popout;
@@ -137,6 +140,7 @@ mod schedule_message;
 mod sent_attachment;
 mod spotify_activity;
 mod stage;
+mod stage_requests;
 mod sticker_player;
 mod sticker_popout;
 mod stickers;
@@ -150,8 +154,10 @@ mod unread_badges;
 mod unread_dms;
 mod update_button;
 mod voice_message;
+mod web_frames;
 pub use logout::RootEvent;
 mod account_switcher;
+mod app_widget;
 #[cfg(feature = "capture")]
 mod avatar_demo;
 mod avatar_play;
@@ -165,6 +171,7 @@ pub(crate) mod frame_clock;
 mod game_genres;
 mod game_profile;
 mod gif_tiles;
+mod graphic_dialogs;
 mod guild_events;
 mod guild_guide;
 mod guild_navigation;
@@ -198,6 +205,7 @@ mod official_messages;
 mod overlay;
 mod overlay_chat;
 mod overlay_panel;
+mod overlay_survey;
 mod overlay_widgets;
 mod paste;
 #[cfg(feature = "capture")]
@@ -205,8 +213,8 @@ mod perf;
 mod permission_spec;
 mod picker;
 mod pins;
-mod plugin_hooks;
 mod plaintext_extensions;
+mod plugin_hooks;
 mod poll;
 mod popout_roles;
 mod profile;
@@ -214,6 +222,7 @@ mod profile_art;
 mod profile_board;
 mod profile_editor;
 pub(crate) mod profile_effects;
+mod profile_frames;
 mod profile_menu;
 mod profile_other;
 mod profile_theme;
@@ -235,6 +244,7 @@ mod saved;
 mod screening;
 mod search;
 mod search_filters;
+mod search_pager;
 mod send_state;
 mod server_access;
 mod server_audit;
@@ -292,6 +302,8 @@ mod video_player;
 mod video_stats;
 mod video_tiles;
 mod voice;
+mod voice_alerts;
+mod voice_blocked;
 mod voice_panel;
 mod voice_sounds;
 mod voice_video;
@@ -521,6 +533,8 @@ pub struct Root {
     channel_drag: channel_drag::State,
     /// A message over the length limit, held while the "too long" dialog asks what to do.
     too_long: Option<String>,
+    /// Small chat dialogs and chained thread requests (`chat_notices`).
+    chat_extra: chat_notices::State,
     focus: FocusHandle,
     /// Focus bookkeeping and keyboard modality (`keyboard`).
     keys: keyboard::State,
@@ -596,6 +610,21 @@ pub struct Root {
     /// for that Stage channel.
     stage_leave_menu: bool,
     stage_end_confirm: Option<Id>,
+    /// The open voice, Stage or stream alert (`voice_alerts`), and the streams whose "Stream is Full" was shown.
+    voice_alert: Option<voice_alerts::VoiceAlert>,
+    stream_full_seen: std::collections::HashSet<String>,
+    /// Blocked and ignored people in voice channels, and when warnings about them were dismissed (`voice_blocked`).
+    blocked_in_voice: voice_blocked::BlockedInVoice,
+    warning_dismissals: voice_blocked::WarningDismissals,
+    /// The Stage's Requests to Speak sidebar is open, and the Stages whose full video notice was dismissed
+    /// (`stage_requests`).
+    stage_requests_open: bool,
+    stage_video_upsell_dismissed: std::collections::HashSet<Id>,
+    /// Videos waiting for their first picture, and the ones that never showed (`camera_failed`).
+    video_ready: std::cell::RefCell<camera_failed::VideoReady>,
+    /// The survey after the overlay was switched off, and its opening at the next frame (`overlay_survey`).
+    overlay_survey: Option<overlay_survey::OverlaySurvey>,
+    overlay_survey_pending: bool,
     /// The menu over a speaker's or audience member's tile (module 106401 and 237749's rows), where it was opened.
     stage_tile_menu: Option<stage::TileMenu>,
     /// Stage instances whose Live Now card was closed with its X.
@@ -967,6 +996,7 @@ impl Root {
             context: context_menu::State::default(),
             channel_drag: channel_drag::State::default(),
             too_long: None,
+            chat_extra: chat_notices::State::default(),
             focus: cx.focus_handle(),
             keys: Default::default(),
             images: HashMap::new(),
@@ -1022,6 +1052,15 @@ impl Root {
             stage_welcome_seen: false,
             stage_leave_menu: false,
             stage_end_confirm: None,
+            voice_alert: None,
+            stream_full_seen: Default::default(),
+            blocked_in_voice: Default::default(),
+            warning_dismissals: voice_blocked::WarningDismissals::load(),
+            stage_requests_open: false,
+            stage_video_upsell_dismissed: Default::default(),
+            video_ready: Default::default(),
+            overlay_survey: None,
+            overlay_survey_pending: false,
             stage_tile_menu: None,
             live_now_closed: Vec::new(),
             publish_confirm: None,
@@ -1367,12 +1406,27 @@ impl Root {
                 }
                 let voice_before = (name == "VOICE_STATE_UPDATE")
                     .then(|| (self.others_in_call(), self.streamers_in_call()));
+                // The person's channel before this state (`oldChannelId`), for `voice_blocked`.
+                let voice_mover = (name == "VOICE_STATE_UPDATE")
+                    .then(|| {
+                        let user = data["user_id"].as_str()?.parse::<Id>().ok()?;
+                        let guild = data["guild_id"]
+                            .as_str()
+                            .and_then(|id| id.parse::<Id>().ok())
+                            .unwrap_or(0);
+                        Some((guild, user, self.voice_channel_of(guild, user)))
+                    })
+                    .flatten();
                 let ready_prev_place = (name == "READY"
                     && (self.hydrated_from_cache || self.stores.current_user.is_some()))
                 .then_some((self.guild, self.channel));
                 let rebuild_messages = matches!(
                     name.as_str(),
-                    "MESSAGE_CREATE" | "MESSAGE_DELETE" | "MESSAGE_UPDATE" | "MESSAGE_ACK"
+                    "MESSAGE_CREATE"
+                        | "MESSAGE_DELETE"
+                        | "MESSAGE_UPDATE"
+                        | "MESSAGE_ACK"
+                        | "AUTO_MODERATION_CONTENT_DELETED"
                 );
                 // Capture before dispatch changes the message indices that the current rows refer to.
                 let message_anchor = rebuild_messages.then(|| self.scroll_anchor()).flatten();
@@ -1380,9 +1434,22 @@ impl Root {
                     self.send_echo(&data);
                 }
                 self.stores.dispatch(&name, &data);
+                self.urgent_message_event(&name);
                 self.spotify_devices_changed(cx);
                 self.spotify_loading_changed();
+                if name == "READY" {
+                    self.blocked_in_voice.reset();
+                }
+                if let Some((guild, user, old)) = voice_mover {
+                    let new = self.voice_channel_of(guild, user);
+                    self.blocked_voice_state(user, old, new, cx);
+                }
+                if name.starts_with("RELATIONSHIP_") {
+                    self.blocked_relationship_changed(&data, cx);
+                }
                 if name == "VOICE_STATE_UPDATE" {
+                    self.ended_stream_voice_state();
+                    self.stage_invite_check(&data, cx);
                     self.voice_state_of_other_session(&data, cx);
                     // Not in the pinned client: the VoiceStats plugin (`plugin_hooks/voice_stats.rs`).
                     self.voice_stats_observe(cx);
@@ -1662,6 +1729,7 @@ impl Root {
             Update::Keybind { id, down } => self.kb_fire(&id, down, cx),
             // The shell, which owns the login, takes this one before it reaches the view.
             Update::AuthFailed | Update::TokenRenewed(_) => {}
+            Update::LimitedAccess => self.limited_access_alert(cx),
             Update::SettingsWritten(answer) => {
                 // The last write was answered: what the server holds now, the changes of other sessions that were
                 // left out in between included. Merged, since everything this app wrote is in it already.
@@ -1678,10 +1746,22 @@ impl Root {
                 }
             }
             Update::Fetched { key, body } => {
+                if let Some(rest) = key.strip_prefix(crate::net::EDIT_KEY) {
+                    self.edit_answered(rest, &body, cx);
+                    return;
+                }
+                if let Some(rest) = key.strip_prefix(deep_link_route::CHANNEL_CHECK_KEY) {
+                    self.link_channel_checked(rest, &body, cx);
+                    return;
+                }
                 if self.spotify_metadata_fetched(&key, &body, cx) {
                     return;
                 }
                 self.active_now_fetched(&key, &body);
+                if key.starts_with(chat_notices::KEY_PREFIX) {
+                    self.thread_step_fetched(&key, &body);
+                    return;
+                }
                 if key.starts_with(message_requests::KEY_PREFIX) {
                     self.message_requests_fetched(&key, &body, cx);
                     return;
@@ -1863,6 +1943,16 @@ impl Root {
                     self.game_profile_fetched(&key, body, cx);
                     return;
                 }
+                if key.starts_with(app_widget::CONFIG_PREFIX)
+                    || key.starts_with(app_widget::IDENTITY_PREFIX)
+                {
+                    self.app_widget_fetched(key, body, cx);
+                    return;
+                }
+                if key.starts_with(profile_frames::PRODUCT_PREFIX) {
+                    self.profile_frame_fetched(key, body, cx);
+                    return;
+                }
                 if key.starts_with(launcher_home::APP_INDEX_PREFIX) {
                     self.fetched.insert(key, body);
                     cx.notify();
@@ -1982,6 +2072,10 @@ impl Root {
                 if key.starts_with(server_insights::INSIGHTS_PREFIX) {
                     self.fetched.insert(key.clone(), body.clone());
                     self.insights_fetched(&key, cx);
+                    return;
+                }
+                if key == dangerous_link::BAD_DOMAINS_KEY {
+                    self.blocked_domains_fetched(&body);
                     return;
                 }
                 if key.starts_with(server_automod::AUTOMOD_PREFIX) {
@@ -2330,6 +2424,7 @@ impl Root {
     }
 
     fn after_ready(&mut self) {
+        self.request_blocked_domains();
         // The app starts where it was closed: the server last shown on the channel it was left on, or Home. A first
         // start, and a server that is gone, open Home as the official client does: opening a server marks its
         // channel read, and nobody chose that server.
@@ -3989,6 +4084,12 @@ impl Root {
         list.extend(self.guild_events_editors());
         list.extend(self.schedule_editors());
         list.extend(self.search.as_ref().map(|search| search.field.clone()));
+        list.extend(
+            self.search
+                .as_ref()
+                .and_then(|search| search.jump.as_ref())
+                .map(|jump| jump.field.clone()),
+        );
         list.extend(self.search_editors());
         list.extend(self.shop_search_editors());
         list.push(self.active_editor());
@@ -5781,7 +5882,8 @@ impl Root {
             .current_dm()
             .filter(|channel| channel.kind == 3)
             .cloned();
-        let muted = self.channel_muted_now();
+        // Module 187360: the bell is slashed while the channel is muted or its resolved level is not All Messages.
+        let muted = self.channel_bell_slashed();
         // Module 586944: "Search in DMs" (`m7OrlR`) in the every-DM context, else "Search {name}" (`LDZtFO`) with the
         // server's or the conversation's name (the key is the same for both; its Turkish reads "{name} sunucusunu ara").
         let search = if self.search_all_dms() {
@@ -6310,12 +6412,19 @@ impl Root {
                                 cx,
                             )
                             .cursor_pointer()
-                            .on_click(cx.listener(|this, _, _, cx| {
-                                this.tip = None;
-                                this.notify_open = !this.notify_open;
-                                this.notify_submenu = None;
-                                cx.notify();
-                            })),
+                            .on_click(cx.listener(
+                                |this, event: &gpui::ClickEvent, _, cx| {
+                                    this.tip = None;
+                                    // Module 187360: a shift-click mutes or unmutes at once, without the menu.
+                                    if event.modifiers().shift {
+                                        this.toggle_channel_mute_now();
+                                    } else {
+                                        this.notify_open = !this.notify_open;
+                                        this.notify_submenu = None;
+                                    }
+                                    cx.notify();
+                                },
+                            )),
                         )
                         .child(
                             self.header_stop(
@@ -6614,18 +6723,18 @@ impl Root {
     }
 
     fn spans(&self, spans: &[Span], text_color: Hsla, key: (u64, u32)) -> Inline {
-        self.spans_edited(spans, text_color, key, false, None)
+        self.spans_edited(spans, text_color, key, &[])
     }
 
     /// A message's last paragraph ends in `(edited)` when the message was edited: `edited_2i8Bfm`, 10px in
-    /// `--chat-text-muted`, after a space in the message's own size.
+    /// `--chat-text-muted`, after a space in the message's own size. A blocked edit adds `(reverted)` the same way
+    /// (module 469759: the edited timestamp of the message's own time). Each mark is its text and its tooltip's time.
     fn spans_edited(
         &self,
         spans: &[Span],
         text_color: Hsla,
         key: (u64, u32),
-        edited: bool,
-        edited_at: Option<chrono::DateTime<chrono::Utc>>,
+        marks: &[(String, Option<chrono::DateTime<chrono::Utc>>)],
     ) -> Inline {
         let jumbo = dc_markdown::is_jumbo(spans);
         // `AccessibilityStore.fontSize`: the text, its 1.375 line and the 22px emoji scale with the chat font.
@@ -6649,7 +6758,8 @@ impl Root {
                 )
             })
             .collect();
-        if edited {
+        let mut extra_hovers = Vec::new();
+        for (text, at) in marks {
             let plain = Span {
                 text: " ".to_owned(),
                 style: dc_markdown::Style::default(),
@@ -6657,18 +6767,15 @@ impl Root {
             };
             pieces.push(self.piece(&plain, text_color, font_size, 400., emoji_size));
             let mut label = self.piece(&plain, hsla("--chat-text-muted"), 10., 400., emoji_size);
-            label.text = "(edited)".to_owned();
+            label.text = text.clone();
             pieces.push(label);
+            extra_hovers.push(None);
+            extra_hovers.push(at.and_then(message_tips::edited_tip));
         }
         let line = if jumbo {
             px(48.)
         } else {
             px((font_size * 1.375).round())
-        };
-        let extra_hovers = if edited {
-            vec![None, edited_at.and_then(message_tips::edited_tip)]
-        } else {
-            Vec::new()
         };
         let element =
             inline(pieces, line).selectable(key, self.selection.clone(), hsla_from(SELECTION));
@@ -6801,10 +6908,28 @@ impl Root {
             });
         }
         let links = link_runs(spans);
-        if links.iter().any(Option::is_some) || emoji_keys.iter().any(Option::is_some) {
+        let channels: Vec<Option<u64>> = spans
+            .iter()
+            .map(|span| match span.kind {
+                Kind::Channel(id) => Some(id),
+                _ => None,
+            })
+            .collect();
+        if links.iter().any(Option::is_some)
+            || emoji_keys.iter().any(Option::is_some)
+            || channels.iter().any(Option::is_some)
+        {
             let root = self.weak.clone();
             let runs = links.clone();
+            let mentions = channels.clone();
             element = element.on_piece_context(move |piece, at, _, cx| {
+                // A channel mention opens its own menu (module 223998) instead of the message's.
+                if let Some(Some(channel)) = mentions.get(piece).copied() {
+                    let _ = root.update(cx, |this, _| {
+                        this.chat_extra.mention_hit = Some((at, channel))
+                    });
+                    return;
+                }
                 let hit = if let Some(Some((url, label))) = runs.get(piece).cloned() {
                     Some(menu::Hit::Link { url, label })
                 } else if let Some(Some(key)) = emoji_keys.get(piece).cloned() {
@@ -6817,13 +6942,6 @@ impl Root {
                 }
             });
         }
-        let channels: Vec<Option<u64>> = spans
-            .iter()
-            .map(|span| match span.kind {
-                Kind::Channel(id) => Some(id),
-                _ => None,
-            })
-            .collect();
         if spoilers.iter().any(Option::is_some)
             || links.iter().any(Option::is_some)
             || channels.iter().any(Option::is_some)
@@ -6843,7 +6961,12 @@ impl Root {
                             .and_then(|channel| this.stores.messages.get(&channel))
                             .map(|messages| messages.iter().map(|known| known.id).collect())
                             .unwrap_or_default();
-                        plugin_hooks::reveal_all_spoilers(&mut this.revealed, key.0, &loaded, modifiers);
+                        plugin_hooks::reveal_all_spoilers(
+                            &mut this.revealed,
+                            key.0,
+                            &loaded,
+                            modifiers,
+                        );
                         cx.notify();
                         return;
                     }
@@ -7435,98 +7558,125 @@ impl Root {
             0.
         };
         let last = blocks.len().saturating_sub(1);
-        div().flex().flex_col().pb(px(trailing)).children(
-            blocks
-                .into_iter()
-                .zip(gaps)
-                .enumerate()
-                .map(|(index, (block, gap))| {
-                    let key = (message.id, index as u32);
-                    match block {
-                        Block::Paragraph(spans) => div()
-                            .min_h(px((self.chat_font_size() * 1.375).round()))
-                            .mt(px(gap))
-                            .child(self.spans_edited(
-                                &spans,
-                                text,
-                                key,
-                                message.edited && index == last,
-                                message.edited_at,
-                            ))
-                            .into_any_element(),
-                        Block::Heading { level, spans } => div()
-                            .mt(px(gap))
-                            .child(self.heading(&spans, level, key))
-                            .into_any_element(),
-                        Block::Subtext(spans) => div()
-                            .mt(px(gap))
-                            .child(self.subtext(&spans, key))
-                            .into_any_element(),
-                        Block::ListItem {
-                            depth,
-                            number,
-                            spans,
-                        } => {
-                            let indent = 16. * (f32::from(depth) + 1.);
-                            let marker = match number {
-                                Some(number) => div()
-                                    .absolute()
-                                    .left(px(-18.))
-                                    .top(px(0.))
-                                    .line_height(px(22.))
-                                    .text_color(marker_color)
-                                    .child(format!("{number}."))
-                                    .into_any_element(),
-                                None => {
-                                    let disc = div()
-                                        .absolute()
-                                        .left(px(-17.))
-                                        .top(px(8.))
-                                        .size(px(5.))
-                                        .rounded_full();
-                                    if depth == 0 {
-                                        disc.bg(marker_color).into_any_element()
-                                    } else {
-                                        disc.border_1()
-                                            .border_color(marker_color)
-                                            .into_any_element()
-                                    }
-                                }
-                            };
-                            div()
-                                .relative()
+        let mut marks = Vec::new();
+        if message.edited {
+            marks.push(("(edited)".to_owned(), message.edited_at));
+        }
+        let reverted = self.automod_blocked_edit(message.id).then(|| {
+            (
+                format!("({})", dc_intl::t("Z7eEx9")),
+                Some(message.timestamp),
+            )
+        });
+        marks.extend(reverted.clone());
+        // Module 469759 puts " (reverted)" after the content: a message whose content does not end in text (only
+        // attachments, a code block) gets it on a line of its own.
+        let reverted_alone = reverted
+            .filter(|_| !matches!(blocks.last(), Some(Block::Paragraph(_))))
+            .map(|mark| {
+                div().child(self.spans_edited(
+                    &[],
+                    text,
+                    (message.id, blocks.len() as u32),
+                    &[mark],
+                ))
+            });
+        div()
+            .flex()
+            .flex_col()
+            .pb(px(trailing))
+            .children(
+                blocks
+                    .into_iter()
+                    .zip(gaps)
+                    .enumerate()
+                    .map(|(index, (block, gap))| {
+                        let key = (message.id, index as u32);
+                        match block {
+                            Block::Paragraph(spans) => div()
+                                .min_h(px((self.chat_font_size() * 1.375).round()))
                                 .mt(px(gap))
-                                .ml(px(indent))
-                                .min_h(px(22.))
-                                .child(marker)
-                                .child(self.spans(&spans, text, key))
-                                .into_any_element()
-                        }
-                        Block::Quote(spans) => div()
-                            .mt(px(gap))
-                            .flex()
-                            .child(
+                                .child(self.spans_edited(
+                                    &spans,
+                                    text,
+                                    key,
+                                    if index == last { &marks } else { &[] },
+                                ))
+                                .into_any_element(),
+                            Block::Heading { level, spans } => div()
+                                .mt(px(gap))
+                                .child(self.heading(&spans, level, key))
+                                .into_any_element(),
+                            Block::Subtext(spans) => div()
+                                .mt(px(gap))
+                                .child(self.subtext(&spans, key))
+                                .into_any_element(),
+                            Block::ListItem {
+                                depth,
+                                number,
+                                spans,
+                            } => {
+                                let indent = 16. * (f32::from(depth) + 1.);
+                                let marker = match number {
+                                    Some(number) => div()
+                                        .absolute()
+                                        .left(px(-18.))
+                                        .top(px(0.))
+                                        .line_height(px(22.))
+                                        .text_color(marker_color)
+                                        .child(format!("{number}."))
+                                        .into_any_element(),
+                                    None => {
+                                        let disc = div()
+                                            .absolute()
+                                            .left(px(-17.))
+                                            .top(px(8.))
+                                            .size(px(5.))
+                                            .rounded_full();
+                                        if depth == 0 {
+                                            disc.bg(marker_color).into_any_element()
+                                        } else {
+                                            disc.border_1()
+                                                .border_color(marker_color)
+                                                .into_any_element()
+                                        }
+                                    }
+                                };
                                 div()
-                                    .flex_none()
-                                    .w(px(4.))
-                                    .rounded(px(4.))
-                                    .bg(color("--spine-default")),
-                            )
-                            .child(
-                                div()
-                                    .flex_1()
-                                    .min_w(px(0.))
-                                    .pl(px(12.))
-                                    .pr(px(8.))
-                                    .child(self.spans(&spans, hsla("--text-subtle"), key)),
-                            )
-                            .into_any_element(),
-                        Block::Code { language, text } => {
-                            self.code_block(key, gap, language.as_deref(), &text)
+                                    .relative()
+                                    .mt(px(gap))
+                                    .ml(px(indent))
+                                    .min_h(px(22.))
+                                    .child(marker)
+                                    .child(self.spans(&spans, text, key))
+                                    .into_any_element()
+                            }
+                            Block::Quote(spans) => div()
+                                .mt(px(gap))
+                                .flex()
+                                .child(
+                                    div()
+                                        .flex_none()
+                                        .w(px(4.))
+                                        .rounded(px(4.))
+                                        .bg(color("--spine-default")),
+                                )
+                                .child(
+                                    div()
+                                        .flex_1()
+                                        .min_w(px(0.))
+                                        .pl(px(12.))
+                                        .pr(px(8.))
+                                        .child(self.spans(&spans, hsla("--text-subtle"), key)),
+                                )
+                                .into_any_element(),
+                            Block::Code { language, text } => {
+                                self.code_block(key, gap, language.as_deref(), &text)
+                            }
                         }
-                    }
-                }),
-        )
+                    }),
+            )
+            .children(reverted_alone)
     }
 
     fn row(&self, index: usize, cx: &mut Context<Self>) -> AnyElement {
@@ -7739,11 +7889,16 @@ impl Root {
                         )
                     })
                     // Not in the pinned client: the MessageClickActions plugin's clicks (`plugin_hooks/message_clicks.rs`).
-                    .when(!is_starter && editing.is_none() && !crate::plugins::bypassed(), |this| {
-                        this.on_click(cx.listener(move |this, event: &gpui::ClickEvent, window, cx| {
-                            this.message_clicked(id, event, window, cx);
-                        }))
-                    })
+                    .when(
+                        !is_starter && editing.is_none() && !crate::plugins::bypassed(),
+                        |this| {
+                            this.on_click(cx.listener(
+                                move |this, event: &gpui::ClickEvent, window, cx| {
+                                    this.message_clicked(id, event, window, cx);
+                                },
+                            ))
+                        },
+                    )
                     .when(hovered, |this| this.child(hover_bar::probe(id, false)))
                     .when(hovered && editing.is_none() && !is_starter, |this| {
                         // No bar while a message is sending, Retry and Delete once it failed, and none on a private
@@ -7776,13 +7931,18 @@ impl Root {
                         .when(
                             !self.hides_inline_media_content(message)
                                 && !self.command_replaces_content(message)
-                                && (!message.content.is_empty() || message.edited),
+                                && (!message.content.is_empty()
+                                    || message.edited
+                                    || self.automod_blocked_edit(id)),
                             |this| {
                                 // `isFailed` colours the text, the links and the inline code; `isSending` fades the
                                 // content (module 74096).
                                 let state = self.send_state_of(id);
-                                self.failed_tint
-                                    .set(state == Some(send_state::SendState::Failed));
+                                // `blockedSend_REFxkR` keeps an AutoMod-blocked message in `--text-default`.
+                                self.failed_tint.set(
+                                    state == Some(send_state::SendState::Failed)
+                                        && !self.automod_blocked(id),
+                                );
                                 self.official_text.set(official.and_then(|look| look.text));
                                 let content = self.content(message);
                                 self.failed_tint.set(false);
@@ -7798,6 +7958,9 @@ impl Root {
                                 )
                             },
                         )
+                        // Module 469759 draws AutoMod's notice inside the content's own block, before the
+                        // attachments, embeds and reactions.
+                        .children(self.automod_blocked_notice(message, compact, cx))
                         .children(self.command_status(message))
                         .children(self.forwarded_block(message, cx))
                         .children(self.accessories(message, cx))
@@ -8417,7 +8580,8 @@ impl Root {
                     bar.child(tipped(cx).on_click(cx.listener(move |this, _, _, cx| {
                         this.tip = None;
                         let text = plugin_hooks::mention_text(author);
-                        this.composer.update(cx, |composer, cx| composer.insert(&text, cx));
+                        this.composer
+                            .update(cx, |composer, cx| composer.insert(&text, cx));
                         cx.notify();
                     })))
                 }
@@ -9322,6 +9486,7 @@ impl Render for Root {
         #[cfg(feature = "capture")]
         crate::perf::RENDERS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         self.interaction_modal_frame(window, cx);
+        self.open_pending_overlay_survey(cx);
         #[cfg(feature = "capture")]
         let _build = crate::perf::Timer::build();
         // The motion clock for this frame; reduced motion as module 775602 decides it.
@@ -9764,6 +9929,18 @@ impl Render for Root {
                     cx.stop_propagation();
                     return;
                 }
+                // A voice alert closes as its own close does (the blocked warnings' close joins or stays).
+                if keys.key == "escape" && this.voice_alert.is_some() {
+                    this.dismiss_voice_alert(cx);
+                    cx.notify();
+                    cx.stop_propagation();
+                    return;
+                }
+                if keys.key == "escape" && this.overlay_survey.take().is_some() {
+                    cx.notify();
+                    cx.stop_propagation();
+                    return;
+                }
                 if keys.key == "escape"
                     && (this.guild_notifications.is_some()
                         || this.channel_status.is_some()
@@ -9771,6 +9948,7 @@ impl Render for Root {
                         || this.start_stage.is_some()
                         || this.stage_welcome.is_some()
                         || this.stage_end_confirm.is_some()
+                        || this.voice_alert.is_some()
                         || this.publish_confirm.is_some())
                 {
                     this.guild_notifications = None;
@@ -9779,6 +9957,7 @@ impl Render for Root {
                     this.start_stage = None;
                     this.stage_welcome = None;
                     this.stage_end_confirm = None;
+                    this.voice_alert = None;
                     this.publish_confirm = None;
                     cx.notify();
                     cx.stop_propagation();
@@ -9914,6 +10093,14 @@ impl Render for Root {
                     cx.stop_propagation();
                     return;
                 }
+                // A dialog over the settings page (Failed to upload files) closes before the page does.
+                if keys.key == "escape"
+                    && (this.chat_alert_escape() || this.graphic_dialog_escape())
+                {
+                    cx.notify();
+                    cx.stop_propagation();
+                    return;
+                }
                 if this.server_settings.is_some() && keys.key == "escape" {
                     if this.close_server_settings_layer() {
                     } else if let Some(open) = this.server_settings.as_mut()
@@ -10021,6 +10208,10 @@ impl Render for Root {
                     cx.stop_propagation();
                     return;
                 }
+                // Module 113367's listener only records the time (the overdue notice ends); the key goes on.
+                if event.keystroke.key == "escape" && this.overdue_notice_escape() {
+                    cx.notify();
+                }
                 if event.keystroke.key == "escape" && this.voice_dialog_close(cx) {
                     cx.stop_propagation();
                     return;
@@ -10086,7 +10277,9 @@ impl Render for Root {
                     this.forward = None;
                     cx.notify();
                     cx.stop_propagation();
-                } else if event.keystroke.key == "escape" && this.interaction_modal_escape() {
+                } else if event.keystroke.key == "escape"
+                    && (this.interaction_modal_escape() || this.chat_alert_escape())
+                {
                     cx.notify();
                     cx.stop_propagation();
                 } else if event.keystroke.key == "escape" && this.custom_reminder.is_some() {
@@ -10495,43 +10688,43 @@ impl Render for Root {
                                                 .flex_1()
                                                 .min_w(px(0.))
                                                 .h_full()
+                                                // Module 626977 over the list: a locked thread's bar.
+                                                .children(self.thread_lock_notice(cx))
                                                 .child(self.regions.place(
                                                     regions::Kind::Messages,
                                                     regions::style_of(regions::Kind::Messages),
                                                 ))
-                                                .child(
-                                                    match self
-                                                        .current_dm()
-                                                        .and_then(|channel| {
-                                                            self.stores.dm_recipient(channel)
+                                                .child(match self.chat_blocker() {
+                                                    // `wrapper_ST_Y69` sits where the composer's form does: 8px in
+                                                    // and over the list's last 16px.
+                                                    Some(blocker) => div()
+                                                        .flex_none()
+                                                        .mt(px(-16.))
+                                                        .px(px(8.))
+                                                        .pb(px(8.))
+                                                        .child(match blocker {
+                                                            blocked::ChatBlocker::System {
+                                                                changelog,
+                                                            } => self
+                                                                .system_dm_composer(changelog, cx),
+                                                            blocked::ChatBlocker::Blocked(user) => {
+                                                                self.blocked_composer(user, cx)
+                                                            }
                                                         })
-                                                        .map(|user| user.id)
-                                                        .filter(|user| self.is_blocked(*user))
-                                                    {
-                                                        // `wrapper_ST_Y69` sits where the composer's form does: 8px in
-                                                        // and over the list's last 16px.
-                                                        Some(user) => div()
-                                                            .flex_none()
-                                                            .mt(px(-16.))
-                                                            .px(px(8.))
-                                                            .pb(px(8.))
-                                                            .child(self.blocked_composer(user, cx))
-                                                            .into_any_element(),
-                                                        None if self.screening_pending() => {
-                                                            self.screening_composer(cx)
-                                                        }
-                                                        None if self.follow_blocker_applies() => {
-                                                            self.follow_composer(cx)
-                                                        }
-                                                        None => self
-                                                            .regions
-                                                            .place_composer()
-                                                            .unwrap_or_else(|| {
-                                                                self.composer_bar(cx)
-                                                                    .into_any_element()
-                                                            }),
-                                                    },
-                                                ),
+                                                        .into_any_element(),
+                                                    None if self.screening_pending() => {
+                                                        self.screening_composer(cx)
+                                                    }
+                                                    None if self.follow_blocker_applies() => {
+                                                        self.follow_composer(cx)
+                                                    }
+                                                    None => self
+                                                        .regions
+                                                        .place_composer()
+                                                        .unwrap_or_else(|| {
+                                                            self.composer_bar(cx).into_any_element()
+                                                        }),
+                                                }),
                                         )
                                         .children(self.search_panel(cx))
                                         .when(
@@ -10601,6 +10794,8 @@ impl Render for Root {
             .children(self.start_stage_modal(window, cx))
             .children(self.stage_welcome_modal(cx))
             .children(self.stage_end_modal(cx))
+            .children(self.voice_alert_modal(cx))
+            .children(self.overlay_survey_modal(cx))
             .children(self.publish_modal(cx))
             .children(self.guild_events_layer(window, cx))
             .children(self.guild_menu_layer(cx))
@@ -10612,6 +10807,8 @@ impl Render for Root {
             .children(self.remove_friend_modal(cx))
             .children(self.not_friend_modal(cx))
             .children(self.favorites_full_modal(cx))
+            .children(self.chat_alert_modal(cx))
+            .children(self.graphic_dialog(cx))
             .children(self.library_remove_modal(cx))
             .children(self.composer_ai_modal(cx))
             .children(self.friend_nickname_layer(window, cx))

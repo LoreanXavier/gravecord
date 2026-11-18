@@ -26,6 +26,8 @@ INDEX = os.path.join(REPO, "design", "snapshot", "MODULE_INDEX.tsv")
 STRINGS = os.path.join(REPO, "design", "snapshot", "dumps", "STRINGS", "en-US.json")
 OUT = os.path.join(REPO, "LEDGER.tsv")
 KEY = re.compile(r'\.t\["([A-Za-z0-9+/=]{6})"\]|\.t\.([A-Za-z0-9]{6})\b')
+# Lines that name a module as missing do not cite it (xtask/src/coverage.rs GAP_MARKERS).
+GAP_MARKERS = ("GAP:", "does not show", "not ported", "not in the app", "isn't in the app")
 CITE = re.compile(r"(?<![0-9A-Za-z])([0-9]{4,6})(?![0-9A-Za-z])")
 
 
@@ -63,7 +65,8 @@ def chunks():
 
 def citations():
     cited = collections.defaultdict(set)
-    for base in ("app", "crates", "xtask"):
+    # xtask is tooling: its tests name modules as data, not as ports.
+    for base in ("app", "crates"):
         for folder, _, files in os.walk(os.path.join(REPO, base)):
             if "target" in folder.split(os.sep):
                 continue
@@ -72,7 +75,9 @@ def citations():
                     continue
                 path = os.path.join(folder, name)
                 with open(path, encoding="utf8", errors="ignore") as handle:
-                    text = handle.read()
+                    text = chr(10).join(
+                        line for line in handle.read().splitlines() if not any(marker in line for marker in GAP_MARKERS)
+                    )
                 relative = os.path.relpath(path, REPO).replace(os.sep, "/")
                 for module in set(CITE.findall(text)):
                     cited[module].add(relative)
@@ -83,6 +88,12 @@ def main():
     texts = messages()
     index = chunks()
     cited = citations()
+    triage = {}
+    path = os.path.join(REPO, "coverage", "ledger-triage.tsv")
+    if os.path.exists(path):
+        with open(path, encoding="utf8") as handle:
+            for row in csv.DictReader(handle, delimiter="	"):
+                triage[row["module"]] = (row["class"], row["where"])
     rows = []
     for name in sorted(os.listdir(MODULES)):
         if not name.endswith(".js"):
@@ -101,22 +112,31 @@ def main():
             continue
         files = sorted(cited.get(module, ()))
         chunk, size = index.get(module, ("", str(len(source))))
+        status = "ported" if files else triage.get(module, ("untriaged", ""))[0]
+        # A partial or missing triage row wins over a citation that covers only a piece of the module.
+        if triage.get(module, ("", ""))[0] in ("partial", "missing"):
+            status = triage[module][0]
+        if not files and status == "ported":
+            files = [triage[module][1]]
         sample = " | ".join(texts.get(key, key).replace("\t", " ").replace("\n", " ")[:60] for key in keys[:4])
-        rows.append((module, chunk, size, len(keys), "ported" if files else "unported", ",".join(files[:4]), sample))
-    rows.sort(key=lambda row: (row[4] != "unported", -row[3]))
+        rows.append((module, chunk, size, len(keys), status, ",".join(files[:4]), sample))
+    order = {"untriaged": 0, "missing": 1, "partial": 2, "ported": 3, "not-applicable": 4}
+    rows.sort(key=lambda row: (order.get(row[4], 0), -row[3]))
     with open(OUT, "w", encoding="utf8", newline="") as handle:
         writer = csv.writer(handle, delimiter="\t", lineterminator="\n")
         writer.writerow(("module", "chunk", "bytes", "messages", "status", "ported_in", "sample"))
         writer.writerows(rows)
+    counts = collections.Counter(row[4] for row in rows)
+    print("by status: " + ", ".join(f"{name} {count}" for name, count in sorted(counts.items())))
     ported = sum(1 for row in rows if row[4] == "ported")
     shown = sum(row[3] for row in rows)
     shown_ported = sum(row[3] for row in rows if row[4] == "ported")
-    print(f"UI modules: {len(rows)}, ported (cited): {ported} ({100 * ported / max(1, len(rows)):.1f}%)")
+    print(f"UI modules: {len(rows)}, ported (cited or triaged ported): {ported} ({100 * ported / max(1, len(rows)):.1f}%)")
     print(f"messages they show: {shown}, in ported modules: {shown_ported} ({100 * shown_ported / max(1, shown):.1f}%)")
     print(f"written: {os.path.relpath(OUT, REPO)}")
     if "--missing" in sys.argv:
         for row in rows:
-            if row[4] == "unported":
+            if row[4] in ("missing", "partial", "untriaged"):
                 print(f"{row[0]}\t{row[3]}\t{row[6]}")
 
 

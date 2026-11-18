@@ -1354,6 +1354,18 @@ pub fn wishlist_ids(profile: &serde_json::Value) -> Vec<String> {
         .unwrap_or_default()
 }
 
+/// When a profile's first wishlist is read (`m` of module 634110): once, and again whenever the profile's
+/// `wishlist_settings.<id>.updated_at` differs from the one the list was read for (`fetchWishlist(id, updatedAt)` of
+/// module 808247 keeps it with the list). Gives the wishlist id and the request guard that carries that stamp.
+pub fn wishlist_read_guard(user: u64, profile: &serde_json::Value) -> Option<(String, String)> {
+    let id = wishlist_ids(profile).into_iter().next()?;
+    let stamp = profile["wishlist_settings"][id.as_str()]["updated_at"]
+        .as_str()
+        .unwrap_or_default()
+        .to_owned();
+    Some((id, format!("profile-wishlist:{user}@{stamp}")))
+}
+
 /// `GET /wishlists/<id>?source=user_profile` (`fetchWishlist` of module 808247).
 pub fn wishlist_route(id: &str) -> String {
     format!("/wishlists/{id}?source=user_profile")
@@ -1593,6 +1605,18 @@ mod tests {
 
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn a_wishlist_is_read_again_when_its_stamp_changes() {
+        let at = |stamp: &str| json!({"wishlist_settings": {"77": {"updated_at": stamp}}});
+        let (id, first) = wishlist_read_guard(5, &at("2026-01-01T00:00:00Z")).unwrap();
+        assert_eq!(id, "77");
+        let (_, same) = wishlist_read_guard(5, &at("2026-01-01T00:00:00Z")).unwrap();
+        let (_, changed) = wishlist_read_guard(5, &at("2026-02-01T00:00:00Z")).unwrap();
+        assert_eq!(first, same);
+        assert_ne!(first, changed);
+        assert!(wishlist_read_guard(5, &json!({"wishlist_settings": {}})).is_none());
+    }
 
     #[test]
     fn prices_print_like_the_bundle() {

@@ -69,6 +69,12 @@ enum Subject {
         user: Id,
         widget: Id,
     },
+    /// A live Stage (`t0.STAGE_CHANNEL`, Report Stage of module 304694): its instance, channel and guild.
+    Stage {
+        instance: Id,
+        channel: Id,
+        guild: Id,
+    },
 }
 
 impl Subject {
@@ -77,6 +83,7 @@ impl Subject {
             Self::Event { .. } => "guild_scheduled_event",
             Self::App { .. } => "application",
             Self::Widget { .. } => "widget",
+            Self::Stage { .. } => "stage_channel",
         }
     }
 }
@@ -137,6 +144,19 @@ impl Root {
     /// Report Widget (module 928658 `GJ`): `name: widget` with the owner's `user_id` and the `widget_id`.
     pub(super) fn open_report_widget(&mut self, user: Id, widget: Id, cx: &mut Context<Self>) {
         self.start_report(user, None, Some(Subject::Widget { user, widget }), cx);
+    }
+
+    /// Report Stage (module 928658 `pb`): the channel's live Stage instance, if it has one.
+    pub(super) fn open_report_stage(&mut self, channel: Id, cx: &mut Context<Self>) {
+        let Some(instance) = self.stores.stage_instances.get_by_channel(channel) else {
+            return;
+        };
+        let subject = Subject::Stage {
+            instance: instance.id,
+            channel: instance.channel_id,
+            guild: instance.guild_id,
+        };
+        self.start_report(0, None, Some(subject), cx);
     }
 
     fn start_report(
@@ -328,6 +348,20 @@ impl Root {
                     body["channel_id"] = json!(channel.to_string());
                 }
                 body["entrypoint"] = json!(entrypoint);
+            }
+            // `h` in module 369053: `{name, channel_id, guild_id, stage_instance_id}`.
+            (
+                Some(Subject::Stage {
+                    instance,
+                    channel,
+                    guild,
+                }),
+                _,
+            ) => {
+                body["name"] = json!("stage_channel");
+                body["channel_id"] = json!(channel.to_string());
+                body["guild_id"] = json!(guild.to_string());
+                body["stage_instance_id"] = json!(instance.to_string());
             }
             // `h` in module 369053: `{name, user_id, widget_id}`.
             (Some(Subject::Widget { user, widget }), _) => {
@@ -1368,6 +1402,21 @@ mod tests {
         assert_eq!(body["widget_id"], "11");
         assert!(body.get("guild_id").is_none());
         assert!(body.get("channel_id").is_none());
+    }
+
+    #[test]
+    fn a_stage_report_names_its_instance_channel_and_guild() {
+        let open = subject_report(Subject::Stage {
+            instance: 5,
+            channel: 6,
+            guild: 3,
+        });
+        let body = Root::report_body(&open, &menu(), 69);
+        assert_eq!(body["name"], "stage_channel");
+        assert_eq!(body["stage_instance_id"], "5");
+        assert_eq!(body["channel_id"], "6");
+        assert_eq!(body["guild_id"], "3");
+        assert!(body.get("user_id").is_none());
     }
 
     #[test]
