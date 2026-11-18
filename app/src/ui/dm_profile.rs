@@ -600,6 +600,8 @@ impl Root {
             .filter(|pronouns| !pronouns.is_empty())
             .map(str::to_owned);
         let has_pronouns = pronouns.is_some();
+        let platform =
+            self.platform_icons(user.id, super::plugin_hooks::PlatformPlace::Profile, cx);
         let note = Some(self.stores.notes.text_of(user_id))
             .filter(|note| !note.is_empty())
             .map(str::to_owned);
@@ -676,6 +678,16 @@ impl Root {
                     .line_height(px(18.))
                     .text_color(strong)
                     .child(open("username", cx).child(user.username.clone()))
+                    // Not in the pinned client: PlatformIndicators' icons before the pronouns, which then show
+                    // even without pronouns (`plugin_hooks/platform_indicators.rs`).
+                    .when_some(platform, |this, icons| {
+                        if pronouns.is_none() {
+                            this.child(div().mx(px(1.)).size(px(4.)).rounded_full().bg(default))
+                                .child(icons)
+                        } else {
+                            this.child(icons)
+                        }
+                    })
                     .when_some(pronouns, |this, pronouns| {
                         let tip = Tip::text(dc_intl::tr("Pronouns"), Side::Top).after(300);
                         let target = div()

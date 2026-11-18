@@ -3,6 +3,7 @@
 //! button, that marks every server's unread channels and threads read in one `BULK_ACK`. Not part of the pinned
 //! client.
 
+use super::super::motion::Transitions as _;
 use super::super::tooltip::{Body, Tip};
 use super::super::{Root, color, icon};
 use crate::plugins::State;
@@ -11,7 +12,6 @@ use gpui::{
     AnyElement, Context, InteractiveElement, IntoElement, ParentElement,
     StatefulInteractiveElement, Styled, div, px,
 };
-use super::super::motion::Transitions as _;
 use serde_json::Value;
 
 const ID: &str = "ReadAllNotificationsButton";

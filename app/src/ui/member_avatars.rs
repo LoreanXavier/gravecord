@@ -663,6 +663,16 @@ impl Root {
         let status = Status::parse(status, self.stores.presence.is_mobile_online(user));
         let tint = color(status.token());
         let tint = [tint.r, tint.g, tint.b, tint.a].map(|value| (value * 255.).round() as u8);
+        // Not in the pinned client: PlatformIndicators' `colorMobileIndicator` draws the phone, in the status's colour,
+        // for anyone on mobile (`plugin_hooks/platform_indicators.rs`).
+        let status = if status != Status::Mobile
+            && status != Status::Offline
+            && super::plugin_hooks::mobile_status(&self.stores, user, false)
+        {
+            Status::Mobile
+        } else {
+            status
+        };
         // Not in the pinned client: ColorSighted keeps the colour and draws every status as the plain disk
         // (`plugin_hooks.rs`); the phone of a mobile user stays.
         let status = match status {

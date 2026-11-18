@@ -12,7 +12,7 @@ every setting changed), and with every plugin off, and fails on one differing pi
 The list is the plugins enabled in the owner's Equicord backup of 2026-09-21 (156). Sources were read in the local
 Equicord checkout of 2026-11-14 (`src/plugins` is Vencord's, `src/equicordplugins` Equicord's).
 
-Totals: 24 ported, 3 native, 84 planned, 45 not applicable.
+Totals: 25 ported, 3 native, 83 planned, 45 not applicable.
 
 Status: **ported** works and has its proof; **native** is what gravecord already does without a plugin;
 **planned** is not built yet (an import keeps its settings for when it is); **not applicable** has nothing to
@@ -118,7 +118,7 @@ port in a native client, or was removed upstream.
 | PermissionFreeWill | planned | plugins/permissionFreeWill/index.ts | Disables the client-side restrictions for channel permission management. | no client-side limits in channel permission editing. |  |
 | PermissionsViewer | planned | plugins/permissionsViewer/index.tsx | View the permissions a user or channel has, and the roles of a server | a permission breakdown in profiles and menus. |  |
 | PinDMs | planned | plugins/pinDms/index.tsx | Allows you to pin private channels to the top of your DM list. To pin/unpin or re-order pins, right click DMs | pinned DM categories in the DM list. |  |
-| PlatformIndicators | planned | plugins/platformIndicators/index.tsx | Adds platform indicators (Desktop, Mobile, Web...) to users | desktop, mobile and web icons by names. |  |
+| PlatformIndicators | ported | plugins/platformIndicators/index.tsx | Adds platform indicators (Desktop, Mobile, Web...) to users | plugin_hooks/platform_indicators.rs: an icon per client and its status colour (with tooltips) after names in the member list, in message headers, and before the pronouns in the DM sidebar profile; the phone for anyone on mobile with colorMobileIndicator. Your own clients are the presence the server sent, else this desktop (the app keeps no session client list). Not yet in the popout and full profile (only the DM sidebar has the pronoun line the original patches the same way). | `plugin_hooks::platform_indicators::tests` (2); frames pi-on/pi-off; plugins-off member-list, chat, dm-list |
 | PreviewMessage | planned | plugins/previewMessage/index.tsx | Lets you preview your message before sending it. | a preview of the message before sending. |  |
 | ProfileSectionsAPI | not applicable | equicordplugins/_api/profileSections.ts | API to add sections near the 'Member Since' area of user profile panels. | client-mod plumbing (an API for other plugins), nothing to port. |  |
 | QuickMention | ported | plugins/quickMention/index.tsx | Adds a quick mention button to the message actions bar | hover_bar.rs: an @ button after the quick reactions and before Add Reaction, where you may write; inserts `<@ID> ` in the composer (shown as text: the composer draws no mention pill for typed syntax). | `quick_mention_sits_before_add_reaction`; frames qm-on, qm-click; plugins-off hover-bar |
@@ -232,6 +232,12 @@ Every setting of each original (`definePluginSettings`), its type and default th
 | OnePingPerDM | `allowEveryone` | BOOLEAN | `false` | ported |
 | OnePingPerDM | `ignoreUsers` | STRING | `""` | ported |
 | OnePingPerDM | `alwaysPlaySound` | BOOLEAN | `false` | ported |
+| PlatformIndicators | `list` | BOOLEAN | `true` | ported |
+| PlatformIndicators | `profiles` | BOOLEAN | `true` | ported |
+| PlatformIndicators | `messages` | BOOLEAN | `true` | ported |
+| PlatformIndicators | `colorMobileIndicator` | BOOLEAN | `true` | ported |
+| PlatformIndicators | `showBots` | BOOLEAN | `false` | ported |
+| PlatformIndicators | `ConsoleIcon` | SELECT | `"equicord"` | ported |
 | ReadAllNotificationsButton | `compact` | BOOLEAN | `false` | ported |
 | TypingIndicator | `includeCurrentChannel` | BOOLEAN | `true` | ported |
 | TypingIndicator | `includeMutedChannels` | BOOLEAN | `false` | ported |

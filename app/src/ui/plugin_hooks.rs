@@ -3,11 +3,13 @@
 mod call_timer;
 mod member_count;
 mod message_clicks;
+mod platform_indicators;
 mod read_all;
 mod typing_indicator;
 mod voice_stats;
 
 pub(super) use message_clicks::follow as follow_message_clicks;
+pub(super) use platform_indicators::{Place as PlatformPlace, mobile_status};
 pub(in crate::ui) use voice_stats::import_totals as import_voice_totals;
 
 use crate::plugins::State;

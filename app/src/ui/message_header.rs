@@ -278,6 +278,8 @@ impl Root {
         if let Some(kind) = kind {
             chips.push(self.app_tag_chip(kind, id, cx));
         }
+        // Not in the pinned client: PlatformIndicators (`plugin_hooks/platform_indicators.rs`).
+        chips.extend(self.platform_icons(author.id, super::plugin_hooks::PlatformPlace::Message, cx));
         chips
     }
 

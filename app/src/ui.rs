@@ -3135,7 +3135,14 @@ impl Root {
                                                 14.,
                                                 "--status-warning",
                                             )))
-                                        }),
+                                        })
+                                        // Not in the pinned client: PlatformIndicators
+                                        // (`plugin_hooks/platform_indicators.rs`).
+                                        .children(self.platform_icons(
+                                            user.id,
+                                            plugin_hooks::PlatformPlace::MemberList,
+                                            cx,
+                                        )),
                                 )
                                 .children(activity.map(|line| {
                                     div()

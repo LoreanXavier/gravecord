@@ -771,6 +771,59 @@ pub(crate) const DEFS: &[Def] = &[
         ],
     },
     Def {
+        id: "PlatformIndicators",
+        name: "PlatformIndicators",
+        description: "Adds platform indicators (Desktop, Mobile, Web...) to users.",
+        origin: Origin::Equicord,
+        source: "src/plugins/platformIndicators/index.tsx",
+        default_on: false,
+        settings: &[
+            Setting {
+                key: "list",
+                label: "Member list",
+                description: "Show indicators in the member list.",
+                kind: Kind::Switch { default: true },
+            },
+            Setting {
+                key: "profiles",
+                label: "Profiles",
+                description: "Show indicators in user profiles.",
+                kind: Kind::Switch { default: true },
+            },
+            Setting {
+                key: "messages",
+                label: "Messages",
+                description: "Show indicators inside messages.",
+                kind: Kind::Switch { default: true },
+            },
+            Setting {
+                key: "colorMobileIndicator",
+                label: "Coloured mobile indicator",
+                description: "Whether to make the mobile indicator match the color of the user status.",
+                kind: Kind::Switch { default: true },
+            },
+            Setting {
+                key: "showBots",
+                label: "Bots",
+                description: "Whether to show platform indicators on bots.",
+                kind: Kind::Switch { default: false },
+            },
+            Setting {
+                key: "ConsoleIcon",
+                label: "Console icon",
+                description: "What console icon to use.",
+                kind: Kind::Select {
+                    options: &[
+                        ("Equicord", Lit::Str("equicord")),
+                        ("Suncord", Lit::Str("suncord")),
+                        ("Vencord", Lit::Str("vencord")),
+                    ],
+                    default: 0,
+                },
+            },
+        ],
+    },
+    Def {
         id: "QuickMention",
         name: "QuickMention",
         description: "Adds a quick mention button to the message actions bar.",
