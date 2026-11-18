@@ -182,14 +182,28 @@ impl Shell {
             .as_mut()
             .map(|cached| std::mem::take(&mut cached.pictures))
             .unwrap_or_default();
+        // With nothing kept from the last run there is nothing true to draw before READY: the connecting screen
+        // covers the window as the official's does (module 596339 `NU`), its spinner read or fetched off the UI thread.
+        if cached.is_none() {
+            let spinner_tx = hook_tx.clone();
+            self.handle.spawn(async move {
+                let Ok(client) = dc_http::Client::new(Token::new(""), Identity::new()) else {
+                    return;
+                };
+                if let Some(clip) = crate::spinner::load(&client).await {
+                    let _ = spinner_tx.send(net::Update::Spinner(std::sync::Arc::new(clip)));
+                }
+            });
+        }
         let root = cx.new(|cx| Root::new(request_tx, hook_tx, cx));
         root.update(cx, |root, cx| {
             // The cached pictures start decoding first, on the background threads, while the rest of the cache is
             // applied here: the first frame has them decoded.
             root.add_start_pictures(pictures);
             root.decode_start_pictures(window, cx);
-            if let Some(cached) = cached {
-                root.apply_cache(cached, cx);
+            match cached {
+                Some(cached) => root.apply_cache(cached, cx),
+                None => root.show_connecting_screen(),
             }
         });
         if std::mem::take(&mut self.switched) {

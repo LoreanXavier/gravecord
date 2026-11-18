@@ -25,7 +25,12 @@ use tokio_tungstenite::tungstenite::{self, Message};
 use tokio_tungstenite::{MaybeTlsStream, WebSocketStream, connect_async_with_config};
 use tracing::{debug, info, warn};
 
+/// `tu` in module 868: the `helloTimeout` set as `_connect` begins, so it covers the socket's connect and OP_HELLO.
 const HELLO_TIMEOUT: Duration = Duration::from_secs(30);
+/// The most the socket's TCP connect and TLS handshake may take, as the HTTP client's connect timeout: a connect that
+/// hangs (one routed to a dead address) is given up and tried again on a new one, with a new name lookup, after the
+/// backoff, instead of holding the start until the HELLO deadline.
+const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 /// `t_` in module 868: past this since the last ack, a session is not worth resuming.
 const RESUME_WINDOW: Duration = Duration::from_secs(180);
 const AUTHENTICATION_FAILED: u16 = 4004;
@@ -131,10 +136,20 @@ impl Session {
 
     async fn run(mut self) {
         loop {
-            let next = match self.connect().await {
-                Ok(socket) => self.drive(socket).await,
-                Err(error) => {
+            let attempt = tokio::time::Instant::now();
+            let next = match tokio::time::timeout(CONNECT_TIMEOUT, self.connect()).await {
+                Ok(Ok(socket)) => self.drive(socket, attempt + HELLO_TIMEOUT).await,
+                Ok(Err(error)) => {
                     warn!("gateway connect failed: {error}");
+                    Next::Reconnect
+                }
+                Err(_) => {
+                    warn!(
+                        "gateway connect timed out after {} ms",
+                        CONNECT_TIMEOUT.as_millis()
+                    );
+                    // As the HELLO timeout does (`setResumeUrl(null)`): the next attempt goes to the main endpoint.
+                    self.resume_url = None;
                     Next::Reconnect
                 }
             };
@@ -247,7 +262,7 @@ impl Session {
         }
     }
 
-    async fn drive(&mut self, mut socket: Socket) -> Next {
+    async fn drive(&mut self, mut socket: Socket, hello_by: tokio::time::Instant) -> Next {
         self.identified = false;
         let mut inflater = match Inflater::new() {
             Ok(inflater) => inflater,
@@ -256,7 +271,7 @@ impl Session {
                 return Next::Reconnect;
             }
         };
-        let hello_deadline = tokio::time::sleep(HELLO_TIMEOUT);
+        let hello_deadline = tokio::time::sleep_until(hello_by);
         tokio::pin!(hello_deadline);
         let mut hello_seen = false;
         let mut heartbeat_interval = Duration::from_secs(u64::MAX / 4);

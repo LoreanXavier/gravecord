@@ -32,7 +32,6 @@ pub enum Update {
         connected: bool,
     },
     /// The connecting screen's spinner, fetched and decoded.
-    #[cfg(feature = "capture")]
     Spinner(Arc<crate::spinner::Clip>),
     /// `None` resets from the channel's interval; a value sets the server's remaining cooldown.
     Slowmode {
@@ -414,6 +413,9 @@ pub(crate) const MESSAGE_PAGE: u32 = dc_state::message_window::INITIAL_PAGE;
 /// at once and the connections, the memory and the CPU are shared out among them.
 static IMAGE_FETCHES: tokio::sync::Semaphore = tokio::sync::Semaphore::const_new(48);
 /// The longest one picture download may take before it counts as failed.
+/// How long the open channel's page may go unanswered before it is asked again on a new connection
+/// (`Client::get_hedged`). A page answers in a few hundred ms; a connection routed to a dead address hung about 7 s.
+const PAGE_HEDGE_AFTER: std::time::Duration = std::time::Duration::from_secs(2);
 const IMAGE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(60);
 /// Download slots not in use, for the harness's `badge state` line.
 #[cfg(feature = "capture")]
@@ -1427,17 +1429,32 @@ enum StartPageUse {
     Deliver { page: Value, started_ms: u64 },
     /// Ask the server.
     Fetch,
+    /// After READY, the page that came before it: drawn now, and the server asked as for `Fetch`, its answer
+    /// replacing the page (as a live page replaces the start cache's).
+    DeliverThenFetch { page: Value, started_ms: u64 },
 }
 
 impl StartPage {
-    /// A `LoadMessages` of `channel` arrived. Only a load before READY uses the page: what was posted between the
-    /// page and READY never reaches the gateway's events, so a load after READY always asks the server.
+    /// A `LoadMessages` of `channel` arrived. Only a load before READY uses the page alone: what was posted between
+    /// the page and READY never reaches the gateway's events, so a load after READY always asks the server. A page
+    /// that is in by then (a first start opens its channel only at READY) is drawn while that answer comes.
     fn claim(&mut self, channel: u64, ready_seen: bool) -> StartPageUse {
         if ready_seen {
-            if !matches!(self, StartPage::None) {
-                *self = StartPage::Spent;
-            }
-            return StartPageUse::Fetch;
+            return match std::mem::take(self) {
+                StartPage::None => StartPageUse::Fetch,
+                StartPage::Done {
+                    channel: asked,
+                    page,
+                    started_ms,
+                } if asked == channel => {
+                    *self = StartPage::Spent;
+                    StartPageUse::DeliverThenFetch { page, started_ms }
+                }
+                _ => {
+                    *self = StartPage::Spent;
+                    StartPageUse::Fetch
+                }
+            };
         }
         match std::mem::take(self) {
             StartPage::InFlight(asked) if asked == channel => {
@@ -1499,7 +1516,7 @@ async fn load_messages(
         .map(|elapsed| elapsed.as_millis() as u64)
         .unwrap_or_default();
     let route = format!("/channels/{channel}/messages?limit={MESSAGE_PAGE}");
-    match client.get(&route).await {
+    match client.get_hedged(&route, PAGE_HEDGE_AFTER).await {
         Ok(page) => {
             crate::start_trace::mark("msgs_recv");
             let _ = updates.send(Update::Messages {
@@ -1677,6 +1694,17 @@ pub async fn run(token: Token, updates: mpsc::UnboundedSender<Update>, requests:
                             load_messages(&client, channel, &updates).await;
                         });
                     }
+                    StartPageUse::DeliverThenFetch { page, started_ms } => {
+                        crate::start_trace::mark("start_page_after_ready");
+                        let _ = updates.send(Update::Messages {
+                            channel,
+                            page,
+                            started_ms,
+                        });
+                        tokio::spawn(async move {
+                            load_messages(&client, channel, &updates).await;
+                        });
+                    }
                 }
             }
             Request::PrefetchMessages { channel } => {
@@ -1696,7 +1724,7 @@ pub async fn run(token: Token, updates: mpsc::UnboundedSender<Update>, requests:
                             .map(|elapsed| elapsed.as_millis() as u64)
                             .unwrap_or_default();
                         let route = format!("/channels/{channel}/messages?limit={MESSAGE_PAGE}");
-                        match client.get(&route).await {
+                        match client.get_hedged(&route, PAGE_HEDGE_AFTER).await {
                             Ok(page) => {
                                 crate::start_trace::mark("msgs_recv");
                                 let deliver = start_page
@@ -3305,10 +3333,26 @@ mod start_page_tests {
         assert_eq!(page, StartPage::Spent);
         // A page superseded that way is dropped when it lands, never shown over the newer one.
         assert!(!page.arrived(&json!([]), 5));
+        // A page in before READY is drawn after it too, while the server is asked again; only once.
         let mut kept = StartPage::InFlight(7);
         assert!(kept.arrived(&json!([]), 5));
-        assert_eq!(kept.claim(7, true), StartPageUse::Fetch);
+        assert_eq!(
+            kept.claim(8, true),
+            StartPageUse::Fetch,
+            "not for another channel"
+        );
         assert_eq!(kept, StartPage::Spent);
+        let mut kept = StartPage::InFlight(7);
+        assert!(kept.arrived(&json!([]), 5));
+        assert_eq!(
+            kept.claim(7, true),
+            StartPageUse::DeliverThenFetch {
+                page: json!([]),
+                started_ms: 5
+            }
+        );
+        assert_eq!(kept, StartPage::Spent);
+        assert_eq!(kept.claim(7, true), StartPageUse::Fetch);
     }
 
     #[test]

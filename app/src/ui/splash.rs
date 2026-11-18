@@ -556,11 +556,19 @@ fn keeps_frames_after_done() -> bool {
 
 impl Root {
     pub(crate) fn ready_for_capture(&self) -> bool {
-        self.ready && self.splash.done
+        // Home has no page to wait for: READY (or the cache's) is its content.
+        (self.ready || (self.channel.is_none() && self.content_ready())) && self.splash.done
+    }
+
+    /// A start with nothing kept from the last run: the screen shows from the first frame until the first content is
+    /// in. A start from the start cache draws the cached screen instead (it starts done).
+    pub(crate) fn show_connecting_screen(&mut self) {
+        self.splash.done = false;
+        self.splash.started = Instant::now();
+        self.splash.loaded_at = None;
     }
 
     /// The spinner's loop came in. Its frames become pictures one at a time as they are drawn at 200px.
-    #[cfg(feature = "capture")]
     pub(super) fn splash_clip(&mut self, clip: Arc<Clip>) {
         if self.splash.done && !keeps_frames_after_done() {
             return;
