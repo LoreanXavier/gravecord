@@ -2087,6 +2087,7 @@ mod tests {
             shortcut: None,
             radio: false,
             role_dot: None,
+            status_dot: None,
         }
     }
 

@@ -632,6 +632,75 @@ pub(crate) const DEFS: &[Def] = &[
         settings: &[],
     },
     Def {
+        id: "BypassStatus",
+        name: "BypassStatus",
+        description: "Still get notifications from specific sources when in do not disturb mode. Right-click on users/channels/guilds to set them to bypass do not disturb mode.",
+        origin: Origin::Equicord,
+        source: "src/equicordplugins/bypassStatus/index.tsx",
+        default_on: false,
+        settings: &[
+            Setting {
+                key: "guilds",
+                label: "Guilds",
+                description: "Guilds to let bypass (notified when pinged anywhere in guild)",
+                kind: Kind::Text {
+                    default: "",
+                    max_len: 4000,
+                },
+            },
+            Setting {
+                key: "channels",
+                label: "Channels",
+                description: "Channels to let bypass (notified when pinged in that channel)",
+                kind: Kind::Text {
+                    default: "",
+                    max_len: 4000,
+                },
+            },
+            Setting {
+                key: "users",
+                label: "Users",
+                description: "Users to let bypass (notified for all messages sent in DMs)",
+                kind: Kind::Text {
+                    default: "",
+                    max_len: 4000,
+                },
+            },
+            Setting {
+                key: "allowOutsideOfDms",
+                label: "Allow Outside Of Dms",
+                description: "Allow selected users to bypass status outside of DMs too (acts like a channel/guild bypass, but it's for all messages sent by the selected users)",
+                kind: Kind::Switch { default: false },
+            },
+            Setting {
+                key: "notificationSound",
+                label: "Notification Sound",
+                description: "Whether the notification sound should be played",
+                kind: Kind::Switch { default: true },
+            },
+            Setting {
+                key: "respectSilentPings",
+                label: "Respect Silent Pings",
+                description: "Respect silent pings (@silent / suppress notifications)",
+                kind: Kind::Switch { default: true },
+            },
+            Setting {
+                key: "statusToUse",
+                label: "Status To Use",
+                description: "Status to use for whitelist",
+                kind: Kind::Select {
+                    options: &[
+                        ("Online", Lit::Str("online")),
+                        ("Idle", Lit::Str("idle")),
+                        ("Do Not Disturb", Lit::Str("dnd")),
+                        ("Invisible", Lit::Str("invisible")),
+                    ],
+                    default: 2,
+                },
+            },
+        ],
+    },
+    Def {
         id: "CallTimer",
         name: "CallTimer",
         description: "Add call timers for all users in voice channels and in the connection status.",

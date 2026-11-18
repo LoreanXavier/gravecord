@@ -35,6 +35,8 @@ const NATIVE_BASE: Id = u64::MAX - 1_000_000;
 pub(in crate::ui) enum Action {
     None,
     OpenProfile(Id),
+    /// `transitionTo("/channels/<guild>/<channel>/<message>")`.
+    JumpTo(Id, Id),
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -179,8 +181,13 @@ impl Root {
         window: &mut gpui::Window,
         cx: &mut Context<Self>,
     ) {
-        if let Action::OpenProfile(user) = action {
-            self.open_full_profile(user, window, cx);
+        match action {
+            Action::OpenProfile(user) => self.open_full_profile(user, window, cx),
+            Action::JumpTo(channel, message) => {
+                self.jump_to_message_id(channel, message, true, None);
+                cx.notify();
+            }
+            Action::None => {}
         }
     }
 

@@ -6,6 +6,7 @@ mod better_activities;
 mod better_role_context;
 mod better_role_dot;
 mod bigger_stream_preview;
+mod bypass_status;
 mod call_timer;
 pub(in crate::ui) mod clips_enhancements;
 mod download_all;

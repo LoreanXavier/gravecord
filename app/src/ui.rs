@@ -1734,6 +1734,8 @@ impl Root {
                 // Not in the pinned client: RelationshipNotifier's flux handlers
                 // (`plugin_hooks/relationship_notifier.rs`).
                 self.relationship_notifier_dispatch(&name, &data, cx);
+                // Not in the pinned client: BypassStatus' MESSAGE_CREATE (`plugin_hooks/bypass_status.rs`).
+                self.bypass_status_dispatch(&name, &data, cx);
                 if name == "CHANNEL_PINS_UPDATE" {
                     self.ack_open_pins();
                 }

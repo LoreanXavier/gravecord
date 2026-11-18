@@ -147,6 +147,7 @@ assert len(idle) == idle_entries, f'IDLE_SETTINGS: read {len(idle)} of {idle_ent
 
 # How each ported plugin is built here, and its proof.
 PORTED = {
+    'BypassStatus': "plugin_hooks/bypass_status.rs: while your status is statusToUse, a message that mentions you in a listed server or channel, or a listed person's DM (anywhere with allowOutsideOfDms when it mentions you), still notifies with the client mod's notification (title as the original builds it, mentions resolved, a click opens the message) and the message sound; own, empty, open-and-focused and (respectSilentPings) @silent messages excepted; the server, channel and user menus get Add/Remove Status Bypass with the ring icons as a group before their last one. GAP: no DM channel is created for a listed person without one (the original's getOrEnsurePrivateChannel, which changes no outcome); the lists are matched with spaces removed rather than rewritten on change.",
     'RelationshipNotifier': "plugin_hooks/relationship_notifier.rs + plugin_notifications.rs: servers, group DMs, friends and incoming requests kept per account (written only on a change, at most once a second); a removal you did not make yourself (GUILD_DELETE not an outage, CHANNEL_DELETE of a group, RELATIONSHIP_REMOVE of a friend or incoming request) gives the original's notification, and at sign-in (and 5 s after turning it on) offlineRemovals tells what went while away; each kind has its switch, notices adds the notice bar's GENERIC notice with OK. The notification is the client mod's: the in-app card while focused (5 s, paused on hover, bottom right), else a desktop notification whose click opens the person's profile. GAP: the Notification Log, the desktop notification's icon.",
     'ZipPreview': "plugin_hooks/zip_preview.rs + plugins/zip_preview.rs: a .zip file attachment gets the chevron row under its name; opening it asks the native question for a Discord attachment (Cancel / Preview ZIP), fetches at most 50 MB off the UI thread, reads it as fflate's unzipSync (stored and deflated entries, folders dropped, sorted, 1000 at most) and lists it with the folder path as links; a text or picture file of 10 MB at most opens in the 680 wide dialog (code block with Copy and Download, or the picture with Download); the states and errors are the original's. GAP: the 180 ms open and close animation.",
     'SilentMessageToggle': "plugin_hooks/silent_message_toggle.rs: the chat bar's bell after PreviewMessage's eye (1.2 times larger, crossed out in the danger colour while off, Enable/Disable Silent Message); while on, a message that goes out gets the @silent prefix (the base's silentPrefix send turns it into SUPPRESS_NOTIFICATIONS) and a voice message the flag itself; autoDisable turns it off after one; persistState none resets it on a channel change, restarts keeps it in storage plugin-silent-message-toggle.",
@@ -233,6 +234,7 @@ PORTED = {
                      'so the original\'s 200% cap on the sync has nothing to cap.',
 }
 TESTS = {
+    'BypassStatus': '`ids_and_mentions_follow_the_original`; frames pending (live runs held)',
     'RelationshipNotifier': '`texts_and_names_follow_the_original`, `the_timeout_waits_while_hovered`; frames pending (live runs held)',
     'ZipPreview': '`an_archive_reads_as_unzip_sync_does`, `helpers_follow_the_original`; frames pending (live runs held)',
     'SilentMessageToggle': '`the_prefix_and_settings_follow_the_original`, `auto_disable_takes_the_toggle_once`; frames pending (live runs held)',
@@ -386,7 +388,6 @@ PLANNED = {
     'BetterForwards': 'forward dialog tweaks.',
     'BetterGifAltText': "a place where alt text shows: the original changes the `alt` that screen readers read, and the app draws images without an accessibility tree.",
     'BetterPlusReacts': "the pinned client's own `+:emoji:` rule first: a message `+:emoji:` reacts to the last message (the send path's reaction shortcut and its autocomplete), which the port does not have yet (GAP: main app); BetterPlusReacts only lets more pluses pick an older message.",
-    'BypassStatus': 'notification and sound rules that pass Do Not Disturb for chosen users, channels and servers.',
     'ClipUpload': 'a button to upload a local video as a clip.',
     'CustomRPC': 'a custom rich presence editor and its activity.',
     'Decor': 'its third-party avatar decorations service (decor-auth in the backup\'s data store is not copied).',

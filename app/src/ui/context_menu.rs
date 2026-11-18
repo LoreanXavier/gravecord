@@ -316,13 +316,15 @@ pub(super) enum Act {
     /// (`plugin_hooks/greet_sticker_picker.rs`).
     PluginGreetMode(bool),
     PluginGreetSticker(u8),
+    /// Not in the pinned client: BypassStatus' Add / Remove Status Bypass (`plugin_hooks/bypass_status.rs`).
+    PluginStatusBypass,
 }
 
 impl Act {
     /// Every row kind once (`Correction` with its first index). `ordinal` is an exhaustive match, so adding a variant
     /// without listing it here fails the build or the `act_list_is_complete` test.
     #[cfg(test)]
-    pub(super) const ALL: [Act; 138] = [
+    pub(super) const ALL: [Act; 139] = [
         Act::InventoryAbout,
         Act::InventoryHide,
         Act::ReportApp,
@@ -466,6 +468,7 @@ impl Act {
         Act::PluginApplyNewGuildSettings,
         Act::PluginGreetMode(false),
         Act::PluginGreetSticker(0),
+        Act::PluginStatusBypass,
     ];
 
     #[cfg(test)]
@@ -614,6 +617,7 @@ impl Act {
             Act::PluginApplyNewGuildSettings => 135,
             Act::PluginGreetMode(_) => 136,
             Act::PluginGreetSticker(_) => 137,
+            Act::PluginStatusBypass => 138,
         }
     }
 }
@@ -659,7 +663,8 @@ pub(super) fn status(act: Act) -> Status {
         | Act::PluginPinDeleteCategory
         | Act::PluginApplyNewGuildSettings
         | Act::PluginGreetMode(_)
-        | Act::PluginGreetSticker(_) => Wired,
+        | Act::PluginGreetSticker(_)
+        | Act::PluginStatusBypass => Wired,
         Act::InventoryAbout
         | Act::InventoryHide
         | Act::ViewAllActivity
@@ -808,6 +813,37 @@ pub(super) struct Row {
     pub radio: bool,
     /// The `roleDot` leading accessory (module 165862): the role's 12px circle in a 20px box, 8px before the label.
     pub role_dot: Option<u32>,
+    /// Not in the pinned client: BypassStatus' 18px ring as the leading accessory and the icon (`plugin_hooks/
+    /// bypass_status.rs`): the row's colour round a black centre when on, the danger colour round a white one when off.
+    pub status_dot: Option<bool>,
+}
+
+/// BypassStatus' `EnabledIcon` / `DisabledIcon`: a 16px disc with a 7.5px one in its middle, in an 18px box.
+fn status_dot(on: bool, tint: gpui::Hsla) -> gpui::Div {
+    div()
+        .size(px(18.))
+        .flex_none()
+        .flex()
+        .items_center()
+        .justify_center()
+        .child(
+            div()
+                .size(px(16.))
+                .rounded_full()
+                .flex()
+                .items_center()
+                .justify_center()
+                .bg(if on {
+                    tint
+                } else {
+                    color("--status-danger").into()
+                })
+                .child(div().size(px(7.5)).rounded_full().bg(if on {
+                    gpui::black()
+                } else {
+                    gpui::white()
+                })),
+        )
 }
 
 impl Row {
@@ -825,6 +861,7 @@ impl Row {
             shortcut: None,
             radio: false,
             role_dot: None,
+            status_dot: None,
         }
     }
 
@@ -3464,6 +3501,8 @@ impl Root {
         let items = self.with_stream_preview_row(items, target);
         // Not in the pinned client: PinDMs' "Pin DMs" row (`plugin_hooks/pin_dms.rs`).
         let items = self.with_pin_dms_row(items, target);
+        // Not in the pinned client: BypassStatus' group before the last one (`plugin_hooks/bypass_status.rs`).
+        let items = self.with_bypass_status_row(items, target);
         self.close_all_context_menus();
         self.menu_scroll.set_offset(gpui::point(px(0.), px(0.)));
         let at = flip_above(at, menu_height(&items), self.viewport.1);
@@ -3683,6 +3722,8 @@ impl Root {
             (Act::PluginServerInfo, Target::Guild(guild)) => {
                 self.server_info_open(guild, cx);
             }
+            // Not in the pinned client: BypassStatus (`plugin_hooks/bypass_status.rs`).
+            (Act::PluginStatusBypass, target) => self.bypass_status_toggle(target, cx),
             // Not in the pinned client: GreetStickerPicker (`plugin_hooks/greet_sticker_picker.rs`).
             (
                 Act::PluginGreetMode(_) | Act::PluginGreetSticker(_),
@@ -5846,6 +5887,10 @@ impl Root {
             this.run_context(act, target, window, cx);
             cx.notify();
         }))
+        .children(
+            row.status_dot
+                .map(|on| div().mr(px(8.)).child(status_dot(on, tint.into()))),
+        )
         .children(row.role_dot.map(|color| {
             // `roleDotAccessory_M3qk4j` around `roleCircle_7RsUnm` (12px, `margin: 0 4px`).
             div()
@@ -5920,6 +5965,10 @@ impl Root {
             row.check
                 .filter(|_| row.radio)
                 .map(|on| div().ml(px(8.)).child(super::create_channel::radio(on))),
+        )
+        .children(
+            row.status_dot
+                .map(|on| div().ml(px(8.)).child(status_dot(on, tint.into()))),
         )
         .children(row.trailing.filter(|_| !row.caret).map(|name| {
             div()
