@@ -271,6 +271,10 @@ impl Root {
     ) -> Vec<AnyElement> {
         let id = user.id;
         let name = user.display_name().to_owned();
+        // `isNonUserBot` (module 619019): the system account or a bot with the `0000` tag gets no buttons (`aI`).
+        if user.system || (user.bot && user.discriminator == "0000") {
+            return Vec::new();
+        }
         if user.bot {
             // `aI` gives a bot `s9` instead of `ap`: no friend or Block button. Its Report Spam (`s4`) needs only
             // a message of theirs (an application the account does not own is always reportable).

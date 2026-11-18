@@ -289,11 +289,14 @@ impl Root {
     }
 
     /// Capture only: `notice block-feedback`, the block survey's bar as if its predicate held in a sampled session
-    /// (the predicate's cache is set; the dismissal stays as stored).
+    /// (the predicate's cache is set and a stored dismissal is cleared).
     #[cfg(feature = "capture")]
     pub(crate) fn script_block_feedback_notice(&mut self) -> String {
         BLOCK_PREDICATE.with(|cell| cell.set(Some((Instant::now(), true))));
         let _ = SAMPLE_FORCED.set(());
+        // A dismissal an earlier capture stored (the capture storage, not the account's) would hide it.
+        crate::storage::remove(BLOCK_FEEDBACK_KEY);
+        crate::storage::remove(&format!("{BLOCK_FEEDBACK_KEY}-untilAtLeast"));
         format!("block feedback notice: {:?}", self.shown_notice())
     }
 

@@ -773,7 +773,15 @@ impl Root {
                     "stream" => Kind::Stream { streamer: true },
                     "report" => Kind::Report,
                     "video" => Kind::VideoBackground,
-                    _ => return "usage: feedback gate voice|stream|report|video".to_owned(),
+                    // What `activity_left` asks after a Leave, its application's name riding the debounce.
+                    "activity" => {
+                        self.feedback.app_name = Some("Watch Together".to_owned());
+                        Kind::Activity { ads: false }
+                    }
+                    _ => {
+                        return "usage: feedback gate voice|stream|report|video|activity"
+                            .to_owned();
+                    }
                 };
                 let allowed = self.feedback_allowed(kind);
                 self.show_feedback_after_debounce(kind, cx);
