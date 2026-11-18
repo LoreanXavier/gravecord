@@ -533,10 +533,30 @@ fn render_sized_at(
                 .gap(px(8.));
             this.child(match input {
                 None => bar.children(buttons),
+                // `actionBar_dvN-MP`: `flex-wrap: wrap`, `gap: var(--custom-modal-padding) var(--space-8)` (24px
+                // between lines at `padding-size-sm`): an input too wide beside the buttons puts them on a line of their
+                // own. `actionBarLeading`: `flex: 1 1 auto`, `min-width: 0`.
                 Some(input) => bar
                     .items_center()
-                    .child(div().flex_1().min_w(px(0.)).child(input))
-                    .child(div().flex().gap(px(8.)).children(buttons)),
+                    .flex_wrap()
+                    .gap_y(px(24.))
+                    .gap_x(px(8.))
+                    .child(
+                        div()
+                            .flex_grow(1.)
+                            .flex_shrink(1.)
+                            .min_w(px(0.))
+                            .child(input),
+                    )
+                    // `actionBarTrailing`: `flex-shrink: 0`.
+                    .child(
+                        div()
+                            .flex_none()
+                            .ml_auto()
+                            .flex()
+                            .gap(px(8.))
+                            .children(buttons),
+                    ),
             })
         });
     deferred(

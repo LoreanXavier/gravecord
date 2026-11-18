@@ -47,6 +47,9 @@ pub(super) enum Target {
     AttachmentLink,
     /// A forum tag (`forum-tag`, module 960015): Copy Tag ID in developer mode.
     ForumTag(Id),
+    /// The "+N" of an invite's roles in Server Settings > Invites (`invite-roles-menu`, module 551309): every role of
+    /// the invite, kept in `State::invite_roles`.
+    InviteRoles,
     User {
         user: Id,
         guild: Option<Id>,
@@ -238,13 +241,15 @@ pub(super) enum Act {
     EntranceServer,
     EntranceGlobal,
     DownloadSound,
+    /// A row that only closes its menu (the roles of `invite-roles-menu`, module 551309: `onSelect` does nothing).
+    Noop,
 }
 
 impl Act {
     /// Every row kind once (`Correction` with its first index). `ordinal` is an exhaustive match, so adding a variant
     /// without listing it here fails the build or the `act_list_is_complete` test.
     #[cfg(test)]
-    pub(super) const ALL: [Act; 115] = [
+    pub(super) const ALL: [Act; 116] = [
         Act::InventoryAbout,
         Act::InventoryHide,
         Act::ReportApp,
@@ -360,6 +365,7 @@ impl Act {
         Act::EntranceServer,
         Act::EntranceGlobal,
         Act::DownloadSound,
+        Act::Noop,
     ];
 
     #[cfg(test)]
@@ -480,6 +486,7 @@ impl Act {
             Act::EntranceServer => 112,
             Act::EntranceGlobal => 113,
             Act::DownloadSound => 114,
+            Act::Noop => 115,
         }
     }
 }
@@ -604,7 +611,8 @@ pub(super) fn status(act: Act) -> Status {
         | Act::EditSound
         | Act::EntranceServer
         | Act::EntranceGlobal
-        | Act::DownloadSound => Wired,
+        | Act::DownloadSound
+        | Act::Noop => Wired,
     }
 }
 
@@ -644,6 +652,8 @@ pub(super) struct Row {
     pub shortcut: Option<&'static str>,
     /// A `MenuRadioItem`: the check is drawn as a radio.
     pub radio: bool,
+    /// The `roleDot` leading accessory (module 165862): the role's 12px circle in a 20px box, 8px before the label.
+    pub role_dot: Option<u32>,
 }
 
 impl Row {
@@ -660,7 +670,14 @@ impl Row {
             disabled: false,
             shortcut: None,
             radio: false,
+            role_dot: None,
         }
+    }
+
+    /// The `roleDot` accessory in the role's colour (0: `DEFAULT_ROLE_COLOR`).
+    pub(super) fn role_dot(mut self, color: u32) -> Self {
+        self.role_dot = Some(color);
+        self
     }
 
     fn shortcut(mut self, keys: &'static str) -> Self {
@@ -2076,6 +2093,8 @@ pub(super) struct State {
     pub in_overlay: bool,
     /// The address and file name of the attachment chip whose menu is open.
     pub attachment_link: Option<(String, String)>,
+    /// The roles (name, colour) of the invite whose "+N" opened `invite-roles-menu`.
+    pub invite_roles: Vec<(String, u32)>,
 }
 
 const MUTE_FOR: [(i64, &str); 6] = [
@@ -2829,6 +2848,13 @@ impl Root {
                     );
                 audit_channel_items(category, can_edit, developer)
             }
+            // Module 551309: one group of the roles, each with its circle; a pick only closes the menu.
+            Target::InviteRoles => self
+                .context
+                .invite_roles
+                .iter()
+                .map(|(name, color)| Entry::Row(Row::new(Act::Noop, name.clone()).role_dot(*color)))
+                .collect(),
             Target::PickerSticker(sticker) => {
                 picker_sticker_items(self.sticker_favorited(sticker), developer)
             }
@@ -3639,7 +3665,8 @@ impl Root {
                     | Target::Composer
                     | Target::Favorites
                     | Target::PickerEmoji
-                    | Target::PickerSound => {
+                    | Target::PickerSound
+                    | Target::InviteRoles => {
                         return;
                     }
                 };
@@ -4212,7 +4239,9 @@ impl Root {
             }
             (Act::HideFavorites, Target::Favorites) => self.set_favorites_guild(false, cx),
             (Act::FavoritesSettings, Target::Favorites) => self.open_favorites_settings(cx),
-            (Act::FavoritesNickname, Target::Channel(id)) => self.open_favorite_nickname(id, cx),
+            (Act::FavoritesNickname, Target::Channel(id)) => {
+                self.open_favorite_nickname(id, window, cx)
+            }
             // A direct message is pinned by its own override on the "@me" settings (`xl` of module 816662).
             (Act::PinDm, Target::Dm(id)) => {
                 let flags = self.stores.guild_settings.channel(0, id).flags ^ PINNED;
@@ -5411,6 +5440,22 @@ impl Root {
             }
             this.run_context(act, target, window, cx);
             cx.notify();
+        }))
+        .children(row.role_dot.map(|color| {
+            // `roleDotAccessory_M3qk4j` around `roleCircle_7RsUnm` (12px, `margin: 0 4px`).
+            div()
+                .mr(px(8.))
+                .size(px(20.))
+                .flex_none()
+                .flex()
+                .items_center()
+                .justify_center()
+                .child(
+                    div()
+                        .size(px(12.))
+                        .rounded_full()
+                        .bg(gpui::rgb(if color == 0 { 0x99aab5 } else { color })),
+                )
         }))
         .children(row.icon.map(|name| {
             div().mr(px(8.)).child(icon(

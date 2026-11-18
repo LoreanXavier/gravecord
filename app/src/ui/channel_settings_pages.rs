@@ -36,6 +36,11 @@ fn active(until: Option<&String>) -> bool {
         .is_some_and(|until| until.timestamp_millis() > chrono::Utc::now().timestamp_millis())
 }
 
+/// Save of module 671576: `(T || D) && !L && !z`, a pause was on when the dialog opened and none is now.
+pub(super) fn lifts_lockdown(was: (u64, bool, bool), invites: bool, dms: bool) -> bool {
+    (was.1 || was.2) && !invites && !dms
+}
+
 /// Module 859706 `c`: the body of `PUT /guilds/{id}/incident-actions`.
 pub(super) fn incident_body(
     invites: bool,
@@ -229,10 +234,15 @@ impl Root {
                         } else {
                             super::modal::Tone::PrimaryDisabled
                         },
-                        |this, _, _| {
+                        |this, _, cx| {
                             let Some(open) = this.security_actions.take() else {
                                 return;
                             };
+                            // Module 671576: a save that lifts every pause that was on asks why the server was
+                            // locked (module 336496).
+                            if lifts_lockdown(open.was, open.invites, open.dms) {
+                                this.open_lockdown_feedback(cx);
+                            }
                             let _ = this.requests.send(Request::Rest {
                                 key: None,
                                 method: reqwest::Method::PUT,
@@ -539,6 +549,7 @@ impl Root {
             .and_then(|body| body.as_array().cloned())
             .unwrap_or_default();
         let now = chrono::Utc::now().timestamp_millis();
+        let guild = self.guild_of_channel(channel);
         let column = |width: f32| div().w(px(width)).flex_none();
         let head = |text: &'static str, width: f32| {
             column(width)
@@ -556,88 +567,99 @@ impl Root {
                 .text_color(color("--text-default"))
                 .child(text)
         };
-        let rows = invites.into_iter().map(|invite| {
-            let code = invite["code"].as_str().unwrap_or_default().to_owned();
-            let inviter = User::from_value(&invite["inviter"]);
-            let picture = inviter
-                .as_ref()
-                .and_then(|user| self.images.get(&avatar_source(user).0).cloned());
-            let uses = invite["uses"].as_u64().unwrap_or(0);
-            let max = invite["max_uses"].as_u64().unwrap_or(0);
-            let created = invite["created_at"]
-                .as_str()
-                .and_then(|at| chrono::DateTime::parse_from_rfc3339(at).ok())
-                .map_or(now, |at| at.timestamp_millis());
-            let left = expires_in(created, invite["max_age"].as_i64().unwrap_or(0), now);
-            let group = SharedString::from(format!("invite-row-{code}"));
-            let revoke = code.clone();
-            div()
-                .group(group.clone())
-                .relative()
-                .h(px(62.))
-                .border_b_1()
-                .border_color(color("--border-subtle"))
-                .flex()
-                .items_center()
-                .child(
-                    column(210.)
-                        .flex()
-                        .items_center()
-                        .gap(px(12.))
-                        .child(div().size(px(24.)).rounded_full().children(
-                            picture.map(|picture| img(picture).size(px(24.)).rounded_full()),
-                        ))
-                        .child(
-                            div()
-                                .text_size(px(16.))
-                                .line_height(px(20.))
-                                .text_color(color("--text-default"))
-                                .child(
-                                    inviter
-                                        .map(|user| user.display_name().to_owned())
-                                        .unwrap_or_default(),
-                                ),
+        let rows = invites
+            .into_iter()
+            .map(|invite| {
+                let code = invite["code"].as_str().unwrap_or_default().to_owned();
+                let inviter = User::from_value(&invite["inviter"]);
+                let picture = inviter
+                    .as_ref()
+                    .and_then(|user| self.images.get(&avatar_source(user).0).cloned());
+                let uses = invite["uses"].as_u64().unwrap_or(0);
+                let max = invite["max_uses"].as_u64().unwrap_or(0);
+                let created = invite["created_at"]
+                    .as_str()
+                    .and_then(|at| chrono::DateTime::parse_from_rfc3339(at).ok())
+                    .map_or(now, |at| at.timestamp_millis());
+                let left = expires_in(created, invite["max_age"].as_i64().unwrap_or(0), now);
+                let group = SharedString::from(format!("invite-row-{code}"));
+                let revoke = code.clone();
+                div()
+                    .group(group.clone())
+                    .relative()
+                    .h(px(62.))
+                    .border_b_1()
+                    .border_color(color("--border-subtle"))
+                    .flex()
+                    .items_center()
+                    .child(
+                        column(210.)
+                            .flex()
+                            .items_center()
+                            .gap(px(12.))
+                            .child(div().size(px(24.)).rounded_full().children(
+                                picture.map(|picture| img(picture).size(px(24.)).rounded_full()),
+                            ))
+                            .child(
+                                div()
+                                    .text_size(px(16.))
+                                    .line_height(px(20.))
+                                    .text_color(color("--text-default"))
+                                    .child(
+                                        inviter
+                                            .map(|user| user.display_name().to_owned())
+                                            .unwrap_or_default(),
+                                    ),
+                            ),
+                    )
+                    .child(column(162.).child(self.invite_source_cell(&code, &invite, cx)))
+                    .child(column(68.).child(mono(if max > 0 {
+                        format!("{uses}/{max}")
+                    } else {
+                        uses.to_string()
+                    })))
+                    .child(column(115.).child(mono(left)))
+                    .child(column(102.).children(self.invite_roles_cell(
+                        &code,
+                        &super::server_settings_pages::invite_roles(
+                            guild.and_then(|guild| self.stores.guild(guild)),
+                            &invite,
                         ),
-                )
-                .child(column(162.).child(mono(code.clone())))
-                .child(column(68.).child(mono(if max > 0 {
-                    format!("{uses}/{max}")
-                } else {
-                    uses.to_string()
-                })))
-                .child(column(115.).child(mono(left)))
-                .child(
-                    div()
-                        .id(SharedString::from(format!("invite-revoke-{code}")))
-                        .absolute()
-                        .right(px(-31.))
-                        .top(px(-12.))
-                        .size(px(16.))
-                        .cursor_pointer()
-                        .opacity(0.)
-                        .group_hover(group, |style| style.opacity(1.))
-                        .child(icon("modal_close", 16., "--icon-subtle"))
-                        .on_click(cx.listener(move |this, _, _, cx| {
-                            let _ = this.requests.send(Request::Rest {
-                                key: None,
-                                method: reqwest::Method::DELETE,
-                                route: format!("/invites/{revoke}"),
-                                body: None,
-                            });
-                            let key = format!("channel-invites:{channel}");
-                            if let Some(list) = this
-                                .fetched
-                                .get_mut(&key)
-                                .and_then(|body| body.as_array_mut())
-                            {
-                                list.retain(|invite| {
-                                    invite["code"].as_str() != Some(revoke.as_str())
+                        cx,
+                    )))
+                    .child(
+                        div()
+                            .id(SharedString::from(format!("invite-revoke-{code}")))
+                            .absolute()
+                            .right(px(-31.))
+                            .top(px(-12.))
+                            .size(px(16.))
+                            .cursor_pointer()
+                            .opacity(0.)
+                            .group_hover(group, |style| style.opacity(1.))
+                            .child(icon("modal_close", 16., "--icon-subtle"))
+                            .on_click(cx.listener(move |this, _, _, cx| {
+                                let _ = this.requests.send(Request::Rest {
+                                    key: None,
+                                    method: reqwest::Method::DELETE,
+                                    route: format!("/invites/{revoke}"),
+                                    body: None,
                                 });
-                            }
-                            cx.notify();
-                        })),
-                )
-        });
+                                let key = format!("channel-invites:{channel}");
+                                if let Some(list) = this
+                                    .fetched
+                                    .get_mut(&key)
+                                    .and_then(|body| body.as_array_mut())
+                                {
+                                    list.retain(|invite| {
+                                        invite["code"].as_str() != Some(revoke.as_str())
+                                    });
+                                }
+                                cx.notify();
+                            })),
+                    )
+            })
+            .collect::<Vec<_>>();
         div()
             .flex()
             .flex_col()
@@ -667,38 +689,74 @@ impl Root {
                     )
                     .child("."),
             )
-            .child(
-                // `inviteDisabledContainer`: Security Actions for the whole server.
-                div().mb(px(16.)).child(
-                    div()
-                        .id("channel-invites-pause")
-                        .h(px(32.))
-                        .px(px(11.))
-                        .rounded(px(8.))
-                        .border_1()
-                        .border_color(color("--control-critical-primary-border-default"))
-                        .bg(color("--control-critical-primary-background-default"))
-                        .cursor_pointer()
-                        .flex()
-                        .items_center()
-                        .text_size(px(14.))
-                        .line_height(px(18.))
-                        .font_weight(FontWeight(500.))
-                        .text_color(color("--white"))
-                        .child("Pause Invites")
-                        .on_click(cx.listener(move |this, _, _, cx| {
-                            let guild = this
-                                .stores
-                                .guilds
-                                .iter()
-                                .find(|guild| guild.channels.iter().any(|known| known.id == channel))
-                                .map(|guild| guild.id);
-                            if let Some(guild) = guild {
-                                this.open_security_actions(guild, cx);
-                            }
-                        })),
-                ),
-            )
+            .child({
+                // `inviteDisabledContainer_k0kUi1` (a row 8px apart): Security Actions for the whole server, "Enable
+                // Invites" (`primary`) while invites are paused, with `inviteDisabledTip_k0kUi1` (4px apart: the 20px
+                // circle-error icon in `YELLOW_300`, "Invites to this server are currently paused.", `body-sm/normal`),
+                // else "Pause Invites" (`critical-primary`); without Manage Server it is disabled (module 422542 `ec`).
+                let (paused, allowed) =
+                    guild.map_or((false, false), |guild| self.invites_pause_state(guild));
+                let (border, background) = if paused {
+                    (
+                        "--control-primary-border-default",
+                        "--control-primary-background-default",
+                    )
+                } else {
+                    (
+                        "--control-critical-primary-border-default",
+                        "--control-critical-primary-background-default",
+                    )
+                };
+                div()
+                    .mb(px(16.))
+                    .flex()
+                    .items_center()
+                    .gap(px(8.))
+                    .child(
+                        div()
+                            .id("channel-invites-pause")
+                            .h(px(32.))
+                            .px(px(11.))
+                            .rounded(px(8.))
+                            .border_1()
+                            .border_color(color(border))
+                            .bg(color(background))
+                            .when(allowed, |button| button.cursor_pointer())
+                            .when(!allowed, |button| button.opacity(0.5))
+                            .flex()
+                            .items_center()
+                            .text_size(px(14.))
+                            .line_height(px(18.))
+                            .font_weight(FontWeight(500.))
+                            .text_color(color("--white"))
+                            .child(if paused {
+                                dc_intl::t("/dbw3H")
+                            } else {
+                                dc_intl::t("Uwsjn6")
+                            })
+                            .on_click(cx.listener(move |this, _, _, cx| {
+                                if let Some(guild) = guild.filter(|_| allowed) {
+                                    this.open_security_actions(guild, cx);
+                                }
+                            })),
+                    )
+                    .when(paused, |row| {
+                        row.child(
+                            div()
+                                .flex()
+                                .items_center()
+                                .gap(px(4.))
+                                .child(icon("shop_circle_error", 20., "--yellow-300"))
+                                .child(
+                                    div()
+                                        .text_size(px(14.))
+                                        .line_height(px(18.))
+                                        .text_color(color("--text-default"))
+                                        .child(dc_intl::t("2LLbj9")),
+                                ),
+                        )
+                    })
+            })
             .child(div().mb(px(20.)).h(px(1.)).bg(color("--border-subtle")))
             .child(
                 div()
@@ -1544,7 +1602,17 @@ impl Root {
 
 #[cfg(test)]
 mod tests {
-    use super::{expires_in, incident_body};
+    use super::{expires_in, incident_body, lifts_lockdown};
+
+    /// Module 671576: the feedback of module 336496 follows only a save that lifts every pause that was on.
+    #[test]
+    fn lifting_every_pause_asks_why_the_server_was_locked() {
+        assert!(lifts_lockdown((2, true, false), false, false));
+        assert!(lifts_lockdown((2, true, true), false, false));
+        assert!(!lifts_lockdown((2, true, true), false, true));
+        assert!(!lifts_lockdown((2, false, false), false, false));
+        assert!(!lifts_lockdown((2, false, false), true, false));
+    }
 
     #[test]
     fn security_actions_put_both_times_or_none() {

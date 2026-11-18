@@ -178,9 +178,6 @@ impl Root {
     /// "Thread Settings" of the Favorites server: its modal is not built yet (no capture of it).
     pub(super) fn open_favorites_settings(&mut self, _cx: &mut Context<Self>) {}
 
-    /// "Change Nickname" of a favourite: its modal is not built yet (no capture of it).
-    pub(super) fn open_favorite_nickname(&mut self, _channel: Id, _cx: &mut Context<Self>) {}
-
     /// The Appearance switch "Show Favorites server".
     pub(super) fn favorites_toggled(&mut self, on: bool) {
         let mut favorites = self.stores.favorites();

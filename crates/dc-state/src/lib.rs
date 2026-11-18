@@ -3311,6 +3311,23 @@ impl Stores {
         patch
     }
 
+    /// A recurring dismissible content dismissed less than `cooldown_ms` ago (`FZ` of module 543862). Before the
+    /// settings arrive it counts as dismissed, so nothing shows that the account had put away.
+    pub fn recurring_dismissed(&self, content: u64, cooldown_ms: u64, now_ms: u64) -> bool {
+        !self.settings_loaded
+            || settings::recurring_dismissed(&self.settings_raw, content, cooldown_ms, now_ms)
+    }
+
+    /// Dismisses a recurring content now (`uh`); empty until the settings have arrived, as `dismiss_content`.
+    pub fn dismiss_recurring(&mut self, content: u64, now_ms: u64) -> String {
+        if !self.settings_loaded {
+            return String::new();
+        }
+        let (patch, updated) = settings::dismiss_recurring(&self.settings_raw, content, now_ms);
+        self.settings_raw = updated;
+        patch
+    }
+
     /// The in-app feedback state of one survey type (`inAppFeedbackSettings`, read by module 220162).
     pub fn in_app_feedback(&self, kind: u64) -> settings::InAppFeedbackState {
         settings::in_app_feedback_state(&self.settings_raw, kind)
