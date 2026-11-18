@@ -242,6 +242,9 @@ SKIPPED_SETTINGS = {}
 
 # Already what gravecord does without a plugin.
 NATIVE = {
+    'StopAutoUnread': 'the app never raises a channel to All Messages by itself: the pinned client's '
+                      '`maybeAutoUpgradeChannel` (called by the unreads notice hook in module 626977) is not ported '
+                      '(GAP: main app), so there is nothing to stop.',
     'NoTrack': 'gravecord sends no analytics, metrics or Sentry reports; its only `/science` post is the overlay problem '
                'report the user submits.',
     'ForceOwnerCrown': 'the member list shows the owner crown at any server size.',
@@ -327,7 +330,6 @@ PLANNED = {
     'SpotifyCrack': 'listen along without Premium and no Spotify pause on voice.',
     'SpotifyShareCommands': 'its /track, /album, /artist commands.',
     'SteamStatusSync': 'status sync with the Steam client.',
-    'StopAutoUnread': 'no automatic unread marking.',
     'Streaks': 'DM streak counts (its service login in the data store is not copied).',
     'StreamingCodecDisabler': 'a codec choice for streams and cameras in dc-media.',
     'SuperReactionTweaks': 'super reaction limits and default.',
