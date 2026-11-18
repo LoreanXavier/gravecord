@@ -100,13 +100,15 @@ const MAX_KEPT_PICTURE_BYTES: usize = 1024 * 1024;
 /// The folder of the pictures kept only for the start, next to the other start files.
 const START_PICTURES_DIR: &str = "start-pictures";
 
-/// Pictures of the first screen that the picture requests do not keep on disk: attachments' previews, server emojis
-/// and the composer's emoji button (cut from a sheet with the theme's tint). Only the screen in view's are kept, in
-/// their own folder by image key (`start-pictures`): each save replaces the set, logging out removes it, and what is
-/// scrolled through is never written. An attachment's or emoji's key names one picture forever; the button is written
-/// again whenever it is cut.
+/// Pictures of the first screen that the picture requests do not keep on disk: attachments', embeds' and components'
+/// pictures (each named by its message), server emojis and the composer's emoji button (cut from a sheet with the
+/// theme's tint). Only the screen in view's are kept, in their own folder by image key (`start-pictures`): each save
+/// replaces the set, logging out removes it, and what is scrolled through is never written. A copy of another length
+/// than the picture in memory is written again (an edited embed, the button in another tint).
 pub(crate) fn kept_for_the_start(key: &str) -> bool {
     key.starts_with("attachment:")
+        || key.starts_with("embed:")
+        || key.starts_with("comp:")
         || key.starts_with("custom:")
         || key.starts_with("custom-animated:")
         || key == EMOJI_BUTTON
@@ -151,7 +153,8 @@ fn write_start_pictures(
         }
         for (key, image) in pictures {
             let path = dir.join(start_picture_name(&key));
-            if key != EMOJI_BUTTON && path.is_file() {
+            // A copy of the same length is the same picture (the key names it); another length is a newer one.
+            if std::fs::metadata(&path).is_ok_and(|meta| meta.len() == image.bytes.len() as u64) {
                 continue;
             }
             let part = path.with_extension("part");
@@ -676,7 +679,9 @@ impl Root {
             self.stores.load_messages_since(channel, &page, 0);
             self.rebuild_rows();
             crate::start_trace::took("dur_cache_rows", loading);
+            let asking = std::time::Instant::now();
             self.request_images();
+            crate::start_trace::took("dur_cache_images", asking);
             self.ready = true;
             crate::start_trace::mark("cache_messages");
         }
@@ -688,6 +693,11 @@ impl Root {
     /// The first screen's pictures the cache read (Cached::pictures), put in before anything asks for them; the
     /// usual requests still run and bring the same bytes (or a newer copy) behind them. A picture already in is kept.
     pub(crate) fn add_start_pictures(&mut self, pictures: Vec<(String, Vec<u8>)>) {
+        let kept = pictures
+            .iter()
+            .filter(|(key, _)| kept_for_the_start(key))
+            .count();
+        tracing::debug!(target: "gravecord::start", pictures = pictures.len(), kept, "start pictures read");
         for (key, bytes) in pictures {
             let format = super::image_format(&key, &bytes);
             self.images
@@ -778,6 +788,15 @@ impl Root {
                 .filter(|guild| guild.icon.is_some())
                 .take(12)
                 .map(|guild| format!("guild:{}", guild.id)),
+        );
+        // The attachments' previews and server emojis of the newest messages, which the start keeps too.
+        let messages: Vec<_> = messages.into_iter().flatten().rev().take(25).collect();
+        keys.extend(
+            messages
+                .iter()
+                .flat_map(|message| super::media_image::wanted(message, false, false))
+                .map(|(key, _)| key)
+                .filter(|key| kept_for_the_start(key) && key != EMOJI_BUTTON),
         );
         keys.sort();
         keys.dedup();
@@ -1060,6 +1079,7 @@ mod tests {
     #[test]
     fn only_the_screens_attachments_and_emojis_are_kept_for_the_start() {
         assert!(kept_for_the_start("attachment:2"));
+        assert!(kept_for_the_start("embed:7:0:image") && kept_for_the_start("comp:7:media:0"));
         assert!(kept_for_the_start("custom:5") && kept_for_the_start("custom-animated:5"));
         assert!(kept_for_the_start(EMOJI_BUTTON));
         assert!(

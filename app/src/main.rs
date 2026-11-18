@@ -337,6 +337,14 @@ fn main() -> std::process::ExitCode {
 
 fn run() -> Result<()> {
     start_trace::init();
+    // The en-US strings, which every frame reads and which take about 40 ms to decompress and parse, load on their own
+    // thread while the window opens, not on the UI thread inside the first frame.
+    let _ = std::thread::Builder::new()
+        .name("preload".to_owned())
+        .spawn(|| {
+            dc_intl::preload();
+            start_trace::mark("intl_loaded");
+        });
     inert::init();
     #[cfg(feature = "capture")]
     perf::start_heap_profile();

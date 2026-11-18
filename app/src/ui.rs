@@ -2801,6 +2801,7 @@ impl Root {
     }
 
     fn request_images(&mut self) {
+        let gathering = Instant::now();
         self.request_stored_app_icon();
         self.request_role_icon_images();
         self.request_stage_art();
@@ -2890,6 +2891,12 @@ impl Root {
                     self.pref_on("animate_emojis", true),
                 ));
             }
+        }
+        if self
+            .channel
+            .is_some_and(|channel| self.stores.messages.contains_key(&channel))
+        {
+            crate::start_trace::took("dur_images_gather_msgs", gathering);
         }
         for (key, url) in media {
             self.request_image(key, url);
