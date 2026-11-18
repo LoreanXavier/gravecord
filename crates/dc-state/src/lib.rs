@@ -448,6 +448,12 @@ pub struct Guild {
     pub id: Id,
     pub name: String,
     pub icon: Option<String>,
+    /// The server banner's hash (`banner`), for the plugins that open it (ViewIcons).
+    pub banner: Option<String>,
+    /// `description`, `preferred_locale` and `verification_level`, for ServerInfo.
+    pub description: Option<String>,
+    pub preferred_locale: Option<String>,
+    pub verification_level: Option<u64>,
     pub owner_id: Option<Id>,
     pub home_header: Option<String>,
     pub rules_channel_id: Option<Id>,
@@ -827,6 +833,10 @@ impl Guild {
             id: id(&value["id"])?,
             name: text(&properties["name"])?,
             icon: text(&properties["icon"]),
+            banner: text(&properties["banner"]),
+            description: text(&properties["description"]),
+            preferred_locale: text(&properties["preferred_locale"]),
+            verification_level: properties["verification_level"].as_u64(),
             owner_id: id(&properties["owner_id"]),
             home_header: text(&properties["home_header"]),
             rules_channel_id: id(&properties["rules_channel_id"]),
@@ -2688,6 +2698,12 @@ impl Stores {
                 if let Some(message) = Message::from_value(data) {
                     let me = self.current_user.as_ref().map(|user| user.id);
                     let mention = unread::message_mention(self, data, chrono::Utc::now());
+                    if let Some(me) = me
+                        && message.mention_user_ids.contains(&me)
+                    {
+                        self.read_states
+                            .track_direct_mention(message.channel_id, message.id);
+                    }
                     self.read_states.message_created(
                         message.channel_id,
                         message.id,
@@ -4939,6 +4955,10 @@ mod tests {
             id: 1,
             name: String::new(),
             icon: None,
+            banner: None,
+            description: None,
+            preferred_locale: None,
+            verification_level: None,
             owner_id: None,
             home_header: None,
             rules_channel_id: None,

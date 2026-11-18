@@ -1621,6 +1621,13 @@ pub async fn run(
             // the current time. `motion reduced on|off|system` forces the reduced-motion decision. `motion idle <ms>`
             // waits and prints how many renders and frames the driver asked for in that time. `motion state` prints
             // the clock.
+            // `gifs still`: every GIF tile shows its first frame from now on (`gif_tiles.rs`), whatever the real
+            // clock says; plugins-off uses it so an animation cannot tell two runs apart.
+            ["gifs", "still"] => {
+                crate::ui::gif_tiles::hold_still(true);
+                cx.update(|cx| root.update(cx, |_, cx| cx.notify()));
+                let _ = writeln!(output, "gifs: still");
+            }
             ["motion", rest @ ..] => {
                 let line = crate::ui::motion::step(rest, window, &root, cx).await;
                 let _ = writeln!(output, "{line}");

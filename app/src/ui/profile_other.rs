@@ -60,7 +60,7 @@ impl Root {
         guild: Id,
         user: Id,
         strong: Hsla,
-        cx: Option<&mut Context<Self>>,
+        mut cx: Option<&mut Context<Self>>,
     ) -> Option<AnyElement> {
         let guild = self.stores.guilds.iter().find(|known| known.id == guild)?;
         let member = self.stores.members.get(guild.id, user)?;
@@ -79,7 +79,8 @@ impl Root {
             "--border-subtle"
         });
         let dot_halo = palette.token("--background-base-lowest");
-        let role_dot_style = self.pref_index("role_style", 0) == 1;
+        // Not in the pinned client: BetterRoleDot can draw them with dots (`plugin_hooks/better_role_dot.rs`).
+        let role_dot_style = self.popout_role_dots();
         let guild_shows_icons = guild.features.iter().any(|feature| feature == "ROLE_ICONS");
         Some(
             div()
@@ -155,7 +156,16 @@ impl Root {
                         .rounded(px(8.))
                         .flex()
                         .items_center()
-                        .child(indicator)
+                        // Not in the pinned client: BetterRoleDot copies a dot's colour.
+                        .child(match cx.as_deref_mut() {
+                            Some(cx) if role_dot_style && role.color != 0 => self.role_dot_copy(
+                                format!("popout-{id}"),
+                                role.color,
+                                indicator,
+                                cx,
+                            ),
+                            _ => indicator.into_any_element(),
+                        })
                         .when(role.guild_connection, |this| {
                             this.child(icon("share_link", 12., "--text-default"))
                         })

@@ -1917,6 +1917,17 @@ impl Root {
         match media {
             TileMedia::None => div().into_any_element(),
             TileMedia::Avatar => {
+                // Not in the pinned client: FullVCPFP fills the tile with the avatar (`plugin_hooks/full_vc_pfp.rs`).
+                let guild = self
+                    .call
+                    .as_ref()
+                    .map(|call| call.guild)
+                    .filter(|guild| *guild != 0);
+                if let Some(full) =
+                    self.full_vc_avatar(&person.user, guild, (layout.tile_width, layout.tile_height))
+                {
+                    return full;
+                }
                 let picture = self
                     .images
                     .get(&super::avatar_source(&person.user).0)

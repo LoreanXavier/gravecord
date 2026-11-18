@@ -373,7 +373,7 @@ impl Root {
     }
 
     /// The Favorites section: the favourites this account can use, in their order.
-    fn favorite_emoji_items(&self) -> Vec<Item> {
+    pub(super) fn favorite_emoji_items(&self) -> Vec<Item> {
         self.favorite_emoji_keys()
             .iter()
             .filter_map(|key| self.emoji_lookup(key))
@@ -705,6 +705,8 @@ impl Root {
             .and_then(|section| section.items.first())
             .cloned();
         self.request_picker_images(&sections);
+        // Not in the pinned client: SuperReactionTweaks' `superReactByDefault` (`plugin_hooks/super_reaction_tweaks.rs`).
+        let burst = matches!(target, Target::Reaction { .. }) && self.super_react_by_default();
         self.picker = Some(Picker {
             target,
             tab: Tab::Emoji,
@@ -717,7 +719,7 @@ impl Root {
             list,
             collapsed,
             hovered,
-            burst: false,
+            burst,
             show_emoji_packs: false,
             expanded_pack_ids: HashSet::new(),
         });

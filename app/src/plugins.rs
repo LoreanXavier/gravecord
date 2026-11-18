@@ -37,7 +37,22 @@ fn cell() -> &'static RwLock<State> {
         } else {
             crate::storage::get(STORAGE_KEY)
         };
-        RwLock::new(saved.map_or_else(State::default, |value| State::from_value(&value)))
+        #[allow(unused_mut)]
+        let mut state = saved.map_or_else(State::default, |value| State::from_value(&value));
+        // Capture only: `GRAVECORD_PLUGINS_ALL_ON=1` starts with the master switch and every plugin on (their
+        // settings as they are), for `cargo xtask perf` with the plugins on.
+        #[cfg(feature = "capture")]
+        if std::env::var("GRAVECORD_PLUGINS_ALL_ON").is_ok_and(|value| value == "1") {
+            state.master = true;
+            // `GRAVECORD_PLUGINS_EXCEPT`: comma-separated plugins left off (a perf script that clicks the rail by
+            // its position cannot run with ServerListIndicators' extra rail item).
+            let except = std::env::var("GRAVECORD_PLUGINS_EXCEPT").unwrap_or_default();
+            for def in DEFS {
+                let skipped = except.split(',').any(|id| id.trim() == def.id);
+                state.set_enabled(def.id, !skipped);
+            }
+        }
+        RwLock::new(state)
     })
 }
 

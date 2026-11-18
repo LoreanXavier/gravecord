@@ -121,6 +121,14 @@ thread_local! {
     static JOINS: RefCell<Joins> = RefCell::new(Joins::default());
     /// The one-second redraw while times run (`useFixedTimer`).
     static TICKER: RefCell<Option<gpui::Task<()>>> = const { RefCell::new(None) };
+    /// A running time was drawn as text since the last tick. The tick redraws only then: a clock icon (its time in
+    /// a tooltip) or a time nowhere on screen needs no redraw, so an idle window with people in calls elsewhere
+    /// stays idle.
+    static SHOWN: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+fn note_shown() {
+    SHOWN.with(|shown| shown.set(true));
 }
 
 fn now_ms() -> u64 {
@@ -155,7 +163,9 @@ impl Root {
                 loop {
                     cx.background_executor().timer(Duration::from_secs(1)).await;
                     let alive = this.update(cx, |_, cx| {
-                        cx.notify();
+                        if SHOWN.with(|shown| shown.replace(false)) {
+                            cx.notify();
+                        }
                         current().is_some()
                     });
                     if !matches!(alive, Ok(true)) {
@@ -174,6 +184,7 @@ impl Root {
         let me = self.stores.current_user.as_ref()?.id;
         let since = JOINS.with(|joins| joins.borrow().since(me))?;
         let text = format_duration_ms(now_ms().saturating_sub(since), settings.human, true);
+        note_shown();
         Some(
             div()
                 .font_family(MONO)
@@ -207,6 +218,7 @@ impl Root {
             settings.seconds,
         );
         if settings.without_hover {
+            note_shown();
             let tint = match self.role_color_of(user).filter(|_| settings.role_color) {
                 Some(rgb) => gpui::rgb(rgb),
                 None => color("--channels-default"),

@@ -240,6 +240,16 @@ const fn millis(default: f64) -> Kind {
 /// by the code (a test checks both ways), so a setting can never sit in the page doing nothing unnoticed.
 pub(crate) const IDLE_SETTINGS: &[(&str, &str, &str)] = &[
     (
+        "SuperReactionTweaks",
+        "unlimitedSuperReactionPlaying",
+        "it lifts the cap on super reaction effects playing at once, and the app plays no super reaction effects yet",
+    ),
+    (
+        "SuperReactionTweaks",
+        "superReactionPlayingLimit",
+        "it caps the super reaction effects playing at once, and the app plays no super reaction effects yet",
+    ),
+    (
         "AlwaysAnimate",
         "statusEmojis",
         "the app draws every custom status emoji as a still picture (the pinned client's member list plays an \
@@ -289,6 +299,20 @@ pub(crate) const SHOWN_WHEN: &[(&str, &str, &str)] = &[(
 
 /// Every plugin, in the order the Plugins page lists them (by name).
 pub(crate) const DEFS: &[Def] = &[
+    Def {
+        id: "AccountPanelServerProfile",
+        name: "AccountPanelServerProfile",
+        description: "Right click your account panel in the bottom left to view your profile in the current server",
+        origin: Origin::Vencord,
+        source: "src/plugins/accountPanelServerProfile/index.tsx",
+        default_on: false,
+        settings: &[Setting {
+            key: "prioritizeServerProfile",
+            label: "Prioritize Server Profile",
+            description: "Prioritize Server Profile when left clicking your account panel",
+            kind: Kind::Switch { default: false },
+        }],
+    },
     Def {
         id: "AlwaysAnimate",
         name: "AlwaysAnimate",
@@ -429,11 +453,63 @@ pub(crate) const DEFS: &[Def] = &[
         ],
     },
     Def {
+        id: "BetterRoleContext",
+        name: "BetterRoleContext",
+        description: "Adds options to copy role color / edit role / view role icon when right clicking roles in the user profile or in the member list",
+        origin: Origin::Vencord,
+        source: "src/plugins/betterRoleContext/index.tsx",
+        default_on: false,
+        settings: &[Setting {
+            key: "roleIconFileFormat",
+            label: "Role Icon File Format",
+            description: "File format to use when viewing role icons",
+            kind: Kind::Select {
+                options: &[
+                    ("png", Lit::Str("png")),
+                    ("webp", Lit::Str("webp")),
+                    ("jpg", Lit::Str("jpg")),
+                ],
+                default: 0,
+            },
+        }],
+    },
+    Def {
+        id: "BetterRoleDot",
+        name: "BetterRoleDot",
+        description: "Copy role colour on RoleDot (accessibility setting) click. Also allows using both RoleDot and                       coloured names simultaneously",
+        origin: Origin::Vencord,
+        source: "src/plugins/betterRoleDot/index.ts",
+        default_on: false,
+        settings: &[
+            Setting {
+                key: "bothStyles",
+                label: "Both styles",
+                description: "Show both role dot and coloured names",
+                kind: Kind::Switch { default: false },
+            },
+            Setting {
+                key: "copyRoleColorInProfilePopout",
+                label: "Copy in profile popout",
+                description: "Allow click on role dot in profile popout to copy role color",
+                kind: Kind::Switch { default: false },
+            },
+        ],
+    },
+    Def {
         id: "BetterUploadButton",
         name: "BetterUploadButton",
         description: "Upload with a single click, open menu with right click.",
         origin: Origin::Vencord,
         source: "src/plugins/betterUploadButton/index.ts",
+        default_on: false,
+        settings: &[],
+    },
+    Def {
+        id: "BiggerStreamPreview",
+        name: "BiggerStreamPreview",
+        description: "This plugin allows you to enlarge stream previews",
+        origin: Origin::Vencord,
+        source: "src/plugins/biggerStreamPreview/index.tsx",
         default_on: false,
         settings: &[],
     },
@@ -555,6 +631,15 @@ pub(crate) const DEFS: &[Def] = &[
         }],
     },
     Def {
+        id: "FavoriteEmojiFirst",
+        name: "FavoriteEmojiFirst",
+        description: "Puts your favorite emoji first in the emoji autocomplete and also has emoji alias.",
+        origin: Origin::Vencord,
+        source: "src/plugins/favEmojiFirst/index.tsx",
+        default_on: false,
+        settings: &[],
+    },
+    Def {
         id: "FixImagesQuality",
         name: "FixImagesQuality",
         description: "Improves quality of images by loading them at their original resolution.",
@@ -567,6 +652,15 @@ pub(crate) const DEFS: &[Def] = &[
             description: "Also load the original image in chat. Animated images then always play, and it may be slow.",
             kind: Kind::Switch { default: false },
         }],
+    },
+    Def {
+        id: "FullVCPFP",
+        name: "FullVCPFP",
+        description: "Makes avatars take up the entire vc tile",
+        origin: Origin::Equicord,
+        source: "src/equicordplugins/fullVcPfp/index.tsx",
+        default_on: false,
+        settings: &[],
     },
     Def {
         id: "GameActivityToggle",
@@ -605,6 +699,64 @@ pub(crate) const DEFS: &[Def] = &[
         source: "src/plugins/gifPaste/index.ts",
         default_on: false,
         settings: &[],
+    },
+    Def {
+        id: "IgnoreActivities",
+        name: "IgnoreActivities",
+        description: "Ignore activities from showing up on your status ONLY. You can configure which ones are specifically ignored from the Registered Games and Activities tabs, or use the general settings below",
+        origin: Origin::Vencord,
+        source: "src/plugins/ignoreActivities/index.tsx",
+        default_on: false,
+        settings: &[
+            Setting {
+                key: "listMode",
+                label: "List Mode",
+                description: "Change the mode of the filter list",
+                kind: Kind::Select {
+                    options: &[("Whitelist", Lit::Int(0)), ("Blacklist", Lit::Int(1))],
+                    default: 0,
+                },
+            },
+            Setting {
+                key: "idsList",
+                label: "Filter List",
+                description: "Comma separated list of activity IDs to filter (Useful for filtering specific RPC activities and CustomRPC",
+                kind: Kind::Text {
+                    default: "",
+                    max_len: 4000,
+                },
+            },
+            Setting {
+                key: "ignorePlaying",
+                label: "Ignore Playing",
+                description: "Ignore all playing activities (These are usually game and RPC activities)",
+                kind: Kind::Switch { default: false },
+            },
+            Setting {
+                key: "ignoreStreaming",
+                label: "Ignore Streaming",
+                description: "Ignore all streaming activities",
+                kind: Kind::Switch { default: false },
+            },
+            Setting {
+                key: "ignoreListening",
+                label: "Ignore Listening",
+                description: "Ignore all listening activities (These are usually Spotify activities)",
+                kind: Kind::Switch { default: false },
+            },
+            Setting {
+                key: "ignoreWatching",
+                label: "Ignore Watching",
+                description: "Ignore all watching activities",
+                kind: Kind::Switch { default: false },
+            },
+            Setting {
+                key: "ignoreCompeting",
+                label: "Ignore Competing",
+                description: "Ignore all competing activities (These are normally special game activities)",
+                kind: Kind::Switch { default: false },
+            },
+        ],
     },
     Def {
         id: "MemberCount",
@@ -813,6 +965,31 @@ pub(crate) const DEFS: &[Def] = &[
         }],
     },
     Def {
+        id: "MuteChannelMentions",
+        name: "MuteChannelMentions",
+        description: "Hides mention badges from the channels you pick, both on the channel and on the server icon.                       Nothing is sent to Discord.",
+        origin: Origin::Equicord,
+        source: "src/userplugins/muteChannelMentions/index.tsx",
+        default_on: false,
+        settings: &[
+            Setting {
+                key: "channelIds",
+                label: "Channel IDs",
+                description: "Comma separated channel IDs whose mention badges are hidden.",
+                kind: Kind::Text {
+                    default: "",
+                    max_len: 4000,
+                },
+            },
+            Setting {
+                key: "onlyEveryone",
+                label: "Only @everyone",
+                description: "Only hide @everyone, @here and role pings. Direct mentions of you still show.",
+                kind: Kind::Switch { default: true },
+            },
+        ],
+    },
+    Def {
         id: "NoNitroUpsell",
         name: "NoNitroUpsell",
         description: "Removes all of Discord's nitro upsells by tricking the client into thinking you have nitro.",
@@ -1003,6 +1180,84 @@ pub(crate) const DEFS: &[Def] = &[
         settings: &[],
     },
     Def {
+        id: "RoleColorEverywhere",
+        name: "RoleColorEverywhere",
+        description: "Adds the top role color anywhere possible",
+        origin: Origin::Vencord,
+        source: "src/plugins/roleColorEverywhere/index.tsx",
+        default_on: false,
+        settings: &[
+            Setting {
+                key: "chatMentions",
+                label: "Chat Mentions",
+                description: "Show role colors in chat mentions (including in the message box)",
+                kind: Kind::Switch { default: true },
+            },
+            Setting {
+                key: "memberList",
+                label: "Member List",
+                description: "Show role colors in member list role headers",
+                kind: Kind::Switch { default: true },
+            },
+            Setting {
+                key: "voiceUsers",
+                label: "Voice Users",
+                description: "Show role colors in the voice chat user list",
+                kind: Kind::Switch { default: true },
+            },
+            Setting {
+                key: "reactorsList",
+                label: "Reactors List",
+                description: "Show role colors in the reactors list",
+                kind: Kind::Switch { default: true },
+            },
+            Setting {
+                key: "pollResults",
+                label: "Poll Results",
+                description: "Show role colors in the poll results",
+                kind: Kind::Switch { default: true },
+            },
+            Setting {
+                key: "colorChatMessages",
+                label: "Color Chat Messages",
+                description: "Color chat messages based on the author's role color",
+                kind: Kind::Switch { default: false },
+            },
+            Setting {
+                key: "messageSaturation",
+                label: "Message Saturation",
+                description: "Intensity of message coloring.",
+                kind: Kind::Number {
+                    default: 30.,
+                    min: 0.,
+                    max: 100.,
+                    step: 10.,
+                },
+            },
+        ],
+    },
+    Def {
+        id: "ServerInfo",
+        name: "ServerInfo",
+        description: "Allows you to view info about a server",
+        origin: Origin::Vencord,
+        source: "src/plugins/serverInfo/index.tsx",
+        default_on: false,
+        settings: &[Setting {
+            key: "sorting",
+            label: "Sorting",
+            description: "Username or if applicable Display Name",
+            kind: Kind::Select {
+                options: &[
+                    ("Username", Lit::Str("username")),
+                    ("Display Name", Lit::Str("displayname")),
+                    ("Dont Sort", Lit::Str("none")),
+                ],
+                default: 1,
+            },
+        }],
+    },
+    Def {
         id: "ServerListIndicators",
         name: "ServerListIndicators",
         description: "Add online friend count or server count in the server list.",
@@ -1066,6 +1321,39 @@ pub(crate) const DEFS: &[Def] = &[
                 label: "In the full profile",
                 description: "Show connected accounts in the full-size profile modal.",
                 kind: Kind::Switch { default: true },
+            },
+        ],
+    },
+    Def {
+        id: "SuperReactionTweaks",
+        name: "SuperReactionTweaks",
+        description: "Customize the limit of Super Reactions playing at once, and super react by default",
+        origin: Origin::Vencord,
+        source: "src/plugins/superReactionTweaks/index.ts",
+        default_on: false,
+        settings: &[
+            Setting {
+                key: "superReactByDefault",
+                label: "Super React By Default",
+                description: "Reaction picker will default to Super Reactions",
+                kind: Kind::Switch { default: true },
+            },
+            Setting {
+                key: "unlimitedSuperReactionPlaying",
+                label: "Unlimited Super Reaction Playing",
+                description: "Remove the limit on Super Reactions playing at once",
+                kind: Kind::Switch { default: false },
+            },
+            Setting {
+                key: "superReactionPlayingLimit",
+                label: "Super Reaction Playing Limit",
+                description: "Max Super Reactions to play at once. 0 to disable playing Super Reactions",
+                kind: Kind::Number {
+                    default: 20.,
+                    min: 0.,
+                    max: 100.,
+                    step: 1.,
+                },
             },
         ],
     },
@@ -1194,6 +1482,54 @@ pub(crate) const DEFS: &[Def] = &[
                 label: "Show yourself",
                 description: "Enable or disable showing pronouns for yourself",
                 kind: Kind::Switch { default: true },
+            },
+        ],
+    },
+    Def {
+        id: "ValidUser",
+        name: "ValidUser",
+        description: "Fix mentions for unknown users showing up as '@unknown-user' (hover over a mention to fix it)",
+        origin: Origin::Vencord,
+        source: "src/plugins/validUser/index.tsx",
+        default_on: false,
+        settings: &[],
+    },
+    Def {
+        id: "ViewIcons",
+        name: "ViewIcons",
+        description: "Makes avatars and banners in user profiles clickable, adds View Icon/Banner/Avatar Decoration entries in the user, server and group channel context menu.",
+        origin: Origin::Vencord,
+        source: "src/plugins/viewIcons/index.tsx",
+        default_on: false,
+        settings: &[
+            Setting {
+                key: "format",
+                label: "Format",
+                description: "Choose the image format to use for non-animated images. Animated images will always use .webp",
+                kind: Kind::Select {
+                    options: &[
+                        ("webp", Lit::Str("webp")),
+                        ("png", Lit::Str("png")),
+                        ("jpg", Lit::Str("jpg")),
+                    ],
+                    default: 0,
+                },
+            },
+            Setting {
+                key: "imgSize",
+                label: "Image Size",
+                description: "The image size to use",
+                kind: Kind::Select {
+                    options: &[
+                        ("128", Lit::Str("128")),
+                        ("256", Lit::Str("256")),
+                        ("512", Lit::Str("512")),
+                        ("1024", Lit::Str("1024")),
+                        ("2048", Lit::Str("2048")),
+                        ("4096", Lit::Str("4096")),
+                    ],
+                    default: 3,
+                },
             },
         ],
     },

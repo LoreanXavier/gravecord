@@ -243,10 +243,11 @@ fn build(repo: &Path, release: bool) -> Result<PathBuf> {
         "gravecord",
         "--features",
         "capture",
-        "-j",
-        "4",
         "--quiet",
     ]);
+    // Six jobs unless `CARGO_BUILD_JOBS` asks for another number (a shared machine runs builds at four).
+    let jobs = std::env::var("CARGO_BUILD_JOBS").unwrap_or_else(|_| "6".to_owned());
+    command.args(["-j", &jobs]);
     if release {
         command.arg("--release");
     }
@@ -258,7 +259,9 @@ fn build(repo: &Path, release: bool) -> Result<PathBuf> {
 }
 
 fn exe_of(repo: &Path, release: bool) -> PathBuf {
-    repo.join("target")
+    // Where cargo puts it: `CARGO_TARGET_DIR` when set, else the repository's `target`.
+    std::env::var_os("CARGO_TARGET_DIR")
+        .map_or_else(|| repo.join("target"), PathBuf::from)
         .join(if release { "release" } else { "debug" })
         .join("gravecord.exe")
 }
