@@ -44,8 +44,12 @@ fn cell() -> &'static RwLock<State> {
         #[cfg(feature = "capture")]
         if std::env::var("GRAVECORD_PLUGINS_ALL_ON").is_ok_and(|value| value == "1") {
             state.master = true;
+            // `GRAVECORD_PLUGINS_EXCEPT`: comma-separated plugins left off (a perf script that clicks the rail by
+            // its position cannot run with ServerListIndicators' extra rail item).
+            let except = std::env::var("GRAVECORD_PLUGINS_EXCEPT").unwrap_or_default();
             for def in DEFS {
-                state.set_enabled(def.id, true);
+                let skipped = except.split(',').any(|id| id.trim() == def.id);
+                state.set_enabled(def.id, !skipped);
             }
         }
         RwLock::new(state)
