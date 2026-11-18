@@ -66,6 +66,9 @@ struct Reply {
 pub struct Recording {
     /// By method and URL, in recorded order.
     http: HashMap<(String, String), Vec<Answer>>,
+    /// The recorded URLs in the order they were first answered: the fallback for a query never recorded takes the
+    /// first of the same path, the same one every run.
+    order: Vec<(String, String)>,
     hello: Value,
     hello_delay_ms: u64,
     ready_delay_ms: u64,
@@ -130,6 +133,7 @@ fn answers(op: u64, data: &Value, dispatch: &Value) -> bool {
 impl Recording {
     pub fn load(dir: &Path) -> Result<Self> {
         let mut http: HashMap<(String, String), Vec<Answer>> = HashMap::new();
+        let mut order = Vec::new();
         for line in read_lines(&dir.join("http.jsonl"))? {
             let (Some(method), Some(url), Some(file)) = (
                 line["method"].as_str(),
@@ -138,14 +142,16 @@ impl Recording {
             ) else {
                 continue;
             };
-            http.entry((method.to_owned(), url.to_owned()))
-                .or_default()
-                .push(Answer {
-                    status: line["status"].as_u64().unwrap_or(200) as u16,
-                    content_type: line["content_type"].as_str().map(str::to_owned),
-                    elapsed_ms: line["elapsed_ms"].as_u64().unwrap_or(0),
-                    file: dir.join(file),
-                });
+            let key = (method.to_owned(), url.to_owned());
+            if !http.contains_key(&key) {
+                order.push(key.clone());
+            }
+            http.entry(key).or_default().push(Answer {
+                status: line["status"].as_u64().unwrap_or(200) as u16,
+                content_type: line["content_type"].as_str().map(str::to_owned),
+                elapsed_ms: line["elapsed_ms"].as_u64().unwrap_or(0),
+                file: dir.join(file),
+            });
         }
         let frames = read_lines(&dir.join("gateway.jsonl"))?;
         // The first connection: from the first `connect` to the next.
@@ -229,6 +235,7 @@ impl Recording {
         replies.retain(|reply| !reply.items.is_empty());
         Ok(Self {
             http,
+            order,
             hello,
             hello_delay_ms: hello_at.saturating_sub(connect_at.unwrap_or(hello_at)),
             ready_delay_ms: ready_at.saturating_sub(identify_at),
@@ -406,14 +413,15 @@ fn answer(writer: &mut TcpStream, head: &Head, state: &State) -> Result<()> {
     let answers = state.recording.http.get(&key).or_else(|| {
         // A recorded answer of the same path whose query differed (a cursor, a nonce).
         let path = url.split('?').next().unwrap_or(&url);
-        state
-            .recording
-            .http
-            .iter()
-            .find(|((method, other), _)| {
-                *method == head.method && other.split('?').next() == Some(path)
-            })
-            .map(|(_, answers)| answers)
+        let similar = state.recording.order.iter().find(|(method, other)| {
+            *method == head.method && other.split('?').next() == Some(path)
+        })?;
+        state.note(&format!(
+            "query not recorded, answered as another of {} {}",
+            head.method,
+            log_url(&url)
+        ));
+        state.recording.http.get(similar)
     });
     let Some(answers) = answers.filter(|answers| !answers.is_empty()) else {
         state.note(&format!("miss {} {}", head.method, log_url(&url)));
@@ -551,13 +559,17 @@ fn gateway(stream: TcpStream, state: &State) -> Result<()> {
                 socket.send(Message::Binary(bytes.into()))?;
             }
             OP_IDENTIFY | OP_RESUME => {
+                // What the client asked with, its token and ids replaced: the only client input to the server's time.
+                let mut asked = data.clone();
+                dc_proto::replay::sanitize(&mut asked);
                 state.note(&format!(
-                    "{} received",
+                    "{} received: {}",
                     if op == OP_IDENTIFY {
                         "IDENTIFY"
                     } else {
                         "RESUME"
-                    }
+                    },
+                    canonical(&asked)
                 ));
                 let delay = state
                     .options

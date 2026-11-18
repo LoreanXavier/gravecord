@@ -311,7 +311,8 @@ pub(super) struct Splash {
     /// The width of a space in the tip's 16px text, for tips that flow as words.
     space: Option<f32>,
     /// The redraw asked for the spinner's next frame (or the problems' slide), while none is due sooner.
-    tick: Option<gpui::Task<()>>,
+    /// Its moment: a redraw due sooner (the clip came in while the slide's was pending) replaces it.
+    tick: Option<(Instant, gpui::Task<()>)>,
 }
 
 impl Splash {
@@ -738,14 +739,16 @@ impl Root {
         match next_redraw(elapsed, faded.is_some(), self.splash.clip.is_some()) {
             Redraw::EveryFrame => window.request_animation_frame(),
             Redraw::After(delay) => {
-                if self.splash.tick.is_none() {
-                    self.splash.tick = Some(cx.spawn(async move |this, cx| {
+                let due = Instant::now() + delay;
+                if self.splash.tick.as_ref().is_none_or(|(at, _)| due < *at) {
+                    let task = cx.spawn(async move |this, cx| {
                         cx.background_executor().timer(delay).await;
                         let _ = this.update(cx, |this, cx| {
                             this.splash.tick = None;
                             cx.notify();
                         });
-                    }));
+                    });
+                    self.splash.tick = Some((due, task));
                 }
             }
         }
