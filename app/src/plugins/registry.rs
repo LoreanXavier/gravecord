@@ -2123,6 +2123,25 @@ pub(crate) const DEFS: &[Def] = &[
         }],
     },
     Def {
+        id: "UnlockedAvatarZoom",
+        name: "UnlockedAvatarZoom",
+        description: "Allows you to zoom in further in the image crop tool when changing your avatar",
+        origin: Origin::Vencord,
+        source: "src/plugins/unlockedAvatarZoom/index.ts",
+        default_on: false,
+        settings: &[Setting {
+            key: "zoomMultiplier",
+            label: "Zoom Multiplier",
+            description: "Zoom multiplier",
+            kind: Kind::Number {
+                default: 4.,
+                min: 2.,
+                max: 16.,
+                step: 1.,
+            },
+        }],
+    },
+    Def {
         id: "UserMessagesPronouns",
         name: "UserMessagesPronouns",
         description: "Adds pronouns to chat user messages",

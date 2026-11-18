@@ -147,6 +147,7 @@ assert len(idle) == idle_entries, f'IDLE_SETTINGS: read {len(idle)} of {idle_ent
 
 # How each ported plugin is built here, and its proof.
 PORTED = {
+    'UnlockedAvatarZoom': "plugin_hooks/unlocked_avatar_zoom.rs: the image crop tool's zoom slider (every picture it edits, as the patched maxValue of module 142630) reaches zoomMultiplier instead of 2; the slider, the arrow keys and the clamp follow it.",
     'BetterQuickReact': "plugin_hooks/more_quick_reactions.rs (now MoreQuickReactions upstream): the hover bar shows reactionCount quick reactions; the message menu's row is uncut and becomes a grid of columns 44px cells (33px compact, button at 75% and emoji at 125%) showing rows rows, padded 4/1/6 and centred, the menu widening to fit; the wheel moves it a row at a time with scroll; frequentEmojis keeps the favourites out (off: they come first, as the pinned list has them).",
     'BypassStatus': "plugin_hooks/bypass_status.rs: while your status is statusToUse, a message that mentions you in a listed server or channel, or a listed person's DM (anywhere with allowOutsideOfDms when it mentions you), still notifies with the client mod's notification (title as the original builds it, mentions resolved, a click opens the message) and the message sound; own, empty, open-and-focused and (respectSilentPings) @silent messages excepted; the server, channel and user menus get Add/Remove Status Bypass with the ring icons as a group before their last one. GAP: no DM channel is created for a listed person without one (the original's getOrEnsurePrivateChannel, which changes no outcome); the lists are matched with spaces removed rather than rewritten on change.",
     'RelationshipNotifier': "plugin_hooks/relationship_notifier.rs + plugin_notifications.rs: servers, group DMs, friends and incoming requests kept per account (written only on a change, at most once a second); a removal you did not make yourself (GUILD_DELETE not an outage, CHANNEL_DELETE of a group, RELATIONSHIP_REMOVE of a friend or incoming request) gives the original's notification, and at sign-in (and 5 s after turning it on) offlineRemovals tells what went while away; each kind has its switch, notices adds the notice bar's GENERIC notice with OK. The notification is the client mod's: the in-app card while focused (5 s, paused on hover, bottom right), else a desktop notification whose click opens the person's profile. GAP: the Notification Log, the desktop notification's icon.",
@@ -235,6 +236,7 @@ PORTED = {
                      'so the original\'s 200% cap on the sync has nothing to cap.',
 }
 TESTS = {
+    'UnlockedAvatarZoom': '`the_slider_reaches_the_multiplier`; frames pending (live runs held)',
     'BetterQuickReact': '`the_grid_scrolls_a_row_at_a_time`; frames pending (live runs held)',
     'BypassStatus': '`ids_and_mentions_follow_the_original`; frames pending (live runs held)',
     'RelationshipNotifier': '`texts_and_names_follow_the_original`, `the_timeout_waits_while_hovered`; frames pending (live runs held)',
@@ -410,7 +412,6 @@ PLANNED = {
     'Streaks': 'DM streak counts (its service login in the data store is not copied).',
     'StreamingCodecDisabler': 'a codec choice for streams and cameras in dc-media.',
     'Translate+': 'message translation (needs a translation service).',
-    'UnlockedAvatarZoom': "the avatar crop tool (Edit Image of a new avatar), which the app does not have yet; the plugin only raises its zoom slider's maximum.",
     'UserPFP': 'its third-party avatar service.',
     'USRBG': 'its third-party banner service.',
     'ValidReply': "the pinned client's \"Message could not be loaded\" reply bar first: a reply whose message the server did not embed draws no reply line here (GAP in the reply path: intl REPLY_QUOTE_MESSAGE_NOT_LOADED); ValidReply's hover fetch hangs on that bar.",

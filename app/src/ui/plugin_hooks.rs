@@ -45,6 +45,8 @@ mod silent_message_toggle;
 mod super_reaction_tweaks;
 mod typing_indicator;
 mod typing_tweaks;
+mod unlocked_avatar_zoom;
+pub(in crate::ui) use unlocked_avatar_zoom::crop_max_zoom;
 mod valid_user;
 mod view_icons;
 mod voice_stats;
