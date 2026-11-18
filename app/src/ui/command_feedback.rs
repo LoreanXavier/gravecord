@@ -249,7 +249,8 @@ impl Root {
         message: &Message,
         cx: &mut Context<Self>,
     ) -> Option<AnyElement> {
-        if message.flags & FLAG_EPHEMERAL == 0 {
+        // A message AutoMod blocked draws this line inside its notice (module 469759) instead.
+        if message.flags & FLAG_EPHEMERAL == 0 || self.automod_blocked(message.id) {
             return None;
         }
         let (channel, id) = (message.channel_id, message.id);

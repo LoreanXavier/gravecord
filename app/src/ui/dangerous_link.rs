@@ -47,9 +47,28 @@ pub(super) fn parse_hashes(body: &serde_json::Value) -> HashSet<[u8; 32]> {
         .collect()
 }
 
+/// The host libdiscore checks, as the pinned client answered over CDP: a lower-case `http://` or `https://` prefix or
+/// none at all (any other scheme, or an upper-case one, is never checked); the host ends at `/`, `\`, `?` or `#`,
+/// loses the credentials before the last `@` and the port, and is lower-cased; a trailing dot is kept (and so never
+/// matches).
+fn checked_host(url: &str) -> Option<String> {
+    let rest = match url
+        .strip_prefix("https://")
+        .or_else(|| url.strip_prefix("http://"))
+    {
+        Some(rest) => rest,
+        None if url.contains("://") => return None,
+        None => url,
+    };
+    let authority = &rest[..rest.find(['/', '\\', '?', '#']).unwrap_or(rest.len())];
+    let host = authority.rsplit('@').next().unwrap_or_default();
+    let host = host.split(':').next().unwrap_or_default();
+    Some(host.to_ascii_lowercase())
+}
+
 /// `isBlockedDomain`: the listed domain the URL's host is, or sits under.
 pub(super) fn blocked_domain_in(hashes: &HashSet<[u8; 32]>, url: &str) -> Option<String> {
-    let host = links::hostname(url);
+    let host = checked_host(url)?;
     if host.is_empty() {
         return None;
     }
@@ -83,6 +102,8 @@ impl Root {
     pub(super) fn blocked_domains_fetched(&mut self, body: &serde_json::Value) {
         let hashes = parse_hashes(body);
         if hashes.is_empty() {
+            // A failed read is asked again at the next session start.
+            ASKED.store(false, std::sync::atomic::Ordering::Relaxed);
             return;
         }
         if let Ok(mut slot) = HASHES.write() {
@@ -326,6 +347,28 @@ mod tests {
             Some("discordgift.site")
         );
         assert_eq!(blocked("https://discordgift.site.example.com"), None);
+        // The edge cases asked of the pinned client.
+        for (url, want) in [
+            ("https://discordgift.site./x", None),
+            (
+                "https://user:pw@discordgift.site/x",
+                Some("discordgift.site"),
+            ),
+            ("https://evil.com\\@discordgift.site/", None),
+            (
+                "https://example.com@discordgift.site/",
+                Some("discordgift.site"),
+            ),
+            ("https://discordgift.site@example.com/", None),
+            ("discordgift.site", Some("discordgift.site")),
+            ("HTTPS://DISCORDGIFT.SITE", None),
+            ("ftp://discordgift.site/", None),
+            ("https://[::1]/", None),
+            ("https://discordgift.site#frag", Some("discordgift.site")),
+            ("https://discordgift.site?x=1", Some("discordgift.site")),
+        ] {
+            assert_eq!(blocked(url).as_deref(), want, "{url}");
+        }
         assert_eq!(blocked("https://example.com"), None);
     }
 

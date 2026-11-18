@@ -35,6 +35,7 @@ pub(crate) struct Invite {
     pub error: Option<InviteError>,
 }
 
+// GAP: Bypass Join Applications and the custom invite link line of the invite settings (module 312556) are not drawn.
 /// Why the invite could not be made, as `v` of module 312556 words it.
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) enum InviteError {
@@ -45,7 +46,8 @@ pub(crate) enum InviteError {
 
 /// `v` of module 312556: the API's `TOO_MANY_INVITES`, its message, or `eAn6z2`.
 pub(super) fn invite_error(report: &Value) -> Option<InviteError> {
-    if report["ok"] == true {
+    // An inert run's refusal never reached Discord: nothing to say about it.
+    if report["ok"] == true || report["refused"] == true {
         return None;
     }
     let body = &report["body"];
@@ -535,6 +537,10 @@ mod tests {
     fn a_failed_invite_says_why_as_the_modal_does() {
         assert_eq!(
             invite_error(&json!({"ok": true, "body": {"code": "abc"}})),
+            None
+        );
+        assert_eq!(
+            invite_error(&json!({"ok": false, "status": 0, "body": null, "refused": true})),
             None
         );
         assert_eq!(

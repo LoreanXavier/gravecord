@@ -6,6 +6,8 @@
 //! (`EVENT_BANNER_DISMISS`, kept by EventBannerStore under `EventBanner`). Nothing shows while the channel has an
 //! active event (`Qs` of module 508654). Sizes from `container__B7Y3X` (400 wide, 16px padding, 12px corners,
 //! `--opacity-black-52`, darker on hover); no capture shows this prompt.
+//!
+//! GAP: the stage channel's places for these prompts (stage modules 717965 and 895903) are not drawn.
 
 use super::super::{Root, color, icon};
 use super::list::can_manage;
