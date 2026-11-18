@@ -1107,6 +1107,26 @@ pub async fn run(
                 let line = root.update(cx, |root, cx| root.script_feedback(rest, cx));
                 let _ = writeln!(output, "feedback: {line}");
             }
+            // Capture only: the AV warnings (`ui::av_errors`) and a watched stream that fails (`av fail <owner>`).
+            #[cfg(feature = "capture")]
+            ["av", "fail", owner] => {
+                // `focused`: the owner of the stream on screen.
+                let owner = if *owner == "focused" {
+                    root.read_with(cx, |root, _| root.focused_tile_owner())
+                } else {
+                    owner.parse::<u64>().ok()
+                };
+                let line = match owner {
+                    Some(owner) => root.update(cx, |root, cx| root.script_stream_fail(owner, cx)),
+                    None => "usage: av fail <owner id|focused>".to_owned(),
+                };
+                let _ = writeln!(output, "av: {line}");
+            }
+            #[cfg(feature = "capture")]
+            ["av", rest @ ..] => {
+                let line = root.update(cx, |root, cx| root.script_av(rest, cx));
+                let _ = writeln!(output, "av: {line}");
+            }
             // Capture only: the video picture-in-picture window (`ui::video_pip`).
             #[cfg(feature = "capture")]
             ["pip", rest @ ..] => {

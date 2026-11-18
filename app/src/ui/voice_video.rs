@@ -230,6 +230,9 @@ pub(super) struct Video {
     /// 616356 closes every other ended stream at once), and its tile says "This stream has ended." (module 566331)
     /// until Close Stream.
     pub(super) ended_focus: Option<StreamKey>,
+    /// `ended_focus` failed instead of ending (`FAILED`): its tile is module 768088, kept while its owner still
+    /// streams.
+    pub(super) ended_failed: bool,
 }
 
 impl Video {
@@ -975,6 +978,7 @@ impl Root {
         self.video.pending_watch = None;
         self.video.pending_restart = None;
         self.video.ended_focus = None;
+        self.video.ended_failed = false;
         self.video.watched_owners.clear();
         let keys: Vec<StreamKey> = self.video.streams.keys().copied().collect();
         for key in keys {
@@ -994,14 +998,23 @@ impl Root {
             .iter()
             .find(|state| state.user_id == key.owner())
             .map(|state| state.self_stream);
-        if streaming != Some(false) {
+        // A failed stream stays until closed while its owner is in the channel (`FAILED` is not cleared by a voice
+        // state); an ended one goes once its owner streams again or leaves.
+        let keep = if self.video.ended_failed {
+            streaming.is_some()
+        } else {
+            streaming == Some(false)
+        };
+        if !keep {
             self.video.ended_focus = None;
+            self.video.ended_failed = false;
         }
     }
 
     /// Close Stream of the ended stream's tile (`Xi` of module 401843, `STREAM_CLOSE`): the tile goes, and the view
     /// with it.
     pub(super) fn close_ended_stream(&mut self, cx: &mut Context<Self>) {
+        self.video.ended_failed = false;
         if let Some(key) = self.video.ended_focus.take()
             && self.vv.focus.tile == Some((key.owner(), super::video_tiles::TileKind::Stream))
         {
@@ -1465,6 +1478,32 @@ impl Root {
         }
     }
 
+    /// Capture only: the watched stream of `owner` fails as a connection that ended for good would make it.
+    #[cfg(feature = "capture")]
+    pub(crate) fn script_stream_fail(&mut self, owner: u64, cx: &mut Context<Self>) -> String {
+        let key = self
+            .video
+            .streams
+            .iter()
+            .find(|(key, live)| key.owner() == owner && live.last.role == Role::Watch)
+            .map(|(key, _)| *key);
+        let Some(key) = key else {
+            return "no watched stream of that owner".to_owned();
+        };
+        let update = self.video.streams.get_mut(&key).and_then(|live| {
+            live.tracker.connection(&StreamEvent::Ended {
+                reason: dc_voice::DisconnectReason::Failed("harness"),
+            })
+        });
+        match update {
+            Some(update) => {
+                self.stream_changed(update, true, cx);
+                "stream failed".to_owned()
+            }
+            None => "no status change".to_owned(),
+        }
+    }
+
     /// The backoff of a lost stream connection ran out: connect again, unless the stream ended or another connection
     /// took its place meanwhile.
     fn stream_reconnect(&mut self, key: StreamKey, generation: u64, join: streams::StreamJoin) {
@@ -1511,6 +1550,16 @@ impl Root {
                     && !self.is_stage_voice_channel(key.guild().unwrap_or(0), key.channel())
                 {
                     self.video.ended_focus = Some(key);
+                    self.video.ended_failed = false;
+                }
+                // Module 768088: a watched stream on screen that failed stays as "Stream failed to start :(".
+                if reason == EndReason::Failed
+                    && live.last.role == Role::Watch
+                    && focused
+                    && !self.is_stage_voice_channel(key.guild().unwrap_or(0), key.channel())
+                {
+                    self.video.ended_focus = Some(key);
+                    self.video.ended_failed = true;
                 }
                 live.controls.stop();
                 if tell_gateway && reason != EndReason::StreamFull {

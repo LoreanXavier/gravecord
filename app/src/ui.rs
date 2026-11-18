@@ -158,6 +158,7 @@ mod web_frames;
 pub use logout::RootEvent;
 mod account_switcher;
 mod app_widget;
+mod av_errors;
 #[cfg(feature = "capture")]
 mod avatar_demo;
 mod avatar_play;
@@ -258,6 +259,7 @@ mod slowmode;
 mod splash;
 pub(crate) mod start_cache;
 mod status_menu;
+mod stream_failed;
 mod video_pip;
 #[cfg(feature = "capture")]
 pub(crate) use server_discovery::FORCE_ELIGIBLE;
@@ -632,6 +634,8 @@ pub struct Root {
     voice_users_expanded: bool,
     /// The video picture-in-picture window (`video_pip`).
     video_pip: video_pip::VideoPip,
+    /// The AV warnings of the call's streams and camera (`av_errors`).
+    av_errors: av_errors::AvErrors,
     /// The menu over a speaker's or audience member's tile (module 106401 and 237749's rows), where it was opened.
     stage_tile_menu: Option<stage::TileMenu>,
     /// Stage instances whose Live Now card was closed with its X.
@@ -1071,6 +1075,7 @@ impl Root {
             feedback: Default::default(),
             voice_users_expanded: false,
             video_pip: Default::default(),
+            av_errors: Default::default(),
             stage_tile_menu: None,
             live_now_closed: Vec::new(),
             publish_confirm: None,
@@ -9437,6 +9442,7 @@ impl Render for Root {
         crate::perf::RENDERS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         self.interaction_modal_frame(window, cx);
         self.open_pending_overlay_survey(cx);
+        self.av_errors_frame(cx);
         #[cfg(feature = "capture")]
         let _build = crate::perf::Timer::build();
         // The motion clock for this frame; reduced motion as module 775602 decides it.
