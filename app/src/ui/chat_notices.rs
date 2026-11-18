@@ -12,8 +12,8 @@ use super::modal::{self, Tone};
 use crate::net::Request;
 use dc_state::Id;
 use gpui::{
-    AnyElement, Context, FontWeight, IntoElement, ParentElement, SharedString, Styled, Window, div,
-    prelude::*, px,
+    AnyElement, Context, Focusable, FontWeight, IntoElement, ParentElement, SharedString, Styled,
+    Window, div, prelude::*, px,
 };
 use serde_json::{Value, json};
 use std::collections::{HashMap, VecDeque};
@@ -59,6 +59,9 @@ pub(super) enum Then {
     ReportRaid {
         guild: Id,
     },
+    /// Submit of "Why was this server locked?" (module 336496): only the `GUILD_RAID_LOCKDOWN_FEEDBACK` analytics
+    /// event, which is not sent here; the dialog closes.
+    LockdownFeedback,
     /// Clear of "Clear message?" (module 990474 `C`): the mentioned command takes the composer.
     UseCommand {
         name: String,
@@ -111,6 +114,43 @@ const RAID_KINDS: [(&str, &str); 5] = [
     ("SUSPICIOUS_USERS", "lKXu+n"),
     ("SETTINGS_SPAM", "ETFVFw"),
 ];
+
+/// The reasons of "Why was this server locked?" (`S` of module 336496, values of module 615550 `n7`) with their
+/// strings; the last, Other, opens the text box.
+pub(super) const LOCKDOWN_REASONS: [(&str, &str); 6] = [
+    ("DM_SPAM", "//3pvi"),
+    ("MENTION_SPAM", "SdVsip"),
+    ("CHANNEL_SPAM", "uTiSVL"),
+    ("SUS_NEW_MEMBERS", "GQczU8"),
+    ("CHANGING_SETTINGS", "AAgqy3"),
+    ("OTHER", "ryPKb7"),
+];
+const LOCKDOWN_OTHER: usize = 5;
+
+/// Module 336496, opened by Security Actions (module 671576) when a save lifts every pause that was on: the six reasons
+/// as a checkbox group, "Tell us what happened" under Other, Cancel and Submit (disabled until a reason is chosen).
+pub(super) fn lockdown_feedback_alert() -> Alert {
+    Alert {
+        id: "lockdown-feedback",
+        title: dc_intl::t("f5hd9P").to_owned(),
+        subtitle: None,
+        content: Some(Content::LockdownFeedback { chosen: Vec::new() }),
+        buttons: vec![
+            AlertButton {
+                id: "lockdown-feedback-cancel",
+                label: dc_intl::t("ETE/oC").to_owned(),
+                secondary: true,
+                then: Then::Close,
+            },
+            AlertButton {
+                id: "lockdown-feedback-submit",
+                label: dc_intl::t("nAt0rE").to_owned(),
+                secondary: false,
+                then: Then::LockdownFeedback,
+            },
+        ],
+    }
+}
 
 /// `MVz.GUILD_RAID` of module 652215 for "Learn more about raids".
 const RAID_ARTICLE: &str = "https://support.discord.com/hc/en-us/articles/10989121220631";
@@ -176,6 +216,15 @@ pub(super) enum Content {
     SoundboardKeybind { original: Option<Vec<[u32; 3]>> },
     /// Module 935074's checkbox group, with the indices of `RAID_KINDS` chosen.
     RaidReport { chosen: Vec<usize> },
+    /// Module 336496's checkbox group, with the indices of `LOCKDOWN_REASONS` chosen.
+    LockdownFeedback { chosen: Vec<usize> },
+}
+
+impl Content {
+    /// Submit of module 336496 is disabled while no reason is chosen (`disabled: 0 === b.length`).
+    pub(super) fn blocks_submit(&self) -> bool {
+        matches!(self, Content::LockdownFeedback { chosen } if chosen.is_empty())
+    }
 }
 
 /// The Soundboard Keybind modal (module 29681): "Soundboard Keybind", Cancel and Save.
@@ -317,6 +366,8 @@ pub(super) fn forward_failed_alert(
 #[derive(Default)]
 pub(super) struct State {
     pub alert: Option<Alert>,
+    /// The "Other" text box of "Why was this server locked?" while that dialog is open.
+    pub lockdown_other: Option<gpui::Entity<crate::editor::Editor>>,
     pub forward_batch: Option<ForwardBatch>,
     /// A right press on a `#channel` mention: where, and the channel (read by the message menu's opener).
     pub mention_hit: Option<(gpui::Point<gpui::Pixels>, Id)>,
@@ -627,6 +678,10 @@ impl Root {
                 // GAP: "Raid report submitted" goes to the screen reader announcer, which is not built.
                 tracing::debug!("raid report submitted");
             }
+            Then::LockdownFeedback => {
+                self.chat_extra.lockdown_other = None;
+                tracing::debug!("lockdown feedback submitted");
+            }
             Then::UseCommand { name, id } => self.use_command_mention(&name, id, window, cx),
         }
     }
@@ -634,16 +689,32 @@ impl Root {
     /// A dialog closed without its confirming button: the Soundboard Keybind modal puts the keybind back (its
     /// `useState` copy is simply dropped in the official client).
     fn alert_closed(&mut self, closed: Option<Alert>) {
-        if let Some(Content::SoundboardKeybind { original }) =
-            closed.and_then(|alert| alert.content)
-        {
-            self.soundboard_keybind_revert(original);
+        match closed.and_then(|alert| alert.content) {
+            Some(Content::SoundboardKeybind { original }) => {
+                self.soundboard_keybind_revert(original);
+            }
+            Some(Content::LockdownFeedback { .. }) => self.chat_extra.lockdown_other = None,
+            _ => {}
         }
     }
 
     /// Report Raid of the server header menu (module 808144): the dialog of module 935074.
     pub(super) fn open_report_raid(&mut self, guild: Id, cx: &mut Context<Self>) {
         self.chat_extra.alert = Some(raid_report_alert(guild));
+        cx.notify();
+    }
+
+    /// Module 336496 after a Security Actions save that lifted the pauses, with its "Other" text box (module 103557,
+    /// `placeholder` "Tell us what happened", `autoFocus` once it shows).
+    pub(super) fn open_lockdown_feedback(&mut self, cx: &mut Context<Self>) {
+        let input = cx.new(|cx| {
+            let mut input = crate::editor::Editor::new(super::editor_style(), cx);
+            input.set_keeps_text(true);
+            input.set_placeholder(dc_intl::t("PAM+JR").to_owned());
+            input
+        });
+        self.chat_extra.lockdown_other = Some(input);
+        self.chat_extra.alert = Some(lockdown_feedback_alert());
         cx.notify();
     }
 
@@ -657,22 +728,22 @@ impl Root {
 
     pub(super) fn chat_alert_modal(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
         let alert = self.chat_extra.alert.clone()?;
+        let blocked = alert.content.as_ref().is_some_and(Content::blocks_submit);
         let buttons = alert
             .buttons
             .iter()
             .cloned()
             .map(|button| {
                 let then = button.then.clone();
-                modal::button(
-                    button.id,
-                    button.label,
-                    if button.secondary {
-                        Tone::Secondary
-                    } else {
-                        Tone::Primary
-                    },
-                    move |this, window, cx| this.alert_then(then.clone(), window, cx),
-                )
+                let tone = match (button.secondary, blocked) {
+                    (true, _) => Tone::Secondary,
+                    (false, true) => Tone::PrimaryDisabled,
+                    (false, false) => Tone::Primary,
+                };
+                // A disabled button's click does nothing (modal.rs), so the dialog stays open.
+                modal::button(button.id, button.label, tone, move |this, window, cx| {
+                    this.alert_then(then.clone(), window, cx)
+                })
             })
             .collect();
         let medium = alert.medium();
@@ -783,6 +854,81 @@ impl Root {
                         }))
                 }))
                 .into_any_element(),
+            // Module 336496: a stack 8px apart (`B` gap 8) of the checkbox group (module 167417, drawn as Report a
+            // Raid's) and, while Other is chosen, `textboxContainer_p32tDk` (8px above, 32px in from the start) with
+            // the text area of module 103557: three rows (`rows: 3`, 20px lines) inside `padding: 12px 10px`.
+            Content::LockdownFeedback { chosen } => {
+                let other = chosen.contains(&LOCKDOWN_OTHER);
+                div()
+                    .flex()
+                    .flex_col()
+                    .gap(px(8.))
+                    .child(
+                        div()
+                            .pt(px(8.))
+                            .pb(px(4.))
+                            .flex()
+                            .flex_col()
+                            .gap(px(16.))
+                            .children(LOCKDOWN_REASONS.iter().enumerate().map(
+                                |(index, (kind, label))| {
+                                    let checked = chosen.contains(&index);
+                                    div()
+                                        .id(SharedString::from(format!("lockdown-feedback-{kind}")))
+                                        .flex()
+                                        .items_start()
+                                        .gap(px(12.))
+                                        .cursor_pointer()
+                                        .child(super::server_onboarding::checkbox(checked, false))
+                                        .child(
+                                            div()
+                                                .text_size(px(16.))
+                                                .line_height(px(20.))
+                                                .text_color(super::color("--text-strong"))
+                                                .child(dc_intl::t(label)),
+                                        )
+                                        .on_click(cx.listener(move |this, _, window, cx| {
+                                            if let Some(Alert {
+                                                content: Some(Content::LockdownFeedback { chosen }),
+                                                ..
+                                            }) = this.chat_extra.alert.as_mut()
+                                            {
+                                                toggle_choice(chosen, index);
+                                                if index == LOCKDOWN_OTHER
+                                                    && chosen.contains(&LOCKDOWN_OTHER)
+                                                    && let Some(input) =
+                                                        this.chat_extra.lockdown_other.as_ref()
+                                                {
+                                                    let focus = input.read(cx).focus_handle(cx);
+                                                    window.focus(&focus, cx);
+                                                }
+                                            }
+                                            cx.notify();
+                                        }))
+                                },
+                            )),
+                    )
+                    .when(other, |stack| {
+                        stack.children(self.chat_extra.lockdown_other.clone().map(|input| {
+                            div().mt(px(8.)).pl(px(32.)).w_full().child(
+                                div()
+                                    .id("lockdown-feedback-other")
+                                    .w_full()
+                                    .px(px(10.))
+                                    .py(px(12.))
+                                    .min_h(px(3. * 20. + 24.))
+                                    .rounded(px(RADIUS_SM))
+                                    .border_1()
+                                    .border_color(super::color("--input-border-default"))
+                                    .bg(super::color("--input-background-default"))
+                                    .text_size(px(16.))
+                                    .line_height(px(20.))
+                                    .child(input),
+                            )
+                        }))
+                    })
+                    .into_any_element()
+            }
         }
     }
 }
@@ -1124,6 +1270,24 @@ pub(super) fn body_text(text: impl Into<gpui::SharedString>) -> AnyElement {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Module 336496: six reasons, Submit held back until one is chosen.
+    #[test]
+    fn the_lockdown_feedback_waits_for_a_reason() {
+        let alert = lockdown_feedback_alert();
+        assert_eq!(alert.title, "Why was this server locked?");
+        let labels: Vec<_> = LOCKDOWN_REASONS
+            .iter()
+            .map(|(_, key)| dc_intl::t(key))
+            .collect();
+        assert_eq!(labels[0], "DM Spam");
+        assert_eq!(labels[5], "Other");
+        assert_eq!(dc_intl::t("PAM+JR"), "Tell us what happened");
+        assert!(alert.content.as_ref().unwrap().blocks_submit());
+        assert!(!Content::LockdownFeedback { chosen: vec![3] }.blocks_submit());
+        assert!(!Content::RaidReport { chosen: vec![] }.blocks_submit());
+        assert_eq!(alert.buttons[1].label, "Submit");
+    }
 
     /// Module 935074 and `B` of 859706: five behaviours to tick, and the report goes only to a server with an alerts
     /// channel.

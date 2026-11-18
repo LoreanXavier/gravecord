@@ -24,8 +24,8 @@ use std::time::Duration;
 mod crawl;
 mod grab;
 mod hitch;
-mod settle;
 pub(crate) mod native;
+mod settle;
 mod ticks;
 
 const STEP_GAP: Duration = Duration::from_millis(60);
@@ -872,6 +872,11 @@ pub async fn run(
                 let path = std::path::PathBuf::from(*path);
                 root.update(cx, |root, cx| root.crop_file_picked(&path, cx));
             }
+            // The file the Create Server dialog's icon input (module 356343) would get from the system dialog.
+            ["add-server-icon", path] => {
+                let path = std::path::PathBuf::from(*path);
+                root.update(cx, |root, cx| root.add_server_icon_file(path, cx));
+            }
             // `image-crop state`: the open image dialogs, the cropper's transform and its last announcement.
             ["image-crop", "state"] => {
                 let line = root.update(cx, |root, _| root.image_crop_state());
@@ -1502,6 +1507,10 @@ pub async fn run(
                 let _ = writeln!(output, "{line}");
             }
             // Capture only: `server-settings <page>` and `channel-settings <section>` open those full-window pages.
+            ["invites", "demo"] => {
+                let line = root.update(cx, |root, cx| root.script_invites_demo(cx));
+                let _ = writeln!(output, "{line}");
+            }
             ["server-settings", page] => {
                 let line = root.update(cx, |root, cx| root.script_server_settings(page, cx));
                 let _ = writeln!(output, "{line}");

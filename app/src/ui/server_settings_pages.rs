@@ -27,6 +27,40 @@ const NO_APPS_ART: &str = "https://cdn.discordapp.com/assets/content/21f7110f79f
 /// Module 29093: the dark No Bans picture.
 const NO_BANS_ART: &str = "https://discordapp.com/assets/626d8d0fc1024e29.svg";
 
+/// `InviteFlags.IS_APPLICATION_BYPASS` (module 821418): members joining through the link skip join applications.
+pub(super) const INVITE_APPLICATION_BYPASS: u64 = 8;
+
+/// A role an invite grants, as the server has it.
+#[derive(Clone, Debug, PartialEq)]
+pub(super) struct InviteRole {
+    pub name: String,
+    pub color: u32,
+}
+
+/// `er` of module 422542: the invite's `roles` (objects with an `id`, or bare ids) that the server still has, in the
+/// invite's order.
+pub(super) fn invite_roles(guild: Option<&dc_state::Guild>, invite: &Value) -> Vec<InviteRole> {
+    let Some(guild) = guild else {
+        return Vec::new();
+    };
+    invite["roles"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|role| {
+            role["id"]
+                .as_str()
+                .or_else(|| role.as_str())
+                .and_then(|id| id.parse::<Id>().ok())
+        })
+        .filter_map(|id| {
+            let name = guild.roles.get(&id)?.clone();
+            let color = guild.role_info.get(&id).map_or(0, |info| info.color);
+            Some(InviteRole { name, color })
+        })
+        .collect()
+}
+
 /// Bans page state: the search field, the query last searched, and the ban whose dialog is open.
 pub(crate) struct BansState {
     pub(super) search: Entity<Editor>,
@@ -558,6 +592,242 @@ impl Root {
             .child(label)
     }
 
+    /// `Wr` and `Fi` of module 347951: invites are paused (`INVITES_DISABLED`, or `invites_disabled_until` still to
+    /// come), and the account may manage the server.
+    pub(super) fn invites_pause_state(&self, guild: Id) -> (bool, bool) {
+        let Some(known) = self.stores.guild(guild) else {
+            return (false, false);
+        };
+        let now = chrono::Utc::now().timestamp_millis();
+        let paused = known.features.iter().any(|f| f == "INVITES_DISABLED")
+            || known
+                .invites_disabled_until
+                .as_deref()
+                .and_then(|until| chrono::DateTime::parse_from_rfc3339(until).ok())
+                .is_some_and(|until| until.timestamp_millis() > now);
+        let allowed = self.stores.me().is_some_and(|me| {
+            dc_state::permissions::can_in_guild(known, me, dc_state::permissions::MANAGE_GUILD)
+        });
+        (paused, allowed)
+    }
+
+    /// The Roles cell (`z` of module 422542, `roleContainer_U5Umrb`: a row 4px apart): the first role as the pill of
+    /// module 950072 (the role's colour at `27` alpha behind the pill of 417454) and, for more, a 24px square
+    /// (`otherRoles_U5Umrb`, `--background-base-lower`, `--radius-xs`) with "+N" (`body-xs/medium`, `text-strong`)
+    /// whose tooltip is "View All Roles"; its click lists every role (module 551309, `invite-roles-menu`).
+    pub(super) fn invite_roles_cell(
+        &self,
+        code: &str,
+        roles: &[InviteRole],
+        cx: &mut Context<Self>,
+    ) -> Option<AnyElement> {
+        let first = roles.first()?;
+        let tint = |alpha: f32| {
+            let mut tint: gpui::Rgba = if first.color == 0 {
+                color("--primary-300")
+            } else {
+                gpui::rgb(first.color)
+            };
+            tint.a *= alpha;
+            tint
+        };
+        let pill = div()
+            .h(px(24.))
+            .p(px(4.))
+            .rounded(px(8.))
+            .bg(tint(f32::from(0x27_u8) / 255.))
+            .flex()
+            .items_center()
+            .min_w(px(0.))
+            .child(
+                div().mr(px(4.)).child(
+                    div()
+                        .mx(px(4.))
+                        .size(px(12.))
+                        .flex_none()
+                        .rounded_full()
+                        .bg(tint(1.)),
+                ),
+            )
+            .child(
+                div()
+                    .mr(px(2.))
+                    .min_w(px(0.))
+                    .overflow_hidden()
+                    .whitespace_nowrap()
+                    .text_ellipsis()
+                    .text_size(px(12.))
+                    .line_height(px(16.))
+                    .font_weight(FontWeight(500.))
+                    .text_color(color("--interactive-text-active"))
+                    .child(first.name.clone()),
+            );
+        let more = roles.len() - 1;
+        let names: Vec<(String, u32)> = roles
+            .iter()
+            .map(|role| (role.name.clone(), role.color))
+            .collect();
+        Some(
+            div()
+                .flex()
+                .items_center()
+                .gap(px(4.))
+                .min_w(px(0.))
+                .child(pill)
+                .when(more > 0, |cell| {
+                    cell.child(
+                        self.with_tip(
+                            format!("server-invite-roles-{code}"),
+                            super::tooltip::Tip::text(
+                                dc_intl::t("DY6n4q"),
+                                super::tooltip::Side::Top,
+                            ),
+                            div()
+                                .id(SharedString::from(format!(
+                                    "server-invite-more-roles-{code}"
+                                )))
+                                .size(px(24.))
+                                .flex_none()
+                                .rounded(px(4.))
+                                .bg(color("--background-base-lower"))
+                                .cursor_pointer()
+                                .flex()
+                                .items_center()
+                                .justify_center()
+                                .text_size(px(12.))
+                                .line_height(px(16.))
+                                .font_weight(FontWeight(500.))
+                                .text_color(color("--text-strong"))
+                                .child(format!("+{more}"))
+                                .on_click(cx.listener(
+                                    move |this, event: &gpui::ClickEvent, _, cx| {
+                                        this.open_invite_roles_menu(
+                                            event.position(),
+                                            names.clone(),
+                                            cx,
+                                        );
+                                    },
+                                )),
+                            cx,
+                        ),
+                    )
+                })
+                .into_any_element(),
+        )
+    }
+
+    /// The Invite Code cell (`inviteSource` of `ea` in module 422542): the code (`inviteCode_k0kUi1`, monospace, one
+    /// line) and, for an invite with `IS_APPLICATION_BYPASS`, `bypass_k0kUi1`: "Bypass Join Applications"
+    /// (`body-xs/normal`, `text-muted`) and the `xxs` info icon 4px after it, whose tooltip says what the link does.
+    pub(super) fn invite_source_cell(
+        &self,
+        code: &str,
+        invite: &Value,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let bypass = invite["flags"].as_u64().unwrap_or(0) & INVITE_APPLICATION_BYPASS != 0;
+        div()
+            .flex()
+            .flex_col()
+            .max_w_full()
+            .overflow_hidden()
+            .child(
+                div()
+                    .overflow_hidden()
+                    .whitespace_nowrap()
+                    .text_ellipsis()
+                    .font_family(super::MONO)
+                    .text_size(px(14.))
+                    .line_height(px(18.))
+                    .text_color(color("--text-default"))
+                    .child(code.to_owned()),
+            )
+            .when(bypass, |source| {
+                source.child(
+                    div()
+                        .flex()
+                        .items_center()
+                        .gap(px(2.))
+                        .child(
+                            div()
+                                .text_size(px(12.))
+                                .line_height(px(16.))
+                                .text_color(color("--text-muted"))
+                                .child(dc_intl::t("1i1bUl")),
+                        )
+                        .child(
+                            self.with_tip(
+                                format!("invite-bypass-{code}"),
+                                super::tooltip::Tip::text(
+                                    dc_intl::t("jvd/LF"),
+                                    super::tooltip::Side::Top,
+                                ),
+                                div()
+                                    .ml(px(4.))
+                                    .child(icon("circle_info", 12., "--text-muted")),
+                                cx,
+                            ),
+                        ),
+                )
+            })
+            .into_any_element()
+    }
+    /// Capture only: `invites demo` adds a local invite to the open server's fetched list (nothing is sent) that
+    /// grants every role of the server and bypasses join applications, so the Roles and Invite Code cells show.
+    #[cfg(feature = "capture")]
+    pub(crate) fn script_invites_demo(&mut self, cx: &mut Context<Self>) -> String {
+        let Some(guild) = self.guild else {
+            return "invites demo: no server open".to_owned();
+        };
+        let roles: Vec<Value> = self
+            .stores
+            .guild(guild)
+            .map(|known| {
+                let mut ids: Vec<_> = known
+                    .roles
+                    .keys()
+                    .copied()
+                    .filter(|id| *id != guild)
+                    .collect();
+                ids.sort_unstable();
+                ids.into_iter()
+                    .map(|id| serde_json::json!({"id": id.to_string()}))
+                    .collect()
+            })
+            .unwrap_or_default();
+        let invite = serde_json::json!({
+            "code": "demoBypass",
+            "uses": 1,
+            "max_uses": 0,
+            "max_age": 0,
+            "flags": INVITE_APPLICATION_BYPASS,
+            "roles": roles,
+            "created_at": chrono::Utc::now().to_rfc3339(),
+        });
+        let count = roles.len();
+        let list = self
+            .fetched
+            .entry(format!("{INVITES_PREFIX}{guild}"))
+            .or_insert_with(|| Value::Array(Vec::new()));
+        if let Some(list) = list.as_array_mut() {
+            list.retain(|known| known["code"] != "demoBypass");
+            list.push(invite);
+        }
+        cx.notify();
+        format!("invites demo: one invite with {count} roles")
+    }
+
+    /// The "+N" of an invite's roles: `invite-roles-menu` (module 551309) at the click.
+    fn open_invite_roles_menu(
+        &mut self,
+        at: gpui::Point<gpui::Pixels>,
+        roles: Vec<(String, u32)>,
+        cx: &mut Context<Self>,
+    ) {
+        self.context.invite_roles = roles;
+        self.open_context_menu(super::context_menu::Target::InviteRoles, at, cx);
+    }
+
     /// Invites (`header_k0kUi1`, `actions_yu8zQD`, the table): columns 190, 142, 48, 95 and 95 wide, 20 apart.
     pub(super) fn server_invites_page(&self, guild: Id, cx: &mut Context<Self>) -> AnyElement {
         let invites: Vec<Value> = self
@@ -592,108 +862,120 @@ impl Root {
                 .text_color(color("--text-default"))
                 .child(text)
         };
-        let rows = invites.into_iter().map(|invite| {
-            let code = invite["code"].as_str().unwrap_or_default().to_owned();
-            let inviter = User::from_value(&invite["inviter"]);
-            let picture = inviter
-                .as_ref()
-                .and_then(|user| self.images.get(&avatar_source(user).0).cloned());
-            let channel = invite["channel"]["name"]
-                .as_str()
-                .map(str::to_owned)
-                .or_else(|| invite["channel"]["id"].as_str().and_then(channel_name))
-                .unwrap_or_default();
-            let uses = invite["uses"].as_u64().unwrap_or(0);
-            let max = invite["max_uses"].as_u64().unwrap_or(0);
-            let created = invite["created_at"]
-                .as_str()
-                .and_then(|at| chrono::DateTime::parse_from_rfc3339(at).ok())
-                .map_or(now, |at| at.timestamp_millis());
-            let left = expires_in(created, invite["max_age"].as_i64().unwrap_or(0), now);
-            let group = SharedString::from(format!("server-invite-row-{code}"));
-            let revoke = code.clone();
-            div()
-                .group(group.clone())
-                .relative()
-                .h(px(62.))
-                .border_b_1()
-                .border_color(color("--border-subtle"))
-                .flex()
-                .gap(px(20.))
-                .items_center()
-                .child(
-                    div()
-                        .w(px(190.))
-                        .flex_none()
-                        .flex()
-                        .items_center()
-                        .gap(px(12.))
-                        .child(div().size(px(24.)).flex_none().rounded_full().children(
-                            picture.map(|picture| img(picture).size(px(24.)).rounded_full()),
-                        ))
-                        .child(
-                            div()
-                                .flex()
-                                .flex_col()
-                                .child(
-                                    div()
-                                        .text_size(px(16.))
-                                        .line_height(px(20.))
-                                        .text_color(color("--text-default"))
-                                        .child(
-                                            inviter
-                                                .map(|user| user.display_name().to_owned())
-                                                .unwrap_or_default(),
-                                        ),
-                                )
-                                .child(
-                                    div()
-                                        .text_size(px(12.))
-                                        .line_height(px(16.))
-                                        .text_color(color("--text-default"))
-                                        .child(format!("#{channel}")),
-                                ),
-                        ),
-                )
-                .child(div().w(px(142.)).flex_none().child(mono(code.clone())))
-                .child(div().w(px(48.)).flex_none().child(mono(if max > 0 {
-                    format!("{uses}/{max}")
-                } else {
-                    uses.to_string()
-                })))
-                .child(div().w(px(95.)).flex_none().child(mono(left)))
-                .child(div().w(px(95.)).flex_none())
-                .child(
-                    div()
-                        .id(SharedString::from(format!("server-invite-revoke-{code}")))
-                        .absolute()
-                        .right(px(-31.))
-                        .top(px(-12.))
-                        .size(px(16.))
-                        .cursor_pointer()
-                        .opacity(0.)
-                        .group_hover(group, |style| style.opacity(1.))
-                        .child(icon("modal_close", 16., "--icon-subtle"))
-                        .on_click(cx.listener(move |this, _, _, cx| {
-                            let _ = this.requests.send(Request::Rest {
-                                key: None,
-                                method: reqwest::Method::DELETE,
-                                route: format!("/invites/{revoke}"),
-                                body: None,
-                            });
-                            if let Some(list) = this
-                                .fetched
-                                .get_mut(&format!("{INVITES_PREFIX}{guild}"))
-                                .and_then(|body| body.as_array_mut())
-                            {
-                                list.retain(|invite| {
-                                    invite["code"].as_str() != Some(revoke.as_str())
+        let rows = invites
+            .into_iter()
+            .map(|invite| {
+                let code = invite["code"].as_str().unwrap_or_default().to_owned();
+                let inviter = User::from_value(&invite["inviter"]);
+                let picture = inviter
+                    .as_ref()
+                    .and_then(|user| self.images.get(&avatar_source(user).0).cloned());
+                let channel = invite["channel"]["name"]
+                    .as_str()
+                    .map(str::to_owned)
+                    .or_else(|| invite["channel"]["id"].as_str().and_then(channel_name))
+                    .unwrap_or_default();
+                let uses = invite["uses"].as_u64().unwrap_or(0);
+                let max = invite["max_uses"].as_u64().unwrap_or(0);
+                let created = invite["created_at"]
+                    .as_str()
+                    .and_then(|at| chrono::DateTime::parse_from_rfc3339(at).ok())
+                    .map_or(now, |at| at.timestamp_millis());
+                let left = expires_in(created, invite["max_age"].as_i64().unwrap_or(0), now);
+                let group = SharedString::from(format!("server-invite-row-{code}"));
+                let revoke = code.clone();
+                // `er` of module 422542: the invite's roles as the server has them, then `IS_APPLICATION_BYPASS`
+                // (8, module 821418) of its flags.
+                let roles = invite_roles(self.stores.guild(guild), &invite);
+                let source = self.invite_source_cell(&code, &invite, cx);
+                div()
+                    .group(group.clone())
+                    .relative()
+                    .h(px(62.))
+                    .border_b_1()
+                    .border_color(color("--border-subtle"))
+                    .flex()
+                    .gap(px(20.))
+                    .items_center()
+                    .child(
+                        div()
+                            .w(px(190.))
+                            .flex_none()
+                            .flex()
+                            .items_center()
+                            .gap(px(12.))
+                            .child(div().size(px(24.)).flex_none().rounded_full().children(
+                                picture.map(|picture| img(picture).size(px(24.)).rounded_full()),
+                            ))
+                            .child(
+                                div()
+                                    .flex()
+                                    .flex_col()
+                                    .child(
+                                        div()
+                                            .text_size(px(16.))
+                                            .line_height(px(20.))
+                                            .text_color(color("--text-default"))
+                                            .child(
+                                                inviter
+                                                    .map(|user| user.display_name().to_owned())
+                                                    .unwrap_or_default(),
+                                            ),
+                                    )
+                                    .child(
+                                        div()
+                                            .text_size(px(12.))
+                                            .line_height(px(16.))
+                                            .text_color(color("--text-default"))
+                                            .child(format!("#{channel}")),
+                                    ),
+                            ),
+                    )
+                    .child(div().w(px(142.)).flex_none().child(source))
+                    .child(div().w(px(48.)).flex_none().child(mono(if max > 0 {
+                        format!("{uses}/{max}")
+                    } else {
+                        uses.to_string()
+                    })))
+                    .child(div().w(px(95.)).flex_none().child(mono(left)))
+                    .child(
+                        div()
+                            .w(px(95.))
+                            .flex_none()
+                            .children(self.invite_roles_cell(&code, &roles, cx)),
+                    )
+                    .child(
+                        div()
+                            .id(SharedString::from(format!("server-invite-revoke-{code}")))
+                            .absolute()
+                            .right(px(-31.))
+                            .top(px(-12.))
+                            .size(px(16.))
+                            .cursor_pointer()
+                            .opacity(0.)
+                            .group_hover(group, |style| style.opacity(1.))
+                            .child(icon("modal_close", 16., "--icon-subtle"))
+                            .on_click(cx.listener(move |this, _, _, cx| {
+                                let _ = this.requests.send(Request::Rest {
+                                    key: None,
+                                    method: reqwest::Method::DELETE,
+                                    route: format!("/invites/{revoke}"),
+                                    body: None,
                                 });
-                            }
-                            cx.notify();
-                        })),
-                )
-        });
+                                if let Some(list) = this
+                                    .fetched
+                                    .get_mut(&format!("{INVITES_PREFIX}{guild}"))
+                                    .and_then(|body| body.as_array_mut())
+                                {
+                                    list.retain(|invite| {
+                                        invite["code"].as_str() != Some(revoke.as_str())
+                                    });
+                                }
+                                cx.notify();
+                            })),
+                    )
+            })
+            .collect::<Vec<_>>();
         div()
             .flex()
             .flex_col()
@@ -736,25 +1018,51 @@ impl Root {
                         div()
                             .flex()
                             .gap(px(8.))
-                            .child(
+                            .child({
+                                // `et` of module 422542: "Enable Invites" in the primary colour while invites are
+                                // paused (`Wr` of module 347951), else "Pause Invites" (`critical-secondary`); both
+                                // open Security Actions, and need Manage Server (`Fi`).
+                                let (paused, allowed) = self.invites_pause_state(guild);
+                                let (border, background, text) = if paused {
+                                    (
+                                        "--control-primary-border-default",
+                                        "--control-primary-background-default",
+                                        "--white",
+                                    )
+                                } else {
+                                    (
+                                        "--control-critical-secondary-border-default",
+                                        "--control-critical-secondary-background-default",
+                                        "--control-critical-secondary-text-default",
+                                    )
+                                };
                                 div()
                                     .id("server-invites-pause")
                                     .h(px(40.))
                                     .px(px(15.))
                                     .rounded(px(8.))
                                     .border_1()
-                                    .border_color(color("--control-critical-secondary-border-default"))
-                                    .bg(color("--control-critical-secondary-background-default"))
-                                    .cursor_pointer()
+                                    .border_color(color(border))
+                                    .bg(color(background))
+                                    .when(allowed, |button| button.cursor_pointer())
+                                    .when(!allowed, |button| button.opacity(0.5))
                                     .flex()
                                     .items_center()
                                     .text_size(px(16.))
                                     .line_height(px(20.))
                                     .font_weight(FontWeight(500.))
-                                    .text_color(color("--control-critical-secondary-text-default"))
-                                    .child("Pause Invites")
-                                    .on_click(cx.listener(move |this, _, _, cx| this.open_security_actions(guild, cx))),
-                            )
+                                    .text_color(color(text))
+                                    .child(if paused {
+                                        dc_intl::t("/dbw3H")
+                                    } else {
+                                        dc_intl::t("Uwsjn6")
+                                    })
+                                    .on_click(cx.listener(move |this, _, _, cx| {
+                                        if allowed {
+                                            this.open_security_actions(guild, cx)
+                                        }
+                                    }))
+                            })
                             .child(Self::primary_button("server-invites-create", "Create Invite Link").on_click(cx.listener(move |this, _, _, cx| {
                                 this.server_settings = None;
                                 this.open_invite(cx);
@@ -1055,6 +1363,43 @@ impl Root {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// `er` of module 422542: only the roles the server still has, in the invite's order, with their colours.
+    #[test]
+    fn an_invite_lists_the_roles_the_server_has() {
+        let mut guild = dc_state::Guild::default();
+        guild.roles.insert(1, "Mods".into());
+        guild.roles.insert(2, "Plain".into());
+        guild.role_info.insert(
+            1,
+            dc_state::RoleInfo {
+                color: 0x3498db,
+                ..Default::default()
+            },
+        );
+        let invite = serde_json::json!({"roles": [{"id": "2"}, {"id": "9"}, "1"], "flags": 8});
+        assert_eq!(
+            invite_roles(Some(&guild), &invite),
+            vec![
+                InviteRole {
+                    name: "Plain".into(),
+                    color: 0
+                },
+                InviteRole {
+                    name: "Mods".into(),
+                    color: 0x3498db
+                },
+            ]
+        );
+        assert!(invite_roles(None, &invite).is_empty());
+        assert_ne!(
+            invite["flags"].as_u64().unwrap() & INVITE_APPLICATION_BYPASS,
+            0
+        );
+        assert_eq!(dc_intl::t("1i1bUl"), "Bypass Join Applications");
+        assert_eq!(dc_intl::t("DY6n4q"), "View All Roles");
+        assert_eq!(dc_intl::t("/dbw3H"), "Enable Invites");
+    }
 
     #[test]
     fn bans_filter_like_em() {

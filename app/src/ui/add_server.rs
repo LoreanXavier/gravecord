@@ -3,7 +3,9 @@
 //! Creating posts `POST /guilds` as module 943457 `createGuildFromTemplate` does (`name`, `icon`, the template's
 //! channels, `system_channel_id`, `guild_template_code`); joining posts `POST /invites/{code}` as the invite card does.
 //! The template list and channel names are module 570465 with its en-US strings. Differences: School Club's example
-//! role is not sent, and the icon upload only draws its ring (picking a picture is not wired).
+//! role is not sent. The icon upload is module 356343: the dashed ring with "Upload" until a picture is picked (the
+//! image input of module 946274: jpg, jpeg, jfif, png, gif, webp, avif, read as a data URL off the UI thread), then
+//! the picture in an 80px circle; the data URL goes in the create body's `icon`.
 
 use super::{Root, color, editor_style, icon};
 use crate::editor::{Editor, EditorEvent};
@@ -32,6 +34,8 @@ pub(crate) struct AddServer {
     pub name: Entity<Editor>,
     pub invite: Entity<Editor>,
     pub error: Option<&'static str>,
+    /// The picked icon: its data URL (`icon` of the create body) and the decoded picture.
+    pub icon: Option<(String, Arc<gpui::Image>)>,
     scroll: ScrollHandle,
     _events: Vec<Subscription>,
 }
@@ -176,7 +180,7 @@ pub(crate) const TEMPLATES: [Template; 7] = [
 ];
 
 /// The `POST /guilds` body of `createGuildFromTemplate`.
-pub(crate) fn create_body(template: &Template, name: &str) -> Value {
+pub(crate) fn create_body(template: &Template, name: &str, icon: Option<&str>) -> Value {
     let channels: Vec<Value> = template
         .channels
         .iter()
@@ -186,7 +190,7 @@ pub(crate) fn create_body(template: &Template, name: &str) -> Value {
         .collect();
     json!({
         "name": name,
-        "icon": null,
+        "icon": icon,
         "channels": channels,
         "system_channel_id": template.system,
         "guild_template_code": template.code,
@@ -237,7 +241,144 @@ fn muted_card() -> u32 {
     0x97979f14
 }
 
+/// `gA` of module 946274: the file types the image input takes.
+const ICON_EXTENSIONS: [&str; 7] = ["jpg", "jpeg", "jfif", "png", "gif", "webp", "avif"];
+
+/// `readAsDataURL` of the picked file (`p` of module 946274), with the type its extension names.
+pub(crate) fn icon_data_url(extension: &str, bytes: &[u8]) -> Option<String> {
+    use base64::Engine as _;
+    let mime = match extension.to_ascii_lowercase().as_str() {
+        "jpg" | "jpeg" | "jfif" => "image/jpeg",
+        "png" => "image/png",
+        "gif" => "image/gif",
+        "webp" => "image/webp",
+        "avif" => "image/avif",
+        _ => return None,
+    };
+    Some(format!(
+        "data:{mime};base64,{}",
+        base64::engine::general_purpose::STANDARD.encode(bytes)
+    ))
+}
+
 impl Root {
+    /// Module 356343 (`iconContainer_YUKqn_`, 80px): the picked icon in an 80px circle on `--background-mod-normal`
+    /// (`filledIcon_YUKqn_`, "Your icon"), else the dashed ring with its camera and "+" badge and "Upload"
+    /// (`uploadLabel_YUKqn_`: 44px from the top, centred, `body-xs/semibold`, the ring's own colour). A click opens the
+    /// file dialog (`aria-label` "Upload a Server Icon").
+    fn add_server_icon_control(&self, cx: &mut Context<Self>) -> AnyElement {
+        let picked = self
+            .add_server
+            .as_ref()
+            .and_then(|add| add.icon.as_ref())
+            .map(|(_, image)| image.clone());
+        div()
+            .id("add-server-icon")
+            .relative()
+            .size(px(80.))
+            .cursor_pointer()
+            .map(|control| match picked {
+                Some(image) => control.child(
+                    div()
+                        .size(px(80.))
+                        .rounded_full()
+                        .overflow_hidden()
+                        .bg(color("--background-mod-normal"))
+                        // The `img` is sized to 80 by 80 with no `object-fit`: it fills the circle.
+                        .child(
+                            img(image)
+                                .size(px(80.))
+                                .rounded_full()
+                                .object_fit(gpui::ObjectFit::Fill),
+                        ),
+                ),
+                None => control
+                    .child(img(template_icon("add_server_upload")).size(px(80.)))
+                    .child(
+                        div()
+                            .absolute()
+                            .top(px(44.))
+                            .left_0()
+                            .right_0()
+                            .flex()
+                            .justify_center()
+                            .text_size(px(12.))
+                            .line_height(px(16.))
+                            .font_weight(FontWeight(600.))
+                            // The ring's `currentColor` (`--text-muted` in the measured frame).
+                            .text_color(color("--text-muted"))
+                            .child(dc_intl::t("3UB9ad")),
+                    ),
+            })
+            .on_click(cx.listener(|this, _, _, cx| this.pick_add_server_icon(cx)))
+            .into_any_element()
+    }
+
+    /// The file dialog of the image input; the file is read and decoded off the UI thread.
+    fn pick_add_server_icon(&mut self, cx: &mut Context<Self>) {
+        if crate::storage::is_capture_run() {
+            // A capture run never opens the dialog: `add-server-icon <path>` hands the file in.
+            return;
+        }
+        let picked = cx.prompt_for_paths(gpui::PathPromptOptions {
+            files: true,
+            directories: false,
+            multiple: false,
+            prompt: None,
+        });
+        cx.spawn(async move |this, cx| {
+            let Ok(Ok(Some(paths))) = picked.await else {
+                return;
+            };
+            let Some(path) = paths.into_iter().next() else {
+                return;
+            };
+            let _ = this.update(cx, |this, cx| this.add_server_icon_file(path, cx));
+        })
+        .detach();
+    }
+
+    /// Reads the picked file in the background (`readAsDataURL`), then shows it once it decodes as a picture (an
+    /// unreadable one is dropped, as `onerror` does without `onChange`).
+    pub(crate) fn add_server_icon_file(
+        &mut self,
+        path: std::path::PathBuf,
+        cx: &mut Context<Self>,
+    ) {
+        let extension = path
+            .extension()
+            .and_then(|extension| extension.to_str())
+            .unwrap_or_default()
+            .to_ascii_lowercase();
+        if !ICON_EXTENSIONS.contains(&extension.as_str()) {
+            return;
+        }
+        let task = cx.background_executor().spawn(async move {
+            let bytes = std::fs::read(&path).ok()?;
+            let format = match extension.as_str() {
+                "jpg" | "jpeg" | "jfif" => gpui::ImageFormat::Jpeg,
+                "png" => gpui::ImageFormat::Png,
+                "gif" => gpui::ImageFormat::Gif,
+                "webp" => gpui::ImageFormat::Webp,
+                _ => return None,
+            };
+            let uri = icon_data_url(&extension, &bytes)?;
+            Some((uri, Arc::new(gpui::Image::from_bytes(format, bytes))))
+        });
+        cx.spawn(async move |this, cx| {
+            let Some(picked) = task.await else {
+                return;
+            };
+            let _ = this.update(cx, |this, cx| {
+                if let Some(add) = this.add_server.as_mut() {
+                    add.icon = Some(picked);
+                    cx.notify();
+                }
+            });
+        })
+        .detach();
+    }
+
     pub(super) fn open_add_server(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let username = self
             .stores
@@ -279,6 +420,7 @@ impl Root {
             name,
             invite,
             error: None,
+            icon: None,
             scroll: ScrollHandle::new(),
             _events: events,
         });
@@ -313,7 +455,8 @@ impl Root {
                 if name.is_empty() {
                     return;
                 }
-                let body = create_body(&TEMPLATES[add.template], &name);
+                let icon = add.icon.as_ref().map(|(uri, _)| uri.as_str());
+                let body = create_body(&TEMPLATES[add.template], &name, icon);
                 let _ = self.requests.send(Request::Rest {
                     key: None,
                     method: reqwest::Method::POST,
@@ -628,7 +771,7 @@ impl Root {
                         .pt(px(4.))
                         .flex()
                         .justify_center()
-                        .child(img(template_icon("add_server_upload")).size(px(80.))),
+                        .child(self.add_server_icon_control(cx)),
                 )
                 .child(
                     div()
@@ -978,13 +1121,25 @@ mod tests {
 
     #[test]
     fn templates_become_the_guild_request_of_module_943457() {
-        let body = create_body(&TEMPLATES[0], "fixture throwaway");
+        let body = create_body(&TEMPLATES[0], "fixture throwaway", None);
         assert_eq!(body["name"], "fixture throwaway");
         assert_eq!(body["guild_template_code"], "2TffvPucqHkN");
         assert_eq!(body["channels"], json!([]));
         assert!(body["system_channel_id"].is_null());
         assert!(body["icon"].is_null());
-        let gaming = create_body(&TEMPLATES[1], "g");
+        // Module 356343: a picked icon goes as the data URL the image input read.
+        let uri = icon_data_url("PNG", &[1, 2, 3]).unwrap();
+        assert_eq!(uri, "data:image/png;base64,AQID");
+        assert_eq!(
+            icon_data_url("jfif", &[0]).unwrap(),
+            "data:image/jpeg;base64,AA=="
+        );
+        assert!(icon_data_url("bmp", &[0]).is_none());
+        let with_icon = create_body(&TEMPLATES[0], "fixture throwaway", Some(&uri));
+        assert_eq!(with_icon["icon"], uri.as_str());
+        assert_eq!(dc_intl::t("3UB9ad"), "Upload");
+        assert_eq!(dc_intl::t("DWB2YZ"), "Upload a Server Icon");
+        let gaming = create_body(&TEMPLATES[1], "g", None);
         assert_eq!(gaming["guild_template_code"], "hvtBQMfw6uSJ");
         assert_eq!(gaming["system_channel_id"], "01");
         let channels = gaming["channels"].as_array().unwrap();

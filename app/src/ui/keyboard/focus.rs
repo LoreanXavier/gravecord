@@ -348,6 +348,8 @@ impl Root {
                 self.friend_menu.is_some(),
                 self.confirm_remove_friend.is_some(),
                 self.friend_nickname.is_some(),
+                self.favorite_nickname.is_some(),
+                self.reorder_hint.is_some(),
                 self.add_friend.is_some(),
                 self.profile_menu.is_some(),
                 self.remediation.is_some(),

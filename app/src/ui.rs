@@ -166,6 +166,7 @@ mod avatar_play;
 mod boost_page;
 mod channel_browser;
 mod discover;
+mod favorite_nickname;
 mod favorites;
 mod feedback;
 mod fetch_failures;
@@ -242,6 +243,7 @@ mod reactions_modal;
 pub(crate) mod regions;
 mod remediation;
 mod reminder_modal;
+mod reorder_hint;
 mod report;
 mod report_issue;
 mod rtc_channel;
@@ -690,6 +692,8 @@ pub struct Root {
     friend_menu: Option<friends::FriendMenu>,
     confirm_remove_friend: Option<friends::RemoveFriend>,
     friend_nickname: Option<friend_nickname::Dialog>,
+    /// Change Nickname of a favourite (module 250737).
+    favorite_nickname: Option<favorite_nickname::Dialog>,
     group_edit: Option<group_manage::Edit>,
     group_leave: Option<group_manage::Leave>,
     /// Kick, Ban, Timeout and Remove Timeout of a member's menu.
@@ -777,6 +781,8 @@ pub struct Root {
     leave_guild: Option<Id>,
     /// A destructive request waiting for its confirmation (`destructive.rs`).
     destructive: Option<destructive::Pending>,
+    /// "Trying to reorder channels?" (module 354643): whether its "Don't show again" box is ticked.
+    reorder_hint: Option<bool>,
     /// The Log Out confirmation of the settings sidebar.
     logout_confirm: bool,
     poll: Option<composer_plus::PollForm>,
@@ -1131,6 +1137,7 @@ impl Root {
             friend_menu: None,
             confirm_remove_friend: None,
             friend_nickname: None,
+            favorite_nickname: None,
             group_edit: None,
             group_leave: None,
             member_action: None,
@@ -1195,6 +1202,7 @@ impl Root {
             click_at: gpui::Point::default(),
             leave_guild: None,
             destructive: None,
+            reorder_hint: None,
             logout_confirm: false,
             poll: None,
             components: components::State::default(),
@@ -4055,6 +4063,12 @@ impl Root {
         list.extend(self.full_profile.as_ref().map(|open| open.note.clone()));
         list.extend(self.custom_status.as_ref().map(|open| open.input.clone()));
         list.extend(self.friend_nickname.as_ref().map(|open| open.input.clone()));
+        list.extend(
+            self.favorite_nickname
+                .as_ref()
+                .map(|open| open.input.clone()),
+        );
+        list.extend(self.chat_extra.lockdown_other.clone());
         list.extend(self.group_edit.as_ref().map(|open| open.input.clone()));
         list.extend(self.member_action_input());
         list.extend(self.modify_attachment_editors());
@@ -10179,6 +10193,12 @@ impl Render for Root {
                     cx.stop_propagation();
                     return;
                 }
+                if keys.key == "escape" && this.reorder_hint.is_some() {
+                    this.close_reorder_hint();
+                    cx.notify();
+                    cx.stop_propagation();
+                    return;
+                }
                 if keys.key == "escape" && this.destructive.is_some() {
                     this.close_destructive();
                     cx.notify();
@@ -10402,6 +10422,7 @@ impl Render for Root {
                     && (this.friend_menu.is_some()
                         || this.confirm_remove_friend.is_some()
                         || this.friend_nickname.is_some()
+                        || this.favorite_nickname.is_some()
                         || this.group_edit.is_some()
                         || this.group_leave.is_some()
                         || this.member_action.is_some())
@@ -10411,6 +10432,7 @@ impl Render for Root {
                     this.friend_menu = None;
                     this.confirm_remove_friend = None;
                     this.friend_nickname = None;
+                    this.favorite_nickname = None;
                     this.member_action = None;
                     cx.notify();
                     cx.stop_propagation();
@@ -10988,6 +11010,7 @@ impl Render for Root {
             .children(self.library_remove_modal(cx))
             .children(self.composer_ai_modal(cx))
             .children(self.friend_nickname_layer(window, cx))
+            .children(self.favorite_nickname_layer(window, cx))
             .children(self.group_edit_layer(window, cx))
             .children(self.group_leave_layer(cx))
             .children(self.member_action_layer(window, cx))
@@ -11019,6 +11042,7 @@ impl Render for Root {
             .children(self.plus_menu_layer(window, cx))
             .children(self.leave_modal(cx))
             .children(self.destructive_modal(cx))
+            .children(self.reorder_hint_modal(cx))
             .children(self.logout_modal(cx))
             .children(self.manage_accounts_modal(cx))
             .children(self.add_account_modal(cx))

@@ -818,6 +818,70 @@ pub fn dismiss_content(current: &[u8], content: u16) -> (String, Vec<u8>) {
     whole_message_patch(updated, 4)
 }
 
+/// `UserContentSettings.recurring_dismissible_content_states` (7, a map from the content's number to a
+/// `RecurringDismissibleContentState`): the entry of `content`, the state's message.
+fn recurring_state(current: &[u8], content: u64) -> Option<&[u8]> {
+    let (_, message) = fields(current).find(|(number, _)| *number == 4)?;
+    fields(message)
+        .filter(|(number, _)| *number == 7)
+        .filter(|(_, entry)| varint_of(entry, 1).unwrap_or(0) == content)
+        .find_map(|(_, entry)| fields(entry).find(|(number, _)| *number == 2))
+        .map(|(_, state)| state)
+}
+
+/// `last_dismissed_at_ms` (2) of a recurring content's state (`getDismissedRecurringDismissibleContentState` of
+/// module 543862 reads it as `lastDismissedAtMs`); `None` when it was never dismissed (or "0").
+pub fn recurring_dismissed_at_ms(current: &[u8], content: u64) -> Option<u64> {
+    recurring_state(current, content)
+        .and_then(|state| varint_of(state, 2))
+        .filter(|at| *at != 0)
+}
+
+/// `FZ` of module 543862 with `cooldownDurationMs`: the content stays dismissed until the cooldown after its last
+/// dismissal has run out.
+pub fn recurring_dismissed(current: &[u8], content: u64, cooldown_ms: u64, now_ms: u64) -> bool {
+    recurring_dismissed_at_ms(current, content).is_some_and(|at| now_ms < at + cooldown_ms)
+}
+
+/// `uh` of module 543862 (`N`): the content's state becomes `{lastDismissedVersion: 0, lastDismissedAtMs: now,
+/// lastDismissedObjectId: "0", numTimesDismissed: previous + 1}` (`Y`). The patch carries the whole `user_content`.
+pub fn dismiss_recurring(current: &[u8], content: u64, now_ms: u64) -> (String, Vec<u8>) {
+    let times = recurring_state(current, content)
+        .and_then(|state| varint_of(state, 4))
+        .unwrap_or(0)
+        + 1;
+    let mut state = Vec::new();
+    push_varint(&mut state, 2 << 3 | WIRE_VARINT);
+    push_varint(&mut state, now_ms);
+    push_varint(&mut state, 4 << 3 | WIRE_VARINT);
+    push_varint(&mut state, times);
+    let mut entry = Vec::new();
+    push_varint(&mut entry, 1 << 3 | WIRE_VARINT);
+    push_varint(&mut entry, content);
+    push_bytes_field(&mut entry, 2, &state);
+    let message = fields(current)
+        .find(|(number, _)| *number == 4)
+        .map_or(&[][..], |(_, payload)| payload);
+    let mut updated_message: Vec<u8> = raw_fields(message)
+        .into_iter()
+        .filter(|(number, raw)| {
+            *number != 7
+                || fields(raw)
+                    .next()
+                    .is_none_or(|(_, payload)| varint_of(payload, 1).unwrap_or(0) != content)
+        })
+        .flat_map(|(_, bytes)| bytes.iter().copied())
+        .collect();
+    push_bytes_field(&mut updated_message, 7, &entry);
+    let mut updated: Vec<u8> = raw_fields(current)
+        .into_iter()
+        .filter(|(number, _)| *number != 4)
+        .flat_map(|(_, bytes)| bytes.iter().copied())
+        .collect();
+    push_bytes_field(&mut updated, 4, &updated_message);
+    whole_message_patch(updated, 4)
+}
+
 /// An update from the gateway folded into `current`: a full one replaces everything, a partial one only the top-level
 /// messages it carries.
 pub fn merge_update(current: &mut Vec<u8>, update: &[u8], partial: bool) {
@@ -1762,6 +1826,45 @@ mod tests {
         assert_eq!(top[0].0, 4);
         assert!(super::fields(top[0].1).any(|(n, p)| n == 42 && p == b"preserve nested field"));
         assert_eq!(super::dismiss_content(&current, 133).1, current);
+    }
+
+    #[test]
+    fn a_recurring_dismissal_lasts_its_cooldown_and_counts_up() {
+        const WEEK: u64 = 7 * 24 * 3_600_000;
+        let mut content = Vec::new();
+        super::push_bytes_field(&mut content, 1, &[1]);
+        let mut current = Vec::new();
+        super::push_bytes_field(&mut current, 4, &content);
+        assert!(!super::recurring_dismissed(&current, 547, WEEK, 1_000));
+        let (_, current) = super::dismiss_recurring(&current, 547, 1_000);
+        let (_, current) = super::dismiss_recurring(&current, 12, 5_000);
+        assert_eq!(super::recurring_dismissed_at_ms(&current, 547), Some(1_000));
+        assert!(super::recurring_dismissed(
+            &current,
+            547,
+            WEEK,
+            1_000 + WEEK - 1
+        ));
+        assert!(!super::recurring_dismissed(
+            &current,
+            547,
+            WEEK,
+            1_000 + WEEK
+        ));
+        let (patch, current) = super::dismiss_recurring(&current, 547, 9_000);
+        assert_eq!(super::recurring_dismissed_at_ms(&current, 547), Some(9_000));
+        assert_eq!(super::recurring_dismissed_at_ms(&current, 12), Some(5_000));
+        let state = super::recurring_state(&current, 547).unwrap();
+        assert_eq!(super::varint_of(state, 4), Some(2));
+        // The other dismissals and the bitset stay; one entry per content.
+        assert!(super::content_dismissed(&current, 0));
+        let (_, message) = super::fields(&current).find(|(n, _)| *n == 4).unwrap();
+        assert_eq!(super::fields(message).filter(|(n, _)| *n == 7).count(), 2);
+        let patch = super::decode(&patch);
+        assert_eq!(
+            super::fields(&patch).map(|(n, _)| n).collect::<Vec<_>>(),
+            [4]
+        );
     }
 
     #[test]

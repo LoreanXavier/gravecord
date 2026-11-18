@@ -505,17 +505,40 @@ impl Root {
         ROWS.with(|rows| rows.borrow_mut().clear());
     }
 
-    /// Whether this person may drag channels here (module 79843: `MANAGE_CHANNELS`), and the entry is not pinned.
+    /// Whether this person may drag channels here (module 79843: `MANAGE_CHANNELS`, the server without opt-in
+    /// channels), and the entry is not pinned.
     fn channel_drag_allowed(&self, channel: &Channel) -> bool {
         self.can_manage_channels()
             && self.guild.is_some_and(|guild| {
-                self.stores.guild_settings.channel(guild, channel.id).flags & 2048 == 0
+                !self.opt_in_reorder_blocked(guild)
+                    && self.stores.guild_settings.channel(guild, channel.id).flags & 2048 == 0
             })
     }
 
-    /// A pinned channel the person may otherwise move (`pinned-channel` of module 79843; a server with opt-in
-    /// channels has its own dialog, `opt-in-channels`, which is not built): trying to drag it asks "Trying to reorder a
-    /// pinned channel?" (module 933752) and nothing moves.
+    /// `WW` of module 395504, the `opt-in-channels` reason of module 79843: a Community server (or a staff account)
+    /// with `OPT_IN_CHANNELS_ON` (16384, module 355097) in the account's settings of it.
+    pub(super) fn opt_in_reorder_blocked(&self, guild: Id) -> bool {
+        let community = self
+            .stores
+            .guild(guild)
+            .is_some_and(|known| known.features.iter().any(|feature| feature == "COMMUNITY"));
+        let staff = self
+            .stores
+            .current_user
+            .as_ref()
+            .is_some_and(|me| me.flags & 1 != 0);
+        (community || staff)
+            && self
+                .stores
+                .guild_settings
+                .guilds
+                .get(&guild)
+                .is_some_and(|settings| settings.flags & 16384 != 0)
+    }
+
+    /// A channel the person may otherwise move, held back by `canDrag` of module 616740: in a server with opt-in
+    /// channels (`opt-in-channels`) the drag asks "Trying to reorder channels?" (module 354643, unless dismissed this
+    /// week); a pinned one (`pinned-channel`) asks "Trying to reorder a pinned channel?" (module 933752). Nothing moves.
     fn pinned_drag_wrap(
         &self,
         channel: &Channel,
@@ -525,18 +548,24 @@ impl Root {
         let Some(guild) = self.guild else {
             return row;
         };
-        let opt_in = self
-            .stores
-            .guild_settings
-            .guilds
-            .get(&guild)
-            .is_some_and(|settings| settings.flags & 16384 != 0);
+        let opt_in = self.opt_in_reorder_blocked(guild);
         let pinned = self.stores.guild_settings.channel(guild, channel.id).flags & 2048 != 0;
-        if !self.can_manage_channels() || opt_in || !pinned {
+        if !self.can_manage_channels() || !(opt_in || pinned) {
             return row;
         }
         let id = channel.id;
         let root = cx.entity().downgrade();
+        if opt_in {
+            return div()
+                .id(SharedString::from(format!("channel-opt-in-drag-{id}")))
+                .flex_none()
+                .on_drag(PinnedDrag, move |_, _, _, cx| {
+                    let _ = root.update(cx, |this, cx| this.open_reorder_hint(cx));
+                    cx.new(|_| EmptyDrag)
+                })
+                .child(row)
+                .into_any_element();
+        }
         div()
             .id(SharedString::from(format!("channel-pinned-drag-{id}")))
             .flex_none()
