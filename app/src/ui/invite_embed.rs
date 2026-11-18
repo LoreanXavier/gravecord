@@ -99,6 +99,7 @@ impl Root {
     }
 
     /// Capture only: `invite-error <code>` answers a Join as Discord refuses it.
+    #[cfg(feature = "capture")]
     pub(crate) fn script_invite_error(&mut self, code: &str, cx: &mut Context<Self>) -> String {
         let report = serde_json::json!({"ok": false, "status": 403, "body": {"code": code.parse::<u64>().unwrap_or(0)}});
         self.invite_accept_answered(&format!("{ACCEPT_KEY}x"), &report, cx);

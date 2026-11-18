@@ -389,6 +389,7 @@ impl Root {
 
     /// Capture only: the open server becomes one this account is a pending member of, with its own request in the
     /// given status (`none` drops it) and an optional rejection reason.
+    #[cfg(feature = "capture")]
     pub(crate) fn script_join_request(&mut self, words: &[&str], cx: &mut Context<Self>) -> String {
         let Some(guild) = self.guild else {
             return "no server open".to_owned();

@@ -1222,7 +1222,7 @@ mod tests {
             Some("Go".into()),
             Then::Close,
         );
-        assert!(alert.buttons[0].secondary);
+        assert_eq!(alert.buttons[0].tone, Tone::Secondary);
         assert_eq!(alert.buttons[1].label, "Go");
     }
 }
