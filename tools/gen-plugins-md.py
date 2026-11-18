@@ -147,6 +147,7 @@ assert len(idle) == idle_entries, f'IDLE_SETTINGS: read {len(idle)} of {idle_ent
 
 # How each ported plugin is built here, and its proof.
 PORTED = {
+    'USRBG': "plugin_hooks/usrbg.rs: the USRBG list is fetched once while the plugin is on; a listed person's profiles show that banner (in place of their own unless nitroFirst) and, with voiceBackground, their voice tile without video shows it as a cover background; the card has the Get your own USRBG banner button.",
     'StreamingCodecDisabler': "plugin_hooks/streaming_codec_disabler.rs + dc-voice signal.rs: disableH264Codec puts H264 into a voice connection's codec list (ops 1 and 14) with encode false, as filterCodecs does; the other four codecs are not offered by this client.",
     'VoiceMessages': "plugin_hooks/voice_messages.rs: the + menu ends with Send Voice Message (Send Audio File as Voice Message beside the client's own Record Voice Message row; in a server with Send Messages and Send Voice Messages); Record Voice Message records from the microphone with the plugin's echoCancellation and noiseSuppression (Ogg Opus) or takes a chosen or dropped audio file, previews it in the voice message player (the plugin's RECORDING / ---- pill otherwise), decodes it off the UI thread for the plugin's own waveform and length, warns when it is not Ogg Opus, and sends it as a voice message with the pending reply and SilentMessageToggle's flag. GAP: the sending toast's clock icon; the warning's link drawn as text.",
     'UnlockedAvatarZoom': "plugin_hooks/unlocked_avatar_zoom.rs: the image crop tool's zoom slider (every picture it edits, as the patched maxValue of module 142630) reaches zoomMultiplier instead of 2; the slider, the arrow keys and the clamp follow it.",
@@ -238,6 +239,7 @@ PORTED = {
                      'so the original\'s 200% cap on the sync has nothing to cap.',
 }
 TESTS = {
+    'USRBG': '`banners_follow_the_list_and_nitro_first`; frames pending (live runs held)',
     'StreamingCodecDisabler': '`only_the_switch_takes_h264_out`',
     'VoiceMessages': '`the_waveform_follows_generate_waveform`; frames pending (live runs held)',
     'UnlockedAvatarZoom': '`the_slider_reaches_the_multiplier`; frames pending (live runs held)',
@@ -416,7 +418,6 @@ PLANNED = {
     'Streaks': 'DM streak counts (its service login in the data store is not copied).',
     'Translate+': 'message translation (needs a translation service).',
     'UserPFP': 'its third-party avatar service.',
-    'USRBG': 'its third-party banner service.',
     'ValidReply': "the pinned client's \"Message could not be loaded\" reply bar first: a reply whose message the server did not embed draws no reply line here (GAP in the reply path: intl REPLY_QUOTE_MESSAGE_NOT_LOADED); ValidReply's hover fetch hangs on that bar.",
     'VoiceMessageTranscriber': 'an on-device Whisper model runner.',
     'ExpressionCloner': 'menu rows that clone, edit and delete emoji and stickers into your servers.',

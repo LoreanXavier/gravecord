@@ -12,7 +12,7 @@ every setting changed), and with every plugin off, and fails on one differing pi
 The list is the plugins enabled in the owner's Equicord backup of 2026-09-21 (156). Sources were read in the local
 Equicord checkout of 2026-11-14 (`src/plugins` is Vencord's, `src/equicordplugins` Equicord's).
 
-Totals: 71 ported, 9 native, 31 planned, 45 not applicable.
+Totals: 72 ported, 9 native, 30 planned, 45 not applicable.
 
 Status: **ported** works and has its proof; **native** is what gravecord already does without a plugin;
 **planned** is not built yet (an import keeps its settings for when it is); **not applicable** has nothing to
@@ -160,7 +160,7 @@ port in a native client, or was removed upstream.
 | UserMessagesPronouns | ported | plugins/userMessagesPronouns/index.ts | Adds pronouns to chat user messages | plugin_hooks/message_pronouns.rs: after a message's time, '• pronouns' in the time's style with a Pronouns tooltip, server profile pronouns first, from profiles already loaded (nothing fetched), lowercased unless Capitalized; not for bots, system or AutoMod messages, nor yourself without showSelf. Not 1:1: its compact-mode place is not drawn, the app has no compact message display. | `server_pronouns_first_then_the_accounts_formatted`; frame ump-on; plugins-off chat |
 | UserPFP | planned | equicordplugins/userpfp/index.tsx | Allows you to set local static or animated avatars for yourself and other users | its third-party avatar service. |  |
 | UserSettingsAPI | not applicable | plugins/_api/userSettings.ts | Patches Discord's UserSettings to expose their group and name. | client-mod plumbing (an API for other plugins), nothing to port. |  |
-| USRBG | planned | plugins/usrbg/index.tsx | Displays user banners from USRBG, allowing anyone to get a banner without Nitro | its third-party banner service. |  |
+| USRBG | ported | plugins/usrbg/index.tsx | Displays user banners from USRBG, allowing anyone to get a banner without Nitro | plugin_hooks/usrbg.rs: the USRBG list is fetched once while the plugin is on; a listed person's profiles show that banner (in place of their own unless nitroFirst) and, with voiceBackground, their voice tile without video shows it as a cover background; the card has the Get your own USRBG banner button. | `banners_follow_the_list_and_nitro_first`; frames pending (live runs held) |
 | ValidReply | planned | plugins/validReply/index.ts |  | the pinned client's "Message could not be loaded" reply bar first: a reply whose message the server did not embed draws no reply line here (GAP in the reply path: intl REPLY_QUOTE_MESSAGE_NOT_LOADED); ValidReply's hover fetch hangs on that bar. |  |
 | ValidUser | ported | plugins/validUser/index.tsx | Fix mentions for unknown users showing up as '@unknown-user' (hover over a mention to fix it) | plugin_hooks/valid_user.rs: the pointer on an @unknown-user mention queues GET /users/<id> (newest first, 300 ms apart, never twice) and merges the user, so the mention shows the name. GAP: the badges the original deduces for a profile it cannot fetch. | `keys_carry_the_user`; frame vu-after (hover logs the GET, `plugin demo-user` answer shows @Discord); plugins-off mentions |
 | VCSupport | not applicable | (not in the 2026-11-14 checkout) |  | Equicord support-server helper. |  |
@@ -366,6 +366,8 @@ Every setting of each original (`definePluginSettings`), its type and default th
 | UnlockedAvatarZoom | `zoomMultiplier` | SLIDER | `4` | ported |
 | UserMessagesPronouns | `pronounsFormat` | SELECT | `PronounsFormat.Lowercase` | ported |
 | UserMessagesPronouns | `showSelf` | BOOLEAN | `true` | ported |
+| USRBG | `nitroFirst` | SELECT | `true` | ported |
+| USRBG | `voiceBackground` | BOOLEAN | `true` | ported |
 | ViewIcons | `format` | SELECT | `"webp"` | ported |
 | ViewIcons | `imgSize` | SELECT | `n === "1024" }))` | ported |
 | VoiceMessages | `noiseSuppression` | BOOLEAN | `true` | ported |

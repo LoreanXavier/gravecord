@@ -9,6 +9,8 @@ pub(crate) enum Lit {
     Str(&'static str),
     /// A number option (the original's enum values, as AnonymiseFileNames' `method`).
     Int(i64),
+    /// A true/false option (USRBG's `nitroFirst`).
+    Bool(bool),
 }
 
 impl Lit {
@@ -16,6 +18,7 @@ impl Lit {
         match self {
             Lit::Str(text) => Value::from(text),
             Lit::Int(number) => Value::from(number),
+            Lit::Bool(on) => Value::from(on),
         }
     }
 
@@ -23,6 +26,7 @@ impl Lit {
         match self {
             Lit::Str(text) => value.as_str() == Some(text),
             Lit::Int(number) => value.as_f64() == Some(number as f64),
+            Lit::Bool(on) => value.as_bool() == Some(on),
         }
     }
 }
@@ -2225,6 +2229,34 @@ pub(crate) const DEFS: &[Def] = &[
                 key: "showSelf",
                 label: "Show yourself",
                 description: "Enable or disable showing pronouns for yourself",
+                kind: Kind::Switch { default: true },
+            },
+        ],
+    },
+    Def {
+        id: "USRBG",
+        name: "USRBG",
+        description: "Displays user banners from USRBG, allowing anyone to get a banner without Nitro",
+        origin: Origin::Vencord,
+        source: "src/plugins/usrbg/index.tsx",
+        default_on: false,
+        settings: &[
+            Setting {
+                key: "nitroFirst",
+                label: "Nitro First",
+                description: "Banner to use if both Nitro and USRBG banners are present",
+                kind: Kind::Select {
+                    options: &[
+                        ("Nitro banner", Lit::Bool(true)),
+                        ("USRBG banner", Lit::Bool(false)),
+                    ],
+                    default: 0,
+                },
+            },
+            Setting {
+                key: "voiceBackground",
+                label: "Voice Background",
+                description: "Use USRBG banners as voice chat backgrounds",
                 kind: Kind::Switch { default: true },
             },
         ],

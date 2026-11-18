@@ -47,6 +47,8 @@ pub(in crate::ui) use streaming_codec_disabler::sync_streaming_codecs;
 mod super_reaction_tweaks;
 mod typing_indicator;
 mod typing_tweaks;
+mod usrbg;
+pub(in crate::ui) use usrbg::{usrbg_banner, usrbg_voice_background};
 mod unlocked_avatar_zoom;
 pub(in crate::ui) use unlocked_avatar_zoom::crop_max_zoom;
 mod valid_user;
@@ -692,7 +694,7 @@ pub(in crate::ui) fn skip_blocked_prompt() -> bool {
 
 /// Plugins whose settings page has a section of their own (the original's `OptionType.COMPONENT`).
 pub(in crate::ui) fn has_own_section(id: &str) -> bool {
-    matches!(id, "MessageTags" | "ClipsEnhancements")
+    matches!(id, "MessageTags" | "ClipsEnhancements" | "USRBG")
 }
 
 impl super::Root {
@@ -708,6 +710,7 @@ impl super::Root {
         };
         match id {
             "MessageTags" => Some(self.message_tags_settings(cx)),
+            "USRBG" => Some(self.usrbg_settings(cx)),
             "ClipsEnhancements" => Some(
                 gpui::div()
                     .id("clips-enhancements-link")

@@ -12,14 +12,17 @@ pub(super) fn banner_source(user: Id, guild: Option<Id>, body: &Value) -> Option
     let scoped = guild
         .filter(|guild| Some(*guild) == member_guild)
         .zip(member["banner"].as_str());
-    let url = if let Some((guild, hash)) = scoped {
-        format!(
+    let own = if let Some((guild, hash)) = scoped {
+        Some(format!(
             "https://cdn.discordapp.com/guilds/{guild}/users/{user}/banners/{hash}.png?size=300"
-        )
+        ))
     } else {
-        let hash = body["user_profile"]["banner"].as_str()?;
-        format!("https://cdn.discordapp.com/banners/{user}/{hash}.png?size=300")
+        body["user_profile"]["banner"]
+            .as_str()
+            .map(|hash| format!("https://cdn.discordapp.com/banners/{user}/{hash}.png?size=300"))
     };
+    // Not in the pinned client: USRBG's banner in its place (`plugin_hooks/usrbg.rs`).
+    let url = super::plugin_hooks::usrbg_banner(user, own.is_some()).or(own)?;
     Some((format!("profile-banner:{url}"), url))
 }
 
@@ -50,6 +53,10 @@ pub(super) fn live_banner_source(
             hash,
         )
     };
+    // Not in the pinned client: USRBG's banner replaces this one (`plugin_hooks/usrbg.rs`).
+    if super::plugin_hooks::usrbg_banner(user, true).is_some() {
+        return None;
+    }
     super::avatar_play::is_animated(hash).then(|| {
         (
             format!("banner-live:{base}:{side}"),

@@ -2001,6 +2001,10 @@ impl Root {
                 if self.relationship_notifier_fetched(&key, &body, cx) {
                     return;
                 }
+                // Not in the pinned client: USRBG's list (`plugin_hooks/usrbg.rs`).
+                if self.usrbg_fetched(&key, &body, cx) {
+                    return;
+                }
                 // Not in the pinned client: ZipPreview's archive arrived (`plugin_hooks/zip_preview.rs`).
                 if self.zip_preview_fetched(&key, cx) {
                     return;
@@ -10365,6 +10369,8 @@ impl Render for Root {
         self.prepare_live_activities(cx);
         // Not in the pinned client: StreamingCodecDisabler's filter (`plugin_hooks/streaming_codec_disabler.rs`).
         plugin_hooks::sync_streaming_codecs();
+        // Not in the pinned client: USRBG's list, once (`plugin_hooks/usrbg.rs`).
+        self.usrbg_prepare();
         if changed(&mut self.prepared.badge, self.data_revision) {
             self.refresh_notification_badge_soon(cx);
         }
