@@ -72,8 +72,31 @@ enum Dialog {
     AgeGate { app: String, name: String },
     /// Module 130574, the first-time notice.
     HeadsUp { app: String, name: String },
-    /// "Unable to launch activity" with a reason.
+    /// "Failed to Launch Activity" (module 85982) with the reason as its subtitle.
     Failed { text: String },
+}
+
+/// `f` of module 872142 for a failed request (its `errorType` 2): the message the "Failed to Launch Activity" dialog
+/// (module 85982) shows for the API error `code`, "Unable to launch activity" for any other.
+/// GAP: the Brazil notice (`GJ27pD`, error 20060 for an account located in BR) needs the location metadata.
+pub(super) fn launch_error_message(code: Option<u64>) -> &'static str {
+    dc_intl::t(match code {
+        // `INVALID_ACTIVITY_LAUNCH_NO_ACCESS`
+        Some(50106) => "GyzcrS",
+        // `INVALID_ACTIVITY_LAUNCH_PREMIUM_TIER`
+        Some(50107) => "zxv7EF",
+        // `INVALID_PERMISSIONS`
+        Some(50013) => "hHGrWz",
+        // `INVALID_ACTIVITY_LAUNCH_AFK_CHANNEL`
+        Some(50148) => "j29zCr",
+        // `INVALID_ACTIVITY_LAUNCH_AGE_GATED`
+        Some(50165) => "4WuFRE",
+        // `INVALID_ACTIVITY_LAUNCH_DEV_PREVIEW_GUILD_SIZE`
+        Some(50209) => "RvkXdb",
+        // `ACTIVITY_CONFIGURATION_DOES_NOT_SUPPORT_PLATFORM`
+        Some(50231) => "uGDCcw",
+        _ => "IOy+I5",
+    })
 }
 
 /// What a launch is waiting on.
@@ -447,11 +470,13 @@ impl Root {
         let (step, app) = rest.split_once(':').unwrap_or((rest, ""));
         tracing::info!(step, ok = ?body["ok"].as_bool(), status = ?body["status"].as_u64(), "activity request answered");
         let app = app.to_owned();
-        let failed = |this: &mut Self, why: &str, cx: &mut Context<Self>| {
+        // `launchFrame`'s catch (module 456006, `showErrorModal`): the message of module 872142 for the API error.
+        let code = body["body"]["code"].as_u64();
+        let failed = move |this: &mut Self, why: &str, cx: &mut Context<Self>| {
             tracing::warn!("activity launch failed: {why}");
             this.activities.launching = None;
             this.activities.dialog = Some(Dialog::Failed {
-                text: "We were unable to run the command. Please try again later.".to_owned(),
+                text: launch_error_message(code).to_owned(),
             });
             cx.notify();
         };
@@ -634,6 +659,28 @@ impl Root {
         cx.notify();
     }
 
+    /// A Leave button: the activity is left with `showFeedback` (`EMBEDDED_ACTIVITY_CLOSE`), so the Activity survey
+    /// may follow (module 220162 `handleActivityClose`), with "Activity included ads" when the application's activity
+    /// config (the shelf's entry of it) says it `displays_advertisements`.
+    pub(super) fn leave_activity_by_hand(&mut self, cx: &mut Context<Self>) {
+        let left = self.activities.running.as_ref().map(|running| {
+            let guild = Some(running.guild).filter(|guild| *guild != 0);
+            let ads = self.fetched.get(&shelf_key(guild)).is_some_and(|body| {
+                body["activities"].as_array().is_some_and(|configs| {
+                    configs.iter().any(|config| {
+                        config["application_id"].as_str() == Some(running.application_id.as_str())
+                            && config["displays_advertisements"].as_bool() == Some(true)
+                    })
+                })
+            });
+            (running.name.clone(), ads)
+        });
+        self.leave_activity(cx);
+        if let Some((name, ads)) = left {
+            self.activity_left(name, ads, cx);
+        }
+    }
+
     /// The call ended: an open activity is left (`handleRTCConnectionState`).
     pub(super) fn leave_activity_on_call_end(&mut self, cx: &mut Context<Self>) {
         self.leave_activity(cx);
@@ -730,15 +777,16 @@ impl Root {
                 },
                 cx,
             ),
-            Dialog::Failed { text: message } => modal::render(
+            // Module 85982 on the dialog of module 189213: no children, so `sm`.
+            Dialog::Failed { text: message } => modal::render_small(
                 modal::Spec {
                     id: "activity-failed",
-                    title: "Unable to launch activity".into(),
+                    title: dc_intl::t("PtobXW").into(),
                     subtitle: text(message),
                     body: None,
                     buttons: vec![modal::button(
                         "activity-failed-okay",
-                        "Okay",
+                        dc_intl::t("BddRzS"),
                         Tone::Primary,
                         |this, _, _| this.activities.dialog = None,
                     )],
@@ -747,6 +795,15 @@ impl Root {
                 cx,
             ),
         })
+    }
+
+    /// Capture only: `activity failed <code>`, what a launch whose request failed with that API error shows.
+    #[cfg(feature = "capture")]
+    pub(crate) fn script_activity_failed(&mut self, code: Option<u64>) -> String {
+        self.activities.launching = None;
+        let text = launch_error_message(code).to_owned();
+        self.activities.dialog = Some(Dialog::Failed { text: text.clone() });
+        format!("failed: {text}")
     }
 
     /// A one-line state for the capture harness: what the shelf, the launch and the gateway say.
@@ -814,6 +871,28 @@ fn frame_id() -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_failed_launch_names_the_api_error_like_module_872142() {
+        assert_eq!(
+            launch_error_message(Some(50107)),
+            "This server doesn't have a high enough boosting level for the requested activity"
+        );
+        assert_eq!(
+            launch_error_message(Some(50148)),
+            "You cannot launch Activities in this channel."
+        );
+        assert_eq!(
+            launch_error_message(Some(50165)),
+            "This Activity is age-restricted"
+        );
+        assert_eq!(launch_error_message(None), "Unable to launch activity");
+        assert_eq!(
+            launch_error_message(Some(10003)),
+            "Unable to launch activity"
+        );
+        assert_eq!(dc_intl::t("PtobXW"), "Failed to Launch Activity");
+    }
 
     fn instance() -> Instance {
         Instance {

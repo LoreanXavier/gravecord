@@ -68,6 +68,11 @@ pub(super) enum VoiceAlert {
         target: CallTarget,
         dont_ask: bool,
     },
+    /// "Reload Activity" (module 47294) before the call pops out (or back in) while an Activity runs, with its
+    /// "Don't show again" box.
+    ReloadActivity {
+        dont_show: bool,
+    },
 }
 
 /// Whom the confirmed call of module 502054 goes to: a person's menu, or a DM row's.
@@ -104,6 +109,23 @@ pub(super) fn call_confirmation_disabled() -> bool {
     crate::storage::get("UnsyncedUserSettingsStore")
         .and_then(|store| store.get("disableCallUserConfirmationPrompt")?.as_bool())
         .unwrap_or(false)
+}
+
+/// `disableEmbeddedActivityPopOutAlert` of `UnsyncedUserSettingsStore` (module 964404), off until ticked.
+pub(super) fn activity_popout_alert_disabled() -> bool {
+    crate::storage::get("UnsyncedUserSettingsStore")
+        .and_then(|store| store.get("disableEmbeddedActivityPopOutAlert")?.as_bool())
+        .unwrap_or(false)
+}
+
+/// Module 47294's effect: the box's state is kept as it changes (`updatedUnsyncedSettings`), whichever button closes
+/// the dialog.
+fn set_activity_popout_alert_disabled(disabled: bool) {
+    let mut store = crate::storage::get("UnsyncedUserSettingsStore")
+        .filter(serde_json::Value::is_object)
+        .unwrap_or_else(|| serde_json::json!({}));
+    store["disableEmbeddedActivityPopOutAlert"] = serde_json::json!(disabled);
+    crate::storage::set("UnsyncedUserSettingsStore", store);
 }
 
 fn disable_call_confirmation() {
@@ -530,6 +552,9 @@ impl Root {
             VoiceAlert::CallConfirm { target, dont_ask } => {
                 return Some(self.call_confirm_modal(*target, *dont_ask, cx));
             }
+            VoiceAlert::ReloadActivity { dont_show, .. } => {
+                return Some(self.reload_activity_modal(*dont_show, cx));
+            }
             _ => {}
         }
         let close = || -> modal::Handler { Box::new(|this, _, _| this.voice_alert = None) };
@@ -537,7 +562,8 @@ impl Root {
             VoiceAlert::JoinBlocked { .. }
             | VoiceAlert::BlockedJoined { .. }
             | VoiceAlert::InvitedToSpeak { .. }
-            | VoiceAlert::CallConfirm { .. } => return None,
+            | VoiceAlert::CallConfirm { .. }
+            | VoiceAlert::ReloadActivity { .. } => return None,
             VoiceAlert::ChannelFull => modal::Spec {
                 id: "channel-full-modal",
                 title: dc_intl::t("elyVbv").into(),
@@ -762,6 +788,60 @@ impl Root {
     /// Module 502054 on the alert of module 732159 (`variant: "active"`): Cancel and Start Call, "Don't ask again" in
     /// the action bar (the checkbox of module 568385, `labelType: "secondary"`: `body-md/normal`, `text-subtle`, 12px
     /// after the box).
+    /// Module 47294 on the dialog of module 189213 (`size: "md"`): "Reload Activity", its subtitle, Cancel and Reload,
+    /// and "Don't show again" in the action bar.
+    fn reload_activity_modal(&self, dont_show: bool, cx: &mut Context<Self>) -> AnyElement {
+        let checkbox = div()
+            .id("reload-activity-dont-show")
+            .flex()
+            .items_start()
+            .gap(px(12.))
+            .cursor_pointer()
+            .child(super::server_onboarding::checkbox(dont_show, false))
+            .child(
+                div()
+                    .text_size(px(16.))
+                    .line_height(px(20.))
+                    .text_color(color("--text-subtle"))
+                    .child(dc_intl::t("wGAwOS")),
+            )
+            .on_click(cx.listener(|this, _, _, cx| {
+                if let Some(VoiceAlert::ReloadActivity { dont_show, .. }) =
+                    this.voice_alert.as_mut()
+                {
+                    *dont_show = !*dont_show;
+                    set_activity_popout_alert_disabled(*dont_show);
+                }
+                cx.notify();
+            }))
+            .into_any_element();
+        let spec = modal::Spec {
+            id: "reload-activity-modal",
+            title: dc_intl::t("ye21jI").into(),
+            subtitle: Some(div().child(dc_intl::t("hbagWD")).into_any_element()),
+            body: None,
+            buttons: vec![
+                modal::button(
+                    "reload-activity-cancel",
+                    dc_intl::t("B8pz37"),
+                    modal::Tone::Secondary,
+                    |this, _, _| this.voice_alert = None,
+                ),
+                modal::button(
+                    "reload-activity-reload",
+                    dc_intl::t("makWn9"),
+                    modal::Tone::Primary,
+                    |this, window, cx| {
+                        this.voice_alert = None;
+                        this.toggle_call_popout_now(window, cx);
+                    },
+                ),
+            ],
+            close: Box::new(|this, _, _| this.voice_alert = None),
+        };
+        modal::render_with_input(spec, checkbox, cx)
+    }
+
     fn call_confirm_modal(
         &self,
         target: CallTarget,
@@ -903,6 +983,20 @@ impl Root {
                     ),
             )
             .into_any_element()
+    }
+}
+
+impl Root {
+    /// Capture only: `voice-alert reload-activity`, what Pop Out asks while an Activity runs.
+    #[cfg(feature = "capture")]
+    pub(crate) fn script_voice_alert(&mut self, name: &str) -> String {
+        match name {
+            "reload-activity" => {
+                self.voice_alert = Some(VoiceAlert::ReloadActivity { dont_show: false });
+                "voice alert: reload activity".to_owned()
+            }
+            _ => "usage: voice-alert reload-activity".to_owned(),
+        }
     }
 }
 

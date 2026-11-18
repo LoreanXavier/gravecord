@@ -140,6 +140,8 @@ pub(crate) struct NitroState {
     #[cfg(not(feature = "capture"))]
     pub(super) handoff: Option<(String, String)>,
     pub(super) sources: Option<Value>,
+    /// A capture step set `sources`: the account's own read must not replace it.
+    pub(super) sources_injected: bool,
     pub(super) subscriptions: Option<Value>,
     /// A capture step set `subscriptions`: the account's own read must not replace it.
     pub(super) subscriptions_injected: bool,
@@ -178,6 +180,7 @@ impl Default for NitroState {
             #[cfg(not(feature = "capture"))]
             handoff: None,
             sources: None,
+            sources_injected: false,
             subscriptions: None,
             subscriptions_injected: false,
             favorites_tab: 0,
@@ -516,8 +519,9 @@ impl Root {
                 self.nitro.plans.extend(incoming);
             }
         } else if key == SOURCES_KEY {
-            if report["ok"] == true {
+            if report["ok"] == true && !self.nitro.sources_injected {
                 self.nitro.sources = Some(report["body"].clone());
+                self.request_payment_source_art();
             }
         } else if key == GIFT_CODES_KEY {
             if report["ok"] == true {
@@ -915,7 +919,9 @@ impl Root {
                     .flex()
                     .when(item.art_left, |this| this.flex_row_reverse())
             })
-            .when(!item.large, |this| this.w(px(small_card_w)).flex().flex_col())
+            .when(!item.large, |this| {
+                this.w(px(small_card_w)).flex().flex_col()
+            })
             .child(
                 div()
                     .absolute()
@@ -1545,21 +1551,9 @@ impl Root {
             .flex_col()
             .items_center()
             .child(self.nitro_hero(cx))
-            .child(self.bento_section(
-                "What's New",
-                "nitro-whats-new",
-                &WHATS_NEW,
-                bento_w,
-                cx,
-            ))
+            .child(self.bento_section("What's New", "nitro-whats-new", &WHATS_NEW, bento_w, cx))
             .child(div().h(px(164.)))
-            .child(self.bento_section(
-                "Best of Nitro",
-                "nitro-best-of",
-                &BEST_OF,
-                bento_w,
-                cx,
-            ))
+            .child(self.bento_section("Best of Nitro", "nitro-best-of", &BEST_OF, bento_w, cx))
             .child(div().h(px(164.)))
             .child(self.nitro_plans(cx))
             .child(div().h(px(164.)))
@@ -1738,6 +1732,28 @@ impl Root {
             .collect();
         self.nitro.subscriptions = Some(Value::Array(rows));
         self.nitro.subscriptions_injected = true;
+        cx.notify();
+    }
+
+    /// Capture harness step `payment-sources demo|none`: the body of `GET /users/@me/billing/payment-sources` as an
+    /// account with a card (the default), PayPal, an iDEAL account and a Venmo account would return it; nothing is
+    /// sent.
+    #[cfg(feature = "capture")]
+    pub(crate) fn script_payment_sources(&mut self, demo: bool, cx: &mut Context<Self>) {
+        let rows = if demo {
+            serde_json::json!([
+                {"id": "1", "type": 1, "brand": "visa", "last_4": "4242", "expires_month": 3,
+                 "expires_year": 2029, "default": true, "invalid": false, "country": "US"},
+                {"id": "2", "type": 2, "email": "player@example.com", "default": false, "invalid": false},
+                {"id": "3", "type": 16, "bank": "rabobank", "default": false, "invalid": true},
+                {"id": "4", "type": 11, "username": "player", "default": false, "invalid": false},
+            ])
+        } else {
+            serde_json::json!([])
+        };
+        self.nitro.sources = Some(rows);
+        self.nitro.sources_injected = true;
+        self.request_payment_source_art();
         cx.notify();
     }
 

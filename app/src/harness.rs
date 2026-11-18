@@ -1264,6 +1264,15 @@ pub async fn run(
                 let state = root.read_with(cx, |root, _| root.activity_state_line());
                 let _ = writeln!(output, "activity: {state}");
             }
+            ["activity", "failed", code @ ..] => {
+                let code = code.first().and_then(|code| code.parse().ok());
+                let line = root.update(cx, |root, cx| {
+                    let line = root.script_activity_failed(code);
+                    cx.notify();
+                    line
+                });
+                let _ = writeln!(output, "activity {line}");
+            }
             ["activity", "launch", name @ ..] => {
                 let name = name.join(" ");
                 let outcome = root.update(cx, |root, cx| root.activity_launch_named(&name, cx));
@@ -1376,6 +1385,40 @@ pub async fn run(
                 let plan = plan.parse::<u64>().ok();
                 let state = (*state).to_owned();
                 root.update(cx, |root, cx| root.script_subscription(plan, &state, cx));
+            }
+            // Capture only: a DM recipient as a bot with an authorized application (module 891522 `s9`).
+            ["app-dm", user, application, name @ ..] => {
+                let user = user.parse().unwrap_or(0);
+                let name = name.join(" ");
+                let line = root.update(cx, |root, cx| {
+                    let line = root.script_app_dm(user, application, &name);
+                    cx.notify();
+                    line
+                });
+                let _ = writeln!(output, "{line}");
+            }
+            // Capture only: a voice alert by name (`reload-activity`).
+            ["voice-alert", name] => {
+                let line = root.update(cx, |root, cx| {
+                    let line = root.script_voice_alert(name);
+                    cx.notify();
+                    line
+                });
+                let _ = writeln!(output, "{line}");
+            }
+            // Capture only: a step of the Nitro cancellation flow (module 673761) over the open settings.
+            ["cancel-nitro", step] => {
+                let line = root.update(cx, |root, cx| {
+                    let line = root.script_cancel_nitro(step);
+                    cx.notify();
+                    line
+                });
+                let _ = writeln!(output, "{line}");
+            }
+            // Capture only: saved payment sources for the Billing page (`demo` or `none`); nothing is sent.
+            ["payment-sources", which] => {
+                let demo = *which == "demo";
+                root.update(cx, |root, cx| root.script_payment_sources(demo, cx));
             }
             // Local cooldown only; no request or channel setting is sent.
             ["slowmode", "reject"] => {

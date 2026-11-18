@@ -263,6 +263,38 @@ pub fn format(key: &str, values: &Args<'_>) -> String {
     }
 }
 
+/// [`format_runs`] by paragraph: each top-level `$p` tag of the message (`<$p>...</><$p>...</>`, a `p` element each
+/// in the official client) is one list of runs, and what lies between them another. A message without paragraphs is
+/// a single paragraph.
+pub fn paragraph_runs(key: &str, values: &Args<'_>) -> Vec<Vec<(String, Option<Box<str>>)>> {
+    let Some((locale, message)) = message(key) else {
+        return Vec::new();
+    };
+    let formatters = locale_data::formatters(locale);
+    let mut out = Vec::new();
+    let mut loose: Vec<Node> = Vec::new();
+    for node in &message.nodes {
+        match node {
+            Node::Tag { name, children, .. } if &**name == "$p" => {
+                if !loose.is_empty() {
+                    out.push(format::runs(
+                        &std::mem::take(&mut loose),
+                        values,
+                        formatters,
+                    ));
+                }
+                out.push(format::runs(children, values, formatters));
+            }
+            other => loose.push(other.clone()),
+        }
+    }
+    if !loose.is_empty() {
+        out.push(format::runs(&loose, values, formatters));
+    }
+    out.retain(|runs| !runs.is_empty());
+    out
+}
+
 /// [`format`] in runs of text, each with the innermost rich-text tag around it (`$b` is bold): for messages whose
 /// placeholders the official client styles, such as "**{a}** is typing...".
 pub fn format_runs(key: &str, values: &Args<'_>) -> Vec<(String, Option<Box<str>>)> {

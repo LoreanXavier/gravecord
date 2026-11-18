@@ -111,8 +111,12 @@ impl Root {
         let recipient = self
             .current_dm()
             .and_then(|dm| self.stores.dm_recipient(dm))
-            .map(|user| user.id);
-        if let Some(user) = recipient {
+            .map(|user| (user.id, user.bot));
+        // A bot's DM reads the authorized apps for its Mute and Deauthorize buttons (module 891522 `s9`).
+        if recipient.is_some_and(|(_, bot)| bot) {
+            self.request_authorized_apps();
+        }
+        if let Some((user, _)) = recipient {
             let _ = self.requests.send(crate::net::Request::Fetch {
                 key: format!("profile:{user}"),
                 route: self.dm_profile_route(user),
@@ -475,8 +479,8 @@ impl Root {
                                 // Not in the pinned client: MessagePeek's last message in its place
                                 // (`plugin_hooks/message_peek.rs`).
                                 .children({
-                                    let presence =
-                                        self.presence_line_with(&recipient, None, true, 16., look.text);
+                                    let presence = self
+                                        .presence_line_with(&recipient, None, true, 16., look.text);
                                     match self.message_peek(channel, presence.is_some()) {
                                         super::plugin_hooks::Peek::Keep => presence,
                                         super::plugin_hooks::Peek::Empty => None,

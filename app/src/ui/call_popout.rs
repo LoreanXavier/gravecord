@@ -49,8 +49,23 @@ impl Root {
         self.vv.popout.is_some()
     }
 
-    /// Pop Out: opens the window, or closes it when it is open.
+    /// Pop Out: opens the window, or closes it when it is open. With an Activity of this session running, "Reload
+    /// Activity" asks first (module 47294, `handleOpenPopout` and the pop-in of module 555444), unless its "Don't show
+    /// again" was ticked.
     pub(super) fn toggle_call_popout(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.activities.running.is_some()
+            && !super::voice_alerts::activity_popout_alert_disabled()
+        {
+            self.voice_alert =
+                Some(super::voice_alerts::VoiceAlert::ReloadActivity { dont_show: false });
+            cx.notify();
+            return;
+        }
+        self.toggle_call_popout_now(window, cx);
+    }
+
+    /// Pop Out or pop in, without asking.
+    pub(super) fn toggle_call_popout_now(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.vv.popout.is_some() {
             self.close_call_popout(cx);
             return;

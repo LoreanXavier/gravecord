@@ -1441,7 +1441,7 @@ impl Root {
             .line_height(px(18.))
             .font_weight(FontWeight(500.))
             .text_color(mid("--white"))
-            .on_click(cx.listener(|this, _, _, cx| this.leave_activity(cx)))
+            .on_click(cx.listener(|this, _, _, cx| this.leave_activity_by_hand(cx)))
             .child("Leave")
             .into_any_element()
     }
