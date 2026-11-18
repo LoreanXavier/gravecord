@@ -816,15 +816,42 @@ impl Root {
     /// The quick reaction row of the message menu (module 761304 `tr`): the first four in priority order, less the
     /// sprite-sheet faces of `eP`.
     pub(super) fn quick_reactions(&self) -> Vec<&'static dc_tokens::emoji_data::Emoji> {
-        self.priority_reactions()
+        // Not in the pinned client: MoreQuickReactions lifts the cut at 4, and `frequentEmojis` keeps the favourites
+        // out (`plugin_hooks/more_quick_reactions.rs`).
+        let grid = super::plugin_hooks::more_quick_grid();
+        let more = grid.is_some();
+        let ordered: Vec<&'static dc_tokens::emoji_data::Emoji> = match grid {
+            Some(grid) if grid.frequent_only => self
+                .frequent_reactions()
+                .iter()
+                .filter_map(|name| dc_tokens::emoji_by_name(name))
+                .collect(),
+            _ => self.priority_reactions(),
+        };
+        ordered
             .into_iter()
             .filter(|emoji| !(emoji.sprite.is_some() && NOT_QUICK.contains(&emoji.names[0])))
-            .take(4)
+            .take(if more { usize::MAX } else { 4 })
             .collect()
     }
 
     /// The hover bar's three (module 891522 `np`): the frecent reactions only (`QZ`), topped up with
     /// `100`, `laughing` and `sparkling_heart` when fewer than three.
+    /// Not in the pinned client: the hover bar's row with MoreQuickReactions' `reactionCount`.
+    pub(super) fn hover_bar_reactions_up_to(
+        &self,
+        count: usize,
+    ) -> Vec<&'static dc_tokens::emoji_data::Emoji> {
+        hover_order_up_to(
+            self.frequent_reactions(),
+            |name| dc_tokens::emoji_by_name(name).map(Same),
+            count,
+        )
+        .into_iter()
+        .map(|Same(emoji)| emoji)
+        .collect()
+    }
+
     pub(super) fn hover_bar_reactions(&self) -> Vec<&'static dc_tokens::emoji_data::Emoji> {
         hover_order(self.frequent_reactions(), |name| {
             dc_tokens::emoji_by_name(name).map(Same)
@@ -1163,7 +1190,12 @@ impl Root {
         ))
     }
 
-    fn react_from_menu(&mut self, message: Id, surrogates: &'static str, cx: &mut Context<Self>) {
+    pub(super) fn react_from_menu(
+        &mut self,
+        message: Id,
+        surrogates: &'static str,
+        cx: &mut Context<Self>,
+    ) {
         self.menu = None;
         if let Some(channel) = self.channel {
             let already_me = self
@@ -1409,6 +1441,10 @@ impl Root {
         if reactions.is_empty() {
             return None;
         }
+        // Not in the pinned client: MoreQuickReactions' grid (`plugin_hooks/more_quick_reactions.rs`).
+        if let Some(grid) = super::plugin_hooks::more_quick_grid() {
+            return Some(self.more_quick_grid_row(message, reactions, grid, cx));
+        }
         Some(
             div()
                 .p(px(8.))
@@ -1491,7 +1527,9 @@ impl Root {
                         .relative()
                         .child(self.anchor_probe("context-menu"))
                         .occlude()
-                        .w(px(MENU_WIDTH))
+                        // Not in the pinned client: MoreQuickReactions' grid widens the menu (`min-width:
+                        // fit-content`, `plugin_hooks/more_quick_reactions.rs`).
+                        .w(px(super::plugin_hooks::more_quick_menu_width(MENU_WIDTH)))
                         .max_h(px(max_height))
                         .rounded(px(8.))
                         .bg(color("--background-surface-higher"))
@@ -1967,6 +2005,15 @@ fn priority_order<T: PartialEq>(
 
 /// `l.length >= 3 ? l : unique(l.concat(nh))`, then the first three.
 fn hover_order<T: PartialEq>(frecent: Vec<String>, resolve: impl Fn(&str) -> Option<T>) -> Vec<T> {
+    hover_order_up_to(frecent, resolve, 3)
+}
+
+/// `hover_order` cut at `count` (3 in the pinned client; not in it: MoreQuickReactions' `reactionCount`).
+fn hover_order_up_to<T: PartialEq>(
+    frecent: Vec<String>,
+    resolve: impl Fn(&str) -> Option<T>,
+    count: usize,
+) -> Vec<T> {
     let mut out: Vec<T> = frecent.iter().filter_map(|key| resolve(key)).collect();
     if out.len() < 3 {
         for item in ["100", "laughing", "sparkling_heart"]
@@ -1978,7 +2025,7 @@ fn hover_order<T: PartialEq>(frecent: Vec<String>, resolve: impl Fn(&str) -> Opt
             }
         }
     }
-    out.truncate(3);
+    out.truncate(count);
     out
 }
 

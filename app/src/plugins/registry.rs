@@ -571,6 +571,67 @@ pub(crate) const DEFS: &[Def] = &[
         }],
     },
     Def {
+        id: "BetterQuickReact",
+        name: "MoreQuickReactions",
+        description: "Improves the quick react buttons in the message context menu.",
+        origin: Origin::Vencord,
+        source: "src/plugins/moreQuickReactions/index.ts",
+        default_on: false,
+        settings: &[
+            Setting {
+                key: "reactionCount",
+                label: "Reaction Count",
+                description: "Number of reactions (0-42)",
+                kind: Kind::Number {
+                    default: 5.,
+                    min: 0.,
+                    max: 42.,
+                    step: 1.,
+                },
+            },
+            Setting {
+                key: "frequentEmojis",
+                label: "Frequent Emojis",
+                description: "Use frequently used emojis instead of favorite emojis",
+                kind: Kind::Switch { default: true },
+            },
+            Setting {
+                key: "rows",
+                label: "Rows",
+                description: "Rows of quick reactions to display",
+                kind: Kind::Number {
+                    default: 2.,
+                    min: 1.,
+                    max: 16.,
+                    step: 1.,
+                },
+            },
+            Setting {
+                key: "columns",
+                label: "Columns",
+                description: "Columns of quick reactions to display",
+                kind: Kind::Number {
+                    default: 4.,
+                    min: 1.,
+                    max: 12.,
+                    step: 1.,
+                },
+            },
+            Setting {
+                key: "compactMode",
+                label: "Compact Mode",
+                description: "Scales the buttons to 75% of their original scale, whilst increasing the inner emoji to 125% scale. Emojis will be 93.75% of the original size. Recommended to have a minimum of 5 columns",
+                kind: Kind::Switch { default: false },
+            },
+            Setting {
+                key: "scroll",
+                label: "Scroll",
+                description: "Enable scrolling the list of emojis",
+                kind: Kind::Switch { default: true },
+            },
+        ],
+    },
+    Def {
         id: "BetterRoleContext",
         name: "BetterRoleContext",
         description: "Adds options to copy role color / edit role / view role icon when right clicking roles in the user profile or in the member list",

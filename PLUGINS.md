@@ -12,7 +12,7 @@ every setting changed), and with every plugin off, and fails on one differing pi
 The list is the plugins enabled in the owner's Equicord backup of 2026-09-21 (156). Sources were read in the local
 Equicord checkout of 2026-11-14 (`src/plugins` is Vencord's, `src/equicordplugins` Equicord's).
 
-Totals: 67 ported, 9 native, 35 planned, 45 not applicable.
+Totals: 68 ported, 9 native, 34 planned, 45 not applicable.
 
 Status: **ported** works and has its proof; **native** is what gravecord already does without a plugin;
 **planned** is not built yet (an import keeps its settings for when it is); **not applicable** has nothing to
@@ -36,7 +36,7 @@ port in a native client, or was removed upstream.
 | BetterGifAltText | planned | plugins/betterGifAltText/index.ts | Change GIF alt text from simply being 'GIF' to containing the gif tags / filename | a place where alt text shows: the original changes the `alt` that screen readers read, and the app draws images without an accessibility tree. |  |
 | BetterNotesBox | not applicable | (not in the 2026-11-14 checkout) |  | removed from Equicord (last seen in dbca8ef2); the private note box is the client's own here. |  |
 | BetterPlusReacts | planned | equicordplugins/betterPlusReacts/index.ts | The amount of plus before :emoji: is the message to add it to | the pinned client's own `+:emoji:` rule first: a message `+:emoji:` reacts to the last message (the send path's reaction shortcut and its autocomplete), which the port does not have yet (GAP: main app); BetterPlusReacts only lets more pluses pick an older message. |  |
-| BetterQuickReact | planned | plugins/moreQuickReactions/index.ts | Improves the quick react buttons in the message context menu. | now MoreQuickReactions upstream. more quick reaction buttons in the message context menu. |  |
+| BetterQuickReact | ported | plugins/moreQuickReactions/index.ts | Improves the quick react buttons in the message context menu. | plugin_hooks/more_quick_reactions.rs (now MoreQuickReactions upstream): the hover bar shows reactionCount quick reactions; the message menu's row is uncut and becomes a grid of columns 44px cells (33px compact, button at 75% and emoji at 125%) showing rows rows, padded 4/1/6 and centred, the menu widening to fit; the wheel moves it a row at a time with scroll; frequentEmojis keeps the favourites out (off: they come first, as the pinned list has them). | `the_grid_scrolls_a_row_at_a_time`; frames pending (live runs held) |
 | BetterRoleContext | ported | plugins/betterRoleContext/index.tsx | Adds options to copy role color / edit role / view role icon when right clicking roles in the user profile or in the member list | plugin_hooks/better_role_context.rs: a right click on a member list role header opens the role menu: Edit Role (Manage Roles: Server Settings on Roles with the role open), Copy Role Color (#rrggbb), View Role Icon (role-icons/<id>/<icon>.<roleIconFileFormat> at 128 in the viewer, without sender or Forward), View Role Members (the role's member popout) and Copy Role ID, with the original's icons. GAP: the dev-context rows of a profile's role chip (the chips open no menu here). | `rows_follow_what_the_role_offers_in_the_original_order`, `colors_copy_as_css_hex_and_the_format_defaults_to_png`; frames brc-menu, brc-members, brc-icon, brc-edit (synthetic hoisted role); plugins-off role-header |
 | BetterRoleDot | ported | plugins/betterRoleDot/index.ts | Copy role colour on RoleDot (accessibility setting) click. Also allows using both RoleDot and coloured names simultaneously | plugin_hooks/better_role_dot.rs: a click on the role dot (chat, member list, and the popout's dots) copies #rrggbb with the success toast; bothStyles makes every In names / Next to names test true (names, role mentions and dots together); copyRoleColorInProfilePopout draws the popout's roles with dots. | `colours_copy_as_color_strings_and_switches_read`; frame brd-both; plugins-off chat, member-list, profile-popout |
 | BetterSettings | not applicable | plugins/betterSettings/index.tsx | Enhances your settings-menu-opening experience | settings are native here: no crossfade or lazy loading to remove. |  |
@@ -209,6 +209,12 @@ Every setting of each original (`definePluginSettings`), its type and default th
 | BetterActivities | `hideTooltip` | BOOLEAN | `true` | ported |
 | BetterActivities | `allActivitiesStyle` | SELECT | `true` | ported |
 | BetterCommands | `autoFillArguments` | BOOLEAN | `true` | nothing to act on yet: the app's command flow already asks every option in turn, optional ones too, so there is nothing more to fill |
+| BetterQuickReact | `reactionCount` | NUMBER | `5` | ported |
+| BetterQuickReact | `frequentEmojis` | BOOLEAN | `true` | ported |
+| BetterQuickReact | `rows` | SLIDER | `2` | ported |
+| BetterQuickReact | `columns` | SLIDER | `4` | ported |
+| BetterQuickReact | `compactMode` | BOOLEAN | `false` | ported |
+| BetterQuickReact | `scroll` | BOOLEAN | `true` | ported |
 | BetterRoleContext | `roleIconFileFormat` | SELECT | `"png"` | ported |
 | BetterRoleDot | `bothStyles` | BOOLEAN | `false` | ported |
 | BetterRoleDot | `copyRoleColorInProfilePopout` | BOOLEAN | `false` | ported |

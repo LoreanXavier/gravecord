@@ -9038,7 +9038,12 @@ impl Root {
         // `isExpanded`: Shift held, not in keyboard mode, and no picker or menu of the bar open.
         caps.expanded =
             hover_bar::shift_held() && !self.keyboard_mode() && !picker_open && !more_open;
-        let quick: Vec<&'static dc_tokens::emoji_data::Emoji> = self.hover_bar_reactions();
+        let quick: Vec<&'static dc_tokens::emoji_data::Emoji> = match plugin_hooks::more_quick_grid() {
+            // Not in the pinned client: MoreQuickReactions shows `reactionCount` of them
+            // (`plugin_hooks/more_quick_reactions.rs`).
+            Some(grid) => self.hover_bar_reactions_up_to(grid.reaction_count),
+            None => self.hover_bar_reactions(),
+        };
         // `.hoverBarButton:hover .icon` is `scale(1.1)` over `.4s` (module 194085, stylesheet 28636); the button's
         // colour is `--interactive-text-default`, `-hover` under the pointer, `-active` when selected (319714).
         let button = |name: &str| {

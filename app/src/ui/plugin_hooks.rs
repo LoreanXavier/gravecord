@@ -20,6 +20,10 @@ mod message_clicks;
 mod message_peek;
 mod message_pronouns;
 mod message_tags;
+mod more_quick_reactions;
+pub(in crate::ui) use more_quick_reactions::{
+    grid as more_quick_grid, menu_width as more_quick_menu_width,
+};
 mod more_commands;
 pub(crate) use more_commands::outgoing as more_commands_outgoing;
 mod mute_channel_mentions;
