@@ -22,8 +22,8 @@ mod new_guild_settings;
 mod open_in_app;
 mod pin_dms;
 mod platform_indicators;
-mod preview_message;
 mod plugin_commands;
+mod preview_message;
 mod read_all;
 mod role_color_everywhere;
 mod server_info;
@@ -43,11 +43,11 @@ pub(in crate::ui) use download_all::{DOWNLOAD_ALL, download_all};
 
 pub(super) use message_clicks::follow as follow_message_clicks;
 pub(super) use message_peek::Peek;
-pub(in crate::ui) use preview_message::File as PreviewFile;
 pub(in crate::ui) use pin_dms::{
     Category as PinCategory, DEFAULT_COLOR as PIN_DEFAULT_COLOR, PinCategoryDraft,
 };
 pub(super) use platform_indicators::{Place as PlatformPlace, mobile_status};
+pub(in crate::ui) use preview_message::File as PreviewFile;
 pub(in crate::ui) use role_color_everywhere::{
     Place as RolePlace, label as role_colored_label, paint as role_colored,
 };
