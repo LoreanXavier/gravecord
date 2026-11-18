@@ -1990,6 +1990,10 @@ impl Root {
                 if self.friend_invites_answered(&key, &body) {
                     return;
                 }
+                // Not in the pinned client: ZipPreview's archive arrived (`plugin_hooks/zip_preview.rs`).
+                if self.zip_preview_fetched(&key, cx) {
+                    return;
+                }
                 // Not in the pinned client: MoreCommands' fetched answers (`plugin_hooks/more_commands.rs`).
                 if self.more_commands_fetched(&key, &body, cx) {
                     return;
@@ -11637,6 +11641,8 @@ impl Render for Root {
             .children(self.server_info_layer(cx))
             // Not in the pinned client: MessageTags' tag dialog (`plugin_hooks/message_tags.rs`).
             .children(self.message_tags_dialog(window, cx))
+            // Not in the pinned client: ZipPreview's file dialog (`plugin_hooks/zip_preview.rs`).
+            .children(self.zip_preview_dialog(window, cx))
             .children(self.not_friend_modal(cx))
             .children(self.favorites_full_modal(cx))
             .children(self.chat_alert_modal(cx))

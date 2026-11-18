@@ -244,6 +244,14 @@ pub enum Request {
         height: u32,
         avatars: Vec<CloudAvatar>,
     },
+    /// Not in the pinned client: ZipPreview's archive. `native` is the Discord attachment path its native helper
+    /// fetches from `cdn.discordapp.com` (after the user agreed); else `url` is fetched as it is. At most 50 MB is read
+    /// and the archive is parsed off the UI thread into `plugins::zip_preview`, then `Update::Fetched` under `key`.
+    FetchZip {
+        key: String,
+        url: String,
+        native: Option<String>,
+    },
     /// Conditionally GET a public CDN JSON list and parse it off the UI thread.
     FetchCdn {
         key: String,
@@ -814,6 +822,7 @@ impl Request {
             Request::FetchCdn { .. } => "FetchCdn",
             Request::FetchPublicJson { .. } => "FetchPublicJson",
             Request::FriendCloud { .. } => "FriendCloud",
+            Request::FetchZip { .. } => "FetchZip",
             Request::ResolveRedirect { .. } => "ResolveRedirect",
             Request::Typing { .. } => "Typing",
             Request::React { .. } => "React",
@@ -853,6 +862,7 @@ impl Request {
             | Request::FetchCdn { .. }
             | Request::FetchPublicJson { .. }
             | Request::FriendCloud { .. }
+            | Request::FetchZip { .. }
             | Request::ResolveRedirect { .. }
             | Request::LoadMessages { .. }
             | Request::PrefetchMessages { .. }
@@ -2480,6 +2490,45 @@ pub async fn run(token: Token, updates: mpsc::UnboundedSender<Update>, requests:
                     let _ = updates.send(Update::Fetched {
                         key,
                         body: json!({"path": path.map(|path| path.display().to_string())}),
+                    });
+                });
+            }
+            Request::FetchZip { key, url, native } => {
+                tokio::spawn(async move {
+                    use crate::plugins::zip_preview as zip;
+                    let fetch_url = native.as_ref().map_or_else(
+                        || url.clone(),
+                        |path| format!("https://cdn.discordapp.com/attachments/{path}"),
+                    );
+                    let fetched = client
+                        .fetch_public_limited(&fetch_url, zip::MAX_ZIP_BYTES)
+                        .await;
+                    let bytes = match (fetched, native.is_some()) {
+                        (Ok(dc_http::LimitedGet::Body(bytes)), _) => Ok(bytes),
+                        (Ok(dc_http::LimitedGet::TooLarge), _) => Err(zip::TOO_LARGE.to_owned()),
+                        (Ok(dc_http::LimitedGet::Status(status, reason)), true) => {
+                            Err(format!("Fetch failed: {status} {reason}"))
+                        }
+                        (Ok(dc_http::LimitedGet::Status(..)), false) => {
+                            Err("Could not fetch ZIP.".to_owned())
+                        }
+                        (Err(error), _) => Err(error.to_string()),
+                    };
+                    let parsed = match bytes {
+                        Ok(bytes) => tokio::task::spawn_blocking(move || zip::parse(&bytes))
+                            .await
+                            .unwrap_or_else(|_| Err("Failed to preview ZIP.".to_owned())),
+                        Err(message) => Err(message),
+                    };
+                    match parsed {
+                        Ok(archive) => {
+                            zip::set_state(&url, zip::State::Resolved(std::sync::Arc::new(archive)))
+                        }
+                        Err(message) => zip::reject(&url, message),
+                    }
+                    let _ = updates.send(Update::Fetched {
+                        key,
+                        body: Value::Null,
                     });
                 });
             }

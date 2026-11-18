@@ -2073,6 +2073,15 @@ pub(crate) const DEFS: &[Def] = &[
             kind: Kind::Switch { default: true },
         }],
     },
+    Def {
+        id: "ZipPreview",
+        name: "ZipPreview",
+        description: "Previews ZIP contents inside file attachments.",
+        origin: Origin::Equicord,
+        source: "src/equicordplugins/zipPreview/index.tsx",
+        default_on: false,
+        settings: &[],
+    },
 ];
 
 #[cfg(test)]

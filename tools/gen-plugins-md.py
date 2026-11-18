@@ -147,6 +147,7 @@ assert len(idle) == idle_entries, f'IDLE_SETTINGS: read {len(idle)} of {idle_ent
 
 # How each ported plugin is built here, and its proof.
 PORTED = {
+    'ZipPreview': "plugin_hooks/zip_preview.rs + plugins/zip_preview.rs: a .zip file attachment gets the chevron row under its name; opening it asks the native question for a Discord attachment (Cancel / Preview ZIP), fetches at most 50 MB off the UI thread, reads it as fflate's unzipSync (stored and deflated entries, folders dropped, sorted, 1000 at most) and lists it with the folder path as links; a text or picture file of 10 MB at most opens in the 680 wide dialog (code block with Copy and Download, or the picture with Download); the states and errors are the original's. GAP: the 180 ms open and close animation.",
     'SilentMessageToggle': "plugin_hooks/silent_message_toggle.rs: the chat bar's bell after PreviewMessage's eye (1.2 times larger, crossed out in the danger colour while off, Enable/Disable Silent Message); while on, a message that goes out gets the @silent prefix (the base's silentPrefix send turns it into SUPPRESS_NOTIFICATIONS) and a voice message the flag itself; autoDisable turns it off after one; persistState none resets it on a channel change, restarts keeps it in storage plugin-silent-message-toggle.",
     'MoreCommands': "plugin_hooks/more_commands.rs: its 50 commands in the Built-In section while it is on: system info, uptime, time, choose, dice, coin, ask, random cat/dog/neko/anime-boys pictures (their public APIs), random number, transform (case, repeat, reverse, NFC/NFD/NFKC/NFKD), word count, countdown, ping, echo, lenny, mock, slap, freaky (addFreakyEnding), morse, uwuify, gifroulette (a favourite GIF, refused in the Equicord and Vencord servers), friendcloud (the affinities' avatars drawn into affinities-cloud.png off the UI thread, waiting in the message box) and 22 kaomoji; Clyde answers where the plugin's sendBotMessage does, the Commands API's error text from Equicord otherwise; uwuEveryMessage uwuifies what you send and edit. GAP: /imgtogif always answers No Image specified! (slash commands take no file option here yet), uwuEverything is idle, /systeminfo's network reads 4g and /gettime writes the en-US form.",
     'MuteChannelMentions': "plugin_hooks/mute_channel_mentions.rs + dc-state ReadStates::hidden: the picked channels' mention badges are filtered wherever the app reads a channel's mentions (channel rows, server icons, overlay, keyboard), none at all or with onlyEveryone only your direct mentions since the last read; channel and thread menus get the Hide mention badge check after Mark As Read. Nothing is sent.",
@@ -231,6 +232,7 @@ PORTED = {
                      'so the original\'s 200% cap on the sync has nothing to cap.',
 }
 TESTS = {
+    'ZipPreview': '`an_archive_reads_as_unzip_sync_does`, `helpers_follow_the_original`; frames pending (live runs held)',
     'SilentMessageToggle': '`the_prefix_and_settings_follow_the_original`, `auto_disable_takes_the_toggle_once`; frames pending (live runs held)',
     'MoreCommands': '`the_text_commands_follow_the_original`, `uwuify_replaces_words_and_keeps_links`, `transform_applies_case_form_reversal_and_repeats`, `the_cloud_follows_the_original_numbers`, `every_command_has_a_distinct_name`; frames pending (live runs held)',
     'MuteChannelMentions': '`ids_parse_as_the_original_splits_them`, dc-state `hidden_channels_show_nothing_or_only_direct_mentions_since_the_ack`; frame mcm-menu; plugins-off channel-menu, chat',
@@ -410,7 +412,6 @@ PLANNED = {
     'ValidReply': "the pinned client's \"Message could not be loaded\" reply bar first: a reply whose message the server did not embed draws no reply line here (GAP in the reply path: intl REPLY_QUOTE_MESSAGE_NOT_LOADED); ValidReply's hover fetch hangs on that bar.",
     'VoiceMessages': 'recording voice messages on desktop.',
     'VoiceMessageTranscriber': 'an on-device Whisper model runner.',
-    'ZipPreview': 'a ZIP listing in file attachments.',
     'BetterQuickReact': 'more quick reaction buttons in the message context menu.',
     'ExpressionCloner': 'menu rows that clone, edit and delete emoji and stickers into your servers.',
     'IloveSpam': 'messages of users flagged as likely spammers shown as any other.',

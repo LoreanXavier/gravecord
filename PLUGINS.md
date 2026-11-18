@@ -12,7 +12,7 @@ every setting changed), and with every plugin off, and fails on one differing pi
 The list is the plugins enabled in the owner's Equicord backup of 2026-09-21 (156). Sources were read in the local
 Equicord checkout of 2026-11-14 (`src/plugins` is Vencord's, `src/equicordplugins` Equicord's).
 
-Totals: 64 ported, 9 native, 38 planned, 45 not applicable.
+Totals: 65 ported, 9 native, 37 planned, 45 not applicable.
 
 Status: **ported** works and has its proof; **native** is what gravecord already does without a plugin;
 **planned** is not built yet (an import keeps its settings for when it is); **not applicable** has nothing to
@@ -175,7 +175,7 @@ port in a native client, or was removed upstream.
 | WebScreenShareFixes | not applicable | plugins/webScreenShareFixes.web/index.ts | Removes 2500kbps bitrate cap on chromium and vesktop clients and fixes CPU usage growing endlessly while screensharing. | web build only (Chromium bitrate cap). |  |
 | WhoReacted | ported | plugins/whoReacted/index.tsx | Renders the avatars of users who reacted to a message | plugin_hooks/who_reacted.rs: after each reaction's count up to five avatars at 90% (four and +N past five), from GET reactions?limit=100&type=0 queued one per 250 ms newest first and merged into the users; nothing on a message with over ten reactions; clickableAvatars opens the profile popout instead of reacting. Super reactions (type 1) are not fetched: the app draws no burst pills. | `five_at_most_with_the_rest_counted`; frame wr-on (demo-reactors); plugins-off reactions, chat |
 | YoutubeAdblock | not applicable | plugins/youtubeAdblock.desktop/index.ts | Block ads in YouTube embeds and the WatchTogether activity via AdGuard | needs an ad filter inside the YouTube web view of embeds; deferred with the web host. |  |
-| ZipPreview | planned | equicordplugins/zipPreview/index.tsx | Previews ZIP contents inside file attachments. | a ZIP listing in file attachments. |  |
+| ZipPreview | ported | equicordplugins/zipPreview/index.tsx | Previews ZIP contents inside file attachments. | plugin_hooks/zip_preview.rs + plugins/zip_preview.rs: a .zip file attachment gets the chevron row under its name; opening it asks the native question for a Discord attachment (Cancel / Preview ZIP), fetches at most 50 MB off the UI thread, reads it as fflate's unzipSync (stored and deflated entries, folders dropped, sorted, 1000 at most) and lists it with the folder path as links; a text or picture file of 10 MB at most opens in the 680 wide dialog (code block with Copy and Download, or the picture with Download); the states and errors are the original's. GAP: the 180 ms open and close animation. | `an_archive_reads_as_unzip_sync_does`, `helpers_follow_the_original`; frames pending (live runs held) |
 
 ## Settings of the ported plugins
 

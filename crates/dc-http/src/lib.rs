@@ -17,6 +17,16 @@ mod webhook;
 
 pub use upload::Progress;
 
+/// The answer of [`Client::fetch_public_limited`].
+#[derive(Debug)]
+pub enum LimitedGet {
+    Body(Vec<u8>),
+    /// An error status, with its reason phrase.
+    Status(u16, String),
+    /// The body is over the limit.
+    TooLarge,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ConditionalGet {
     NotModified {
@@ -552,6 +562,33 @@ impl Client {
             &bytes,
         );
         Ok(bytes)
+    }
+
+    /// Public GET (no authorization) reading at most `limit` bytes of the body: an error status, or a body over the
+    /// limit (by its length header or as it streams), comes back as [`LimitedGet`] instead of the bytes.
+    pub async fn fetch_public_limited(&self, url: &str, limit: usize) -> Result<LimitedGet, Error> {
+        let mut response = self.http().get(url).send().await?;
+        let status = response.status();
+        if !status.is_success() {
+            return Ok(LimitedGet::Status(
+                status.as_u16(),
+                status.canonical_reason().unwrap_or_default().to_owned(),
+            ));
+        }
+        if response
+            .content_length()
+            .is_some_and(|length| length > limit as u64)
+        {
+            return Ok(LimitedGet::TooLarge);
+        }
+        let mut bytes = Vec::new();
+        while let Some(chunk) = response.chunk().await? {
+            bytes.extend_from_slice(&chunk);
+            if bytes.len() > limit {
+                return Ok(LimitedGet::TooLarge);
+            }
+        }
+        Ok(LimitedGet::Body(bytes))
     }
 
     /// Public CDN GET with optional `If-None-Match` validation (no authorization headers sent).

@@ -41,6 +41,7 @@ mod valid_user;
 mod view_icons;
 mod voice_stats;
 mod who_reacted;
+mod zip_preview;
 
 pub(in crate::ui) use account_panel::ANCHOR as ACCOUNT_PANEL_ANCHOR;
 pub(in crate::ui) use always_animate::{Part as AnimatePart, always_animate};
