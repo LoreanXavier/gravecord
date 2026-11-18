@@ -105,9 +105,18 @@ for dp, dn, fn in os.walk(ROOT):
             rel = os.path.relpath(path, ROOT).replace(os.sep, '/')
             desc = re.search(r'\n\s{4}description:\s*"([^"]*)"', block)
             settings = []
-            s = re.search(r'definePluginSettings\(\{', text)
+            holder = text
+            s = re.search(r'definePluginSettings\(\{', holder)
+            # Some plugins keep their settings in a file of their own beside the index (`settings.ts`).
+            if not s:
+                for other in sorted(fn):
+                    if other != f and other.endswith(('.ts', '.tsx')):
+                        holder = open(os.path.join(dp, other), encoding='utf-8', errors='replace').read()
+                        s = re.search(r'definePluginSettings\(\{', holder)
+                        if s:
+                            break
             if s:
-                for key, body in top_level_entries(balanced(text, s.end() - 1)):
+                for key, body in top_level_entries(balanced(holder, s.end() - 1)):
                     kind = re.search(r'type:\s*OptionType\.(\w+)', body)
                     # A select marks its default option with `default: true`; take that option's value.
                     picked = re.search(r'value:\s*([^,}\n]+?),\s*default:\s*true', body)
@@ -132,6 +141,12 @@ assert len(idle) == idle_entries, f'IDLE_SETTINGS: read {len(idle)} of {idle_ent
 
 # How each ported plugin is built here, and its proof.
 PORTED = {
+    'NoNitroUpsell': "plugin_hooks.rs premium_type_override, nitro.rs premium_wire: while on, the account's tier reads as Nitro (premiumTypeOverride 2) everywhere the app asks for it, so the upsells that depend on it are left out, as the original tricks the client; the server still applies the real tier.",
+    'WhoReacted': "plugin_hooks/who_reacted.rs: after each reaction's count up to five avatars at 90% (four and +N past five), from GET reactions?limit=100&type=0 queued one per 250 ms newest first and merged into the users; nothing on a message with over ten reactions; clickableAvatars opens the profile popout instead of reacting. Super reactions (type 1) are not fetched: the app draws no burst pills.",
+    'TypingTweaks': "plugin_hooks/typing_tweaks.rs: in the typing line every bold name is the person, with a 16px avatar (showAvatars), the role colour (showRoleColors) and a click to the full profile; over three people the alternative line (alternativeFormatting, with the original's count); amITyping keeps you in the list; blocked and ignored people are left out as useTypingUsers does.",
+    'UserMessagesPronouns': "plugin_hooks/message_pronouns.rs: after a message's time, '• pronouns' in the time's style with a Pronouns tooltip, server profile pronouns first, from profiles already loaded (nothing fetched), lowercased unless Capitalized; not for bots, system or AutoMod messages, nor yourself without showSelf. Not 1:1: its compact-mode place is not drawn, the app has no compact message display.",
+    'DownloadAllAttachments': "plugin_hooks/download_all.rs: a hover bar button on messages with attachments (before QuickMention's, in plugin order); over 1 GiB a critical toast, else every attachment from its proxy URL (and with downloadAllFileTypes its URL after it), four at a time, saved into Downloads as the one file or a stored ZIP attachments-<id>.zip with unique names, then the original's success or failure toast. The app has no save dialog, so the file goes where its other downloads go.",
+    'AlwaysAnimate': "plugin_hooks/always_animate.rs: icons plays animated avatars (message rows, member list, panel) and server icons on the rail without the pointer and, for server icons, without focus, as canAnimate:!0 does; nameplates play in the member list all the time; roleGradients slides every gradient name, and with the plugin alone (its two patches without a setting) gradient names in chat and the member list slide. Reduced motion still stops gradients.",
     'GameActivityToggle': "plugin_hooks/game_activity_toggle.rs: a panel button before the microphone that turns Share my activity on and off (the account setting, so the presence changes at once), red with the struck-through gamepad while off; oldIcon draws the old line. Not 1:1: the right-click Share Spotify Activity menu is missing, because the app has no Spotify connection show_activity request yet.",
     'CancelFriendRequest': "profile_menu.rs, profile_other.rs, dm.rs: for an outgoing request the profile's friend button turns red and cancels it, the DM's text button reads 'Cancel Outgoing Friend Request' (critical), and the profile More menu ends with that row; each removes the relationship as the friends list's Cancel does.",
     'ServerListIndicators': "plugin_hooks/server_list_indicators.rs: under the Home button an item with the friends online and/or the servers (mode), and the same as its tooltip. Pending join requests of servers not joined are not counted yet (the app keeps no UserGuildJoinRequestStore id list).",
@@ -182,6 +197,12 @@ PORTED = {
                      'so the original\'s 200% cap on the sync has nothing to cap.',
 }
 TESTS = {
+    'NoNitroUpsell': '`no_nitro_upsell_reads_as_nitro_only_while_on`; frames nnu-on/nnu-off (Appearance: Color Themes as Nitro); plugins-off gif-picker, settings-appearance',
+    'WhoReacted': '`five_at_most_with_the_rest_counted`; frame wr-on (demo-reactors); plugins-off reactions, chat',
+    'TypingTweaks': '`bold_runs_become_people_and_many_use_the_alternative_line`; frames tt-on/tt-off; plugins-off typing',
+    'UserMessagesPronouns': '`server_pronouns_first_then_the_accounts_formatted`; frame ump-on; plugins-off chat',
+    'DownloadAllAttachments': '`names_are_made_unique_as_the_original_does`, `the_archive_holds_each_file_stored_with_its_crc`, `sources_size_check_and_toasts_follow_the_original`, `download_all_saves_what_answered_as_a_zip_or_one_file` (local server); frame daa-on; plugins-off attachment-hover, hover-bar',
+    'AlwaysAnimate': '`each_switch_plays_its_part_and_two_patches_need_none`; frames aa-on/aa-off (avatar report); plugins-off chat, member-list',
     'GameActivityToggle': '`the_button_reads_its_settings_and_names_the_next_state`; frames gat-on/gat-off/gat-old; plugins-off chat (user panel)',
     'CancelFriendRequest': 'frames cfr-on/cfr-off (an outgoing request set locally); plugins-off voice-profile, profile-popout',
     'ServerListIndicators': '`the_item_says_what_its_mode_counts`; frame sli-on; plugins-off chat (rail)',
@@ -221,6 +242,9 @@ SKIPPED_SETTINGS = {}
 
 # Already what gravecord does without a plugin.
 NATIVE = {
+    'StopAutoUnread': 'the app never raises a channel to All Messages by itself: the pinned client\'s '
+                      '`maybeAutoUpgradeChannel` (called by the unreads notice hook in module 626977) is not ported '
+                      '(GAP: main app), so there is nothing to stop.',
     'NoTrack': 'gravecord sends no analytics, metrics or Sentry reports; its only `/science` post is the overlay problem '
                'report the user submits.',
     'ForceOwnerCrown': 'the member list shows the owner crown at any server size.',
@@ -258,7 +282,6 @@ NOT_APPLICABLE = {
 PLANNED = {
     'AccountPanelServerProfile': 'a right-click menu on the account panel that opens the server profile popout.',
     'AltKrispSwitch': 'Krisp, which is blocked here (its signature check); without it there is nothing to switch to.',
-    'AlwaysAnimate': 'a switch in the image pipeline to play animated avatars, banners and emoji without hover.',
     'BetterActivities': 'activity icons in member list rows and every activity in the profile popout.',
     'BetterAudioPlayer': 'a spectrograph and oscilloscope in the audio attachment player (needs the decoded samples).',
     'BetterBlockedUsers': 'search in the blocked list, selectable names, no blocked-profile prompt, grouped blocked messages.',
@@ -275,7 +298,6 @@ PLANNED = {
     'ClipUpload': 'a button to upload a local video as a clip.',
     'CustomRPC': 'a custom rich presence editor and its activity.',
     'Decor': 'its third-party avatar decorations service (decor-auth in the backup\'s data store is not copied).',
-    'DownloadAllAttachments': 'a hover-bar button that saves every attachment of a message.',
     'Experiments': 'the experiments and developer pages.',
     'FavoriteEmojiFirst': 'favourite emoji first in the emoji autocomplete.',
     'FixYoutubeEmbeds': 'the YouTube embed workaround inside the web host.',
@@ -292,7 +314,6 @@ PLANNED = {
     'MoreCommands': 'its slash commands.',
     'MuteChannelMentions': 'mention badges hidden for chosen channels.',
     'NewGuildSettings': 'notification defaults applied when joining a server.',
-    'NoNitroUpsell': 'every Nitro upsell hidden (the app draws them from the pinned client).',
     'OpenInApp': 'Spotify, Steam and other links opened in their apps.',
     'PermissionFreeWill': 'no client-side limits in channel permission editing.',
     'PermissionsViewer': 'a permission breakdown in profiles and menus.',
@@ -309,14 +330,11 @@ PLANNED = {
     'SpotifyCrack': 'listen along without Premium and no Spotify pause on voice.',
     'SpotifyShareCommands': 'its /track, /album, /artist commands.',
     'SteamStatusSync': 'status sync with the Steam client.',
-    'StopAutoUnread': 'no automatic unread marking.',
     'Streaks': 'DM streak counts (its service login in the data store is not copied).',
     'StreamingCodecDisabler': 'a codec choice for streams and cameras in dc-media.',
     'SuperReactionTweaks': 'super reaction limits and default.',
     'Translate+': 'message translation (needs a translation service).',
-    'TypingTweaks': 'avatars and role colours in the typing line.',
     'UnlockedAvatarZoom': "the avatar crop tool (Edit Image of a new avatar), which the app does not have yet; the plugin only raises its zoom slider's maximum.",
-    'UserMessagesPronouns': 'pronouns by names in chat.',
     'UserPFP': 'its third-party avatar service.',
     'USRBG': 'its third-party banner service.',
     'ValidReply': 'replied messages fetched when missing.',
@@ -324,7 +342,6 @@ PLANNED = {
     'ViewIcons': 'avatars, banners and icons opened full size, with menu rows.',
     'VoiceMessages': 'recording voice messages on desktop.',
     'VoiceMessageTranscriber': 'an on-device Whisper model runner.',
-    'WhoReacted': 'reactor avatars on reactions.',
     'ZipPreview': 'a ZIP listing in file attachments.',
     'BetterQuickReact': 'more quick reaction buttons in the message context menu.',
     'ExpressionCloner': 'menu rows that clone, edit and delete emoji and stickers into your servers.',

@@ -354,11 +354,13 @@ impl Root {
             .collect();
         let selected = self.profile.as_ref().map(|profile| profile.user);
         let can_animate = window.is_window_active() && !crate::ui::motion::reduced();
+        // Not in the pinned client: AlwaysAnimate's `nameplates` (`animate:true,loop:true`, `plugin_hooks/always_animate.rs`).
+        let always = super::plugin_hooks::always_animate(super::plugin_hooks::AnimatePart::Nameplates);
         let active: Vec<_> = members
             .iter()
             .filter_map(|(user, sku)| {
                 let hovered = self.hovered_nameplate == Some(*user);
-                (can_animate && (hovered || selected == Some(*user)))
+                (always || (can_animate && (hovered || selected == Some(*user))))
                     .then_some((*user, *sku, hovered))
             })
             .collect();

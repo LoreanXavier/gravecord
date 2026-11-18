@@ -65,14 +65,16 @@ pub(super) fn name(text: impl Into<SharedString>, colors: RoleColors) -> Gradien
     GradientName {
         text: text.into(),
         colors,
-        animate: false,
+        // Not in the pinned client: AlwaysAnimate's `roleGradients` (`plugin_hooks/always_animate.rs`).
+        animate: super::plugin_hooks::always_animate(super::plugin_hooks::AnimatePart::RoleGradients)
+            && !super::motion::reduced(),
     }
 }
 
 impl GradientName {
     /// The background slides (the pointer is on the name or its message); not with reduced motion.
     pub(super) fn animate(mut self, animate: bool) -> Self {
-        self.animate = animate && !super::motion::reduced();
+        self.animate = (self.animate || animate) && !super::motion::reduced();
         self
     }
 }

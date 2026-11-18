@@ -25,6 +25,16 @@ const CONTROL_SCENARIO: &str = "double-click";
 const SCENARIOS: &str = "tests/plugins-off/scenarios.txt";
 /// Startup, the script and the capture: the longest scenario takes about a minute.
 const RUN_LIMIT: Duration = Duration::from_secs(240);
+/// The settle step before the capture, and how long it may take.
+const SETTLE: &str = "settle 20000";
+
+/// The settle step's line, for a failure's report.
+fn settled(log: &str) -> &str {
+    log.lines()
+        .rev()
+        .find(|line| line.starts_with("settle:"))
+        .unwrap_or("settle: no line (the harness stopped before it)")
+}
 
 struct Scenario {
     name: String,
@@ -71,7 +81,9 @@ impl Mode {
     fn script(self, scenario: &str) -> String {
         // The motion clock moves two seconds on, to a multiple of 2.4 s (the typing dots' period), and stops before the
         // capture: every transition has ended, and a caret or a looping animation is in the same phase in every run.
-        let scenario = format!("{scenario}; motion clock +2000@2400; wait 300");
+        // Then the window must stay the same picture for a second (`settle`): what loads at its own pace (pictures,
+        // GIF results, call tiles) has arrived, however loaded the machine is.
+        let scenario = format!("{scenario}; motion clock +2000@2400; {SETTLE}; wait 300");
         match self {
             Mode::Reference => scenario,
             Mode::MasterOff => format!(
@@ -230,6 +242,14 @@ pub fn run(repo: &Path, args: &[&str]) -> Result<()> {
                     reference = capture(repo, &exe, &out, Mode::Reference, scenario)?.0;
                 }
                 let (frame, log) = capture(repo, &exe, &out, mode, scenario)?;
+                let frames = format!(
+                    "reference {}, run {}; {}",
+                    out.join(format!("{}.reference.png", scenario.name))
+                        .display(),
+                    out.join(format!("{}.{}.png", scenario.name, mode.name()))
+                        .display(),
+                    settled(&log)
+                );
                 verdict = match (quiet(&log), compare(&reference, &frame)) {
                     (None, _) => {
                         Err("no `plugin: effects` line (the harness did not finish)".to_owned())
@@ -245,7 +265,7 @@ pub fn run(repo: &Path, args: &[&str]) -> Result<()> {
                         let path = out.join(format!("{}.{}.diff.png", scenario.name, mode.name()));
                         let _ = diff.save(&path);
                         Err(format!(
-                            "{count} pixels differ in {bbox:?}, see {}",
+                            "{count} pixels differ in {bbox:?}, diff {}; {frames}",
                             path.display()
                         ))
                     }
@@ -331,10 +351,14 @@ mod tests {
             script
                 .starts_with("plugin master off; plugin all on; plugin scramble; plugin effects;")
         );
-        assert!(script.ends_with("wait 10; motion clock +2000@2400; wait 300; plugin effects"));
+        assert!(
+            script.ends_with(
+                "wait 10; motion clock +2000@2400; settle 20000; wait 300; plugin effects"
+            )
+        );
         assert_eq!(
             Mode::Reference.script("wait 10"),
-            "wait 10; motion clock +2000@2400; wait 300"
+            "wait 10; motion clock +2000@2400; settle 20000; wait 300"
         );
     }
 

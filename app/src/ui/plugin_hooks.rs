@@ -1,16 +1,24 @@
 //! Where the built-in plugins (`crate::plugins`) act on the chat. Not part of the pinned client.
 
+mod always_animate;
 mod call_timer;
+mod download_all;
 mod game_activity_toggle;
 mod member_count;
 mod message_clicks;
 mod message_peek;
+mod message_pronouns;
 mod platform_indicators;
 mod read_all;
 mod server_list_indicators;
 mod show_connections;
 mod typing_indicator;
+mod typing_tweaks;
 mod voice_stats;
+mod who_reacted;
+
+pub(in crate::ui) use always_animate::{Part as AnimatePart, always_animate};
+pub(in crate::ui) use download_all::{DOWNLOAD_ALL, download_all};
 
 pub(super) use message_clicks::follow as follow_message_clicks;
 pub(super) use message_peek::Peek;
@@ -299,6 +307,19 @@ pub(super) fn anonymise_default() -> Option<bool> {
             .is_on("AnonymiseFileNames")
             .then(|| state.value("AnonymiseFileNames", "anonymiseByDefault") == Value::Bool(true))
     })
+}
+
+/// NoNitroUpsell (Equicord `src/equicordplugins/noNitroUpsell`): `premiumTypeOverride = 2` while it is on, so every
+/// place that reads the account's tier takes it as Nitro and leaves its upsell out, as the original tricks the client.
+pub(super) fn premium_type_override() -> Option<u64> {
+    if crate::plugins::bypassed() {
+        return None;
+    }
+    crate::plugins::with(premium_type_override_in)
+}
+
+fn premium_type_override_in(state: &State) -> Option<u64> {
+    state.is_on("NoNitroUpsell").then_some(2)
 }
 
 /// VoiceDownload (Vencord `src/plugins/voiceDownload`): after a voice message's volume, a 24px download arrow
@@ -897,6 +918,14 @@ mod tests {
     }
 
     #[test]
+    fn no_nitro_upsell_reads_as_nitro_only_while_on() {
+        assert_eq!(premium_type_override_in(&State::default()), None);
+        assert_eq!(premium_type_override_in(&with_on("NoNitroUpsell")), Some(2));
+        // Off (the unit tests' state) the account's own tier stands.
+        assert_eq!(premium_type_override(), None);
+    }
+
+    #[test]
     fn copy_user_urls_and_quick_mention_write_what_the_originals_write() {
         assert_eq!(user_url(42), "<https://discord.com/users/42>");
         assert_eq!(mention_text(42), "<@42> ");
@@ -917,6 +946,7 @@ mod tests {
             can_react: true,
             can_reply: true,
             quick_mention: true,
+            download_all: false,
             ..Caps::default()
         };
         assert_eq!(
@@ -926,6 +956,7 @@ mod tests {
         let caps = Caps {
             can_reply: true,
             quick_mention: true,
+            download_all: false,
             ..Caps::default()
         };
         assert_eq!(buttons(caps)[0], Button::QuickMention);

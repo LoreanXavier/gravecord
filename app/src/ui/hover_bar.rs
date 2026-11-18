@@ -138,6 +138,8 @@ pub(super) struct Caps {
     pub expanded: bool,
     /// Not in the pinned client: the QuickMention plugin's button (`plugin_hooks.rs`).
     pub quick_mention: bool,
+    /// Not in the pinned client: the DownloadAllAttachments plugin's button (`plugin_hooks/download_all.rs`).
+    pub download_all: bool,
 }
 
 /// One button of the bar, in its order.
@@ -161,6 +163,8 @@ pub(super) enum Button {
     More,
     /// Not in the pinned client: QuickMention (`plugin_hooks.rs`).
     QuickMention,
+    /// Not in the pinned client: DownloadAllAttachments (`plugin_hooks/download_all.rs`).
+    DownloadAll,
 }
 
 /// The buttons of `nA`, left to right. The expanded bar (Shift held) leads with the shortcuts and drops the quick
@@ -190,7 +194,10 @@ pub(super) fn buttons(caps: Caps) -> Vec<Button> {
     if caps.can_react && !x {
         out.push(Button::Quick);
     }
-    // Vencord's message popover buttons sit between the quick reactions and Add Reaction.
+    // Vencord's message popover buttons sit between the quick reactions and Add Reaction, in plugin order.
+    if caps.download_all {
+        out.push(Button::DownloadAll);
+    }
     if caps.quick_mention {
         out.push(Button::QuickMention);
     }
@@ -332,6 +339,7 @@ impl Root {
             can_delete: (own || can(MANAGE_MESSAGES)) && !UNDELETABLE.contains(&kind),
             expanded: false,
             quick_mention: super::plugin_hooks::quick_mention(private || can(SEND_MESSAGES)),
+            download_all: super::plugin_hooks::download_all(message),
         }
     }
 }
@@ -370,6 +378,7 @@ pub(super) fn label_icon(button: Button, caps: Caps) -> (&'static str, &'static 
         Button::Delete => (dc_intl::tr("Delete"), "msg_trash"),
         Button::More => (dc_intl::tr("More"), "msg_more"),
         Button::QuickMention => ("Quick Mention", "plugin_mention"),
+        Button::DownloadAll => (super::plugin_hooks::DOWNLOAD_ALL, "plugin_cloud_download"),
     }
 }
 

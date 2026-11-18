@@ -611,7 +611,7 @@ impl Root {
                     .unwrap_or_else(|| user.username.clone())
             })
             .unwrap_or_default();
-        let nitro = self.stores.account.premium_type == Some(2);
+        let nitro = self.premium_wire() == Some(2);
         let tone = if modal.accepting {
             modal::Tone::PrimaryLoading
         } else {

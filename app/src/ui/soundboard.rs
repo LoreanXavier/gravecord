@@ -868,7 +868,7 @@ impl Root {
                 || permissions::can_in_guild(guild, me, permissions::MANAGE_GUILD_EXPRESSIONS));
         Ctx {
             current: guild.map(|guild| guild.id),
-            everywhere: dc_state::premium::PremiumType::from_wire(self.stores.account.premium_type)
+            everywhere: dc_state::premium::PremiumType::from_wire(self.premium_wire())
                 .has(dc_state::premium::Feature::SoundboardEverywhere),
             external,
             can_create,
@@ -1063,7 +1063,7 @@ impl Root {
         if self.soundboard.upsell_dismissed {
             return false;
         }
-        let nitro = dc_state::premium::PremiumType::from_wire(self.stores.account.premium_type)
+        let nitro = dc_state::premium::PremiumType::from_wire(self.premium_wire())
             .has(dc_state::premium::Feature::SoundboardEverywhere);
         let old = self
             .stores
@@ -1775,7 +1775,7 @@ impl Root {
 
     /// The Nitro notice over the list (module 916885): a gradient border, the close, the title, the text and the button.
     fn soundboard_notice(&self, cx: &mut Context<Self>) -> AnyElement {
-        let premium = self.stores.account.premium_type;
+        let premium = self.premium_wire();
         let text = match premium {
             Some(2) => {
                 "Choose a Soundboard sound to automatically play whenever you join a voice channel. Now available with Nitro."

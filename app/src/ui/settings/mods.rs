@@ -818,6 +818,25 @@ impl Root {
                 cx.notify();
                 "demo-connections: 3 accounts".to_owned()
             }
+            // `demo-reactors <message> <emoji>`: the reactors WhoReacted would have fetched for a reaction, locally: every
+            // cached user, repeated to `count` (for its frames; nothing is sent).
+            ["demo-reactors", message, emoji, count] => {
+                let count: usize = count.parse().unwrap_or(3);
+                let mut users: Vec<serde_json::Value> = self
+                    .stores
+                    .users
+                    .values()
+                    .filter(|user| !user.bot)
+                    .map(|user| serde_json::json!({"id": user.id.to_string(), "username": user.username, "avatar": user.avatar}))
+                    .collect();
+                users.sort_by_key(|user| user["id"].as_str().unwrap_or_default().to_owned());
+                let users: Vec<_> = users.iter().cycle().take(count).cloned().collect();
+                let key = format!("plugin-who-reacted:{message}:{emoji}:0");
+                self.requested.insert(key.clone());
+                self.fetched.insert(key, serde_json::Value::Array(users));
+                cx.notify();
+                format!("demo-reactors: {count} on {message} {emoji}")
+            }
             // `effects`: what the plugins did since the last `effects` (`plugins::note`), `{}` when nothing.
             ["effects"] => {
                 let mut effects = plugins::effects();

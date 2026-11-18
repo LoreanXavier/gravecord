@@ -12,7 +12,7 @@ every setting changed), and with every plugin off, and fails on one differing pi
 The list is the plugins enabled in the owner's Equicord backup of 2026-09-21 (156). Sources were read in the local
 Equicord checkout of 2026-11-14 (`src/plugins` is Vencord's, `src/equicordplugins` Equicord's).
 
-Totals: 30 ported, 5 native, 76 planned, 45 not applicable.
+Totals: 36 ported, 6 native, 69 planned, 45 not applicable.
 
 Status: **ported** works and has its proof; **native** is what gravecord already does without a plugin;
 **planned** is not built yet (an import keeps its settings for when it is); **not applicable** has nothing to
@@ -22,7 +22,7 @@ port in a native client, or was removed upstream.
 | - | - | - | - | - | - |
 | AccountPanelServerProfile | planned | plugins/accountPanelServerProfile/index.tsx | Right click your account panel in the bottom left to view your profile in the current server | a right-click menu on the account panel that opens the server profile popout. |  |
 | AltKrispSwitch | planned | equicordplugins/altKrispSwitch/index.tsx | Makes the Noise Suppression Popout switch between None and Krisp instead of Krisp and Standard | Krisp, which is blocked here (its signature check); without it there is nothing to switch to. |  |
-| AlwaysAnimate | planned | plugins/alwaysAnimate/index.ts | Animates anything that can be animated | a switch in the image pipeline to play animated avatars, banners and emoji without hover. |  |
+| AlwaysAnimate | ported | plugins/alwaysAnimate/index.ts | Animates anything that can be animated | plugin_hooks/always_animate.rs: icons plays animated avatars (message rows, member list, panel) and server icons on the rail without the pointer and, for server icons, without focus, as canAnimate:!0 does; nameplates play in the member list all the time; roleGradients slides every gradient name, and with the plugin alone (its two patches without a setting) gradient names in chat and the member list slide. Reduced motion still stops gradients. | `each_switch_plays_its_part_and_two_patches_need_none`; frames aa-on/aa-off (avatar report); plugins-off chat, member-list |
 | AlwaysTrust | ported | plugins/alwaysTrust/index.tsx | Removes the annoying untrusted domain and suspicious file popup | links.rs: any link opens without "Leaving Discord" (`domain`); server_settings.rs: Delete Server without the typed name, behind the plugin's own "Delete server?" (`noDeleteSafety`, `confirmModal`). | `always_trust_needs_its_domain_setting`, `always_trust_deletes_servers_by_its_two_settings`; frames trust-off/on, trust-settings |
 | AnonymiseFileNames | ported | plugins/anonymiseFileNames/index.tsx | Anonymise uploaded file names | uploads.rs: files are renamed as they are sent, by the original's four methods; a switch first in each upload card's bar turns it off for that file. A spoilered file stays one. Its /Spoiler command is not ported: the app runs no client-side slash commands of plugins. | `anonymised_names_follow_each_method`; frames anon-on/anon-off; plugins-off upload-card |
 | AudioPlayerAPI | not applicable | equicordplugins/_api/audioPlayer.ts | API to play internal Discord audio files or external audio links. | client-mod plumbing (an API for other plugins), nothing to port. |  |
@@ -60,7 +60,7 @@ port in a native client, or was removed upstream.
 | Decor | planned | plugins/decor/index.tsx | Create and use your own custom avatar decorations, or pick your favorite from the presets. | its third-party avatar decorations service (decor-auth in the backup's data store is not copied). |  |
 | DisableCallIdle | ported | plugins/disableCallIdle/index.ts | Disables automatically getting kicked from a DM voice call after 3 minutes and being moved to an AFK voice channel. | dm_call.rs: no leave after 3 minutes alone in a DM call. The pinned client's other idle rule (`handleIdleUpdate`: leave voice after 5 h idle, move to the AFK channel) is not in the app yet, so there is nothing more to disable. | `switch_only_plugins_follow_their_switch_and_the_master`; frames idle-off/on (195 s alone) |
 | DisableDeepLinks | not applicable | plugins/noDeepLinks.web/index.ts | Disables Discord's stupid deep linking feature which tries to force you to use their Desktop App | web build only. |  |
-| DownloadAllAttachments | planned | equicordplugins/downloadAllAttachments/index.tsx | Adds a popover button to download all attachments in a message at once. | a hover-bar button that saves every attachment of a message. |  |
+| DownloadAllAttachments | ported | equicordplugins/downloadAllAttachments/index.tsx | Adds a popover button to download all attachments in a message at once. | plugin_hooks/download_all.rs: a hover bar button on messages with attachments (before QuickMention's, in plugin order); over 1 GiB a critical toast, else every attachment from its proxy URL (and with downloadAllFileTypes its URL after it), four at a time, saved into Downloads as the one file or a stored ZIP attachments-<id>.zip with unique names, then the original's success or failure toast. The app has no save dialog, so the file goes where its other downloads go. | `names_are_made_unique_as_the_original_does`, `the_archive_holds_each_file_stored_with_its_crc`, `sources_size_check_and_toasts_follow_the_original`, `download_all_saves_what_answered_as_a_zip_or_one_file` (local server); frame daa-on; plugins-off attachment-hover, hover-bar |
 | DynamicImageModalAPI | not applicable | plugins/_api/dynamicImageModalApi.ts | Allows you to omit either width or height when opening an image modal | client-mod plumbing (an API for other plugins), nothing to port. |  |
 | EquicordHelper | not applicable | equicordplugins/equicordHelper/index.tsx | Used to provide support and fix discord caused crashes. | workarounds for Discord web crashes in the mod. |  |
 | Experiments | planned | plugins/experiments/index.tsx | Enable Access to Experiments & other dev-only features in Discord! | the experiments and developer pages. |  |
@@ -104,7 +104,7 @@ port in a native client, or was removed upstream.
 | NewGuildSettings | planned | plugins/newGuildSettings/index.tsx | Automatically mute new servers and change various other settings upon joining | notification defaults applied when joining a server. |  |
 | NicknameIconsAPI | not applicable | plugins/_api/nicknameIcons.ts | API to add icons to the nickname, in profiles | client-mod plumbing (an API for other plugins), nothing to port. |  |
 | NoDevtoolsWarning | not applicable | plugins/noDevtoolsWarning/index.ts | Disables the 'HOLD UP' banner in the console. As a side effect, also prevents Discord from hiding your token, which prevents random logouts. | no web console in a native client. |  |
-| NoNitroUpsell | planned | equicordplugins/noNitroUpsell/index.ts | Removes all of Discord's nitro upsells by tricking the client into thinking you have nitro. | every Nitro upsell hidden (the app draws them from the pinned client). |  |
+| NoNitroUpsell | ported | equicordplugins/noNitroUpsell/index.ts | Removes all of Discord's nitro upsells by tricking the client into thinking you have nitro. | plugin_hooks.rs premium_type_override, nitro.rs premium_wire: while on, the account's tier reads as Nitro (premiumTypeOverride 2) everywhere the app asks for it, so the upsells that depend on it are left out, as the original tricks the client; the server still applies the real tier. | `no_nitro_upsell_reads_as_nitro_only_while_on`; frames nnu-on/nnu-off (Appearance: Color Themes as Nitro); plugins-off gif-picker, settings-appearance |
 | NoPendingCount | ported | plugins/noPendingCount/index.ts | Removes the ping count of incoming friend requests, message requests, and nitro offers. | unread_badges.rs and home.rs: friend request count 0, no Message Requests badge (the row stays). | `no_pending_count_hides_each_badge_by_its_setting`; frames pending-off/on; plugins-off requests |
 | NoPushToTalk | native | equicordplugins/noPushToTalk/index.ts | Bypasses the push-to-talk requirement for voice activity in channels that enforce it. | the app does not enforce Use Voice Activity yet (the pinned client's PermissionVADStore and its warning), so voice activity already works where a server requires push to talk; when the app adds the rule, this plugin needs its hook there. |  |
 | NormalizeMessageLinks | native | equicordplugins/normalizeMessageLinks/index.ts | Strip canary/ptb from message links | Copy Message Link already writes discord.com links. |  |
@@ -141,7 +141,7 @@ port in a native client, or was removed upstream.
 | SpotifyCrack | planned | plugins/spotifyCrack/index.ts | Free listen along, no auto-pausing in voice chat, and allows activity to continue playing when idling | listen along without Premium and no Spotify pause on voice. |  |
 | SpotifyShareCommands | planned | plugins/spotifyShareCommands/index.ts | Share your current Spotify track, album or artist via slash command (/track, /album, /artist) | its /track, /album, /artist commands. |  |
 | SteamStatusSync | planned | equicordplugins/steamStatusSync/index.tsx | Sync your status to Steam! (Online, Away, Invisible, or Offline.) | status sync with the Steam client. |  |
-| StopAutoUnread | planned | equicordplugins/stopAutoUnread/index.ts |  | no automatic unread marking. |  |
+| StopAutoUnread | native | equicordplugins/stopAutoUnread/index.ts |  | the app never raises a channel to All Messages by itself: the pinned client's `maybeAutoUpgradeChannel` (called by the unreads notice hook in module 626977) is not ported (GAP: main app), so there is nothing to stop. |  |
 | Streaks | planned | equicordplugins/streaks/index.tsx | Shows a streak next to a user when you exchange DMs with them on consecutive days. | DM streak counts (its service login in the data store is not copied). |  |
 | StreamerModeOnStream | not applicable | (not in the 2026-11-14 checkout) |  | no longer in the Equicord checkout of 2026-11-14 (added in 9e0aa4b2, since dropped). |  |
 | StreamingCodecDisabler | planned | equicordplugins/streamingCodecDisabler/index.ts | Disable video codecs of your choice for streaming and cameras. | a codec choice for streams and cameras in dc-media. |  |
@@ -153,11 +153,11 @@ port in a native client, or was removed upstream.
 | TimeBarAllActivities | not applicable | (not in the 2026-11-14 checkout) |  | removed from Equicord in bcfef05a: "now a stock feature". |  |
 | Translate+ | planned | equicordplugins/translatePlus/index.tsx | Vencord's translate plugin but with support for artistic languages! | message translation (needs a translation service). |  |
 | TypingIndicator | ported | plugins/typingIndicator/index.tsx | Adds an indicator if someone is typing on a channel. | plugin_hooks/typing_indicator.rs: by a channel's name, up to three 16px avatars and the dots of who is typing, the chat's typing line as the tooltip. Not ported: thread rows (the original also patches the thread spine), and TypingTweaks' several-users line (TypingTweaks is not built yet). | `the_indicator_leaves_out_who_its_settings_leave_out`; frames ti-on/ti-off; plugins-off channel-typing |
-| TypingTweaks | planned | plugins/typingTweaks/index.tsx | Show avatars and role colours in the typing indicator | avatars and role colours in the typing line. |  |
+| TypingTweaks | ported | plugins/typingTweaks/index.tsx | Show avatars and role colours in the typing indicator | plugin_hooks/typing_tweaks.rs: in the typing line every bold name is the person, with a 16px avatar (showAvatars), the role colour (showRoleColors) and a click to the full profile; over three people the alternative line (alternativeFormatting, with the original's count); amITyping keeps you in the list; blocked and ignored people are left out as useTypingUsers does. | `bold_runs_become_people_and_many_use_the_alternative_line`; frames tt-on/tt-off; plugins-off typing |
 | UnlimitedAccounts | ported | equicordplugins/unlimitedAccounts/index.ts | Increases the amount of accounts you can add. | account_switcher.rs: `maxAccounts` (0 = no limit) for the list and the Add button. | `unlimited_accounts_lifts_the_five_account_limit`; frames ua-off/ua-on; plugins-off accounts |
 | UnlockedAvatarZoom | planned | plugins/unlockedAvatarZoom/index.ts | Allows you to zoom in further in the image crop tool when changing your avatar | the avatar crop tool (Edit Image of a new avatar), which the app does not have yet; the plugin only raises its zoom slider's maximum. |  |
 | UserAreaAPI | not applicable | equicordplugins/_api/userArea.ts | API to add buttons to the user area panel. | client-mod plumbing (an API for other plugins), nothing to port. |  |
-| UserMessagesPronouns | planned | plugins/userMessagesPronouns/index.ts | Adds pronouns to chat user messages | pronouns by names in chat. |  |
+| UserMessagesPronouns | ported | plugins/userMessagesPronouns/index.ts | Adds pronouns to chat user messages | plugin_hooks/message_pronouns.rs: after a message's time, '• pronouns' in the time's style with a Pronouns tooltip, server profile pronouns first, from profiles already loaded (nothing fetched), lowercased unless Capitalized; not for bots, system or AutoMod messages, nor yourself without showSelf. Not 1:1: its compact-mode place is not drawn, the app has no compact message display. | `server_pronouns_first_then_the_accounts_formatted`; frame ump-on; plugins-off chat |
 | UserPFP | planned | equicordplugins/userpfp/index.tsx | Allows you to set local static or animated avatars for yourself and other users | its third-party avatar service. |  |
 | UserSettingsAPI | not applicable | plugins/_api/userSettings.ts | Patches Discord's UserSettings to expose their group and name. | client-mod plumbing (an API for other plugins), nothing to port. |  |
 | USRBG | planned | plugins/usrbg/index.tsx | Displays user banners from USRBG, allowing anyone to get a banner without Nitro | its third-party banner service. |  |
@@ -173,7 +173,7 @@ port in a native client, or was removed upstream.
 | WebContextMenus | not applicable | plugins/webContextMenus.web/index.ts | Re-adds context menus missing in the web version of Discord: Links & Images (Copy/Open Link/Image), Text Area (Copy, Cut, Paste, SpellCheck) | web build only (the desktop app has these menus). |  |
 | WebKeybinds | not applicable | plugins/webKeybinds.web/index.ts | Re-adds keybinds missing in the web version of Discord. Only works fully on Vesktop/Equibop/Legcord, not inside your browser | web build only. |  |
 | WebScreenShareFixes | not applicable | plugins/webScreenShareFixes.web/index.ts | Removes 2500kbps bitrate cap on chromium and vesktop clients and fixes CPU usage growing endlessly while screensharing. | web build only (Chromium bitrate cap). |  |
-| WhoReacted | planned | plugins/whoReacted/index.tsx | Renders the avatars of users who reacted to a message | reactor avatars on reactions. |  |
+| WhoReacted | ported | plugins/whoReacted/index.tsx | Renders the avatars of users who reacted to a message | plugin_hooks/who_reacted.rs: after each reaction's count up to five avatars at 90% (four and +N past five), from GET reactions?limit=100&type=0 queued one per 250 ms newest first and merged into the users; nothing on a message with over ten reactions; clickableAvatars opens the profile popout instead of reacting. Super reactions (type 1) are not fetched: the app draws no burst pills. | `five_at_most_with_the_rest_counted`; frame wr-on (demo-reactors); plugins-off reactions, chat |
 | YoutubeAdblock | not applicable | plugins/youtubeAdblock.desktop/index.ts | Block ads in YouTube embeds and the WatchTogether activity via AdGuard | needs an ad filter inside the YouTube web view of embeds; deferred with the web host. |  |
 | ZipPreview | planned | equicordplugins/zipPreview/index.tsx | Previews ZIP contents inside file attachments. | a ZIP listing in file attachments. |  |
 
@@ -183,6 +183,11 @@ Every setting of each original (`definePluginSettings`), its type and default th
 
 | plugin | setting | type | default (original) | here |
 | - | - | - | - | - |
+| AlwaysAnimate | `icons` | BOOLEAN | `true` | ported |
+| AlwaysAnimate | `statusEmojis` | BOOLEAN | `true` | nothing to act on yet: the app draws every custom status emoji as a still picture (the pinned client's member list plays an animated one), so there is nothing playing to force |
+| AlwaysAnimate | `serverBanners` | BOOLEAN | `true` | nothing to act on yet: the channel list header does not draw the server's banner yet, so there is no banner to play |
+| AlwaysAnimate | `nameplates` | BOOLEAN | `true` | ported |
+| AlwaysAnimate | `roleGradients` | BOOLEAN | `true` | ported |
 | AlwaysTrust | `domain` | BOOLEAN | `true` | ported |
 | AlwaysTrust | `file` | BOOLEAN | `true` | nothing to act on yet: the app does not show the pinned client's "Potentially Dangerous Download" dialog yet (module 432518, opened from module 889558), so there is no dialog to remove |
 | AlwaysTrust | `noDeleteSafety` | BOOLEAN | `true` | ported |
@@ -200,6 +205,7 @@ Every setting of each original (`definePluginSettings`), its type and default th
 | CallTimer | `trackSelf` | BOOLEAN | `false` | ported |
 | CallTimer | `showSeconds` | BOOLEAN | `false` | ported |
 | CallTimer | `watchLargeGuilds` | BOOLEAN | `false` | nothing to act on yet: the original subscribes to every server's events for it (`GUILD_SUBSCRIPTIONS_FLUSH`); plugin code sends nothing, so times come from the voice states the app already receives |
+| DownloadAllAttachments | `downloadAllFileTypes` | BOOLEAN | `false` | ported |
 | FixImagesQuality | `originalImagesInChat` | BOOLEAN | `false` | ported |
 | GameActivityToggle | `oldIcon` | BOOLEAN | `false` | ported |
 | GameActivityToggle | `location` | SELECT | `"PANEL"` | nothing to act on yet: the original only reads it while EquicordToolbox is on, which is not ported; the button stays next to Mute/Deafen as with the default |
@@ -252,5 +258,12 @@ Every setting of each original (`definePluginSettings`), its type and default th
 | TypingIndicator | `includeIgnoredUsers` | BOOLEAN | `false` | ported |
 | TypingIndicator | `includeBlockedUsers` | BOOLEAN | `false` | ported |
 | TypingIndicator | `indicatorMode` | SELECT | `IndicatorMode.Dots | IndicatorMode.Avatars` | ported |
+| TypingTweaks | `showAvatars` | BOOLEAN | `true` | ported |
+| TypingTweaks | `showRoleColors` | BOOLEAN | `true` | ported |
+| TypingTweaks | `alternativeFormatting` | BOOLEAN | `true` | ported |
+| TypingTweaks | `amITyping` | BOOLEAN | `false` | ported |
 | UnlimitedAccounts | `maxAccounts` | NUMBER | `0` | ported |
+| UserMessagesPronouns | `pronounsFormat` | SELECT | `PronounsFormat.Lowercase` | ported |
+| UserMessagesPronouns | `showSelf` | BOOLEAN | `true` | ported |
 | VolumeBooster | `multiplier` | SLIDER | `2` | ported |
+| WhoReacted | `clickableAvatars` | BOOLEAN | `true` | ported |

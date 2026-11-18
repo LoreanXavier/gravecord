@@ -1767,7 +1767,13 @@ impl Root {
 
     /// Whether the account has any Nitro (`premium_type`).
     pub(super) fn premium(&self) -> PremiumType {
-        PremiumType::from_wire(self.stores.account.premium_type)
+        PremiumType::from_wire(self.premium_wire())
+    }
+
+    /// The account's `premium_type` as `UserStore` gives it: `premiumTypeOverride ?? premiumType`. Not in the pinned
+    /// client: NoNitroUpsell's override (`plugin_hooks.rs`).
+    pub(super) fn premium_wire(&self) -> Option<u64> {
+        super::plugin_hooks::premium_type_override().or(self.stores.account.premium_type)
     }
 }
 

@@ -240,6 +240,17 @@ const fn millis(default: f64) -> Kind {
 /// by the code (a test checks both ways), so a setting can never sit in the page doing nothing unnoticed.
 pub(crate) const IDLE_SETTINGS: &[(&str, &str, &str)] = &[
     (
+        "AlwaysAnimate",
+        "statusEmojis",
+        "the app draws every custom status emoji as a still picture (the pinned client's member list plays an \
+         animated one), so there is nothing playing to force",
+    ),
+    (
+        "AlwaysAnimate",
+        "serverBanners",
+        "the channel list header does not draw the server's banner yet, so there is no banner to play",
+    ),
+    (
         "AlwaysTrust",
         "file",
         "the app does not show the pinned client's \"Potentially Dangerous Download\" dialog yet (module 432518, opened from module 889558), so there is no dialog to remove",
@@ -278,6 +289,46 @@ pub(crate) const SHOWN_WHEN: &[(&str, &str, &str)] = &[(
 
 /// Every plugin, in the order the Plugins page lists them (by name).
 pub(crate) const DEFS: &[Def] = &[
+    Def {
+        id: "AlwaysAnimate",
+        name: "AlwaysAnimate",
+        description: "Animates anything that can be animated",
+        origin: Origin::Vencord,
+        source: "src/plugins/alwaysAnimate/index.ts",
+        default_on: false,
+        settings: &[
+            Setting {
+                key: "icons",
+                label: "Icons",
+                description: "Always animate server icons, avatars, decor and more",
+                kind: Kind::Switch { default: true },
+            },
+            Setting {
+                key: "statusEmojis",
+                label: "Status emojis",
+                description: "Always animate status emojis",
+                kind: Kind::Switch { default: true },
+            },
+            Setting {
+                key: "serverBanners",
+                label: "Server banners",
+                description: "Always animate server banners",
+                kind: Kind::Switch { default: true },
+            },
+            Setting {
+                key: "nameplates",
+                label: "Nameplates",
+                description: "Always animate nameplates",
+                kind: Kind::Switch { default: true },
+            },
+            Setting {
+                key: "roleGradients",
+                label: "Role gradients",
+                description: "Always animate role gradients",
+                kind: Kind::Switch { default: true },
+            },
+        ],
+    },
     Def {
         id: "AlwaysTrust",
         name: "AlwaysTrust",
@@ -488,6 +539,20 @@ pub(crate) const DEFS: &[Def] = &[
         source: "src/plugins/disableCallIdle/index.ts",
         default_on: false,
         settings: &[],
+    },
+    Def {
+        id: "DownloadAllAttachments",
+        name: "DownloadAllAttachments",
+        description: "Adds a popover button to download all attachments in a message at once.",
+        origin: Origin::Equicord,
+        source: "src/equicordplugins/downloadAllAttachments/index.tsx",
+        default_on: false,
+        settings: &[Setting {
+            key: "downloadAllFileTypes",
+            label: "All file types",
+            description: "Also download non-media attachments. Only enable this if you trust what people send you.",
+            kind: Kind::Switch { default: false },
+        }],
     },
     Def {
         id: "FixImagesQuality",
@@ -746,6 +811,15 @@ pub(crate) const DEFS: &[Def] = &[
             description: "Hide message previews and timestamps for muted DMs and group chats.",
             kind: Kind::Switch { default: false },
         }],
+    },
+    Def {
+        id: "NoNitroUpsell",
+        name: "NoNitroUpsell",
+        description: "Removes all of Discord's nitro upsells by tricking the client into thinking you have nitro.",
+        origin: Origin::Equicord,
+        source: "src/equicordplugins/noNitroUpsell/index.ts",
+        default_on: false,
+        settings: &[],
     },
     Def {
         id: "NoPendingCount",
@@ -1043,6 +1117,40 @@ pub(crate) const DEFS: &[Def] = &[
         ],
     },
     Def {
+        id: "TypingTweaks",
+        name: "TypingTweaks",
+        description: "Show avatars and role colours in the typing indicator",
+        origin: Origin::Vencord,
+        source: "src/plugins/typingTweaks/index.tsx",
+        default_on: false,
+        settings: &[
+            Setting {
+                key: "showAvatars",
+                label: "Avatars",
+                description: "Show avatars in the typing indicator",
+                kind: Kind::Switch { default: true },
+            },
+            Setting {
+                key: "showRoleColors",
+                label: "Role colours",
+                description: "Show role colors in the typing indicator",
+                kind: Kind::Switch { default: true },
+            },
+            Setting {
+                key: "alternativeFormatting",
+                label: "Alternative line",
+                description: "Show a more useful message when several users are typing",
+                kind: Kind::Switch { default: true },
+            },
+            Setting {
+                key: "amITyping",
+                label: "Am I typing",
+                description: "Shows you if other people can see you typing",
+                kind: Kind::Switch { default: false },
+            },
+        ],
+    },
+    Def {
         id: "UnlimitedAccounts",
         name: "UnlimitedAccounts",
         description: "Lets the account switcher hold more than five accounts.",
@@ -1060,6 +1168,34 @@ pub(crate) const DEFS: &[Def] = &[
                 step: 1.,
             },
         }],
+    },
+    Def {
+        id: "UserMessagesPronouns",
+        name: "UserMessagesPronouns",
+        description: "Adds pronouns to chat user messages",
+        origin: Origin::Vencord,
+        source: "src/plugins/userMessagesPronouns/index.ts",
+        default_on: false,
+        settings: &[
+            Setting {
+                key: "pronounsFormat",
+                label: "Pronouns format",
+                description: "The format for pronouns to appear in chat",
+                kind: Kind::Select {
+                    options: &[
+                        ("Lowercase", Lit::Str("LOWERCASE")),
+                        ("Capitalized", Lit::Str("CAPITALIZED")),
+                    ],
+                    default: 0,
+                },
+            },
+            Setting {
+                key: "showSelf",
+                label: "Show yourself",
+                description: "Enable or disable showing pronouns for yourself",
+                kind: Kind::Switch { default: true },
+            },
+        ],
     },
     Def {
         id: "VoiceDownload",
@@ -1096,6 +1232,20 @@ pub(crate) const DEFS: &[Def] = &[
                 max: 5.,
                 step: 0.5,
             },
+        }],
+    },
+    Def {
+        id: "WhoReacted",
+        name: "WhoReacted",
+        description: "Renders the avatars of users who reacted to a message",
+        origin: Origin::Vencord,
+        source: "src/plugins/whoReacted/index.tsx",
+        default_on: false,
+        settings: &[Setting {
+            key: "clickableAvatars",
+            label: "Clickable avatars",
+            description: "While this is enabled, clicking a reacting user's avatar will open their profile instead of adding the reaction",
+            kind: Kind::Switch { default: true },
         }],
     },
 ];

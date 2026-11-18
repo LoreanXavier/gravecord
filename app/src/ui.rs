@@ -1777,6 +1777,12 @@ impl Root {
                 if self.spotify_metadata_fetched(&key, &body, cx) {
                     return;
                 }
+                // Not in the pinned client: WhoReacted's reactors join the users (`plugin_hooks/who_reacted.rs`).
+                self.who_reacted_fetched(&key, &body);
+                // Not in the pinned client: DownloadAllAttachments' outcome (`plugin_hooks/download_all.rs`).
+                if self.download_all_answered(&key, &body, cx) {
+                    return;
+                }
                 self.active_now_fetched(&key, &body);
                 if key.starts_with(chat_notices::KEY_PREFIX) {
                     self.thread_step_fetched(&key, &body);
@@ -2957,7 +2963,12 @@ impl Root {
         if let Some(colors) = self.role_gradient_of(user)
             && self.name_styles(user, self.guild).is_none()
         {
-            return role_gradient::name(self.guild_display_name(user), colors).into_any_element();
+            // Not in the pinned client: AlwaysAnimate slides it (`plugin_hooks/always_animate.rs`).
+            return role_gradient::name(self.guild_display_name(user), colors)
+                .animate(plugin_hooks::always_animate(
+                    plugin_hooks::AnimatePart::ChatAndMemberGradients,
+                ))
+                .into_any_element();
         }
         let in_dm = self.current_guild().is_none() && self.current_dm().is_some();
         name_styles::name(
@@ -3216,7 +3227,11 @@ impl Root {
                                                             colors,
                                                         )
                                                         .animate(
-                                                            self.hovered_nameplate == Some(user.id),
+                                                            self.hovered_nameplate == Some(user.id)
+                                                                // Not in the pinned client: AlwaysAnimate.
+                                                                || plugin_hooks::always_animate(
+                                                                    plugin_hooks::AnimatePart::ChatAndMemberGradients,
+                                                                ),
                                                         )
                                                         .into_any_element(),
                                                         None => name_styles::name(
@@ -3723,9 +3738,13 @@ impl Root {
             .into_any_element()
     }
 
-    fn typing_bar(&self) -> Option<AnyElement> {
+    fn typing_bar(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
         let channel = self.channel?;
-        let users = self.stores.typing_users(channel, Instant::now());
+        // Not in the pinned client: TypingTweaks' list and line (`plugin_hooks/typing_tweaks.rs`).
+        let tweaks = self.typing_tweaks_users(channel);
+        let users = tweaks
+            .clone()
+            .unwrap_or_else(|| self.stores.typing_users(channel, Instant::now()));
         let names: Vec<String> = users
             .iter()
             .filter_map(|user| self.stores.users.get(user))
@@ -3770,14 +3789,17 @@ impl Root {
                         .ml(px(24.))
                         .flex()
                         .whitespace_nowrap()
-                        .children(runs.into_iter().map(|(text, tag)| {
-                            div()
-                                .when(tag.as_deref() == Some("$b"), |this| {
-                                    this.font_weight(FontWeight(600.))
-                                        .text_color(color("--text-default"))
-                                })
-                                .child(text)
-                        })),
+                        .map(|this| match tweaks {
+                            Some(users) => this.children(self.typing_tweaks_line(&users, runs, cx)),
+                            None => this.children(runs.into_iter().map(|(text, tag)| {
+                                div()
+                                    .when(tag.as_deref() == Some("$b"), |this| {
+                                        this.font_weight(FontWeight(600.))
+                                            .text_color(color("--text-default"))
+                                    })
+                                    .child(text)
+                            })),
+                        }),
                 )
                 .into_any_element(),
         )
@@ -7190,7 +7212,9 @@ impl Root {
                                 })
                             })
                             .child(self.rolling_count(message.id, index, reaction.count)),
-                    );
+                    )
+                    // Not in the pinned client: WhoReacted (`plugin_hooks/who_reacted.rs`).
+                    .children(self.who_reacted(message, &reaction_route_name(reaction), cx));
                 self.with_tip(
                     format!("reaction-tip-{}-{index}", message.id),
                     tip,
@@ -8248,7 +8272,10 @@ impl Root {
                                             cx,
                                         )
                                         .ml(px(8.)),
-                                    ),
+                                    )
+                                    // Not in the pinned client: UserMessagesPronouns
+                                    // (`plugin_hooks/message_pronouns.rs`).
+                                    .children(self.message_pronouns(message, cx)),
                             )
                             .child(content),
                     )
@@ -8603,6 +8630,14 @@ impl Root {
                         this.composer
                             .update(cx, |composer, cx| composer.insert(&text, cx));
                         cx.notify();
+                    })))
+                }
+                // Not in the pinned client: DownloadAllAttachments (`plugin_hooks/download_all.rs`).
+                Button::DownloadAll => {
+                    let attachments = message.attachments.clone();
+                    bar.child(tipped(cx).on_click(cx.listener(move |this, _, _, cx| {
+                        this.tip = None;
+                        this.download_all_attachments(id, &attachments, cx);
                     })))
                 }
                 Button::More => {
@@ -8968,7 +9003,7 @@ impl Root {
             .mt(px(-16.))
             .px(px(8.))
             .pb(px(8.))
-            .children(self.typing_bar())
+            .children(self.typing_bar(cx))
             .children(self.slowmode_notice(cx))
             .child(self.regions.composer_probe())
             .child(

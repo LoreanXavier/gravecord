@@ -720,7 +720,7 @@ impl Root {
             })
             .map(|guild| guild.premium_tier);
         Account {
-            premium: self.stores.account.premium_type,
+            premium: self.premium_wire(),
             guild_tier,
         }
     }

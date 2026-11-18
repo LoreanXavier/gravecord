@@ -115,7 +115,8 @@ impl super::Root {
         let (key, url) = self.live_avatar_source(user, side)?;
         if !should_animate(
             super::motion::window_active(),
-            hovered,
+            // Not in the pinned client: AlwaysAnimate's `icons` (`plugin_hooks/always_animate.rs`).
+            hovered || super::plugin_hooks::always_animate(super::plugin_hooks::AnimatePart::Icons),
             super::motion::reduced(),
             true,
             self.pref_on("animate_gifs", true),
@@ -164,7 +165,9 @@ impl super::Root {
         cx: &mut Context<Self>,
     ) -> Option<AnyElement> {
         let hash = guild.icon.as_deref().filter(|hash| is_animated(hash))?;
-        if !hovered || !super::motion::window_active() {
+        // Not in the pinned client: AlwaysAnimate's `icons` plays it all the time (`plugin_hooks/always_animate.rs`).
+        let always = super::plugin_hooks::always_animate(super::plugin_hooks::AnimatePart::Icons);
+        if !always && (!hovered || !super::motion::window_active()) {
             return None;
         }
         let scale = self.ui_scale.get();
