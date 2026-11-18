@@ -203,6 +203,7 @@ mod official_messages;
 mod overlay;
 mod overlay_chat;
 mod overlay_panel;
+mod overlay_survey;
 mod overlay_widgets;
 mod paste;
 #[cfg(feature = "capture")]
@@ -618,6 +619,9 @@ pub struct Root {
     stage_video_upsell_dismissed: std::collections::HashSet<Id>,
     /// Videos waiting for their first picture, and the ones that never showed (`camera_failed`).
     video_ready: std::cell::RefCell<camera_failed::VideoReady>,
+    /// The survey after the overlay was switched off, and its opening at the next frame (`overlay_survey`).
+    overlay_survey: Option<overlay_survey::OverlaySurvey>,
+    overlay_survey_pending: bool,
     /// The menu over a speaker's or audience member's tile (module 106401 and 237749's rows), where it was opened.
     stage_tile_menu: Option<stage::TileMenu>,
     /// Stage instances whose Live Now card was closed with its X.
@@ -1052,6 +1056,8 @@ impl Root {
             stage_requests_open: false,
             stage_video_upsell_dismissed: Default::default(),
             video_ready: Default::default(),
+            overlay_survey: None,
+            overlay_survey_pending: false,
             stage_tile_menu: None,
             live_now_closed: Vec::new(),
             publish_confirm: None,
@@ -9362,6 +9368,7 @@ impl Render for Root {
         #[cfg(feature = "capture")]
         crate::perf::RENDERS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         self.interaction_modal_frame(window, cx);
+        self.open_pending_overlay_survey(cx);
         #[cfg(feature = "capture")]
         let _build = crate::perf::Timer::build();
         // The motion clock for this frame; reduced motion as module 775602 decides it.
@@ -9807,6 +9814,11 @@ impl Render for Root {
                 // A voice alert closes as its own close does (the blocked warnings' close joins or stays).
                 if keys.key == "escape" && this.voice_alert.is_some() {
                     this.dismiss_voice_alert(cx);
+                    cx.notify();
+                    cx.stop_propagation();
+                    return;
+                }
+                if keys.key == "escape" && this.overlay_survey.take().is_some() {
                     cx.notify();
                     cx.stop_propagation();
                     return;
@@ -10657,6 +10669,7 @@ impl Render for Root {
             .children(self.stage_welcome_modal(cx))
             .children(self.stage_end_modal(cx))
             .children(self.voice_alert_modal(cx))
+            .children(self.overlay_survey_modal(cx))
             .children(self.publish_modal(cx))
             .children(self.guild_events_layer(window, cx))
             .children(self.guild_menu_layer(cx))
