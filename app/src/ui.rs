@@ -51,9 +51,9 @@ mod call_background;
 mod call_menus;
 mod call_popout;
 mod call_volume;
-mod camera_failed;
 #[cfg(feature = "capture")]
 pub(crate) mod callsim;
+mod camera_failed;
 mod carousel;
 #[cfg(feature = "capture")]
 mod ch_fixture;
@@ -165,6 +165,7 @@ mod boost_page;
 mod channel_browser;
 mod discover;
 mod favorites;
+mod feedback;
 mod fetch_failures;
 mod forums;
 pub(crate) mod frame_clock;
@@ -237,6 +238,7 @@ mod remediation;
 mod reminder_modal;
 mod report;
 mod report_issue;
+mod rtc_channel;
 mod running_game_panel;
 mod running_games;
 mod saved;
@@ -256,6 +258,7 @@ mod slowmode;
 mod splash;
 pub(crate) mod start_cache;
 mod status_menu;
+mod video_pip;
 #[cfg(feature = "capture")]
 pub(crate) use server_discovery::FORCE_ELIGIBLE;
 mod server_discovery_form;
@@ -623,6 +626,12 @@ pub struct Root {
     /// The survey after the overlay was switched off, and its opening at the next frame (`overlay_survey`).
     overlay_survey: Option<overlay_survey::OverlaySurvey>,
     overlay_survey_pending: bool,
+    /// The call, stream and report surveys (`feedback`).
+    feedback: feedback::Feedback,
+    /// The voice panel's strip of people shows them all (`rtc_channel`, Show All Users).
+    voice_users_expanded: bool,
+    /// The video picture-in-picture window (`video_pip`).
+    video_pip: video_pip::VideoPip,
     /// The menu over a speaker's or audience member's tile (module 106401 and 237749's rows), where it was opened.
     stage_tile_menu: Option<stage::TileMenu>,
     /// Stage instances whose Live Now card was closed with its X.
@@ -1059,6 +1068,9 @@ impl Root {
             video_ready: Default::default(),
             overlay_survey: None,
             overlay_survey_pending: false,
+            feedback: Default::default(),
+            voice_users_expanded: false,
+            video_pip: Default::default(),
             stage_tile_menu: None,
             live_now_closed: Vec::new(),
             publish_confirm: None,
@@ -6930,7 +6942,12 @@ impl Root {
                             .and_then(|channel| this.stores.messages.get(&channel))
                             .map(|messages| messages.iter().map(|known| known.id).collect())
                             .unwrap_or_default();
-                        plugin_hooks::reveal_all_spoilers(&mut this.revealed, key.0, &loaded, modifiers);
+                        plugin_hooks::reveal_all_spoilers(
+                            &mut this.revealed,
+                            key.0,
+                            &loaded,
+                            modifiers,
+                        );
                         cx.notify();
                         return;
                     }
@@ -7826,11 +7843,16 @@ impl Root {
                         )
                     })
                     // Not in the pinned client: the MessageClickActions plugin's clicks (`plugin_hooks/message_clicks.rs`).
-                    .when(!is_starter && editing.is_none() && !crate::plugins::bypassed(), |this| {
-                        this.on_click(cx.listener(move |this, event: &gpui::ClickEvent, window, cx| {
-                            this.message_clicked(id, event, window, cx);
-                        }))
-                    })
+                    .when(
+                        !is_starter && editing.is_none() && !crate::plugins::bypassed(),
+                        |this| {
+                            this.on_click(cx.listener(
+                                move |this, event: &gpui::ClickEvent, window, cx| {
+                                    this.message_clicked(id, event, window, cx);
+                                },
+                            ))
+                        },
+                    )
                     .when(hovered, |this| this.child(hover_bar::probe(id, false)))
                     .when(hovered && editing.is_none() && !is_starter, |this| {
                         // No bar while a message is sending, Retry and Delete once it failed, and none on a private
@@ -8508,7 +8530,8 @@ impl Root {
                     bar.child(tipped(cx).on_click(cx.listener(move |this, _, _, cx| {
                         this.tip = None;
                         let text = plugin_hooks::mention_text(author);
-                        this.composer.update(cx, |composer, cx| composer.insert(&text, cx));
+                        this.composer
+                            .update(cx, |composer, cx| composer.insert(&text, cx));
                         cx.notify();
                     })))
                 }
@@ -9863,6 +9886,10 @@ impl Render for Root {
                     cx.stop_propagation();
                     return;
                 }
+                if keys.key == "escape" && this.feedback_escape(cx) {
+                    cx.stop_propagation();
+                    return;
+                }
                 if keys.key == "escape" && this.overlay_survey.take().is_some() {
                     cx.notify();
                     cx.stop_propagation();
@@ -9891,7 +9918,7 @@ impl Render for Root {
                     return;
                 }
                 if keys.key == "escape" && this.report.is_some() {
-                    this.report = None;
+                    this.report_closed(cx);
                     cx.notify();
                     cx.stop_propagation();
                     return;
@@ -10713,6 +10740,7 @@ impl Render for Root {
             .children(self.stage_end_modal(cx))
             .children(self.voice_alert_modal(cx))
             .children(self.overlay_survey_modal(cx))
+            .children(self.feedback_modal(cx))
             .children(self.publish_modal(cx))
             .children(self.guild_events_layer(window, cx))
             .children(self.guild_menu_layer(cx))
@@ -10741,6 +10769,7 @@ impl Render for Root {
             .children(self.update_dialog_layer(cx))
             .children(self.oauth_layer(window, cx))
             .children(self.activity_pip_layer(window))
+            .children(self.video_pip_layer(window, cx))
             .children(self.notify_menu(window, cx))
             .children(self.notify_mute_submenu(window, cx))
             .children(self.unpin_modal(cx))

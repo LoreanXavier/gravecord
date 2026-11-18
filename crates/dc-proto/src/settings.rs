@@ -409,6 +409,9 @@ pub const IGNORE_SPEEDBUMP_DISABLED: ProtoPref = pref(
     &[FIELD_SAFETY],
     SAFETY_IGNORE_SPEEDBUMP_DISABLED,
 );
+/// `debug.rtc_panel_show_voice_states` (field 9, then 1, a `BoolValue`): Show Voice Users of the voice panel's
+/// channel menu (`vL` of module 253932).
+pub const RTC_PANEL_SHOW_VOICE_STATES: ProtoPref = pref("rtc_panel_show_voice_states", &[9, 1], 1);
 pub const THEME: ProtoPref = pref("appearance_theme", &[13], 1);
 /// `appearance.client_theme_settings.background_gradient_preset_id`: the Nitro colour theme (see `PROTO_PREFS`).
 pub const CLIENT_THEME_PRESET: ProtoPref = pref("appearance_client_theme_preset", &[13, 3, 2], 1);
@@ -1461,6 +1464,122 @@ pub fn set_video_background(
     push_bytes_field(&mut encoded, FIELD_VOICE_AND_VIDEO, &message);
     let updated = with_encoded(current, &[], FIELD_VOICE_AND_VIDEO, &encoded);
     whole_message_patch(updated, FIELD_VOICE_AND_VIDEO)
+}
+
+/// `in_app_feedback_settings` (field 25 of `PreloadedUserSettings`): the map `in_app_feedback_states` (1) of a feedback
+/// type (`InAppFeedbackType`: VOICE 0, STREAM 1, VIDEO_BACKGROUND 2, ACTIVITY 3, IN_APP_REPORTS 4, ...) to an
+/// `InAppFeedbackState` of `last_impression_time` (1) and `opt_out_expiry_time` (2), each a `UInt64Value` of
+/// milliseconds.
+const FIELD_IN_APP_FEEDBACK: u64 = 25;
+
+/// One feedback type's state: when its survey last showed and until when it is opted out.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct InAppFeedbackState {
+    pub last_impression_ms: Option<u64>,
+    pub opt_out_expiry_ms: Option<u64>,
+}
+
+fn feedback_entries(settings: &[u8]) -> Vec<(u64, InAppFeedbackState)> {
+    let Some((_, message)) = fields(settings).find(|(number, _)| *number == FIELD_IN_APP_FEEDBACK)
+    else {
+        return Vec::new();
+    };
+    let wrapped = |state: &[u8], number: u64| {
+        fields(state)
+            .find(|(known, _)| *known == number)
+            .map(|(_, wrapper)| varint_of(wrapper, 1).unwrap_or(0))
+    };
+    fields(message)
+        .filter(|(number, _)| *number == 1)
+        .map(|(_, entry)| {
+            let kind = varint_of(entry, 1).unwrap_or(0);
+            let state = fields(entry)
+                .find(|(number, _)| *number == 2)
+                .map(|(_, state)| InAppFeedbackState {
+                    last_impression_ms: wrapped(state, 1),
+                    opt_out_expiry_ms: wrapped(state, 2),
+                })
+                .unwrap_or_default();
+            (kind, state)
+        })
+        .collect()
+}
+
+/// The state of feedback type `kind` (the last entry wins, as a map read does).
+pub fn in_app_feedback_state(settings: &[u8], kind: u64) -> InAppFeedbackState {
+    feedback_entries(settings)
+        .into_iter()
+        .rev()
+        .find(|(known, _)| *known == kind)
+        .map(|(_, state)| state)
+        .unwrap_or_default()
+}
+
+/// Sets the state of feedback type `kind`: the PATCH body value (the whole field 25 message, as `updateSetting` sends
+/// the changed top-level message) and the new settings. The other types' entries are kept.
+pub fn set_in_app_feedback(
+    current: &[u8],
+    kind: u64,
+    state: InAppFeedbackState,
+) -> (String, Vec<u8>) {
+    let mut entries: Vec<(u64, InAppFeedbackState)> = feedback_entries(current)
+        .into_iter()
+        .filter(|(known, _)| *known != kind)
+        .collect();
+    entries.push((kind, state));
+    let mut message = Vec::new();
+    for (kind, state) in entries {
+        let mut value = Vec::new();
+        for (number, ms) in [(1, state.last_impression_ms), (2, state.opt_out_expiry_ms)] {
+            if let Some(ms) = ms {
+                let mut wrapper = Vec::new();
+                push_varint(&mut wrapper, 1 << 3 | WIRE_VARINT);
+                push_varint(&mut wrapper, ms);
+                push_bytes_field(&mut value, number, &wrapper);
+            }
+        }
+        let mut entry = Vec::new();
+        push_varint(&mut entry, 1 << 3 | WIRE_VARINT);
+        push_varint(&mut entry, kind);
+        push_bytes_field(&mut entry, 2, &value);
+        push_bytes_field(&mut message, 1, &entry);
+    }
+    let mut encoded = Vec::new();
+    push_bytes_field(&mut encoded, FIELD_IN_APP_FEEDBACK, &message);
+    let updated = with_encoded(current, &[], FIELD_IN_APP_FEEDBACK, &encoded);
+    whole_message_patch(updated, FIELD_IN_APP_FEEDBACK)
+}
+
+#[cfg(test)]
+mod in_app_feedback_tests {
+    use super::*;
+
+    #[test]
+    fn feedback_states_round_trip_and_keep_other_types_and_fields() {
+        let mut current = Vec::new();
+        push_bytes_field(&mut current, 77, b"kept");
+        let voice = InAppFeedbackState {
+            last_impression_ms: Some(1_700_000_000_000),
+            opt_out_expiry_ms: None,
+        };
+        let (_, current) = set_in_app_feedback(&current, 0, voice);
+        let stream = InAppFeedbackState {
+            last_impression_ms: Some(5),
+            opt_out_expiry_ms: Some(8_640_000_000_000_000),
+        };
+        let (patch, current) = set_in_app_feedback(&current, 1, stream);
+        assert_eq!(in_app_feedback_state(&current, 0), voice);
+        assert_eq!(in_app_feedback_state(&current, 1), stream);
+        assert_eq!(
+            in_app_feedback_state(&current, 4),
+            InAppFeedbackState::default()
+        );
+        assert!(raw_fields(&current).iter().any(|(number, _)| *number == 77));
+        // The patch is field 25 alone.
+        let patch = STANDARD.decode(patch).unwrap();
+        assert!(raw_fields(&patch).iter().all(|(number, _)| *number == 25));
+        assert_eq!(in_app_feedback_state(&patch, 1), stream);
+    }
 }
 
 #[cfg(test)]

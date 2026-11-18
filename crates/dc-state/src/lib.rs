@@ -2036,7 +2036,10 @@ impl PrivateChannel {
         out.insert("name".to_owned(), json!(self.name));
         out.insert("icon".to_owned(), json!(self.icon));
         if let Some(application_id) = self.application_id {
-            out.insert("application_id".to_owned(), json!(application_id.to_string()));
+            out.insert(
+                "application_id".to_owned(),
+                json!(application_id.to_string()),
+            );
         }
         if let Some(owner_id) = self.owner_id {
             out.insert("owner_id".to_owned(), json!(owner_id.to_string()));
@@ -2487,15 +2490,16 @@ impl Stores {
                         guild.my_timeout_until = prior.my_timeout_until;
                     }
                     let me = self.current_user.as_ref().map(|user| user.id);
-                    if let Some(member) = data["members"]
-                        .as_array()
-                        .into_iter()
-                        .flatten()
-                        .find(|member| {
-                            me.is_some()
-                                && (id(&member["user"]["id"]) == me
-                                    || id(&member["user_id"]) == me)
-                        })
+                    if let Some(member) =
+                        data["members"]
+                            .as_array()
+                            .into_iter()
+                            .flatten()
+                            .find(|member| {
+                                me.is_some()
+                                    && (id(&member["user"]["id"]) == me
+                                        || id(&member["user_id"]) == me)
+                            })
                     {
                         guild.set_my_member(member);
                         self.my_members_by_guild.insert(guild.id, member.clone());
@@ -2849,9 +2853,7 @@ impl Stores {
                 }
             }
             "GUILD_SCHEDULED_EVENT_CREATE" => {
-                if let (Some(guild), Some(event_id)) =
-                    (id(&data["guild_id"]), id(&data["id"]))
-                {
+                if let (Some(guild), Some(event_id)) = (id(&data["guild_id"]), id(&data["id"])) {
                     let me = self.current_user.as_ref().map(|u| u.id);
                     let creator = id(&data["creator_id"]);
                     let mute_events = self
@@ -3258,6 +3260,25 @@ impl Stores {
         patch
     }
 
+    /// The in-app feedback state of one survey type (`inAppFeedbackSettings`, read by module 220162).
+    pub fn in_app_feedback(&self, kind: u64) -> settings::InAppFeedbackState {
+        settings::in_app_feedback_state(&self.settings_raw, kind)
+    }
+
+    /// Sets one survey type's state and returns the PATCH value; empty before the settings arrived.
+    pub fn set_in_app_feedback(
+        &mut self,
+        kind: u64,
+        state: settings::InAppFeedbackState,
+    ) -> String {
+        if !self.settings_loaded {
+            return String::new();
+        }
+        let (patch, updated) = settings::set_in_app_feedback(&self.settings_raw, kind, state);
+        self.settings_raw = updated;
+        patch
+    }
+
     /// The status the account's proto settings hold: the chosen one, when it lapses, and the custom status.
     pub fn status_state(&self) -> Option<settings::StatusState> {
         settings::read_status(&self.settings_raw)
@@ -3472,11 +3493,7 @@ impl Stores {
         self.my_members_by_guild.clear();
         for (guild_id, member) in guild_ids.into_iter().zip(merged) {
             if let (Some(guild_id), Some(member)) = (guild_id, member) {
-                if let Some(guild) = self
-                    .guilds
-                    .iter_mut()
-                    .find(|guild| guild.id == guild_id)
-                {
+                if let Some(guild) = self.guilds.iter_mut().find(|guild| guild.id == guild_id) {
                     guild.set_my_member(&member);
                 }
                 self.my_members_by_guild.insert(guild_id, member);
@@ -3841,10 +3858,7 @@ impl Stores {
         }
         if let Some(mentions) = data["mentions"].as_array() {
             known.mentions = mentions.len();
-            known.mention_user_ids = mentions
-                .iter()
-                .filter_map(|user| id(&user["id"]))
-                .collect();
+            known.mention_user_ids = mentions.iter().filter_map(|user| id(&user["id"])).collect();
         }
         if let Some(roles) = data["mention_roles"].as_array() {
             known.mention_roles = roles.len();
@@ -4248,12 +4262,10 @@ impl Stores {
             if let Some(last) = id(&entry["last_message_id"]) {
                 let latest = self.read_states.latest.entry(channel_id).or_insert(0);
                 *latest = (*latest).max(last);
-                if let Some(guild) = guild_id.and_then(|gid| {
-                    self.guilds.iter_mut().find(|known| known.id == gid)
-                }) {
-                    if let Some(channel) =
-                        guild.channels.iter_mut().find(|c| c.id == channel_id)
-                    {
+                if let Some(guild) =
+                    guild_id.and_then(|gid| self.guilds.iter_mut().find(|known| known.id == gid))
+                {
+                    if let Some(channel) = guild.channels.iter_mut().find(|c| c.id == channel_id) {
                         if channel.last_message_id.is_none_or(|prev| last > prev) {
                             channel.last_message_id = Some(last);
                         }
@@ -6269,10 +6281,7 @@ mod tests {
         );
         assert_eq!(stores.read_states.mentions(20), 1);
         assert_eq!(stores.read_states.latest.get(&20), Some(&201));
-        stores.dispatch(
-            "MESSAGE_DELETE",
-            &json!({"id": "201", "channel_id": "20"}),
-        );
+        stores.dispatch("MESSAGE_DELETE", &json!({"id": "201", "channel_id": "20"}));
         assert_eq!(stores.read_states.mentions(20), 0);
         assert_eq!(stores.read_states.latest.get(&20), Some(&200));
 

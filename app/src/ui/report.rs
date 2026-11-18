@@ -1152,7 +1152,7 @@ impl Root {
                                     }
                                     "submit" => this.report_submit(cx),
                                     _ => {
-                                        this.report = None;
+                                        this.report_closed(cx);
                                         cx.notify();
                                     }
                                 }
@@ -1204,7 +1204,7 @@ impl Root {
                             .justify_center()
                             .child(icon("modal_close", 20., "--control-icon-only-icon-default"))
                             .on_click(cx.listener(|this, _, _, cx| {
-                                this.report = None;
+                                this.report_closed(cx);
                                 cx.notify();
                             })),
                     ),
@@ -1280,7 +1280,7 @@ impl Root {
                     .items_center()
                     .justify_center()
                     .on_click(cx.listener(|this, _, _, cx| {
-                        this.report = None;
+                        this.report_closed(cx);
                         cx.notify();
                     }))
                     .child(modal.posed(pose)),

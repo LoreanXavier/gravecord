@@ -1020,8 +1020,13 @@ impl Root {
             .filter(|(_, live)| live.last.role == Role::Send)
             .map(|(key, _)| *key)
             .collect();
+        let stopped = !own.is_empty();
         for key in own {
             self.stream_stop_key(key, cx);
+        }
+        // `stopStream` (`D` of module 401843) closes the stream with `canShowFeedback` (module 220162, STREAM_CLOSE).
+        if stopped {
+            self.possibly_show_feedback(super::feedback::Kind::Stream { streamer: true }, cx);
         }
     }
 
@@ -1318,6 +1323,7 @@ impl Root {
             .map(|(key, _)| *key);
         if let Some(key) = key {
             self.stream_stop_key(key, cx);
+            self.possibly_show_feedback(super::feedback::Kind::Stream { streamer: false }, cx);
         }
     }
 

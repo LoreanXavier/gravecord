@@ -45,6 +45,8 @@ pub(super) enum Then {
     DmsOff {
         guild: Id,
     },
+    /// Upload Logs of module 72514 after a survey: the RTC logs go up as Voice & Video's button sends them.
+    UploadLogs,
 }
 
 #[derive(Clone, Debug)]
@@ -365,6 +367,7 @@ impl Root {
                 destinations,
             } => self.retry_forward(*message, destinations, window, cx),
             Then::DmsOff { guild } => self.turn_off_guild_dms(guild, cx),
+            Then::UploadLogs => self.voice_upload_logs(cx),
         }
     }
 

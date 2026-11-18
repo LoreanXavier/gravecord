@@ -68,6 +68,11 @@ pub(super) enum Target {
         user: Id,
         widget: Id,
     },
+    /// The voice panel's channel line (`rtc-channel`, module 576701).
+    RtcChannel {
+        guild: Id,
+        channel: Id,
+    },
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -118,6 +123,16 @@ pub(super) enum Act {
     /// "Pin Post" / "Unpin Post" of a forum post (module 41402).
     PinPost,
     UnpinPost,
+    /// The voice panel channel menu (`rtc-channel`, module 576701): the input mode radios of module 1611.
+    RtcVoiceActivity,
+    RtcPushToTalk,
+    /// Input Volume and Output Volume (modules 486487, 298242): the menu sliders.
+    InputVolume,
+    OutputVolume,
+    /// Pop Out (`popout-call`): the call in its own window.
+    PopOutCall,
+    /// Show Voice Users (`show-voice-states`, the `debug.rtcPanelShowVoiceStates` setting).
+    ShowVoiceUsers,
     LeaveThread,
     /// "Join Thread" (module 660273): `joinThread`, shown for a thread the account has not joined.
     JoinThread,
@@ -210,7 +225,7 @@ impl Act {
     /// Every row kind once (`Correction` with its first index). `ordinal` is an exhaustive match, so adding a variant
     /// without listing it here fails the build or the `act_list_is_complete` test.
     #[cfg(test)]
-    pub(super) const ALL: [Act; 104] = [
+    pub(super) const ALL: [Act; 110] = [
         Act::InventoryAbout,
         Act::InventoryHide,
         Act::ReportApp,
@@ -315,6 +330,12 @@ impl Act {
         Act::UnlockThread,
         Act::PinPost,
         Act::UnpinPost,
+        Act::RtcVoiceActivity,
+        Act::RtcPushToTalk,
+        Act::InputVolume,
+        Act::OutputVolume,
+        Act::PopOutCall,
+        Act::ShowVoiceUsers,
     ];
 
     #[cfg(test)]
@@ -424,6 +445,12 @@ impl Act {
             Act::UnpinPost => 101,
             Act::JoinQuiet => 102,
             Act::ReportStage => 103,
+            Act::RtcVoiceActivity => 104,
+            Act::RtcPushToTalk => 105,
+            Act::InputVolume => 106,
+            Act::OutputVolume => 107,
+            Act::PopOutCall => 108,
+            Act::ShowVoiceUsers => 109,
         }
     }
 }
@@ -538,6 +565,12 @@ pub(super) fn status(act: Act) -> Status {
         | Act::FavoritesNickname
         | Act::FavoritesSettings
         | Act::HideFavorites => Wired,
+        Act::RtcVoiceActivity
+        | Act::RtcPushToTalk
+        | Act::InputVolume
+        | Act::OutputVolume
+        | Act::PopOutCall
+        | Act::ShowVoiceUsers => Wired,
     }
 }
 
@@ -575,6 +608,8 @@ pub(super) struct Row {
     pub disabled: bool,
     /// The key combination shown at the right (`shortcut` of the menu item, module 165862).
     pub shortcut: Option<&'static str>,
+    /// A `MenuRadioItem`: the check is drawn as a radio.
+    pub radio: bool,
 }
 
 impl Row {
@@ -590,6 +625,7 @@ impl Row {
             danger: false,
             disabled: false,
             shortcut: None,
+            radio: false,
         }
     }
 
@@ -636,7 +672,7 @@ impl Row {
     /// Row heights measured in the captures: 34, 36 with an icon, caret or checkbox, 52 with a second line,
     /// 58 for the menu volume slider.
     pub fn height(&self) -> f32 {
-        if self.act == Act::Volume {
+        if matches!(self.act, Act::Volume | Act::InputVolume | Act::OutputVolume) {
             58.
         } else if self.sub.is_some() {
             52.
@@ -2601,6 +2637,7 @@ impl Root {
             Target::GameProfile(_) => game_profile_items(developer),
             Target::GameAddToProfile(game) => self.game_widget_items(game),
             Target::ProfileWidget { .. } => profile_widget_items(),
+            Target::RtcChannel { guild, channel } => self.rtc_channel_items(guild, channel),
             Target::Favorites => favorites_items(),
             Target::ChannelMention(_) => channel_mention_items(developer),
             Target::PickerSticker(sticker) => {
@@ -3272,6 +3309,15 @@ impl Root {
                 self.select(guild, None);
                 self.open_invite(cx);
             }
+            (
+                act @ (Act::Invite
+                | Act::CopyLink
+                | Act::RtcVoiceActivity
+                | Act::RtcPushToTalk
+                | Act::PopOutCall
+                | Act::ShowVoiceUsers),
+                Target::RtcChannel { channel, .. },
+            ) => self.run_rtc_channel(act, channel, window, cx),
             (Act::Invite, Target::Channel(channel)) => {
                 if let Some(guild) = self.guild_of_channel(channel) {
                     self.select(guild, Some(channel));
@@ -3304,7 +3350,9 @@ impl Root {
                 ));
             }
             // Not in the pinned client: CopyUserURLs' "Copy User URL" (`plugin_hooks.rs`).
-            (Act::CopyLink, Target::User { user, .. }) => super::plugin_hooks::copy_user_url(user, cx),
+            (Act::CopyLink, Target::User { user, .. }) => {
+                super::plugin_hooks::copy_user_url(user, cx)
+            }
             (Act::CopyLink, Target::Dm(channel)) => {
                 if let Some(user) = self.dm_user(channel) {
                     super::plugin_hooks::copy_user_url(user, cx);
@@ -3333,6 +3381,7 @@ impl Root {
                     | Target::GameProfile(id)
                     | Target::GameAddToProfile(id)
                     | Target::PickerSticker(id) => id,
+                    Target::RtcChannel { channel, .. } => channel,
                     Target::ProfileWidget { .. }
                     | Target::InventoryFeed
                     | Target::InventoryFeedAtPointer
@@ -4951,6 +5000,13 @@ impl Root {
         if row.act == Act::Volume {
             return self.volume_row(row, target, cx);
         }
+        if let Some(side) = match row.act {
+            Act::InputVolume => Some(super::audio_menu::Side::Input),
+            Act::OutputVolume => Some(super::audio_menu::Side::Output),
+            _ => None,
+        } {
+            return self.rtc_volume_row(row, side, cx);
+        }
         let act = row.act;
         let danger = row.danger;
         let disabled = row.disabled;
@@ -4966,6 +5022,7 @@ impl Root {
         };
         let has_sub = row.caret;
         let is_check = row.check.is_some();
+        let is_radio = row.radio;
         let label = gpui::StyledText::new(row.label.clone()).with_highlights(
             (act == Act::Mute && matches!(target, Target::Dm(_)))
                 .then(|| row.label.find('@'))
@@ -5053,6 +5110,17 @@ impl Root {
             }
             if !is_check {
                 this.close_context_menu(cx);
+            } else if is_radio {
+                // A radio item stays open and its group follows the pick.
+                if let Some(open) = this.context.open.as_mut() {
+                    for (at, entry) in open.items.iter_mut().enumerate() {
+                        if let Entry::Row(entry) = entry
+                            && entry.radio
+                        {
+                            entry.check = Some(at == index);
+                        }
+                    }
+                }
             } else if let Some(open) = this.context.open.as_mut()
                 && let Some(Entry::Row(entry)) = open.items.get_mut(index)
                 && let Some(checked) = entry.check.as_mut()
@@ -5115,7 +5183,12 @@ impl Root {
                 .text_color(tint)
                 .child(keys)
         }))
-        .children(row.check.map(menu_check_box))
+        .children(row.check.filter(|_| !row.radio).map(menu_check_box))
+        .children(
+            row.check
+                .filter(|_| row.radio)
+                .map(|on| div().ml(px(8.)).child(super::create_channel::radio(on))),
+        )
         .children(row.trailing.filter(|_| !row.caret).map(|name| {
             div()
                 .ml(px(8.))

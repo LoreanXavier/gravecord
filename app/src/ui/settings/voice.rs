@@ -1011,6 +1011,12 @@ impl Root {
         self.voice_commit();
     }
 
+    /// The input mode radios of a menu (module 1611 `setMode`): Voice Activity or Push to Talk.
+    pub(in crate::ui) fn set_push_to_talk(&mut self, on: bool) {
+        self.voice.stored.set_mode(on, |_| {});
+        self.voice_commit();
+    }
+
     /// The user panel's Input Profile submenu (`setActiveInputProfile`).
     pub(in crate::ui) fn set_input_profile(&mut self, profile: Profile) {
         self.voice.stored.profile = profile;

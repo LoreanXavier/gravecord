@@ -678,7 +678,7 @@ impl Root {
         })
     }
 
-    fn user_of(&self, id: Id) -> User {
+    pub(super) fn user_of(&self, id: Id) -> User {
         self.stores
             .users
             .get(&id)
@@ -1578,11 +1578,10 @@ impl Root {
         };
         // A person's video still without a picture after 20 seconds: "Failed to start camera" (module 566566).
         let camera_failed = !stream_tile && !outside && {
-            let (failed, began) = self.video_ready.borrow_mut().observe(
-                user_id,
-                loading,
-                std::time::Instant::now(),
-            );
+            let (failed, began) =
+                self.video_ready
+                    .borrow_mut()
+                    .observe(user_id, loading, std::time::Instant::now());
             if began {
                 cx.spawn(async move |this, cx| {
                     cx.background_executor()

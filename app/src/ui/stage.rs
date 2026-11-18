@@ -539,6 +539,7 @@ impl Root {
             }
         }
         let requests = self.stage_requests_toggle(channel, hands.len(), cx);
+        let hand = self.stage_hand_button(guild, channel, cx);
         let video_full =
             self.video_stage_full_notice(channel, (speakers.len() + audience.len()) as u64, cx);
         let sidebar = self.stage_requests_sidebar(channel, cx);
@@ -801,7 +802,7 @@ impl Root {
                             .items_center()
                             .gap(px(8.))
                             .child(round("stage-sound", "voice_soundboard_off"))
-                            .child(round("stage-hand", "stage_hand_raise"))
+                            .child(hand)
                             .child(round("stage-mic", "stage_mic_off"))
                             .child(round("stage-more", "voice_view_more")),
                     )
@@ -1960,6 +1961,97 @@ impl Root {
     }
 }
 
+impl Root {
+    /// The audience's hand button of the Stage's controls (`eI` of module 717965, its state from module 361619). Its
+    /// label: "Speaker abilities are only for confirmed adults" while the account must confirm its age (`Vv` of module
+    /// 418208, taken as true like the coachmark above: the account's age state is not read), else Cancel Request
+    /// (green) while the hand is up, Request to Speak, or Raise Hand Disabled (and disabled) when this member may not
+    /// ask (`REQUEST_TO_SPEAK`, module 370228). A click raises or lowers the hand (`J7` of module 849736:
+    /// `request_to_speak_timestamp` now or null). GAP: under the age gate the click opens age verification, which is
+    /// not built, so it does nothing here.
+    fn stage_hand_button(
+        &self,
+        guild: Id,
+        channel: &Channel,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let me = self.stores.current_user.as_ref().map(|user| user.id);
+        let mine = self
+            .stores
+            .voice_members(guild, channel.id)
+            .into_iter()
+            .find(|state| Some(state.user_id) == me)
+            .cloned();
+        let raised = mine
+            .as_ref()
+            .is_some_and(|state| state.request_to_speak_timestamp.is_some());
+        let may_ask = self.my_permission(
+            guild,
+            Some(channel),
+            dc_state::permissions::REQUEST_TO_SPEAK,
+        );
+        let age_gate = may_ask;
+        let label = hand_label(age_gate, raised, may_ask);
+        let disabled = !may_ask && !raised;
+        let in_stage = mine.is_some() && !age_gate;
+        let target = channel.id;
+        let button = div()
+            .id("stage-hand")
+            .size(px(40.))
+            .rounded(px(8.))
+            .flex()
+            .items_center()
+            .justify_center()
+            .when(raised, |this| this.bg(color("--control-connected-background-default")))
+            .when(disabled, |this| this.opacity(0.5))
+            .when(!disabled, |this| {
+                this.cursor_pointer()
+                    .hover(|style| style.bg(color("--interactive-background-hover")))
+            })
+            .child(icon("stage_hand_raise", 20., "--white"))
+            .when(in_stage && !disabled, |this| {
+                this.on_click(cx.listener(move |this, _, _, cx| {
+                    let now = chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
+                    let body = if raised {
+                        json!({"request_to_speak_timestamp": null, "channel_id": target.to_string()})
+                    } else {
+                        json!({"request_to_speak_timestamp": now, "channel_id": target.to_string()})
+                    };
+                    let _ = this.requests.send(Request::Rest {
+                        key: None,
+                        method: reqwest::Method::PATCH,
+                        route: format!("/guilds/{guild}/voice-states/@me"),
+                        body: Some(body),
+                    });
+                    cx.notify();
+                }))
+            });
+        self.with_tip(
+            "stage-hand-tip",
+            super::tooltip::Tip::body(
+                super::tooltip::Body::Text(label.into()),
+                super::tooltip::Side::Top,
+            ),
+            button,
+            cx,
+        )
+        .into_any_element()
+    }
+}
+
+/// The label of the hand button (`label` of `eI`).
+pub(super) fn hand_label(age_gate: bool, raised: bool, may_ask: bool) -> &'static str {
+    if age_gate {
+        dc_intl::t("NzITVo")
+    } else if raised {
+        dc_intl::t("GCimTk")
+    } else if may_ask {
+        dc_intl::t("hLbG5N")
+    } else {
+        dc_intl::t("e4WMvx")
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1999,5 +2091,22 @@ mod tests {
         assert!(!new_channel_pill(&old, true, 1, 0, now));
         let voice = channel(made(day), ChannelKind::Voice);
         assert!(!new_channel_pill(&voice, true, 1, 0, now));
+    }
+}
+
+#[cfg(test)]
+mod hand_tests {
+    #[test]
+    fn the_hand_button_names_its_state() {
+        assert_eq!(
+            super::hand_label(true, true, true),
+            "Speaker abilities are only for confirmed adults"
+        );
+        assert_eq!(super::hand_label(false, true, false), "Cancel Request");
+        assert_eq!(super::hand_label(false, false, true), "Request to Speak");
+        assert_eq!(
+            super::hand_label(false, false, false),
+            "Raise Hand Disabled"
+        );
     }
 }

@@ -1101,6 +1101,18 @@ pub async fn run(
                 });
                 let _ = writeln!(output, "ch: {line}");
             }
+            // Capture only: the call, stream and report surveys (`ui::feedback`).
+            #[cfg(feature = "capture")]
+            ["feedback", rest @ ..] => {
+                let line = root.update(cx, |root, cx| root.script_feedback(rest, cx));
+                let _ = writeln!(output, "feedback: {line}");
+            }
+            // Capture only: the video picture-in-picture window (`ui::video_pip`).
+            #[cfg(feature = "capture")]
+            ["pip", rest @ ..] => {
+                let line = root.update(cx, |root, cx| root.script_pip(rest, cx));
+                let _ = writeln!(output, "pip: {line}");
+            }
             ["voice", rest @ ..] => {
                 let line = root.update(cx, |root, cx| root.script_voice(rest, cx));
                 let _ = writeln!(output, "voice: {line}");
