@@ -1725,6 +1725,9 @@ impl Root {
                     self.inventory_stale(&data, cx);
                 }
                 self.sidebar_event_update(&name, &data);
+                // Not in the pinned client: NewGuildSettings on a server just joined
+                // (`plugin_hooks/new_guild_settings.rs`).
+                self.new_guild_settings_dispatch(&name, &data);
                 if name == "CHANNEL_PINS_UPDATE" {
                     self.ack_open_pins();
                 }

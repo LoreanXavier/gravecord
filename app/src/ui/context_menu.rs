@@ -304,13 +304,15 @@ pub(super) enum Act {
     PluginPinCategoryUp,
     PluginPinCategoryDown,
     PluginPinDeleteCategory,
+    /// Not in the pinned client: NewGuildSettings' row (`plugin_hooks/new_guild_settings.rs`).
+    PluginApplyNewGuildSettings,
 }
 
 impl Act {
     /// Every row kind once (`Correction` with its first index). `ordinal` is an exhaustive match, so adding a variant
     /// without listing it here fails the build or the `act_list_is_complete` test.
     #[cfg(test)]
-    pub(super) const ALL: [Act; 135] = [
+    pub(super) const ALL: [Act; 136] = [
         Act::InventoryAbout,
         Act::InventoryHide,
         Act::ReportApp,
@@ -451,6 +453,7 @@ impl Act {
         Act::PluginPinCategoryUp,
         Act::PluginPinCategoryDown,
         Act::PluginPinDeleteCategory,
+        Act::PluginApplyNewGuildSettings,
     ];
 
     #[cfg(test)]
@@ -596,6 +599,7 @@ impl Act {
             Act::PluginPinCategoryUp => 132,
             Act::PluginPinCategoryDown => 133,
             Act::PluginPinDeleteCategory => 134,
+            Act::PluginApplyNewGuildSettings => 135,
         }
     }
 }
@@ -638,7 +642,8 @@ pub(super) fn status(act: Act) -> Status {
         | Act::PluginPinEditCategory
         | Act::PluginPinCategoryUp
         | Act::PluginPinCategoryDown
-        | Act::PluginPinDeleteCategory => Wired,
+        | Act::PluginPinDeleteCategory
+        | Act::PluginApplyNewGuildSettings => Wired,
         Act::InventoryAbout
         | Act::InventoryHide
         | Act::ViewAllActivity
@@ -2332,7 +2337,7 @@ const PINNED: u64 = 2048;
 /// `OPT_IN_ENABLED`: set along with a pin.
 const OPT_IN_ENABLED: u64 = 4096;
 /// The store the official client keeps Hide Names in (`CollapsedVoiceChannelStore`, persisted as `collapsedChannels`).
-const HIDDEN_NAMES: &str = "collapsedChannels";
+pub(in crate::ui) const HIDDEN_NAMES: &str = "collapsedChannels";
 
 /// The channel type number the API uses (`channel_type` of a favourite).
 pub(super) fn channel_type_number(kind: ChannelKind) -> u64 {
@@ -3430,6 +3435,8 @@ impl Root {
         let items = self.with_view_icons_rows(items, target);
         // Not in the pinned client: ServerInfo's row (`plugin_hooks/server_info.rs`).
         let items = self.with_server_info_row(items, target);
+        // Not in the pinned client: NewGuildSettings' row, before ServerInfo's (`plugin_hooks/new_guild_settings.rs`).
+        let items = self.with_new_guild_settings_row(items, target);
         // Not in the pinned client: BiggerStreamPreview's row (`plugin_hooks/bigger_stream_preview.rs`).
         let items = self.with_stream_preview_row(items, target);
         // Not in the pinned client: PinDMs' "Pin DMs" row (`plugin_hooks/pin_dms.rs`).
@@ -3644,6 +3651,11 @@ impl Root {
                 self.account_panel_toggle_prioritize(cx);
             }
             // Not in the pinned client: ServerInfo (`plugin_hooks/server_info.rs`).
+            // Not in the pinned client: NewGuildSettings (`plugin_hooks/new_guild_settings.rs`).
+            (Act::PluginApplyNewGuildSettings, Target::Guild(guild)) => {
+                self.apply_new_guild_settings(guild);
+                cx.notify();
+            }
             (Act::PluginServerInfo, Target::Guild(guild)) => {
                 self.server_info_open(guild, cx);
             }

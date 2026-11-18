@@ -12,7 +12,7 @@ every setting changed), and with every plugin off, and fails on one differing pi
 The list is the plugins enabled in the owner's Equicord backup of 2026-09-21 (156). Sources were read in the local
 Equicord checkout of 2026-11-14 (`src/plugins` is Vencord's, `src/equicordplugins` Equicord's).
 
-Totals: 54 ported, 8 native, 49 planned, 45 not applicable.
+Totals: 55 ported, 8 native, 48 planned, 45 not applicable.
 
 Status: **ported** works and has its proof; **native** is what gravecord already does without a plugin;
 **planned** is not built yet (an import keeps its settings for when it is); **not applicable** has nothing to
@@ -101,7 +101,7 @@ port in a native client, or was removed upstream.
 | MoreCommands | planned | equicordplugins/moreCommands/index.ts | Adds various fun and useful commands | its slash commands. |  |
 | MoreKaomoji | not applicable | (not in the 2026-11-14 checkout) |  | removed from Equicord in d7e6fcd3. |  |
 | MuteChannelMentions | ported | userplugins/muteChannelMentions/index.tsx | Hides mention badges from the channels you pick, both on the channel and on the server icon. Nothing is sent to Discord. | plugin_hooks/mute_channel_mentions.rs + dc-state ReadStates::hidden: the picked channels' mention badges are filtered wherever the app reads a channel's mentions (channel rows, server icons, overlay, keyboard), none at all or with onlyEveryone only your direct mentions since the last read; channel and thread menus get the Hide mention badge check after Mark As Read. Nothing is sent. | `ids_parse_as_the_original_splits_them`, dc-state `hidden_channels_show_nothing_or_only_direct_mentions_since_the_ack`; frame mcm-menu; plugins-off channel-menu, chat |
-| NewGuildSettings | planned | plugins/newGuildSettings/index.tsx | Automatically mute new servers and change various other settings upon joining | notification defaults applied when joining a server. |  |
+| NewGuildSettings | ported | plugins/newGuildSettings/index.tsx | Automatically mute new servers and change various other settings upon joining | plugin_hooks/new_guild_settings.rs: a server you join (its GUILD_CREATE carries your joined_at from the last two minutes: invite, Discovery or an approved join request; a lurked server has none) gets the defaults in one settings patch (muted, mobile push, @everyone/roles suppressed, highlights, events, the level unless Server default), Show All Channels in a Community server that shows picked channels, and voice names hidden; Apply NewGuildSettings in the server menu's privacy group and Apply NewGuildSettings to Folder (250 ms apart). GAP: the CogWheel row of the server header dropdown. | `defaults_follow_the_switches`, `only_a_recent_join_counts`; frame ngs-menu; plugins-off guild-menu |
 | NicknameIconsAPI | not applicable | plugins/_api/nicknameIcons.ts | API to add icons to the nickname, in profiles | client-mod plumbing (an API for other plugins), nothing to port. |  |
 | NoDevtoolsWarning | not applicable | plugins/noDevtoolsWarning/index.ts | Disables the 'HOLD UP' banner in the console. As a side effect, also prevents Discord from hiding your token, which prevents random logouts. | no web console in a native client. |  |
 | NoNitroUpsell | ported | equicordplugins/noNitroUpsell/index.ts | Removes all of Discord's nitro upsells by tricking the client into thinking you have nitro. | plugin_hooks.rs premium_type_override, nitro.rs premium_wire: while on, the account's tier reads as Nitro (premiumTypeOverride 2) everywhere the app asks for it, so the upsells that depend on it are left out, as the original tricks the client; the server still applies the real tier. | `no_nitro_upsell_reads_as_nitro_only_while_on`; frames nnu-on/nnu-off (Appearance: Color Themes as Nitro); plugins-off gif-picker, settings-appearance |
@@ -252,6 +252,15 @@ Every setting of each original (`definePluginSettings`), its type and default th
 | MessagePeek | `hideMuted` | BOOLEAN | `false` | ported |
 | MuteChannelMentions | `channelIds` | STRING | `""` | ported |
 | MuteChannelMentions | `onlyEveryone` | BOOLEAN | `true` | ported |
+| NewGuildSettings | `guild` | BOOLEAN | `true` | ported |
+| NewGuildSettings | `messages` | SELECT | `3` | ported |
+| NewGuildSettings | `everyone` | BOOLEAN | `true` | ported |
+| NewGuildSettings | `role` | BOOLEAN | `true` | ported |
+| NewGuildSettings | `highlights` | BOOLEAN | `true` | ported |
+| NewGuildSettings | `events` | BOOLEAN | `true` | ported |
+| NewGuildSettings | `showAllChannels` | BOOLEAN | `true` | ported |
+| NewGuildSettings | `mobilePush` | BOOLEAN | `true` | ported |
+| NewGuildSettings | `voiceChannels` | BOOLEAN | `false` | ported |
 | NoPendingCount | `hideFriendRequestsCount` | BOOLEAN | `true` | ported |
 | NoPendingCount | `hideMessageRequestsCount` | BOOLEAN | `true` | ported |
 | NoPendingCount | `hidePremiumOffersCount` | BOOLEAN | `true` | nothing to act on yet: the app's Home badge does not count unseen Nitro offers yet (`getUnacknowledgedOffers`), so there is no count to hide |

@@ -1030,6 +1030,78 @@ pub(crate) const DEFS: &[Def] = &[
         ],
     },
     Def {
+        id: "NewGuildSettings",
+        name: "NewGuildSettings",
+        description: "Automatically mute new servers and change various other settings upon joining",
+        origin: Origin::Vencord,
+        source: "src/plugins/newGuildSettings/index.tsx",
+        default_on: false,
+        settings: &[
+            Setting {
+                key: "guild",
+                label: "Guild",
+                description: "Mute Guild automatically",
+                kind: Kind::Switch { default: true },
+            },
+            Setting {
+                key: "messages",
+                label: "Messages",
+                description: "Server Notification Settings",
+                kind: Kind::Select {
+                    options: &[
+                        ("All messages", Lit::Int(0)),
+                        ("Only @mentions", Lit::Int(1)),
+                        ("Nothing", Lit::Int(2)),
+                        ("Server default", Lit::Int(3)),
+                    ],
+                    default: 3,
+                },
+            },
+            Setting {
+                key: "everyone",
+                label: "Everyone",
+                description: "Suppress @everyone and @here",
+                kind: Kind::Switch { default: true },
+            },
+            Setting {
+                key: "role",
+                label: "Role",
+                description: "Suppress All Role @mentions",
+                kind: Kind::Switch { default: true },
+            },
+            Setting {
+                key: "highlights",
+                label: "Highlights",
+                description: "Suppress Highlights automatically",
+                kind: Kind::Switch { default: true },
+            },
+            Setting {
+                key: "events",
+                label: "Events",
+                description: "Mute New Events automatically",
+                kind: Kind::Switch { default: true },
+            },
+            Setting {
+                key: "showAllChannels",
+                label: "Show All Channels",
+                description: "Show all channels automatically",
+                kind: Kind::Switch { default: true },
+            },
+            Setting {
+                key: "mobilePush",
+                label: "Mobile Push",
+                description: "Mute Mobile Push Notifications automatically",
+                kind: Kind::Switch { default: true },
+            },
+            Setting {
+                key: "voiceChannels",
+                label: "Voice Channels",
+                description: "Hide names in Voice channels automatically",
+                kind: Kind::Switch { default: false },
+            },
+        ],
+    },
+    Def {
         id: "NoNitroUpsell",
         name: "NoNitroUpsell",
         description: "Removes all of Discord's nitro upsells by tricking the client into thinking you have nitro.",

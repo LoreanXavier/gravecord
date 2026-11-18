@@ -283,6 +283,22 @@ impl Root {
                 .into_any_element(),
             );
         }
+        // Not in the pinned client: NewGuildSettings' row at the end (`plugin_hooks/new_guild_settings.rs`).
+        if self.new_guild_settings_on() {
+            rows.push(
+                row(
+                    "folder-menu-new-guild-settings",
+                    "Apply NewGuildSettings to Folder",
+                    false,
+                )
+                .on_click(cx.listener(move |this, _, _, cx| {
+                    this.rail_folders.menu = None;
+                    this.apply_new_guild_settings_to_folder(folder, cx);
+                    cx.notify();
+                }))
+                .into_any_element(),
+            );
+        }
         let frame = div()
             .id("folder-menu")
             .occlude()
