@@ -872,6 +872,9 @@ pub struct Root {
     /// Members the start cache brought (server, user): asked for again once the gateway is up, so none stays as the
     /// last run knew it.
     start_members: Vec<(Id, Id)>,
+    /// Pictures of the screen kept for the next start that are not in yet: each is written to the start's folder
+    /// when it comes in (`start_cache::kept_for_the_start`).
+    start_keep: HashSet<String>,
     /// The connecting screen, up until the first content is in.
     splash: splash::Splash,
     forums: HashMap<Id, forums::Forum>,
@@ -1244,6 +1247,7 @@ impl Root {
             ready: false,
             hydrated_from_cache: false,
             start_members: Vec::new(),
+            start_keep: HashSet::new(),
             splash: splash::Splash::new(),
             forums: HashMap::new(),
             regions: regions::Regions::default(),
@@ -1758,11 +1762,13 @@ impl Root {
                 self.restore_scroll_anchor(anchor);
                 self.request_images();
                 if Some(channel) == self.channel {
+                    let pictures = self.start_pictures();
+                    self.keep_start_pictures(&pictures);
                     start_cache::save_messages(
                         self.stores.current_user.as_ref().map(|me| me.id),
                         channel,
                         &page,
-                        &self.start_pictures(),
+                        &pictures,
                         self.start_members_to_keep(),
                     );
                 }
@@ -2436,8 +2442,9 @@ impl Root {
             Update::Image { key, bytes } => {
                 let format = image_format(&key, &bytes);
                 self.image_retries.arrived(&key);
-                self.images
-                    .insert(key, Arc::new(Image::from_bytes(format, bytes)));
+                let image = Arc::new(Image::from_bytes(format, bytes));
+                self.start_picture_arrived(&key, &image);
+                self.images.insert(key, image);
             }
             #[cfg(feature = "capture")]
             Update::Spinner(clip) => self.splash_clip(clip),

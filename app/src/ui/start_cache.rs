@@ -94,6 +94,90 @@ pub(crate) struct Cached {
 const MAX_PICTURES: usize = 64;
 const MAX_PICTURE_BYTES: usize = 4 * 1024 * 1024;
 
+/// The most bytes one picture kept only for the start may have on disk.
+const MAX_KEPT_PICTURE_BYTES: usize = 1024 * 1024;
+
+/// The folder of the pictures kept only for the start, next to the other start files.
+const START_PICTURES_DIR: &str = "start-pictures";
+
+/// Pictures of the first screen that the picture requests do not keep on disk: attachments' previews, server emojis
+/// and the composer's emoji button (cut from a sheet with the theme's tint). Only the screen in view's are kept, in
+/// their own folder by image key (`start-pictures`): each save replaces the set, logging out removes it, and what is
+/// scrolled through is never written. An attachment's or emoji's key names one picture forever; the button is written
+/// again whenever it is cut.
+pub(crate) fn kept_for_the_start(key: &str) -> bool {
+    key.starts_with("attachment:")
+        || key.starts_with("custom:")
+        || key.starts_with("custom-animated:")
+        || key == EMOJI_BUTTON
+}
+
+const EMOJI_BUTTON: &str = "emoji_button";
+
+/// The file of a picture kept for the start, named by its image key.
+fn start_picture_name(key: &str) -> String {
+    let name: String = key
+        .chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || c == '-' {
+                c
+            } else {
+                '_'
+            }
+        })
+        .collect();
+    format!("{name}.bin")
+}
+
+/// Writes pictures kept for the start off the UI thread. With `wanted` (the screen's whole set), files of other
+/// pictures are removed, so the folder holds one screen.
+fn write_start_pictures(
+    pictures: Vec<(String, std::sync::Arc<gpui::Image>)>,
+    wanted: Option<Vec<String>>,
+) {
+    let pictures: Vec<_> = pictures
+        .into_iter()
+        .filter(|(_, image)| !image.bytes.is_empty() && image.bytes.len() <= MAX_KEPT_PICTURE_BYTES)
+        .collect();
+    if pictures.is_empty() && wanted.is_none() {
+        return;
+    }
+    let Some(dir) = file(START_PICTURES_DIR) else {
+        return;
+    };
+    std::thread::spawn(move || {
+        if std::fs::create_dir_all(&dir).is_err() {
+            return;
+        }
+        for (key, image) in pictures {
+            let path = dir.join(start_picture_name(&key));
+            if key != EMOJI_BUTTON && path.is_file() {
+                continue;
+            }
+            let part = path.with_extension("part");
+            if std::fs::write(&part, &image.bytes).is_ok() {
+                let _ = std::fs::rename(&part, &path);
+            }
+        }
+        if let Some(wanted) = wanted {
+            let keep: std::collections::HashSet<String> =
+                wanted.iter().map(|key| start_picture_name(key)).collect();
+            for entry in std::fs::read_dir(&dir).into_iter().flatten().flatten() {
+                let name = entry.file_name().to_string_lossy().into_owned();
+                if name.ends_with(".bin") && !keep.contains(&name) {
+                    let _ = std::fs::remove_file(entry.path());
+                }
+            }
+        }
+    });
+}
+
+/// A picture kept for the start, if the folder has it.
+fn read_start_picture(key: &str) -> Option<Vec<u8>> {
+    let bytes = std::fs::read(file(START_PICTURES_DIR)?.join(start_picture_name(key))).ok()?;
+    (!bytes.is_empty()).then_some(bytes)
+}
+
 impl Cached {
     /// The account the cache was kept for.
     pub(crate) fn account(&self) -> Option<u64> {
@@ -430,7 +514,9 @@ fn messages_for(mut value: Value, account: Option<u64>) -> Option<KeptPage> {
                 pair.get(1)?.as_str()?.to_owned(),
             ))
         })
-        .filter(|(_, url)| url.starts_with("https://"))
+        // The pictures kept for the start are read by key from their own folder; the others by URL from the
+        // picture cache, so only https ones.
+        .filter(|(key, url)| kept_for_the_start(key) || url.starts_with("https://"))
         .collect();
     Some(KeptPage {
         channel,
@@ -440,20 +526,26 @@ fn messages_for(mut value: Value, account: Option<u64>) -> Option<KeptPage> {
     })
 }
 
-/// The bytes the picture cache holds for `pictures`, at most `MAX_PICTURE_BYTES` in all. A copy past its freshness
-/// is still the picture of its URL (the URLs name the picture's hash), and the usual request refreshes it.
+/// The bytes the caches hold for `pictures`, at most `MAX_PICTURE_BYTES` in all: one that does not fit is skipped and
+/// the smaller ones after it still come (the list is the most wanted first). A copy past its freshness is still the
+/// picture of its URL (the URLs name the picture's hash), and the usual request refreshes it.
 fn read_pictures(pictures: &[(String, String)]) -> Vec<(String, Vec<u8>)> {
     let mut total = 0;
     let mut out = Vec::new();
     for (key, url) in pictures {
-        let Some(cached) = super::shop::art_cache::read_raw(url) else {
+        let bytes = if kept_for_the_start(key) {
+            read_start_picture(key)
+        } else {
+            super::shop::art_cache::read_raw(url).map(|cached| cached.bytes)
+        };
+        let Some(bytes) = bytes else {
             continue;
         };
-        total += cached.bytes.len();
-        if total > MAX_PICTURE_BYTES {
-            break;
+        if total + bytes.len() > MAX_PICTURE_BYTES {
+            continue;
         }
-        out.push((key.clone(), cached.bytes));
+        total += bytes.len();
+        out.push((key.clone(), bytes));
     }
     out
 }
@@ -503,6 +595,9 @@ pub(crate) fn forget() {
             let _ = std::fs::remove_file(path);
         }
     }
+    if let Some(dir) = file(START_PICTURES_DIR) {
+        let _ = std::fs::remove_dir_all(dir);
+    }
 }
 
 impl Root {
@@ -514,16 +609,11 @@ impl Root {
             return;
         }
         let applying = std::time::Instant::now();
-        // The first screen's pictures are in before anything asks for them; the usual requests still run and bring
-        // the same bytes (or a newer copy) behind them.
-        for (key, bytes) in cached.pictures {
-            let format = super::image_format(&key, &bytes);
-            self.images
-                .entry(key)
-                .or_insert_with(|| std::sync::Arc::new(gpui::Image::from_bytes(format, bytes)));
-        }
+        self.add_start_pictures(cached.pictures);
         self.cached_ready = Some(cached.ready.clone());
+        let dispatching = std::time::Instant::now();
         self.stores.dispatch("READY", &cached.ready);
+        crate::start_trace::took("dur_cache_dispatch", dispatching);
         for member in &cached.members {
             let Some(guild) = member["guild_id"].as_str().and_then(|id| id.parse().ok()) else {
                 continue;
@@ -538,8 +628,11 @@ impl Root {
         }
         self.hydrated_from_cache = true;
         self.reset_theme_sync();
+        let opening = std::time::Instant::now();
         self.after_ready();
+        crate::start_trace::took("dur_cache_after_ready", opening);
         self.request_group_images();
+        let wishing = std::time::Instant::now();
         if let Some(wishlists) = cached.wishlists {
             for product in wishlists.products {
                 self.shop_prefetch_product_art(&product, 78.);
@@ -575,11 +668,14 @@ impl Root {
                     .insert(format!("profile-wishlist:{user}"), list);
             }
         }
+        crate::start_trace::took("dur_cache_wishlists", wishing);
         if let Some((channel, page)) = cached.messages
             && Some(channel) == self.channel
         {
+            let loading = std::time::Instant::now();
             self.stores.load_messages_since(channel, &page, 0);
             self.rebuild_rows();
+            crate::start_trace::took("dur_cache_rows", loading);
             self.request_images();
             self.ready = true;
             crate::start_trace::mark("cache_messages");
@@ -587,6 +683,17 @@ impl Root {
         crate::start_trace::took("dur_cache_apply", applying);
         crate::start_trace::mark("cache_applied");
         cx.notify();
+    }
+
+    /// The first screen's pictures the cache read (Cached::pictures), put in before anything asks for them; the
+    /// usual requests still run and bring the same bytes (or a newer copy) behind them. A picture already in is kept.
+    pub(crate) fn add_start_pictures(&mut self, pictures: Vec<(String, Vec<u8>)>) {
+        for (key, bytes) in pictures {
+            let format = super::image_format(&key, &bytes);
+            self.images
+                .entry(key)
+                .or_insert_with(|| std::sync::Arc::new(gpui::Image::from_bytes(format, bytes)));
+        }
     }
 
     /// The start's timeline as the frames show it (`start_trace`): the first frame, the first with messages, with the
@@ -690,8 +797,9 @@ impl Root {
     }
 
     /// The pictures of the screen in view, as image key and URL, the most wanted first: the account's own avatar, the
-    /// avatars of the open channel's authors (newest messages first), the rail's server icons, and on Home the DM
-    /// list's avatars. Kept with the messages, they are read with the cache at the next start.
+    /// avatars of the open channel's authors (newest messages first), the rail's server icons, the server notice's
+    /// illustration, the composer's emoji button, on Home the DM list's avatars, and last the newest messages' own
+    /// pictures. Kept with the messages, they are read with the cache at the next start.
     pub(super) fn start_pictures(&self) -> Vec<(String, String)> {
         fn push(out: &mut Vec<(String, String)>, pair: (String, String)) {
             if out.len() < MAX_PICTURES && !out.iter().any(|(key, _)| *key == pair.0) {
@@ -702,27 +810,11 @@ impl Root {
         if let Some(me) = &self.stores.current_user {
             push(&mut out, super::avatar_source(me));
         }
-        if let Some(messages) = self
+        let messages = self
             .channel
-            .and_then(|channel| self.stores.messages.get(&channel))
-        {
-            for message in messages.iter().rev() {
-                push(&mut out, self.guild_avatar_source(&message.author));
-            }
-            // The newest messages' own pictures that the picture cache keeps (file kind icons, stickers, client
-            // assets); attachments are not kept on disk, so they are not among them.
-            let gifs = self.pref_on("animate_gifs", true) && !super::motion::reduced();
-            let emojis = self.pref_on("animate_emojis", true);
-            let newest: Vec<_> = messages.iter().rev().take(25).collect();
-            let wanted = newest
-                .iter()
-                .flat_map(|message| super::media_image::wanted(message, gifs, emojis))
-                .chain(super::message_kinds::wanted(messages));
-            for (key, url) in wanted {
-                if crate::net::disk_cacheable_raw_image(&key, &url) {
-                    push(&mut out, (key, url));
-                }
-            }
+            .and_then(|channel| self.stores.messages.get(&channel));
+        for message in messages.into_iter().flatten().rev() {
+            push(&mut out, self.guild_avatar_source(&message.author));
         }
         for guild in &self.stores.guilds {
             if let Some(icon) = &guild.icon {
@@ -738,6 +830,13 @@ impl Root {
                 );
             }
         }
+        // The open server's notice illustration ("An adventure begins."), a client asset kept on disk.
+        if let Some(picture) = self.channel_notice_picture() {
+            push(&mut out, (picture.to_owned(), picture.to_owned()));
+        }
+        if self.channel.is_some() {
+            push(&mut out, (EMOJI_BUTTON.to_owned(), String::new()));
+        }
         if self.guild.is_none() {
             for dm in &self.stores.private_channels {
                 if let Some(user) = self.stores.dm_recipient(dm) {
@@ -745,9 +844,59 @@ impl Root {
                 }
             }
         }
+        if let Some(messages) = messages {
+            // The newest messages' own pictures: the ones the picture cache keeps (file kind icons, stickers, client
+            // assets) and the attachments' previews and server emojis kept for the start.
+            let gifs = self.pref_on("animate_gifs", true) && !super::motion::reduced();
+            let emojis = self.pref_on("animate_emojis", true);
+            let newest: Vec<_> = messages.iter().rev().take(25).collect();
+            let wanted = newest
+                .iter()
+                .flat_map(|message| super::media_image::wanted(message, gifs, emojis))
+                .chain(super::message_kinds::wanted(messages));
+            for (key, url) in wanted {
+                if crate::net::disk_cacheable_raw_image(&key, &url)
+                    || (enabled() && kept_for_the_start(&key) && !url.starts_with("data:"))
+                {
+                    push(&mut out, (key, url));
+                }
+            }
+        }
         out
     }
 
+    /// Writes the screen's pictures that only the start keeps (`kept_for_the_start`): the ones in now at once, the
+    /// others as they come in (`start_picture_arrived`). The screen's set replaces the last one's on disk.
+    pub(super) fn keep_start_pictures(&mut self, pictures: &[(String, String)]) {
+        self.start_keep.clear();
+        if !enabled() {
+            return;
+        }
+        let wanted: Vec<String> = pictures
+            .iter()
+            .map(|(key, _)| key)
+            .filter(|key| kept_for_the_start(key))
+            .cloned()
+            .collect();
+        let mut have = Vec::new();
+        for key in &wanted {
+            match self.images.get(key) {
+                Some(image) => have.push((key.clone(), image.clone())),
+                None => {
+                    self.start_keep.insert(key.clone());
+                }
+            }
+        }
+        write_start_pictures(have, Some(wanted));
+    }
+
+    /// A picture came in: written when the screen's start pictures wait for it. The emoji button is written each time
+    /// it is cut, so a new tint replaces the old one.
+    pub(super) fn start_picture_arrived(&mut self, key: &str, image: &std::sync::Arc<gpui::Image>) {
+        if self.start_keep.remove(key) || (key == EMOJI_BUTTON && enabled()) {
+            write_start_pictures(vec![(key.to_owned(), image.clone())], None);
+        }
+    }
     /// The open server channel's authors as server members (`guild_id` added), for the next start's first frame.
     pub(super) fn start_members_to_keep(&self) -> Vec<Value> {
         let (Some(guild), Some(channel)) = (self.guild, self.channel) else {
@@ -906,6 +1055,27 @@ mod tests {
         assert_eq!(token_account(""), None);
         let words = base64::engine::general_purpose::STANDARD_NO_PAD.encode("not-an-id");
         assert_eq!(token_account(&format!("{words}.x.y")), None);
+    }
+
+    #[test]
+    fn only_the_screens_attachments_and_emojis_are_kept_for_the_start() {
+        assert!(kept_for_the_start("attachment:2"));
+        assert!(kept_for_the_start("custom:5") && kept_for_the_start("custom-animated:5"));
+        assert!(kept_for_the_start(EMOJI_BUTTON));
+        assert!(
+            !kept_for_the_start("avatar:1"),
+            "avatars go through the usual cache"
+        );
+        // Named by key, one file per picture, nothing that leaves the folder.
+        assert_eq!(start_picture_name("attachment:12"), "attachment_12.bin");
+        assert_eq!(start_picture_name("../x"), "___x.bin");
+        // A kept page's start pictures are read by key whatever their URL; others only over https.
+        let page = json!({"version": VERSION, "account": "1", "channel": "100", "page": [],
+            "pictures": [["attachment:9", "https://media.discordapp.net/attachments/1/9/a.png?ex=1"],
+                ["emoji_button", ""], ["avatar:3", "http://insecure"]]});
+        let kept = messages_for(page, Some(1)).unwrap();
+        let keys: Vec<&str> = kept.pictures.iter().map(|(key, _)| key.as_str()).collect();
+        assert_eq!(keys, ["attachment:9", "emoji_button"]);
     }
 
     #[test]

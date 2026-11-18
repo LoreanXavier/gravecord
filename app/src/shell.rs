@@ -177,15 +177,21 @@ impl Shell {
             .or_else(|| crate::ui::start_cache::load(account));
         self.session = Some(task);
         self.token = Some(token);
-        let root = cx.new(|cx| {
-            let mut root = Root::new(request_tx, hook_tx, cx);
+        let mut cached = cached;
+        let pictures = cached
+            .as_mut()
+            .map(|cached| std::mem::take(&mut cached.pictures))
+            .unwrap_or_default();
+        let root = cx.new(|cx| Root::new(request_tx, hook_tx, cx));
+        root.update(cx, |root, cx| {
+            // The cached pictures start decoding first, on the background threads, while the rest of the cache is
+            // applied here: the first frame has them decoded.
+            root.add_start_pictures(pictures);
+            root.decode_start_pictures(window, cx);
             if let Some(cached) = cached {
                 root.apply_cache(cached, cx);
             }
-            root
         });
-        // The cached pictures start decoding now, beside the rest of the start, so the first frame has them.
-        root.update(cx, |root, cx| root.decode_start_pictures(window, cx));
         if std::mem::take(&mut self.switched) {
             root.update(cx, |root, _| root.announce_switch());
         }
