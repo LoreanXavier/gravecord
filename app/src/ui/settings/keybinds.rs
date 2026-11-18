@@ -35,6 +35,15 @@ pub(in crate::ui) const OVERLAY_LOCK: &str = "TOGGLE_OVERLAY_INPUT_LOCK";
 /// `O()` (module 532624): `shift+` and the layout's Backquote key, as Windows codes (shift 160, backquote 192).
 pub(in crate::ui) const OVERLAY_LOCK_DEFAULT: [[u32; 3]; 2] =
     [[KEYBOARD_KEY, 160, WINDOWS], [KEYBOARD_KEY, 192, WINDOWS]];
+/// Open Soundboard (Hold), the managed keybind of module 532624 (`z(SOUNDBOARD_HOLD, "ctrl+`", !1)`).
+pub(in crate::ui) const SOUNDBOARD_HOLD: &str = "SOUNDBOARD_HOLD";
+/// `ctrl+` and Backquote as Windows codes (ctrl 162, backquote 192).
+pub(in crate::ui) const SOUNDBOARD_HOLD_DEFAULT: [[u32; 3]; 2] =
+    [[KEYBOARD_KEY, 162, WINDOWS], [KEYBOARD_KEY, 192, WINDOWS]];
+/// The toggle form (`SOUNDBOARD`).
+const SOUNDBOARD_TOGGLE: &str = "SOUNDBOARD";
+/// `q(SOUNDBOARD_HOLD)` then `z(...)` run once as the store starts (`J`): a managed one is made again at Ctrl+`.
+static SOUNDBOARD_RESET: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
 /// Module 158935 `l$` `keybindActionTypes` as the captured Windows build lists them (`system.json`), each with its
 /// label (module 994778) and the line under the row (`keybindDescriptions`).
@@ -200,6 +209,58 @@ pub(in crate::ui) fn load() -> Vec<Keybind> {
             managed: true,
         });
     }
+    // `q(SOUNDBOARD_HOLD)`: the managed one goes once per start; `z(SOUNDBOARD_HOLD, "ctrl+`", !1)`: one is made,
+    // managed, unless a keybind of that action (managed or not) is left.
+    if !SOUNDBOARD_RESET.swap(true, std::sync::atomic::Ordering::Relaxed) {
+        let before = list.len();
+        list.retain(|keybind| !(keybind.managed && keybind.action == SOUNDBOARD_HOLD));
+        if before != list.len() && !cfg!(test) {
+            save(&list);
+        }
+    }
+    if !list.iter().any(|keybind| keybind.action == SOUNDBOARD_HOLD) {
+        let id = next_id(&list);
+        list.push(Keybind {
+            id,
+            action: SOUNDBOARD_HOLD.to_owned(),
+            shortcut: SOUNDBOARD_HOLD_DEFAULT.to_vec(),
+            enabled: true,
+            managed: true,
+        });
+    }
+    list
+}
+
+/// The Open Soundboard (Hold) keybind (managed, Ctrl+` unless edited in the Soundboard Keybind modal).
+pub(in crate::ui) fn soundboard_hold() -> Option<Keybind> {
+    load()
+        .into_iter()
+        .find(|keybind| keybind.action == SOUNDBOARD_HOLD)
+}
+
+/// The modal's Save (module 29681 `f`): an empty shortcut deletes the keybind, else it is set (or added).
+pub(in crate::ui) fn save_soundboard_hold(shortcut: &[[u32; 3]]) -> Vec<Keybind> {
+    let mut list = load();
+    match list
+        .iter()
+        .position(|keybind| keybind.action == SOUNDBOARD_HOLD)
+    {
+        Some(at) if shortcut.is_empty() => {
+            list.remove(at);
+        }
+        Some(at) => list[at].shortcut = shortcut.to_vec(),
+        None if shortcut.is_empty() => {}
+        None => {
+            let id = next_id(&list);
+            list.push(Keybind {
+                id,
+                action: SOUNDBOARD_HOLD.to_owned(),
+                shortcut: shortcut.to_vec(),
+                enabled: true,
+                managed: false,
+            });
+        }
+    }
     list
 }
 
@@ -253,6 +314,10 @@ pub(in crate::ui) enum Effect {
     PushToMute(bool),
     /// `TOGGLE_OVERLAY_INPUT_LOCK`: on the key going up (`keyup` of module 596339).
     ToggleOverlayLock,
+    /// `SOUNDBOARD_HOLD`: the soundboard wheel while held (both edges).
+    SoundboardHold(bool),
+    /// `SOUNDBOARD`: the wheel opens to stay or closes (on the key going up).
+    SoundboardToggle,
 }
 
 /// The decision of `ACTIONS`' callbacks (`U[action]`, module 532624): toggles act on the key going down, holds on
@@ -268,6 +333,8 @@ pub(in crate::ui) fn effect(action: &str, down: bool, push_to_talk: bool) -> Opt
         "PUSH_TO_TALK" | "PUSH_TO_TALK_PRIORITY" => push_to_talk.then_some(Effect::Talk(down)),
         "PUSH_TO_MUTE" => (!push_to_talk).then_some(Effect::PushToMute(down)),
         OVERLAY_LOCK => (!down).then_some(Effect::ToggleOverlayLock),
+        SOUNDBOARD_HOLD => Some(Effect::SoundboardHold(down)),
+        SOUNDBOARD_TOGGLE => (!down).then_some(Effect::SoundboardToggle),
         _ => None,
     }
 }
@@ -400,12 +467,143 @@ impl Root {
         self.settings_extra.kb.hooks = kept;
     }
 
+    /// The Soundboard Keybind modal (module 29681), from the soundboard's TIP line: the keybinds are off while it is
+    /// open (`m.A.disable()`).
+    pub(in crate::ui) fn open_soundboard_keybind(&mut self) {
+        let original = soundboard_hold().map(|keybind| keybind.shortcut);
+        self.chat_extra.alert = Some(crate::ui::chat_notices::soundboard_keybind_alert(original));
+        self.kb_sync_hooks();
+    }
+
+    /// The Open Soundboard (Hold) keybind as the TIP line writes it (`dI(shortcut, true)`), none without one.
+    pub(in crate::ui) fn soundboard_hold_text(&self) -> Option<String> {
+        soundboard_hold()
+            .filter(|keybind| !keybind.shortcut.is_empty())
+            .map(|keybind| shortcut_text(&keybind.shortcut))
+    }
+
+    fn soundboard_keybind_open(&self) -> bool {
+        self.chat_extra
+            .alert
+            .as_ref()
+            .is_some_and(|alert| alert.id == "soundboard-keybind")
+    }
+
+    /// Save (`f`): an empty shortcut deletes the keybind; otherwise it stays as recorded.
+    pub(in crate::ui) fn soundboard_keybind_save(&mut self) {
+        self.kb_stop_recording();
+        let shortcut = soundboard_hold()
+            .map(|keybind| keybind.shortcut)
+            .unwrap_or_default();
+        let list = save_soundboard_hold(&shortcut);
+        self.kb_change(&list);
+    }
+
+    /// Cancel, Escape or the close button: the shortcut the modal opened with comes back.
+    pub(in crate::ui) fn soundboard_keybind_revert(&mut self, original: Option<Vec<[u32; 3]>>) {
+        self.kb_stop_recording();
+        let mut list = load();
+        match original {
+            Some(shortcut) => {
+                if let Some(keybind) = list
+                    .iter_mut()
+                    .find(|keybind| keybind.action == SOUNDBOARD_HOLD)
+                {
+                    keybind.shortcut = shortcut;
+                }
+            }
+            None => list.retain(|keybind| keybind.action != SOUNDBOARD_HOLD),
+        }
+        self.kb_change(&list);
+    }
+
+    /// The modal's body: the warning, Action with "Open Soundboard (Hold)" and its line, Keybind with the recorder,
+    /// and Reset Keybind (stylesheet 767251).
+    pub(in crate::ui) fn soundboard_keybind_body(&self, cx: &mut Context<Self>) -> AnyElement {
+        let header = |key: &'static str| {
+            div()
+                .mb(px(8.))
+                .text_size(px(14.))
+                .line_height(px(18.))
+                .font_weight(FontWeight(500.))
+                .text_color(color("--text-default"))
+                .child(dc_intl::t(key))
+        };
+        let keybind = soundboard_hold().unwrap_or(Keybind {
+            id: String::new(),
+            action: SOUNDBOARD_HOLD.to_owned(),
+            shortcut: Vec::new(),
+            enabled: true,
+            managed: true,
+        });
+        div()
+            .flex()
+            .flex_col()
+            .child(
+                div()
+                    .mb(px(16.))
+                    .child(self.warning_notice(dc_intl::t("O2v/eP"))),
+            )
+            .child(header("UUpAD6"))
+            .child(
+                div()
+                    .mb(px(8.))
+                    .p(px(8.))
+                    .rounded(px(4.))
+                    .border_1()
+                    .border_color(color("--background-base-lowest"))
+                    .bg(color("--background-base-lower"))
+                    .text_size(px(16.))
+                    .line_height(px(20.))
+                    .text_color(color("--text-default"))
+                    .child(dc_intl::t("1xFbP/")),
+            )
+            .child(
+                div()
+                    .mb(px(8.))
+                    .text_size(px(14.))
+                    .line_height(px(18.))
+                    .text_color(color("--text-default"))
+                    .child(dc_intl::t("laNlTl")),
+            )
+            .child(header("1La4tC"))
+            .child(self.kb_recorder(&keybind, cx))
+            .child(
+                div()
+                    .id("soundboard-keybind-reset")
+                    .mt(px(8.))
+                    .cursor_pointer()
+                    .text_size(px(14.))
+                    .line_height(px(18.))
+                    .text_color(color("--text-link"))
+                    .hover(|style| style.underline())
+                    .on_click(cx.listener(|_, _, _, cx| {
+                        // `v(OH("ctrl+`"))`.
+                        let mut list = load();
+                        if let Some(keybind) = list
+                            .iter_mut()
+                            .find(|keybind| keybind.action == SOUNDBOARD_HOLD)
+                        {
+                            keybind.shortcut = SOUNDBOARD_HOLD_DEFAULT.to_vec();
+                        }
+                        save(&list);
+                        cx.notify();
+                    }))
+                    .child(dc_intl::t("s7+2rQ")),
+            )
+            .into_any_element()
+    }
+
     /// A keybind went down or up, from its hook or from the window's keys.
     pub(in crate::ui) fn kb_fire(&mut self, id: &str, down: bool, cx: &mut Context<Self>) {
         let Some(keybind) = load().into_iter().find(|keybind| keybind.id == id) else {
             return;
         };
-        if !keybind.enabled || self.keybinds_page_visible() || self.voice_is_recording() {
+        if !keybind.enabled
+            || self.keybinds_page_visible()
+            || self.voice_is_recording()
+            || self.soundboard_keybind_open()
+        {
             return;
         }
         let push_to_talk = self.kb_push_to_talk();
@@ -442,6 +640,8 @@ impl Root {
                 }
             }
             Effect::ToggleOverlayLock => self.overlay_toggle_lock(cx),
+            Effect::SoundboardHold(down) => self.soundboard_hold_keybind(down, cx),
+            Effect::SoundboardToggle => self.soundboard_toggle_keybind(cx),
         }
         cx.notify();
     }
@@ -1249,6 +1449,29 @@ mod tests {
             effect(OVERLAY_LOCK, false, true),
             Some(Effect::ToggleOverlayLock)
         );
+        // Open Soundboard (Hold) acts on both edges; the Soundboard toggle on the key going up.
+        assert_eq!(
+            effect(SOUNDBOARD_HOLD, true, false),
+            Some(Effect::SoundboardHold(true))
+        );
+        assert_eq!(
+            effect(SOUNDBOARD_HOLD, false, true),
+            Some(Effect::SoundboardHold(false))
+        );
+        assert_eq!(effect("SOUNDBOARD", true, false), None);
+        assert_eq!(
+            effect("SOUNDBOARD", false, false),
+            Some(Effect::SoundboardToggle)
+        );
+        // The managed Ctrl+` keybind is always in the list, hidden from the custom keybinds.
+        let list = load();
+        let hold = list
+            .iter()
+            .find(|keybind| keybind.action == SOUNDBOARD_HOLD)
+            .expect("made at start");
+        assert!(hold.managed);
+        assert_eq!(hold.shortcut, SOUNDBOARD_HOLD_DEFAULT.to_vec());
+        assert!(visible(&list).iter().all(|k| k.action != SOUNDBOARD_HOLD));
         let lock = |shortcut: Vec<[u32; 3]>| Keybind {
             id: "9".into(),
             action: OVERLAY_LOCK.into(),

@@ -311,6 +311,10 @@ pub(super) struct Overlay {
     pub(super) chat_variant: Option<Option<i64>>,
     /// The pointer in the window (logical px) at its last move: where a Settings menu opens.
     pub(super) pointer: (f32, f32),
+    /// The soundboard wheel (`SoundboardOverlayStore`, module 528772).
+    pub(super) wheel: Option<super::overlay_wheel::Wheel>,
+    /// A harness run: the sound the wheel would have played.
+    pub(super) wheel_played: Option<String>,
 }
 
 impl Default for Overlay {
@@ -358,6 +362,8 @@ impl Default for Overlay {
             failed: false,
             chat_variant: None,
             pointer: (0., 0.),
+            wheel: None,
+            wheel_played: None,
         }
     }
 }
@@ -760,6 +766,7 @@ impl Root {
                 self.overlay.menu = None;
                 self.overlay.report = None;
                 self.overlay.widgets_panel = false;
+                self.overlay.wheel = None;
                 if self.overlay.shown.take().is_some() {
                     #[cfg(windows)]
                     if let Some(hwnd) = self.overlay.hwnd {
@@ -2147,6 +2154,8 @@ impl Root {
                     .then(|| self.overlay_report_layer(width, height, cx))
                     .flatten(),
             )
+            // `eQ` of module 427830: the soundboard wheel over everything, locked or not.
+            .children(self.overlay_wheel_layer(cx))
             .into_any_element()
     }
 }
@@ -2474,6 +2483,7 @@ impl Root {
                 cx.notify();
                 "overlay report: open".to_owned()
             }
+            ["wheel", rest @ ..] => self.script_overlay_wheel(rest, cx),
             ["alt", value] => {
                 self.overlay_show_widgets(*value != "on", cx);
                 format!("overlay alt: show_widgets={}", self.overlay.show_widgets)

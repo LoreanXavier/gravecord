@@ -47,6 +47,8 @@ pub(super) enum Then {
     },
     /// Upload Logs of module 72514 after a survey: the RTC logs go up as Voice & Video's button sends them.
     UploadLogs,
+    /// Save of the Soundboard Keybind modal (module 29681 `f`).
+    SaveSoundboardKeybind,
 }
 
 #[derive(Clone, Debug)]
@@ -68,6 +70,33 @@ pub(super) enum Content {
     AffectedGuild(Id),
     /// Module 940372: the files of a bulk emoji upload that failed, a row each (`errors_qy2FFG`, 8px apart).
     EmojiUploadErrors(Vec<(super::server_emoji::UploadError, String)>),
+    /// Module 29681: the Open Soundboard (Hold) keybind being edited; `original` is its shortcut when the modal
+    /// opened (`None`: there was none), put back unless Save is pressed.
+    SoundboardKeybind { original: Option<Vec<[u32; 3]>> },
+}
+
+/// The Soundboard Keybind modal (module 29681): "Soundboard Keybind", Cancel and Save.
+pub(super) fn soundboard_keybind_alert(original: Option<Vec<[u32; 3]>>) -> Alert {
+    Alert {
+        id: "soundboard-keybind",
+        title: dc_intl::t("0Osu3x").to_owned(),
+        subtitle: None,
+        content: Some(Content::SoundboardKeybind { original }),
+        buttons: vec![
+            AlertButton {
+                id: "soundboard-keybind-cancel",
+                label: dc_intl::t("ETE/oC").to_owned(),
+                secondary: true,
+                then: Then::Close,
+            },
+            AlertButton {
+                id: "soundboard-keybind-save",
+                label: dc_intl::t("R3BPH+").to_owned(),
+                secondary: false,
+                then: Then::SaveSoundboardKeybind,
+            },
+        ],
+    }
 }
 
 /// "Failed to upload files" (module 940372): the failed files of a bulk emoji upload and Got It.
@@ -453,9 +482,9 @@ impl Root {
     }
 
     fn alert_then(&mut self, then: Then, window: &mut Window, cx: &mut Context<Self>) {
-        self.chat_extra.alert = None;
+        let closed = self.chat_extra.alert.take();
         match then {
-            Then::Close => {}
+            Then::Close => self.alert_closed(closed),
             Then::ReplacePin { post, old } => {
                 let (old_archived, old_flags) = self.thread_state(old).unwrap_or_default();
                 let (archived, flags) = self.thread_state(post).unwrap_or_default();
@@ -479,12 +508,26 @@ impl Root {
             } => self.retry_forward(*message, destinations, window, cx),
             Then::DmsOff { guild } => self.turn_off_guild_dms(guild, cx),
             Then::UploadLogs => self.voice_upload_logs(cx),
+            Then::SaveSoundboardKeybind => self.soundboard_keybind_save(),
+        }
+    }
+
+    /// A dialog closed without its confirming button: the Soundboard Keybind modal puts the keybind back (its
+    /// `useState` copy is simply dropped in the official client).
+    fn alert_closed(&mut self, closed: Option<Alert>) {
+        if let Some(Content::SoundboardKeybind { original }) =
+            closed.and_then(|alert| alert.content)
+        {
+            self.soundboard_keybind_revert(original);
         }
     }
 
     /// Escape closes the open alert; true when there was one.
     pub(super) fn chat_alert_escape(&mut self) -> bool {
-        self.chat_extra.alert.take().is_some()
+        let closed = self.chat_extra.alert.take();
+        let was = closed.is_some();
+        self.alert_closed(closed);
+        was
     }
 
     pub(super) fn chat_alert_modal(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
@@ -514,7 +557,10 @@ impl Root {
             subtitle: alert.subtitle.map(rich_text),
             body: alert.content.map(|content| self.alert_content(content, cx)),
             buttons,
-            close: Box::new(|this, _, _| this.chat_extra.alert = None),
+            close: Box::new(|this, _, _| {
+                let closed = this.chat_extra.alert.take();
+                this.alert_closed(closed);
+            }),
         };
         Some(if medium {
             modal::render(spec, cx)
@@ -526,6 +572,7 @@ impl Root {
     fn alert_content(&self, content: Content, cx: &mut Context<Self>) -> AnyElement {
         match content {
             Content::Text(text) => body_text(text),
+            Content::SoundboardKeybind { .. } => self.soundboard_keybind_body(cx),
             Content::FailedDestinations(destinations) => {
                 // `failedDestinations_PiyhYP`: a `--border-subtle` edge, 8px corners, 16px above, 8px 16px inside;
                 // `failedRow_PiyhYP` 48px rows with the 32px picture 12px from the name (`body-md/medium`,

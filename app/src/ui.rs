@@ -209,6 +209,7 @@ mod overlay_chat;
 mod overlay_panel;
 mod overlay_survey;
 mod overlay_video;
+mod overlay_wheel;
 mod overlay_widgets;
 mod paste;
 #[cfg(feature = "capture")]
