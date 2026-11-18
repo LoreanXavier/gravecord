@@ -289,6 +289,7 @@ mod stream_failed;
 mod video_pip;
 #[cfg(feature = "capture")]
 pub(crate) use plugin_hooks::more_commands_outgoing;
+pub(crate) use plugin_hooks::spotify_premium_forced;
 pub(crate) use server_discovery::FORCE_ELIGIBLE;
 mod server_discovery_form;
 mod server_emoji;

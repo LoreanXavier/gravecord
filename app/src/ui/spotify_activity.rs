@@ -187,6 +187,10 @@ impl Root {
     /// playing starts a 30-second timer (`U`) that pauses it (`eo`, "Playback auto paused"); 100ms of silence (`H`)
     /// stops the timer.
     pub(super) fn spotify_speaking(&mut self, speaking: bool, cx: &mut Context<Self>) {
+        // Not in the pinned client: SpotifyCrack's `noSpotifyAutoPause` (`plugin_hooks/spotify_crack.rs`).
+        if super::plugin_hooks::spotify_no_auto_pause() {
+            return;
+        }
         self.spotify_actions.speaking_turn += 1;
         let turn = self.spotify_actions.speaking_turn;
         let playing = self.call.is_some() && self.stores.spotify.player().is_some();

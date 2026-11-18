@@ -365,7 +365,8 @@ async fn perform(
                 Reply::Played
             }),
             Operation::Premium(_) => api.profile().await.map(|body| {
-                let premium = body["product"] == "premium";
+                // Not in the pinned client: SpotifyCrack reads every account as Premium (`plugin_hooks/spotify_crack.rs`).
+                let premium = body["product"] == "premium" || crate::ui::spotify_premium_forced();
                 dispatch(
                     &updates,
                     "SPOTIFY_PROFILE_UPDATE",
@@ -485,7 +486,8 @@ fn scan(
             dispatch(
                 &updates,
                 "SPOTIFY_PROFILE_UPDATE",
-                json!({"accountId":account,"isPremium":body["product"]=="premium"}),
+                // Not in the pinned client: SpotifyCrack (`plugin_hooks/spotify_crack.rs`).
+                json!({"accountId":account,"isPremium":body["product"]=="premium" || crate::ui::spotify_premium_forced()}),
             );
         }
         let body = api.devices().await?;

@@ -244,6 +244,11 @@ const fn millis(default: f64) -> Kind {
 /// by the code (a test checks both ways), so a setting can never sit in the page doing nothing unnoticed.
 pub(crate) const IDLE_SETTINGS: &[(&str, &str, &str)] = &[
     (
+        "SpotifyCrack",
+        "keepSpotifyActivityOnIdle",
+        "this client does not put your Spotify listening activity into your presence yet (shouldShowActivity's          place), so there is no idle check to lift",
+    ),
+    (
         "StreamingCodecDisabler",
         "disableAv1Codec",
         "this client offers H264 only in a voice connection's codec list, so there is no AV1 entry to take out",
@@ -2127,6 +2132,28 @@ pub(crate) const DEFS: &[Def] = &[
                 label: "Auto Disable",
                 description: "Automatically disable the silent message toggle again after sending one",
                 kind: Kind::Switch { default: true },
+            },
+        ],
+    },
+    Def {
+        id: "SpotifyCrack",
+        name: "SpotifyCrack",
+        description: "Free listen along, no auto-pausing in voice chat, and allows activity to continue playing when idling",
+        origin: Origin::Vencord,
+        source: "src/plugins/spotifyCrack/index.ts",
+        default_on: false,
+        settings: &[
+            Setting {
+                key: "noSpotifyAutoPause",
+                label: "No Spotify Auto Pause",
+                description: "Disable Spotify auto-pause",
+                kind: Kind::Switch { default: true },
+            },
+            Setting {
+                key: "keepSpotifyActivityOnIdle",
+                label: "Keep Spotify Activity On Idle",
+                description: "Keep Spotify activity playing when idling",
+                kind: Kind::Switch { default: false },
             },
         ],
     },

@@ -147,6 +147,7 @@ assert len(idle) == idle_entries, f'IDLE_SETTINGS: read {len(idle)} of {idle_ent
 
 # How each ported plugin is built here, and its proof.
 PORTED = {
+    'SpotifyCrack': "plugin_hooks/spotify_crack.rs: every Spotify account reads as Premium in SPOTIFY_PROFILE_UPDATE (listen along without Premium); noSpotifyAutoPause keeps speaking in voice from pausing Spotify after 30 seconds. keepSpotifyActivityOnIdle is idle: this client does not send your Spotify activity yet.",
     'SearchFix': "plugin_hooks/search_fix.rs: a search page past offset 5000 is asked for in the other sort order from offset 0, as the plugin rewrites the query; the card carries its note.",
     'GlobalBadges': "plugin_hooks/global_badges.rs: the badges of other client mods (apiUrl/users, fetched while on and every 30 minutes; Vencord's and Equicord's left out, each mod behind its Show switch) lead a profile's badge row, round at 90% with their text as tooltip and Copy Badge Name / Copy Badge Image Link on a right click; the card has Join GlobalBadges Server. GAP: the badge directory entry a click opens in the original, the toolbox's Refetch, the Allow Host notice; the Show switches are listed instead of the multi-select.",
     'UserPFP': "plugin_hooks/userpfp.rs: the UserPFP list (databaseSource, fetched while on, hidden as in a release build) and the avatars you set with Set Avatar in a person's menu (stored locally, the Custom Avatar dialog with Original/Local previews, the PNG/GIF URL field, a PNG/JPEG dropped or chosen as a data URL, Delete and Save) replace avatars wherever they are drawn, unless preferNitro and the avatar is animated; UserPFP-hosted pictures are asked for still and GIFs play where avatars animate; overrideServerAvatars puts the custom (else the person's own) avatar over server avatars; the card has the local-only note and the Join UserPFP Server and Support UserPFP here buttons. GAP: the Allow Host notice (no content security policy here).",
@@ -242,6 +243,7 @@ PORTED = {
                      'so the original\'s 200% cap on the sync has nothing to cap.',
 }
 TESTS = {
+    'SpotifyCrack': '`the_defaults_follow_the_original`',
     'SearchFix': '`past_5000_the_order_flips_from_the_start`',
     'GlobalBadges': '`badges_follow_the_switches_and_blocked_mods`; frames pending (live runs held)',
     'UserPFP': '`userpfp_pictures_are_asked_for_still`; frames pending (live runs held)',
@@ -421,7 +423,6 @@ PLANNED = {
     'Quoter': 'a quote image made from a message.',
     'SedEnhanced': "the pinned client's own sed rule first: a message `s/a/b` edits your last message (the `searchReplace` rule of the send path, module 857069), which the port does not have yet (GAP: main app); SedEnhanced only widens that rule's syntax and regex.",
     'ShowHiddenThings': "the pinned client's own pieces first: the chat timeout icon by a timed-out member's name (showCommunicationDisabledStyles) and the invites-paused tooltip on the server rail are not drawn by the port yet (GAPs in the official UI), so showTimeouts and showInvitesPaused would unlock nothing; showModView lifts the user menu's Open in Mod View permission check, which the port does not apply yet either (it shows the row in every server).",
-    'SpotifyCrack': 'listen along without Premium and no Spotify pause on voice.',
     'SteamStatusSync': 'status sync with the Steam client.',
     'Streaks': 'DM streak counts (its service login in the data store is not copied).',
     'Translate+': 'message translation (needs a translation service).',
