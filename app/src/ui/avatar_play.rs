@@ -69,6 +69,10 @@ impl super::Root {
 
     /// The animated file of a user's avatar in a server (their server avatar first), as a cache key and URL.
     fn live_avatar_source(&self, user: &User, side: u32) -> Option<(String, String)> {
+        // Not in the pinned client: UserPFP's moving avatar, or none over a custom one (`plugin_hooks/userpfp.rs`).
+        if let Some(custom) = super::plugin_hooks::userpfp_live_avatar(user) {
+            return custom;
+        }
         let guild_hash = self.guild.and_then(|guild| {
             self.stores
                 .members

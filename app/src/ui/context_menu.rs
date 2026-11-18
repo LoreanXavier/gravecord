@@ -318,13 +318,15 @@ pub(super) enum Act {
     PluginGreetSticker(u8),
     /// Not in the pinned client: BypassStatus' Add / Remove Status Bypass (`plugin_hooks/bypass_status.rs`).
     PluginStatusBypass,
+    /// Not in the pinned client: UserPFP's Set Avatar (`plugin_hooks/userpfp.rs`).
+    PluginSetAvatar,
 }
 
 impl Act {
     /// Every row kind once (`Correction` with its first index). `ordinal` is an exhaustive match, so adding a variant
     /// without listing it here fails the build or the `act_list_is_complete` test.
     #[cfg(test)]
-    pub(super) const ALL: [Act; 139] = [
+    pub(super) const ALL: [Act; 140] = [
         Act::InventoryAbout,
         Act::InventoryHide,
         Act::ReportApp,
@@ -469,6 +471,7 @@ impl Act {
         Act::PluginGreetMode(false),
         Act::PluginGreetSticker(0),
         Act::PluginStatusBypass,
+        Act::PluginSetAvatar,
     ];
 
     #[cfg(test)]
@@ -618,6 +621,7 @@ impl Act {
             Act::PluginGreetMode(_) => 136,
             Act::PluginGreetSticker(_) => 137,
             Act::PluginStatusBypass => 138,
+            Act::PluginSetAvatar => 139,
         }
     }
 }
@@ -664,7 +668,8 @@ pub(super) fn status(act: Act) -> Status {
         | Act::PluginApplyNewGuildSettings
         | Act::PluginGreetMode(_)
         | Act::PluginGreetSticker(_)
-        | Act::PluginStatusBypass => Wired,
+        | Act::PluginStatusBypass
+        | Act::PluginSetAvatar => Wired,
         Act::InventoryAbout
         | Act::InventoryHide
         | Act::ViewAllActivity
@@ -3503,6 +3508,8 @@ impl Root {
         let items = self.with_pin_dms_row(items, target);
         // Not in the pinned client: BypassStatus' group before the last one (`plugin_hooks/bypass_status.rs`).
         let items = self.with_bypass_status_row(items, target);
+        // Not in the pinned client: UserPFP's Set Avatar, last (`plugin_hooks/userpfp.rs`).
+        let items = self.with_userpfp_row(items, target);
         self.close_all_context_menus();
         self.menu_scroll.set_offset(gpui::point(px(0.), px(0.)));
         let at = flip_above(at, menu_height(&items), self.viewport.1);
@@ -3724,6 +3731,8 @@ impl Root {
             }
             // Not in the pinned client: BypassStatus (`plugin_hooks/bypass_status.rs`).
             (Act::PluginStatusBypass, target) => self.bypass_status_toggle(target, cx),
+            // Not in the pinned client: UserPFP (`plugin_hooks/userpfp.rs`).
+            (Act::PluginSetAvatar, Target::User { user, .. }) => self.userpfp_open(user, cx),
             // Not in the pinned client: GreetStickerPicker (`plugin_hooks/greet_sticker_picker.rs`).
             (
                 Act::PluginGreetMode(_) | Act::PluginGreetSticker(_),

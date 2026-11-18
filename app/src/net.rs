@@ -585,6 +585,19 @@ pub(crate) fn login_refused() -> bool {
 /// write arrives while a newer choice is already on screen. Applied, it put the older choice back for a moment (a
 /// theme picked three times in a row walked through all three again). While the count is above zero those answers are
 /// left out, and the answer of the last write brings the server's settings in (`Update::SettingsWritten`).
+/// The bytes of a base64 `data:` URL, or `None` for anything else.
+fn data_url_bytes(url: &str) -> Option<Vec<u8>> {
+    use base64::Engine as _;
+    let rest = url.strip_prefix("data:")?;
+    let (meta, payload) = rest.split_once(',')?;
+    if !meta.ends_with(";base64") {
+        return None;
+    }
+    base64::engine::general_purpose::STANDARD
+        .decode(payload.trim())
+        .ok()
+}
+
 /// One avatar of MoreCommands' `/friendcloud`: its picture and its square on the canvas.
 #[derive(Clone, Debug, PartialEq)]
 pub struct CloudAvatar {
@@ -2789,6 +2802,11 @@ pub async fn run(token: Token, updates: mpsc::UnboundedSender<Update>, requests:
                 crate::start_trace::mark("img_first_req");
                 tokio::spawn(async move {
                     let _flight = flight;
+                    // A `data:` picture (UserPFP's uploaded avatars) is decoded here, never fetched.
+                    if let Some(bytes) = data_url_bytes(&url) {
+                        let _ = updates.send(Update::Image { key, bytes });
+                        return;
+                    }
                     // A Shop or CDN picture kept on disk is drawn at once; a stale one is fetched again behind it.
                     let shop_box = shop_art_box(&key);
                     let cache_raw =

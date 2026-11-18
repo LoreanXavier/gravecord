@@ -2001,6 +2001,10 @@ impl Root {
                 if self.relationship_notifier_fetched(&key, &body, cx) {
                     return;
                 }
+                // Not in the pinned client: UserPFP's list (`plugin_hooks/userpfp.rs`).
+                if self.userpfp_fetched(&key, &body, cx) {
+                    return;
+                }
                 // Not in the pinned client: USRBG's list (`plugin_hooks/usrbg.rs`).
                 if self.usrbg_fetched(&key, &body, cx) {
                     return;
@@ -3148,6 +3152,14 @@ impl Root {
     }
 
     fn guild_avatar_source(&self, user: &User) -> (String, String) {
+        // Not in the pinned client: UserPFP's `overrideServerAvatars` (`plugin_hooks/userpfp.rs`).
+        let server = self
+            .guild
+            .and_then(|guild| self.stores.members.get(guild, user.id))
+            .is_some_and(|member| member.avatar.is_some());
+        if let Some(source) = plugin_hooks::userpfp_server_avatar(user, server) {
+            return source;
+        }
         self.guild
             .and_then(|guild| self.stores.members.get(guild, user.id)?.avatar_url(guild))
             .map(|url| (url.clone(), url))
@@ -10252,6 +10264,10 @@ fn image_format(key: &str, bytes: &[u8]) -> ImageFormat {
 }
 
 fn avatar_source(user: &User) -> (String, String) {
+    // Not in the pinned client: UserPFP's avatar (`plugin_hooks/userpfp.rs`).
+    if let Some(url) = plugin_hooks::userpfp_avatar(user, false) {
+        return (format!("userpfp:{url}"), url);
+    }
     match &user.avatar {
         // Clyde's local notices: the bot's own image, a client asset (`/assets/9380e4b5bd8d267c.png` in the row of
         // design/dom/failed-message/clyde-notice-darker-cozy.json).
@@ -10371,6 +10387,8 @@ impl Render for Root {
         plugin_hooks::sync_streaming_codecs();
         // Not in the pinned client: USRBG's list, once (`plugin_hooks/usrbg.rs`).
         self.usrbg_prepare();
+        // Not in the pinned client: UserPFP's list, once (`plugin_hooks/userpfp.rs`).
+        self.userpfp_prepare();
         if changed(&mut self.prepared.badge, self.data_revision) {
             self.refresh_notification_badge_soon(cx);
         }
@@ -11667,6 +11685,8 @@ impl Render for Root {
             .children(self.message_tags_dialog(window, cx))
             // Not in the pinned client: VoiceMessages' dialog (`plugin_hooks/voice_messages.rs`).
             .children(self.voice_messages_dialog(cx))
+            // Not in the pinned client: UserPFP's Custom Avatar dialog (`plugin_hooks/userpfp.rs`).
+            .children(self.userpfp_dialog(window, cx))
             // Not in the pinned client: ZipPreview's file dialog (`plugin_hooks/zip_preview.rs`).
             .children(self.zip_preview_dialog(window, cx))
             .children(self.not_friend_modal(cx))

@@ -345,6 +345,8 @@ pub(crate) const SHOWN_WHEN: &[(&str, &str, &str)] = &[
     ),
     // Folded by a click on the "Direct Messages" title.
     ("PinDMs", "dmSectionCollapsed", ""),
+    // `hidden: !IS_DEV`: a development setting.
+    ("UserPFP", "databaseSource", ""),
 ];
 
 /// Every plugin, in the order the Plugins page lists them (by name).
@@ -2230,6 +2232,40 @@ pub(crate) const DEFS: &[Def] = &[
                 label: "Show yourself",
                 description: "Enable or disable showing pronouns for yourself",
                 kind: Kind::Switch { default: true },
+            },
+        ],
+    },
+    Def {
+        id: "UserPFP",
+        name: "UserPFP",
+        description: "Allows you to set local static or animated avatars for yourself and other users",
+        origin: Origin::Equicord,
+        source: "src/equicordplugins/userpfp/index.tsx",
+        default_on: false,
+        settings: &[
+            Setting {
+                key: "overrideServerAvatars",
+                label: "Override Server Avatars",
+                description: "Override server avatars with custom avatars or the default user avatar if no custom avatar is set.",
+                kind: Kind::Switch { default: true },
+            },
+            Setting {
+                key: "preferNitro",
+                label: "Prefer Nitro",
+                description: "Which avatar to use if both default animated (Nitro) pfp and UserPFP avatars are present",
+                kind: Kind::Select {
+                    options: &[("UserPFP", Lit::Bool(false)), ("Nitro", Lit::Bool(true))],
+                    default: 1,
+                },
+            },
+            Setting {
+                key: "databaseSource",
+                label: "Database Source",
+                description: "URL to load database from",
+                kind: Kind::Text {
+                    default: "https://userpfp.github.io/UserPFP/source/data.json",
+                    max_len: 2000,
+                },
             },
         ],
     },

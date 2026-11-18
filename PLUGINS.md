@@ -12,7 +12,7 @@ every setting changed), and with every plugin off, and fails on one differing pi
 The list is the plugins enabled in the owner's Equicord backup of 2026-09-21 (156). Sources were read in the local
 Equicord checkout of 2026-11-14 (`src/plugins` is Vencord's, `src/equicordplugins` Equicord's).
 
-Totals: 72 ported, 9 native, 30 planned, 45 not applicable.
+Totals: 73 ported, 9 native, 29 planned, 45 not applicable.
 
 Status: **ported** works and has its proof; **native** is what gravecord already does without a plugin;
 **planned** is not built yet (an import keeps its settings for when it is); **not applicable** has nothing to
@@ -158,7 +158,7 @@ port in a native client, or was removed upstream.
 | UnlockedAvatarZoom | ported | plugins/unlockedAvatarZoom/index.ts | Allows you to zoom in further in the image crop tool when changing your avatar | plugin_hooks/unlocked_avatar_zoom.rs: the image crop tool's zoom slider (every picture it edits, as the patched maxValue of module 142630) reaches zoomMultiplier instead of 2; the slider, the arrow keys and the clamp follow it. | `the_slider_reaches_the_multiplier`; frames pending (live runs held) |
 | UserAreaAPI | not applicable | equicordplugins/_api/userArea.ts | API to add buttons to the user area panel. | client-mod plumbing (an API for other plugins), nothing to port. |  |
 | UserMessagesPronouns | ported | plugins/userMessagesPronouns/index.ts | Adds pronouns to chat user messages | plugin_hooks/message_pronouns.rs: after a message's time, '• pronouns' in the time's style with a Pronouns tooltip, server profile pronouns first, from profiles already loaded (nothing fetched), lowercased unless Capitalized; not for bots, system or AutoMod messages, nor yourself without showSelf. Not 1:1: its compact-mode place is not drawn, the app has no compact message display. | `server_pronouns_first_then_the_accounts_formatted`; frame ump-on; plugins-off chat |
-| UserPFP | planned | equicordplugins/userpfp/index.tsx | Allows you to set local static or animated avatars for yourself and other users | its third-party avatar service. |  |
+| UserPFP | ported | equicordplugins/userpfp/index.tsx | Allows you to set local static or animated avatars for yourself and other users | plugin_hooks/userpfp.rs: the UserPFP list (databaseSource, fetched while on, hidden as in a release build) and the avatars you set with Set Avatar in a person's menu (stored locally, the Custom Avatar dialog with Original/Local previews, the PNG/GIF URL field, a PNG/JPEG dropped or chosen as a data URL, Delete and Save) replace avatars wherever they are drawn, unless preferNitro and the avatar is animated; UserPFP-hosted pictures are asked for still and GIFs play where avatars animate; overrideServerAvatars puts the custom (else the person's own) avatar over server avatars; the card has the local-only note and the Join UserPFP Server and Support UserPFP here buttons. GAP: the Allow Host notice (no content security policy here). | `userpfp_pictures_are_asked_for_still`; frames pending (live runs held) |
 | UserSettingsAPI | not applicable | plugins/_api/userSettings.ts | Patches Discord's UserSettings to expose their group and name. | client-mod plumbing (an API for other plugins), nothing to port. |  |
 | USRBG | ported | plugins/usrbg/index.tsx | Displays user banners from USRBG, allowing anyone to get a banner without Nitro | plugin_hooks/usrbg.rs: the USRBG list is fetched once while the plugin is on; a listed person's profiles show that banner (in place of their own unless nitroFirst) and, with voiceBackground, their voice tile without video shows it as a cover background; the card has the Get your own USRBG banner button. | `banners_follow_the_list_and_nitro_first`; frames pending (live runs held) |
 | ValidReply | planned | plugins/validReply/index.ts |  | the pinned client's "Message could not be loaded" reply bar first: a reply whose message the server did not embed draws no reply line here (GAP in the reply path: intl REPLY_QUOTE_MESSAGE_NOT_LOADED); ValidReply's hover fetch hangs on that bar. |  |
@@ -366,6 +366,9 @@ Every setting of each original (`definePluginSettings`), its type and default th
 | UnlockedAvatarZoom | `zoomMultiplier` | SLIDER | `4` | ported |
 | UserMessagesPronouns | `pronounsFormat` | SELECT | `PronounsFormat.Lowercase` | ported |
 | UserMessagesPronouns | `showSelf` | BOOLEAN | `true` | ported |
+| UserPFP | `overrideServerAvatars` | BOOLEAN | `true` | ported |
+| UserPFP | `preferNitro` | SELECT | `true` | ported |
+| UserPFP | `databaseSource` | STRING | `"https://userpfp.github.io/UserPFP/source/data.json"` | ported |
 | USRBG | `nitroFirst` | SELECT | `true` | ported |
 | USRBG | `voiceBackground` | BOOLEAN | `true` | ported |
 | ViewIcons | `format` | SELECT | `"webp"` | ported |
