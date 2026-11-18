@@ -337,6 +337,10 @@ impl Root {
             return true;
         };
         if report["ok"].as_bool() != Some(true) {
+            // A refused removal leaves the old request: Reapply does not go on to the form.
+            if kind == "remove" && self.reapply_after_remove == Some(guild) {
+                self.reapply_after_remove = None;
+            }
             return true;
         }
         let request = if kind == "reset" {

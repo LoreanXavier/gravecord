@@ -102,7 +102,14 @@ impl Root {
     #[cfg(feature = "capture")]
     pub(crate) fn script_invite_error(&mut self, code: &str, cx: &mut Context<Self>) -> String {
         let report = serde_json::json!({"ok": false, "status": 403, "body": {"code": code.parse::<u64>().unwrap_or(0)}});
-        self.invite_accept_answered(&format!("{ACCEPT_KEY}x"), &report, cx);
+        // Through the same path a real answer takes.
+        self.apply_update(
+            crate::net::Update::Fetched {
+                key: format!("{ACCEPT_KEY}x"),
+                body: report,
+            },
+            cx,
+        );
         format!(
             "alert {:?}",
             self.chat_extra.alert.as_ref().map(|alert| alert.id)

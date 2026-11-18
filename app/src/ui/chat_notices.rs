@@ -446,13 +446,19 @@ impl Root {
     /// start), the line in `body-sm/normal` and a `sm` primary "Add to Channel List" with the plus icon.
     pub(super) fn opt_in_channel_notice(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
         let (guild, channel) = (self.guild?, self.channel?);
-        let known = self
-            .stores
-            .guild(guild)?
+        let server = self.stores.guild(guild)?;
+        let parent_id = server
             .channels
             .iter()
             .find(|known| known.id == channel)?
-            .clone();
+            .parent_id;
+        // `jN` of module 395504: opt-in counts only in a Community server, or for staff.
+        let community = server.features.iter().any(|feature| feature == "COMMUNITY")
+            || self
+                .stores
+                .current_user
+                .as_ref()
+                .is_some_and(|user| user.has_flag(dc_state::USER_FLAG_STAFF));
         let settings = self.stores.guild_settings.guilds.get(&guild)?;
         let picked = |id: Option<Id>| {
             id.and_then(|id| settings.channels.get(&id))
@@ -460,9 +466,9 @@ impl Root {
         };
         // GAP: the Server Guide resource-channel exemption (`IS_GUILD_RESOURCE_CHANNEL` behind `473529 d`) is not read.
         if !opt_in_notice_shown(
-            settings.flags & OPT_IN_CHANNELS_ON != 0,
+            community && settings.flags & OPT_IN_CHANNELS_ON != 0,
             picked(Some(channel)),
-            picked(known.parent_id),
+            picked(parent_id),
         ) {
             return None;
         }
