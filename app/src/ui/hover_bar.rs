@@ -290,6 +290,11 @@ impl Root {
         let saved = self.saved_flags(message.id);
         let channel = self.current_channel();
         let private = channel.is_none() && self.current_dm().is_some();
+        // `isSystemDM()`: no pin (module 492841), reaction (module 707985) or reply (module 517997 `u`) there.
+        let system_dm = channel.is_none()
+            && self
+                .current_dm()
+                .is_some_and(|dm| self.stores.is_system_dm(dm));
         let can = |permission: u64| {
             channel.is_some_and(|channel| self.can_in_channel(channel, permission))
         };
@@ -317,11 +322,13 @@ impl Root {
             && can(VIEW_CHANNEL);
         // Module 492841.
         let can_pin = user_message
+            && !system_dm
             && (private || can(PIN_MESSAGES | READ_MESSAGE_HISTORY))
             && !matches!(channel_type, Some(2 | 13));
         // Module 707985 `disableReactionCreates` with the "Show emoji reactions" setting.
-        let can_react =
-            self.pref_on("chat_emoji_render_reactions", true) && (private || can(ADD_REACTIONS));
+        let can_react = self.pref_on("chat_emoji_render_reactions", true)
+            && !system_dm
+            && (private || can(ADD_REACTIONS));
         let can_edit = own && user_message;
         Caps {
             developer: self.pref_on("developer_mode", false),
@@ -332,7 +339,7 @@ impl Root {
             can_start_thread,
             can_view_thread,
             can_forward: FORWARDABLE.contains(&kind),
-            can_reply: REPLYABLE.contains(&kind),
+            can_reply: REPLYABLE.contains(&kind) && !system_dm,
             can_edit,
             can_react,
             can_publish: self.can_publish(message),

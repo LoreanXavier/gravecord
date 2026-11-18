@@ -51,11 +51,17 @@ enum Status {
     Idle,
     Dnd,
     Offline,
+    /// No status at all (`HIDDEN_STATUS`): a non-user bot's profile avatar (`isNonUserBot`, module 718019).
+    Hidden,
 }
+
+/// The status a caller passes to draw an avatar with no status and no cut-out.
+pub(super) const HIDDEN_STATUS: &str = "hidden";
 
 impl Status {
     fn parse(value: &str, mobile: bool) -> Self {
         match value {
+            HIDDEN_STATUS => Self::Hidden,
             "online" if mobile => Self::Mobile,
             "idle" => Self::Idle,
             "dnd" => Self::Dnd,
@@ -68,7 +74,7 @@ impl Status {
             Self::Online | Self::Mobile => "--icon-status-online",
             Self::Idle => "--icon-status-idle",
             Self::Dnd => "--icon-status-dnd",
-            Self::Offline => "--icon-status-offline",
+            Self::Offline | Self::Hidden => "--icon-status-offline",
         }
     }
 }
@@ -216,6 +222,9 @@ fn rounded_rect(
 
 fn status_cutout(x: f32, y: f32, spec: Spec, decoration: bool, feather: f32) -> f32 {
     let g = spec.size.geometry();
+    if spec.status == Status::Hidden {
+        return 0.;
+    }
     if spec.status != Status::Mobile {
         return circle(x, y, g.center, g.center, g.hole, feather);
     }
@@ -248,9 +257,12 @@ fn status_mask(x: f32, y: f32, status: Status, feather: f32) -> f32 {
         let button = circle(x, y, 5., 12.5, 1.25, feather);
         return shell * (1. - screen) * (1. - button);
     }
+    if status == Status::Hidden {
+        return 0.;
+    }
     let disk = circle(x, y, 5., 5., 5., feather);
     let hole = match status {
-        Status::Online | Status::Mobile => 0.,
+        Status::Online | Status::Mobile | Status::Hidden => 0.,
         Status::Offline => circle(x, y, 5., 5., 2.5, feather),
         Status::Idle => circle(x, y, 2.5, 2.5, 3.75, feather),
         Status::Dnd => {
@@ -668,6 +680,7 @@ impl Root {
         // for anyone on mobile (`plugin_hooks/platform_indicators.rs`).
         let status = if status != Status::Mobile
             && status != Status::Offline
+            && status != Status::Hidden
             && super::plugin_hooks::mobile_status(&self.stores, user, false)
         {
             Status::Mobile
@@ -677,7 +690,9 @@ impl Root {
         // Not in the pinned client: ColorSighted keeps the colour and draws every status as the plain disk
         // (`plugin_hooks.rs`); the phone of a mobile user stays.
         let status = match status {
-            Status::Idle | Status::Dnd | Status::Offline if super::plugin_hooks::color_sighted() => {
+            Status::Idle | Status::Dnd | Status::Offline
+                if super::plugin_hooks::color_sighted() =>
+            {
                 Status::Online
             }
             status => status,
@@ -899,6 +914,8 @@ mod tests {
         assert_eq!(undecorated.get_pixel(1, 1)[3], 0);
         assert_eq!(undecorated.get_pixel(192, 192).0, [255, 0, 0, 255]);
         assert_eq!(status_mask(5., 5., Status::Offline, 0.1), 0.);
+        assert_eq!(status_mask(5., 5., Status::Hidden, 0.1), 0.);
+        assert!(Status::parse(HIDDEN_STATUS, true) == Status::Hidden);
         assert_eq!(status_mask(2.5, 2.5, Status::Idle, 0.1), 0.);
     }
 

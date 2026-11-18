@@ -38,6 +38,9 @@ pub(super) enum AppTag {
     OriginalPoster,
     /// A published announcement as it arrives in a following server (`isCrosspost`, module 943667): `SERVER`.
     Server,
+    /// A message of the system account (`message.isSystemDM()`, module 383233: its author is `system`): `SYSTEM_DM`,
+    /// drawn like `OFFICIAL` with the tick forced on (`OFFICIAL`, "Official Discord Message" on the tick).
+    Official,
 }
 
 /// Module 943667: a plain message flagged `IS_CROSSPOST` that references another message and is not a forward.
@@ -62,6 +65,17 @@ pub(super) fn app_tag(bot: bool, flags: u64, forum_post_owner: bool) -> Option<A
         Some(AppTag::OriginalPoster)
     } else {
         None
+    }
+}
+
+/// `k` of module 812299 in its order: `SYSTEM_DM` for the system account, `SERVER` for a crosspost, then `app_tag`.
+pub(super) fn message_tag(system: bool, crosspost: bool, app: Option<AppTag>) -> Option<AppTag> {
+    if system {
+        Some(AppTag::Official)
+    } else if crosspost {
+        Some(AppTag::Server)
+    } else {
+        app
     }
 }
 
@@ -269,17 +283,22 @@ impl Root {
                         matches!(parent.kind, dc_state::ChannelKind::Other(15 | 16))
                     })
         });
-        // Module 812299 `k`: a crossposted message is `SERVER` before a bot is `BOT`.
-        let kind = if is_crosspost(message) {
-            Some(AppTag::Server)
-        } else {
-            app_tag(author.bot, author.flags | author.public_flags, forum_owner)
-        };
+        // Module 812299 `k`: the system account's message is `SYSTEM_DM` first, then a crossposted message is `SERVER`,
+        // before a bot is `BOT`.
+        let kind = message_tag(
+            author.system,
+            is_crosspost(message),
+            app_tag(author.bot, author.flags | author.public_flags, forum_owner),
+        );
         if let Some(kind) = kind {
             chips.push(self.app_tag_chip(kind, id, cx));
         }
         // Not in the pinned client: PlatformIndicators (`plugin_hooks/platform_indicators.rs`).
-        chips.extend(self.platform_icons(author.id, super::plugin_hooks::PlatformPlace::Message, cx));
+        chips.extend(self.platform_icons(
+            author.id,
+            super::plugin_hooks::PlatformPlace::Message,
+            cx,
+        ));
         chips
     }
 
@@ -323,7 +342,8 @@ impl Root {
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let op = kind == AppTag::OriginalPoster;
-        let verified = matches!(kind, AppTag::App { verified: true });
+        let official = kind == AppTag::Official;
+        let verified = official || matches!(kind, AppTag::App { verified: true });
         let tag = div()
             .ml(px(4.))
             // `.botTag { top: .1rem }` and `.rem { margin-top: .2em }` / `.botTagOP { margin-top: .25em }` at 10px.
@@ -345,8 +365,18 @@ impl Root {
                 let key = format!("message-verified-{message}");
                 self.with_tip(
                     key,
-                    // `g76OcH`.
-                    Tip::body(Body::Text(dc_intl::tr("Verified App").into()), Side::Top),
+                    // `g76OcH`, or `7s687k` for the system account.
+                    Tip::body(
+                        Body::Text(
+                            if official {
+                                dc_intl::t("7s687k")
+                            } else {
+                                dc_intl::tr("Verified App")
+                            }
+                            .into(),
+                        ),
+                        Side::Top,
+                    ),
                     div()
                         .ml(px(-3.2))
                         .size(px(16.))
@@ -359,11 +389,12 @@ impl Root {
                     .text_size(px(12.8))
                     .line_height(px(15.))
                     .font_weight(FontWeight(600.))
-                    // `9RNkeF`, `fyE8sH` and `PuJGuM`.
+                    // `9RNkeF`, `fyE8sH`, `PuJGuM` and `lKQ7Wt`.
                     .child(match kind {
                         AppTag::OriginalPoster => dc_intl::tr("OP"),
                         AppTag::Server => dc_intl::tr("SERVER"),
                         AppTag::App { .. } => dc_intl::tr("APP"),
+                        AppTag::Official => dc_intl::t("lKQ7Wt"),
                     }),
             );
         if op {
@@ -378,6 +409,64 @@ impl Root {
                 .into_any_element();
         }
         tag.into_any_element()
+    }
+
+    /// Module 709066 `_` at its pixel sizes (no `useRemSizes`: the DM list's `decorators` in module 181254 and the
+    /// profile name in module 465829): `.px_feVUtO.botTag_feVUtO` 16px tall, `0 4px` padding, 4px radius,
+    /// `botTagRegular` (`--background-brand`, white); when verified the 16px `CheckmarkSmallBoldIcon` 2px into the
+    /// padding, with "Official Discord Message" (`7s687k`, forced on for `SYSTEM_DM`) or "Verified App" (`g76OcH`) in
+    /// a tooltip, then `OFFICIAL` (`lKQ7Wt`) or `APP` (`9RNkeF`) at 12px / 16px semibold.
+    pub(super) fn app_tag_px(
+        &self,
+        kind: AppTag,
+        key: String,
+        cx: &mut Context<Self>,
+    ) -> gpui::Div {
+        let official = kind == AppTag::Official;
+        let verified = official || matches!(kind, AppTag::App { verified: true });
+        let tick = verified.then(|| {
+            self.with_tip(
+                key,
+                Tip::body(
+                    Body::Text(
+                        if official {
+                            dc_intl::t("7s687k")
+                        } else {
+                            dc_intl::tr("Verified App")
+                        }
+                        .into(),
+                    ),
+                    Side::Top,
+                ),
+                div()
+                    .ml(px(-2.))
+                    .size(px(16.))
+                    .child(icon("select_check", 16., "--white")),
+                cx,
+            )
+        });
+        div()
+            .h(px(16.))
+            .px(px(4.))
+            .rounded(px(4.))
+            .flex()
+            .flex_none()
+            .items_center()
+            .bg(color("--background-brand"))
+            .text_color(color("--white"))
+            .children(tick)
+            .child(
+                div()
+                    .text_size(px(12.))
+                    .line_height(px(16.))
+                    .font_weight(FontWeight(600.))
+                    .child(match kind {
+                        AppTag::Official => dc_intl::t("lKQ7Wt"),
+                        AppTag::OriginalPoster => dc_intl::tr("OP"),
+                        AppTag::Server => dc_intl::tr("SERVER"),
+                        AppTag::App { .. } => dc_intl::tr("APP"),
+                    }),
+            )
     }
 
     /// A role's picture at `size` px when the server shows role icons (or the role is a subscription's) and the
@@ -880,6 +969,15 @@ mod tests {
             Some(AppTag::App { verified: true })
         );
         assert_eq!(app_tag(false, VERIFIED_BOT, false), None);
+    }
+
+    #[test]
+    fn the_system_account_is_official_before_a_crosspost_or_an_app() {
+        let app = app_tag(true, 0, false);
+        assert_eq!(message_tag(true, true, app), Some(AppTag::Official));
+        assert_eq!(message_tag(false, true, app), Some(AppTag::Server));
+        assert_eq!(message_tag(false, false, app), app);
+        assert_eq!(message_tag(false, false, None), None);
     }
 
     #[test]

@@ -445,7 +445,10 @@ impl Root {
         if badges.is_empty() {
             return None;
         }
-        let (shown, overflow) = managed_badges(badges.len(), self.badge_management());
+        // Module 567556 `e8`: `isTargetUserBot` (the user's `bot`) turns badge management off and `eJ` draws the list
+        // without the `managed_IqWmhA` pill (`ea && !isTargetUserBot`): bare `container_IqWmhA` (`margin: 1px 0`).
+        let bot = self.stores.users.get(&user).is_some_and(|known| known.bot);
+        let (shown, overflow) = managed_badges(badges.len(), self.badge_management() && !bot);
         badges.truncate(shown);
         let username = self
             .stores
@@ -495,15 +498,18 @@ impl Root {
                     _ => "dm-profile-badges",
                 })
                 // `.container_IqWmhA`: 20px icons + 1px padding + 1px border = 24px outer height.
-                .min_h(px(24.))
-                .mx(px(-1.))
-                .px(px(3.))
-                .py(px(1.))
-                .border_1()
-                .border_color(palette.token("--border-muted"))
-                .rounded(px(8.))
-                .bg(palette.pill_background(false))
-                .hover(move |this| this.bg(hover))
+                .when(!bot, |this| {
+                    this.min_h(px(24.))
+                        .mx(px(-1.))
+                        .px(px(3.))
+                        .py(px(1.))
+                        .border_1()
+                        .border_color(palette.token("--border-muted"))
+                        .rounded(px(8.))
+                        .bg(palette.pill_background(false))
+                        .hover(move |this| this.bg(hover))
+                })
+                .when(bot, |this| this.my(px(1.)))
                 .flex()
                 .flex_wrap()
                 .items_center()
@@ -631,13 +637,30 @@ impl Root {
                 }));
             self.with_tip(format!("{place}-note-tip-{user_id}"), tip, target, cx)
         };
+        // `an` of module 289287 (a non-user bot: the system account, or a bot tagged `0000`): the names open nothing
+        // (`onClickName` is unset) and there is no note button.
+        let non_user_bot = user.non_user_bot();
         let open = move |id: &'static str, cx: &mut Context<Self>| {
             div()
                 .id(SharedString::from(format!("{place}-{id}-{user_id}")))
-                .cursor_pointer()
-                .on_click(cx.listener(move |this, _, window, cx| {
-                    this.open_full_profile(user_id, window, cx);
-                }))
+                .when(!non_user_bot, |this| {
+                    this.cursor_pointer()
+                        .on_click(cx.listener(move |this, _, window, cx| {
+                            this.open_full_profile(user_id, window, cx);
+                        }))
+                })
+        };
+        // Module 465829 `_`: the tag of `u.r(user)` (module 296948: `SYSTEM_DM` for the system account, `BOT` for a
+        // bot) after the name and a space (`vertical-align: baseline`: its bottom on the 20px name's baseline, 19px
+        // into the 24px line), and `isBot_C2XpHA` on the username row (8px above it, 6px between its items).
+        let tag_kind = if user.system {
+            Some(super::message_header::AppTag::Official)
+        } else if user.bot {
+            Some(super::message_header::AppTag::App {
+                verified: user.verified_bot(),
+            })
+        } else {
+            None
         };
         let strong = palette.token("--text-strong");
         let default = palette.token("--text-default");
@@ -657,23 +680,38 @@ impl Root {
                             .line_height(px(24.))
                             .font_weight(FontWeight(600.))
                             .text_color(default)
+                            .flex()
+                            .items_start()
                             .child(super::name_styles::name(
                                 format!("{place}-name-{user_id}"),
                                 self.dm_display_name(user),
                                 self.name_styles(user, None).as_ref(),
                                 super::name_styles::Display::Animated,
-                            )),
+                            ))
+                            .when_some(tag_kind, |this, kind| {
+                                this.child(div().flex_none().child("\u{a0}")).child(
+                                    self.app_tag_px(kind, format!("{place}-app-tag-{user_id}"), cx)
+                                        .mt(px(3.)),
+                                )
+                            }),
                     )
-                    .child(div().flex_none().self_start().child(note_button)),
+                    .when(!non_user_bot, |this| {
+                        this.child(div().flex_none().self_start().child(note_button))
+                    }),
             )
             .child(
                 div()
+                    .when(tag_kind.is_some(), |this| this.mt(px(8.)))
                     .min_h(px(24.))
                     .flex()
                     .flex_wrap()
                     .items_center()
                     .gap_y(px(2.))
-                    .gap_x(px(if has_pronouns { 6. } else { 9.33 }))
+                    .gap_x(px(if has_pronouns || tag_kind.is_some() {
+                        6.
+                    } else {
+                        9.33
+                    }))
                     .text_size(px(14.))
                     .line_height(px(18.))
                     .text_color(strong)
@@ -1205,7 +1243,14 @@ impl Root {
             self.want_image(avatar_key, avatar_url, cx);
         }
         let user_id = user.id;
-        let presence = self.stores.status(user_id).to_owned();
+        // Module 718019: a non-user bot's avatar has no status (`isNonUserBot()`), and in `an` (module 289287) it opens
+        // nothing (`onOpenProfile` is unset).
+        let non_user_bot = user.non_user_bot();
+        let presence = if non_user_bot {
+            super::member_avatars::HIDDEN_STATUS.to_owned()
+        } else {
+            self.stores.status(user_id).to_owned()
+        };
         let ring = div()
             .absolute()
             .left(px(left - 6.))
@@ -1220,10 +1265,12 @@ impl Root {
             .absolute()
             .left(px(left))
             .top(px(top))
-            .cursor_pointer()
-            .on_click(
-                cx.listener(move |this, _, window, cx| this.open_full_profile(user_id, window, cx)),
-            )
+            .when(!non_user_bot, |this| {
+                this.cursor_pointer()
+                    .on_click(cx.listener(move |this, _, window, cx| {
+                        this.open_full_profile(user_id, window, cx)
+                    }))
+            })
             .child(self.profile_avatar(user, &presence, cx));
         // gpui places an absolute child against its own parent, so the pair is laid over the whole header.
         div()
@@ -1233,6 +1280,22 @@ impl Root {
             .size_full()
             .child(ring)
             .child(avatar)
+    }
+
+    /// The buttons on the sidebar's banner: the friend button and "..." (`oM`), or for a non-user bot (`an`, module
+    /// 289287) only module 35241's "..." when its menu has a row: Copy User ID (module 50268) in developer mode.
+    fn sidebar_banner_buttons(&self, user: &User, cx: &mut Context<Self>) -> Vec<AnyElement> {
+        if user.non_user_bot() {
+            return if self.developer_mode() {
+                vec![self.profile_more_button(user.id, cx)]
+            } else {
+                Vec::new()
+            };
+        }
+        vec![
+            self.profile_friend_button(user.id, cx),
+            self.profile_more_button(user.id, cx),
+        ]
     }
 
     pub(super) fn dm_profile_width(&self, viewport_width: f32) -> f32 {
@@ -1332,7 +1395,11 @@ impl Root {
         let names = self
             .profile_names("dm-profile", user, None, palette, hovering, cx)
             .into_any_element();
-        let mutuals = self.profile_mutuals("dm-profile", user_id, palette, cx);
+        // `an` of module 289287: a non-user bot's sidebar is the names, the bio and Created On only.
+        let non_user_bot = user.non_user_bot();
+        let mutuals = (!non_user_bot)
+            .then(|| self.profile_mutuals("dm-profile", user_id, palette, cx))
+            .flatten();
         let private =
             is_private.then(|| super::profile_board::private_notice(user.display_name(), palette));
         let bio = bio.map(|bio| {
@@ -1366,6 +1433,20 @@ impl Root {
                     .child(member_since(user_id)),
             )
             .into_any_element();
+        if non_user_bot {
+            return SidebarParts {
+                names,
+                mutuals,
+                private,
+                bio,
+                member_since,
+                voice_time: None,
+                connections: None,
+                games: None,
+                activity: Vec::new(),
+                wishlist: None,
+            };
+        }
         let connections = self.connections_row(user_id, false, cx);
         // Not in the pinned client: the VoiceStats plugin's "Voice Time" (`plugin_hooks/voice_stats.rs`).
         let voice_time = self.voice_time_section(
@@ -1458,8 +1539,7 @@ impl Root {
             .right(px(8.))
             .flex()
             .gap(px(8.))
-            .child(self.profile_friend_button(user_id, cx))
-            .child(self.profile_more_button(user_id, cx));
+            .children(self.sidebar_banner_buttons(user, cx));
         let effect = self.sidebar_effect(window, cx, user_id, 300.);
         let has_cards =
             parts.games.is_some() || !parts.activity.is_empty() || parts.wishlist.is_some();
@@ -1529,7 +1609,8 @@ impl Root {
                         )),
                 )
             });
-        let footer = (!self.full_profile_button_hidden()).then(|| {
+        // `an` draws `r7` only for the product-updates account (module 311016), which is not a non-user bot here.
+        let footer = (!self.full_profile_button_hidden() && !user.non_user_bot()).then(|| {
             // `redesignFooter_YBm90d`: 72px, a secondary `md` full-width button.
             div().h(px(72.)).flex_none().p(px(16.)).child(
                 div()
@@ -1666,8 +1747,7 @@ impl Root {
             .right(px(8.))
             .flex()
             .gap(px(8.))
-            .child(self.profile_friend_button(user_id, cx))
-            .child(self.profile_more_button(user_id, cx));
+            .children(self.sidebar_banner_buttons(user, cx));
         let effect = self.sidebar_effect(window, cx, user_id, 340.);
         let overlay_box = div()
             .p(px(12.))
@@ -1703,7 +1783,7 @@ impl Root {
             .children(parts.private)
             .children(parts.activity)
             .child(overlay_box);
-        let footer = (!self.full_profile_button_hidden()).then(|| {
+        let footer = (!self.full_profile_button_hidden() && !user.non_user_bot()).then(|| {
             div()
                 .id("dm-profile-full")
                 .parity("dm-profile-full")
