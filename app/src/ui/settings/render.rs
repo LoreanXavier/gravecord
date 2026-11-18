@@ -384,6 +384,54 @@ pub(super) fn plain_switch(
         )
 }
 
+/// `plain_switch` that can be disabled (`disabled_9AraPt`: half opacity, no clicks) and hands the context on.
+pub(super) fn plain_switch_with(
+    id: SharedString,
+    on: bool,
+    disabled: bool,
+    changed: impl Fn(&mut Root, bool, &mut Context<Root>) + 'static,
+    cx: &mut Context<Root>,
+) -> impl IntoElement {
+    let reduced = motion::reduced();
+    let state = motion::controls::switch_state(&id, on, reduced);
+    let thumb = motion::controls::thumb(state, on, reduced);
+    let background = motion::controls::switch_background(
+        state,
+        color("--input-background-default"),
+        color("--switch-background-active"),
+        color("--background-brand"),
+    );
+    div()
+        .id(id)
+        .flex_none()
+        .relative()
+        .w(px(SWITCH_WIDTH))
+        .h(px(24.))
+        .rounded(px(16.))
+        .border_1()
+        .border_color(color("--input-border-default"))
+        .bg(background)
+        .when(disabled, |this| this.opacity(0.5))
+        .when(!disabled, |this| {
+            this.cursor_pointer()
+                .on_click(cx.listener(move |this, _, _, cx| {
+                    changed(this, !on, cx);
+                    cx.notify();
+                }))
+        })
+        .child(
+            div()
+                .absolute()
+                .top(px(3. + (thumb.y - 4.) as f32))
+                .left(px(3. + 24. * thumb.travel as f32 + (thumb.x - 4.) as f32))
+                .w(px(thumb.width as f32))
+                .h(px(thumb.height as f32))
+                .rounded(px(thumb.radius as f32))
+                .bg(gpui::white())
+                .children(switch_icon(on)),
+        )
+}
+
 /// `radioIndicator_oJuRbG`: a 20px ring, 2px stroke, with a fill and an 8px dot that grow in and out (the
 /// `fillIn`, `dotIn`, `fillOut` and `dotOut` keyframes, in `motion::controls`).
 pub(crate) fn radio_dot(selected: bool) -> impl IntoElement {
@@ -1685,7 +1733,9 @@ impl Root {
         cx: &mut Context<Self>,
     ) -> gpui::Div {
         let runs: Runs = match key {
-            "library_install_shortcut_desktop" => &[("When installing games from the Discord Store.", false)],
+            "library_install_shortcut_desktop" => {
+                &[("When installing games from the Discord Store.", false)]
+            }
             _ => &[(
                 "When installing games from the Discord Store. Also makes your games discoverable via windows search.",
                 false,

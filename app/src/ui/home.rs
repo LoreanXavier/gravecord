@@ -321,7 +321,8 @@ impl Root {
             .is_some_and(|open| open.target == super::context_menu::Target::Dm(id));
         let row_selected = selected || context_menu_open;
         let avatar = self.images.get(&avatar_source(&recipient).0).cloned();
-        let status = self.stores.status(recipient.id).to_owned();
+        // Module 935154: a Twitch or YouTube stream shows as the streaming status.
+        let status = self.display_status(recipient.id, None);
         let look = row_look_with_menu(
             selected,
             hovered,

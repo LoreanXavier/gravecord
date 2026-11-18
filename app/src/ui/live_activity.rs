@@ -9,7 +9,7 @@ use gpui::{
 use serde_json::Value;
 use std::time::Duration;
 
-const SPOTIFY_PLATFORM_ICON: &str = "live-platform:spotify";
+use super::platform_presence;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum Surface {
@@ -189,21 +189,6 @@ pub(super) fn needs_account_link(application: &Value, tokens: Option<&Value>) ->
     (!linked).then_some(url)
 }
 
-fn heading(activity: &Value) -> String {
-    let kind = activity["type"].as_u64().unwrap_or(0);
-    let base = match kind {
-        1 => "Streaming",
-        2 => "Listening to",
-        3 => "Watching",
-        5 => "Competing in",
-        _ => "Playing",
-    };
-    if matches!(kind, 2 | 3 | 5) && !activity["details"].is_null() {
-        format!("{base} {}", activity["name"].as_str().unwrap_or_default())
-    } else {
-        base.to_owned()
-    }
-}
 fn steam_url(application: &Value) -> Option<String> {
     let sku = application["third_party_skus"]
         .as_array()?
@@ -335,15 +320,21 @@ impl Root {
                     dc_proto::pin::WEBAPP_ORIGIN
                 ),
             );
-            self.request_image(
-                SPOTIFY_PLATFORM_ICON.into(),
-                format!(
-                    "{}/assets/f6833ce4dd20c1fb.svg",
-                    dc_proto::pin::WEBAPP_ORIGIN
-                ),
-            );
         }
         for activity in &activities {
+            // The header's platform mark (770689 `platformIcon`) and the console picture of 325158 `P`.
+            if let Some(platform) = platform_presence::provider(activity) {
+                self.request_image(
+                    platform_presence::asset_key(platform.white_svg),
+                    platform_presence::asset_url(platform.white_svg),
+                );
+            }
+            if let Some(file) = platform_presence::fallback_art(activity, false) {
+                self.request_image(
+                    platform_presence::asset_key(file),
+                    platform_presence::asset_url(file),
+                );
+            }
             for key in ["large_image", "small_image"] {
                 if let Some(url) = asset_url(activity, key) {
                     self.request_image(url.clone(), url);
@@ -475,19 +466,39 @@ impl Root {
                         link_id(application).and_then(|id| self.fetched.get(&tokens_key(&id))),
                     )
                 });
+                // 325158 `P`: the activity's art, else the application's icon, else Xbox's or PlayStation's own
+                // picture for a console game.
+                let has_large = asset_url(activity, "large_image").is_some()
+                    || application.and_then(|app| field(app, "icon")).is_some();
                 let art = asset_url(activity, "large_image")
                     .and_then(|url| self.images.get(&url))
                     .cloned()
                     .or_else(|| {
                         app_id.and_then(|id| self.images.get(&format!("app-icon:{id}")).cloned())
+                    })
+                    .or_else(|| {
+                        platform_presence::fallback_art(activity, has_large).and_then(|file| {
+                            self.images.get(&platform_presence::asset_key(file)).cloned()
+                        })
                     });
+                let (heading, header_platform) = platform_presence::heading(activity);
+                let header_icon = header_platform.and_then(|platform| {
+                    self.images
+                        .get(&platform_presence::asset_key(platform.white_svg))
+                        .cloned()
+                });
+                let own = self.stores.current_user.as_ref().is_some_and(|me| me.id == user);
+                let connect_offer = (!own && !bot)
+                    .then(|| platform_presence::connect_offer(activity, &self.linked_platforms()))
+                    .flatten();
+                // 325158 `b`: a Crunchyroll activity's small image is not drawn.
                 let small = asset_url(activity, "small_image")
+                    .filter(|_| !platform_presence::is_crunchyroll(activity))
                     .and_then(|url| self.images.get(&url))
                     .cloned();
                 let kind = activity["type"].as_u64().unwrap_or(0);
                 let spotify = dc_state::now_playing::is_spotify(activity);
                 let missing_spotify_art = spotify && asset_url(activity, "large_image").is_none();
-                let own = self.stores.current_user.as_ref().is_some_and(|me| me.id == user);
                 // Module 285909 draws the button when its menu has rows: a game always has Report Issue; another
                 // activity only View All Activity, in a popout.
                 // In the full profile the official card draws it for a game too (`headerContextMenu_Bu4Al8`).
@@ -716,7 +727,12 @@ impl Root {
                         .iter()
                         .enumerate()
                         .filter_map(|(button_index, label)| {
-                            let label = label.as_str()?.to_owned();
+                            // 802880 `tc`: a Crunchyroll activity's buttons read Watch (`I6JG46`).
+                            let label = if platform_presence::is_crunchyroll(activity) {
+                                dc_intl::t("I6JG46").to_owned()
+                            } else {
+                                label.as_str()?.to_owned()
+                            };
                             let activity = activity.clone();
                             Some(
                                 div()
@@ -820,6 +836,85 @@ impl Root {
                         );
                     }
                     actions = Some(stack.into_any_element());
+                } else if let Some(url) = (connect_offer.is_none() && !own && !bot)
+                    .then(|| platform_presence::stream_url(activity))
+                    .flatten()
+                {
+                    // 802880 `tV`: a Twitch or YouTube stream gets Watch (`I6JG46`), which opens the stream.
+                    actions = Some(
+                        div()
+                            .id(SharedString::from(format!(
+                                "activity-watch-{user}-{index}-{large}"
+                            )))
+                            .when(!large, |this| this.w_full())
+                            .px(px(11.))
+                            .h(px(32.))
+                            .rounded(px(8.))
+                            .border_1()
+                            .border_color(color("--control-secondary-border-default"))
+                            .bg(color("--control-secondary-background-default"))
+                            .hover(|s| s.bg(color("--control-secondary-background-hover")))
+                            .flex()
+                            .items_center()
+                            .justify_center()
+                            .cursor_pointer()
+                            .on_click(cx.listener(move |this, _, _, cx| {
+                                cx.stop_propagation();
+                                this.follow_link(&url, "", cx);
+                            }))
+                            .text_size(px(14.))
+                            .line_height(px(18.))
+                            .font_weight(FontWeight(500.))
+                            .text_color(strong)
+                            .child(dc_intl::t("I6JG46"))
+                            .into_any_element(),
+                    );
+                } else if let Some(platform) = connect_offer {
+                    // 802880 `tP`: "Connect Xbox" / "Connect PlayStation Network" (`XWSHTb`), which opens that
+                    // platform's link dialog (module 80320).
+                    let kind = platform.kind;
+                    let (glyph, size) = if kind == "xbox" {
+                        ("activity_connect_xbox", 16.)
+                    } else {
+                        ("activity_connect_playstation", 18.)
+                    };
+                    actions = Some(
+                        div()
+                            .id(SharedString::from(format!(
+                                "activity-connect-platform-{user}-{index}-{large}"
+                            )))
+                            .when(!large, |this| this.w_full())
+                            // `$.FD` (993401): the secondary `sm` button of 821609, 1px border.
+                            .px(px(11.))
+                            .h(px(32.))
+                            .rounded(px(8.))
+                            .border_1()
+                            .border_color(color("--control-secondary-border-default"))
+                            .bg(color("--control-secondary-background-default"))
+                            .hover(|s| s.bg(color("--control-secondary-background-hover")))
+                            .flex()
+                            .items_center()
+                            .justify_center()
+                            .gap(px(4.))
+                            .cursor_pointer()
+                            .on_click(cx.listener(move |this, _, _, cx| {
+                                cx.stop_propagation();
+                                this.open_connection_dialog(kind, cx);
+                            }))
+                            .child(icon(glyph, size, "--text-strong"))
+                            .child(
+                                div()
+                                    .text_size(px(14.))
+                                    .line_height(px(18.))
+                                    .font_weight(FontWeight(500.))
+                                    .text_color(strong)
+                                    .child(dc_intl::format(
+                                        "XWSHTb",
+                                        &[("platform", platform.name.into())],
+                                    )),
+                            )
+                            .into_any_element(),
+                    );
                 }
                 if spotify && !own && activity["flags"].as_u64().unwrap_or_default() & 48 != 0 {
                     actions = Some(self.spotify_buttons(user, activity, surface, &palette, cx));
@@ -855,14 +950,15 @@ impl Root {
                                     .line_height(px(if surface == Surface::Sidebar { 18. } else { 16. }))
                                     .font_weight(FontWeight(500.))
                                     .text_color(strong)
-                                    .child(heading(activity))
-                                    .when(spotify, |header| {
+                                    .child(heading)
+                                    // `platformIcon_Bu4Al8`: the platform's white mark, 12px, in `--icon-muted`.
+                                    .when(header_platform.is_some(), |header| {
                                         header.child(
                                             div()
-                                                .parity("live-spotify-platform")
+                                                .when(spotify, |icon| icon.parity("live-spotify-platform"))
                                                 .size(px(12.))
                                                 .flex_none()
-                                                .children(self.images.get(SPOTIFY_PLATFORM_ICON).map(|picture| {
+                                                .children(header_icon.map(|picture| {
                                                     svg().data(&picture.bytes).size_full().text_color(palette.token("--icon-muted"))
                                                 })),
                                         )

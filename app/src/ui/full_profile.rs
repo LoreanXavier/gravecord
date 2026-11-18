@@ -228,7 +228,7 @@ fn profile_route(user: Id, guild: Option<Id>) -> String {
 
 /// 370480.An formats the server's ISO date in the current local timezone. A date without an offset (connections'
 /// `metadata.created_at`, `2013-01-06T10:00:00`) is local time, as `new Date()` reads it.
-fn profile_date(value: &str) -> Option<String> {
+pub(in crate::ui) fn profile_date(value: &str) -> Option<String> {
     let local = chrono::DateTime::parse_from_rfc3339(value)
         .ok()
         .map(|date| date.with_timezone(&chrono::Local).date_naive())
@@ -270,7 +270,7 @@ fn encode_uri_segment(input: &str) -> String {
 /// One entry of a connection's metadata line (module 169869): `N` (a count and its label), `m` (a tag on a pill) and
 /// `A` (a label after a picture).
 #[derive(Clone, Debug, PartialEq, Eq)]
-enum ConnectionMeta {
+pub(in crate::ui) enum ConnectionMeta {
     Text(String),
     /// `connectedAccountVanityMetadataTag`; PayPal's adds `paypalVerifiedTag` (green, white text).
     Tag {
@@ -313,7 +313,7 @@ struct ConnectedAccount {
 /// The platforms of module 573648 (`type`, `name`, `icon.lightPNG`, `icon.lightSVG`, `icon.darkSVG`): `isSupported` is a
 /// type in this list, and module 851767 keeps only supported connections of a profile. The profile draws the PNG;
 /// ShowConnections draws the SVG of the theme (`plugin_hooks/show_connections.rs`).
-const CONNECTED_PLATFORMS: &[(&str, &str, &str, &str, &str)] = &[
+pub(in crate::ui) const CONNECTED_PLATFORMS: &[(&str, &str, &str, &str, &str)] = &[
     (
         "twitch",
         "Twitch",
@@ -537,7 +537,7 @@ const CONNECTED_PLATFORMS: &[(&str, &str, &str, &str, &str)] = &[
 const STEAM_DOTA2_ICON: &str = "44e2229fd99bc14e.png";
 const STEAM_TF2_ICON: &str = "9eb53b4fa3cc12d5.png";
 
-fn connection_icon_key(file: &str) -> String {
+pub(in crate::ui) fn connection_icon_key(file: &str) -> String {
     format!("connection-icon:{file}")
 }
 
@@ -577,7 +577,7 @@ fn metadata_count(count: f64) -> String {
 /// The metadata line of one connection, as `renderMetadata` of `t0` (module 927071) picks the builder of module
 /// 169869 by platform: Reddit `xE`, Steam `dy`, Letterboxd `uq`, Bluesky / Mastodon / X `ED`, PayPal `gZ`, eBay `ub`,
 /// TikTok `HU`. The keys are `pK` of module 783419.
-fn connection_metadata(kind: &str, metadata: &Value) -> Vec<ConnectionMeta> {
+pub(in crate::ui) fn connection_metadata(kind: &str, metadata: &Value) -> Vec<ConnectionMeta> {
     let number = |key: &str| metadata_number(&metadata[key]);
     let flag = |key: &str| metadata_flag(&metadata[key]);
     let tag = |label: &str| ConnectionMeta::Tag {

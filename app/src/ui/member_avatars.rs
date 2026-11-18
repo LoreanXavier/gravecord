@@ -44,6 +44,11 @@ struct Geometry {
     hole: f32,
 }
 
+/// Module 960076: a `STREAMING` activity whose url is a Twitch channel or a YouTube video (487887 `yz`).
+fn is_stream(activity: &serde_json::Value) -> bool {
+    super::platform_presence::stream_url(activity).is_some()
+}
+
 #[derive(Clone, Copy, PartialEq)]
 enum Status {
     Online,
@@ -53,6 +58,8 @@ enum Status {
     Offline,
     /// No status at all (`HIDDEN_STATUS`): a non-user bot's profile avatar (`isNonUserBot`, module 718019).
     Hidden,
+    /// `STREAMING` (module 935154): a Twitch or YouTube stream among the activities (960076), purple with a play mark.
+    Streaming,
 }
 
 /// The status a caller passes to draw an avatar with no status and no cut-out.
@@ -75,6 +82,8 @@ impl Status {
             Self::Idle => "--icon-status-idle",
             Self::Dnd => "--icon-status-dnd",
             Self::Offline | Self::Hidden => "--icon-status-offline",
+            // `PLATFORM_TWITCH` of module 935154 `A`.
+            Self::Streaming => "--platform-twitch",
         }
     }
 }
@@ -207,6 +216,22 @@ fn circle(x: f32, y: f32, center_x: f32, center_y: f32, radius: f32, feather: f3
     ((radius - (x - center_x).hypot(y - center_y)) / feather + 0.5).clamp(0., 1.)
 }
 
+/// Coverage of a triangle given clockwise or counterclockwise: the smallest signed distance to its edges.
+fn triangle(x: f32, y: f32, points: [(f32, f32); 3], feather: f32) -> f32 {
+    let area = (points[1].0 - points[0].0) * (points[2].1 - points[0].1)
+        - (points[1].1 - points[0].1) * (points[2].0 - points[0].0);
+    let sign = area.signum();
+    let mut inside = f32::MAX;
+    for edge in 0..3 {
+        let (ax, ay) = points[edge];
+        let (bx, by) = points[(edge + 1) % 3];
+        let length = (bx - ax).hypot(by - ay);
+        let distance = sign * ((bx - ax) * (y - ay) - (by - ay) * (x - ax)) / length;
+        inside = inside.min(distance);
+    }
+    (inside / feather + 0.5).clamp(0., 1.)
+}
+
 fn rounded_rect(
     x: f32,
     y: f32,
@@ -263,6 +288,8 @@ fn status_mask(x: f32, y: f32, status: Status, feather: f32) -> f32 {
     let disk = circle(x, y, 5., 5., 5., feather);
     let hole = match status {
         Status::Online | Status::Mobile | Status::Hidden => 0.,
+        // `svg-mask-status-streaming`: the disk without the play triangle (0.35,0.25 0.783,0.5 0.35,0.75).
+        Status::Streaming => triangle(x, y, [(3.5, 2.5), (7.830_127_5, 5.), (3.5, 7.5)], feather),
         Status::Offline => circle(x, y, 5., 5., 2.5, feather),
         Status::Idle => circle(x, y, 2.5, 2.5, 3.75, feather),
         Status::Dnd => {
@@ -673,7 +700,16 @@ impl Root {
         });
         let cache = self.member_avatars.clone();
         let user = user.id;
-        let status = Status::parse(status, self.stores.presence.is_mobile_online(user));
+        let mut status = Status::parse(status, self.stores.presence.is_mobile_online(user));
+        if status != Status::Offline
+            && self
+                .stores
+                .presence
+                .get(user, guild)
+                .is_some_and(|presence| presence.activities.iter().any(is_stream))
+        {
+            status = Status::Streaming;
+        }
         let tint = color(status.token());
         let tint = [tint.r, tint.g, tint.b, tint.a].map(|value| (value * 255.).round() as u8);
         // Not in the pinned client: PlatformIndicators' `colorMobileIndicator` draws the phone, in the status's colour,
@@ -856,6 +892,21 @@ mod tests {
         let decoration = RgbaImage::from_pixel(32, 32, Rgba([0, 255, 0, 255]));
         assert!(Status::parse("online", true) == Status::Mobile);
         assert!(Status::parse("dnd", true) == Status::Dnd);
+        assert!(is_stream(
+            &serde_json::json!({"type": 1, "url": "https://www.twitch.tv/a"})
+        ));
+        assert!(is_stream(
+            &serde_json::json!({"type": 1, "url": "https://youtube.com/watch?v=x"})
+        ));
+        assert!(!is_stream(
+            &serde_json::json!({"type": 1, "url": "https://twitch.tv/"})
+        ));
+        assert!(!is_stream(
+            &serde_json::json!({"type": 0, "url": "https://twitch.tv/a"})
+        ));
+        // The play mark is cut out of the disk; the disk's edge stays.
+        assert!(status_mask(5.0, 5.0, Status::Streaming, 0.1) < 0.01);
+        assert!(status_mask(1.5, 5.0, Status::Streaming, 0.1) > 0.99);
         for size in [Size::Member, Size::Profile, Size::Modal] {
             let g = size.geometry();
             let spec = Spec {

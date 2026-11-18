@@ -610,6 +610,13 @@ impl Root {
             dc_intl::t!("sau5tt").to_owned()
         } else if let Some(activity) = activity {
             match activity.value["type"].as_u64() {
+                // 596339: one person playing on Xbox reads "Playing on Xbox" (`tO8wOx`) beside the Xbox mark.
+                Some(0)
+                    if party.members.len() == 1
+                        && super::platform_presence::is_xbox(&activity.value) =>
+                {
+                    dc_intl::t("tO8wOx").to_owned()
+                }
                 Some(2) if party.members.len() == 1 => dc_intl::format(
                     "NF5xop",
                     &[(
@@ -661,6 +668,29 @@ impl Root {
                             if activity.application.id == "spotify" && party.members.len() == 1 {
                                 icon("active_now_spotify", 24., "--platform-spotify")
                                     .into_any_element()
+                            } else if super::platform_presence::is_xbox(&activity.value)
+                                && party.activities.len() == 1
+                            {
+                                // `_w.Header.Icon.Src.XBOX` (module 266080 in `PRIMARY_300`) for one person, the
+                                // platform's `lightPNG` for a group.
+                                if party.members.len() == 1 {
+                                    icon("activity_connect_xbox", 24., "--primary-300")
+                                        .into_any_element()
+                                } else {
+                                    let file = "8cea2073e188eabe.png";
+                                    let key = super::platform_presence::asset_key(file);
+                                    self.want_image(
+                                        key.clone(),
+                                        super::platform_presence::asset_url(file),
+                                        cx,
+                                    );
+                                    match self.images.get(&key) {
+                                        Some(picture) => {
+                                            img(picture.clone()).size(px(24.)).into_any_element()
+                                        }
+                                        None => div().size(px(24.)).into_any_element(),
+                                    }
+                                }
                             } else {
                                 self.active_now_art(&activity.application, 24., cx)
                             },

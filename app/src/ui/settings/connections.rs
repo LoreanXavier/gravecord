@@ -6,7 +6,7 @@
 //! first (Crunchyroll, Xbox, PlayStation, domain, Bluesky) have theirs in `connection_dialogs.rs`.
 
 use super::actions::Dialog;
-use super::{button, mask_icon};
+use super::button;
 use crate::net::Request;
 use crate::ui::tooltip::{Body, Side, Tip};
 use crate::ui::{Root, color};
@@ -248,19 +248,17 @@ pub(in crate::ui) struct Account {
     pub kind: String,
     pub id: String,
     pub name: String,
+    /// The platform's name (module 573648), which the Unlink dialog names.
+    pub platform: String,
+    /// A two-way console link (`Tm.has(type) && twoWayLink`): its authorized application is removed too.
+    pub two_way: bool,
 }
 
 /// The accounts of the connections list, skipping revoked ones the way the store's `getAccounts` still lists them but
 /// the page filters by support (`isSupported`): a connection without a type or id is left out.
 pub(super) fn accounts_of(list: &[Value]) -> Vec<Account> {
     list.iter()
-        .filter_map(|item| {
-            Some(Account {
-                kind: item["type"].as_str()?.to_owned(),
-                id: item["id"].as_str()?.to_owned(),
-                name: item["name"].as_str().unwrap_or_default().to_owned(),
-            })
-        })
+        .filter_map(super::connection_card::account_of)
         .collect()
 }
 
@@ -268,7 +266,7 @@ pub(super) fn account_removal(account: &Account) -> Request {
     Request::Rest {
         key: None,
         method: reqwest::Method::DELETE,
-        route: format!("/users/@me/connections/{}/{}", account.kind, account.id),
+        route: super::connection_card::connection_route(&account.kind, &account.id),
         body: None,
     }
 }
@@ -497,8 +495,8 @@ impl Root {
     }
 
     /// A platform button (module 289498): `GET /connections/{type}/authorize` and the address it answers opens in the
-    /// browser (`738104`). Five platforms start with a dialog of their own first (`80320`); those dialogs are not built.
-    fn connection_clicked(&mut self, kind: &'static str, cx: &mut Context<Self>) {
+    /// browser (`738104`). Five platforms start with a dialog of their own first (`80320`, `connection_dialogs.rs`).
+    pub(super) fn connection_clicked(&mut self, kind: &'static str, cx: &mut Context<Self>) {
         if opens_a_dialog(kind) {
             self.open_connection_dialog(kind, cx);
             return;
@@ -532,7 +530,11 @@ impl Root {
         self.follow_link(&url, &name, cx);
     }
 
-    pub(in crate::ui) fn connection_authorize(&mut self, kind: &'static str, cx: &mut Context<Self>) {
+    pub(in crate::ui) fn connection_authorize(
+        &mut self,
+        kind: &'static str,
+        cx: &mut Context<Self>,
+    ) {
         let route = format!("/connections/{kind}/authorize");
         if crate::storage::is_capture_run() {
             // The route creates an authorization state at the server; a harness run never starts one.
@@ -561,6 +563,21 @@ impl Root {
             self.connection_domain_answered(body, cx);
             return true;
         }
+        if key.starts_with(super::connection_card::UPDATE_KEY)
+            || key.starts_with(super::connection_card::CALLBACK_KEY)
+        {
+            // The server answers with `USER_CONNECTIONS_UPDATE`, which reads the list again.
+            return true;
+        }
+        if let Some(id) = key.strip_prefix(super::connection_card::REFRESH_KEY) {
+            self.connection_refresh_answered(id.to_owned(), cx);
+            return true;
+        }
+        if let Some(id) = key.strip_prefix(super::connection_card::JOIN_KEY) {
+            self.connection_join_answered(id, body);
+            cx.notify();
+            return true;
+        }
         if !key.starts_with(AUTHORIZE_KEY) {
             return false;
         }
@@ -580,8 +597,13 @@ impl Root {
         let Some(list) = self.settings_extra.connections.as_ref() else {
             return div().h(px(216.)).into_any_element();
         };
-        let accounts = accounts_of(list);
-        if accounts.is_empty() {
+        let dark = !matches!(crate::ui::theme(), dc_tokens::Theme::Light);
+        // `Tq`: only supported platforms (`isSupported`), one `TW` card each.
+        let rows: Vec<AnyElement> = list
+            .iter()
+            .filter_map(|item| self.connection_card(item, dark, cx))
+            .collect();
+        if rows.is_empty() {
             // `hh.SG` with `WenGZ2` and `aoLS84`.
             // 10px more room under the grid than the apps list has under its description (captured positions).
             return div()
@@ -592,67 +614,15 @@ impl Root {
                 ))
                 .into_any_element();
         }
-        let rows: Vec<AnyElement> = accounts
-            .into_iter()
-            .map(|account| {
-                let shown = account.clone();
-                card(SharedString::from(format!(
-                    "connection-{}-{}",
-                    account.kind, account.id
-                )))
-                .child(
-                    div()
-                        .size(px(40.))
-                        .rounded(px(8.))
-                        .bg(color("--background-mod-muted"))
-                        .flex()
-                        .items_center()
-                        .justify_center()
-                        .child(mask_icon("settings_connected_apps", 24., "--icon-strong")),
-                )
-                .child(
-                    div()
-                        .flex_1()
-                        .min_w(px(0.))
-                        .child(
-                            div()
-                                .text_size(px(16.))
-                                .font_weight(FontWeight(600.))
-                                .text_color(color("--text-strong"))
-                                .child(account.name.clone()),
-                        )
-                        .child(
-                            div()
-                                .text_size(px(14.))
-                                .text_color(color("--text-subtle"))
-                                .child(account.kind.clone()),
-                        ),
-                )
-                .child(
-                    div()
-                        .id(SharedString::from(format!("disconnect-{}", account.id)))
-                        .cursor_pointer()
-                        .on_click(cx.listener(move |this, _, _, cx| {
-                            // `apVJux`: the dialog first; the removal is its confirm button.
-                            this.settings_extra.dialog = Some(Dialog::Disconnect(shown.clone()));
-                            cx.notify();
-                        }))
-                        .child(button(
-                            SharedString::from(format!("disconnect-button-{}", account.id)),
-                            dc_intl::tr("Disconnect"),
-                            super::model::ButtonKind::CriticalSecondary,
-                        )),
-                )
-                .into_any_element()
-            })
-            .collect();
+        // `connectionList_yX-kzH`: a grid 24px apart, the count heading first.
         div()
             .flex()
             .flex_col()
-            .gap(px(8.))
+            .gap(px(24.))
             .child(
                 div()
                     .text_size(px(16.))
+                    .line_height(px(20.))
                     .font_weight(FontWeight(600.))
                     .text_color(color("--text-strong"))
                     .child(count_line(rows.len())),
@@ -770,7 +740,9 @@ mod tests {
             vec![Account {
                 kind: "steam".into(),
                 id: "7".into(),
-                name: "gabe".into()
+                name: "gabe".into(),
+                platform: "Steam".into(),
+                two_way: false,
             }]
         );
     }
@@ -778,15 +750,17 @@ mod tests {
     #[test]
     fn removing_an_account_names_its_type_and_id() {
         let request = account_removal(&Account {
-            kind: "github".into(),
-            id: "42".into(),
+            kind: "bluesky".into(),
+            id: "did:plc:42".into(),
             name: String::new(),
+            platform: "Bluesky".into(),
+            two_way: false,
         });
         let Request::Rest { method, route, .. } = request else {
             panic!("a rest request");
         };
         assert_eq!(method, reqwest::Method::DELETE);
-        assert_eq!(route, "/users/@me/connections/github/42");
+        assert_eq!(route, "/users/@me/connections/bluesky/did%3Aplc%3A42");
     }
 
     #[test]

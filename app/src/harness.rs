@@ -537,8 +537,31 @@ pub async fn run(
                 });
                 let _ = writeln!(output, "limited-access: reported");
             }
-            ["gw", name, json @ ..] => {
+            // Capture only: `fetched <key> <json>` hands the view an answer of one of its reads as if the network had
+            // brought it (local fixtures for pages the test account has no data for, such as its connections).
+            ["fetched", key, json @ ..] => {
                 let text = json.join(" ");
+                let note = match serde_json::from_str(&text) {
+                    Ok(body) => {
+                        let key = (*key).to_owned();
+                        cx.update(|cx| {
+                            root.update(cx, |root, cx| {
+                                root.update(crate::net::Update::Fetched { key, body }, cx)
+                            })
+                        });
+                        "fetched: delivered".to_owned()
+                    }
+                    Err(error) => format!("fetched: not json: {error}"),
+                };
+                let _ = writeln!(output, "{note}");
+            }
+            ["gw", name, json @ ..] => {
+                // `{dm_user}` stands for the open DM's recipient (local fixtures for someone else's presence).
+                let recipient = root.read_with(cx, |root, _| root.script_dm_user());
+                let mut text = json.join(" ");
+                if let Some(id) = recipient {
+                    text = text.replace("{dm_user}", &id);
+                }
                 let note = match serde_json::from_str(&text) {
                     Ok(data) => {
                         let name = (*name).to_owned();

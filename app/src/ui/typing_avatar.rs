@@ -138,6 +138,7 @@ fn status_tint(status: &str) -> &'static str {
         "dnd" => "--icon-status-dnd",
         "idle" => "--icon-status-idle",
         "invisible" | "offline" => "--icon-status-offline",
+        "streaming" => "--platform-twitch",
         _ => "--icon-status-online",
     }
 }

@@ -898,7 +898,7 @@ impl Root {
             FontWeight(500.)
         };
         let avatar = self.images.get(&avatar_source(&recipient).0).cloned();
-        let status = self.stores.status(recipient.id).to_owned();
+        let status = self.display_status(recipient.id, None);
         let typing = self
             .stores
             .typing_users(id, std::time::Instant::now())

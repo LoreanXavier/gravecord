@@ -16,6 +16,7 @@ mod appearance;
 mod billing;
 pub(in crate::ui) mod client_theme;
 mod clips;
+mod connection_card;
 mod connection_dialogs;
 mod connections;
 mod content_filters;
@@ -841,7 +842,7 @@ impl Row {
     }
 }
 
-fn new_badge() -> impl IntoElement {
+pub(super) fn new_badge() -> impl IntoElement {
     badge(dc_intl::tr("NEW"))
 }
 
