@@ -59,6 +59,14 @@ pub(super) enum Kind {
     Report,
     /// The video background survey (module 932140), asked for instead of the call's when a background was used.
     VideoBackground,
+    /// "How'd {applicationName} go?" (module 121847), after leaving an Activity; `ads` when the application's
+    /// `embedded_activity_config.displays_advertisements` adds "Activity included ads".
+    Activity {
+        ads: bool,
+    },
+    /// "How is blocking users on Discord?" (module 307750), from the block feedback notice. It is not one of the
+    /// manager's types: no gate, no stored state, no "Don't show again" and no help request line.
+    Block,
 }
 
 impl Kind {
@@ -68,6 +76,9 @@ impl Kind {
             Kind::Stream { .. } => 1,
             Kind::Report => 4,
             Kind::VideoBackground => 2,
+            Kind::Activity { .. } => 3,
+            // Not stored: the block survey has no `inAppFeedbackSettings` entry.
+            Kind::Block => u64::MAX,
         }
     }
 
@@ -77,8 +88,10 @@ impl Kind {
         match self {
             Kind::VideoBackground => 0,
             Kind::Stream { .. } => 1,
+            Kind::Activity { .. } => 2,
             Kind::Voice => 3,
             Kind::Report => 4,
+            Kind::Block => 5,
         }
     }
 
@@ -87,6 +100,8 @@ impl Kind {
         match self {
             Kind::Voice | Kind::Stream { .. } | Kind::VideoBackground => (0.2, DAY_MS),
             Kind::Report => (0.5, 2 * DAY_MS),
+            Kind::Activity { .. } => (0.5, 0),
+            Kind::Block => (1.0, 0),
         }
     }
 
@@ -94,9 +109,21 @@ impl Kind {
     /// a survey waits out its cooldown since the last one of any of them.
     fn group(self) -> &'static [u64] {
         match self {
-            Kind::Voice | Kind::Stream { .. } | Kind::VideoBackground => &[0, 1, 2, 3],
+            Kind::Voice | Kind::Stream { .. } | Kind::VideoBackground | Kind::Activity { .. } => {
+                &[0, 1, 2, 3]
+            }
             Kind::Report => &[4],
+            Kind::Block => &[],
         }
+    }
+
+    /// `FeedbackModal` (module 612479) rather than `FeedbackModalV2`: the faces stay over the problem list, which
+    /// has no Back, and Back from the text box goes to the problems.
+    fn v1(self) -> bool {
+        matches!(
+            self,
+            Kind::Report | Kind::VideoBackground | Kind::Activity { .. } | Kind::Block
+        )
     }
 }
 
@@ -192,6 +219,55 @@ fn categories(kind: Kind, rng: &mut impl rand::Rng) -> Vec<Category> {
                     freeform: true,
                 },
             ],
+        }];
+    }
+    if let Kind::Activity { ads } = kind {
+        // Module 121847's past-tense problems (ADS only for an application that shows ads), shuffled with OTHER
+        // last (`ed` of module 930932); OTHER, ADS and NOT_FUN take the text box.
+        let mut problems = vec![
+            problem("FAILED_LOAD", "Activity didn't load properly"),
+            problem("LAGGING", "Activity was lagging or freezing"),
+            problem("CONFUSING", "Activity controls were confusing"),
+            Problem {
+                value: "NOT_FUN",
+                label: "Activity was not fun",
+                freeform: true,
+            },
+        ];
+        if ads {
+            problems.push(Problem {
+                value: "ADS",
+                label: "Activity included ads",
+                freeform: true,
+            });
+        }
+        problems.shuffle(rng);
+        problems.push(Problem {
+            value: "OTHER",
+            label: "Other",
+            freeform: true,
+        });
+        return vec![Category {
+            label: "",
+            problems,
+        }];
+    }
+    if kind == Kind::Block {
+        // `A4` of module 14594, shuffled with SOMETHING_ELSE (the text box) last.
+        let mut problems = vec![
+            problem("confusion", "I'm not sure what blocking actually does"),
+            problem("does_not_achieve_wants", "Blocking doesn't do what I want"),
+            problem("hard_to_access", "It is hard to find how to block someone"),
+        ];
+        problems.shuffle(rng);
+        problems.push(Problem {
+            value: "something_else",
+            label: "Something else",
+            freeform: true,
+        });
+        return vec![Category {
+            label: "",
+            problems,
         }];
     }
     let mut tree = match kind {
@@ -324,7 +400,7 @@ fn categories(kind: Kind, rng: &mut impl rand::Rng) -> Vec<Category> {
                 ),
             ],
         }],
-        Kind::VideoBackground => Vec::new(),
+        Kind::VideoBackground | Kind::Activity { .. } | Kind::Block => Vec::new(),
     };
     tree.shuffle(rng);
     for category in &mut tree {
@@ -407,15 +483,19 @@ pub(super) enum After {
 /// `onSubmit`: nothing without a face and a problem; else Upload Logs for a bad or neutral face when `roll` (a
 /// number in 0..1) is under 0.01 (module 878234, call and stream only), else the thanks.
 pub(super) fn after_submit(kind: Kind, picks: &Picks, roll: f64) -> After {
+    // Module 307750 thanks every rated survey (`a || mM(...)`), a problem or not.
+    if kind == Kind::Block {
+        return if picks.rating.is_some() {
+            After::Thanks
+        } else {
+            After::Nothing
+        };
+    }
     if picks.rating.is_none() || picks.problem.is_none() {
         return After::Nothing;
     }
     let bad = matches!(picks.rating, Some(Rating::Bad | Rating::Neutral));
-    if !matches!(kind, Kind::Report | Kind::VideoBackground)
-        && bad
-        && picks.category.is_some()
-        && roll < 0.01
-    {
+    if !kind.v1() && bad && picks.category.is_some() && roll < 0.01 {
         return After::UploadLogs;
     }
     After::Thanks
@@ -423,6 +503,8 @@ pub(super) fn after_submit(kind: Kind, picks: &Picks, roll: f64) -> After {
 
 pub(super) struct Form {
     kind: Kind,
+    /// The application's name, for the Activity survey's title.
+    app_name: String,
     tree: Vec<Category>,
     picks: Picks,
     dont_show: bool,
@@ -453,6 +535,8 @@ impl Form {
 pub(super) struct Feedback {
     pub form: Option<Form>,
     pending: Option<Kind>,
+    /// The application of the Activity survey waiting out the debounce.
+    app_name: Option<String>,
 }
 
 impl Root {
@@ -494,6 +578,13 @@ impl Root {
             };
             self.possibly_show_feedback(kind, cx);
         }
+    }
+
+    /// `handleActivityClose` (module 220162) for an Activity left with `showFeedback` (the default of `stopEmbeddedActivity`,
+    /// off when another launch replaces it): the Activity survey (module 121847) through the manager's gates.
+    pub(super) fn activity_left(&mut self, name: String, ads: bool, cx: &mut Context<Self>) {
+        self.feedback.app_name = Some(name);
+        self.possibly_show_feedback(Kind::Activity { ads }, cx);
     }
 
     fn feedback_allowed(&self, kind: Kind) -> bool {
@@ -553,8 +644,10 @@ impl Root {
         let text = cx.new(|cx| Editor::new(super::editor_style(), cx));
         let tree = categories(kind, &mut rand::rng());
         let single = tree.len() == 1;
+        let app_name = self.feedback.app_name.take().unwrap_or_default();
         self.feedback.form = Some(Form {
             kind,
+            app_name,
             tree,
             picks: Picks {
                 category: single.then_some(0),
@@ -585,9 +678,10 @@ impl Root {
         // GAP: the call survey's "People couldn't hear me at all" while muted for 98% of the call opens module
         // 813923 (the mute tutorial question), which is not built; the analytics events of the surveys are not sent.
         let thanks = match form.kind {
-            Kind::Voice | Kind::Report => "d9+vQ8",
+            Kind::Voice | Kind::Report | Kind::Block => "d9+vQ8",
             Kind::VideoBackground => "aHB11f",
             Kind::Stream { .. } => "mMTVnv",
+            Kind::Activity { .. } => "zuHR+y",
         };
         let roll = self.feedback_roll.take().unwrap_or_else(rand::random);
         let alert = match after_submit(form.kind, &form.picks, roll) {
@@ -643,6 +737,17 @@ impl Root {
             ["stream-viewer"] => self.open_feedback(Kind::Stream { streamer: false }, cx),
             ["report"] => self.open_feedback(Kind::Report, cx),
             ["video"] => self.open_feedback(Kind::VideoBackground, cx),
+            ["activity", rest @ ..] => {
+                let ads = rest.first() == Some(&"ads");
+                let name = rest[usize::from(ads)..].join(" ");
+                self.feedback.app_name = Some(if name.is_empty() {
+                    "Watch Together".to_owned()
+                } else {
+                    name
+                });
+                self.open_feedback(Kind::Activity { ads }, cx);
+            }
+            ["block"] => self.open_feedback(Kind::Block, cx),
             // The call's camera ran with a background (what VideoState does with a background set).
             ["used-background"] => {
                 if let Some(call) = self.call.as_mut() {
@@ -668,7 +773,15 @@ impl Root {
                     "stream" => Kind::Stream { streamer: true },
                     "report" => Kind::Report,
                     "video" => Kind::VideoBackground,
-                    _ => return "usage: feedback gate voice|stream|report|video".to_owned(),
+                    // What `activity_left` asks after a Leave, its application's name riding the debounce.
+                    "activity" => {
+                        self.feedback.app_name = Some("Watch Together".to_owned());
+                        Kind::Activity { ads: false }
+                    }
+                    _ => {
+                        return "usage: feedback gate voice|stream|report|video|activity"
+                            .to_owned();
+                    }
                 };
                 let allowed = self.feedback_allowed(kind);
                 self.show_feedback_after_debounce(kind, cx);
@@ -678,6 +791,7 @@ impl Root {
             ["upload"] => {
                 self.feedback.form = Some(Form {
                     kind: Kind::Voice,
+                    app_name: String::new(),
                     tree: categories(Kind::Voice, &mut rand::rng()),
                     picks: Picks {
                         rating: Some(Rating::Bad),
@@ -929,18 +1043,21 @@ impl Root {
                         .line_height(px(20.))
                         .child(form.text.clone()),
                 )
-                .child(
-                    div()
-                        .text_size(px(12.))
-                        .line_height(px(16.))
-                        .text_color(color("--text-subtle"))
-                        .child(
-                            gpui::InteractiveText::new("feedback-help-request", styled)
-                                .on_click(vec![link], move |index, window, cx| {
-                                    open(&index, window, cx)
-                                }),
-                        ),
-                )
+                // `hideHelpDeskLink` of the block survey.
+                .when(form.kind != Kind::Block, |this| {
+                    this.child(
+                        div()
+                            .text_size(px(12.))
+                            .line_height(px(16.))
+                            .text_color(color("--text-subtle"))
+                            .child(
+                                gpui::InteractiveText::new("feedback-help-request", styled)
+                                    .on_click(vec![link], move |index, window, cx| {
+                                        open(&index, window, cx)
+                                    }),
+                            ),
+                    )
+                })
                 .into_any_element(),
         )
         .into_any_element()
@@ -950,13 +1067,21 @@ impl Root {
         let form = self.feedback.form.as_ref()?;
         let step = form.step();
         // 612479 (`FeedbackModal`): the report survey and the video background one.
-        let v1 = matches!(form.kind, Kind::Report | Kind::VideoBackground);
-        let (title, body) = match form.kind {
-            Kind::Voice => ("Ss6tlb", "tLi4cR"),
-            Kind::Stream { streamer: true } => ("5smP3R", "0uxA2V"),
-            Kind::Stream { streamer: false } => ("5smP3R", "CqjnLN"),
-            Kind::Report => ("MP5lDj", "7Ct0Dj"),
-            Kind::VideoBackground => ("Wl8qXg", "vPw6j0"),
+        let v1 = form.kind.v1();
+        let (title, body): (String, &str) = match form.kind {
+            Kind::Voice => (dc_intl::t("Ss6tlb").to_owned(), "tLi4cR"),
+            Kind::Stream { streamer: true } => (dc_intl::t("5smP3R").to_owned(), "0uxA2V"),
+            Kind::Stream { streamer: false } => (dc_intl::t("5smP3R").to_owned(), "CqjnLN"),
+            Kind::Report => (dc_intl::t("MP5lDj").to_owned(), "7Ct0Dj"),
+            Kind::VideoBackground => (dc_intl::t("Wl8qXg").to_owned(), "vPw6j0"),
+            Kind::Activity { .. } => (
+                dc_intl::format(
+                    "QXYwoD",
+                    &[("applicationName", form.app_name.as_str().into())],
+                ),
+                "9hk2KF",
+            ),
+            Kind::Block => (dc_intl::t("+2qQAX").to_owned(), "+0RsvT"),
         };
         // `headerContainer`: the 24/32 title and the 16/20 body under it, centred, 16px 24px in and nothing under.
         let header = div()
@@ -972,7 +1097,7 @@ impl Root {
                     .line_height(px(32.))
                     .font_weight(FontWeight(600.))
                     .text_color(color("--text-strong"))
-                    .child(dc_intl::t(title)),
+                    .child(title),
             )
             .child(
                 div()
@@ -1027,11 +1152,13 @@ impl Root {
                     .collect();
                 Some(content(
                     Self::feedback_labelled(
-                        // `problemTitle`: "Had an issue?" for the video background survey.
-                        dc_intl::t(if form.kind == Kind::VideoBackground {
-                            "UNFF85"
-                        } else {
-                            "FJmoxF"
+                        // `problemTitle`: "Had an issue?" for the video background survey, the Activity's and the
+                        // block survey's own.
+                        dc_intl::t(match form.kind {
+                            Kind::VideoBackground => "UNFF85",
+                            Kind::Activity { .. } => "g1q5fr",
+                            Kind::Block => "TXomWW",
+                            _ => "FJmoxF",
                         })
                         .to_owned(),
                         Self::feedback_options(
@@ -1056,7 +1183,10 @@ impl Root {
         };
         // The footer (`footer__KoJTP footer_C-o8GY`): 16px 24px, `space-between`. The faces carry "Don't show again";
         // the later steps Back and, at the text box, Submit (612479 has no Back/Submit before its text box).
-        let footer: Option<AnyElement> = if step == Step::Rating {
+        let footer: Option<AnyElement> = if step == Step::Rating && form.kind == Kind::Block {
+            // `hideDontShowAgainCheckbox`.
+            None
+        } else if step == Step::Rating {
             let checked = form.dont_show;
             Some(
                 div()
@@ -1090,7 +1220,7 @@ impl Root {
                     |this, _, cx| {
                         if let Some(form) = this.feedback.form.as_mut() {
                             let single = form.single();
-                            if matches!(form.kind, Kind::Report | Kind::VideoBackground) {
+                            if form.kind.v1() {
                                 // 612479: back from the text box to the problems, the text cleared.
                                 form.picks.problem = None;
                             } else {
@@ -1313,5 +1443,72 @@ mod tests {
         let report = categories(Kind::Report, &mut rng);
         assert_eq!(report[0].problems.len(), 3);
         assert!(report[0].problems.iter().all(|p| !p.value.is_empty()));
+    }
+}
+
+#[cfg(test)]
+mod activity_and_block_tests {
+    use super::*;
+
+    #[test]
+    fn the_activity_survey_lists_its_problems_with_other_last() {
+        let mut rng = rand::rng();
+        let plain = categories(Kind::Activity { ads: false }, &mut rng);
+        assert_eq!(plain.len(), 1);
+        assert_eq!(plain[0].problems.len(), 5);
+        assert_eq!(plain[0].problems.last().unwrap().value, "OTHER");
+        let ads = categories(Kind::Activity { ads: true }, &mut rng);
+        assert!(
+            ads[0]
+                .problems
+                .iter()
+                .any(|p| p.value == "ADS" && p.freeform)
+        );
+        assert!(
+            ads[0]
+                .problems
+                .iter()
+                .any(|p| p.value == "NOT_FUN" && p.freeform)
+        );
+        assert!(
+            !ads[0]
+                .problems
+                .iter()
+                .any(|p| p.value == "LAGGING" && p.freeform)
+        );
+        for problem in &ads[0].problems {
+            assert!(!dc_intl::tr(problem.label).is_empty());
+        }
+        assert_eq!(Kind::Activity { ads: false }.number(), 3);
+        assert_eq!(Kind::Activity { ads: false }.config(), (0.5, 0));
+    }
+
+    #[test]
+    fn the_block_survey_thanks_any_rating() {
+        let mut rng = rand::rng();
+        let tree = categories(Kind::Block, &mut rng);
+        assert_eq!(tree[0].problems.last().unwrap().value, "something_else");
+        assert!(tree[0].problems.last().unwrap().freeform);
+        let rated = Picks {
+            rating: Some(Rating::Good),
+            category: Some(0),
+            problem: None,
+        };
+        assert_eq!(after_submit(Kind::Block, &rated, 0.0), After::Thanks);
+        assert_eq!(
+            after_submit(Kind::Block, &Picks::default(), 0.0),
+            After::Nothing
+        );
+        // The Activity survey never asks for logs (module 121847 has no roll).
+        let bad = Picks {
+            rating: Some(Rating::Bad),
+            category: Some(0),
+            problem: Some(0),
+        };
+        assert_eq!(
+            after_submit(Kind::Activity { ads: false }, &bad, 0.0),
+            After::Thanks
+        );
+        assert_eq!(dc_intl::t("+2qQAX"), "How is blocking users on Discord?");
     }
 }

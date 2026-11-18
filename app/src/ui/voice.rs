@@ -1551,7 +1551,7 @@ impl Root {
                                 .child(label)
                                 .on_click(cx.listener(move |this, _, _, cx| {
                                     if mine {
-                                        this.leave_activity(cx);
+                                        this.leave_activity_by_hand(cx);
                                     } else {
                                         this.launch_activity(&app, cx);
                                     }

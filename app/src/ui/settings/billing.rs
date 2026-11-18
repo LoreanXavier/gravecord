@@ -15,6 +15,133 @@ use gpui::{
 
 /// `Dmq.PAUSE_PENDING` (module 652215).
 const PAUSE_PENDING: u64 = 9;
+/// `Dmq.BILLING_RETRY` and `Dmq.PAUSED`.
+const BILLING_RETRY: u64 = 7;
+const PAUSED: u64 = 8;
+/// The answer of the cancellation request (module 673761 `handleCancellation`).
+pub(super) const CANCEL_KEY: &str = "settings-nitro-cancel";
+/// `purchase_token` of module 107351: a random id kept 60 days in local storage.
+const PURCHASE_TOKEN: &str = "purchase_token";
+const PURCHASE_TOKEN_DAYS_MS: i64 = 60 * 86_400_000;
+
+/// `o` of module 107351: the stored purchase token while it is fresh, else a new one kept for 60 days.
+fn purchase_token() -> String {
+    let now = chrono::Utc::now().timestamp_millis();
+    if let Some(stored) = crate::storage::get(PURCHASE_TOKEN)
+        && stored["expires"]
+            .as_i64()
+            .is_some_and(|expires| expires >= now)
+        && let Some(token) = stored["purchaseToken"].as_str()
+    {
+        return token.to_owned();
+    }
+    let token = uuid::Uuid::new_v4().to_string();
+    crate::storage::set(
+        PURCHASE_TOKEN,
+        serde_json::json!({"purchaseToken": token, "expires": now + PURCHASE_TOKEN_DAYS_MS}),
+    );
+    token
+}
+
+/// The request of `handleCancellation` (module 673761) for a subscription: a past due, paused or retrying one is
+/// deleted at once (`M2`, `DELETE`), any other is updated to renew without its premium plans (`nV`: `PATCH` with the
+/// items `ez` keeps, nothing due now and the renewal price of what is kept).
+/// GAP: kept items beyond the premium plan (boosts) go through the PREVIEW step, which is not built, so only a
+/// subscription whose items are all premium plans reaches this request; its renewal price is zero.
+pub(super) fn cancel_request(sub: &Subscription, token: &str) -> crate::net::Request {
+    let route = format!("/users/@me/billing/subscriptions/{}", sub.id);
+    if [status::PAST_DUE, PAUSED, BILLING_RETRY].contains(&sub.status) {
+        return crate::net::Request::Rest {
+            key: Some(CANCEL_KEY.to_owned()),
+            method: reqwest::Method::DELETE,
+            route,
+            body: None,
+        };
+    }
+    let currency = sub.currency.clone().unwrap_or_else(|| "usd".to_owned());
+    let kept: Vec<serde_json::Value> = sub
+        .renewal_mutations
+        .as_ref()
+        .map_or(&sub.items, |mutations| &mutations.items)
+        .iter()
+        .filter(|item| premium::plan_premium_type(item.plan_id).is_none())
+        .map(|item| serde_json::json!({"plan_id": item.plan_id.to_string(), "quantity": item.quantity}))
+        .collect();
+    crate::net::Request::Rest {
+        key: Some(CANCEL_KEY.to_owned()),
+        method: reqwest::Method::PATCH,
+        route,
+        body: Some(serde_json::json!({
+            "payment_source_token": null,
+            "gateway_checkout_context": null,
+            "purchase_token": token,
+            "expected_invoice_price": {"amount": 0, "currency": currency},
+            "expected_renewal_price": {"amount": 0, "currency": currency},
+            "items": kept,
+        })),
+    }
+}
+
+/// The critical inline notice (module 683071 `w`, `type: "critical"`) as the account dialogs draw it.
+fn critical_notice(message: &str) -> AnyElement {
+    div()
+        .p(px(12.))
+        .rounded(px(8.))
+        .border_1()
+        .border_color(color("--inlinenotice-border-critical"))
+        .bg(color("--background-feedback-mod-critical"))
+        .text_size(px(16.))
+        .line_height(px(20.))
+        .text_color(color("--text-strong"))
+        .child(message.to_owned())
+        .into_any_element()
+}
+
+/// `b` of module 95337: the subscription keeps items that are not premium plans, so Next leads to the preview of
+/// what renews instead of Confirm.
+pub(super) fn keeps_other_items(sub: &Subscription) -> bool {
+    let other = |items: &[premium::SubscriptionItem]| {
+        items
+            .iter()
+            .any(|item| premium::plan_premium_type(item.plan_id).is_none())
+    };
+    match &sub.renewal_mutations {
+        None => other(&sub.items),
+        Some(mutations) => other(&mutations.items),
+    }
+}
+
+/// The subtitle of module 95337, its paragraphs as runs (bold where the message says): the immediate cancellation
+/// of a past due, paused or retrying subscription, else the end date and what the tier loses.
+/// GAP: the payments-blocked variants (Russia, `m.Hp`) and the group plan's (`MI8Rml`) are not chosen: no store
+/// says the account is in either case.
+pub(super) fn cancel_confirm_text(
+    status: u64,
+    tier: PremiumType,
+    end: Option<&str>,
+) -> Vec<Vec<(String, bool)>> {
+    if [status::PAST_DUE, PAUSED, BILLING_RETRY].contains(&status) {
+        return vec![vec![(dc_intl::t("FClXh9").to_owned(), false)]];
+    }
+    let key = match tier {
+        PremiumType::Basic => "Y6Wfaw",
+        PremiumType::Classic => "X7i9D8",
+        _ => "fCdmNs",
+    };
+    let date = end.and_then(medium_date).unwrap_or_default();
+    let when = dc_intl::Arg::When {
+        date: date.into(),
+        time: String::new().into(),
+    };
+    dc_intl::paragraph_runs(key, &[("date", when)])
+        .into_iter()
+        .map(|runs| {
+            runs.into_iter()
+                .map(|(text, tag)| (text, tag.as_deref() == Some("$b")))
+                .collect()
+        })
+        .collect()
+}
 
 /// `MVz.PREMIUM_DETAILS` and `MVz.STREAM_QUALITY_SETTINGS` (module 652215), through `getArticleURL`.
 const PREMIUM_DETAILS: &str = "https://support.discord.com/hc/en-us/articles/115000435108";
@@ -413,14 +540,158 @@ impl Root {
                     modal::Tone::Secondary,
                     close,
                 ),
+                // `l(g.g.CONFIRM)`: the confirmation step (module 95337).
                 modal::button(
                     "settings-cancel-nitro-continue",
                     dc_intl::tr("Continue"),
                     modal::Tone::Primary,
-                    |_, _, _| {},
+                    |this, _, _| {
+                        this.settings_extra.dialog =
+                            Some(super::actions::Dialog::CancelNitroConfirm {
+                                busy: false,
+                                failed: false,
+                            });
+                    },
                 ),
             ],
             close: Box::new(close),
+        }
+    }
+
+    /// Module 95337 (`size: "md"`): "Confirm cancellation", the subtitle of the status and tier, "Never mind, keep
+    /// Nitro" and the critical Confirm (Next to the renewal preview for a subscription that keeps boosts), and the
+    /// critical notice "Something went wrong..." under it after a failed request.
+    pub(super) fn cancel_confirm_dialog(
+        &self,
+        busy: bool,
+        failed: bool,
+        cx: &mut gpui::Context<Self>,
+    ) -> AnyElement {
+        let sub = self.premium_subscription();
+        let tier = self.cancel_tier();
+        let paragraphs = sub.as_ref().map_or_else(Vec::new, |sub| {
+            cancel_confirm_text(sub.status, tier, sub.current_period_end.as_deref())
+        });
+        let next = sub.as_ref().is_some_and(keeps_other_items);
+        let close = |this: &mut Root, _: &mut gpui::Window, _: &mut gpui::Context<Root>| {
+            this.settings_extra.dialog = None;
+        };
+        let subtitle = div()
+            .flex()
+            .flex_col()
+            .gap(px(16.))
+            .children(paragraphs.into_iter().map(|runs| {
+                // One wrapping text per paragraph, its `$b` runs bold.
+                let mut text = String::new();
+                let mut bold = Vec::new();
+                for (run, strong) in runs {
+                    let start = text.len();
+                    text.push_str(&run);
+                    if strong {
+                        bold.push((
+                            start..text.len(),
+                            gpui::HighlightStyle {
+                                font_weight: Some(FontWeight(700.)),
+                                ..Default::default()
+                            },
+                        ));
+                    }
+                }
+                div().child(gpui::StyledText::new(text).with_highlights(bold))
+            }))
+            .into_any_element();
+        let confirm = if next {
+            // GAP: Next opens the PREVIEW step (module 347378), which is not built.
+            modal::button(
+                "settings-cancel-confirm",
+                dc_intl::t("PDTjLN"),
+                modal::Tone::Critical,
+                |_, _, _| {},
+            )
+        } else {
+            modal::button(
+                "settings-cancel-confirm",
+                dc_intl::t("cY+Oob"),
+                if busy {
+                    modal::Tone::PrimaryLoading
+                } else {
+                    modal::Tone::Critical
+                },
+                |this, _, _| this.send_nitro_cancellation(),
+            )
+        };
+        let spec = modal::Spec {
+            id: "settings-cancel-confirm-modal",
+            title: dc_intl::t("LZunzZ").into(),
+            subtitle: Some(subtitle),
+            body: failed.then(|| critical_notice(dc_intl::t("5mlOCW"))),
+            buttons: vec![
+                modal::button(
+                    "settings-cancel-keep",
+                    dc_intl::t("rzVN6j"),
+                    modal::Tone::Secondary,
+                    close,
+                ),
+                confirm,
+            ],
+            close: Box::new(close),
+        };
+        modal::render(spec, cx)
+    }
+
+    /// Capture only: `cancel-nitro lose|confirm|failed`, a step of the cancellation flow over the open page.
+    #[cfg(feature = "capture")]
+    pub(crate) fn script_cancel_nitro(&mut self, step: &str) -> String {
+        match step {
+            "lose" => self.open_cancel_nitro(),
+            "confirm" | "failed" => {
+                self.settings_extra.dialog = Some(super::actions::Dialog::CancelNitroConfirm {
+                    busy: false,
+                    failed: step == "failed",
+                });
+            }
+            _ => return "usage: cancel-nitro lose|confirm|failed".to_owned(),
+        }
+        format!("cancel nitro: {step}")
+    }
+
+    /// Confirm of module 95337: the request of `handleCancellation`, once.
+    fn send_nitro_cancellation(&mut self) {
+        if matches!(
+            self.settings_extra.dialog,
+            Some(super::actions::Dialog::CancelNitroConfirm { busy: true, .. })
+        ) {
+            return;
+        }
+        let Some(sub) = self.premium_subscription() else {
+            return;
+        };
+        let _ = self.requests.send(cancel_request(&sub, &purchase_token()));
+        self.settings_extra.dialog = Some(super::actions::Dialog::CancelNitroConfirm {
+            busy: true,
+            failed: false,
+        });
+    }
+
+    /// The cancellation came back: the flow closes and the subscription is read again
+    /// (`BILLING_SUBSCRIPTION_UPDATE_SUCCESS` puts the answer in the store), or the error notice shows.
+    pub(super) fn cancel_nitro_answered(&mut self, body: &serde_json::Value) {
+        if !matches!(
+            self.settings_extra.dialog,
+            Some(super::actions::Dialog::CancelNitroConfirm { .. })
+        ) {
+            return;
+        }
+        if body["ok"].as_bool() == Some(true) {
+            self.settings_extra.dialog = None;
+            self.nitro.subscriptions_injected = false;
+            self.nitro.billing_requested = false;
+            self.request_billing();
+        } else {
+            self.settings_extra.dialog = Some(super::actions::Dialog::CancelNitroConfirm {
+                busy: false,
+                failed: true,
+            });
         }
     }
 
@@ -576,7 +847,40 @@ impl Root {
     /// browser page that adds a source on its own is not in the snapshot.
     fn payment_methods_body(&self, cx: &mut gpui::Context<Self>) -> AnyElement {
         if !empty(self.nitro.sources.as_ref()) {
-            return div().h(px(76.)).into_any_element();
+            // Module 158935 `o9` for each saved source: a divider above all but the first, then the row
+            // (`paymentSourceRow_d3LvfJ`) with the source (module 219887) and Edit.
+            let subscribed = self
+                .premium_subscription()
+                .and_then(|sub| sub.payment_source_id);
+            let rows = super::payment_sources::sources_of(self.nitro.sources.as_ref())
+                .into_iter()
+                .enumerate()
+                .map(|(index, source)| {
+                    let for_subscription = subscribed.as_deref() == Some(source.id.as_str());
+                    div()
+                        .flex()
+                        .flex_col()
+                        .when(index > 0, |rows| {
+                            rows.child(div().h(px(1.)).bg(color("--border-subtle")))
+                        })
+                        .child(
+                            div()
+                                .my(px(16.))
+                                .flex()
+                                .items_center()
+                                .justify_between()
+                                .child(self.payment_source_view(&source, for_subscription))
+                                // GAP: Edit opens the source's edit form (module 158935 `o3`), which is not built.
+                                .child(crate::ui::dm::small_button(
+                                    "billing-source-edit",
+                                    dc_intl::t("bt75uw"),
+                                    crate::ui::dm::Tone::Secondary,
+                                    true,
+                                )),
+                        )
+                })
+                .collect::<Vec<_>>();
+            return div().flex().flex_col().children(rows).into_any_element();
         }
         div()
             .h(px(76.))
@@ -749,5 +1053,102 @@ mod cancel_tests {
             lose_text(Lose::Boost, PremiumType::Nitro),
             "Your 2 free Boosts and 30% Boost discount"
         );
+    }
+}
+
+#[cfg(test)]
+mod confirm_tests {
+    use super::{cancel_confirm_text, cancel_request, keeps_other_items};
+    use dc_state::premium::{PremiumType, Subscription, plan_id, status};
+    use serde_json::json;
+
+    fn sub(status: u64, plans: &[u64]) -> Subscription {
+        let items: Vec<_> = plans
+            .iter()
+            .map(|plan| json!({"id": "1", "plan_id": plan.to_string(), "quantity": 1}))
+            .collect();
+        Subscription::from_json(&json!({
+            "id": "77", "type": 1, "status": status, "items": items, "currency": "eur",
+            "current_period_end": "2026-12-02T09:30:00.000000+00:00",
+        }))
+        .unwrap()
+    }
+
+    fn text(paragraphs: &[Vec<(String, bool)>]) -> Vec<String> {
+        paragraphs
+            .iter()
+            .map(|runs| runs.iter().map(|(text, _)| text.as_str()).collect())
+            .collect()
+    }
+
+    #[test]
+    fn the_confirm_step_says_when_access_ends() {
+        let shown = cancel_confirm_text(
+            status::ACTIVE,
+            PremiumType::Nitro,
+            Some("2026-12-02T09:30:00.000000+00:00"),
+        );
+        assert_eq!(
+            text(&shown),
+            [
+                "Cancellation will take effect at the end of your current billing period. On Dec 2, 2026, you will lose access to Nitro, and your included Server Boosts will be removed.",
+                "You can restart your subscription anytime.",
+            ]
+        );
+        assert!(
+            shown[0]
+                .iter()
+                .any(|(text, bold)| *bold && text == "Dec 2, 2026")
+        );
+        let now = cancel_confirm_text(status::PAST_DUE, PremiumType::Nitro, None);
+        assert_eq!(
+            text(&now),
+            [
+                "Cancellation will take effect immediately for any Nitro and Server Boost subscriptions."
+            ]
+        );
+        let classic = cancel_confirm_text(status::ACTIVE, PremiumType::Classic, Some("2027-01-03"));
+        assert!(text(&classic)[0].ends_with("on Jan 3, 2027."));
+    }
+
+    #[test]
+    fn cancelling_renews_without_the_premium_plan_or_deletes_a_late_one() {
+        let crate::net::Request::Rest {
+            method,
+            route,
+            body,
+            ..
+        } = cancel_request(&sub(status::ACTIVE, &[plan_id::MONTH_TIER_2]), "tok")
+        else {
+            panic!("not a REST request");
+        };
+        assert_eq!(method, reqwest::Method::PATCH);
+        assert_eq!(route, "/users/@me/billing/subscriptions/77");
+        let body = body.unwrap();
+        assert_eq!(body["items"], json!([]));
+        assert_eq!(body["purchase_token"], "tok");
+        assert_eq!(
+            body["expected_invoice_price"],
+            json!({"amount": 0, "currency": "eur"})
+        );
+        let crate::net::Request::Rest { method, body, .. } =
+            cancel_request(&sub(status::PAST_DUE, &[plan_id::MONTH_TIER_2]), "tok")
+        else {
+            panic!("not a REST request");
+        };
+        assert_eq!(method, reqwest::Method::DELETE);
+        assert!(body.is_none());
+    }
+
+    #[test]
+    fn boosts_kept_beside_nitro_lead_to_the_preview() {
+        assert!(!keeps_other_items(&sub(
+            status::ACTIVE,
+            &[plan_id::MONTH_TIER_2]
+        )));
+        assert!(keeps_other_items(&sub(
+            status::ACTIVE,
+            &[plan_id::MONTH_TIER_2, plan_id::MONTH_GUILD]
+        )));
     }
 }

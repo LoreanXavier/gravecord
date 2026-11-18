@@ -31,6 +31,7 @@ pub(super) mod nitro_page;
 mod notifications_page;
 mod overlay_page;
 mod pages;
+mod payment_sources;
 mod phone_countries;
 pub(super) mod prefs;
 mod preview;

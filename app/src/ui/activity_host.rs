@@ -120,7 +120,7 @@ impl Root {
                 .hover(|style| style.bg(color("--interactive-background-hover")))
                 .child(icon("activity_leave", 20., "--interactive-icon-default"))
                 .on_click(cx.listener(|this, _, _, cx| {
-                    this.leave_activity(cx);
+                    this.leave_activity_by_hand(cx);
                     cx.notify();
                 })),
             cx,

@@ -36,6 +36,7 @@ mod activity_shelf;
 mod add_server;
 mod alt_text;
 mod announcements;
+mod app_dm;
 mod apps;
 mod attachment_modal;
 mod audio_attachment;

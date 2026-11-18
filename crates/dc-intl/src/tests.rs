@@ -452,3 +452,24 @@ fn parts_find_their_whole_message() {
     assert_eq!(key_of(&text), Some("LJzl+0"));
     assert_eq!(key_of(&[("Learn more", Style::Plain)]), None);
 }
+
+/// "<$p>Cancellation will take effect ... on <$b>{date}</>, ...</><$p>You can restart ...</>" (`X7i9D8`): one list of
+/// runs per paragraph, the date bold inside the first.
+#[test]
+fn paragraphs_split_at_their_p_tags() {
+    let when = Arg::When {
+        date: "Dec 2, 2026".into(),
+        time: String::new().into(),
+    };
+    let paragraphs = paragraph_runs("X7i9D8", &[("date", when)]);
+    assert_eq!(paragraphs.len(), 2);
+    assert_eq!(
+        paragraphs[0][1],
+        ("Dec 2, 2026".to_owned(), Some("$b".into()))
+    );
+    assert_eq!(
+        paragraphs[1][0].0,
+        "You can restart your subscription anytime."
+    );
+    assert_eq!(paragraph_runs("FClXh9", &[]).len(), 1);
+}

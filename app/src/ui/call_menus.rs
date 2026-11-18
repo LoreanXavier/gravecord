@@ -1434,6 +1434,11 @@ impl Root {
             }
             // The notice bar's state, and its Reconnect as a click on it runs it.
             ["notice"] => format!("notice {:?}", self.vv.notices.shown()),
+            ["notice", "block-feedback"] => {
+                let line = self.script_block_feedback_notice();
+                cx.notify();
+                line
+            }
             ["notice", "reconnect"] => {
                 let Some(super::notice_bar::Notice::VoiceDisabled(guild, channel)) =
                     self.vv.notices.shown()

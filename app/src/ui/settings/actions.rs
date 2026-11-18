@@ -84,6 +84,12 @@ pub(in crate::ui) enum Dialog {
     /// Cancel on the Subscriptions page: the first step (`WHAT_YOU_LOSE`) of
     /// `PremiumBrandRefreshSubscriptionCancellationModal` (module 673761). Nothing is canceled from it.
     CancelNitro,
+    /// The flow's `CONFIRM` step (module 95337): Confirm sends the cancellation; `busy` while it is in flight,
+    /// `failed` once it came back with an error.
+    CancelNitroConfirm {
+        busy: bool,
+        failed: bool,
+    },
     Alert {
         title: String,
         body: String,
@@ -138,6 +144,8 @@ pub(in crate::ui) struct State {
     pub search: Option<gpui::Entity<crate::editor::Editor>>,
     pub search_sub: Option<gpui::Subscription>,
     pub(in crate::ui) connections_asked: bool,
+    /// The authorized apps were asked for on their own (a bot's DM).
+    pub(in crate::ui) tokens_asked: bool,
     /// The Gravecord group's pages (`mods.rs`).
     pub(in crate::ui) mods: super::mods::State,
     /// The dialog a connection button opens first (`connection_dialogs.rs`).
@@ -402,6 +410,34 @@ impl Root {
         self.request_connection_icons();
     }
 
+    /// The authorized apps alone (`GET /oauth2/tokens`, module 712440 `fetch`), as a bot's DM asks for them while
+    /// the store has not fetched them yet (module 891522 `s9`).
+    pub(in crate::ui) fn request_authorized_apps(&mut self) {
+        if self.settings_extra.tokens.is_some() || self.settings_extra.tokens_asked {
+            return;
+        }
+        self.settings_extra.tokens_asked = true;
+        let _ = self.requests.send(Request::Fetch {
+            key: super::connections::TOKENS_KEY.to_owned(),
+            route: super::connections::TOKENS_ROUTE.to_owned(),
+        });
+    }
+
+    /// The newest authorized token of an application (`getNewestTokenForApplication` of module 733110).
+    pub(in crate::ui) fn newest_app_token(&self, application: &str) -> Option<&Value> {
+        self.settings_extra
+            .tokens
+            .as_ref()?
+            .iter()
+            .filter(|token| token["application"]["id"].as_str() == Some(application))
+            .max_by_key(|token| {
+                token["id"]
+                    .as_str()
+                    .and_then(|id| id.parse::<u64>().ok())
+                    .unwrap_or(0)
+            })
+    }
+
     /// A fetch of this module came back: true when the key was ours.
     pub(in crate::ui) fn settings_fetched(&mut self, key: &str, body: &Value) -> bool {
         if self.notification_page_fetched(key, body) {
@@ -427,9 +463,11 @@ impl Root {
             }
             super::connections::CONNECTIONS_KEY => {
                 if body.is_array() {
-                    let _ = self.requests.send(Request::Spotify(crate::spotify::Command::Accounts(
-                        crate::spotify::linked_accounts(body),
-                    )));
+                    let _ =
+                        self.requests
+                            .send(Request::Spotify(crate::spotify::Command::Accounts(
+                                crate::spotify::linked_accounts(body),
+                            )));
                     self.stores.spotify.dispatch(
                         "USER_CONNECTIONS_UPDATE",
                         &serde_json::json!({"local": true, "accounts": body}),
@@ -441,6 +479,10 @@ impl Root {
             }
             super::connections::TOKENS_KEY => {
                 self.settings_extra.tokens = body.as_array().cloned();
+                true
+            }
+            super::billing::CANCEL_KEY => {
+                self.cancel_nitro_answered(body);
                 true
             }
             super::connections::APPS_KEY => {
@@ -728,6 +770,9 @@ impl Root {
                 }
             }
             Dialog::CancelNitro => return Some(self.cancel_nitro_dialog(cx)),
+            Dialog::CancelNitroConfirm { busy, failed } => {
+                return Some(self.cancel_confirm_dialog(busy, failed, cx));
+            }
             Dialog::Disconnect(account) => modal::Spec {
                 id: "settings-disconnect",
                 title: format!("Disconnect {}", account.name).into(),

@@ -249,6 +249,15 @@ impl Root {
         )
     }
 
+    /// `s2.I`: a message of theirs in this DM to report (a system line counts: it is theirs too).
+    fn first_message_of(&self, channel: dc_state::Id, user: dc_state::Id) -> Option<Message> {
+        self.stores
+            .messages
+            .get(&channel)
+            .and_then(|messages| messages.iter().find(|message| message.author.id == user))
+            .cloned()
+    }
+
     /// Function `ap` of module 891522 by relationship: Remove Friend for a friend, Add Friend (or Accept for an
     /// incoming request) for nobody, "Friend Request Sent" disabled while one waits, Unblock once blocked; Block
     /// unless blocked; Report Spam (`s4`) while they are not a friend and have a message here. Each acts at
@@ -262,6 +271,27 @@ impl Root {
     ) -> Vec<AnyElement> {
         let id = user.id;
         let name = user.display_name().to_owned();
+        // `isNonUserBot` (module 619019): the system account or a bot with the `0000` tag gets no buttons (`aI`).
+        if user.system || (user.bot && user.discriminator == "0000") {
+            return Vec::new();
+        }
+        if user.bot {
+            // `aI` gives a bot `s9` instead of `ap`: no friend or Block button. Its Report Spam (`s4`) needs only
+            // a message of theirs (an application the account does not own is always reportable).
+            let report = self.first_message_of(channel, id).map(|first| {
+                small_button(
+                    "welcome-report",
+                    dc_intl::tr("Report Spam"),
+                    Tone::CriticalPrimary,
+                    true,
+                )
+                .on_click(cx.listener(move |this, _, window, cx| {
+                    this.open_report_message(&first, true, window, cx);
+                }))
+                .into_any_element()
+            });
+            return self.app_dm_buttons(channel, user, report, cx);
+        }
         let mut list = Vec::new();
         match relationship {
             1 => list.push(
@@ -329,15 +359,8 @@ impl Root {
                     .into_any_element(),
             );
         }
-        // `s2.I`: a message of theirs in this DM to report (a system line counts: it is theirs too).
-        let first_theirs = self
-            .stores
-            .messages
-            .get(&channel)
-            .and_then(|messages| messages.iter().find(|message| message.author.id == id))
-            .cloned();
         if matches!(relationship, 0 | 2 | 3)
-            && let Some(first) = first_theirs
+            && let Some(first) = self.first_message_of(channel, id)
         {
             list.push(
                 small_button(

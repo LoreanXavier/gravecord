@@ -86,6 +86,16 @@ pub(super) enum Then {
     Reapply {
         guild: Id,
     },
+    /// The button of "Mute Notifications" (module 259763): the app's DM takes `muted`.
+    MuteAppDm {
+        channel: Id,
+        muted: bool,
+    },
+    /// Deauthorize of an app's DM (module 891522 `s6`).
+    DeauthorizeApp {
+        application: String,
+        token: String,
+    },
 }
 
 /// Module 987176 as module 190857 opens it before a message request is accepted: the title, its subtitle, Cancel and
@@ -813,6 +823,10 @@ impl Root {
             Then::UseCommand { name, id } => self.use_command_mention(&name, id, window, cx),
             Then::WithdrawApplication { guild } => self.remove_join_request(guild),
             Then::Reapply { guild } => self.reapply(guild),
+            Then::MuteAppDm { channel, muted } => self.mute_app_dm(channel, muted),
+            Then::DeauthorizeApp { application, token } => {
+                self.deauthorize_app(&application, &token, cx);
+            }
         }
     }
 
