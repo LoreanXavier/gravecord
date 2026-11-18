@@ -42,6 +42,8 @@ mod server_info;
 mod server_list_indicators;
 mod show_connections;
 mod silent_message_toggle;
+mod streaming_codec_disabler;
+pub(in crate::ui) use streaming_codec_disabler::sync_streaming_codecs;
 mod super_reaction_tweaks;
 mod typing_indicator;
 mod typing_tweaks;

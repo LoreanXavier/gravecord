@@ -147,6 +147,7 @@ assert len(idle) == idle_entries, f'IDLE_SETTINGS: read {len(idle)} of {idle_ent
 
 # How each ported plugin is built here, and its proof.
 PORTED = {
+    'StreamingCodecDisabler': "plugin_hooks/streaming_codec_disabler.rs + dc-voice signal.rs: disableH264Codec puts H264 into a voice connection's codec list (ops 1 and 14) with encode false, as filterCodecs does; the other four codecs are not offered by this client.",
     'VoiceMessages': "plugin_hooks/voice_messages.rs: the + menu ends with Send Voice Message (Send Audio File as Voice Message beside the client's own Record Voice Message row; in a server with Send Messages and Send Voice Messages); Record Voice Message records from the microphone with the plugin's echoCancellation and noiseSuppression (Ogg Opus) or takes a chosen or dropped audio file, previews it in the voice message player (the plugin's RECORDING / ---- pill otherwise), decodes it off the UI thread for the plugin's own waveform and length, warns when it is not Ogg Opus, and sends it as a voice message with the pending reply and SilentMessageToggle's flag. GAP: the sending toast's clock icon; the warning's link drawn as text.",
     'UnlockedAvatarZoom': "plugin_hooks/unlocked_avatar_zoom.rs: the image crop tool's zoom slider (every picture it edits, as the patched maxValue of module 142630) reaches zoomMultiplier instead of 2; the slider, the arrow keys and the clamp follow it.",
     'BetterQuickReact': "plugin_hooks/more_quick_reactions.rs (now MoreQuickReactions upstream): the hover bar shows reactionCount quick reactions; the message menu's row is uncut and becomes a grid of columns 44px cells (33px compact, button at 75% and emoji at 125%) showing rows rows, padded 4/1/6 and centred, the menu widening to fit; the wheel moves it a row at a time with scroll; frequentEmojis keeps the favourites out (off: they come first, as the pinned list has them).",
@@ -237,6 +238,7 @@ PORTED = {
                      'so the original\'s 200% cap on the sync has nothing to cap.',
 }
 TESTS = {
+    'StreamingCodecDisabler': '`only_the_switch_takes_h264_out`',
     'VoiceMessages': '`the_waveform_follows_generate_waveform`; frames pending (live runs held)',
     'UnlockedAvatarZoom': '`the_slider_reaches_the_multiplier`; frames pending (live runs held)',
     'BetterQuickReact': '`the_grid_scrolls_a_row_at_a_time`; frames pending (live runs held)',
@@ -412,7 +414,6 @@ PLANNED = {
     'SpotifyCrack': 'listen along without Premium and no Spotify pause on voice.',
     'SteamStatusSync': 'status sync with the Steam client.',
     'Streaks': 'DM streak counts (its service login in the data store is not copied).',
-    'StreamingCodecDisabler': 'a codec choice for streams and cameras in dc-media.',
     'Translate+': 'message translation (needs a translation service).',
     'UserPFP': 'its third-party avatar service.',
     'USRBG': 'its third-party banner service.',

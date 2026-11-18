@@ -10363,6 +10363,8 @@ impl Render for Root {
         self.prepare_sidebar_events();
         self.prepare_channel_browser(cx);
         self.prepare_live_activities(cx);
+        // Not in the pinned client: StreamingCodecDisabler's filter (`plugin_hooks/streaming_codec_disabler.rs`).
+        plugin_hooks::sync_streaming_codecs();
         if changed(&mut self.prepared.badge, self.data_revision) {
             self.refresh_notification_badge_soon(cx);
         }

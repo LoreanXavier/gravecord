@@ -76,6 +76,7 @@ pub mod rtc_stats;
 mod rtp;
 mod session;
 mod signal;
+pub use signal::set_h264_encode_disabled;
 #[cfg(test)]
 mod speech_lab;
 #[cfg(feature = "sim")]

@@ -138,15 +138,26 @@ pub(crate) fn heartbeat(nonce: u64, seq_ack: i64, server_version: u64) -> String
     }
 }
 
+/// Not in the pinned client: a client mod's codec filter (StreamingCodecDisabler) takes H264 out of what this client
+/// offers to encode (`encode: false`), as it rewrites the codec list before it is sent.
+static H264_ENCODE_DISABLED: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+
+/// Sets the filter above; the next codec list follows it.
+pub fn set_h264_encode_disabled(disabled: bool) {
+    H264_ENCODE_DISABLED.store(disabled, std::sync::atomic::Ordering::Relaxed);
+}
+
 /// The codec list of ops 1 and 14: Opus, then H264 with the official payload types (`101 + 2 * i`
 /// and the RTX type after it; priorities are 1000 times the position, module 921747 `ez`).
 fn codecs() -> Value {
+    let encode = !H264_ENCODE_DISABLED.load(std::sync::atomic::Ordering::Relaxed);
     json!([
         {"name": "opus", "type": "audio", "priority": 1000, "payload_type": crate::rtp::OPUS_PAYLOAD_TYPE},
         {"name": "H264", "type": "video", "priority": 1000,
          "payload_type": crate::rtp::H264_PAYLOAD_TYPE,
          "rtx_payload_type": crate::rtp::H264_RTX_PAYLOAD_TYPE,
-         "encode": true, "decode": true},
+         "encode": encode, "decode": true},
     ])
 }
 

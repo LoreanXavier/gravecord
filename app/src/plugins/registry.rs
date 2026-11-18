@@ -240,6 +240,26 @@ const fn millis(default: f64) -> Kind {
 /// by the code (a test checks both ways), so a setting can never sit in the page doing nothing unnoticed.
 pub(crate) const IDLE_SETTINGS: &[(&str, &str, &str)] = &[
     (
+        "StreamingCodecDisabler",
+        "disableAv1Codec",
+        "this client offers H264 only in a voice connection's codec list, so there is no AV1 entry to take out",
+    ),
+    (
+        "StreamingCodecDisabler",
+        "disableH265Codec",
+        "this client offers H264 only in a voice connection's codec list, so there is no H265 entry to take out",
+    ),
+    (
+        "StreamingCodecDisabler",
+        "disableVP8Codec",
+        "this client offers H264 only in a voice connection's codec list, so there is no VP8 entry to take out",
+    ),
+    (
+        "StreamingCodecDisabler",
+        "disableVP9Codec",
+        "this client offers H264 only in a voice connection's codec list, so there is no VP9 entry to take out",
+    ),
+    (
         "MoreCommands",
         "uwuEverything",
         "it uwuifies every text node of the interface (a patch of React's element creation); the app's text is drawn          by each view itself and has no single place to pass it through yet",
@@ -1988,6 +2008,46 @@ pub(crate) const DEFS: &[Def] = &[
         source: "src/plugins/spotifyShareCommands/index.ts",
         default_on: false,
         settings: &[],
+    },
+    Def {
+        id: "StreamingCodecDisabler",
+        name: "StreamingCodecDisabler",
+        description: "Disable video codecs of your choice for streaming and cameras.",
+        origin: Origin::Equicord,
+        source: "src/equicordplugins/streamingCodecDisabler/index.ts",
+        default_on: false,
+        settings: &[
+            Setting {
+                key: "disableAv1Codec",
+                label: "Disable Av1 Codec",
+                description: "Make Discord not consider using AV1 for streaming and cameras.",
+                kind: Kind::Switch { default: false },
+            },
+            Setting {
+                key: "disableH265Codec",
+                label: "Disable H265 Codec",
+                description: "Make Discord not consider using H265 for streaming and cameras.",
+                kind: Kind::Switch { default: false },
+            },
+            Setting {
+                key: "disableH264Codec",
+                label: "Disable H264 Codec",
+                description: "Make Discord not consider using H264 for streaming and cameras.",
+                kind: Kind::Switch { default: false },
+            },
+            Setting {
+                key: "disableVP8Codec",
+                label: "Disable VP8 Codec",
+                description: "Make Discord not consider using VP8 for streaming and cameras.",
+                kind: Kind::Switch { default: false },
+            },
+            Setting {
+                key: "disableVP9Codec",
+                label: "Disable VP9 Codec",
+                description: "Make Discord not consider using VP9 for streaming and cameras.",
+                kind: Kind::Switch { default: false },
+            },
+        ],
     },
     Def {
         id: "SuperReactionTweaks",

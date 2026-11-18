@@ -12,7 +12,7 @@ every setting changed), and with every plugin off, and fails on one differing pi
 The list is the plugins enabled in the owner's Equicord backup of 2026-09-21 (156). Sources were read in the local
 Equicord checkout of 2026-11-14 (`src/plugins` is Vencord's, `src/equicordplugins` Equicord's).
 
-Totals: 70 ported, 9 native, 32 planned, 45 not applicable.
+Totals: 71 ported, 9 native, 31 planned, 45 not applicable.
 
 Status: **ported** works and has its proof; **native** is what gravecord already does without a plugin;
 **planned** is not built yet (an import keeps its settings for when it is); **not applicable** has nothing to
@@ -144,7 +144,7 @@ port in a native client, or was removed upstream.
 | StopAutoUnread | native | equicordplugins/stopAutoUnread/index.ts |  | the app never raises a channel to All Messages by itself: the pinned client's `maybeAutoUpgradeChannel` (called by the unreads notice hook in module 626977) is not ported (GAP: main app), so there is nothing to stop. |  |
 | Streaks | planned | equicordplugins/streaks/index.tsx | Shows a streak next to a user when you exchange DMs with them on consecutive days. | DM streak counts (its service login in the data store is not copied). |  |
 | StreamerModeOnStream | not applicable | (not in the 2026-11-14 checkout) |  | no longer in the Equicord checkout of 2026-11-14 (added in 9e0aa4b2, since dropped). |  |
-| StreamingCodecDisabler | planned | equicordplugins/streamingCodecDisabler/index.ts | Disable video codecs of your choice for streaming and cameras. | a codec choice for streams and cameras in dc-media. |  |
+| StreamingCodecDisabler | ported | equicordplugins/streamingCodecDisabler/index.ts | Disable video codecs of your choice for streaming and cameras. | plugin_hooks/streaming_codec_disabler.rs + dc-voice signal.rs: disableH264Codec puts H264 into a voice connection's codec list (ops 1 and 14) with encode false, as filterCodecs does; the other four codecs are not offered by this client. | `only_the_switch_takes_h264_out` |
 | Summaries | not applicable | (not in the 2026-11-14 checkout) |  | removed from Equicord in 452241cf: "Discord killed this feature". |  |
 | SuperReactionTweaks | ported | plugins/superReactionTweaks/index.ts | Customize the limit of Super Reactions playing at once, and super react by default | plugin_hooks/super_reaction_tweaks.rs: superReactByDefault opens the reaction picker with its Super Reactions toggle on, for an account with real Nitro (not the plugins' override). The two playing-limit settings are idle (no super reaction effects play in the app yet). | `super_reactions_start_on_only_with_the_switch`; plugins-off reactions |
 | SupportHelper | not applicable | plugins/_core/supportHelper.tsx | Helps us provide support to you | support-channel helper of the mod. |  |
@@ -345,6 +345,11 @@ Every setting of each original (`definePluginSettings`), its type and default th
 | ShowConnections | `showOnModal` | BOOLEAN | `true` | ported |
 | SilentMessageToggle | `persistState` | SELECT | `"none"` | ported |
 | SilentMessageToggle | `autoDisable` | BOOLEAN | `true` | ported |
+| StreamingCodecDisabler | `disableAv1Codec` | BOOLEAN | `false` | nothing to act on yet: this client offers H264 only in a voice connection's codec list, so there is no AV1 entry to take out |
+| StreamingCodecDisabler | `disableH265Codec` | BOOLEAN | `false` | nothing to act on yet: this client offers H264 only in a voice connection's codec list, so there is no H265 entry to take out |
+| StreamingCodecDisabler | `disableH264Codec` | BOOLEAN | `false` | ported |
+| StreamingCodecDisabler | `disableVP8Codec` | BOOLEAN | `false` | nothing to act on yet: this client offers H264 only in a voice connection's codec list, so there is no VP8 entry to take out |
+| StreamingCodecDisabler | `disableVP9Codec` | BOOLEAN | `false` | nothing to act on yet: this client offers H264 only in a voice connection's codec list, so there is no VP9 entry to take out |
 | SuperReactionTweaks | `superReactByDefault` | BOOLEAN | `true` | ported |
 | SuperReactionTweaks | `unlimitedSuperReactionPlaying` | BOOLEAN | `false` | nothing to act on yet: it lifts the cap on super reaction effects playing at once, and the app plays no super reaction effects yet |
 | SuperReactionTweaks | `superReactionPlayingLimit` | SLIDER | `20` | nothing to act on yet: it caps the super reaction effects playing at once, and the app plays no super reaction effects yet |
