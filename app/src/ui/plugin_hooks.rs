@@ -17,6 +17,7 @@ mod message_pronouns;
 mod mute_channel_mentions;
 mod pin_dms;
 mod platform_indicators;
+mod plugin_commands;
 mod read_all;
 mod role_color_everywhere;
 mod server_info;

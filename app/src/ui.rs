@@ -1978,6 +1978,10 @@ impl Root {
                 if self.image_crop_fetched(&key, &body, cx) {
                     return;
                 }
+                // Not in the pinned client: FriendInvites' answers (`plugin_hooks/plugin_commands.rs`).
+                if self.friend_invites_answered(&key, &body) {
+                    return;
+                }
                 // Not in the pinned client: ValidUser's fetched user (`plugin_hooks/valid_user.rs`).
                 if self.valid_user_fetched(&key, &body, cx) {
                     return;

@@ -664,6 +664,15 @@ pub(crate) const DEFS: &[Def] = &[
         }],
     },
     Def {
+        id: "FriendInvites",
+        name: "FriendInvites",
+        description: "Create and manage friend invite links via slash commands (/create friend invite, /view friend invites, /revoke friend invites).",
+        origin: Origin::Vencord,
+        source: "src/plugins/friendInvites/index.ts",
+        default_on: false,
+        settings: &[],
+    },
+    Def {
         id: "FullVCPFP",
         name: "FullVCPFP",
         description: "Makes avatars take up the entire vc tile",
@@ -1373,6 +1382,15 @@ pub(crate) const DEFS: &[Def] = &[
                 kind: Kind::Switch { default: true },
             },
         ],
+    },
+    Def {
+        id: "SpotifyShareCommands",
+        name: "SpotifyShareCommands",
+        description: "Share your current Spotify track, album or artist via slash command (/track, /album, /artist)",
+        origin: Origin::Vencord,
+        source: "src/plugins/spotifyShareCommands/index.ts",
+        default_on: false,
+        settings: &[],
     },
     Def {
         id: "SuperReactionTweaks",
