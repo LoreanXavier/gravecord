@@ -6,6 +6,7 @@ pub mod identity;
 pub mod op;
 pub mod pin;
 pub mod qos;
+pub mod replay;
 pub mod secrets;
 pub mod settings;
 pub mod voice_op;

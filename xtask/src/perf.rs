@@ -6,6 +6,11 @@
 //!
 //! Scenarios: `all` (default), `start`, `idle`, `typing`, `scroll`, `soak`. The report goes to `design/perf/<label>.md`.
 //! The real server is only selected, scrolled and read: no write is sent from a harness run.
+//!
+//! `--replay <folder>` runs every scenario against a local replay of Discord (`replay.rs`) instead of the real servers:
+//! no login, no token, the same server times every run. `--record <folder>` makes such a folder: one signed-in, inert
+//! run of the `all` scenario (plus what `hitch` and `anim` open) that keeps what the servers answered, outside the
+//! repository (it is personal data). `--ready-delay-ms N` and `--no-latency` change the replayed server times.
 
 use crate::headless;
 use anyhow::{Context, Result, bail};
@@ -41,6 +46,12 @@ struct Options {
     timeout: Duration,
     /// `--exe <path>`: measure this build instead of the one in `target` (a kept copy of a base build, say).
     exe: Option<PathBuf>,
+    /// `--replay <folder>`: the recording the local server answers from.
+    replay: Option<PathBuf>,
+    /// `--record <folder>`: where one signed-in run keeps what the servers answered.
+    record: Option<PathBuf>,
+    ready_delay_ms: Option<u64>,
+    no_latency: bool,
 }
 
 fn parse(args: &[&str]) -> Result<Options> {
@@ -55,6 +66,10 @@ fn parse(args: &[&str]) -> Result<Options> {
         idle_secs: 30,
         timeout: Duration::from_secs(40 * 60),
         exe: None,
+        replay: None,
+        record: None,
+        ready_delay_ms: None,
+        no_latency: false,
     };
     let mut rest = args.iter();
     while let Some(flag) = rest.next() {
@@ -62,10 +77,14 @@ fn parse(args: &[&str]) -> Result<Options> {
             "--release" => options.release = true,
             "--no-build" => options.build = false,
             "--no-wait" => options.wait = false,
+            "--no-latency" => options.no_latency = true,
             "--runs" | "--laps" | "--scenario" | "--label" | "--idle-secs" | "--timeout-min"
-            | "--exe" => {
+            | "--exe" | "--replay" | "--record" | "--ready-delay-ms" => {
                 let value = rest.next().copied().context("flag without a value")?;
                 match *flag {
+                    "--replay" => options.replay = Some(PathBuf::from(value)),
+                    "--record" => options.record = Some(PathBuf::from(value)),
+                    "--ready-delay-ms" => options.ready_delay_ms = Some(value.parse()?),
                     "--exe" => {
                         options.exe = Some(PathBuf::from(value));
                         options.build = false;
@@ -79,7 +98,7 @@ fn parse(args: &[&str]) -> Result<Options> {
                 }
             }
             other => bail!(
-                "usage: cargo xtask perf [--release] [--runs N] [--laps N] [--scenario all|start|idle|typing|scroll|soak|stickers|hitch|anim] [--label L] [--no-build] [--no-wait] [--idle-secs N] [--timeout-min N] [--exe PATH], got {other}"
+                "usage: cargo xtask perf [--release] [--runs N] [--laps N] [--scenario all|start|idle|typing|scroll|soak|stickers|hitch|anim] [--label L] [--no-build] [--no-wait] [--idle-secs N] [--timeout-min N] [--exe PATH] [--replay FOLDER [--ready-delay-ms N] [--no-latency]] [--record FOLDER], got {other}"
             ),
         }
     }
@@ -90,7 +109,23 @@ fn parse(args: &[&str]) -> Result<Options> {
     {
         bail!("unknown scenario {}", options.scenario);
     }
+    if options.record.is_some() {
+        // A recording signs in once: one run of one script.
+        if options.replay.is_some() || !["all", "start"].contains(&options.scenario.as_str()) {
+            bail!("--record takes the all or start scenario, without --replay");
+        }
+        options.runs = 1;
+    }
     Ok(options)
+}
+
+/// What a recording run does after its scenario, so the `hitch` and `anim` scenarios find their answers in the
+/// recording too: older pages of the real channel scrolled into view, the GIF and the sticker pickers opened.
+fn record_extras() -> String {
+    format!(
+        "; click 36 157; wait 1500; channel click {REAL_CHANNEL}; wait 3500; {} wait 1500; click 36 109; wait 1500; click 1202 683; wait 3500; key escape; wait 500; click 1162 683; wait 3500; key escape; wait 500; perf sample recorded",
+        "scroll 800 400 400; wait 70; ".repeat(40)
+    )
 }
 
 /// The steps of one lap through the main destinations, ending where it began, with the process's numbers after it.
@@ -507,8 +542,8 @@ fn median(values: &[f64]) -> f64 {
 /// The budget of a metric: its limit and its target, if it has one.
 fn budget(name: &str) -> Option<(f64, Option<f64>)> {
     match name {
-        // The loading screen no longer shows (it starts done), so `splash_done_ms` stays 0. What the user waits for
-        // is the open channel's live page with its pictures, and its first messages (from the cache when it is on).
+        // `splash_done_ms`: the connecting screen of a cold start gone (0 when the start cache drew the window). What
+        // the user waits for then is the open channel's live page with its pictures, and its first messages.
         "start.splash_done_ms"
         | "start.st_frame_messages_ms"
         | "start.st_frame_live_messages_ms"
@@ -542,8 +577,32 @@ pub fn run(repo: &Path, args: &[&str]) -> Result<()> {
             .map(|(name, script)| (name.to_owned(), script))
             .collect(),
         "anim" => vec![("anim".to_owned(), anim_script())],
+        _ if options.record.is_some() => {
+            vec![("run".to_owned(), script(&options) + &record_extras())]
+        }
         _ => vec![("run".to_owned(), script(&options))],
     };
+    if let Some(folder) = &options.record {
+        if folder.join("http.jsonl").exists() || folder.join("gateway.jsonl").exists() {
+            bail!(
+                "{} already holds a recording: record into a new folder",
+                folder.display()
+            );
+        }
+        if folder.starts_with(repo) {
+            bail!("a recording is personal data: keep it outside the repository");
+        }
+        fs::create_dir_all(folder)?;
+        // SAFETY: no other thread of this process exists yet, or reads the environment.
+        unsafe {
+            std::env::set_var("GRAVECORD_RECORD", folder);
+            // The server times of the recording must not carry the connecting screen's own work, unless the run says
+            // otherwise (`GRAVECORD_NO_CONNECTING=0`: a live check of the start as it ships).
+            if std::env::var_os("GRAVECORD_NO_CONNECTING").is_none() {
+                std::env::set_var("GRAVECORD_NO_CONNECTING", "1");
+            }
+        }
+    }
     let profile = if options.release { "release" } else { "debug" };
     let mut runs: Vec<BTreeMap<String, f64>> = Vec::new();
     let mut disturbed = false;
@@ -559,12 +618,35 @@ pub fn run(repo: &Path, args: &[&str]) -> Result<()> {
         );
         let mut merged = BTreeMap::new();
         for (name, script) in &scripts {
-            // Every run signs the fixture account in; Discord flagged it on 2026-11-18 after bursts of logins, so
-            // launches are spaced (`GRAVECORD_PERF_GAP_SECS`, default 60).
-            if let Some(gap) = launch_gap(last_launch) {
-                sleep(gap);
+            if let Some(folder) = &options.replay {
+                // A server of its own for each process, so every run is answered from the start of the recording.
+                let server = crate::replay::start(
+                    folder,
+                    0,
+                    crate::replay::Options {
+                        ready_delay_ms: options.ready_delay_ms,
+                        no_latency: options.no_latency,
+                        log: Some(
+                            dir.join(format!("{}-run{number}-{name}-replay.log", options.label)),
+                        ),
+                    },
+                )?;
+                // SAFETY: the replay servers' threads never read the environment.
+                unsafe {
+                    std::env::set_var("GRAVECORD_REPLAY", &server.url);
+                    std::env::set_var(
+                        "GRAVECORD_REPLAY_ACCOUNT",
+                        server.account.as_deref().unwrap_or("0"),
+                    );
+                }
+            } else {
+                // Every run signs the fixture account in; Discord flagged it on 2026-11-18 after bursts of logins, so
+                // launches are spaced (`GRAVECORD_PERF_GAP_SECS`, default 60).
+                if let Some(gap) = launch_gap(last_launch) {
+                    sleep(gap);
+                }
+                last_launch = Some(Instant::now());
             }
-            last_launch = Some(Instant::now());
             let log = run_once(repo, &exe, script, &out, options.timeout)?;
             let file = if scripts.len() == 1 {
                 format!("{}-run{number}.txt", options.label)
@@ -583,8 +665,16 @@ pub fn run(repo: &Path, args: &[&str]) -> Result<()> {
     names.sort();
     names.dedup();
     let mut report = format!(
-        "# perf {} ({profile} capture build, {} runs, scenario {}, laps {})\n\n",
-        options.label, options.runs, options.scenario, options.laps
+        "# perf {} ({profile} capture build, {} runs, scenario {}, laps {}{})\n\n",
+        options.label,
+        options.runs,
+        options.scenario,
+        options.laps,
+        match (&options.replay, &options.record) {
+            (Some(_), _) => ", replayed",
+            (_, Some(_)) => ", recorded live",
+            _ => ", live",
+        }
     );
     if disturbed {
         report.push_str(

@@ -638,8 +638,9 @@ pub(crate) fn fetch_url_typed(url: &str, max_bytes: usize) -> Result<(Vec<u8>, S
         .clone()?;
     let url = url.to_owned();
     runtime.block_on(async move {
+        let asked = std::time::Instant::now();
         let mut response = client
-            .get(&url)
+            .get(dc_proto::replay::rewrite(&url).as_ref())
             .send()
             .await
             .map_err(|error| error.to_string())?;
@@ -665,6 +666,7 @@ pub(crate) fn fetch_url_typed(url: &str, max_bytes: usize) -> Result<(Vec<u8>, S
             }
             bytes.extend_from_slice(&chunk);
         }
+        dc_proto::replay::record_http("GET", &url, 200, Some(&kind), asked.elapsed(), &bytes);
         Ok((bytes, kind))
     })
 }

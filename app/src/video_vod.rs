@@ -1068,7 +1068,7 @@ fn fetch_video_bytes(url: &str) -> Result<Vec<u8>, String> {
             .build()
             .map_err(|error| error.to_string())?;
         let response = client
-            .get(&url)
+            .get(dc_proto::replay::rewrite(&url).as_ref())
             .send()
             .await
             .map_err(|error| error.to_string())?;

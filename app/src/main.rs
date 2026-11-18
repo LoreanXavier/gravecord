@@ -291,6 +291,10 @@ fn initial_start() -> shell::Start {
         {
             return shell::Start::Preview(state.clone());
         }
+        // A replay run (`cargo xtask perf --replay`) signs in to the local server: no token is needed or read.
+        if dc_proto::replay::endpoint().is_some() {
+            return shell::Start::Token(replay_token());
+        }
         if let Some(path) = find_upwards("secrets.toml")
             && let Ok(token) = dc_proto::secrets::load(&path)
         {
@@ -306,6 +310,33 @@ fn initial_start() -> shell::Start {
             _ => shell::Start::Login,
         }
     }
+}
+
+/// Capture builds only: `GRAVECORD_REPLAY=<url>` plays a recording of Discord back from the local server at `url`
+/// (`xtask/src/replay.rs`), `GRAVECORD_RECORD=<folder>` records what the real servers answer (`dc_proto::replay`).
+#[cfg(feature = "capture")]
+fn replay_switches() {
+    if let Ok(url) = std::env::var("GRAVECORD_REPLAY") {
+        dc_proto::replay::set_endpoint(&url);
+        tracing::info!("replaying Discord from the local server");
+    }
+    // Both at once records what the replay answered: the recorder's own test.
+    if let Some(dir) = std::env::var_os("GRAVECORD_RECORD") {
+        match dc_proto::replay::start_recording(PathBuf::from(dir)) {
+            Ok(()) => tracing::info!("recording what Discord answers"),
+            Err(error) => tracing::warn!("the recording did not start: {error}"),
+        }
+    }
+}
+
+/// The login of a replay run: shaped like a token of the recorded account (`GRAVECORD_REPLAY_ACCOUNT`), so the start
+/// cache's key matches as it does live; it only ever reaches the local server.
+#[cfg(feature = "capture")]
+fn replay_token() -> Token {
+    use base64::Engine as _;
+    let account = std::env::var("GRAVECORD_REPLAY_ACCOUNT").unwrap_or_else(|_| "0".to_owned());
+    let first = base64::engine::general_purpose::STANDARD_NO_PAD.encode(account.as_bytes());
+    Token::new(format!("{first}.replay.replay"))
 }
 
 /// Opens a link of the app in the main view. The view may still be starting (or showing the login), so this waits for
@@ -337,6 +368,9 @@ fn main() -> std::process::ExitCode {
 
 fn run() -> Result<()> {
     start_trace::init();
+    dc_proto::replay::set_stage_hook(start_trace::mark_ago);
+    #[cfg(feature = "capture")]
+    replay_switches();
     // The en-US strings, which every frame reads and which take about 40 ms to decompress and parse, load on their own
     // thread while the window opens, not on the UI thread inside the first frame.
     let _ = std::thread::Builder::new()
