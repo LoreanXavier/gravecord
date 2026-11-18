@@ -167,6 +167,14 @@ impl Root {
         cx.notify();
     }
 
+    /// `TOGGLE_INBOX` with the Scheduled tab (Manage Messages of the scheduled limit alert, module 859403).
+    pub(super) fn open_inbox_scheduled(&mut self, cx: &mut Context<Self>) {
+        if self.inbox.is_none() {
+            self.toggle_inbox(cx);
+        }
+        self.set_inbox_tab(InboxTab::Scheduled, cx);
+    }
+
     fn set_inbox_tab(&mut self, tab: InboxTab, cx: &mut Context<Self>) {
         self.inbox = Some(tab);
         if tab == InboxTab::Unreads {

@@ -477,6 +477,12 @@ pub struct Guild {
     pub invites_disabled_until: Option<String>,
     pub dms_disabled_until: Option<String>,
     pub lockdown_duration_hours: Option<u64>,
+    /// `incidents_data.raid_detected_at` and `dm_spam_detected_at` (ISO times): an incident is active for two hours
+    /// after either (`k$` of module 903093).
+    pub raid_detected_at: Option<String>,
+    pub dm_spam_detected_at: Option<String>,
+    /// `safety_alerts_channel_id`, else `public_updates_channel_id`: where a raid report goes (`B` of 859706).
+    pub alerts_channel: Option<Id>,
     pub premium_tier: u64,
     pub premium_subscription_count: u64,
     /// Stage video is available only when the guild's advertised capacity is positive (module 279250).
@@ -868,6 +874,10 @@ impl Guild {
             dms_disabled_until: text(&properties["incidents_data"]["dms_disabled_until"]),
             lockdown_duration_hours: properties["incidents_data"]["lockdown_duration_hours"]
                 .as_u64(),
+            raid_detected_at: text(&properties["incidents_data"]["raid_detected_at"]),
+            dm_spam_detected_at: text(&properties["incidents_data"]["dm_spam_detected_at"]),
+            alerts_channel: id(&properties["safety_alerts_channel_id"])
+                .or_else(|| id(&properties["public_updates_channel_id"])),
             premium_tier: properties["premium_tier"].as_u64().unwrap_or(0),
             premium_subscription_count: value["premium_subscription_count"]
                 .as_u64()
@@ -920,6 +930,14 @@ impl Guild {
         self.invites_disabled_until = text(&value["incidents_data"]["invites_disabled_until"]);
         self.dms_disabled_until = text(&value["incidents_data"]["dms_disabled_until"]);
         self.lockdown_duration_hours = value["incidents_data"]["lockdown_duration_hours"].as_u64();
+        self.raid_detected_at = text(&value["incidents_data"]["raid_detected_at"]);
+        self.dm_spam_detected_at = text(&value["incidents_data"]["dm_spam_detected_at"]);
+        if value.get("safety_alerts_channel_id").is_some()
+            || value.get("public_updates_channel_id").is_some()
+        {
+            self.alerts_channel = id(&value["safety_alerts_channel_id"])
+                .or_else(|| id(&value["public_updates_channel_id"]));
+        }
         self.premium_tier = value["premium_tier"].as_u64().unwrap_or(self.premium_tier);
         self.premium_subscription_count = value["premium_subscription_count"]
             .as_u64()
@@ -4894,6 +4912,9 @@ mod tests {
             invites_disabled_until: None,
             dms_disabled_until: None,
             lockdown_duration_hours: None,
+            raid_detected_at: None,
+            dm_spam_detected_at: None,
+            alerts_channel: None,
             features: features
                 .iter()
                 .map(|feature| (*feature).to_owned())

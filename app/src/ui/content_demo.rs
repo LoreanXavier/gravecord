@@ -96,6 +96,63 @@ impl Root {
                     json!({}),
                 );
             }
+            // Command mentions (module 990474): one the server's command index (stored as if fetched) knows, with a
+            // sub-command, and one it does not.
+            "commands" => {
+                let Some(guild) = guild else {
+                    return "content: open a server first".to_owned();
+                };
+                let key = format!("command-index:guild:{guild}");
+                self.requested.insert(key.clone());
+                self.fetched.insert(
+                    key,
+                    json!({
+                        "applications": [{"id": "900300", "name": "Demo Bot", "icon": null}],
+                        "application_commands": [
+                            {"id": "900301", "name": "ping", "type": 1, "application_id": "900300",
+                             "description": "Checks the bot"},
+                            {"id": "900302", "name": "role", "type": 1, "application_id": "900300",
+                             "description": "Roles", "options": [
+                                {"name": "add", "type": 1, "description": "Adds a role", "options": [
+                                    {"name": "who", "type": 6, "description": "The member", "required": true}
+                                ]}
+                            ]}
+                        ]
+                    }),
+                );
+                push(
+                    person(900, "ada"),
+                    "try </ping:900301> or </role add:900302>, not </gone:900399>",
+                    json!({}),
+                );
+            }
+            // An invite that grants roles (module 897288): the resolved invite is stored as if fetched.
+            "invite-roles" => {
+                let code = "demoroles";
+                let roles = json!([
+                    {"id": "900201", "name": "Helpers", "color": 3_447_003, "position": 2},
+                    {"id": "900202", "name": "Event Squad", "color": 15_844_367, "position": 5},
+                    {"id": "900203", "name": "Plain", "color": 0, "position": 1},
+                    {"id": "900204", "name": "Gradient", "color": 10_181_046, "position": 3,
+                     "colors": {"primary_color": 10_181_046, "secondary_color": 15_277_667, "tertiary_color": null}}
+                ]);
+                self.fetched.insert(
+                    format!("invite:{code}"),
+                    json!({
+                        "code": code,
+                        "guild": {"id": "1568692564637524109", "name": "Role Invite Demo", "icon": null},
+                        "approximate_presence_count": 3,
+                        "approximate_member_count": 12,
+                        "roles": roles,
+                    }),
+                );
+                self.requested_invites.insert(code.to_owned());
+                push(
+                    person(900, "ada"),
+                    &format!("https://discord.gg/{code}"),
+                    json!({}),
+                );
+            }
             // Links the app keeps: a thread of this server, a settings page, a profile, an invite (not built).
             "deeplinks" => {
                 let Some(guild) = guild else {

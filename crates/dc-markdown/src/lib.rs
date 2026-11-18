@@ -37,6 +37,30 @@ pub enum Kind {
         unix: i64,
         format: char,
     },
+    /// `</name:id>` (the commandMention rule of module 605275): a slash command, drawn as "/name". `name` holds up to
+    /// three words (a command, its group and its sub command).
+    Command {
+        name: String,
+        id: u64,
+    },
+}
+
+/// The name of a command mention: one to three words of 1 to 32 letters, numbers, `-` or `_` (Devanagari and Thai
+/// count as letters), one space apart.
+fn command_name(name: &str) -> bool {
+    let words: Vec<&str> = name.split(' ').collect();
+    (1..=3).contains(&words.len())
+        && words.iter().all(|word| {
+            (1..=32).contains(&word.chars().count())
+                && word
+                    .chars()
+                    .all(|c| c.is_alphanumeric() || c == '-' || c == '_' || is_indic_mark(c))
+        })
+}
+
+/// Combining marks of the Devanagari and Thai blocks, which `\p{sc=Deva}` and `\p{sc=Thai}` take in.
+fn is_indic_mark(c: char) -> bool {
+    matches!(c, '\u{0900}'..='\u{097F}' | '\u{A8E0}'..='\u{A8FF}' | '\u{0E00}'..='\u{0E7F}')
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -287,6 +311,15 @@ fn angle_token(rest: &str, mentions: bool) -> Option<(usize, Kind, String)> {
     }
     if let Some(id) = inner.strip_prefix('#').and_then(whole_number) {
         return Some((consumed, Kind::Channel(id), raw));
+    }
+    if let Some((name, id)) = inner
+        .strip_prefix('/')
+        .and_then(|command| command.rsplit_once(':'))
+        .filter(|(name, _)| command_name(name))
+        .and_then(|(name, id)| Some((name, whole_number(id)?)))
+    {
+        let name = name.to_owned();
+        return Some((consumed, Kind::Command { name, id }, raw));
     }
     if let Some(stamp) = inner.strip_prefix("t:") {
         let (time, format) = stamp
@@ -689,6 +722,29 @@ mod tests {
             .map(|span| span.kind)
             .filter(|kind| *kind != Kind::Text)
             .collect()
+    }
+
+    /// The commandMention rule of module 605275: up to three words before the id.
+    #[test]
+    fn command_mentions_take_up_to_three_words() {
+        assert_eq!(
+            kinds("use </ping:12> or </role add user:34>"),
+            [
+                Kind::Command {
+                    name: "ping".into(),
+                    id: 12
+                },
+                Kind::Command {
+                    name: "role add user".into(),
+                    id: 34
+                },
+            ]
+        );
+        assert!(kinds("</a b c d:1>").is_empty());
+        assert!(kinds("</ping:x>").is_empty());
+        assert!(kinds("</:1>").is_empty());
+        assert!(kinds("</two  spaces:1>").is_empty());
+        assert!(kinds(&format!("</{}:1>", "a".repeat(33))).is_empty());
     }
 
     #[test]

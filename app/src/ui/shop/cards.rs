@@ -725,28 +725,50 @@ impl Root {
         let mut out = vec![buy];
         if !orbs_only {
             let sku = sku.clone();
+            let tip = format!("shop-card-gift-tip-{sku}");
+            let button = div()
+                .id(SharedString::from(format!("shop-card-gift-{sku}")))
+                .aria_label(gift_button_label(&product.name))
+                .size(px(40.))
+                .flex_none()
+                .rounded(px(8.))
+                .bg(color("--background-brand"))
+                .flex()
+                .items_center()
+                .justify_center()
+                .cursor_pointer()
+                .hover(|button| button.bg(color("--brand-560")))
+                .on_click(cx.listener(move |this, _, _, cx| {
+                    cx.stop_propagation();
+                    this.shop_buy(&sku, true, cx);
+                }))
+                .child(icon("shop_gift", 20., "--white"));
+            // Module 878112: "Send a gift" over the button.
             out.push(
-                div()
-                    .id(SharedString::from(format!("shop-card-gift-{sku}")))
-                    .size(px(40.))
-                    .flex_none()
-                    .rounded(px(8.))
-                    .bg(color("--background-brand"))
-                    .flex()
-                    .items_center()
-                    .justify_center()
-                    .cursor_pointer()
-                    .hover(|button| button.bg(color("--brand-560")))
-                    .on_click(cx.listener(move |this, _, _, cx| {
-                        cx.stop_propagation();
-                        this.shop_buy(&sku, true, cx);
-                    }))
-                    .child(icon("shop_gift", 20., "--white"))
-                    .into_any_element(),
+                self.with_tip(
+                    tip,
+                    crate::ui::tooltip::Tip::text(
+                        dc_intl::t("JCFN/y"),
+                        crate::ui::tooltip::Side::Top,
+                    ),
+                    button,
+                    cx,
+                )
+                .into_any_element(),
             );
         }
         out
     }
+}
+
+/// The gift button's accessible name (module 878112, `5UYoSr`): "Send a gift, {product}".
+pub(in crate::ui) fn gift_button_label(product: &str) -> String {
+    dc_intl::t!(
+        "5UYoSr",
+        ctaLabel = dc_intl::t("JCFN/y"),
+        productLabel = product
+    )
+    .to_string()
 }
 
 /// `footerGradient_UGbKo5` (dark theme): 146 tall from `--background-base-lowest` at the foot, 80% at 30%, clear at
@@ -846,4 +868,16 @@ fn skeleton_row(opacity: f32) -> gpui::Div {
                 .bg(color("--background-mod-strong")),
         )
         .child(skeleton_bar(110.))
+}
+
+#[cfg(test)]
+mod tests {
+    /// Module 878112: the gift button is named by its call to action and the product.
+    #[test]
+    fn the_gift_button_names_the_product() {
+        assert_eq!(
+            super::gift_button_label("Burnice White"),
+            "Send a gift, Burnice White"
+        );
+    }
 }

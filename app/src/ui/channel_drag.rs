@@ -453,6 +453,19 @@ impl Render for Ghost {
     }
 }
 
+/// The drag of a pinned channel, which no list accepts.
+#[derive(Clone, Copy)]
+pub(super) struct PinnedDrag;
+
+/// Its drag image: nothing.
+pub(super) struct EmptyDrag;
+
+impl Render for EmptyDrag {
+    fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+        div()
+    }
+}
+
 /// Which side of the target the line is on, and what the drop would do.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) struct Over {
@@ -500,6 +513,47 @@ impl Root {
             })
     }
 
+    /// A pinned channel the person may otherwise move (`pinned-channel` of module 79843; a server with opt-in
+    /// channels has its own dialog, `opt-in-channels`, which is not built): trying to drag it asks "Trying to reorder a
+    /// pinned channel?" (module 933752) and nothing moves.
+    fn pinned_drag_wrap(
+        &self,
+        channel: &Channel,
+        row: AnyElement,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let Some(guild) = self.guild else {
+            return row;
+        };
+        let opt_in = self
+            .stores
+            .guild_settings
+            .guilds
+            .get(&guild)
+            .is_some_and(|settings| settings.flags & 16384 != 0);
+        let pinned = self.stores.guild_settings.channel(guild, channel.id).flags & 2048 != 0;
+        if !self.can_manage_channels() || opt_in || !pinned {
+            return row;
+        }
+        let id = channel.id;
+        let root = cx.entity().downgrade();
+        div()
+            .id(SharedString::from(format!("channel-pinned-drag-{id}")))
+            .flex_none()
+            .on_drag(PinnedDrag, move |_, _, _, cx| {
+                // `canDrag` answers no after opening the dialog: the drag shows nothing and lands nowhere.
+                let _ = root.update(cx, |this, cx| {
+                    this.ask_destructive(
+                        super::destructive::Pending::unpin_to_reorder(guild, id),
+                        cx,
+                    )
+                });
+                cx.new(|_| EmptyDrag)
+            })
+            .child(row)
+            .into_any_element()
+    }
+
     /// A row of the list as a drag source and drop target: the dimmed look while a drag of another kind is under
     /// way, and the green line on the side the drop would land.
     pub(super) fn channel_drag_wrap(
@@ -509,7 +563,7 @@ impl Root {
         cx: &mut Context<Self>,
     ) -> AnyElement {
         if !self.channel_drag_allowed(channel) {
-            return row;
+            return self.pinned_drag_wrap(channel, row, cx);
         }
         let id = channel.id;
         let cls = cls_of(channel.kind);

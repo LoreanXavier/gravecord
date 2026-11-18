@@ -365,6 +365,39 @@ pub(super) fn index_commands(index: &Value) -> Vec<Cmd> {
         .collect()
 }
 
+/// `USE_APPLICATION_COMMANDS` of module 652215.
+const USE_APPLICATION_COMMANDS: u64 = 1 << 31;
+
+/// Does this index command answer the mention `</name:id>` (module 990474 `E`, `untranslatedName === commandName`)?
+/// Its id and its name are the mention's, and the mention's further words name its sub-command group and sub-command.
+pub(super) fn answers_mention(command: &Value, name: &str, id: u64) -> bool {
+    let mut words = name.split(' ');
+    let same_id = command["id"]
+        .as_str()
+        .and_then(|known| known.parse::<u64>().ok())
+        == Some(id);
+    if !same_id
+        || command["type"].as_u64().unwrap_or(1) != 1
+        || command["name"].as_str() != words.next()
+    {
+        return false;
+    }
+    let mut options = &command["options"];
+    for word in words {
+        let Some(found) = options.as_array().into_iter().flatten().find(|option| {
+            option["name"].as_str() == Some(word)
+                && matches!(
+                    option["type"].as_u64(),
+                    Some(SUB_COMMAND | SUB_COMMAND_GROUP)
+                )
+        }) else {
+            return false;
+        };
+        options = &found["options"];
+    }
+    true
+}
+
 /// The commands a query lists: names starting with it, then names containing it, then app names. Grouped by
 /// application in the order they come (apps first, the built-ins last), each group sorted by name.
 pub(super) fn matching(commands: &[Cmd], query: &str) -> Vec<Cmd> {
@@ -1271,6 +1304,111 @@ impl Root {
         self.command_index_value().cloned()
     }
 
+    /// Whether a painted command mention is a link: read from [`Self::refresh_command_mentions`]'s list.
+    pub(super) fn command_mention_usable(&self, name: &str, id: u64) -> bool {
+        self.command_mentions
+            .iter()
+            .any(|(known, known_name)| *known == id && known_name == name)
+    }
+
+    /// The command mentions of the open channel's loaded messages that are links, worked out again when the messages
+    /// or the command index change.
+    pub(super) fn refresh_command_mentions(&mut self) {
+        let mentions: Vec<(u64, String)> = self
+            .channel
+            .and_then(|channel| self.stores.messages.get(&channel))
+            .into_iter()
+            .flatten()
+            .filter(|message| message.content.contains("</"))
+            .flat_map(|message| dc_markdown::parse(&message.content))
+            .flat_map(|block| super::block_spans(&block).to_vec())
+            .filter_map(|span| match span.kind {
+                dc_markdown::Kind::Command { name, id } => Some((id, name)),
+                _ => None,
+            })
+            .collect();
+        self.command_mentions = mentions
+            .into_iter()
+            .filter(|(id, name)| self.mention_usable_now(name, *id))
+            .collect();
+    }
+
+    /// Module 990474 `E`: a command mention is a link when the loaded index has its command and the command may be
+    /// used here: always in a DM, else with Send Messages and Use Application Commands, never in an archived and
+    /// locked thread without Manage Threads. Otherwise it is plain "/name". GAP: the legacy chat input setting, which
+    /// also turns it plain, is not kept, and media threads are not told apart; mentions outside the open channel's
+    /// messages (search results, pins) stay plain.
+    fn mention_usable_now(&self, name: &str, id: u64) -> bool {
+        let known = self
+            .command_index_value()
+            .and_then(|index| index["application_commands"].as_array())
+            .is_some_and(|commands| {
+                commands
+                    .iter()
+                    .any(|command| answers_mention(command, name, id))
+            });
+        if !known {
+            return false;
+        }
+        let Some(guild) = self.current_guild() else {
+            return self.channel.is_some();
+        };
+        let (Some(me), Some(channel)) = (self.stores.me(), self.channel) else {
+            return false;
+        };
+        let can = |permission: u64| match self.current_channel() {
+            Some(known) => permissions::can_in_channel(guild, known, me, permission),
+            None => permissions::can_in_guild(guild, me, permission),
+        };
+        let locked = guild
+            .threads
+            .iter()
+            .any(|thread| thread.id == channel && thread.archived && thread.locked);
+        !(locked && !can(permissions::MANAGE_THREADS))
+            && can(permissions::SEND_MESSAGES)
+            && can(USE_APPLICATION_COMMANDS)
+    }
+
+    /// A press on a command mention (`C` of module 990474): with a draft in the composer, "Clear message?" first;
+    /// then the command's chip, with the mention's sub-command chosen.
+    pub(super) fn press_command_mention(
+        &mut self,
+        name: String,
+        id: u64,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.composer.read(cx).text().is_empty() {
+            self.use_command_mention(&name, id, window, cx);
+        } else {
+            self.chat_extra.alert = Some(super::chat_notices::clear_for_command_alert(name, id));
+            cx.notify();
+        }
+    }
+
+    /// The mention's command takes the composer (`Gf` of module 721768 with the command and its section).
+    pub(super) fn use_command_mention(
+        &mut self,
+        name: &str,
+        id: u64,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let id_text = id.to_string();
+        let Some(command) = self
+            .all_commands()
+            .into_iter()
+            .find(|command| command.id == id_text && answers_mention(&command.raw, name, id))
+        else {
+            return;
+        };
+        self.begin_command(command, "", cx);
+        for word in name.split(' ').skip(1) {
+            self.fill_option(json!(word), word.to_owned(), false, cx);
+        }
+        window.focus(&self.composer.read(cx).focus_handle(cx), cx);
+    }
+
     /// The launcher the composer's Apps button opens.
     pub(super) fn open_launcher(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.slash.launcher.take().is_some() {
@@ -2040,6 +2178,24 @@ mod tests {
                 json!({"type": 1, "name": "show", "options": [{"type": 3, "name": "who", "value": "me"}]})
             ]
         );
+    }
+
+    /// Module 990474: a mention answers to the command with its id and name, and to its sub-command path.
+    #[test]
+    fn a_command_mention_names_the_command_and_its_sub_commands() {
+        let command = json!({"id": "7", "name": "role", "type": 1, "options": [
+            {"name": "add", "type": 1, "options": [{"name": "who", "type": 6}]},
+            {"name": "admin", "type": 2, "options": [{"name": "grant", "type": 1}]}
+        ]});
+        assert!(answers_mention(&command, "role", 7));
+        assert!(answers_mention(&command, "role add", 7));
+        assert!(answers_mention(&command, "role admin grant", 7));
+        assert!(!answers_mention(&command, "role add who", 7));
+        assert!(!answers_mention(&command, "role remove", 7));
+        assert!(!answers_mention(&command, "role", 8));
+        assert!(!answers_mention(&command, "rolex", 7));
+        let user_command = json!({"id": "7", "name": "role", "type": 2});
+        assert!(!answers_mention(&user_command, "role", 7));
     }
 
     #[test]

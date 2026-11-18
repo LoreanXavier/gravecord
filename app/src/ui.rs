@@ -51,9 +51,9 @@ mod call_background;
 mod call_menus;
 mod call_popout;
 mod call_volume;
-mod camera_failed;
 #[cfg(feature = "capture")]
 pub(crate) mod callsim;
+mod camera_failed;
 mod carousel;
 #[cfg(feature = "capture")]
 mod ch_fixture;
@@ -694,6 +694,9 @@ pub struct Root {
     profile_editor: Option<profile_editor::Open>,
     /// Invite codes already resolved or on their way.
     requested_invites: HashSet<String>,
+    /// The command mentions of the loaded messages that are links here (module 990474), by id and name; worked out
+    /// when the messages or the command index change, never while painting.
+    command_mentions: Vec<(u64, String)>,
     /// Images this client draws itself (invite banners), by key.
     generated_images: std::cell::RefCell<HashMap<String, std::sync::Arc<gpui::Image>>>,
     /// The voice message players: loaded clips, each pill's position and bars, the shared speed and volume.
@@ -1119,6 +1122,7 @@ impl Root {
             full_profile: None,
             profile_editor: None,
             requested_invites: HashSet::new(),
+            command_mentions: Vec::new(),
             generated_images: std::cell::RefCell::new(HashMap::new()),
             voice_hub: std::rc::Rc::new(std::cell::RefCell::new(voice_message::Hub::new())),
             voice_rec: std::rc::Rc::new(std::cell::RefCell::new(voice_message::RecState::new())),
@@ -2211,6 +2215,9 @@ impl Root {
                 }
                 if key.starts_with("invite:") {
                     self.invite_fetched(&key);
+                }
+                if key.starts_with("command-index:") {
+                    self.refresh_command_mentions();
                 }
                 if key.starts_with(poll::VOTERS_PREFIX) {
                     self.poll_voters_fetched(&key);
@@ -3322,6 +3329,19 @@ impl Root {
 
     fn rebuild_rows(&mut self) {
         self.request_invites();
+        // A command mention needs the channel's command index to know whether it is a link (module 990474).
+        if self
+            .channel
+            .and_then(|channel| self.stores.messages.get(&channel))
+            .is_some_and(|messages| {
+                messages
+                    .iter()
+                    .any(|message| message.content.contains("</"))
+            })
+        {
+            self.request_command_index();
+        }
+        self.refresh_command_mentions();
         self.rows.clear();
         let empty = Vec::new();
         let messages = self
@@ -3925,7 +3945,9 @@ impl Root {
                 Piece {
                     // The reply preview shows a mention as its resolved `@name`, never the raw `<@id>`.
                     text: match span.kind {
-                        Kind::User(_) | Kind::Role(_) | Kind::Channel(_) => self.span_label(span),
+                        Kind::User(_) | Kind::Role(_) | Kind::Channel(_) | Kind::Command { .. } => {
+                            self.span_label(span)
+                        }
                         _ => span.text.clone(),
                     },
                     font: run_font,
@@ -6600,6 +6622,8 @@ impl Root {
                 .map_or_else(|| "unknown".to_owned(), |channel| channel.name.clone()),
             Kind::Emoji { name, .. } => format!(":{name}:"),
             Kind::Timestamp { unix, format } => format_timestamp(*unix, *format),
+            // Module 990474 `E`: "/" and the command's name, as a link or as plain text.
+            Kind::Command { name, .. } => format!("/{name}"),
             Kind::Text
             | Kind::Link(_)
             | Kind::AttachmentLink(_)
@@ -6615,7 +6639,8 @@ impl Root {
             Kind::Role(id) if self.current_guild().is_none_or(|guild| !guild.roles.contains_key(&id))
         );
         let mention = matches!(span.kind, Kind::User(_) | Kind::Channel(_) | Kind::Everyone)
-            || (matches!(span.kind, Kind::Role(_)) && !deleted_role);
+            || (matches!(span.kind, Kind::Role(_)) && !deleted_role)
+            || matches!(&span.kind, Kind::Command { name, id } if self.command_mention_usable(name, *id));
         let mut run_font: Font = font(if style.code { MONO } else { SANS });
         run_font.features = kerning();
         run_font.weight = match (style.bold, mention) {
@@ -6970,9 +6995,20 @@ impl Root {
                 }
             });
         }
+        // A usable command mention puts its command in the composer (module 990474).
+        let commands: Vec<Option<(String, u64)>> = spans
+            .iter()
+            .map(|span| match &span.kind {
+                Kind::Command { name, id } if self.command_mention_usable(name, *id) => {
+                    Some((name.clone(), *id))
+                }
+                _ => None,
+            })
+            .collect();
         if spoilers.iter().any(Option::is_some)
             || links.iter().any(Option::is_some)
             || channels.iter().any(Option::is_some)
+            || commands.iter().any(Option::is_some)
         {
             let spoilers = spoilers.to_vec();
             let root = self.weak.clone();
@@ -7003,6 +7039,9 @@ impl Root {
                     }
                     if let Some(Some(channel)) = channels.get(piece).copied() {
                         this.open_channel_mention(channel, cx);
+                    }
+                    if let Some(Some((name, id))) = commands.get(piece).cloned() {
+                        this.press_command_mention(name, id, window, cx);
                     }
                 });
             });

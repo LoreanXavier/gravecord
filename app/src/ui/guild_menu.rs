@@ -31,6 +31,8 @@ enum Entry {
     Privacy,
     Profile,
     HideMuted,
+    /// `report-raid` (module 808144): Report a Raid (module 935074).
+    ReportRaid,
     Leave,
 }
 
@@ -49,6 +51,15 @@ const SETTINGS_ACCESS: u64 = permissions::MANAGE_GUILD
 const CREATE_EVENTS: u64 = 1 << 44;
 /// `OPT_IN_ENABLED` of a server's notification settings flags (module 395504 `WW`).
 const OPT_IN_ENABLED: u64 = 16384;
+
+/// `k$` of module 903093: a raid or DM spam was detected less than two hours ago.
+fn incident_active(guild: &dc_state::Guild, now: chrono::DateTime<chrono::Utc>) -> bool {
+    [&guild.raid_detected_at, &guild.dm_spam_detected_at]
+        .into_iter()
+        .flatten()
+        .filter_map(|at| chrono::DateTime::parse_from_rfc3339(at).ok())
+        .any(|at| at.with_timezone(&chrono::Utc) + chrono::Duration::hours(2) > now)
+}
 
 /// The flags Show All Channels writes: the cached ones with the opt-in bit turned. With no settings loaded at all
 /// the other bits are unknown, so nothing is written; a server missing from loaded settings holds the default 0.
@@ -71,10 +82,31 @@ mod opt_in_tests {
         assert_eq!(toggled_opt_in(None, true), Some(OPT_IN_ENABLED));
         assert_eq!(toggled_opt_in(None, false), None);
     }
+
+    /// `k$` of module 903093: an incident lasts two hours after a raid or DM spam was detected.
+    #[test]
+    fn an_incident_lasts_two_hours_after_it_was_detected() {
+        let mut guild =
+            dc_state::Guild::from_value(&json!({"id": "1", "name": "g", "channels": []})).unwrap();
+        let now = chrono::DateTime::parse_from_rfc3339("2026-11-18T12:00:00Z")
+            .unwrap()
+            .with_timezone(&chrono::Utc);
+        assert!(!incident_active(&guild, now));
+        guild.raid_detected_at = Some("2026-11-18T10:30:00+00:00".to_owned());
+        assert!(incident_active(&guild, now));
+        guild.raid_detected_at = Some("2026-11-18T09:59:00+00:00".to_owned());
+        assert!(!incident_active(&guild, now));
+        guild.dm_spam_detected_at = Some("2026-11-18T11:00:00+00:00".to_owned());
+        assert!(incident_active(&guild, now));
+    }
 }
 
-/// Members who are not the owner can leave: the owner has to transfer or delete the server instead.
-const LEAVE: &[(Entry, &str, &str)] = &[(Entry::Leave, "guild_menu_leave", "Leave Server")];
+/// The last group: Report Raid (the shield, in the danger colour) for a Community server's moderators, then Leave
+/// Server for members who are not the owner (the owner has to transfer or delete the server instead).
+const LAST: &[(Entry, &str, &str)] = &[
+    (Entry::ReportRaid, "guild_menu_privacy", "Report Raid"),
+    (Entry::Leave, "guild_menu_leave", "Leave Server"),
+];
 
 const ENTRIES: [&[(Entry, &str, &str)]; 4] = [
     &[(Entry::Boost, "guild_menu_premium_subscribe", "Server Boost")],
@@ -176,6 +208,20 @@ impl Root {
             Entry::CreateChannel | Entry::CreateCategory => can(permissions::MANAGE_CHANNELS),
             Entry::CreateEvent => owner || held & (permissions::ADMINISTRATOR | CREATE_EVENTS) != 0,
             Entry::ActiveThreads => can(permissions::MANAGE_THREADS) && !known.threads.is_empty(),
+            Entry::Leave => !owner,
+            // `ic` of module 974103: Ban, Kick, Timeout or Manage Server, and no incident in its two hours.
+            Entry::ReportRaid => {
+                known.features.iter().any(|feature| feature == "COMMUNITY")
+                    && (owner
+                        || held
+                            & (permissions::BAN_MEMBERS
+                                | permissions::KICK_MEMBERS
+                                | permissions::MODERATE_MEMBERS
+                                | permissions::MANAGE_GUILD
+                                | permissions::ADMINISTRATOR)
+                            != 0)
+                    && !incident_active(known, chrono::Utc::now())
+            }
             Entry::ShowAll => {
                 known.features.iter().any(|feature| feature == "COMMUNITY")
                     || self
@@ -249,6 +295,7 @@ impl Root {
             Entry::Invite => self.open_invite(cx),
             Entry::Settings => self.open_server_settings(guild, cx),
             Entry::Leave => self.leave_guild = Some(guild),
+            Entry::ReportRaid => self.open_report_raid(guild, cx),
             // `create-event` opens the Create Event flow of the current server, as the server context menu's row does.
             Entry::CreateEvent => {
                 self.open_guild_events(cx);
@@ -267,19 +314,8 @@ impl Root {
         let guild = self.guild?;
         let hidden = self.hide_muted(guild);
         let mut items: Vec<AnyElement> = Vec::new();
-        let owner = self
-            .stores
-            .guilds
-            .iter()
-            .find(|known| known.id == guild)
-            .is_some_and(|known| {
-                known.owner_id.is_some()
-                    && known.owner_id == self.stores.current_user.as_ref().map(|me| me.id)
-            });
         let mut groups: Vec<&[(Entry, &str, &str)]> = ENTRIES.to_vec();
-        if !owner {
-            groups.push(LEAVE);
-        }
+        groups.push(LAST);
         // Entries this person may not use are not listed, and a group left empty takes its rule with it.
         let shown: Vec<Vec<&(Entry, &str, &str)>> = groups
             .iter()
@@ -324,7 +360,7 @@ impl Root {
                         .child(div().mr(px(8.)).child(icon(
                             name,
                             20.,
-                            if entry == Entry::Leave {
+                            if matches!(entry, Entry::Leave | Entry::ReportRaid) {
                                 "--text-feedback-critical"
                             } else {
                                 "--interactive-text-default"
@@ -336,7 +372,7 @@ impl Root {
                                 .text_size(px(14.))
                                 .line_height(px(18.))
                                 .font_weight(FontWeight(500.))
-                                .text_color(if entry == Entry::Leave {
+                                .text_color(if matches!(entry, Entry::Leave | Entry::ReportRaid) {
                                     color("--text-feedback-critical")
                                 } else {
                                     color("--text-strong")

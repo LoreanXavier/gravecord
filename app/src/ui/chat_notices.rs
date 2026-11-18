@@ -12,8 +12,8 @@ use super::modal::{self, Tone};
 use crate::net::Request;
 use dc_state::Id;
 use gpui::{
-    AnyElement, Context, FontWeight, IntoElement, ParentElement, Styled, Window, div, prelude::*,
-    px,
+    AnyElement, Context, FontWeight, IntoElement, ParentElement, SharedString, Styled, Window, div,
+    prelude::*, px,
 };
 use serde_json::{Value, json};
 use std::collections::{HashMap, VecDeque};
@@ -45,6 +45,78 @@ pub(super) enum Then {
     DmsOff {
         guild: Id,
     },
+    /// "Manage Messages" of the scheduled limit alert (module 859403 `vh`): the inbox on its Scheduled tab.
+    ScheduledInbox,
+    /// Submit of Report a Raid (module 935074): `B` of module 859706.
+    ReportRaid {
+        guild: Id,
+    },
+    /// Clear of "Clear message?" (module 990474 `C`): the mentioned command takes the composer.
+    UseCommand {
+        name: String,
+        id: u64,
+    },
+}
+
+/// "Clear message?" (module 990474 `C`, the confirm of 314116): `+awCIy`, Cancel and Clear.
+pub(super) fn clear_for_command_alert(name: String, id: u64) -> Alert {
+    Alert::show(
+        "clear-for-command",
+        dc_intl::t("pe26Cj"),
+        Some(dc_intl::t("+awCIy").to_owned()),
+        Some(dc_intl::t("ETE/oC").to_owned()),
+        Some(dc_intl::t("VkKicb").to_owned()),
+        Then::UseCommand { name, id },
+    )
+}
+
+/// The behaviours of Report a Raid (`M` of module 935074) with their strings.
+const RAID_KINDS: [(&str, &str); 5] = [
+    ("MESSAGE_SPAM", "fwloj2"),
+    ("DM_SPAM", "9CYNmS"),
+    ("MENTION_SPAM", "hR/IdO"),
+    ("SUSPICIOUS_USERS", "lKXu+n"),
+    ("SETTINGS_SPAM", "ETFVFw"),
+];
+
+/// `MVz.GUILD_RAID` of module 652215 for "Learn more about raids".
+const RAID_ARTICLE: &str = "https://support.discord.com/hc/en-us/articles/10989121220631";
+
+/// Report a Raid (module 935074, on the dialog of 189213): "Which behavior best describes how this raid is currently
+/// disrupting your server?" with Learn more about raids, the five behaviours as a checkbox group, Cancel and Submit.
+pub(super) fn raid_report_alert(guild: Id) -> Alert {
+    Alert {
+        id: "report-raid",
+        title: dc_intl::t("uYPGsS").to_owned(),
+        subtitle: None,
+        content: Some(Content::RaidReport { chosen: Vec::new() }),
+        buttons: vec![
+            AlertButton {
+                id: "report-raid-cancel",
+                label: dc_intl::t("ETE/oC").to_owned(),
+                secondary: true,
+                then: Then::Close,
+            },
+            AlertButton {
+                id: "report-raid-submit",
+                label: dc_intl::t("geKm7t").to_owned(),
+                secondary: false,
+                then: Then::ReportRaid { guild },
+            },
+        ],
+    }
+}
+
+/// `B` of module 859706: `POST /guilds/{id}/auto-moderation/report-raid` with no body, only when the server has a
+/// safety alerts or public updates channel.
+pub(super) fn raid_report_request(guild: Id, alerts_channel: Option<Id>) -> Option<Request> {
+    alerts_channel?;
+    Some(Request::Rest {
+        key: None,
+        method: reqwest::Method::POST,
+        route: format!("/guilds/{guild}/auto-moderation/report-raid"),
+        body: None,
+    })
 }
 
 #[derive(Clone, Debug)]
@@ -66,6 +138,8 @@ pub(super) enum Content {
     AffectedGuild(Id),
     /// Module 940372: the files of a bulk emoji upload that failed, a row each (`errors_qy2FFG`, 8px apart).
     EmojiUploadErrors(Vec<(super::server_emoji::UploadError, String)>),
+    /// Module 935074's checkbox group, with the indices of `RAID_KINDS` chosen.
+    RaidReport { chosen: Vec<usize> },
 }
 
 /// "Failed to upload files" (module 940372): the failed files of a bulk emoji upload and Got It.
@@ -478,7 +552,26 @@ impl Root {
                 destinations,
             } => self.retry_forward(*message, destinations, window, cx),
             Then::DmsOff { guild } => self.turn_off_guild_dms(guild, cx),
+            Then::ScheduledInbox => self.open_inbox_scheduled(cx),
+            Then::ReportRaid { guild } => {
+                let channel = self
+                    .stores
+                    .guild(guild)
+                    .and_then(|known| known.alerts_channel);
+                if let Some(request) = raid_report_request(guild, channel) {
+                    let _ = self.requests.send(request);
+                }
+                // GAP: "Raid report submitted" goes to the screen reader announcer, which is not built.
+                tracing::debug!("raid report submitted");
+            }
+            Then::UseCommand { name, id } => self.use_command_mention(&name, id, window, cx),
         }
+    }
+
+    /// Report Raid of the server header menu (module 808144): the dialog of module 935074.
+    pub(super) fn open_report_raid(&mut self, guild: Id, cx: &mut Context<Self>) {
+        self.chat_extra.alert = Some(raid_report_alert(guild));
+        cx.notify();
     }
 
     /// Escape closes the open alert; true when there was one.
@@ -507,10 +600,15 @@ impl Root {
             })
             .collect();
         let medium = alert.medium();
+        let subtitle = if matches!(alert.content, Some(Content::RaidReport { .. })) {
+            Some(raid_subtitle(cx))
+        } else {
+            alert.subtitle.map(rich_text)
+        };
         let spec = modal::Spec {
             id: alert.id,
             title: alert.title.into(),
-            subtitle: alert.subtitle.map(rich_text),
+            subtitle,
             body: alert.content.map(|content| self.alert_content(content, cx)),
             buttons,
             close: Box::new(|this, _, _| this.chat_extra.alert = None),
@@ -567,6 +665,42 @@ impl Root {
                 .gap(px(8.))
                 .children(errors.iter().enumerate().map(|(index, (kind, filename))| {
                     self.emoji_upload_error_row(index, *kind, filename, cx)
+                }))
+                .into_any_element(),
+            // `group_Si_H15`: a column 16px apart with 8px above and 4px below; each checkbox of 568385 has its label
+            // (`body-md/normal`, `text-strong`) 12px after the box.
+            Content::RaidReport { chosen, .. } => div()
+                .pt(px(8.))
+                .pb(px(4.))
+                .flex()
+                .flex_col()
+                .gap(px(16.))
+                .children(RAID_KINDS.iter().enumerate().map(|(index, (kind, label))| {
+                    let checked = chosen.contains(&index);
+                    div()
+                        .id(SharedString::from(format!("report-raid-{kind}")))
+                        .flex()
+                        .items_start()
+                        .gap(px(12.))
+                        .cursor_pointer()
+                        .child(super::server_onboarding::checkbox(checked, false))
+                        .child(
+                            div()
+                                .text_size(px(16.))
+                                .line_height(px(20.))
+                                .text_color(super::color("--text-strong"))
+                                .child(dc_intl::t(label)),
+                        )
+                        .on_click(cx.listener(move |this, _, _, cx| {
+                            if let Some(Alert {
+                                content: Some(Content::RaidReport { chosen, .. }),
+                                ..
+                            }) = this.chat_extra.alert.as_mut()
+                            {
+                                toggle_choice(chosen, index);
+                            }
+                            cx.notify();
+                        }))
                 }))
                 .into_any_element(),
         }
@@ -825,6 +959,47 @@ impl Root {
 }
 
 /// Runs of text, the bold ones at weight 700 (`$b`, a `strong`).
+/// A checkbox of a group: chosen when it was not, else no longer.
+fn toggle_choice(chosen: &mut Vec<usize>, index: usize) {
+    match chosen.iter().position(|known| *known == index) {
+        Some(at) => {
+            chosen.remove(at);
+        }
+        None => chosen.push(index),
+    }
+}
+
+/// `Hg8Ee7` with its `$link` "Learn more about raids" in `--text-link`, which opens the raids article.
+fn raid_subtitle(cx: &mut Context<Root>) -> AnyElement {
+    let mut text = String::new();
+    let mut links = Vec::new();
+    let mut highlights = Vec::new();
+    for (run, tag) in dc_intl::format_runs("Hg8Ee7", &[]) {
+        let start = text.len();
+        text.push_str(&run);
+        if tag.as_deref() == Some("$link") {
+            links.push(start..text.len());
+            highlights.push((
+                start..text.len(),
+                gpui::HighlightStyle {
+                    color: Some(super::color("--text-link").into()),
+                    ..Default::default()
+                },
+            ));
+        }
+    }
+    let open = cx.listener(|this, _: &usize, _, cx| this.follow_link(RAID_ARTICLE, "", cx));
+    div()
+        .child(
+            gpui::InteractiveText::new(
+                "report-raid-learn-more",
+                gpui::StyledText::new(text).with_highlights(highlights),
+            )
+            .on_click(links, move |index, window, cx| open(&index, window, cx)),
+        )
+        .into_any_element()
+}
+
 fn rich_text(runs: Vec<(String, bool)>) -> AnyElement {
     let mut text = String::new();
     let mut highlights = Vec::new();
@@ -869,6 +1044,39 @@ pub(super) fn body_text(text: impl Into<gpui::SharedString>) -> AnyElement {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Module 935074 and `B` of 859706: five behaviours to tick, and the report goes only to a server with an alerts
+    /// channel.
+    #[test]
+    fn a_raid_report_ticks_behaviours_and_posts_only_with_an_alerts_channel() {
+        let alert = raid_report_alert(7);
+        assert_eq!(alert.title, "Report a Raid");
+        assert!(alert.medium());
+        assert_eq!(alert.buttons[1].label, "Submit");
+        let mut chosen = Vec::new();
+        toggle_choice(&mut chosen, 1);
+        toggle_choice(&mut chosen, 3);
+        toggle_choice(&mut chosen, 1);
+        assert_eq!(chosen, [3]);
+        assert_eq!(
+            dc_intl::t(RAID_KINDS[3].1),
+            "Nothing yet, but suspicious new members"
+        );
+        assert!(raid_report_request(7, None).is_none());
+        match raid_report_request(7, Some(9)) {
+            Some(Request::Rest {
+                method,
+                route,
+                body,
+                ..
+            }) => {
+                assert_eq!(method, reqwest::Method::POST);
+                assert_eq!(route, "/guilds/7/auto-moderation/report-raid");
+                assert!(body.is_none());
+            }
+            _ => panic!("no report request"),
+        }
+    }
 
     #[test]
     fn locking_an_archived_thread_unarchives_it_first() {

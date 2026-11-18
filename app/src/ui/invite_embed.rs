@@ -142,7 +142,147 @@ pub(super) fn banner_png(base: [u8; 3], width: u32, height: u32) -> Vec<u8> {
     bytes
 }
 
+/// A role the invite grants (`ZW` of module 7864 over the invite's `roles`).
+#[derive(Clone, Debug, PartialEq)]
+pub(super) struct InviteRole {
+    pub id: Id,
+    pub name: String,
+    pub color: u32,
+    pub position: i64,
+    /// `colors`: the primary, secondary and tertiary colours of a gradient role.
+    pub colors: Option<(u32, Option<u32>, Option<u32>)>,
+}
+
+/// The invite's roles in the order of `d6` (module 7864): highest position first, then by id.
+pub(super) fn invite_roles(body: &serde_json::Value) -> Vec<InviteRole> {
+    let mut roles: Vec<InviteRole> = body["roles"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|role| {
+            let colour = |value: &serde_json::Value| value.as_u64().map(|value| value as u32);
+            let colors = &role["colors"];
+            Some(InviteRole {
+                id: role["id"].as_str()?.parse().ok()?,
+                name: role["name"].as_str()?.to_owned(),
+                color: colour(&role["color"]).unwrap_or(0),
+                position: role["position"].as_i64().unwrap_or(0),
+                colors: colour(&colors["primary_color"])
+                    .filter(|_| colour(&colors["secondary_color"]).is_some())
+                    .map(|primary| {
+                        (
+                            primary,
+                            colour(&colors["secondary_color"]),
+                            colour(&colors["tertiary_color"]),
+                        )
+                    }),
+            })
+        })
+        .collect();
+    roles.sort_by(|a, b| b.position.cmp(&a.position).then(a.id.cmp(&b.id)));
+    roles
+}
+
 impl Root {
+    /// "Roles Granted" under the server's profile on an invite (module 897288, `rolesList_fknPy8` of 679636): the
+    /// heading and the role pills (`rolePill_8JQJle` over the pill of 417454: 24 tall, 4px padding, the role's circle,
+    /// the name in 12px semibold). GAP: when the card's content grows past 292px the official card folds it under a
+    /// gradient with a details button; this card does not fold.
+    fn invite_roles_list(&self, roles: &[InviteRole]) -> Option<AnyElement> {
+        if roles.is_empty() {
+            return None;
+        }
+        let dot_style = self.pref_index("role_style", 0) == 1;
+        let pills = roles.iter().map(|role| {
+            let tint = if role.color == 0 {
+                color("--primary-300")
+            } else {
+                gpui::rgb(role.color)
+            };
+            let gradient = role
+                .colors
+                .map(|(primary, secondary, tertiary)| dc_state::RoleColors {
+                    primary,
+                    secondary,
+                    tertiary,
+                });
+            // `roleCircle_7RsUnm`: 12px with 4px each side; the dot style (`roleDot`) rings a 10px dot.
+            let circle = match (dot_style, gradient) {
+                (false, Some(colors)) => {
+                    div().child(img(super::role_gradient::circle(&colors, 12, 1.)).size(px(12.)))
+                }
+                (false, None) => div().rounded_full().bg(tint),
+                (true, Some(colors)) => div()
+                    .rounded_full()
+                    .bg(color("--background-base-lowest"))
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .child(img(super::role_gradient::circle(&colors, 10, 1.)).size(px(10.))),
+                (true, None) => div()
+                    .rounded_full()
+                    .bg(color("--background-base-lowest"))
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .child(div().size(px(10.)).rounded_full().bg(tint)),
+            };
+            div()
+                .h(px(24.))
+                .p(px(4.))
+                .rounded(px(8.))
+                .bg(color("--background-base-lowest"))
+                .flex()
+                .items_center()
+                .child(
+                    div()
+                        .mr(px(4.))
+                        .child(circle.mx(px(4.)).size(px(12.)).flex_none()),
+                )
+                .child(
+                    div()
+                        .mr(px(2.))
+                        .max_w(px(200.))
+                        .overflow_hidden()
+                        .whitespace_nowrap()
+                        .text_ellipsis()
+                        .text_size(px(12.))
+                        .line_height(px(16.))
+                        .font_weight(FontWeight(600.))
+                        .text_color(color("--interactive-text-active"))
+                        .child(role.name.clone()),
+                )
+        });
+        Some(
+            div()
+                .mb(px(16.))
+                .px(px(16.))
+                .flex()
+                .flex_col()
+                .child(
+                    div()
+                        .mb(px(4.))
+                        .text_size(px(14.))
+                        .line_height(px(18.))
+                        .font_weight(FontWeight(600.))
+                        .text_color(color("--text-default"))
+                        .child(dc_intl::t("stcSfI")),
+                )
+                .child(
+                    div()
+                        .id(SharedString::from(format!("invite-roles-{}", roles[0].id)))
+                        .aria_label(SharedString::from(
+                            dc_intl::t!("PCs0oo", numRoles = roles.len()).to_string(),
+                        ))
+                        .flex()
+                        .flex_wrap()
+                        .gap(px(4.))
+                        .children(pills),
+                )
+                .into_any_element(),
+        )
+    }
+
     /// Codes in loaded messages that have not been asked for yet.
     pub(super) fn request_invites(&mut self) {
         let codes: Vec<String> = self
@@ -508,6 +648,7 @@ impl Root {
                 .child(avatar)
                 .child(header)
                 .child(div().h(px(8.)))
+                .children(self.invite_roles_list(&invite_roles(body)))
                 .child(div().px(px(16.)).pb(px(16.)).child(button))
                 .into_any_element(),
         )
@@ -715,7 +856,25 @@ impl Root {
 
 #[cfg(test)]
 mod tests {
-    use super::{brighten, invite_codes};
+    use super::{brighten, invite_codes, invite_roles};
+
+    /// Module 897288 sorts the granted roles by `d6`: position high to low, then id.
+    #[test]
+    fn granted_roles_follow_position_then_id() {
+        let body = serde_json::json!({"roles": [
+            {"id": "3", "name": "c", "color": 0, "position": 1},
+            {"id": "2", "name": "b", "color": 255, "position": 5},
+            {"id": "1", "name": "a", "color": 0, "position": 1,
+             "colors": {"primary_color": 1, "secondary_color": 2, "tertiary_color": null}},
+            {"id": "x", "name": "broken"}
+        ]});
+        let roles = invite_roles(&body);
+        let names: Vec<&str> = roles.iter().map(|role| role.name.as_str()).collect();
+        assert_eq!(names, ["b", "a", "c"]);
+        assert_eq!(roles[1].colors, Some((1, Some(2), None)));
+        assert_eq!(roles[2].colors, None);
+        assert!(invite_roles(&serde_json::json!({})).is_empty());
+    }
 
     #[test]
     fn codes_come_from_invite_hosts_only() {

@@ -68,6 +68,18 @@ pub(super) struct State {
     pending: Option<Pending>,
 }
 
+/// "Oops! Limit reached." (`RLdUVh`), `3AMt7r` with the limit, Okay (`BddRzS`, the cancel text) and Manage Messages (`lv6bDa`).
+fn limit_alert(max: u32) -> super::chat_notices::Alert {
+    super::chat_notices::Alert::show(
+        "scheduled-limit",
+        dc_intl::t("RLdUVh"),
+        Some(dc_intl::t!("3AMt7r", max = max).to_string()),
+        Some(dc_intl::t("BddRzS").to_owned()),
+        Some(dc_intl::t("lv6bDa").to_owned()),
+        super::chat_notices::Then::ScheduledInbox,
+    )
+}
+
 /// The local time. Capture runs may fix it (`GRAVECORD_NOW=2026-11-10T13:10:00`) so the default time matches a recorded
 /// frame.
 fn now() -> NaiveDateTime {
@@ -813,6 +825,16 @@ impl Root {
                     .update(cx, |composer, _| composer.set_text(&pending.content));
             }
         }
+        // `vh` of module 859403: over the limit with Nitro, "Oops! Limit reached." with Manage Messages. GAP: without
+        // Nitro the official client opens the upsell modal 853861, which is not built; the toast below stands in.
+        if body["body"]["code"].as_u64() == Some(scheduled::TOO_MANY_SCHEDULED_MESSAGES) {
+            let (max, upgradable) = scheduled::limit(self.stores.account.premium_type == Some(2));
+            if !upgradable {
+                self.chat_extra.alert = Some(limit_alert(max));
+                cx.notify();
+                return;
+            }
+        }
         let error = body["body"]["message"]
             .as_str()
             .unwrap_or("Something went wrong. Please try again.");
@@ -860,5 +882,25 @@ fn proof_log(line: &str) {
         .open(std::env::temp_dir().join("gravecord-scheduled-proof.log"))
     {
         let _ = writeln!(file, "{line}");
+    }
+}
+
+#[cfg(test)]
+mod limit_tests {
+    /// `vh` of module 859403: with Nitro the limit alert names the limit, Okay and Manage Messages.
+    #[test]
+    fn the_limit_alert_names_the_limit_and_manages_messages() {
+        let (max, upgradable) = dc_state::scheduled_message::limit(true);
+        assert!(!upgradable);
+        let alert = super::limit_alert(max);
+        assert_eq!(alert.title, "Oops! Limit reached.");
+        let body = &alert.subtitle.as_ref().unwrap()[0].0;
+        assert!(body.contains("25 scheduled messages"), "{body}");
+        let labels: Vec<&str> = alert.buttons.iter().map(|b| b.label.as_str()).collect();
+        assert_eq!(labels, ["Okay", "Manage Messages"]);
+        assert!(matches!(
+            alert.buttons[1].then,
+            super::super::chat_notices::Then::ScheduledInbox
+        ));
     }
 }

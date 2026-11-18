@@ -174,6 +174,20 @@ pub(crate) struct Pending {
     pub anonymise: Option<bool>,
 }
 
+/// The accessible name of an upload card's picture (module 914905): `8TRAzR` with the alt text, else `lXoOEZ`; a
+/// file without a name is "uploaded image" (`lduvqL`).
+pub(super) fn media_label(name: &str, alt: Option<&str>) -> String {
+    let file = if name.is_empty() {
+        dc_intl::t("lduvqL").to_owned()
+    } else {
+        name.to_owned()
+    };
+    match alt.filter(|alt| !alt.is_empty()) {
+        Some(alt) => dc_intl::t!("8TRAzR", filename = file, alt = alt).to_string(),
+        None => dc_intl::t!("lXoOEZ", filename = file).to_string(),
+    }
+}
+
 /// The prefix that marks an attachment as a spoiler (`SPOILER_` in module 453771).
 pub(super) const SPOILER_PREFIX: &str = "SPOILER_";
 
@@ -452,6 +466,10 @@ impl Root {
                     .justify_center()
                     .child(
                         div()
+                            .id(SharedString::from(format!("upload-media-{index}")))
+                            // Module 914905: "Open expanded image view for {filename}", or "... with description
+                            // {alt}" when the file has alt text.
+                            .aria_label(media_label(&pending.name, pending.description.as_deref()))
                             .w(px(width))
                             .h(px(height))
                             .rounded(px(8.))
@@ -570,7 +588,11 @@ impl Root {
                         let on = pending.anonymise.unwrap_or(default);
                         action(
                             format!("upload-anonymise-{index}"),
-                            if on { "plugin_anon_on" } else { "plugin_anon_off" },
+                            if on {
+                                "plugin_anon_on"
+                            } else {
+                                "plugin_anon_off"
+                            },
                             "--interactive-text-default",
                         )
                         .on_click(cx.listener(move |this, _, _, cx| {
@@ -703,5 +725,22 @@ mod tests {
         assert_eq!(file_kind("logo.svg", Some("image/svg+xml")), "webcode");
         assert_eq!(file_kind("pack.tar.gz", None), "archive");
         assert_eq!(file_kind("clip.aep", None), "ae");
+    }
+}
+
+#[cfg(test)]
+mod media_label_tests {
+    /// Module 914905's accessible names of an upload card's picture.
+    #[test]
+    fn the_picture_is_named_by_its_file_and_alt_text() {
+        assert_eq!(
+            super::media_label("cat.png", None),
+            "Open expanded image view for cat.png"
+        );
+        assert_eq!(
+            super::media_label("", Some("")),
+            "Open expanded image view for uploaded image"
+        );
+        assert!(super::media_label("cat.png", Some("a cat")).contains("a cat"));
     }
 }
