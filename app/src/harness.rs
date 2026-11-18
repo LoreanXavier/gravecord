@@ -1579,6 +1579,13 @@ pub async fn run(
                 };
                 let _ = writeln!(output, "{line}");
             }
+            // `shot <png>`: the main window as it is now, so one run can keep several frames (one sign-in for many
+            // checks).
+            ["shot", path] => {
+                let path = PathBuf::from(path);
+                cx.update(|cx| crate::write_capture(cx, window, &path));
+                let _ = writeln!(output, "shot: {}", path.display());
+            }
             ["popout", "shot", path] => {
                 let path = PathBuf::from(path);
                 let handle = root.read_with(cx, |root, _| root.call_popout_window());
