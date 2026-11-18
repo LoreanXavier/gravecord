@@ -885,6 +885,27 @@ pub(crate) const DEFS: &[Def] = &[
         settings: &[],
     },
     Def {
+        id: "ServerListIndicators",
+        name: "ServerListIndicators",
+        description: "Add online friend count or server count in the server list.",
+        origin: Origin::Vencord,
+        source: "src/plugins/serverListIndicators/index.tsx",
+        default_on: false,
+        settings: &[Setting {
+            key: "mode",
+            label: "Mode",
+            description: "What the item counts.",
+            kind: Kind::Select {
+                options: &[
+                    ("Only online friend count", Lit::Int(2)),
+                    ("Only server count", Lit::Int(1)),
+                    ("Both server and online friend counts", Lit::Int(3)),
+                ],
+                default: 0,
+            },
+        }],
+    },
+    Def {
         id: "ShowConnections",
         name: "ShowConnections",
         description: "Show connected accounts in user popouts and the DM sidebar.",

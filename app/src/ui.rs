@@ -4325,6 +4325,8 @@ impl Root {
                 .child(self.home_tile(cx))
                 // Not in the pinned client: ReadAllNotificationsButton (`plugin_hooks/read_all.rs`).
                 .children(self.read_all_button(cx))
+                // Not in the pinned client: ServerListIndicators (`plugin_hooks/server_list_indicators.rs`).
+                .children(self.server_list_indicators(cx))
                 .children(self.favorites_tile(cx))
                 .children(self.unread_dm_rail(cx))
                 .child(

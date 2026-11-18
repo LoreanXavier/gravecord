@@ -12,7 +12,7 @@ every setting changed), and with every plugin off, and fails on one differing pi
 The list is the plugins enabled in the owner's Equicord backup of 2026-09-21 (156). Sources were read in the local
 Equicord checkout of 2026-11-14 (`src/plugins` is Vencord's, `src/equicordplugins` Equicord's).
 
-Totals: 27 ported, 3 native, 81 planned, 45 not applicable.
+Totals: 28 ported, 3 native, 80 planned, 45 not applicable.
 
 Status: **ported** works and has its proof; **native** is what gravecord already does without a plugin;
 **planned** is not built yet (an import keeps its settings for when it is); **not applicable** has nothing to
@@ -133,7 +133,7 @@ port in a native client, or was removed upstream.
 | SedEnhanced | planned | equicordplugins/sedEnhanced/index.ts | Expands on Discord's rudimentary `sed` support. | `s/a/b/` editing the last message, in the send path. |  |
 | ServerInfo | planned | plugins/serverInfo/index.tsx | Allows you to view info about a server | a server information dialog. |  |
 | ServerListAPI | not applicable | plugins/_api/serverList.ts | API required for plugins that modify the server list. | client-mod plumbing (an API for other plugins), nothing to port. |  |
-| ServerListIndicators | planned | plugins/serverListIndicators/index.tsx | Add online friend count or server count in the server list | online friend and server counts by the server list. |  |
+| ServerListIndicators | ported | plugins/serverListIndicators/index.tsx | Add online friend count or server count in the server list | plugin_hooks/server_list_indicators.rs: under the Home button an item with the friends online and/or the servers (mode), and the same as its tooltip. Pending join requests of servers not joined are not counted yet (the app keeps no UserGuildJoinRequestStore id list). | `the_item_says_what_its_mode_counts`; frame sli-on; plugins-off chat (rail) |
 | Settings | not applicable | plugins/_core/settings.tsx | Adds Settings UI and debug info | its settings UI is the Gravecord settings group itself; `settingsLocation` not ported (the group sits before Developer). |  |
 | ShowConnections | ported | plugins/showConnections/index.tsx | Show connected accounts in user popouts and the DM sidebar | plugin_hooks/show_connections.rs: the connected accounts as platform icons (size, spacing) with their names as tooltips in the profile popout and the DM sidebar, and with showOnModal in place of the full profile's connection cards; a click opens the page or copies the name. | `spacing_and_settings_read_as_the_original`; frame sc-on; plugins-off profile-popout, voice-profile |
 | ShowHiddenThings | planned | plugins/showHiddenThings/index.ts | Displays various hidden & moderator-only things regardless of permissions. | hidden and moderator-only things shown. |  |
@@ -240,6 +240,7 @@ Every setting of each original (`definePluginSettings`), its type and default th
 | PlatformIndicators | `showBots` | BOOLEAN | `false` | ported |
 | PlatformIndicators | `ConsoleIcon` | SELECT | `"equicord"` | ported |
 | ReadAllNotificationsButton | `compact` | BOOLEAN | `false` | ported |
+| ServerListIndicators | `mode` | SELECT | `IndicatorType.FRIEND` | ported |
 | ShowConnections | `iconSize` | NUMBER | `32` | ported |
 | ShowConnections | `iconSpacing` | SELECT | `Spacing.COZY` | ported |
 | ShowConnections | `showGithubOrgs` | BOOLEAN | `true` | ported |
