@@ -35,6 +35,7 @@ fn stamp(stores: &Stores, guild: &Guild) -> u64 {
         stores.account.nsfw_allowed.hash(h);
         guild.nsfw_level.hash(h);
         guild.my_roles.hash(h);
+        guild.viewing_roles.hash(h);
         guild.joined_at.hash(h);
     });
     if let Some(settings) = stores.guild_settings.guilds.get(&guild.id) {
@@ -1071,14 +1072,14 @@ mod tests {
         );
         assert!(guild_counts(&stores, &stores.guilds[0], Utc::now()).unread);
 
-        stores.guild_settings.update(
-            &json!({"guild_id": "10", "mute_scheduled_events": true}),
-        );
+        stores
+            .guild_settings
+            .update(&json!({"guild_id": "10", "mute_scheduled_events": true}));
         assert!(!guild_counts(&stores, &stores.guilds[0], Utc::now()).unread);
 
-        stores.guild_settings.update(
-            &json!({"guild_id": "10", "mute_scheduled_events": false}),
-        );
+        stores
+            .guild_settings
+            .update(&json!({"guild_id": "10", "mute_scheduled_events": false}));
         stores.dispatch(
             "GUILD_FEATURE_ACK",
             &json!({"id": "10", "ack_type": 1, "acked_id": "200"}),

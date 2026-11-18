@@ -303,7 +303,14 @@ impl Root {
             };
             // The account's value shows from now on; the page reads it from `Stores::prefs`.
             self.setting_choices.remove(key);
+            let old = self.stores.prefs.get(key).copied().unwrap_or(0);
             let patch = self.stores.set_pref(pref, value);
+            // Module 158935's `setValue` of these two rows offers to bring the servers along (32167, 413201).
+            if key == "activity_sharing_per_guild_default_setting" {
+                self.activity_default_changed(old, value);
+            } else if key == "profile_privacy_setting" {
+                self.profile_privacy_changed(old, value);
+            }
             if key == "activity_privacy_setting" {
                 // Share my detected activities: what the presence carries changes at once.
                 self.refresh_own_presence();

@@ -582,7 +582,7 @@ impl Root {
                 );
             }
             Purpose::ServerIcon => self.server_icon_cropped(uri, cx),
-            Purpose::GuildBanner => self.boost_banner_cropped(uri, cx),
+            Purpose::GuildBanner => self.boost_banner_cropped(uri, cropped.gpui_image(), cx),
             Purpose::HomeHeader => self.onboarding_home_header(Some(uri), cx),
             Purpose::GroupIcon => self.group_icon_cropped(uri, cropped.gpui_image(), cx),
         }
@@ -1317,10 +1317,12 @@ impl Root {
                     cx,
                 ),
             );
+        let bar = self.boost_preview_bar(crop, cx);
         let body = div()
             .pt(px(8.))
             .flex()
             .flex_col()
+            .children(bar)
             .child(area)
             // The text under the area when it cannot move (`jUze6F`) is for screen readers only (`h.A`).
             .children(hint)
@@ -1375,6 +1377,61 @@ impl Root {
             reset.into_any_element(),
             cx,
         ))
+    }
+
+    /// "This is a Boosting preview" (module 58767 `I`, `container_aynOSy`): over a server banner the server's level does
+    /// not allow yet, a 44px bar on `--background-base-lowest` with the pink gem (12px and 8px around it), the line in
+    /// body-sm/semibold and Boost Server, which opens module 13808 over the picture.
+    fn boost_preview_bar(&self, crop: &Crop, cx: &mut Context<Self>) -> Option<AnyElement> {
+        if crop.purpose != Purpose::GuildBanner {
+            return None;
+        }
+        let gif = crop.file_name.to_lowercase().ends_with(".gif");
+        let guild = self.server_settings.as_ref()?.guild;
+        if super::server_boost::banner_allowed(&self.stores.guild(guild)?.features, gif) {
+            return None;
+        }
+        let preview = crop.preview.clone();
+        Some(
+            div()
+                .h(px(44.))
+                .flex()
+                .items_center()
+                .bg(color("--background-base-lowest"))
+                .child(div().pl(px(12.)).pr(px(8.)).child(icon(
+                    "boost_gem",
+                    24.,
+                    "--guild-boosting-pink",
+                )))
+                .child(
+                    div()
+                        .text_size(px(14.))
+                        .line_height(px(18.))
+                        .font_weight(FontWeight(600.))
+                        .text_color(color("--text-strong"))
+                        .child(dc_intl::t("56M7xe")),
+                )
+                .child(
+                    div()
+                        .id("boost-preview-bar-boost")
+                        .ml_auto()
+                        .mr(px(12.))
+                        .cursor_pointer()
+                        .hover(|style| style.underline())
+                        .text_size(px(14.))
+                        .line_height(px(18.))
+                        .font_weight(FontWeight(600.))
+                        .text_color(color("--text-brand"))
+                        .child(dc_intl::t("WUHdZV"))
+                        .on_click(cx.listener(move |this, _, _, cx| {
+                            let shown = preview
+                                .clone()
+                                .map(|picture| (gpui::ImageSource::from(picture), gif));
+                            this.open_banner_upsell(shown, cx);
+                        })),
+                )
+                .into_any_element(),
+        )
     }
 
     /// `editingContainer`: the picture on black, moved by dragging, under the dimmed crop shape.

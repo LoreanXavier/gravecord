@@ -302,8 +302,10 @@ struct ConnectedAccount {
     icon: &'static str,
     /// The platform's `icon.lightSVG` and `icon.darkSVG` (module 573648); only ShowConnections draws them.
     svg: (&'static str, &'static str),
-    /// The account's `verified`; only ShowConnections shows it.
+    /// The account's `verified`: the Verified Connection mark of module 46937 and ShowConnections' label.
     verified: bool,
+    /// The mark in the Twitter colour with "Verified on Twitter" ([`verified_mark`]).
+    twitter_verified: bool,
     url: Option<String>,
     metadata: Vec<ConnectionMeta>,
 }
@@ -735,6 +737,28 @@ fn connection_url(kind: &str, id: &str, name: &str) -> Option<String> {
     })
 }
 
+/// `S` of module 46937: a Bluesky, Mastodon or X account whose `metadata.verified` (`pK.TWITTER_VERIFIED`) is exactly
+/// the string `"1"` takes the `PLATFORM_TWITTER` colour and the "Verified on Twitter" tooltip (`Jebrww`).
+fn twitter_verified(kind: &str, metadata: &Value) -> bool {
+    matches!(kind, "bluesky" | "mastodon" | "twitter") && metadata["verified"].as_str() == Some("1")
+}
+
+/// `PLATFORM_TWITTER` of module 646514 (`unsafe_rawColors`, no CSS variable).
+const PLATFORM_TWITTER: u32 = 0x1da1f2;
+
+/// The Verified Connection mark of an account (`G` in `S` of module 46937): none unless the account is `verified`;
+/// else the tooltip's key, and whether the flower takes the Twitter colour instead of `--icon-muted`.
+fn verified_mark(account: &ConnectedAccount) -> Option<(&'static str, bool)> {
+    if !account.verified {
+        return None;
+    }
+    Some(if account.twitter_verified {
+        ("Jebrww", true)
+    } else {
+        ("6H6h1r", false)
+    })
+}
+
 /// The profile's connections as module 851767 keeps them (supported platforms only) and `t0` of module 927071 draws
 /// them: the platform, the name with its profile link, "Member since" from `metadata.created_at` and the metadata line.
 fn parse_connected_accounts(body: &Value) -> Vec<ConnectedAccount> {
@@ -757,6 +781,7 @@ fn parse_connected_accounts(body: &Value) -> Vec<ConnectedAccount> {
                 icon,
                 svg: (light_svg, dark_svg),
                 verified: item["verified"] == true,
+                twitter_verified: twitter_verified(kind, metadata),
                 url: connection_url(kind, id, &name),
                 metadata: connection_metadata(kind, metadata),
                 name,
@@ -1518,6 +1543,52 @@ impl Root {
                     .line_height(px(18.))
                     .text_color(default)
                     .child(account.name.clone());
+                // `G` of module 46937: module 355971's 16px badge (`connectedAccountVerifiedIcon_XvCt_s`, 4px after the
+                // name) — module 152578's flower in `--icon-muted` (the Twitter colour for a verified X account) with
+                // the 16px CheckmarkSmall (module 478016) centred on it in `--interactive-text-active`, and its tooltip.
+                // GAP: the flower's colour is not desaturated by the saturation setting (`$k` of module 317097).
+                // GAP: no DOM capture of this mark; the 16px check follows 355971's `width`/`height` props, which the
+                // 10px `redesignIconChildContainer_d3vyhc` cannot shrink.
+                let mark = verified_mark(&account).map(|(tip, twitter)| {
+                    let flower: Hsla = if twitter {
+                        gpui::rgb(PLATFORM_TWITTER).into()
+                    } else {
+                        palette.token("--icon-muted").into()
+                    };
+                    let badge = div()
+                        .relative()
+                        .size(px(16.))
+                        .flex_none()
+                        .child(
+                            svg()
+                                .path("icons/discover_flower.svg")
+                                .size(px(16.))
+                                .text_color(flower),
+                        )
+                        .child(
+                            div()
+                                .absolute()
+                                .inset_0()
+                                .flex()
+                                .items_center()
+                                .justify_center()
+                                .child(
+                                    svg()
+                                        .path("icons/discover_flower_check.svg")
+                                        .size(px(16.))
+                                        .flex_none()
+                                        .text_color(palette.token("--interactive-text-active")),
+                                ),
+                        );
+                    self.with_tip(
+                        format!("full-profile-conn-verified-{user}-{index}"),
+                        super::tooltip::Tip::text(dc_intl::t(tip), super::tooltip::Side::Top),
+                        badge,
+                        cx,
+                    )
+                    // The mark is not part of the profile link.
+                    .on_click(|_, _, cx| cx.stop_propagation())
+                });
                 // `platformUrlAnchor_O2KI4e` around `accountName_O2KI4e` (2px gap) with the 16px LinkExternalSmall
                 // glyph (module 509434), underlined on hover; a platform without a profile link shows the name alone.
                 let name: AnyElement = match account.url.clone() {
@@ -1539,6 +1610,8 @@ impl Root {
                             .gap(px(2.))
                             .hover(|style| style.underline())
                             .child(name_text)
+                            // 4px after the name: the anchor's 2px gap and 2px more.
+                            .children(mark.map(|mark| mark.ml(px(2.))))
                             .child(
                                 svg()
                                     .path("icons/link_external_small.svg")
@@ -1551,7 +1624,13 @@ impl Root {
                             }))
                             .into_any_element()
                     }
-                    None => name_text.into_any_element(),
+                    None => div()
+                        .min_w(px(0.))
+                        .flex()
+                        .items_center()
+                        .child(name_text)
+                        .children(mark.map(|mark| mark.ml(px(4.))))
+                        .into_any_element(),
                 };
                 let meta_count = account.metadata.len();
                 let meta: Vec<AnyElement> = account
@@ -3686,6 +3765,39 @@ mod tests {
                 (false, ("dbfa31449965dbd5.svg", "1f7ec18f3695d4cf.svg")),
             ]
         );
+    }
+
+    /// Module 46937: only a verified account has the mark; a Bluesky, Mastodon or X account with `metadata.verified`
+    /// exactly `"1"` takes the Twitter colour and "Verified on Twitter".
+    #[test]
+    fn the_verified_connection_mark_follows_module_46937() {
+        let body = serde_json::json!({"connected_accounts": [
+            {"type": "github", "id": "1", "name": "octocat", "verified": true},
+            {"type": "steam", "id": "2", "name": "s", "verified": false},
+            {"type": "twitter", "id": "3", "name": "x", "verified": true, "metadata": {"verified": "1"}},
+            {"type": "bluesky", "id": "did:plc:a", "name": "b", "verified": true, "metadata": {"verified": "1"}},
+            {"type": "mastodon", "id": "https://m.example/@m", "name": "m", "verified": true, "metadata": {"verified": 1}},
+            {"type": "twitter", "id": "4", "name": "y", "verified": false, "metadata": {"verified": "1"}},
+            {"type": "github", "id": "5", "name": "g", "verified": true, "metadata": {"verified": "1"}}
+        ]});
+        let marks: Vec<_> = parse_connected_accounts(&body)
+            .iter()
+            .map(super::verified_mark)
+            .collect();
+        assert_eq!(
+            marks,
+            [
+                Some(("6H6h1r", false)),
+                None,
+                Some(("Jebrww", true)),
+                Some(("Jebrww", true)),
+                Some(("6H6h1r", false)),
+                None,
+                Some(("6H6h1r", false)),
+            ]
+        );
+        assert_eq!(dc_intl::t("6H6h1r"), "Verified Connection");
+        assert_eq!(dc_intl::t("Jebrww"), "Verified on Twitter");
     }
     use serde_json::json;
 

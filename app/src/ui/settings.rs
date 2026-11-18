@@ -285,7 +285,7 @@ enum Reveal {
 }
 
 impl Open {
-    fn new(page: Page) -> Self {
+    pub(super) fn new(page: Page) -> Self {
         Self {
             page,
             anchor: Rc::default(),

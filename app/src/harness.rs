@@ -510,6 +510,24 @@ pub async fn run(
                 crate::ui::composer_ai::AS_STAFF.store(true, std::sync::atomic::Ordering::Relaxed);
                 let _ = writeln!(output, "composer-ai: staff");
             }
+            // `server-welcome new`: the server in view counts as created just now (module 302125's cards).
+            ["server-welcome", "new"] => {
+                crate::ui::server_welcome_new::AS_NEW
+                    .store(true, std::sync::atomic::Ordering::Relaxed);
+                let _ = writeln!(output, "server-welcome: new");
+            }
+            // `tutorial reset [confirmed ids...]`: the account's tutorial tips unsuppressed (READY's `tutorial`, nothing
+            // sent); `tutorial open <id>` opens a shown tip's popout, `tutorial close` closes it (`ui/tutorial_tips.rs`).
+            ["tutorial", rest @ ..] => {
+                let line = root.update(cx, |root, cx| root.script_tutorial(rest, cx));
+                let _ = writeln!(output, "tutorial: {line}");
+            }
+            // `view-as-role start <role id|everyone> [guild id]`, `view-as-role picker|stop|state`: View Server As
+            // Role, local only (`ui/view_as_role.rs`).
+            ["view-as-role", rest @ ..] => {
+                let line = root.update(cx, |root, cx| root.script_view_as_role(rest, cx));
+                let _ = writeln!(output, "{line}");
+            }
             // `limited-access`: a request refused for limited access, as `net` reports it (module 218642).
             ["limited-access"] => {
                 cx.update(|cx| {
@@ -1323,6 +1341,16 @@ pub async fn run(
             }
             // The calls the text-to-speech engine received (a capture build never speaks aloud).
             // `graphic urgent | download <url>`: the dialogs of `ui/graphic_dialogs.rs`.
+            // `birthday stage | open <source> | nuf | set | pick | confirm | loading | submit | answer | state`: the age
+            // gate of `ui/birthday.rs` on a staged "no date of birth" state; nothing is ever sent.
+            ["birthday", rest @ ..] => {
+                let note = cx.update(|cx| {
+                    window.update(cx, |_, window, cx| {
+                        root.update(cx, |root, cx| root.script_birthday(rest, window, cx))
+                    })
+                });
+                let _ = writeln!(output, "{note:?}");
+            }
             ["graphic", rest @ ..] => {
                 let line = root.update(cx, |root, cx| root.script_graphic(rest, cx));
                 let _ = writeln!(output, "{line}");
@@ -1331,6 +1359,22 @@ pub async fn run(
             ["unread-notice", rest @ ..] => {
                 let line = root.update(cx, |root, cx| {
                     let line = root.script_unread_notice(rest);
+                    cx.notify();
+                    line
+                });
+                let _ = writeln!(output, "{line}");
+            }
+            // `voice-silence-dialog`: "We can't hear you!" with its Don't show checkbox (`ui/settings/voice/extra.rs`).
+            ["voice-silence-dialog"] => {
+                root.update(cx, |root, cx| {
+                    root.script_voice_silence_dialog();
+                    cx.notify();
+                });
+            }
+            // `onboarding-blocked`: the open server in the onboarding blocked state (`ui/member_onboarding.rs`), in memory.
+            ["onboarding-blocked"] => {
+                let line = root.update(cx, |root, cx| {
+                    let line = root.script_onboarding_blocked();
                     cx.notify();
                     line
                 });

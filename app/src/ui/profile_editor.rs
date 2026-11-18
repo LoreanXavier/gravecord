@@ -7,7 +7,7 @@
 //! written when the save bar's button is pressed (module 631670, 159001 and 207803 build the requests).
 
 mod activity;
-mod colour;
+pub(super) mod colour;
 mod geometry;
 mod panel;
 mod picker;
@@ -112,6 +112,8 @@ pub(super) struct Open {
     widget_confirm_remove: Option<usize>,
     panel_collapsed: bool,
     upsell_closed: bool,
+    /// The per-server profile upsell (module 63473) is up (`servers.rs`).
+    guild_upsell: bool,
     /// The status bubble's prompt, drawn once per open from the prompt list (module 645507).
     prompt: &'static str,
     /// The editor's sizes for the window it is drawn in (`geometry.rs`), updated every frame.
@@ -277,6 +279,7 @@ impl Root {
             widget_confirm_remove: None,
             panel_collapsed: false,
             upsell_closed: false,
+            guild_upsell: false,
             prompt: preview::random_prompt(),
             geometry: geometry::Geometry::of(1280., 720.),
             #[cfg(feature = "capture")]
@@ -334,7 +337,9 @@ impl Root {
         let Some(open) = self.profile_editor.as_mut() else {
             return false;
         };
-        if open.widget_confirm_remove.is_some() {
+        if open.guild_upsell {
+            open.guild_upsell = false;
+        } else if open.widget_confirm_remove.is_some() {
             open.widget_confirm_remove = None;
         } else if open.game_picker.is_some() {
             open.game_picker = None;
@@ -881,6 +886,8 @@ impl Root {
             .children(self.profile_editor_game_picker_popout(cx))
             .children(self.profile_editor_widget_modal(cx))
             .children(self.profile_editor_remove_widget_modal(cx));
+        // Over the whole window, not only the editor's box.
+        let guild_upsell = self.profile_editor_guild_upsell_layer(cx);
         let layer = deferred(
             div()
                 .id("profile-editor-layer")
@@ -890,7 +897,8 @@ impl Root {
                 .left_0()
                 .size_full()
                 .bg(pose.dim(color("--background-scrim")))
-                .child(root),
+                .child(root)
+                .children(guild_upsell),
         )
         .with_priority(2)
         .into_any_element();
@@ -1285,6 +1293,7 @@ impl Root {
             ["save"] => self.profile_editor_save(cx),
             ["reset"] => self.profile_editor_reset(cx),
             ["dismiss-upsell"] => self.profile_editor_dismiss_upsell(),
+            ["guild-upsell"] => self.profile_editor_open_guild_upsell(cx),
             _ => return format!("profile-editor: unknown command {rest:?}"),
         }
         cx.notify();

@@ -258,6 +258,7 @@ impl Root {
         let open = self.profile_editor.as_ref().expect("editor is open");
         let geometry = open.geometry;
         let premium = self.profile_editor_premium();
+        let guild_upsell = super::servers::guild_upsell_opens(open.guild, premium);
         let banner = super::panel::banner_color(open, user);
         let avatar_image = self.profile_editor_avatar_image(user);
         let decoration = user
@@ -373,6 +374,20 @@ impl Root {
                         .child(img(image).size(px(side)))
                 })),
         );
+        // `E` of module 641318: on a server profile without Nitro the avatar is a button for `onUpsellClick`, the
+        // per-server profile upsell (module 63473).
+        // GAP: the 20px white NitroWheel over the avatar (`_.QY` of module 531835) is not drawn.
+        let avatar = if guild_upsell {
+            avatar
+                .id("profile-editor-avatar-upsell")
+                .cursor_pointer()
+                .on_click(cx.listener(|this, _, _, cx| {
+                    this.profile_editor_open_guild_upsell(cx);
+                }))
+                .into_any_element()
+        } else {
+            avatar.into_any_element()
+        };
         // The status bubble (`e0.A` with the prompt of module 645507): grows automatically when text wraps inside `bubble_width`.
         let bubble_width = (width - bubble_left - 20.).clamp(120., 180.);
         let bubble = div()

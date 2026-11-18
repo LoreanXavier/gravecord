@@ -305,6 +305,7 @@ impl Root {
                 self.account_switcher_open(),
                 self.settings_extra.has_dialog(),
                 self.add_server.is_some(),
+                self.birthday_modal_open(),
                 self.group_dm.is_some(),
                 self.forward.is_some(),
                 self.invite.is_some(),

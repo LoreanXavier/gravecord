@@ -22,6 +22,10 @@ use std::sync::Arc;
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub(crate) enum Step {
+    /// `AGE_GATE` of module 109766: the birthday step an account without a date of birth starts with
+    /// (`nsfwAllowed == null`), drawn by `birthday.rs`. Only the harness opens it (see `open_add_server`).
+    #[cfg_attr(not(feature = "capture"), allow(dead_code))]
+    AgeGate,
     Pick,
     Purpose,
     Customize,
@@ -426,6 +430,9 @@ impl Root {
         };
         let name = field("", &format!("{username}'s server"), cx);
         let invite = field("https://discord.gg/hTKzmak", "", cx);
+        // GAP: module 109766's flow (`ea`) starts at the birthday step for an account without a date of birth, but
+        // module 596339 opens that NUF modal only for an account with no servers outside the desktop app
+        // (`!isPlatformEmbedded`), so the desktop rail never reaches it; only the harness (`birthday nuf`) shows it.
         self.add_server = Some(AddServer {
             step: Step::Pick,
             template: 0,
@@ -455,6 +462,17 @@ impl Root {
             }
         }
         cx.notify();
+    }
+
+    /// `onComplete` of 109766's birthday step: on to Create Your Server.
+    /// GAP: an unclaimed account that came from an invite (`INVITE_UNCLAIMED`) closes the flow instead.
+    pub(super) fn add_server_age_gate_done(&mut self) {
+        if let Some(add) = self.add_server.as_mut()
+            && add.step == Step::AgeGate
+        {
+            add.step = Step::Pick;
+            add.error = None;
+        }
     }
 
     fn add_server_submit(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -673,8 +691,12 @@ impl Root {
         let add = self.add_server.as_ref()?;
         let (name, invite) = (add.name.clone(), add.invite.clone());
         let step = add.step;
+        if step == Step::AgeGate {
+            return Some(self.add_server_age_gate_layer(cx));
+        }
         let body: AnyElement = match step {
-            Step::Pick => {
+            // `AgeGate` returned above.
+            Step::Pick | Step::AgeGate => {
                 let mut rows: Vec<AnyElement> = Vec::new();
                 for (index, template) in TEMPLATES.iter().enumerate() {
                     if index == 1 {
@@ -941,7 +963,7 @@ impl Root {
             }
         };
         let header = match step {
-            Step::Pick => Self::add_header(
+            Step::Pick | Step::AgeGate => Self::add_header(
                 "Create Your Server",
                 Self::subtitle(
                     "Your server is where you and your friends hang out. Make yours and start talking.",
@@ -979,7 +1001,7 @@ impl Root {
             ),
         };
         let footer = match step {
-            Step::Pick => div()
+            Step::Pick | Step::AgeGate => div()
                 .flex_none()
                 .px(px(24.))
                 .py(px(16.))
@@ -1124,6 +1146,42 @@ impl Root {
             .with_priority(1)
             .into_any_element(),
         )
+    }
+
+    /// The birthday step of module 109766 in this dialog's shell (no close button on that step: `O !== AGE_GATE`).
+    /// GAP: the official step is a slide of the 680px NUF modal (`modal_3h-1-Q`), forced to the light theme, with
+    /// the step illustration in its sidebar (`es`); only the 440 by 464 slide (`container_3h-1-Q`) is drawn here, in
+    /// the current theme. No DOM capture of it exists.
+    fn add_server_age_gate_layer(&self, cx: &mut Context<Self>) -> AnyElement {
+        let modal = div()
+            .parity_with_border("add-server-age-gate", 1.)
+            .id("add-server-age-gate")
+            .occlude()
+            .rounded(px(12.))
+            .border_1()
+            .border_color(color("--border-subtle"))
+            .bg(color("--background-base-low"))
+            .overflow_hidden()
+            .child(self.birthday_nuf_content(cx));
+        let pose = crate::ui::motion::legacy_modal_pose("add-server", "add-server-layer", false);
+        deferred(
+            div()
+                .id("add-server-layer")
+                .occlude()
+                .absolute()
+                .inset_0()
+                .bg(pose.dim(rgba(0x000000b8)))
+                .flex()
+                .items_center()
+                .justify_center()
+                .on_click(cx.listener(|this, _, _, cx| {
+                    this.add_server = None;
+                    cx.notify();
+                }))
+                .child(modal.posed(pose)),
+        )
+        .with_priority(1)
+        .into_any_element()
     }
 }
 

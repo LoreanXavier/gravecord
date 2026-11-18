@@ -8996,6 +8996,7 @@ mod tests {
             my_pending: false,
             my_flags: 0,
             my_timeout_until: None,
+            viewing_roles: None,
             mfa_level: 0,
             vanity_url_code: None,
             invites_disabled_until: None,
