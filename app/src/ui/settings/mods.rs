@@ -837,6 +837,15 @@ impl Root {
                 cx.notify();
                 format!("demo-reactors: {count} on {message} {emoji}")
             }
+            // `demo-user <id> <username>`: ValidUser's answer for a mentioned user arrives as `GET /users/<id>` would
+            // bring it (for its frames when the network is out; the hover and request are logged by the plugin).
+            ["demo-user", id, username] => {
+                let key = format!("plugin-valid-user:{id}");
+                self.requested.insert(key.clone());
+                let body = serde_json::json!({"id": id, "username": username, "global_name": username});
+                let ours = self.valid_user_fetched(&key, &body, cx);
+                format!("demo-user: {id} {username} ({})", if ours { "merged" } else { "not ValidUser's" })
+            }
             // `demo-favorite <emoji key>`: the emoji is made a favourite as the picker's star does (its settings write is
             // blocked in captures), for FavoriteEmojiFirst's frames.
             ["demo-favorite", key] => {

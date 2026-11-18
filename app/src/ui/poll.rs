@@ -1480,14 +1480,17 @@ impl Root {
                     .min_w(px(0.))
                     .flex()
                     .flex_col()
-                    .child(
-                        div()
-                            .truncate()
-                            .text_size(px(16.))
-                            .line_height(px(20.))
-                            .text_color(color("--text-default"))
-                            .child(user.display_name().to_owned()),
-                    )
+                    // Not in the pinned client: RoleColorEverywhere's `pollResults`
+                    // (`plugin_hooks/role_color_everywhere.rs`).
+                    .child(super::plugin_hooks::role_colored(
+                        div().truncate().text_size(px(16.)).line_height(px(20.)),
+                        self.role_color_everywhere(
+                            super::plugin_hooks::RolePlace::PollResults,
+                            user.id,
+                        ),
+                        color("--text-default").into(),
+                        user.display_name().to_owned(),
+                    ))
                     .child(
                         div()
                             .truncate()

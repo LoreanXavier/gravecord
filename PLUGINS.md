@@ -12,7 +12,7 @@ every setting changed), and with every plugin off, and fails on one differing pi
 The list is the plugins enabled in the owner's Equicord backup of 2026-09-21 (156). Sources were read in the local
 Equicord checkout of 2026-11-14 (`src/plugins` is Vencord's, `src/equicordplugins` Equicord's).
 
-Totals: 41 ported, 6 native, 64 planned, 45 not applicable.
+Totals: 48 ported, 6 native, 57 planned, 45 not applicable.
 
 Status: **ported** works and has its proof; **native** is what gravecord already does without a plugin;
 **planned** is not built yet (an import keeps its settings for when it is); **not applicable** has nothing to
@@ -37,11 +37,11 @@ port in a native client, or was removed upstream.
 | BetterNotesBox | not applicable | (not in the 2026-11-14 checkout) |  | removed from Equicord (last seen in dbca8ef2); the private note box is the client's own here. |  |
 | BetterPlusReacts | planned | equicordplugins/betterPlusReacts/index.ts | The amount of plus before :emoji: is the message to add it to | "+:emoji:" reacting to the Nth message above, in the composer's send path. |  |
 | BetterQuickReact | planned | plugins/moreQuickReactions/index.ts | Improves the quick react buttons in the message context menu. | now MoreQuickReactions upstream. more quick reaction buttons in the message context menu. |  |
-| BetterRoleContext | planned | plugins/betterRoleContext/index.tsx | Adds options to copy role color / edit role / view role icon when right clicking roles in the user profile or in the member list | role context menu rows (copy colour, edit role, view icon). |  |
+| BetterRoleContext | ported | plugins/betterRoleContext/index.tsx | Adds options to copy role color / edit role / view role icon when right clicking roles in the user profile or in the member list | plugin_hooks/better_role_context.rs: a right click on a member list role header opens the role menu: Edit Role (Manage Roles: Server Settings on Roles with the role open), Copy Role Color (#rrggbb), View Role Icon (role-icons/<id>/<icon>.<roleIconFileFormat> at 128 in the viewer, without sender or Forward), View Role Members (the role's member popout) and Copy Role ID, with the original's icons. GAP: the dev-context rows of a profile's role chip (the chips open no menu here). | `rows_follow_what_the_role_offers_in_the_original_order`, `colors_copy_as_css_hex_and_the_format_defaults_to_png`; frames brc-menu, brc-members, brc-icon, brc-edit (synthetic hoisted role); plugins-off role-header |
 | BetterRoleDot | ported | plugins/betterRoleDot/index.ts | Copy role colour on RoleDot (accessibility setting) click. Also allows using both RoleDot and coloured names simultaneously | plugin_hooks/better_role_dot.rs: a click on the role dot (chat, member list, and the popout's dots) copies #rrggbb with the success toast; bothStyles makes every In names / Next to names test true (names, role mentions and dots together); copyRoleColorInProfilePopout draws the popout's roles with dots. | `colours_copy_as_color_strings_and_switches_read`; frame brd-both; plugins-off chat, member-list, profile-popout |
 | BetterSettings | not applicable | plugins/betterSettings/index.tsx | Enhances your settings-menu-opening experience | settings are native here: no crossfade or lazy loading to remove. |  |
 | BetterUploadButton | ported | plugins/betterUploadButton/index.ts | Upload with a single click, open menu with right click | ui.rs: the composer plus opens the file picker on a click and its menu on a right click. | `copy_user_urls_and_quick_mention_write_what_the_originals_write` (off); frame bub-on; plugins-off plus-click |
-| BiggerStreamPreview | planned | plugins/biggerStreamPreview/index.tsx | This plugin allows you to enlarge stream previews | a larger stream preview popout. |  |
+| BiggerStreamPreview | ported | plugins/biggerStreamPreview/index.tsx | This plugin allows you to enlarge stream previews | plugin_hooks/bigger_stream_preview.rs: a streaming person's user menu ends with a separator and View Stream Preview (screen icon), opening the stream preview picture at 1280x720 in the viewer (fetched first when not cached, opened on arrival). GAP: the row on a stream tile's own menu. | frame bsp-menu (callsim peer live, row at the end of the voice row menu); plugins-off user-volume, voice-profile |
 | BypassStatus | planned | equicordplugins/bypassStatus/index.tsx | Still get notifications from specific sources when in do not disturb mode. Right-click on users/channels/guilds to set them to bypass do not disturb mode. | notification and sound rules that pass Do Not Disturb for chosen users, channels and servers. |  |
 | CallTimer | ported | plugins/callTimer/index.tsx | Add call timers for all users in voice channels and in the connection status. | plugin_hooks/call_timer.rs: your time under the connection panel's channel line (seconds always, code font); with `allCallTimers` everyone's time by their voice row, as the clock icon with a tooltip or, with `showWithoutHover`, as text under the name. Join times start when the app first sees someone in a channel. | `plugin_hooks::call_timer::tests` (3); frames ct-on/ct-all; plugins-off voice-profile |
 | CancelFriendRequest | ported | equicordplugins/pendingFriendRequest/index.tsx | Adds a way to cancel outgoing friend requests from profiles. | profile_menu.rs, profile_other.rs, dm.rs: for an outgoing request the profile's friend button turns red and cancels it, the DM's text button reads 'Cancel Outgoing Friend Request' (critical), and the profile More menu ends with that row; each removes the relationship as the friends list's Cancel does. | frames cfr-on/cfr-off (an outgoing request set locally); plugins-off voice-profile, profile-popout |
@@ -81,7 +81,7 @@ port in a native client, or was removed upstream.
 | GlobalBadges | planned | equicordplugins/globalBadges/index.tsx | Adds global badges from other client mods | its third-party badge service. |  |
 | GreetStickerPicker | planned | plugins/greetStickerPicker/index.tsx | Allows you to use any greet sticker instead of only the random one by right-clicking the 'Wave to say hi!' button | a sticker choice for the "Wave to say hi!" button. |  |
 | HeaderBarAPI | not applicable | equicordplugins/_api/headerBar.ts | API to add buttons to the header bar and channel toolbar. | client-mod plumbing (an API for other plugins), nothing to port. |  |
-| IgnoreActivities | planned | plugins/ignoreActivities/index.tsx | Ignore activities from showing up on your status ONLY. You can configure which ones are specifically ignored from the Registered Games and Activities tabs, or use the general settings below | a list of activities kept off your status. |  |
+| IgnoreActivities | ported | plugins/ignoreActivities/index.tsx | Ignore activities from showing up on your status ONLY. You can configure which ones are specifically ignored from the Registered Games and Activities tabs, or use the general settings below | plugin_hooks/ignore_activities.rs: your own activity list filtered before it goes out (op 3) and before your own status shows it: ignore* by kind (custom status untouched), idsList blacklisting or whitelisting application ids by listMode, and an Enable Activity check in a registered game's overflow menu that keeps that game off by id or exe path (re-checking turns detection back on). GAP: the eye toggle in the app launcher; start's pruning of games never seen. | `kinds_are_ignored_by_their_switch_and_custom_status_never`, `the_ids_list_blacklists_or_whitelists`, `an_ignored_game_goes_by_its_id_or_its_exe`; no frame (the capture profile has no registered game); plugins-off: the filter sits on the presence path, which a capture never sends |
 | IloveSpam | planned | plugins/iLoveSpam/index.ts | Do not hide messages from 'likely spammers' | now ILoveSpam upstream. messages of users flagged as likely spammers shown as any other. |  |
 | ImageZoom | planned | plugins/imageZoom/index.tsx | Lets you zoom in to images and gifs. Use scroll wheel to zoom in and shift + scroll wheel to increase lens radius / size | a zoom lens in the image viewer. |  |
 | LimitlessScreenshare | planned | (not in the 2026-11-14 checkout) |  | resolution and FPS sliders past the tier limits (owner: later, FakeNitro-style). |  |
@@ -128,15 +128,15 @@ port in a native client, or was removed upstream.
 | RelationshipNotifier | planned | plugins/relationshipNotifier/index.ts | Notifies you when a friend, group chat, or server removes you. | notices when a friend, group or server removes you (its data store lists are not copied). |  |
 | RevealAllSpoilers | ported | plugins/revealAllSpoilers/index.ts | Reveal all spoilers in a message by Ctrl-clicking a spoiler, or in the chat with Ctrl+Shift-click | ui.rs: Ctrl-click a hidden spoiler opens every text spoiler of its message, Ctrl+Shift-click those of every message the chat holds now (later ones stay hidden). | `ctrl_reveals_the_message_and_ctrl_shift_every_loaded_message`; frames spoilers-off/on |
 | ReverseImageSearch | ported | plugins/reverseImageSearch/index.tsx | Adds ImageSearch to image context menus | menu.rs: "Search Image" at the end of the link group when a picture is right-clicked; a submenu of its seven engines and All, opened in the browser. The engine favicons (fetched from DuckDuckGo by the original) are not drawn: plugin code fetches nothing. | `image_search_opens_each_engine_with_the_encoded_address`; frame ris-on; plugins-off image-menu |
-| RoleColorEverywhere | planned | plugins/roleColorEverywhere/index.tsx | Adds the top role color anywhere possible | role colours in mentions, lists, voice and reactions. |  |
+| RoleColorEverywhere | ported | plugins/roleColorEverywhere/index.tsx | Adds the top role color anywhere possible | plugin_hooks/role_color_everywhere.rs: the top role colour (gradient in ENHANCED_ROLE_COLORS servers) on user mentions (with the role-mention tint behind), member list role headers, voice channel names, the reactions dialog and the poll voters dialog, each behind its setting; colorChatMessages mixes it into the text in OKLab at messageSaturation, not on a failed send. GAP: the message box has no mention pills; --text-strong/--text-muted inside a message; CustomUserColors. | `each_place_has_its_switch_and_messages_need_theirs`, `oklab_mix_matches_the_css_ends_and_middle`; frames msg-on/msg-off (mention and message colour), brc-menu (role header); plugins-off mentions, role-header |
 | SearchFix | planned | equicordplugins/searchFix/index.tsx |  | its search request fix. |  |
 | SedEnhanced | planned | equicordplugins/sedEnhanced/index.ts | Expands on Discord's rudimentary `sed` support. | `s/a/b/` editing the last message, in the send path. |  |
-| ServerInfo | planned | plugins/serverInfo/index.tsx | Allows you to view info about a server | a server information dialog. |  |
+| ServerInfo | ported | plugins/serverInfo/index.tsx | Allows you to view info about a server | plugin_hooks/server_info.rs: Server Info after Edit Per-server Profile in the server menu opens the dialog: icon (or acronym), name and description, the banner on the first tab, tabs Server Info / Friends / Mutual Users / Blocked Users / Ignored Users with counts once shown; the info grid (owner, created, joined, vanity, locale, verification, boosts, channels, roles); relationship lists of members (missing ones asked for once by GUILD_MEMBERS_REQUEST) sorted by sorting; mutual users with up to three server icons and +n; rows open the profile, icon and banner the viewer. GAP: the row in the server header dropdown. | `acronyms_and_levels_follow_the_original`, `sorting_defaults_to_display_names`; frames si-menu, si-info, si-friends, si-mutual; plugins-off guild-menu |
 | ServerListAPI | not applicable | plugins/_api/serverList.ts | API required for plugins that modify the server list. | client-mod plumbing (an API for other plugins), nothing to port. |  |
 | ServerListIndicators | ported | plugins/serverListIndicators/index.tsx | Add online friend count or server count in the server list | plugin_hooks/server_list_indicators.rs: under the Home button an item with the friends online and/or the servers (mode), and the same as its tooltip. Pending join requests of servers not joined are not counted yet (the app keeps no UserGuildJoinRequestStore id list). | `the_item_says_what_its_mode_counts`; frame sli-on; plugins-off chat (rail) |
 | Settings | not applicable | plugins/_core/settings.tsx | Adds Settings UI and debug info | its settings UI is the Gravecord settings group itself; `settingsLocation` not ported (the group sits before Developer). |  |
 | ShowConnections | ported | plugins/showConnections/index.tsx | Show connected accounts in user popouts and the DM sidebar | plugin_hooks/show_connections.rs: the connected accounts as platform icons (size, spacing) with their names as tooltips in the profile popout and the DM sidebar, and with showOnModal in place of the full profile's connection cards; a click opens the page or copies the name. | `spacing_and_settings_read_as_the_original`; frame sc-on; plugins-off profile-popout, voice-profile |
-| ShowHiddenThings | planned | plugins/showHiddenThings/index.ts | Displays various hidden & moderator-only things regardless of permissions. | hidden and moderator-only things shown. |  |
+| ShowHiddenThings | planned | plugins/showHiddenThings/index.ts | Displays various hidden & moderator-only things regardless of permissions. | the pinned client's own pieces first: the chat timeout icon by a timed-out member's name (showCommunicationDisabledStyles) and the invites-paused tooltip on the server rail are not drawn by the port yet (GAPs in the official UI), so showTimeouts and showInvitesPaused would unlock nothing; showModView lifts the user menu's Open in Mod View permission check, which the port does not apply yet either (it shows the row in every server). |  |
 | SilentMessageToggle | planned | plugins/silentMessageToggle/index.tsx | Adds a button to the chat bar to toggle sending a silent message. | the pinned client's `@silent` prefix first: its send path strips it and sets SUPPRESS_NOTIFICATIONS (the `silentPrefix` rule and the sends of modules 857069 and 92961); the app sends the text as typed, so the plugin's prefix would reach people as words. |  |
 | SpotifyCrack | planned | plugins/spotifyCrack/index.ts | Free listen along, no auto-pausing in voice chat, and allows activity to continue playing when idling | listen along without Premium and no Spotify pause on voice. |  |
 | SpotifyShareCommands | planned | plugins/spotifyShareCommands/index.ts | Share your current Spotify track, album or artist via slash command (/track, /album, /artist) | its /track, /album, /artist commands. |  |
@@ -161,10 +161,10 @@ port in a native client, or was removed upstream.
 | UserPFP | planned | equicordplugins/userpfp/index.tsx | Allows you to set local static or animated avatars for yourself and other users | its third-party avatar service. |  |
 | UserSettingsAPI | not applicable | plugins/_api/userSettings.ts | Patches Discord's UserSettings to expose their group and name. | client-mod plumbing (an API for other plugins), nothing to port. |  |
 | USRBG | planned | plugins/usrbg/index.tsx | Displays user banners from USRBG, allowing anyone to get a banner without Nitro | its third-party banner service. |  |
-| ValidReply | planned | plugins/validReply/index.ts |  | replied messages fetched when missing. |  |
-| ValidUser | planned | plugins/validUser/index.tsx | Fix mentions for unknown users showing up as '@unknown-user' (hover over a mention to fix it) | unknown mentioned users fetched. |  |
+| ValidReply | planned | plugins/validReply/index.ts |  | the pinned client's "Message could not be loaded" reply bar first: a reply whose message the server did not embed draws no reply line here (GAP in the reply path: intl REPLY_QUOTE_MESSAGE_NOT_LOADED); ValidReply's hover fetch hangs on that bar. |  |
+| ValidUser | ported | plugins/validUser/index.tsx | Fix mentions for unknown users showing up as '@unknown-user' (hover over a mention to fix it) | plugin_hooks/valid_user.rs: the pointer on an @unknown-user mention queues GET /users/<id> (newest first, 300 ms apart, never twice) and merges the user, so the mention shows the name. GAP: the badges the original deduces for a profile it cannot fetch. | `keys_carry_the_user`; frame vu-after (hover logs the GET, `plugin demo-user` answer shows @Discord); plugins-off mentions |
 | VCSupport | not applicable | (not in the 2026-11-14 checkout) |  | Equicord support-server helper. |  |
-| ViewIcons | planned | plugins/viewIcons/index.tsx | Makes avatars and banners in user profiles clickable, adds View Icon/Banner/Avatar Decoration entries in the user, server and group channel context menu. | avatars, banners and icons opened full size, with menu rows. |  |
+| ViewIcons | ported | plugins/viewIcons/index.tsx | Makes avatars and banners in user profiles clickable, adds View Icon/Banner/Avatar Decoration entries in the user, server and group channel context menu. | plugin_hooks/view_icons.rs: View Avatar / View Server Avatar / View Avatar Decoration as a group before the user menu's last one, View Icon / View Banner in the server menu, View Icon in a group DM's menu, each opening the picture viewer (no sender or Forward) at imgSize in format (animated stays webp, client assets png), Open in Browser and Save at size=4096. GAP: the clickable profile avatars, banners and DM header icons. | `addresses_follow_open_image`, `settings_default_to_webp_at_1024`, `the_group_goes_before_the_last_one`; frames vi-menu (View Avatar group before Open in Mod View), vi-guild (no icon, no rows); plugins-off user-menu, channel-menu |
 | VoiceDownload | ported | plugins/voiceDownload/index.tsx | Adds a download to voice messages. (Opens a new browser tab) | voice_message.rs: a download arrow after a voice message's volume that opens the file in the browser (the original's desktop behaviour). | frames vd-on/vd-off/vd-pair; plugins-off chat (the voice message is in view) |
 | VoiceMessages | planned | plugins/voiceMessages/index.tsx | Allows you to send voice messages like on mobile. To do so, right click the upload button and click Send Voice Message | recording voice messages on desktop. |  |
 | VoiceMessageTranscriber | planned | equicordplugins/voiceMessageTranscriber.desktop/index.tsx | On-device transcriptions for voice messages powered by Whisper | an on-device Whisper model runner. |  |
@@ -199,6 +199,7 @@ Every setting of each original (`definePluginSettings`), its type and default th
 | AnonymiseFileNames | `randomisedLength` | NUMBER | `7` | ported |
 | AnonymiseFileNames | `consistent` | STRING | `"image"` | ported |
 | AnonymiseFileNames | `dateFormat` | STRING | `"YYYY-MM-DD_HH-mm-ss-SSS"` | ported |
+| BetterRoleContext | `roleIconFileFormat` | SELECT | `"png"` | ported |
 | BetterRoleDot | `bothStyles` | BOOLEAN | `false` | ported |
 | BetterRoleDot | `copyRoleColorInProfilePopout` | BOOLEAN | `false` | ported |
 | CallTimer | `format` | SELECT | `"stopwatch"` | ported |
@@ -214,6 +215,15 @@ Every setting of each original (`definePluginSettings`), its type and default th
 | FixImagesQuality | `originalImagesInChat` | BOOLEAN | `false` | ported |
 | GameActivityToggle | `oldIcon` | BOOLEAN | `false` | ported |
 | GameActivityToggle | `location` | SELECT | `"PANEL"` | nothing to act on yet: the original only reads it while EquicordToolbox is on, which is not ported; the button stays next to Mute/Deafen as with the default |
+| IgnoreActivities | `importCustomRPC` | COMPONENT | `` | not ported: not applicable yet: it copies CustomRPC's application id, and CustomRPC is not ported. |
+| IgnoreActivities | `listMode` | SELECT | `FilterMode.Whitelist` | ported |
+| IgnoreActivities | `idsList` | COMPONENT | `""` | ported |
+| IgnoreActivities | `ignorePlaying` | BOOLEAN | `false` | ported |
+| IgnoreActivities | `ignoreStreaming` | BOOLEAN | `false` | ported |
+| IgnoreActivities | `ignoreListening` | BOOLEAN | `false` | ported |
+| IgnoreActivities | `ignoreWatching` | BOOLEAN | `false` | ported |
+| IgnoreActivities | `ignoreCompeting` | BOOLEAN | `false` | ported |
+| IgnoreActivities | `ignoredActivities` | CUSTOM | `[] as IgnoredActivity[]` | not ported: kept apart from the settings (storage key plugin-ignore-activities), written by the Enable Activity check of a registered game. |
 | MemberCount | `toolTip` | BOOLEAN | `true` | ported |
 | MemberCount | `memberList` | BOOLEAN | `true` | ported |
 | MemberCount | `voiceActivity` | BOOLEAN | `true` | ported |
@@ -255,6 +265,14 @@ Every setting of each original (`definePluginSettings`), its type and default th
 | PlatformIndicators | `showBots` | BOOLEAN | `false` | ported |
 | PlatformIndicators | `ConsoleIcon` | SELECT | `"equicord"` | ported |
 | ReadAllNotificationsButton | `compact` | BOOLEAN | `false` | ported |
+| RoleColorEverywhere | `chatMentions` | BOOLEAN | `true` | ported |
+| RoleColorEverywhere | `memberList` | BOOLEAN | `true` | ported |
+| RoleColorEverywhere | `voiceUsers` | BOOLEAN | `true` | ported |
+| RoleColorEverywhere | `reactorsList` | BOOLEAN | `true` | ported |
+| RoleColorEverywhere | `pollResults` | BOOLEAN | `true` | ported |
+| RoleColorEverywhere | `colorChatMessages` | BOOLEAN | `false` | ported |
+| RoleColorEverywhere | `messageSaturation` | SLIDER | `30` | ported |
+| ServerInfo | `sorting` | SELECT | `"displayname"` | ported |
 | ServerListIndicators | `mode` | SELECT | `IndicatorType.FRIEND` | ported |
 | ShowConnections | `iconSize` | NUMBER | `32` | ported |
 | ShowConnections | `iconSpacing` | SELECT | `Spacing.COZY` | ported |
@@ -272,5 +290,7 @@ Every setting of each original (`definePluginSettings`), its type and default th
 | UnlimitedAccounts | `maxAccounts` | NUMBER | `0` | ported |
 | UserMessagesPronouns | `pronounsFormat` | SELECT | `PronounsFormat.Lowercase` | ported |
 | UserMessagesPronouns | `showSelf` | BOOLEAN | `true` | ported |
+| ViewIcons | `format` | SELECT | `"webp"` | ported |
+| ViewIcons | `imgSize` | SELECT | `n === "1024" }))` | ported |
 | VolumeBooster | `multiplier` | SLIDER | `2` | ported |
 | WhoReacted | `clickableAvatars` | BOOLEAN | `true` | ported |

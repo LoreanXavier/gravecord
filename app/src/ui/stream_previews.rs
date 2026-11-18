@@ -140,6 +140,8 @@ impl Root {
                     self.images.remove(&old);
                 }
                 self.stream_previews.success(key, url.to_owned(), now);
+                // Not in the pinned client: BiggerStreamPreview's waiting row (`plugin_hooks/bigger_stream_preview.rs`).
+                self.stream_preview_arrived(key, cx);
             }
             None => self.stream_previews.fail(key, retry_after_ms(body), now),
         }

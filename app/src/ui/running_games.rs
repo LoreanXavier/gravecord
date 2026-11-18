@@ -249,7 +249,7 @@ impl Root {
         self.overlay.sync_dirty = true;
     }
 
-    fn detect_changed(&mut self, cx: &mut Context<Self>) {
+    pub(in crate::ui) fn detect_changed(&mut self, cx: &mut Context<Self>) {
         self.persist_detect_store();
         // The clip path records the visible game's window (module 489496: `getVisibleGame()?.windowHandle`).
         #[cfg(windows)]
@@ -407,6 +407,9 @@ impl Root {
             show,
             &status,
         );
+        // Not in the pinned client: IgnoreActivities keeps the ignored ones off your status
+        // (`plugin_hooks/ignore_activities.rs`).
+        let activities = self.ignore_activities_filter(activities);
         if !status.is_empty() {
             // Invisible shows nothing, whatever another session reports.
             let shown = if activities.is_empty() && status == "invisible" {
@@ -773,6 +776,9 @@ impl Root {
         let toggle_game = game.clone();
         let remove_game = game.clone();
         let menu_id = id.clone();
+        // Not in the pinned client: IgnoreActivities' "Enable Activity" check (`plugin_hooks/ignore_activities.rs`).
+        let activity_check = self.ignore_activities_check(game);
+        let check_game = game.clone();
         div()
             .id(gpui::SharedString::from(format!(
                 "registered-game-row-{id}"
@@ -885,7 +891,29 @@ impl Root {
                                                     .delete_entry(&remove_game, now_ms());
                                                 this.detect_changed(cx);
                                             })),
-                                    ),
+                                    )
+                                    .children(activity_check.map(|checked| {
+                                        div()
+                                            .id("registered-game-enable-activity")
+                                            .h(px(32.))
+                                            .px(px(8.))
+                                            .rounded(px(4.))
+                                            .flex()
+                                            .items_center()
+                                            .justify_between()
+                                            .cursor_pointer()
+                                            .text_size(px(14.))
+                                            .font_weight(FontWeight(500.))
+                                            .text_color(color("--interactive-text-default"))
+                                            .hover(|style| {
+                                                style.bg(color("--background-mod-normal"))
+                                            })
+                                            .child("Enable Activity")
+                                            .child(super::context_menu::menu_check_box(checked))
+                                            .on_click(cx.listener(move |this, _, _, cx| {
+                                                this.ignore_activities_toggle(&check_game, cx);
+                                            }))
+                                    })),
                             ))
                         }),
                 )

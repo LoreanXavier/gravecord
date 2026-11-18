@@ -1584,6 +1584,10 @@ impl Root {
                     Some((false, icon)) => (None, Some(icon)),
                     None => (None, None),
                 };
+                // Not in the pinned client: RoleColorEverywhere's `voiceUsers`
+                // (`plugin_hooks/role_color_everywhere.rs`).
+                let role_look =
+                    self.role_color_everywhere(super::plugin_hooks::RolePlace::VoiceUsers, member);
                 div()
                     .id(gpui::SharedString::from(format!("{prefix}-{member}")))
                     .on_mouse_up(
@@ -1678,17 +1682,28 @@ impl Root {
                             .text_size(px(14.))
                             .line_height(px(18.))
                             .font_weight(FontWeight(500.))
-                            .text_color(color(if speaking {
-                                "--interactive-text-active"
-                            } else {
-                                "--channels-default"
-                            }))
-                            .child(super::name_styles::name(
-                                format!("voice-member-name-{}", user.id),
-                                user.display_name().to_owned(),
-                                self.name_styles(&user, Some(guild)).as_ref(),
-                                super::name_styles::Display::Font,
-                            ))
+                            .text_color(match role_look {
+                                Some(look) => gpui::rgb(look.color),
+                                None => color(if speaking {
+                                    "--interactive-text-active"
+                                } else {
+                                    "--channels-default"
+                                }),
+                            })
+                            .child(match role_look.and_then(|look| look.gradient) {
+                                Some(colors) => super::role_gradient::name(
+                                    user.display_name().to_owned(),
+                                    colors,
+                                )
+                                .into_any_element(),
+                                None => super::name_styles::name(
+                                    format!("voice-member-name-{}", user.id),
+                                    user.display_name().to_owned(),
+                                    self.name_styles(&user, Some(guild)).as_ref(),
+                                    super::name_styles::Display::Font,
+                                )
+                                .into_any_element(),
+                            })
                             .children(timer_under),
                     )
                     // `icons_YUoOxm`: 16px, the muted microphone or the deafened headphones.

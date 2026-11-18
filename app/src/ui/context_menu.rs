@@ -21,6 +21,12 @@ use serde_json::json;
 pub(super) enum Target {
     /// Not in the pinned client: the account panel (AccountPanelServerProfile, `plugin_hooks/account_panel.rs`).
     AccountPanel,
+    /// Not in the pinned client: a role's group header in the member list (BetterRoleContext,
+    /// `plugin_hooks/better_role_context.rs`).
+    Role {
+        role: Id,
+        guild: Id,
+    },
     InventoryFeed,
     InventoryFeedAtPointer,
     InventoryAuthor {
@@ -213,13 +219,28 @@ pub(super) enum Act {
     PluginPrioritizeServerProfile,
     /// Not in the pinned client: MuteChannelMentions' check (`plugin_hooks/mute_channel_mentions.rs`).
     PluginHideMentionBadge,
+    /// Not in the pinned client: BetterRoleContext's rows (`plugin_hooks/better_role_context.rs`).
+    PluginEditRole,
+    PluginCopyRoleColor,
+    PluginViewRoleIcon,
+    PluginViewRoleMembers,
+    /// Not in the pinned client: ViewIcons' rows (`plugin_hooks/view_icons.rs`).
+    PluginViewAvatar,
+    PluginViewServerAvatar,
+    PluginViewDecoration,
+    PluginViewIcon,
+    PluginViewBanner,
+    /// Not in the pinned client: ServerInfo's row (`plugin_hooks/server_info.rs`).
+    PluginServerInfo,
+    /// Not in the pinned client: BiggerStreamPreview's row (`plugin_hooks/bigger_stream_preview.rs`).
+    PluginViewStreamPreview,
 }
 
 impl Act {
     /// Every row kind once (`Correction` with its first index). `ordinal` is an exhaustive match, so adding a variant
     /// without listing it here fails the build or the `act_list_is_complete` test.
     #[cfg(test)]
-    pub(super) const ALL: [Act; 108] = [
+    pub(super) const ALL: [Act; 119] = [
         Act::InventoryAbout,
         Act::InventoryHide,
         Act::ReportApp,
@@ -328,6 +349,17 @@ impl Act {
         Act::PluginAlternateProfile,
         Act::PluginPrioritizeServerProfile,
         Act::PluginHideMentionBadge,
+        Act::PluginEditRole,
+        Act::PluginCopyRoleColor,
+        Act::PluginViewRoleIcon,
+        Act::PluginViewRoleMembers,
+        Act::PluginViewAvatar,
+        Act::PluginViewServerAvatar,
+        Act::PluginViewDecoration,
+        Act::PluginViewIcon,
+        Act::PluginViewBanner,
+        Act::PluginServerInfo,
+        Act::PluginViewStreamPreview,
     ];
 
     #[cfg(test)]
@@ -441,6 +473,17 @@ impl Act {
             Act::PluginAlternateProfile => 105,
             Act::PluginPrioritizeServerProfile => 106,
             Act::PluginHideMentionBadge => 107,
+            Act::PluginEditRole => 108,
+            Act::PluginCopyRoleColor => 109,
+            Act::PluginViewRoleIcon => 110,
+            Act::PluginViewRoleMembers => 111,
+            Act::PluginViewAvatar => 112,
+            Act::PluginViewServerAvatar => 113,
+            Act::PluginViewDecoration => 114,
+            Act::PluginViewIcon => 115,
+            Act::PluginViewBanner => 116,
+            Act::PluginServerInfo => 117,
+            Act::PluginViewStreamPreview => 118,
         }
     }
 }
@@ -462,7 +505,18 @@ pub(super) fn status(act: Act) -> Status {
         Act::ModView => Wired,
         Act::PluginAlternateProfile
         | Act::PluginPrioritizeServerProfile
-        | Act::PluginHideMentionBadge => Wired,
+        | Act::PluginHideMentionBadge
+        | Act::PluginEditRole
+        | Act::PluginCopyRoleColor
+        | Act::PluginViewRoleIcon
+        | Act::PluginViewRoleMembers
+        | Act::PluginViewAvatar
+        | Act::PluginViewServerAvatar
+        | Act::PluginViewDecoration
+        | Act::PluginViewIcon
+        | Act::PluginViewBanner
+        | Act::PluginServerInfo
+        | Act::PluginViewStreamPreview => Wired,
         Act::InventoryAbout
         | Act::InventoryHide
         | Act::ViewAllActivity
@@ -2580,6 +2634,7 @@ impl Root {
         let activity_voice = std::mem::take(&mut self.context.activity_voice);
         let items = match target {
             Target::AccountPanel => self.account_panel_items(),
+            Target::Role { role, guild } => self.better_role_items(role, guild),
             Target::SpotifyActivity { user, popout } => spotify_activity_items(
                 self.stores
                     .current_user
@@ -2949,6 +3004,12 @@ impl Root {
             _ => None,
         };
         let items = self.with_hide_mention_row(items, hide_channel);
+        // Not in the pinned client: ViewIcons' group (`plugin_hooks/view_icons.rs`).
+        let items = self.with_view_icons_rows(items, target);
+        // Not in the pinned client: ServerInfo's row (`plugin_hooks/server_info.rs`).
+        let items = self.with_server_info_row(items, target);
+        // Not in the pinned client: BiggerStreamPreview's row (`plugin_hooks/bigger_stream_preview.rs`).
+        let items = self.with_stream_preview_row(items, target);
         self.close_all_context_menus();
         self.menu_scroll.set_offset(gpui::point(px(0.), px(0.)));
         let at = flip_above(at, menu_height(&items), self.viewport.1);
@@ -3157,6 +3218,45 @@ impl Root {
             }
             (Act::PluginPrioritizeServerProfile, Target::AccountPanel) => {
                 self.account_panel_toggle_prioritize(cx);
+            }
+            // Not in the pinned client: ServerInfo (`plugin_hooks/server_info.rs`).
+            (Act::PluginServerInfo, Target::Guild(guild)) => {
+                self.server_info_open(guild, cx);
+            }
+            // Not in the pinned client: BiggerStreamPreview (`plugin_hooks/bigger_stream_preview.rs`).
+            (Act::PluginViewStreamPreview, Target::User { user, .. }) => {
+                self.stream_preview_view(user, cx);
+            }
+            // Not in the pinned client: ViewIcons (`plugin_hooks/view_icons.rs`).
+            (
+                Act::PluginViewAvatar
+                | Act::PluginViewServerAvatar
+                | Act::PluginViewDecoration
+                | Act::PluginViewIcon
+                | Act::PluginViewBanner,
+                _,
+            ) => {
+                self.view_icons_open(act, target, cx);
+            }
+            // Not in the pinned client: BetterRoleContext (`plugin_hooks/better_role_context.rs`).
+            (Act::PluginEditRole, Target::Role { role, guild }) => {
+                self.better_role_edit(role, guild, cx);
+            }
+            (Act::PluginCopyRoleColor, Target::Role { role, guild }) => {
+                self.better_role_copy_color(role, guild, cx);
+            }
+            (Act::PluginViewRoleIcon, Target::Role { role, guild }) => {
+                self.better_role_view_icon(role, guild, cx);
+            }
+            (Act::PluginViewRoleMembers, Target::Role { role, .. }) => {
+                let anchor = self
+                    .tip_anchors
+                    .borrow()
+                    .get(&gpui::SharedString::from(format!("member-group-{role}")))
+                    .copied();
+                if let Some(anchor) = anchor {
+                    self.better_role_members(role, anchor, cx);
+                }
             }
             (Act::PluginHideMentionBadge, Target::Channel(channel) | Target::Thread(channel)) => {
                 self.toggle_hidden_mentions(channel);
@@ -3385,6 +3485,7 @@ impl Root {
                     | Target::GameProfile(id)
                     | Target::GameAddToProfile(id)
                     | Target::PickerSticker(id) => id,
+                    Target::Role { role, .. } => role,
                     Target::ProfileWidget { .. }
                     | Target::AccountPanel
                     | Target::InventoryFeed

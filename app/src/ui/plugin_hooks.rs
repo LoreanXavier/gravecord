@@ -2,11 +2,14 @@
 
 mod account_panel;
 mod always_animate;
+mod better_role_context;
 mod better_role_dot;
+mod bigger_stream_preview;
 mod call_timer;
 mod download_all;
 mod full_vc_pfp;
 mod game_activity_toggle;
+mod ignore_activities;
 mod member_count;
 mod message_clicks;
 mod message_peek;
@@ -14,10 +17,14 @@ mod message_pronouns;
 mod mute_channel_mentions;
 mod platform_indicators;
 mod read_all;
+mod role_color_everywhere;
+mod server_info;
 mod server_list_indicators;
 mod show_connections;
 mod typing_indicator;
 mod typing_tweaks;
+mod valid_user;
+mod view_icons;
 mod voice_stats;
 mod who_reacted;
 
@@ -28,6 +35,9 @@ pub(in crate::ui) use download_all::{DOWNLOAD_ALL, download_all};
 pub(super) use message_clicks::follow as follow_message_clicks;
 pub(super) use message_peek::Peek;
 pub(super) use platform_indicators::{Place as PlatformPlace, mobile_status};
+pub(in crate::ui) use role_color_everywhere::{
+    Place as RolePlace, label as role_colored_label, paint as role_colored,
+};
 pub(in crate::ui) use voice_stats::import_totals as import_voice_totals;
 
 use crate::plugins::State;

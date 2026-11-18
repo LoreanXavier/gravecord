@@ -1759,6 +1759,10 @@ impl Root {
                 }
                 // Not in the pinned client: WhoReacted's reactors join the users (`plugin_hooks/who_reacted.rs`).
                 self.who_reacted_fetched(&key, &body);
+                // Not in the pinned client: ValidUser's fetched user (`plugin_hooks/valid_user.rs`).
+                if self.valid_user_fetched(&key, &body, cx) {
+                    return;
+                }
                 // Not in the pinned client: DownloadAllAttachments' outcome (`plugin_hooks/download_all.rs`).
                 if self.download_all_answered(&key, &body, cx) {
                     return;
@@ -3099,7 +3103,46 @@ impl Root {
                             .and_then(|(role, guild)| self.role_icon_art(guild, role, 16.))
                             .map(|icon| div().flex_none().mr(px(4.)).child(icon)),
                     )
-                    .child(format!("{} \u{2014} {count}", group_label(id, roles)))
+                    // Not in the pinned client: RoleColorEverywhere's `memberList`
+                    // (`plugin_hooks/role_color_everywhere.rs`).
+                    .child(plugin_hooks::role_colored_label(
+                        self.role_color_everywhere_role(id),
+                        format!("{} \u{2014} {count}", group_label(id, roles)),
+                    ))
+                    // Not in the pinned client: BetterRoleContext's role menu on a right click
+                    // (`plugin_hooks/better_role_context.rs`).
+                    .when_some(
+                        id.parse::<Id>()
+                            .ok()
+                            .zip(self.current_guild().map(|guild| guild.id))
+                            .filter(|_| self.better_role_menu_on()),
+                        |this, (role, guild)| {
+                            let anchors = self.tip_anchors.clone();
+                            let key = SharedString::from(format!("member-group-{role}"));
+                            this.relative()
+                                .child(
+                                    gpui::canvas(
+                                        move |bounds, _, _| {
+                                            anchors.borrow_mut().insert(key.clone(), bounds);
+                                        },
+                                        |_, _, _, _| {},
+                                    )
+                                    .absolute()
+                                    .inset_0(),
+                                )
+                                .on_mouse_up(
+                                    gpui::MouseButton::Right,
+                                    cx.listener(move |this, event: &gpui::MouseUpEvent, _, cx| {
+                                        this.open_context_menu(
+                                            context_menu::Target::Role { role, guild },
+                                            event.position,
+                                            cx,
+                                        );
+                                        cx.stop_propagation();
+                                    }),
+                                )
+                        },
+                    )
                     .into_any_element(),
                 MemberRow::Member {
                     user, nick, status, ..
@@ -6695,18 +6738,21 @@ impl Root {
         // its text and the colour at .1 (.3 on hover) behind it (332173); the enhanced styles draw the text in the
         // gradient (`roleColors` of the same module, gated by `X_` of 967144).
         let role_look = match span.kind {
-            Kind::Role(id) if self.role_names_colored() => {
-                self.current_guild().and_then(|guild| {
-                    let info = guild.role_info.get(&id).filter(|info| info.color != 0)?;
-                    Some((info.color, guild.role_colors_of(id)))
-                })
-            }
+            Kind::Role(id) if self.role_names_colored() => self.current_guild().and_then(|guild| {
+                let info = guild.role_info.get(&id).filter(|info| info.color != 0)?;
+                Some((info.color, guild.role_colors_of(id)))
+            }),
+            // Not in the pinned client: RoleColorEverywhere's `chatMentions` hands the mention the person's colour
+            // (`plugin_hooks/role_color_everywhere.rs`).
+            Kind::User(id) => self
+                .role_color_everywhere(plugin_hooks::RolePlace::ChatMentions, id)
+                .map(|look| (look.color, look.gradient)),
             _ => None,
         };
         let tint = match span.kind {
             Kind::Link(_) if self.failed_tint.get() => hsla("--text-feedback-critical"),
             Kind::Link(_) => hsla("--text-link"),
-            Kind::Role(_) if role_look.is_some() => {
+            Kind::Role(_) | Kind::User(_) if role_look.is_some() => {
                 Hsla::from(gpui::rgb(role_look.map_or(0, |(color, _)| color)))
             }
             _ if mention => hsla("--mention-foreground"),
@@ -6896,11 +6942,23 @@ impl Root {
             })
             .collect();
         hovers.extend(extra_hovers.iter().cloned());
-        if hovers.iter().any(Option::is_some) {
+        // Not in the pinned client: ValidUser fetches an unknown mentioned user under the pointer
+        // (`plugin_hooks/valid_user.rs`); `None` while it is off.
+        let unknown = self.valid_user_unknown(spans);
+        let tips = hovers.iter().any(Option::is_some);
+        if tips || unknown.is_some() {
             let root = self.weak.clone();
             let hovers = std::rc::Rc::new(hovers);
             element = element.on_piece_hover(move |over, _, cx| {
                 let _ = root.update(cx, |this, cx| {
+                    if let (Some(unknown), Some((piece, _))) = (&unknown, &over)
+                        && let Some(Some(user)) = unknown.get(*piece)
+                    {
+                        this.valid_user_hovered(*user, cx);
+                    }
+                    if !tips {
+                        return;
+                    }
                     let tip = over.and_then(|(piece, bounds)| {
                         hovers
                             .get(piece)
@@ -7586,6 +7644,14 @@ impl Root {
             && let Some(official) = self.official_text.get()
         {
             return self.content_colored(message, official.into());
+        }
+        // Not in the pinned client: RoleColorEverywhere's `colorChatMessages`, not on a failed send
+        // (`plugin_hooks/role_color_everywhere.rs`).
+        if !self.failed_tint.get()
+            && let Some(mixed) =
+                self.role_color_everywhere_message(message.author.id, hsla("--text-default"))
+        {
+            return self.content_colored(message, mixed);
         }
         self.content_tinted(
             message,
@@ -10885,6 +10951,8 @@ impl Render for Root {
             .children(self.mentions_filter_layer(cx))
             .children(self.friend_menu_layer(cx))
             .children(self.remove_friend_modal(cx))
+            // Not in the pinned client: ServerInfo's dialog (`plugin_hooks/server_info.rs`).
+            .children(self.server_info_layer(cx))
             .children(self.not_friend_modal(cx))
             .children(self.favorites_full_modal(cx))
             .children(self.chat_alert_modal(cx))

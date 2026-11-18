@@ -92,6 +92,9 @@ pub(super) struct Lightbox {
     pub more_at: Option<Point<Pixels>>,
     /// The pointer is on View Details: its submenu is open.
     pub details_open: bool,
+    /// Not in the pinned client: a picture a plugin opens without a message (Vencord's `openImageModal`), with no
+    /// sender line and no Forward. Always false on the pinned client's paths.
+    pub plain: bool,
 }
 
 /// The message's pictures in the order the viewer pages through them: attachments, then embed pictures.
@@ -263,6 +266,53 @@ impl Root {
             more: false,
             more_at: None,
             details_open: false,
+            plain: false,
+        });
+        self.lightbox_images();
+        cx.notify();
+    }
+
+    /// Not in the pinned client: one picture shown from `url` (`width` by `height`) in the viewer with no message,
+    /// `original` for Open in Browser and Save (`openImageModal` of Vencord's utilities, for BetterRoleContext and
+    /// ViewIcons).
+    pub(super) fn open_plain_picture(
+        &mut self,
+        url: String,
+        original: String,
+        (width, height): (u32, u32),
+        cx: &mut Context<Self>,
+    ) {
+        let Some(message) = Message::from_value(&serde_json::json!({
+            "id": "0", "channel_id": "0", "content": "", "timestamp": "1970-01-01T00:00:00+00:00",
+            "author": {"id": "0", "username": ""},
+        })) else {
+            return;
+        };
+        let proxy = format!("{url}{}", if url.contains('?') { "&" } else { "?" });
+        let filename = filename_of(&original);
+        self.lightbox = Some(Lightbox {
+            message,
+            items: vec![Item {
+                key: format!("plain-picture:{url}"),
+                animated: filename.to_ascii_lowercase().ends_with(".gif"),
+                url: original,
+                proxy,
+                width,
+                height,
+                filename,
+                is_video: false,
+                video_src: None,
+                details: None,
+            }],
+            index: 0,
+            zoomed: false,
+            offset: Point::default(),
+            drag: None,
+            saving: false,
+            more: false,
+            more_at: None,
+            details_open: false,
+            plain: true,
         });
         self.lightbox_images();
         cx.notify();
@@ -491,14 +541,16 @@ impl Root {
                     cx,
                 )
             }))
-            .child(self.lightbox_button(
-                "lightbox-forward",
-                "lb_forward",
-                move |this, window, cx| {
-                    this.open_forward(forward_message.clone(), window, cx);
-                },
-                cx,
-            ))
+            .children((!open.plain).then(|| {
+                self.lightbox_button(
+                    "lightbox-forward",
+                    "lb_forward",
+                    move |this, window, cx| {
+                        this.open_forward(forward_message.clone(), window, cx);
+                    },
+                    cx,
+                )
+            }))
             .child(self.with_tip(
                 "lightbox-save-tip",
                 super::tooltip::Tip::text(
@@ -752,7 +804,7 @@ impl Root {
                     .children(arrows)
                     .children((many && !zoomed).then(|| self.lightbox_gallery(cx)))
                     // The sender and the pill fade while zoomed; the close button stays.
-                    .children((!zoomed).then_some(bar))
+                    .children((!zoomed && !open.plain).then_some(bar))
                     .children((!zoomed).then_some(pill))
                     .children(open.more.then(|| self.lightbox_more_menu(cx)))
                     .child(close),
