@@ -678,6 +678,20 @@ impl Root {
                                 cx.notify();
                             }),
                         )
+                        // Not in the pinned client: ImageZoom's lens and its probe (`plugin_hooks/image_zoom.rs`).
+                        .children(
+                            picture
+                                .clone()
+                                .and_then(|picture| {
+                                    self.image_zoom_lens(
+                                        picture,
+                                        width as f32 * scale,
+                                        height as f32 * scale,
+                                    )
+                                })
+                                .into_iter()
+                                .flatten(),
+                        )
                         // An animation plays in its own decoded tile (`gif_tiles`): the media viewer always plays it.
                         .children(picture.map(|picture| {
                             if super::gif_tiles::animated(picture.bytes()) {
@@ -712,6 +726,11 @@ impl Root {
                         .on_mouse_down(
                             MouseButton::Left,
                             cx.listener(|this, event: &gpui::MouseDownEvent, _, cx| {
+                                // Not in the pinned client: ImageZoom's lens takes the press.
+                                if this.image_zoom_press(event.position, cx) {
+                                    cx.stop_propagation();
+                                    return;
+                                }
                                 if let Some(open) = this.lightbox.as_mut() {
                                     if open.more {
                                         open.more = false;
@@ -727,6 +746,10 @@ impl Root {
                             }),
                         )
                         .on_mouse_move(cx.listener(|this, event: &gpui::MouseMoveEvent, _, cx| {
+                            // Not in the pinned client: ImageZoom's lens follows the pointer.
+                            if this.image_zoom_move(event.position, cx) {
+                                return;
+                            }
                             if let Some(open) = this.lightbox.as_mut()
                                 && open.zoomed
                                 && let Some((from, start)) = open.drag
@@ -735,9 +758,24 @@ impl Root {
                                 cx.notify();
                             }
                         }))
+                        // Not in the pinned client: ImageZoom's wheel while the lens is held.
+                        .on_scroll(cx.listener(|this, event: &gpui::ScrollEvent, _, cx| {
+                            let delta = match event.delta {
+                                gpui::ScrollDelta::Lines(lines) => -lines.y * 100.,
+                                gpui::ScrollDelta::Pixels(pixels) => -f32::from(pixels.y),
+                            };
+                            if this.image_zoom_scroll(delta, event.modifiers.shift, cx) {
+                                cx.stop_propagation();
+                            }
+                        }))
                         .on_mouse_up(
                             MouseButton::Left,
                             cx.listener(|this, event: &gpui::MouseUpEvent, _, cx| {
+                                // Not in the pinned client: ImageZoom's lens ends, the viewer keeps its zoom.
+                                if this.image_zoom_release(cx) {
+                                    cx.stop_propagation();
+                                    return;
+                                }
                                 if this
                                     .lightbox
                                     .as_ref()

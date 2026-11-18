@@ -12,6 +12,7 @@ mod full_vc_pfp;
 mod game_activity_toggle;
 mod greet_sticker_picker;
 mod ignore_activities;
+mod image_zoom;
 mod member_count;
 mod message_clicks;
 mod message_peek;

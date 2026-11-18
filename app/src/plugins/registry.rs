@@ -240,6 +240,12 @@ const fn millis(default: f64) -> Kind {
 /// by the code (a test checks both ways), so a setting can never sit in the page doing nothing unnoticed.
 pub(crate) const IDLE_SETTINGS: &[(&str, &str, &str)] = &[
     (
+        "ImageZoom",
+        "nearestNeighbour",
+        "the renderer samples pictures smoothly and has no pixelated mode yet, so the lens cannot switch to nearest \
+         neighbour",
+    ),
+    (
         "BetterCommands",
         "autoFillArguments",
         "the app's command flow already asks every option in turn, optional ones too, so there is nothing more to fill",
@@ -846,6 +852,73 @@ pub(crate) const DEFS: &[Def] = &[
                 label: "Ignore Competing",
                 description: "Ignore all competing activities (These are normally special game activities)",
                 kind: Kind::Switch { default: false },
+            },
+        ],
+    },
+    Def {
+        id: "ImageZoom",
+        name: "ImageZoom",
+        description: "Lets you zoom in to images and gifs. Use scroll wheel to zoom in and shift + scroll wheel to increase lens radius / size",
+        origin: Origin::Vencord,
+        source: "src/plugins/imageZoom/index.tsx",
+        default_on: false,
+        settings: &[
+            Setting {
+                key: "saveZoomValues",
+                label: "Save Zoom Values",
+                description: "Whether to save zoom and lens size values",
+                kind: Kind::Switch { default: true },
+            },
+            Setting {
+                key: "invertScroll",
+                label: "Invert Scroll",
+                description: "Invert scroll",
+                kind: Kind::Switch { default: true },
+            },
+            Setting {
+                key: "nearestNeighbour",
+                label: "Nearest Neighbour",
+                description: "Use Nearest Neighbour Interpolation when scaling images",
+                kind: Kind::Switch { default: false },
+            },
+            Setting {
+                key: "square",
+                label: "Square",
+                description: "Make the lens square",
+                kind: Kind::Switch { default: false },
+            },
+            Setting {
+                key: "zoom",
+                label: "Zoom",
+                description: "Zoom of the lens",
+                kind: Kind::Number {
+                    default: 2.,
+                    min: 1.,
+                    max: 50.,
+                    step: 0.1,
+                },
+            },
+            Setting {
+                key: "size",
+                label: "Size",
+                description: "Radius / Size of the lens",
+                kind: Kind::Number {
+                    default: 100.,
+                    min: 50.,
+                    max: 1000.,
+                    step: 1.,
+                },
+            },
+            Setting {
+                key: "zoomSpeed",
+                label: "Zoom Speed",
+                description: "How fast the zoom / lens size changes",
+                kind: Kind::Number {
+                    default: 0.5,
+                    min: 0.1,
+                    max: 5.,
+                    step: 0.1,
+                },
             },
         ],
     },

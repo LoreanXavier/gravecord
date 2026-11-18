@@ -12,7 +12,7 @@ every setting changed), and with every plugin off, and fails on one differing pi
 The list is the plugins enabled in the owner's Equicord backup of 2026-09-21 (156). Sources were read in the local
 Equicord checkout of 2026-11-14 (`src/plugins` is Vencord's, `src/equicordplugins` Equicord's).
 
-Totals: 60 ported, 9 native, 42 planned, 45 not applicable.
+Totals: 61 ported, 9 native, 41 planned, 45 not applicable.
 
 Status: **ported** works and has its proof; **native** is what gravecord already does without a plugin;
 **planned** is not built yet (an import keeps its settings for when it is); **not applicable** has nothing to
@@ -83,7 +83,7 @@ port in a native client, or was removed upstream.
 | HeaderBarAPI | not applicable | equicordplugins/_api/headerBar.ts | API to add buttons to the header bar and channel toolbar. | client-mod plumbing (an API for other plugins), nothing to port. |  |
 | IgnoreActivities | ported | plugins/ignoreActivities/index.tsx | Ignore activities from showing up on your status ONLY. You can configure which ones are specifically ignored from the Registered Games and Activities tabs, or use the general settings below | plugin_hooks/ignore_activities.rs: your own activity list filtered before it goes out (op 3) and before your own status shows it: ignore* by kind (custom status untouched), idsList blacklisting or whitelisting application ids by listMode, and an Enable Activity check in a registered game's overflow menu that keeps that game off by id or exe path (re-checking turns detection back on). GAP: the eye toggle in the app launcher; start's pruning of games never seen. | `kinds_are_ignored_by_their_switch_and_custom_status_never`, `the_ids_list_blacklists_or_whitelists`, `an_ignored_game_goes_by_its_id_or_its_exe`; no frame (the capture profile has no registered game); plugins-off: the filter sits on the presence path, which a capture never sends |
 | IloveSpam | native | (not in the 2026-11-14 checkout) |  | the app does not hide the messages of users flagged as likely spammers (the user flag 1<<20 that the pinned client's message list checks) yet (GAP: main app), so they already show as any other; when the app adds the rule, this plugin needs its hook there. |  |
-| ImageZoom | planned | plugins/imageZoom/index.tsx | Lets you zoom in to images and gifs. Use scroll wheel to zoom in and shift + scroll wheel to increase lens radius / size | a zoom lens in the image viewer. |  |
+| ImageZoom | ported | plugins/imageZoom/index.tsx | Lets you zoom in to images and gifs. Use scroll wheel to zoom in and shift + scroll wheel to increase lens radius / size | plugin_hooks/image_zoom.rs: holding the left button on a picture in the viewer shows the lens (size, round or square, grey border and glow) magnifying zoom times under the pointer, in place of the viewer's own zoom; the wheel changes zoom and Shift+wheel the size (zoomSpeed, invertScroll, kept with saveZoomValues). GAP: nearestNeighbour (idle), the lens of an animated picture, the image menu's rows. | `the_wheel_follows_the_original`; frames pending (fixture token answers 401) |
 | LimitlessScreenshare | planned | (not in the 2026-11-14 checkout) |  | resolution and FPS sliders past the tier limits (owner: later, FakeNitro-style). |  |
 | LimitMiddleClickPaste | native | (not in the 2026-11-14 checkout) |  | a middle click in the app neither pastes (no primary-selection paste in its text boxes) nor opens a link or a picture (a middle press starts the pinned client's autoscroll instead), which is what pasteScope and openScope ask for; the pinned client's own middle-click link opening is not ported yet (GAP: main app), and when it is, openScope needs its hook there. |  |
 | MemberCount | ported | plugins/memberCount/index.tsx | Shows the number of online members, total members, and users in voice channels on the server - in the member list and tooltip. | plugin_hooks/member_count.rs: online, total and in-voice counts with their tooltips at the top of the member list, online and total in the server tooltip. Not ported: the original's gateway requests (`preload` of a server's online count, member list subscriptions while the list is hidden); plugin code sends nothing, so an unopened server shows '?' online until its count arrives. | `plugin_hooks::member_count::tests` (2); frames mc-on/mc-off; plugins-off member-list |
@@ -228,6 +228,13 @@ Every setting of each original (`definePluginSettings`), its type and default th
 | IgnoreActivities | `ignoreWatching` | BOOLEAN | `false` | ported |
 | IgnoreActivities | `ignoreCompeting` | BOOLEAN | `false` | ported |
 | IgnoreActivities | `ignoredActivities` | CUSTOM | `[] as IgnoredActivity[]` | not ported: kept apart from the settings (storage key plugin-ignore-activities), written by the Enable Activity check of a registered game. |
+| ImageZoom | `saveZoomValues` | BOOLEAN | `true` | ported |
+| ImageZoom | `invertScroll` | BOOLEAN | `true` | ported |
+| ImageZoom | `nearestNeighbour` | BOOLEAN | `false` | nothing to act on yet: the renderer samples pictures smoothly and has no pixelated mode yet, so the lens cannot switch to nearest neighbour |
+| ImageZoom | `square` | BOOLEAN | `false` | ported |
+| ImageZoom | `zoom` | SLIDER | `2` | ported |
+| ImageZoom | `size` | SLIDER | `100` | ported |
+| ImageZoom | `zoomSpeed` | SLIDER | `0.5` | ported |
 | MemberCount | `toolTip` | BOOLEAN | `true` | ported |
 | MemberCount | `memberList` | BOOLEAN | `true` | ported |
 | MemberCount | `voiceActivity` | BOOLEAN | `true` | ported |
