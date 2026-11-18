@@ -632,7 +632,10 @@ pub(crate) const DEFS: &[Def] = &[
             kind: Kind::Select {
                 options: &[
                     ("Always", Lit::Str("always")),
-                    ("Only when beginning or end of activity name matches", Lit::Str("whenMatched")),
+                    (
+                        "Only when beginning or end of activity name matches",
+                        Lit::Str("whenMatched"),
+                    ),
                     ("Never", Lit::Str("never")),
                 ],
                 default: 1,
