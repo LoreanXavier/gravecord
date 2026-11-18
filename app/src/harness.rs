@@ -866,6 +866,27 @@ pub async fn run(
                     composer.replace_text_in_range(None, text, window, cx);
                 });
             }
+            // The file dialog of an image upload site answers with this file (the dialog is never opened in a capture
+            // run): the cropper of module 142630 opens over it.
+            ["image-pick", path] => {
+                let path = std::path::PathBuf::from(*path);
+                root.update(cx, |root, cx| root.crop_file_picked(&path, cx));
+            }
+            // `image-crop state`: the open image dialogs, the cropper's transform and its last announcement.
+            ["image-crop", "state"] => {
+                let line = root.update(cx, |root, _| root.image_crop_state());
+                let _ = writeln!(output, "{line}");
+            }
+            // `image-crop recent <n>`: stand-in recent avatars for the select modal.
+            ["image-crop", "recent", count] => {
+                let count = count.parse().unwrap_or(0);
+                root.update(cx, |root, cx| root.harness_recent_avatars(count, cx));
+            }
+            // `image-crop open <purpose>`: the select image modal of a site whose button is not on a reachable page.
+            ["image-crop", "open", purpose] => {
+                let purpose = purpose.to_string();
+                root.update(cx, |root, cx| root.harness_open_image_select(&purpose, cx));
+            }
             // Puts a file in the composer's upload area, as the file dialog or a drop does.
             ["attach", path] => {
                 let path = std::path::PathBuf::from(*path);
@@ -896,6 +917,37 @@ pub async fn run(
                         );
                     });
                 }
+            }
+            // Drags a file over the window to a point and holds it there (no drop): the drop area shows.
+            ["dragover", path, x, y] => {
+                if let Some(position) = at(x, y) {
+                    let paths = gpui::ExternalPaths(vec![PathBuf::from(*path)].into());
+                    cx.update(|cx| {
+                        dispatch(
+                            cx,
+                            window,
+                            PlatformInput::FileDrop(gpui::FileDropEvent::Entered {
+                                position,
+                                paths,
+                            }),
+                        );
+                        dispatch(
+                            cx,
+                            window,
+                            PlatformInput::FileDrop(gpui::FileDropEvent::Pending { position }),
+                        );
+                    });
+                }
+            }
+            // The dragged file leaves the window.
+            ["dragexit"] => {
+                cx.update(|cx| {
+                    dispatch(
+                        cx,
+                        window,
+                        PlatformInput::FileDrop(gpui::FileDropEvent::Exited),
+                    );
+                });
             }
             // Registered Games with a running game, two seen ones and a hand-added one, in memory only.
             // Capture only: the call simulator (`ui/callsim.rs`).
@@ -1243,6 +1295,15 @@ pub async fn run(
             // `graphic urgent | download <url>`: the dialogs of `ui/graphic_dialogs.rs`.
             ["graphic", rest @ ..] => {
                 let line = root.update(cx, |root, cx| root.script_graphic(rest, cx));
+                let _ = writeln!(output, "{line}");
+            }
+            // `unread-notice young | sent | state`: the store of `ui/unread_notice.rs`, in memory.
+            ["unread-notice", rest @ ..] => {
+                let line = root.update(cx, |root, cx| {
+                    let line = root.script_unread_notice(rest);
+                    cx.notify();
+                    line
+                });
                 let _ = writeln!(output, "{line}");
             }
             // `emoji bulk-errors`: "Failed to upload files" with one row of each kind (`ui/server_emoji.rs`).

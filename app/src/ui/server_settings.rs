@@ -13,8 +13,8 @@ use crate::net::Request;
 use crate::parity::Parity;
 use dc_state::Id;
 use gpui::{
-    AnyElement, Context, Entity, FontWeight, IntoElement, PathPromptOptions, SharedString,
-    Subscription, Window, deferred, div, img, prelude::*, px,
+    AnyElement, Context, Entity, FontWeight, IntoElement, SharedString, Subscription, Window,
+    deferred, div, img, prelude::*, px,
 };
 
 pub(super) const PROFILE_KEY: &str = "guild-profile:";
@@ -537,26 +537,17 @@ impl Root {
         cx.notify();
     }
 
+    /// The icon's file input, then the cropper with `GUILD_ICON` (module 989433, module 142630).
     fn pick_server_icon(&mut self, cx: &mut Context<Self>) {
-        let picked = cx.prompt_for_paths(PathPromptOptions {
-            files: true,
-            directories: false,
-            multiple: false,
-            prompt: None,
-        });
-        cx.spawn(async move |this, cx| {
-            if let Ok(Ok(Some(paths))) = picked.await
-                && let Some(uri) = paths.first().and_then(|path| data_uri(path))
-            {
-                let _ = this.update(cx, |this, cx| {
-                    if let Some(open) = this.server_settings.as_mut() {
-                        open.icon = Some(uri);
-                    }
-                    cx.notify();
-                });
-            }
-        })
-        .detach();
+        self.pick_crop_file(super::image_crop::Purpose::ServerIcon, cx);
+    }
+
+    /// `onCrop` of the server icon: the cropped picture is the pending icon.
+    pub(super) fn server_icon_cropped(&mut self, uri: String, cx: &mut Context<Self>) {
+        if let Some(open) = self.server_settings.as_mut() {
+            open.icon = Some(uri);
+        }
+        cx.notify();
     }
 
     fn open_delete_server(&mut self, window: &mut Window, cx: &mut Context<Self>) {

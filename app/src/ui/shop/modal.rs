@@ -385,10 +385,12 @@ impl Root {
                 None => button.into_any_element(),
             }
         };
+        // Module 878112: "Send a gift" over the button, which is named "Send a gift, {product}".
         let gift = {
             let sku = sku.clone();
-            div()
+            let button = div()
                 .id("shop-modal-gift")
+                .aria_label(super::cards::gift_button_label(&product.name))
                 .size(px(40.))
                 .flex_none()
                 .rounded(px(8.))
@@ -402,7 +404,13 @@ impl Root {
                     cx.stop_propagation();
                     this.shop_buy(&sku, true, cx);
                 }))
-                .child(icon("shop_gift_modal", 20., "--white"))
+                .child(icon("shop_gift_modal", 20., "--white"));
+            self.with_tip(
+                "shop-modal-gift-tip",
+                crate::ui::tooltip::Tip::text(dc_intl::t("JCFN/y"), crate::ui::tooltip::Side::Top),
+                button,
+                cx,
+            )
         };
         let pricing = div()
             .flex()

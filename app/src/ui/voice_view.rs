@@ -157,6 +157,9 @@ pub(super) struct State {
     pub quality_open: bool,
     /// The pointer is on the soundboard button or its Suggested Sounds popup.
     pub suggest: bool,
+    /// Bumped by every enter and leave of the button or the popup: a pending show or hide that finds another
+    /// number was cancelled.
+    pub suggest_timer: u64,
     /// The focused tile, if any (`selectedParticipant`).
     pub focus: video_tiles::Focus,
     /// Full Screen: the call fills the window and the window fills the screen.
@@ -208,6 +211,7 @@ impl Default for State {
             row_focus: false,
             quality_open: false,
             suggest: false,
+            suggest_timer: 0,
             focus: Default::default(),
             fullscreen: false,
             members_hidden: false,

@@ -372,6 +372,16 @@ pub(super) fn render_over_layers(spec: Spec, cx: &mut Context<Root>) -> AnyEleme
     render_sized_at(spec, 480., false, None, None, 4, cx)
 }
 
+/// The dialog with an input in its action bar above a layer that is still open under it (Edit Image over the
+/// profile editor or Server Settings).
+pub(super) fn render_with_input_over_layers(
+    spec: Spec,
+    input: AnyElement,
+    cx: &mut Context<Root>,
+) -> AnyElement {
+    render_sized_at(spec, 480., false, Some(input), None, 4, cx)
+}
+
 /// The small dialog above a popout that is still open under it (the inbox's Mark All as Read question).
 pub(super) fn render_small_over_popouts(spec: Spec, cx: &mut Context<Root>) -> AnyElement {
     render_sized_at(spec, 400., false, None, None, 4, cx)

@@ -1235,7 +1235,7 @@ fn now_ms() -> u64 {
 
 /// The SVG of an arrow turned by `degrees` about its centre (and mirrored for the right side, which the official
 /// layout flips with `scaleX(-1)`), sized to the turned box.
-fn rotated_svg(
+pub(super) fn rotated_svg(
     source: &str,
     degrees: f32,
     mirror: bool,

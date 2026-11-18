@@ -180,6 +180,7 @@ mod guild_guide;
 mod guild_navigation;
 mod hover_bar;
 pub(crate) mod image_cache;
+mod image_crop;
 pub(crate) mod image_fit;
 mod image_retry;
 mod inline_video;
@@ -303,6 +304,8 @@ mod tag_badges;
 mod threads;
 mod tooltip;
 mod unread;
+mod unread_notice;
+mod upload_area;
 mod upload_error;
 mod upload_progress;
 mod uploads;
@@ -550,6 +553,8 @@ pub struct Root {
     requested: HashSet<String>,
     /// Retry state of the pictures asked for through `request_image`.
     image_retries: image_retry::Retries,
+    /// The select image and image crop modals (`image_crop`).
+    image_crop: image_crop::State,
     badge_modal: Option<badge_modal::BadgeModal>,
     spotify_actions: spotify_activity::Actions,
     /// Animated avatar files a frame found missing, asked for by `prepare_live_avatars`.
@@ -624,6 +629,8 @@ pub struct Root {
     /// Blocked and ignored people in voice channels, and when warnings about them were dismissed (`voice_blocked`).
     blocked_in_voice: voice_blocked::BlockedInVoice,
     warning_dismissals: voice_blocked::WarningDismissals,
+    /// `UnreadSettingNoticeStore2` and the channel showing its notice (`unread_notice`).
+    unread_notice: unread_notice::State,
     /// The Stage's Requests to Speak sidebar is open, and the Stages whose full video notice was dismissed
     /// (`stage_requests`).
     stage_requests_open: bool,
@@ -705,6 +712,9 @@ pub struct Root {
     profile_editor: Option<profile_editor::Open>,
     /// Invite codes already resolved or on their way.
     requested_invites: HashSet<String>,
+    /// The command mentions of the loaded messages that are links here (module 990474), by id and name; worked out
+    /// when the messages or the command index change, never while painting.
+    command_mentions: Vec<(u64, String)>,
     /// Images this client draws itself (invite banners), by key.
     generated_images: std::cell::RefCell<HashMap<String, std::sync::Arc<gpui::Image>>>,
     /// The voice message players: loaded clips, each pill's position and bars, the shared speed and volume.
@@ -1024,6 +1034,7 @@ impl Root {
             images: HashMap::new(),
             requested: HashSet::new(),
             image_retries: image_retry::Retries::default(),
+            image_crop: Default::default(),
             badge_modal: None,
             spotify_actions: spotify_activity::Actions::default(),
             avatar_wants: std::cell::RefCell::new(Vec::new()),
@@ -1078,6 +1089,7 @@ impl Root {
             stream_full_seen: Default::default(),
             blocked_in_voice: Default::default(),
             warning_dismissals: voice_blocked::WarningDismissals::load(),
+            unread_notice: unread_notice::State::load(),
             stage_requests_open: false,
             stage_video_upsell_dismissed: Default::default(),
             video_ready: Default::default(),
@@ -1137,6 +1149,7 @@ impl Root {
             full_profile: None,
             profile_editor: None,
             requested_invites: HashSet::new(),
+            command_mentions: Vec::new(),
             generated_images: std::cell::RefCell::new(HashMap::new()),
             voice_hub: std::rc::Rc::new(std::cell::RefCell::new(voice_message::Hub::new())),
             voice_rec: std::rc::Rc::new(std::cell::RefCell::new(voice_message::RecState::new())),
@@ -1463,6 +1476,7 @@ impl Root {
                     self.send_echo(&data);
                 }
                 self.stores.dispatch(&name, &data);
+                self.unread_notice_event(&name, &data);
                 self.urgent_message_event(&name);
                 self.spotify_devices_changed(cx);
                 self.spotify_loading_changed();
@@ -1788,6 +1802,9 @@ impl Root {
                 }
                 // Not in the pinned client: WhoReacted's reactors join the users (`plugin_hooks/who_reacted.rs`).
                 self.who_reacted_fetched(&key, &body);
+                if self.image_crop_fetched(&key, &body, cx) {
+                    return;
+                }
                 // Not in the pinned client: DownloadAllAttachments' outcome (`plugin_hooks/download_all.rs`).
                 if self.download_all_answered(&key, &body, cx) {
                     return;
@@ -2234,6 +2251,9 @@ impl Root {
                 if key.starts_with("invite:") {
                     self.invite_fetched(&key);
                 }
+                if key.starts_with("command-index:") {
+                    self.refresh_command_mentions();
+                }
                 if key.starts_with(poll::VOTERS_PREFIX) {
                     self.poll_voters_fetched(&key);
                 }
@@ -2375,10 +2395,14 @@ impl Root {
                 } else if key.starts_with(inline_video::PREFIX) {
                     self.inline_video_failed(&key);
                     cx.notify();
+                } else if self.image_crop_full_failed(&key, cx) {
                 } else {
                     // Every other picture is asked for again.
                     self.image_retry_after_failure(key, cx);
                 }
+            }
+            Update::Image { key, bytes } if key.starts_with(image_crop::FULL_PREFIX) => {
+                self.image_crop_full_fetched(&key, bytes, cx);
             }
             Update::Image { key, bytes } if key.starts_with(profile_effects::ART_PREFIX) => {
                 self.profile_effect_art_fetched(&key, bytes, cx);
@@ -3356,6 +3380,19 @@ impl Root {
 
     fn rebuild_rows(&mut self) {
         self.request_invites();
+        // A command mention needs the channel's command index to know whether it is a link (module 990474).
+        if self
+            .channel
+            .and_then(|channel| self.stores.messages.get(&channel))
+            .is_some_and(|messages| {
+                messages
+                    .iter()
+                    .any(|message| message.content.contains("</"))
+            })
+        {
+            self.request_command_index();
+        }
+        self.refresh_command_mentions();
         self.rows.clear();
         let empty = Vec::new();
         let messages = self
@@ -3966,7 +4003,9 @@ impl Root {
                 Piece {
                     // The reply preview shows a mention as its resolved `@name`, never the raw `<@id>`.
                     text: match span.kind {
-                        Kind::User(_) | Kind::Role(_) | Kind::Channel(_) => self.span_label(span),
+                        Kind::User(_) | Kind::Role(_) | Kind::Channel(_) | Kind::Command { .. } => {
+                            self.span_label(span)
+                        }
                         _ => span.text.clone(),
                     },
                     font: run_font,
@@ -6645,7 +6684,13 @@ impl Root {
                 .map_or_else(|| "unknown".to_owned(), |channel| channel.name.clone()),
             Kind::Emoji { name, .. } => format!(":{name}:"),
             Kind::Timestamp { unix, format } => format_timestamp(*unix, *format),
-            Kind::Text | Kind::Link(_) | Kind::Everyone | Kind::Unicode => span.text.clone(),
+            // Module 990474 `E`: "/" and the command's name, as a link or as plain text.
+            Kind::Command { name, .. } => format!("/{name}"),
+            Kind::Text
+            | Kind::Link(_)
+            | Kind::AttachmentLink(_)
+            | Kind::Everyone
+            | Kind::Unicode => span.text.clone(),
         }
     }
 
@@ -6656,7 +6701,8 @@ impl Root {
             Kind::Role(id) if self.current_guild().is_none_or(|guild| !guild.roles.contains_key(&id))
         );
         let mention = matches!(span.kind, Kind::User(_) | Kind::Channel(_) | Kind::Everyone)
-            || (matches!(span.kind, Kind::Role(_)) && !deleted_role);
+            || (matches!(span.kind, Kind::Role(_)) && !deleted_role)
+            || matches!(&span.kind, Kind::Command { name, id } if self.command_mention_usable(name, *id));
         let mut run_font: Font = font(if style.code { MONO } else { SANS });
         run_font.features = kerning();
         run_font.weight = match (style.bold, mention) {
@@ -6693,8 +6739,10 @@ impl Root {
             _ => None,
         };
         let tint = match span.kind {
-            Kind::Link(_) if self.failed_tint.get() => hsla("--text-feedback-critical"),
-            Kind::Link(_) => hsla("--text-link"),
+            Kind::Link(_) | Kind::AttachmentLink(_) if self.failed_tint.get() => {
+                hsla("--text-feedback-critical")
+            }
+            Kind::Link(_) | Kind::AttachmentLink(_) => hsla("--text-link"),
             Kind::Role(_) if role_look.is_some() => {
                 Hsla::from(gpui::rgb(role_look.map_or(0, |(color, _)| color)))
             }
@@ -6717,6 +6765,13 @@ impl Root {
                 mention_box.background = role_tint(color, 0.1);
             }
             Some(mention_box)
+        } else if matches!(span.kind, Kind::AttachmentLink(_)) {
+            // Module 862316's attachmentLink: AttachmentIcon at 1em in the link's colour (`.icon__RYHZ5`), then the
+            // file name, with no box of its own.
+            let mut chip = pill(0., 0., "--text-link");
+            chip.background = Hsla::transparent_black();
+            chip.icon = Some(("icons/attachment_link.svg".into(), px(size), px(size + 4.)));
+            Some(chip)
         } else if matches!(span.kind, Kind::Timestamp { .. }) {
             Some(pill(2., 3., "--interactive-background-active"))
         } else {
@@ -6751,7 +6806,8 @@ impl Root {
             color: tint,
             // `underline_links`: links carry their underline at rest.
             underline: style.underline
-                || (matches!(span.kind, Kind::Link(_)) && self.underline_links()),
+                || (matches!(span.kind, Kind::Link(_) | Kind::AttachmentLink(_))
+                    && self.underline_links()),
             strike: style.strike,
             boxed,
             image,
@@ -6763,7 +6819,7 @@ impl Root {
                 None => (hsla("--brand-500"), hsla("--white")),
             }),
             // `.anchor:hover` underlines a link.
-            hover_underline: matches!(span.kind, Kind::Link(_)),
+            hover_underline: matches!(span.kind, Kind::Link(_) | Kind::AttachmentLink(_)),
             gradient: role_look.and_then(|(_, colors)| colors),
         }
     }
@@ -6968,11 +7024,24 @@ impl Root {
             let root = self.weak.clone();
             let runs = links.clone();
             let mentions = channels.clone();
+            let chips: Vec<bool> = spans
+                .iter()
+                .map(|span| matches!(span.kind, Kind::AttachmentLink(_)))
+                .collect();
             element = element.on_piece_context(move |piece, at, _, cx| {
                 // A channel mention opens its own menu (module 223998) instead of the message's.
                 if let Some(Some(channel)) = mentions.get(piece).copied() {
                     let _ = root.update(cx, |this, _| {
                         this.chat_extra.mention_hit = Some((at, channel))
+                    });
+                    return;
+                }
+                // So does an attachment chip: Link Options (module 740024).
+                if chips.get(piece).copied().unwrap_or(false)
+                    && let Some(Some((url, name))) = runs.get(piece).cloned()
+                {
+                    let _ = root.update(cx, |this, _| {
+                        this.chat_extra.attachment_hit = Some((at, url, name))
                     });
                     return;
                 }
@@ -6988,9 +7057,20 @@ impl Root {
                 }
             });
         }
+        // A usable command mention puts its command in the composer (module 990474).
+        let commands: Vec<Option<(String, u64)>> = spans
+            .iter()
+            .map(|span| match &span.kind {
+                Kind::Command { name, id } if self.command_mention_usable(name, *id) => {
+                    Some((name.clone(), *id))
+                }
+                _ => None,
+            })
+            .collect();
         if spoilers.iter().any(Option::is_some)
             || links.iter().any(Option::is_some)
             || channels.iter().any(Option::is_some)
+            || commands.iter().any(Option::is_some)
         {
             let spoilers = spoilers.to_vec();
             let root = self.weak.clone();
@@ -7021,6 +7101,9 @@ impl Root {
                     }
                     if let Some(Some(channel)) = channels.get(piece).copied() {
                         this.open_channel_mention(channel, cx);
+                    }
+                    if let Some(Some((name, id))) = commands.get(piece).cloned() {
+                        this.press_command_mention(name, id, window, cx);
                     }
                 });
             });
@@ -8279,7 +8362,8 @@ impl Root {
                                     )
                                     // Not in the pinned client: UserMessagesPronouns
                                     // (`plugin_hooks/message_pronouns.rs`).
-                                    .children(self.message_pronouns(message, cx)),
+                                    .children(self.message_pronouns(message, cx))
+                                    .children(self.header_badges(message, cx)),
                             )
                             .child(content),
                     )
@@ -9191,6 +9275,12 @@ fn link_runs(spans: &[Span]) -> Vec<Option<(String, String)>> {
     let mut out = vec![None; spans.len()];
     let mut index = 0;
     while index < spans.len() {
+        // An attachment chip is a link of its own, named by its file.
+        if let Kind::AttachmentLink(url) = &spans[index].kind {
+            out[index] = Some((url.clone(), spans[index].text.clone()));
+            index += 1;
+            continue;
+        }
         let Kind::Link(url) = &spans[index].kind else {
             index += 1;
             continue;
@@ -9547,6 +9637,8 @@ impl Render for Root {
         self.interaction_modal_frame(window, cx);
         self.open_pending_overlay_survey(cx);
         self.av_errors_frame(cx);
+        self.unread_notice_frame(cx);
+        self.upload_area_frame(cx);
         #[cfg(feature = "capture")]
         let _build = crate::perf::Timer::build();
         // The motion clock for this frame; reduced motion as module 775602 decides it.
@@ -9754,6 +9846,7 @@ impl Render for Root {
             }),
         )
         .size_full();
+        let image_crop_layers = self.image_crop_layers(window, cx);
         let element = div()
             .id("root")
             .track_focus(&self.focus)
@@ -9806,6 +9899,10 @@ impl Render for Root {
             .capture_key_down(cx.listener(|this, event: &KeyDownEvent, window, cx| {
                 let keys = &event.keystroke;
                 if !event.is_held && this.voice_key_down(keys, cx) {
+                    cx.stop_propagation();
+                    return;
+                }
+                if this.image_crop_key(keys, window, cx) {
                     cx.stop_propagation();
                     return;
                 }
@@ -10440,9 +10537,11 @@ impl Render for Root {
                 MouseButton::Navigate(gpui::NavigationDirection::Forward),
                 cx.listener(|this, _, _, cx| this.go_forward(cx)),
             )
-            .on_drop(cx.listener(|this, paths: &gpui::ExternalPaths, _, cx| {
-                this.on_drop_files(paths, cx);
-            }))
+            .on_drop(
+                cx.listener(|this, paths: &gpui::ExternalPaths, window, cx| {
+                    this.drop_files(paths, window.modifiers().shift, cx);
+                }),
+            )
             // Capture runs before the text under the pointer starts its own selection.
             .capture_any_mouse_down(
                 cx.listener(|this, event: &gpui::MouseDownEvent, window, _| {
@@ -10758,8 +10857,10 @@ impl Render for Root {
                                                 .flex_1()
                                                 .min_w(px(0.))
                                                 .h_full()
-                                                // Module 626977 over the list: a locked thread's bar.
+                                                // Module 626977 over the list: a locked thread's bar, or the
+                                                // notice of a channel just marked unread for every message.
                                                 .children(self.thread_lock_notice(cx))
+                                                .children(self.unread_settings_notice(cx))
                                                 .child(self.regions.place(
                                                     regions::Kind::Messages,
                                                     regions::style_of(regions::Kind::Messages),
@@ -10926,6 +11027,7 @@ impl Render for Root {
             .children(self.folder_picker_layer(cx))
             .children(self.folder_menu_layer(cx))
             .children(self.settings_dialogs(cx))
+            .children(image_crop_layers)
             .children(self.modify_attachment_modal(cx))
             .children(self.report_issue_modal(cx))
             .children(self.game_profile_layer(cx))
@@ -10946,6 +11048,8 @@ impl Render for Root {
             .children(self.app_toast_layer())
             .children(self.picker_layer(window, cx))
             .children(self.soundboard_gift_picker(window, cx))
+            // Module 738876: the drop area over everything (`z-index: 2000`) while files are dragged in.
+            .children(self.file_drop_area(window, cx))
             .children(self.splash_layer(window, cx));
         // Capture only: the display name style comparison sheet (`name-sheet` step).
         #[cfg(feature = "capture")]

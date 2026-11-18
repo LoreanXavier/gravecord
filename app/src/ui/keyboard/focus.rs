@@ -286,6 +286,9 @@ impl Root {
         usize::from(self.layers_open())
             + [
                 self.quick_switcher.is_some(),
+                self.image_crop.select.is_some(),
+                self.image_crop.crop.is_some(),
+                self.image_crop.confirm.is_some(),
                 self.menu.is_some(),
                 self.context.open.is_some(),
                 self.plus_menu,

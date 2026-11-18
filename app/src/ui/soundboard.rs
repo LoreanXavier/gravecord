@@ -242,6 +242,106 @@ pub(super) fn slots(features: &[String]) -> usize {
     }
 }
 
+/// Where a sound button is drawn: the picker (its tooltip side, and whether a press picks the sound for a gift), or
+/// the quick access popout with the reason the sound is there.
+#[derive(Clone, Copy)]
+enum ButtonPlace {
+    Picker { side: Side, gift: bool },
+    Quick(Mark),
+}
+
+/// Why a sound is in the quick access popout (`type` of module 453997).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum Mark {
+    Favorite,
+    Guild,
+    Default,
+}
+
+/// The quick access popout's sounds (module 453997 `A`): available favourites from the call's server, then (with
+/// USE_EXTERNAL_SOUNDS) every server in list order, then the defaults, five or six of them unlocked; a favourite of
+/// another server without Nitro is held back and the first such one ends the list, locked. The rest is filled with the
+/// call's server's available sounds, then the defaults, each by sound id. GAP: frequently used sounds (`frequently_used`
+/// with the clock and "Frequently Used") come between favourites and the server's sounds; play counts are not kept.
+pub(super) fn quick_access(
+    ctx: &Ctx,
+    order: &[Id],
+    sounds: &HashMap<Id, Vec<Sound>>,
+    defaults: &[Sound],
+    favorites: &[String],
+) -> Vec<(Sound, Mark)> {
+    let mut lists: Vec<&[Sound]> = Vec::new();
+    if let Some(current) = ctx.current {
+        lists.extend(sounds.get(&current).map(Vec::as_slice));
+    }
+    if ctx.external || ctx.current.is_none() {
+        lists.extend(
+            order
+                .iter()
+                .filter(|id| Some(**id) != ctx.current)
+                .filter_map(|id| sounds.get(id).map(Vec::as_slice)),
+        );
+    }
+    lists.push(defaults);
+    let find = |id: &String| {
+        lists
+            .iter()
+            .flat_map(|list| list.iter())
+            .find(|sound| sound.available && &sound.id == id)
+    };
+    let locked = |sound: &Sound| {
+        sound.guild != DISCORD
+            && ctx
+                .current
+                .is_none_or(|guild| sound.guild != guild.to_string())
+            && !ctx.everywhere
+    };
+    let full = if ctx.everywhere { 6 } else { 5 };
+    let (mut open, mut held): (Vec<(Sound, Mark)>, Vec<Sound>) = (Vec::new(), Vec::new());
+    for sound in favorites.iter().filter_map(find) {
+        if locked(sound) {
+            held.push(sound.clone());
+        } else {
+            open.push((sound.clone(), Mark::Favorite));
+        }
+        if open.len() >= full && (ctx.everywhere || !held.is_empty()) {
+            break;
+        }
+    }
+    let limit = if held.is_empty() { 6 } else { 5 };
+    let by_id = |list: &[Sound]| {
+        let mut list: Vec<Sound> = list.to_vec();
+        list.sort_by_key(|sound| sound.id.parse::<u64>().unwrap_or(0));
+        list
+    };
+    let own = ctx
+        .current
+        .and_then(|current| sounds.get(&current))
+        .map(|list| by_id(list))
+        .unwrap_or_default();
+    for sound in own.into_iter().filter(|sound| sound.available) {
+        if open.len() >= limit {
+            break;
+        }
+        if !open.iter().any(|(known, _)| known.id == sound.id) {
+            open.push((sound, Mark::Guild));
+        }
+    }
+    for sound in by_id(defaults) {
+        if open.len() >= limit {
+            break;
+        }
+        if !open.iter().any(|(known, _)| known.id == sound.id) {
+            open.push((sound, Mark::Default));
+        }
+    }
+    open.truncate(limit);
+    if let Some(first) = held.into_iter().next() {
+        open.push((first, Mark::Favorite));
+    }
+    open
+}
+
 /// The picker's sections: Favorites, the call's server, Discord Sounds (last for Nitro users), then the servers whose
 /// sounds this user may see.
 pub(super) fn sections(
@@ -1064,19 +1164,46 @@ impl Root {
             .into_any_element()
     }
 
-    /// The pointer entered or left the bar's soundboard button or its popup: the defaults load on the first entry.
+    /// The pointer entered or left the bar's soundboard button or its popup: the sounds load on the first entry. As
+    /// the hover hook of module 421773 (`A(200, 300)` in 533978), the popup shows 200ms after an entry and hides 300ms
+    /// after a leave, and each entry or leave cancels the other's wait, so the pointer can cross the gap to the popup.
     pub(super) fn soundboard_hover(&mut self, inside: bool, cx: &mut Context<Self>) {
+        self.vv.suggest_timer += 1;
+        let ticket = self.vv.suggest_timer;
+        let wait = if inside { 200 } else { 300 };
+        cx.spawn(async move |this, cx| {
+            cx.background_executor()
+                .timer(std::time::Duration::from_millis(wait))
+                .await;
+            let _ = this.update(cx, |this, cx| {
+                if this.vv.suggest_timer == ticket && this.vv.suggest != inside {
+                    this.vv.suggest = inside;
+                    cx.notify();
+                }
+            });
+        })
+        .detach();
         if inside && !self.vv.suggest {
             self.soundboard_request();
-            let known: Vec<Sound> = self.soundboard.defaults.clone();
+            let order: Vec<Id> = self.stores.guilds.iter().map(|guild| guild.id).collect();
+            // The emoji of the sounds the popup shows: favourites and the server's own, not only the defaults.
+            let known: Vec<Sound> = quick_access(
+                &self.soundboard_ctx(),
+                &order,
+                &self.soundboard.guilds,
+                &self.soundboard.defaults,
+                &self.soundboard.favorites,
+            )
+            .into_iter()
+            .map(|(sound, _)| sound)
+            .chain(self.soundboard.defaults.iter().cloned())
+            .collect();
             self.request_sound_images(&known);
         }
-        self.vv.suggest = inside;
-        cx.notify();
     }
 
-    /// Suggested Sounds (the hover popup over the bar's soundboard button): the first six default sounds in a 3x2
-    /// grid with See All. Measured in `design/dom/popouts/stream-stopped-darker-cozy.json`: 494x152, centred over the
+    /// Suggested Sounds (the hover popup over the bar's soundboard button, module 662080): six sounds of
+    /// [`quick_access`] in a 3x2 grid with See All. Measured in `design/dom/popouts/stream-stopped-darker-cozy.json`: 494x152, centred over the
     /// button, padding 16, tiles 148x40 with an 8px gap.
     pub(super) fn soundboard_suggest(&self, cx: &mut Context<Self>) -> Vec<AnyElement> {
         const WIDTH: f32 = 494.;
@@ -1095,17 +1222,18 @@ impl Root {
         else {
             return Vec::new();
         };
-        let sounds: Vec<&Sound> = self
-            .soundboard
-            .defaults
-            .iter()
-            .filter(|sound| sound.available)
-            .take(6)
-            .collect();
+        let ctx = self.soundboard_ctx();
+        let order: Vec<Id> = self.stores.guilds.iter().map(|guild| guild.id).collect();
+        let sounds = quick_access(
+            &ctx,
+            &order,
+            &self.soundboard.guilds,
+            &self.soundboard.defaults,
+            &self.soundboard.favorites,
+        );
         if sounds.is_empty() {
             return Vec::new();
         }
-        let ctx = self.soundboard_ctx();
         let left = f32::from(anchor.left()) + f32::from(anchor.size.width) / 2.
             - WIDTH / 2.
             - self.combined_sidebar_width();
@@ -1117,13 +1245,12 @@ impl Root {
                 div()
                     .flex()
                     .gap(px(8.))
-                    .children(chunk.iter().map(|sound| {
+                    .children(chunk.iter().map(|(sound, mark)| {
                         self.soundboard_button(
                             &format!("suggest{row}"),
                             sound,
                             &ctx,
-                            Side::Top,
-                            false,
+                            ButtonPlace::Quick(*mark),
                             cx,
                         )
                     }))
@@ -1153,6 +1280,11 @@ impl Root {
                             .flex_col()
                             .gap(px(8.))
                             .occlude()
+                            // The card occludes its parent's hitbox, so it reports the pointer itself.
+                            .id("soundboard-suggest-card")
+                            .on_hover(cx.listener(|this, inside: &bool, _, cx| {
+                                this.soundboard_hover(*inside, cx);
+                            }))
                             .child(
                                 div()
                                     .h(px(24.))
@@ -1185,6 +1317,7 @@ impl Root {
                                             .hover(|style| style.underline())
                                             .on_click(cx.listener(|this, _, window, cx| {
                                                 this.vv.suggest = false;
+                                                this.vv.suggest_timer += 1;
                                                 this.toggle_soundboard(window, cx);
                                             }))
                                             .child("See All"),
@@ -2228,7 +2361,13 @@ impl Root {
                     .iter()
                     .enumerate()
                     .map(|(column, item)| match item {
-                        Some(sound) => self.soundboard_button(&key, sound, ctx, side, gift, cx),
+                        Some(sound) => self.soundboard_button(
+                            &key,
+                            sound,
+                            ctx,
+                            ButtonPlace::Picker { side, gift },
+                            cx,
+                        ),
                         None => self.soundboard_add_button(
                             guild,
                             section.add.unwrap_or(false),
@@ -2461,10 +2600,13 @@ impl Root {
         section: &str,
         sound: &Sound,
         ctx: &Ctx,
-        side: Side,
-        gift: bool,
+        place: ButtonPlace,
         cx: &mut Context<Self>,
     ) -> AnyElement {
+        let (side, gift, quick) = match place {
+            ButtonPlace::Picker { side, gift } => (side, gift, None),
+            ButtonPlace::Quick(mark) => (Side::Top, false, Some(mark)),
+        };
         let state = access(sound, ctx);
         let open = state == Access::Open;
         let key = format!("{section}-{}", sound.id);
@@ -2538,24 +2680,50 @@ impl Root {
                             this.child(icon("sb_play", 20., "--text-strong"))
                         }
                     }))
-                    .child(
-                        secondary(format!("sb-star-{key}"))
-                            .aria_label(labels.favorite.clone())
-                            .on_click(cx.listener(move |this, _, _, cx| {
-                                cx.stop_propagation();
-                                this.soundboard.toggle_favorite(&starred.id);
-                                cx.notify();
-                            }))
-                            .child(icon(
-                                "sb_star",
-                                16.,
-                                if favorite {
-                                    "--text-feedback-warning"
-                                } else {
-                                    "--interactive-text-default"
-                                },
+                    .when_some(quick, |this, mark| {
+                        // Module 782618 `R` in the quick access popout: the end icon only says why the sound is
+                        // there (a star with "Favorited"); it toggles nothing.
+                        let tip = match mark {
+                            Mark::Favorite => Some(dc_intl::t("iJA/TE")),
+                            Mark::Guild | Mark::Default => None,
+                        };
+                        let mark_icon = div()
+                            .id(SharedString::from(format!("sb-mark-{key}")))
+                            .size(px(16.))
+                            .flex_none()
+                            .when(tip.is_some(), |this| {
+                                this.child(icon("sb_star", 16., "--interactive-text-default"))
+                            });
+                        match tip {
+                            Some(tip) => this.child(self.with_tip(
+                                format!("sb-mark-tip-{key}"),
+                                Tip::body(Body::Text(tip.into()), Side::Top),
+                                mark_icon,
+                                cx,
                             )),
-                    ),
+                            None => this.child(mark_icon),
+                        }
+                    })
+                    .when(quick.is_none(), |this| {
+                        this.child(
+                            secondary(format!("sb-star-{key}"))
+                                .aria_label(labels.favorite.clone())
+                                .on_click(cx.listener(move |this, _, _, cx| {
+                                    cx.stop_propagation();
+                                    this.soundboard.toggle_favorite(&starred.id);
+                                    cx.notify();
+                                }))
+                                .child(icon(
+                                    "sb_star",
+                                    16.,
+                                    if favorite {
+                                        "--text-feedback-warning"
+                                    } else {
+                                        "--interactive-text-default"
+                                    },
+                                )),
+                        )
+                    }),
             );
         let body = div()
             .id(SharedString::from(format!("sb-button-{key}")))
@@ -2766,6 +2934,54 @@ mod tests {
             volume: 1.,
             available: true,
         }
+    }
+
+    /// Module 453997: favourites first, then the call's server's sounds, then the defaults; a favourite of another
+    /// server without Nitro is held back and ends the list.
+    #[test]
+    fn quick_access_puts_favourites_first_and_holds_back_locked_ones() {
+        let defaults: Vec<Sound> = (1..=8)
+            .map(|n| sound(&n.to_string(), DISCORD, "d"))
+            .collect();
+        let mut sounds = HashMap::new();
+        sounds.insert(10, vec![sound("102", "10", "g2"), sound("101", "10", "g1")]);
+        sounds.insert(20, vec![sound("201", "20", "other")]);
+        let ctx = Ctx {
+            current: Some(10),
+            external: true,
+            ..Ctx::default()
+        };
+        let favorites = vec!["5".to_owned(), "201".to_owned()];
+        let picked = quick_access(&ctx, &[10, 20], &sounds, &defaults, &favorites);
+        let ids: Vec<(&str, Mark)> = picked.iter().map(|(s, m)| (s.id.as_str(), *m)).collect();
+        assert_eq!(
+            ids,
+            [
+                ("5", Mark::Favorite),
+                ("101", Mark::Guild),
+                ("102", Mark::Guild),
+                ("1", Mark::Default),
+                ("2", Mark::Default),
+                ("201", Mark::Favorite),
+            ]
+        );
+        assert_eq!(access(&picked[5].0, &ctx), Access::Locked);
+        // With Nitro the other server's favourite is open, and six sounds fill the grid.
+        let nitro = Ctx {
+            everywhere: true,
+            ..ctx.clone()
+        };
+        let picked = quick_access(&nitro, &[10, 20], &sounds, &defaults, &favorites);
+        assert_eq!(picked.len(), 6);
+        assert_eq!(picked[1].0.id, "201");
+        assert_eq!(picked[1].1, Mark::Favorite);
+        // Without USE_EXTERNAL_SOUNDS another server's sounds are not looked at.
+        let closed = Ctx {
+            external: false,
+            ..ctx
+        };
+        let picked = quick_access(&closed, &[10, 20], &sounds, &defaults, &favorites);
+        assert!(picked.iter().all(|(sound, _)| sound.id != "201"));
     }
 
     #[test]

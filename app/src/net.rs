@@ -1036,12 +1036,14 @@ async fn schedule_message(
         }
         None => (None, None),
     };
+    // `_sendMessage` takes `@silent` off before it schedules too (module 677413).
+    let (silent, content) = dc_state::split_silent_prefix(content);
     let build = |attachments: Vec<Value>| {
         dc_state::scheduled_message::create_body(dc_state::scheduled_message::CreateRequest {
             channel,
             content,
             scheduled_timestamp: timestamp,
-            flags: None,
+            flags: silent.then_some(dc_state::SUPPRESS_NOTIFICATIONS_FLAG),
             message_reference: message_reference.clone(),
             allowed_mentions: allowed_mentions.clone(),
             sticker_ids,
@@ -1202,6 +1204,8 @@ pub(crate) fn send_body(
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map_or(0, |elapsed| elapsed.as_millis() as u64);
+    // A leading `@silent` is sent as the SUPPRESS_NOTIFICATIONS flag (module 339200's silentPrefix, 677413).
+    let (silent, content) = dc_state::split_silent_prefix(content);
     let mut body = json!({
         "mobile_network_type": "unknown",
         "content": content,
@@ -1218,7 +1222,11 @@ pub(crate) fn send_body(
         body["allowed_mentions"] =
             json!({"parse": ["users", "roles", "everyone"], "replied_user": ping});
     }
-    body["flags"] = json!(0);
+    body["flags"] = json!(if silent {
+        dc_state::SUPPRESS_NOTIFICATIONS_FLAG
+    } else {
+        0
+    });
     body
 }
 
@@ -1244,14 +1252,14 @@ async fn send_local(
         body["sticker_ids"] = json!(sticker_ids.iter().map(u64::to_string).collect::<Vec<_>>());
     }
     if let Some((guild, source, message)) = forward {
-        // `message_reference` of type 1 and no flags: the forward of module 138399.
+        // `message_reference` of type 1: the forward of module 138399. Its flags are SUPPRESS_NOTIFICATIONS when the
+        // note beside it starts with `@silent` (module 92961), which the forward's own content carries.
         body["message_reference"] = json!({
             "guild_id": guild.map(|guild| guild.to_string()),
             "channel_id": source.to_string(),
             "message_id": message.to_string(),
             "type": 1,
         });
-        body["flags"] = json!(0);
     }
     if !files.is_empty() {
         let cancel = crate::upload_flow::register(nonce);
@@ -3030,6 +3038,17 @@ Connection: close
     fn a_dm_reply_has_no_guild() {
         let body = send_body(5, "hi", Some((None, 7, true)));
         assert!(body["message_reference"].get("guild_id").is_none());
+    }
+
+    /// Module 339200's silentPrefix: `@silent` goes out as flag 4096, without the prefix.
+    #[test]
+    fn a_silent_prefix_becomes_the_suppress_notifications_flag() {
+        let body = send_body(5, "@silent  hush", None);
+        assert_eq!(body["content"], "hush");
+        assert_eq!(body["flags"], 4096);
+        let plain = send_body(5, "@silently", None);
+        assert_eq!(plain["content"], "@silently");
+        assert_eq!(plain["flags"], 0);
     }
 }
 

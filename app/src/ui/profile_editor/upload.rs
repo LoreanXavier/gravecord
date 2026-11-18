@@ -1,14 +1,13 @@
-//! The avatar and banner image upload of the profile editor. The official client opens a file dialog, then a
-//! cropper (module 468450 `XD` and the upload modal it lazy-loads), then stores the cropped image as the pending
-//! change with its data URI. The cropper is not drawn here: the chosen picture is used whole. The limits are the
-//! official ones: a file over `maxFileSizeBytes` (module 478644, 10 MiB) is refused with the "Your files are too
-//! powerful" error, and the avatar's description is the file name without its extension (`Rh` of module 101058).
+//! The avatar and banner image upload of the profile editor. The official client opens the select image modal
+//! (module 468450 `XD` lazy-loads module 685663), takes the file into the cropper (module 142630, `ui/image_crop.rs`),
+//! then stores the cropped image as the pending change with its data URI. The limits are the official ones: a file
+//! over `maxFileSizeBytes` (module 478644, 10 MiB), before or after cropping, is refused with the "Your files are too
+//! powerful" error, and the avatar's description is the file name without its extension.
+//! GAP: `Rh` of module 101058 writes the description as "{name}, added {dateTime}" (`DYil93`); the bare name is kept.
 
 use super::save::Picked;
 use crate::ui::Root;
-use base64::Engine;
-use gpui::{Context, PathPromptOptions};
-use std::path::Path;
+use gpui::Context;
 use std::sync::Arc;
 
 /// `maxFileSizeBytes` of the upload modal (module 478644).
@@ -50,74 +49,70 @@ pub(super) fn too_big(bytes: usize) -> String {
     )
 }
 
-/// Reads a picture file for the editor. `None` for a file type the API does not take.
-pub(super) fn prepare(
-    path: &Path,
-    target: Target,
-    reader: impl Fn(&Path) -> Option<Vec<u8>>,
-) -> Option<Result<Prepared, String>> {
-    let extension = path.extension()?.to_str()?.to_ascii_lowercase();
-    let (mime, format) = match extension.as_str() {
-        "png" => ("image/png", gpui::ImageFormat::Png),
-        "jpg" | "jpeg" => ("image/jpeg", gpui::ImageFormat::Jpeg),
-        "gif" => ("image/gif", gpui::ImageFormat::Gif),
-        "webp" => ("image/webp", gpui::ImageFormat::Webp),
-        _ => return None,
-    };
-    let bytes = reader(path)?;
-    if bytes.len() > MAX_BYTES {
-        return Some(Err(too_big(bytes.len())));
+/// The pending description: the file name without its extension; a banner without one is "Banner image" (`yiRnNO`).
+fn description(stem: &str, target: Target) -> String {
+    match target {
+        Target::Banner if stem.is_empty() => dc_intl::t("yiRnNO").to_owned(),
+        _ => stem.to_owned(),
     }
-    let stem = path
-        .file_stem()
-        .and_then(|stem| stem.to_str())
-        .unwrap_or_default();
-    let description = match target {
-        Target::Avatar => Some(stem.to_owned()),
-        // The banner's pending description is its file name, or "Banner image" when it has none.
-        Target::Banner => Some(if stem.is_empty() {
-            "Banner image".to_owned()
-        } else {
-            stem.to_owned()
-        }),
-    };
-    let image_uri = format!(
-        "data:{mime};base64,{}",
-        base64::engine::general_purpose::STANDARD.encode(&bytes)
-    );
-    Some(Ok(Prepared {
-        picked: Picked {
-            image_uri,
-            description,
-        },
-        image: Arc::new(gpui::Image::from_bytes(format, bytes)),
-    }))
 }
 
 impl Root {
-    /// Opens the file dialog for the avatar or banner and keeps the chosen picture as the pending change.
+    /// `XD` of module 468450: the select image modal (module 685663) for the avatar or banner; its Upload Image tile
+    /// takes a file and the cropper (module 142630) hands back the pending change (`profile_editor_cropped`).
     pub(super) fn profile_editor_pick_image(&mut self, target: Target, cx: &mut Context<Self>) {
-        let picked = cx.prompt_for_paths(PathPromptOptions {
-            files: true,
-            directories: false,
-            multiple: false,
-            prompt: None,
-        });
-        cx.spawn(async move |this, cx| {
-            let Ok(Ok(Some(paths))) = picked.await else {
-                return;
-            };
-            let Some(path) = paths.first() else {
-                return;
-            };
-            let Some(result) = prepare(path, target, |path| std::fs::read(path).ok()) else {
-                return;
-            };
-            let _ = this.update(cx, |this, cx| {
-                this.profile_editor_set_image(target, result, cx);
-            });
-        })
-        .detach();
+        let purpose = match target {
+            Target::Avatar => crate::ui::image_crop::Purpose::ProfileAvatar,
+            Target::Banner => crate::ui::image_crop::Purpose::ProfileBanner,
+        };
+        self.open_image_select(purpose, cx);
+    }
+
+    /// The file input's `maxFileSizeBytes` (10 MiB): a bigger file is refused with the "too powerful" error.
+    pub(in crate::ui) fn profile_editor_too_big(
+        &mut self,
+        size: usize,
+        cx: &mut Context<Self>,
+    ) -> Option<String> {
+        if size <= MAX_BYTES {
+            return None;
+        }
+        let message = too_big(size);
+        if let Some(open) = self.profile_editor.as_mut() {
+            open.error = Some(message.clone());
+        }
+        cx.notify();
+        Some(message)
+    }
+
+    /// `onComplete` of module 468450: the cropped picture becomes the pending change unless it is over 10 MiB after
+    /// cropping (`q0rsrZ`, measured on the data URI's bytes by `EW`).
+    pub(in crate::ui) fn profile_editor_cropped(
+        &mut self,
+        banner: bool,
+        image_uri: String,
+        image: Arc<gpui::Image>,
+        stem: &str,
+        cx: &mut Context<Self>,
+    ) {
+        let target = if banner {
+            Target::Banner
+        } else {
+            Target::Avatar
+        };
+        let bytes = image.bytes().len();
+        let result = if bytes > MAX_BYTES {
+            Err(too_big(bytes))
+        } else {
+            Ok(Prepared {
+                picked: Picked {
+                    image_uri,
+                    description: Some(description(stem, target)),
+                },
+                image,
+            })
+        };
+        self.profile_editor_set_image(target, result, cx);
     }
 
     /// Applies a prepared picture, or shows why it was refused.
@@ -165,40 +160,18 @@ impl Root {
 mod tests {
     use super::*;
 
-    fn read(bytes: Vec<u8>) -> impl Fn(&Path) -> Option<Vec<u8>> {
-        move |_| Some(bytes.clone())
-    }
-
     #[test]
-    fn a_png_becomes_a_data_uri_described_by_its_name() {
-        let result = prepare(
-            Path::new("C:/pictures/my face.png"),
-            Target::Avatar,
-            read(vec![1, 2, 3]),
-        )
-        .expect("a png is taken")
-        .expect("it is small enough");
-        assert_eq!(result.picked.image_uri, "data:image/png;base64,AQID");
-        assert_eq!(result.picked.description.as_deref(), Some("my face"));
-    }
-
-    #[test]
-    fn other_file_types_are_ignored() {
-        assert!(prepare(Path::new("notes.txt"), Target::Avatar, read(vec![1])).is_none());
+    fn the_description_is_the_file_name_and_a_nameless_banner_is_banner_image() {
+        assert_eq!(description("my face", Target::Avatar), "my face");
+        assert_eq!(description("", Target::Avatar), "");
+        assert_eq!(description("", Target::Banner), "Banner image");
     }
 
     #[test]
     fn a_file_over_ten_megabytes_is_refused_with_the_official_text() {
-        let big = vec![0u8; MAX_BYTES + 1];
-        let Some(Err(message)) = prepare(Path::new("big.gif"), Target::Banner, read(big)) else {
-            panic!("expected a refusal");
-        };
+        let message = too_big(MAX_BYTES + 1);
         assert!(message.starts_with("Your files are too powerful."));
         assert!(message.ends_with("The max file size is 10 MB."));
-        let exact = vec![0u8; MAX_BYTES];
-        assert!(matches!(
-            prepare(Path::new("ok.gif"), Target::Banner, read(exact)),
-            Some(Ok(_))
-        ));
+        assert_eq!(size_text(1536), "1.50 KB");
     }
 }

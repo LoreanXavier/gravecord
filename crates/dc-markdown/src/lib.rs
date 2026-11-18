@@ -18,6 +18,9 @@ pub enum Kind {
     #[default]
     Text,
     Link(String),
+    /// An attachment's CDN address (the attachmentLink rule of module 258072): the span's text is the file's name,
+    /// drawn as a link chip with the attachment icon (module 862316).
+    AttachmentLink(String),
     User(u64),
     Role(u64),
     Channel(u64),
@@ -34,6 +37,30 @@ pub enum Kind {
         unix: i64,
         format: char,
     },
+    /// `</name:id>` (the commandMention rule of module 605275): a slash command, drawn as "/name". `name` holds up to
+    /// three words (a command, its group and its sub command).
+    Command {
+        name: String,
+        id: u64,
+    },
+}
+
+/// The name of a command mention: one to three words of 1 to 32 letters, numbers, `-` or `_` (Devanagari and Thai
+/// count as letters), one space apart.
+fn command_name(name: &str) -> bool {
+    let words: Vec<&str> = name.split(' ').collect();
+    (1..=3).contains(&words.len())
+        && words.iter().all(|word| {
+            (1..=32).contains(&word.chars().count())
+                && word
+                    .chars()
+                    .all(|c| c.is_alphanumeric() || c == '-' || c == '_' || is_indic_mark(c))
+        })
+}
+
+/// Combining marks of the Devanagari and Thai blocks, which `\p{sc=Deva}` and `\p{sc=Thai}` take in.
+fn is_indic_mark(c: char) -> bool {
+    matches!(c, '\u{0900}'..='\u{097F}' | '\u{A8E0}'..='\u{A8FF}' | '\u{0E00}'..='\u{0E7F}')
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -285,6 +312,15 @@ fn angle_token(rest: &str, mentions: bool) -> Option<(usize, Kind, String)> {
     if let Some(id) = inner.strip_prefix('#').and_then(whole_number) {
         return Some((consumed, Kind::Channel(id), raw));
     }
+    if let Some((name, id)) = inner
+        .strip_prefix('/')
+        .and_then(|command| command.rsplit_once(':'))
+        .filter(|(name, _)| command_name(name))
+        .and_then(|(name, id)| Some((name, whole_number(id)?)))
+    {
+        let name = name.to_owned();
+        return Some((consumed, Kind::Command { name, id }, raw));
+    }
     if let Some(stamp) = inner.strip_prefix("t:") {
         let (time, format) = stamp
             .split_once(':')
@@ -443,6 +479,76 @@ fn closing(body: &str, mark: &str) -> Option<usize> {
     None
 }
 
+/// Module 258072, by hand: `^https://(?:[A-Za-z0-9-]+\.)*(?:(?:media|images)S\.discordapp\.net|cdnS\.discordapp\.com)`
+/// `/(?:attachments|ephemeral-attachments)/\d+/\d+/([A-Za-z0-9._-]*[A-Za-z0-9_-])(?:[?][a-zA-Z0-9?&=_-]*)?` with
+/// `S = (?:-[A-Za-z0-9]+)?`. The length matched and the file name.
+pub fn attachment_link(text: &str) -> Option<(usize, &str)> {
+    let rest = text.strip_prefix("https://")?;
+    let host_end = rest.find('/')?;
+    let host = &rest[..host_end];
+    let labels: Vec<&str> = host.split('.').collect();
+    let label_ok = |label: &str| {
+        !label.is_empty()
+            && label
+                .bytes()
+                .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-')
+    };
+    // `name` or `name-<alphanumerics>`.
+    let service = |label: &str, names: &[&str]| {
+        names.iter().any(|name| {
+            label.strip_prefix(name).is_some_and(|tail| {
+                tail.is_empty()
+                    || tail.strip_prefix('-').is_some_and(|sub| {
+                        !sub.is_empty() && sub.bytes().all(|byte| byte.is_ascii_alphanumeric())
+                    })
+            })
+        })
+    };
+    let [prefix @ .., service_label, domain, tld] = labels.as_slice() else {
+        return None;
+    };
+    let known = *domain == "discordapp"
+        && match *tld {
+            "net" => service(service_label, &["media", "images"]),
+            "com" => service(service_label, &["cdn"]),
+            _ => false,
+        };
+    if !known || !prefix.iter().all(|label| label_ok(label)) {
+        return None;
+    }
+    let path = &rest[host_end + 1..];
+    let path = path
+        .strip_prefix("attachments/")
+        .or_else(|| path.strip_prefix("ephemeral-attachments/"))?;
+    let mut at = text.len() - path.len();
+    for _ in 0..2 {
+        let digits = text[at..].bytes().take_while(u8::is_ascii_digit).count();
+        if digits == 0 || text.as_bytes().get(at + digits) != Some(&b'/') {
+            return None;
+        }
+        at += digits + 1;
+    }
+    let run = text[at..]
+        .bytes()
+        .take_while(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_' | b'-'))
+        .count();
+    // The name ends on a character other than a dot.
+    let name = text[at..at + run].trim_end_matches('.');
+    if name.is_empty() {
+        return None;
+    }
+    let mut end = at + name.len();
+    if name.len() == run && text[end..].starts_with('?') {
+        end += 1 + text[end + 1..]
+            .bytes()
+            .take_while(|byte| {
+                byte.is_ascii_alphanumeric() || matches!(byte, b'?' | b'&' | b'=' | b'_' | b'-')
+            })
+            .count();
+    }
+    Some((end, name))
+}
+
 fn everyone_here_prefix(source: &str, at: usize) -> Option<usize> {
     let rest = &source[at..];
     let length = if rest.starts_with("@everyone") {
@@ -516,6 +622,18 @@ fn walk(source: &str, style: Style, rules: Rules, spans: &mut Vec<Span>) {
                 }
             }
             at += consumed;
+            continue;
+        }
+        // `attachmentLink` comes just before `url` (order `url.order - .5`).
+        if rules.links
+            && let Some((length, name)) = attachment_link(rest)
+        {
+            spans.push(Span {
+                text: name.to_owned(),
+                style,
+                kind: Kind::AttachmentLink(rest[..length].to_owned()),
+            });
+            at += length;
             continue;
         }
         if rules.links
@@ -604,6 +722,29 @@ mod tests {
             .map(|span| span.kind)
             .filter(|kind| *kind != Kind::Text)
             .collect()
+    }
+
+    /// The commandMention rule of module 605275: up to three words before the id.
+    #[test]
+    fn command_mentions_take_up_to_three_words() {
+        assert_eq!(
+            kinds("use </ping:12> or </role add user:34>"),
+            [
+                Kind::Command {
+                    name: "ping".into(),
+                    id: 12
+                },
+                Kind::Command {
+                    name: "role add user".into(),
+                    id: 34
+                },
+            ]
+        );
+        assert!(kinds("</a b c d:1>").is_empty());
+        assert!(kinds("</ping:x>").is_empty());
+        assert!(kinds("</:1>").is_empty());
+        assert!(kinds("</two  spaces:1>").is_empty());
+        assert!(kinds(&format!("</{}:1>", "a".repeat(33))).is_empty());
     }
 
     #[test]
@@ -742,6 +883,43 @@ mod tests {
             [Kind::Link("https://a.io/x)".into())]
         );
         assert!(kinds("https://").is_empty());
+    }
+
+    /// Module 258072: CDN attachment addresses become chips named by the file; other addresses stay links.
+    #[test]
+    fn attachment_addresses_become_chips_with_the_file_name() {
+        let url =
+            "https://cdn.discordapp.com/attachments/12/34/report.final.pdf?ex=1a&is=2b&hm=3c&";
+        let spans = inline(&format!("see {url} now"));
+        assert_eq!(spans[1].text, "report.final.pdf");
+        assert_eq!(spans[1].kind, Kind::AttachmentLink(url.into()));
+        assert_eq!(spans[2].text, " now");
+        assert_eq!(
+            attachment_link("https://media-x1.discordapp.net/ephemeral-attachments/1/2/a_b-c.png"),
+            Some((67, "a_b-c.png"))
+        );
+        assert_eq!(
+            attachment_link("https://images.discordapp.net/attachments/1/2/name..."),
+            Some((50, "name"))
+        );
+        assert_eq!(
+            attachment_link("https://eu.cdn-2.discordapp.com/attachments/1/2/x"),
+            Some((49, "x"))
+        );
+        // The rest of an address the pattern does not cover stays text after the chip.
+        let spaced = inline("https://cdn.discordapp.com/attachments/1/2/a%20b.txt");
+        assert_eq!(spaced[0].text, "a");
+        for plain in [
+            "https://cdn.discordapp.com/emojis/1.png",
+            "https://cdn.discord.com/attachments/1/2/a.png",
+            "http://cdn.discordapp.com/attachments/1/2/a.png",
+            "https://cdn.discordapp.com/attachments/x/2/a.png",
+            "https://cdnx.discordapp.com/attachments/1/2/a.png",
+            "https://media.discordapp.com/attachments/1/2/a.png",
+        ] {
+            assert_eq!(attachment_link(plain), None, "{plain}");
+            assert!(matches!(inline(plain)[0].kind, Kind::Link(_)), "{plain}");
+        }
     }
 
     #[test]

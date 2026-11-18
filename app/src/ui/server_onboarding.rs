@@ -20,7 +20,6 @@
 //!   official save first.
 //! - Connections (`gM`, `gq`, `g5`, `gk`, `gD`, module 802941): behind experiment `2025-10_community_account_link_onboarding`,
 //!   off on the fixture and absent from every capture. Saves never send `connections`.
-//! - The Server Guide banner's crop dialog (module 142630): with `BANNER` the picture goes up uncropped.
 //! - The shake and red flash of a blocked Back (`SHAKE_APP`, `EMPHASIZE_NOTICE`); leaving edit mode with unsaved changes
 //!   drops them where the official page refuses to close.
 //! - The testimonial carousel's slide, every drag animation and the drop bars (cards reorder on drop).
@@ -3233,7 +3232,7 @@ impl Root {
     }
 
     /// `ex.A.saveGuild(id, { homeHeader })`.
-    fn onboarding_home_header(&mut self, uri: Option<String>, cx: &mut Context<Self>) {
+    pub(super) fn onboarding_home_header(&mut self, uri: Option<String>, cx: &mut Context<Self>) {
         let Some(guild) = self.onboarding().map(|state| state.guild) else {
             return;
         };
@@ -6452,10 +6451,7 @@ impl Root {
                         )
                         .w_auto()
                         .on_click(cx.listener(|this, _, _, cx| {
-                            this.onboarding_pick_picture(
-                                |this, uri, cx| this.onboarding_home_header(Some(uri), cx),
-                                cx,
-                            );
+                            this.pick_crop_file(super::image_crop::Purpose::HomeHeader, cx);
                         }))
                     } else {
                         div()
@@ -6515,10 +6511,7 @@ impl Root {
                     )
                     .on_click(cx.listener(move |this, _, _, cx| {
                         if unlocked {
-                            this.onboarding_pick_picture(
-                                |this, uri, cx| this.onboarding_home_header(Some(uri), cx),
-                                cx,
-                            );
+                            this.pick_crop_file(super::image_crop::Purpose::HomeHeader, cx);
                         } else {
                             boost(this, cx);
                         }
@@ -9004,6 +8997,9 @@ mod tests {
             invites_disabled_until: None,
             dms_disabled_until: None,
             lockdown_duration_hours: None,
+            raid_detected_at: None,
+            dm_spam_detected_at: None,
+            alerts_channel: None,
             features: Vec::new(),
             premium_tier: 0,
             premium_subscription_count: 0,

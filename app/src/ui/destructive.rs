@@ -14,6 +14,8 @@ enum Then {
     Send(Box<Request>),
     /// A bulk mark as read of `(channel, message)` pairs (`mark_read.rs`).
     MarkRead(Vec<(Id, Id)>),
+    /// The channel's pin is taken off (`jA(guild, channel, false)` of module 816662): FAVORITED leaves its flags.
+    Unpin { guild: Id, channel: Id },
 }
 
 /// The question that is open: nothing happens until its confirm button is pressed.
@@ -53,7 +55,25 @@ fn around(key: &str, name_value: &str, name: &str) -> (String, String) {
     }
 }
 
+/// `FAVORITED` of a channel override's flags (module 355097 `vv`): the channel is pinned to the top.
+const FAVORITED: u64 = 2048;
+
 impl Pending {
+    /// Module 933752, opened when a pinned channel is dragged (`canDrag` of module 616740, reason `pinned-channel` of
+    /// 79843): "Trying to reorder a pinned channel?", `K82phZ`, Cancel and "Unpin Channel" in the brand colour.
+    pub(super) fn unpin_to_reorder(guild: Id, channel: Id) -> Self {
+        Self {
+            id: "pinned-reorder-modal",
+            title: dc_intl::t("7r7op8").to_owned(),
+            before: dc_intl::t("K82phZ").to_owned(),
+            name: String::new(),
+            after: String::new(),
+            confirm: dc_intl::t("H8ZQbo").to_owned(),
+            critical: false,
+            then: Some(Then::Unpin { guild, channel }),
+        }
+    }
+
     /// Module 894533 for a thread: title and button `H7vTe2` "Delete Thread", body `a6Gz9J`.
     pub(super) fn delete_thread(thread: Id, name: &str) -> Self {
         Self {
@@ -108,7 +128,7 @@ impl Pending {
     fn request(&self) -> Option<&Request> {
         match self.then.as_ref()? {
             Then::Send(request) => Some(request),
-            Then::MarkRead(_) => None,
+            Then::MarkRead(_) | Then::Unpin { .. } => None,
         }
     }
 }
@@ -175,6 +195,15 @@ impl Root {
                                     let _ = this.requests.send(*request);
                                 }
                                 Then::MarkRead(reads) => this.mark_read_bulk(&reads, cx),
+                                Then::Unpin { guild, channel } => {
+                                    let flags =
+                                        this.stores.guild_settings.channel(guild, channel).flags;
+                                    this.patch_channel_override(
+                                        guild,
+                                        channel,
+                                        serde_json::json!({ "flags": flags & !FAVORITED }),
+                                    );
+                                }
                             }
                         },
                     ),
@@ -200,6 +229,24 @@ mod tests {
         };
         assert_eq!(*method, reqwest::Method::DELETE);
         assert_eq!(route, "/channels/77");
+    }
+
+    /// Module 933752: the question names the pinned channel's way out and sends nothing by itself.
+    #[test]
+    fn reordering_a_pinned_channel_asks_to_unpin_it() {
+        let pending = Pending::unpin_to_reorder(1, 2);
+        assert_eq!(pending.title, "Trying to reorder a pinned channel?");
+        assert_eq!(pending.confirm, "Unpin Channel");
+        assert!(!pending.critical);
+        assert!(pending.request().is_none());
+        assert!(matches!(
+            pending.then,
+            Some(Then::Unpin {
+                guild: 1,
+                channel: 2
+            })
+        ));
+        assert_eq!(2048 & !FAVORITED, 0);
     }
 
     #[test]

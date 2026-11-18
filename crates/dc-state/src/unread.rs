@@ -139,7 +139,7 @@ pub(crate) fn message_level(stores: &Stores, guild: &Guild, channel: &Channel) -
         .unwrap_or(guild.default_message_notifications)
 }
 
-fn all_unreads(stores: &Stores, guild: &Guild, channel: &Channel) -> bool {
+pub(crate) fn all_unreads(stores: &Stores, guild: &Guild, channel: &Channel) -> bool {
     if stores.notification_flags & 16 == 0 {
         return true;
     }

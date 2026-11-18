@@ -61,6 +61,7 @@ pub mod thread_members;
 pub mod thread_messages;
 pub mod thread_previews;
 pub mod unread;
+pub mod unread_notice;
 
 use chrono::{DateTime, Local, Utc};
 use dc_proto::settings;
@@ -476,6 +477,12 @@ pub struct Guild {
     pub invites_disabled_until: Option<String>,
     pub dms_disabled_until: Option<String>,
     pub lockdown_duration_hours: Option<u64>,
+    /// `incidents_data.raid_detected_at` and `dm_spam_detected_at` (ISO times): an incident is active for two hours
+    /// after either (`k$` of module 903093).
+    pub raid_detected_at: Option<String>,
+    pub dm_spam_detected_at: Option<String>,
+    /// `safety_alerts_channel_id`, else `public_updates_channel_id`: where a raid report goes (`B` of 859706).
+    pub alerts_channel: Option<Id>,
     pub premium_tier: u64,
     pub premium_subscription_count: u64,
     /// Stage video is available only when the guild's advertised capacity is positive (module 279250).
@@ -867,6 +874,10 @@ impl Guild {
             dms_disabled_until: text(&properties["incidents_data"]["dms_disabled_until"]),
             lockdown_duration_hours: properties["incidents_data"]["lockdown_duration_hours"]
                 .as_u64(),
+            raid_detected_at: text(&properties["incidents_data"]["raid_detected_at"]),
+            dm_spam_detected_at: text(&properties["incidents_data"]["dm_spam_detected_at"]),
+            alerts_channel: id(&properties["safety_alerts_channel_id"])
+                .or_else(|| id(&properties["public_updates_channel_id"])),
             premium_tier: properties["premium_tier"].as_u64().unwrap_or(0),
             premium_subscription_count: value["premium_subscription_count"]
                 .as_u64()
@@ -919,6 +930,14 @@ impl Guild {
         self.invites_disabled_until = text(&value["incidents_data"]["invites_disabled_until"]);
         self.dms_disabled_until = text(&value["incidents_data"]["dms_disabled_until"]);
         self.lockdown_duration_hours = value["incidents_data"]["lockdown_duration_hours"].as_u64();
+        self.raid_detected_at = text(&value["incidents_data"]["raid_detected_at"]);
+        self.dm_spam_detected_at = text(&value["incidents_data"]["dm_spam_detected_at"]);
+        if value.get("safety_alerts_channel_id").is_some()
+            || value.get("public_updates_channel_id").is_some()
+        {
+            self.alerts_channel = id(&value["safety_alerts_channel_id"])
+                .or_else(|| id(&value["public_updates_channel_id"]));
+        }
         self.premium_tier = value["premium_tier"].as_u64().unwrap_or(self.premium_tier);
         self.premium_subscription_count = value["premium_subscription_count"]
             .as_u64()
@@ -1806,6 +1825,22 @@ impl Forwarded {
 
 /// `IS_VOICE_MESSAGE` in the message flags (module 652215, `pr7`).
 pub const VOICE_MESSAGE_FLAG: u64 = 1 << 13;
+
+/// `SUPPRESS_NOTIFICATIONS` in the message flags (module 652215, `pr7`): an `@silent` message.
+pub const SUPPRESS_NOTIFICATIONS_FLAG: u64 = 1 << 12;
+
+/// The `@silent` prefix (module 677413, `Ay`, the send side of the silentPrefix rule of 182490/605275): text that
+/// starts with `@silent` followed by whitespace or the end is sent without it, trimmed, and with
+/// [`SUPPRESS_NOTIFICATIONS_FLAG`] (`_sendMessage` of module 138399). Anything else is returned as it is.
+pub fn split_silent_prefix(content: &str) -> (bool, &str) {
+    const PREFIX: &str = "@silent";
+    match content.strip_prefix(PREFIX) {
+        Some(rest) if rest.is_empty() || rest.starts_with(char::is_whitespace) => {
+            (true, rest.trim())
+        }
+        _ => (false, content),
+    }
+}
 
 impl Message {
     /// A voice message: the message flag is set (`hasFlag(IS_VOICE_MESSAGE)`), the player is drawn for its attachment.
@@ -4351,6 +4386,19 @@ mod tests {
         assert_eq!(copy.attachments[0].duration_secs, Some(6.0065));
     }
 
+    /// Module 677413: `^@silent(\s|$)`, then the rest trimmed.
+    #[test]
+    fn silent_prefix_is_split_only_before_whitespace_or_the_end() {
+        use super::split_silent_prefix as split;
+        assert_eq!(split("@silent hello  "), (true, "hello"));
+        assert_eq!(split("@silent\nline"), (true, "line"));
+        assert_eq!(split("@silent"), (true, ""));
+        assert_eq!(split("@silent @silent x"), (true, "@silent x"));
+        assert_eq!(split("@silently"), (false, "@silently"));
+        assert_eq!(split(" @silent x"), (false, " @silent x"));
+        assert_eq!(split("hi @silent"), (false, "hi @silent"));
+    }
+
     /// A voice message as the gateway delivers it: the flag, one `audio/ogg` attachment with its length and waveform.
     #[test]
     fn a_voice_message_payload_keeps_its_flag_length_and_waveform() {
@@ -4894,6 +4942,9 @@ mod tests {
             invites_disabled_until: None,
             dms_disabled_until: None,
             lockdown_duration_hours: None,
+            raid_detected_at: None,
+            dm_spam_detected_at: None,
+            alerts_channel: None,
             features: features
                 .iter()
                 .map(|feature| (*feature).to_owned())

@@ -320,11 +320,16 @@ impl Root {
             })
             .map(|guild| guild.id);
         let mut pending = std::collections::HashMap::new();
+        // A note that starts with `@silent` sends the forward and the note without notifications (module 92961).
+        let silent = dc_state::split_silent_prefix(&note).0;
         for destination in &forward.selected {
             // The forward first, then the note as a message of its own: the queue keeps that order, and a failed
             // forward fails the note that waits behind it.
-            let nonce = self
-                .start_local_forward(destination.channel(), (guild, source.channel_id, source.id));
+            let nonce = self.start_local_forward(
+                destination.channel(),
+                (guild, source.channel_id, source.id),
+                silent,
+            );
             pending.insert(nonce, *destination);
             if !note.is_empty() {
                 self.start_local_text(destination.channel(), note.clone());

@@ -384,12 +384,20 @@ impl Root {
     /// A forward of `message` (of `source_channel`, in `guild` if any) into `channel`: an empty message that points at
     /// the source with `message_reference` type 1.
     /// Returns the send's nonce, which its `Update::SendResult` carries.
+    /// A `silent` forward (its note starts with `@silent`, module 92961) carries the bare prefix as its content, which
+    /// the send turns into the SUPPRESS_NOTIFICATIONS flag.
     pub(super) fn start_local_forward(
         &mut self,
         channel: Id,
         source: (Option<Id>, Id, Id),
+        silent: bool,
     ) -> String {
         let parts = Parts {
+            content: if silent {
+                "@silent".to_owned()
+            } else {
+                String::new()
+            },
             forward: Some(source),
             ..Parts::default()
         };
@@ -409,6 +417,17 @@ impl Root {
         let Some(nonce_id) = id_of(&nonce) else {
             return;
         };
+        // `_sendMessage` (module 138399) takes a leading `@silent` off (677413) before the row is made; with nothing
+        // else left to send, nothing is sent. The kept `content` goes out whole: `net::send_body` splits it again.
+        let (silent, shown_text) = dc_state::split_silent_prefix(&content);
+        if silent
+            && shown_text.is_empty()
+            && files.is_empty()
+            && sticker_ids.is_empty()
+            && forward.is_none()
+        {
+            return;
+        }
         let (msg_latest, max_ts) = self
             .stores
             .messages
@@ -439,15 +458,12 @@ impl Root {
             Some(ts) => ts.max(chrono::Utc::now()),
             None => chrono::Utc::now(),
         };
-        let mut message = Message::from_value(&local_message_value(
-            id,
-            &nonce,
-            channel,
-            &content,
-            self.me_json(),
-            reply,
-            now,
-        ));
+        let mut value =
+            local_message_value(id, &nonce, channel, shown_text, self.me_json(), reply, now);
+        if silent {
+            value["flags"] = json!(dc_state::SUPPRESS_NOTIFICATIONS_FLAG);
+        }
+        let mut message = Message::from_value(&value);
         if let (Some(message), Some((_, replied, _))) = (message.as_mut(), reply) {
             message.referenced = self
                 .stores
@@ -466,7 +482,7 @@ impl Root {
                 .collect();
         }
         // A message of files alone shows the placeholder of its uploads (`upload_progress.rs`).
-        let shown = !content.is_empty()
+        let shown = !shown_text.is_empty()
             || !sticker_ids.is_empty()
             || !files.is_empty()
             || forward.is_some();

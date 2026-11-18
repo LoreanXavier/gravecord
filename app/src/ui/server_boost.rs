@@ -272,7 +272,13 @@ impl Root {
         false
     }
 
+    /// The banner opens the select image modal with `GUILD_BANNER` and its cropper (module 989433 `EK`, modules 685663
+    /// and 142630); the invite background has no upload type and goes up as picked.
     fn pick_boost_image(&mut self, splash: bool, cx: &mut Context<Self>) {
+        if !splash {
+            self.open_image_select(super::image_crop::Purpose::GuildBanner, cx);
+            return;
+        }
         let picked = cx.prompt_for_paths(PathPromptOptions {
             files: true,
             directories: false,
@@ -286,17 +292,21 @@ impl Root {
                 let _ = this.update(cx, |this, cx| {
                     let uri = super::server_settings::data_uri(path);
                     if let Some(state) = this.boost_mut() {
-                        if splash {
-                            state.now.splash = uri;
-                        } else {
-                            state.now.banner = uri;
-                        }
+                        state.now.splash = uri;
                     }
                     cx.notify();
                 });
             }
         })
         .detach();
+    }
+
+    /// `onCrop` of the server banner: the cropped picture is the pending banner.
+    pub(super) fn boost_banner_cropped(&mut self, uri: String, cx: &mut Context<Self>) {
+        if let Some(state) = self.boost_mut() {
+            state.now.banner = Some(uri);
+        }
+        cx.notify();
     }
 
     /// `EY.u`: the white button with its gem.
