@@ -39,7 +39,9 @@ mod read_all;
 mod relationship_notifier;
 pub(in crate::ui) use relationship_notifier::relationship_removed_by_you;
 mod role_color_everywhere;
+mod search_fix;
 mod server_info;
+pub(in crate::ui) use search_fix::search_fix;
 mod server_list_indicators;
 mod show_connections;
 mod silent_message_toggle;
@@ -699,7 +701,7 @@ pub(in crate::ui) fn skip_blocked_prompt() -> bool {
 pub(in crate::ui) fn has_own_section(id: &str) -> bool {
     matches!(
         id,
-        "MessageTags" | "ClipsEnhancements" | "USRBG" | "UserPFP" | "GlobalBadges"
+        "MessageTags" | "ClipsEnhancements" | "USRBG" | "UserPFP" | "GlobalBadges" | "SearchFix"
     )
 }
 
@@ -719,6 +721,13 @@ impl super::Root {
             "USRBG" => Some(self.usrbg_settings(cx)),
             "UserPFP" => Some(self.userpfp_settings(cx)),
             "GlobalBadges" => Some(self.global_badges_settings(cx)),
+            "SearchFix" => Some(
+                gpui::div()
+                    .text_size(gpui::px(14.))
+                    .text_color(gpui::white())
+                    .child(search_fix::NOTE)
+                    .into_any_element(),
+            ),
             "ClipsEnhancements" => Some(
                 gpui::div()
                     .id("clips-enhancements-link")

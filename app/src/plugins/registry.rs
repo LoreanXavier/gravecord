@@ -2002,6 +2002,15 @@ pub(crate) const DEFS: &[Def] = &[
         ],
     },
     Def {
+        id: "SearchFix",
+        name: "SearchFix",
+        description: "Fixes the annoying \"We dropped the magnifying glass!\" error.",
+        origin: Origin::Equicord,
+        source: "src/equicordplugins/searchFix/index.tsx",
+        default_on: false,
+        settings: &[],
+    },
+    Def {
         id: "ServerInfo",
         name: "ServerInfo",
         description: "Allows you to view info about a server",
