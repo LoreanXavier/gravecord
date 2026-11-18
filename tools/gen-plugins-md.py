@@ -105,9 +105,18 @@ for dp, dn, fn in os.walk(ROOT):
             rel = os.path.relpath(path, ROOT).replace(os.sep, '/')
             desc = re.search(r'\n\s{4}description:\s*"([^"]*)"', block)
             settings = []
-            s = re.search(r'definePluginSettings\(\{', text)
+            holder = text
+            s = re.search(r'definePluginSettings\(\{', holder)
+            # Some plugins keep their settings in a file of their own beside the index (`settings.ts`).
+            if not s:
+                for other in sorted(fn):
+                    if other != f and other.endswith(('.ts', '.tsx')):
+                        holder = open(os.path.join(dp, other), encoding='utf-8', errors='replace').read()
+                        s = re.search(r'definePluginSettings\(\{', holder)
+                        if s:
+                            break
             if s:
-                for key, body in top_level_entries(balanced(text, s.end() - 1)):
+                for key, body in top_level_entries(balanced(holder, s.end() - 1)):
                     kind = re.search(r'type:\s*OptionType\.(\w+)', body)
                     # A select marks its default option with `default: true`; take that option's value.
                     picked = re.search(r'value:\s*([^,}\n]+?),\s*default:\s*true', body)

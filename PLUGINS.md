@@ -259,4 +259,6 @@ Every setting of each original (`definePluginSettings`), its type and default th
 | TypingIndicator | `includeBlockedUsers` | BOOLEAN | `false` | ported |
 | TypingIndicator | `indicatorMode` | SELECT | `IndicatorMode.Dots | IndicatorMode.Avatars` | ported |
 | UnlimitedAccounts | `maxAccounts` | NUMBER | `0` | ported |
+| UserMessagesPronouns | `pronounsFormat` | SELECT | `PronounsFormat.Lowercase` | ported |
+| UserMessagesPronouns | `showSelf` | BOOLEAN | `true` | ported |
 | VolumeBooster | `multiplier` | SLIDER | `2` | ported |
