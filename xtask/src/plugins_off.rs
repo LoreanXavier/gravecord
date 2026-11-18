@@ -45,18 +45,9 @@ const RUN_LIMIT: Duration = Duration::from_secs(240);
 /// The settle step before the capture, and how long it may take.
 const SETTLE: &str = "settle 20000";
 
-/// The least time between two signed-in launches: Discord flags an account that signs in many times in a few
-/// minutes (twice on 2026-11-18). `GRAVECORD_LAUNCH_GAP_S` changes it.
-const LAUNCH_GAP: Duration = Duration::from_secs(60);
-
-fn launch_gap() -> Duration {
-    std::env::var("GRAVECORD_LAUNCH_GAP_S")
-        .ok()
-        .and_then(|seconds| seconds.parse().ok())
-        .map_or(LAUNCH_GAP, Duration::from_secs)
-}
-
 thread_local! {
+    /// The last signed-in launch: Discord flagged the fixture account after bursts of logins (twice on 2026-11-18), so
+    /// launches are spaced like perf's (`perf::launch_gap`, `GRAVECORD_PERF_GAP_SECS`).
     static LAST_LAUNCH: std::cell::Cell<Option<Instant>> = const { std::cell::Cell::new(None) };
 }
 
@@ -181,11 +172,8 @@ fn capture(
         "--script".to_owned(),
         mode.script(&scenario.script),
     ];
-    if let Some(last) = LAST_LAUNCH.with(std::cell::Cell::get) {
-        let wait = launch_gap().saturating_sub(last.elapsed());
-        if !wait.is_zero() {
-            std::thread::sleep(wait);
-        }
+    if let Some(wait) = super::perf::launch_gap(LAST_LAUNCH.with(std::cell::Cell::get)) {
+        std::thread::sleep(wait);
     }
     let pid = super::headless::spawn(exe, &args, repo)?;
     LAST_LAUNCH.with(|cell| cell.set(Some(Instant::now())));

@@ -273,7 +273,8 @@ fn wait_quiet() -> bool {
 }
 
 /// How long to wait before the next signed-in launch: what is left of the gap since the last one.
-fn launch_gap(last: Option<Instant>) -> Option<Duration> {
+/// How long to wait before the next signed-in launch (`GRAVECORD_PERF_GAP_SECS`, default 60); `plugins_off.rs` too.
+pub(crate) fn launch_gap(last: Option<Instant>) -> Option<Duration> {
     let gap = std::env::var("GRAVECORD_PERF_GAP_SECS")
         .ok()
         .and_then(|value| value.parse().ok())
