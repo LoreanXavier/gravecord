@@ -12,7 +12,7 @@ every setting changed), and with every plugin off, and fails on one differing pi
 The list is the plugins enabled in the owner's Equicord backup of 2026-09-21 (156). Sources were read in the local
 Equicord checkout of 2026-11-14 (`src/plugins` is Vencord's, `src/equicordplugins` Equicord's).
 
-Totals: 61 ported, 9 native, 41 planned, 45 not applicable.
+Totals: 62 ported, 9 native, 40 planned, 45 not applicable.
 
 Status: **ported** works and has its proof; **native** is what gravecord already does without a plugin;
 **planned** is not built yet (an import keeps its settings for when it is); **not applicable** has nothing to
@@ -27,7 +27,7 @@ port in a native client, or was removed upstream.
 | AnonymiseFileNames | ported | plugins/anonymiseFileNames/index.tsx | Anonymise uploaded file names | uploads.rs: files are renamed as they are sent, by the original's four methods; a switch first in each upload card's bar turns it off for that file. A spoilered file stays one. Its /Spoiler command is not ported: the app runs no client-side slash commands of plugins. | `anonymised_names_follow_each_method`; frames anon-on/anon-off; plugins-off upload-card |
 | AudioPlayerAPI | not applicable | equicordplugins/_api/audioPlayer.ts | API to play internal Discord audio files or external audio links. | client-mod plumbing (an API for other plugins), nothing to port. |  |
 | BadgeAPI | not applicable | plugins/_api/badges/index.tsx | API to add badges to users | client-mod plumbing (an API for other plugins), nothing to port. |  |
-| BetterActivities | planned | equicordplugins/betterActivities/index.tsx | Shows activity icons in the member list and allows showing all activities | activity icons in member list rows and every activity in the profile popout. |  |
+| BetterActivities | ported | equicordplugins/betterActivities/index.tsx | Shows activity icons in the member list and allows showing all activities | plugin_hooks/better_activities.rs: the member list and DM list lines (where the pinned client draws ActivityStatus) end in a row of activity icons (large else small image, mp:/spotify:/app-assets, the application icon or the Xbox mark without assets, one per picture, Twitch first with specialFirst, GIFs only with renderGifs, the default glyph when nothing else) whose tooltip is the activity card without buttons; the profile popout shows every activity as a carousel (arrows wrap, a dot per activity) or a list; removeGameActivityStatus drops the activity part and its dot. On the pinned client the plugin's regexes for removeGameActivityStatus remove the custom status instead (the first lands in a branch that never renders) and its popout patch swallows the profile widgets: the settings' meaning is ported, not those side effects. GAP: the cards are the app's visible activities; the tooltip has no spring; the arrows' tooltip colour. | `the_settings_follow_the_original_defaults`, `pictures_follow_get_application_icons`, `without_assets_the_application_icon_or_xbox_stands_in`, `twitch_goes_first_or_at_its_place`; frames pending (fixture token answers 401) |
 | BetterAudioPlayer | planned | equicordplugins/betterAudioPlayer.desktop/index.tsx | Adds a spectrograph and oscilloscope visualizer to audio attachment players. | a spectrograph and oscilloscope in the audio attachment player (needs the decoded samples). |  |
 | BetterBlockedUsers | ported | equicordplugins/betterBlockedUsers/index.tsx | Allows you to search in blocked users list, make names selectable in settings, skips blocked profile prompt, and groups blocked / ignored messages. | plugin_hooks.rs (merge_hidden_messages, skip_blocked_prompt): every blocked and every ignored message of a hidden stretch folds into its kind's first row (no split by an ignored run), and a blocked person's profile opens without Show Profile? (an ignored person's question stays). GAP: the search field and Show User Profile buttons of the settings' blocked users list, which the app does not have. | plugins-off chat, dm-list (the hooks return false off); frames pending (fixture token answers 401) |
 | BetterCommands | ported | equicordplugins/betterCommands/index.ts | Enhances the command system with miscellaneous improvements. | plugin_hooks/plugin_commands.rs: /refresh among the built-in commands fetches the open channel's or server's command index again, with Clyde's before and after lines; autoFillArguments is idle (the app's command flow already asks every option). GAP: the user option's per-application index. | command table test (`every_plugin_with_commands_is_defined`); frames pending (fixture token answers 401) |
@@ -199,6 +199,15 @@ Every setting of each original (`definePluginSettings`), its type and default th
 | AnonymiseFileNames | `randomisedLength` | NUMBER | `7` | ported |
 | AnonymiseFileNames | `consistent` | STRING | `"image"` | ported |
 | AnonymiseFileNames | `dateFormat` | STRING | `"YYYY-MM-DD_HH-mm-ss-SSS"` | ported |
+| BetterActivities | `memberList` | BOOLEAN | `true` | ported |
+| BetterActivities | `iconSize` | SLIDER | `15` | ported |
+| BetterActivities | `specialFirst` | BOOLEAN | `true` | ported |
+| BetterActivities | `renderGifs` | BOOLEAN | `true` | ported |
+| BetterActivities | `removeGameActivityStatus` | BOOLEAN | `false` | ported |
+| BetterActivities | `divider` | COMPONENT | `` | not ported: a 1px line between the member list and the popout settings in the plugin card (a COMPONENT, no value); the card here lists the settings without it. |
+| BetterActivities | `userPopout` | BOOLEAN | `true` | ported |
+| BetterActivities | `hideTooltip` | BOOLEAN | `true` | ported |
+| BetterActivities | `allActivitiesStyle` | SELECT | `true` | ported |
 | BetterCommands | `autoFillArguments` | BOOLEAN | `true` | nothing to act on yet: the app's command flow already asks every option in turn, optional ones too, so there is nothing more to fill |
 | BetterRoleContext | `roleIconFileFormat` | SELECT | `"png"` | ported |
 | BetterRoleDot | `bothStyles` | BOOLEAN | `false` | ported |

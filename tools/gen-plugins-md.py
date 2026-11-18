@@ -154,6 +154,7 @@ PORTED = {
     'BetterRoleDot': "plugin_hooks/better_role_dot.rs: a click on the role dot (chat, member list, and the popout's dots) copies #rrggbb with the success toast; bothStyles makes every In names / Next to names test true (names, role mentions and dots together); copyRoleColorInProfilePopout draws the popout's roles with dots.",
     'NoNitroUpsell': "plugin_hooks.rs premium_type_override, nitro.rs premium_wire: while on, the account's tier reads as Nitro (premiumTypeOverride 2) everywhere the app asks for it, so the upsells that depend on it are left out, as the original tricks the client; the server still applies the real tier.",
     'WhoReacted': "plugin_hooks/who_reacted.rs: after each reaction's count up to five avatars at 90% (four and +N past five), from GET reactions?limit=100&type=0 queued one per 250 ms newest first and merged into the users; nothing on a message with over ten reactions; clickableAvatars opens the profile popout instead of reacting. Super reactions (type 1) are not fetched: the app draws no burst pills.",
+    'BetterActivities': "plugin_hooks/better_activities.rs: the member list and DM list lines (where the pinned client draws ActivityStatus) end in a row of activity icons (large else small image, mp:/spotify:/app-assets, the application icon or the Xbox mark without assets, one per picture, Twitch first with specialFirst, GIFs only with renderGifs, the default glyph when nothing else) whose tooltip is the activity card without buttons; the profile popout shows every activity as a carousel (arrows wrap, a dot per activity) or a list; removeGameActivityStatus drops the activity part and its dot. On the pinned client the plugin's regexes for removeGameActivityStatus remove the custom status instead (the first lands in a branch that never renders) and its popout patch swallows the profile widgets: the settings' meaning is ported, not those side effects. GAP: the cards are the app's visible activities; the tooltip has no spring; the arrows' tooltip colour.",
     'BetterBlockedUsers': "plugin_hooks.rs (merge_hidden_messages, skip_blocked_prompt): every blocked and every ignored message of a hidden stretch folds into its kind's first row (no split by an ignored run), and a blocked person's profile opens without Show Profile? (an ignored person's question stays). GAP: the search field and Show User Profile buttons of the settings' blocked users list, which the app does not have.",
     'BetterCommands': "plugin_hooks/plugin_commands.rs: /refresh among the built-in commands fetches the open channel's or server's command index again, with Clyde's before and after lines; autoFillArguments is idle (the app's command flow already asks every option). GAP: the user option's per-application index.",
     'BetterRoleContext': "plugin_hooks/better_role_context.rs: a right click on a member list role header opens the role menu: Edit Role (Manage Roles: Server Settings on Roles with the role open), Copy Role Color (#rrggbb), View Role Icon (role-icons/<id>/<icon>.<roleIconFileFormat> at 128 in the viewer, without sender or Forward), View Role Members (the role's member popout) and Copy Role ID, with the original's icons. GAP: the dev-context rows of a profile's role chip (the chips open no menu here).",
@@ -235,6 +236,7 @@ TESTS = {
     'BetterRoleDot': '`colours_copy_as_color_strings_and_switches_read`; frame brd-both; plugins-off chat, member-list, profile-popout',
     'NoNitroUpsell': '`no_nitro_upsell_reads_as_nitro_only_while_on`; frames nnu-on/nnu-off (Appearance: Color Themes as Nitro); plugins-off gif-picker, settings-appearance',
     'WhoReacted': '`five_at_most_with_the_rest_counted`; frame wr-on (demo-reactors); plugins-off reactions, chat',
+    'BetterActivities': '`the_settings_follow_the_original_defaults`, `pictures_follow_get_application_icons`, `without_assets_the_application_icon_or_xbox_stands_in`, `twitch_goes_first_or_at_its_place`; frames pending (fixture token answers 401)',
     'BetterBlockedUsers': 'plugins-off chat, dm-list (the hooks return false off); frames pending (fixture token answers 401)',
     'BetterCommands': 'command table test (`every_plugin_with_commands_is_defined`); frames pending (fixture token answers 401)',
     'BetterRoleContext': '`rows_follow_what_the_role_offers_in_the_original_order`, `colors_copy_as_css_hex_and_the_format_defaults_to_png`; frames brc-menu, brc-members, brc-icon, brc-edit (synthetic hoisted role); plugins-off role-header',
@@ -295,6 +297,9 @@ TESTS = {
 }
 # Original settings a port does not have, with why (none today).
 SKIPPED_SETTINGS = {
+    'BetterActivities': {
+        'divider': 'a 1px line between the member list and the popout settings in the plugin card (a COMPONENT, no value); the card here lists the settings without it.',
+    },
     'MessageTags': {
         'tagsList': 'kept apart from the settings (storage key plugin-message-tags), written by the tag dialog and /tags delete.',
         'tagComponent': 'ported as the plugin card\'s own section (Registered Tags with Edit, Delete, Create Tag), not as a setting.',
@@ -368,7 +373,6 @@ NOT_APPLICABLE = {
 # Not built yet: what each needs in this app.
 PLANNED = {
     'AltKrispSwitch': 'Krisp, which is blocked here (its signature check); without it there is nothing to switch to.',
-    'BetterActivities': 'activity icons in member list rows and every activity in the profile popout.',
     'BetterAudioPlayer': 'a spectrograph and oscilloscope in the audio attachment player (needs the decoded samples).',
     'BetterFolders': 'a second server sidebar for folders.',
     'BetterForwards': 'forward dialog tweaks.',

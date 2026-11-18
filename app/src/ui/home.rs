@@ -520,8 +520,10 @@ impl Root {
                                 .children(
                                     (!system)
                                         .then(|| {
-                                            let presence = self.presence_line_with(
-                                                &recipient, None, true, 16., look.text,
+                                            // Module 181254 draws module 342312's `ActivityStatus` here
+                                            // (BetterActivities).
+                                            let presence = self.activity_status_line(
+                                                &recipient, None, 16., look.text, "dm", cx,
                                             );
                                             match self.message_peek(channel, presence.is_some()) {
                                                 super::plugin_hooks::Peek::Keep => presence,

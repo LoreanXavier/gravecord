@@ -3393,7 +3393,15 @@ impl Root {
                     let name = nick
                         .clone()
                         .unwrap_or_else(|| user.display_name().to_owned());
-                    let activity = self.presence_line(user, self.guild, true);
+                    // Module 110574 draws module 342312's `ActivityStatus` here (BetterActivities patches it).
+                    let activity = self.activity_status_line(
+                        user,
+                        self.guild,
+                        16.,
+                        "--channels-default",
+                        "member",
+                        cx,
+                    );
                     let height = if activity.is_some() { 42. } else { 40. };
                     let has_nameplate = user.nameplate.is_some();
                     let text_width = Rc::new(std::cell::Cell::new(0.));

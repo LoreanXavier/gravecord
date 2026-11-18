@@ -474,6 +474,75 @@ pub(crate) const DEFS: &[Def] = &[
         ],
     },
     Def {
+        id: "BetterActivities",
+        name: "BetterActivities",
+        description: "Shows activity icons in the member list and allows showing all activities",
+        origin: Origin::Equicord,
+        source: "src/equicordplugins/betterActivities/index.tsx",
+        default_on: false,
+        settings: &[
+            Setting {
+                key: "memberList",
+                label: "Member List",
+                description: "Show activity icons in the member list",
+                kind: Kind::Switch { default: true },
+            },
+            Setting {
+                key: "iconSize",
+                label: "Icon Size",
+                description: "Size of the activity icons",
+                kind: Kind::Number {
+                    default: 15.,
+                    min: 10.,
+                    max: 20.,
+                    step: 1.,
+                },
+            },
+            Setting {
+                key: "specialFirst",
+                label: "Special First",
+                description: "Show special activities first (Currently Spotify and Twitch)",
+                kind: Kind::Switch { default: true },
+            },
+            Setting {
+                key: "renderGifs",
+                label: "Render Gifs",
+                description: "Allow rendering GIFs",
+                kind: Kind::Switch { default: true },
+            },
+            Setting {
+                key: "removeGameActivityStatus",
+                label: "Remove Game Activity Status",
+                description: "Remove game activity icon and status",
+                kind: Kind::Switch { default: false },
+            },
+            Setting {
+                key: "userPopout",
+                label: "User Popout",
+                description: "Show all activities in the profile popout/sidebar",
+                kind: Kind::Switch { default: true },
+            },
+            Setting {
+                key: "hideTooltip",
+                label: "Hide Tooltip",
+                description: "Hides activities in various places",
+                kind: Kind::Switch { default: true },
+            },
+            Setting {
+                key: "allActivitiesStyle",
+                label: "All Activities Style",
+                description: "Style for showing all activities",
+                kind: Kind::Select {
+                    options: &[
+                        ("Carousel", Lit::Str("carousel")),
+                        ("List", Lit::Str("list")),
+                    ],
+                    default: 0,
+                },
+            },
+        ],
+    },
+    Def {
         id: "BetterBlockedUsers",
         name: "BetterBlockedUsers",
         description: "Allows you to search in blocked users list, make names selectable in settings, skips blocked profile prompt, and groups blocked / ignored messages.",

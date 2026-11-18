@@ -141,6 +141,36 @@ impl Root {
         line: f32,
         tint: &'static str,
     ) -> Option<AnyElement> {
+        self.presence_line_inner(user, guild, compact, line, tint, None, false)
+    }
+
+    /// The line where the pinned client draws module 342312's `ActivityStatus` (the member list and the DM list),
+    /// which BetterActivities patches: its icons close the line, and `removeGameActivityStatus` drops the activity
+    /// part (`plugin_hooks/better_activities.rs`). With the plugin off it is `presence_line_with`.
+    pub(super) fn activity_status_line(
+        &self,
+        user: &User,
+        guild: Option<Id>,
+        line: f32,
+        tint: &'static str,
+        place: &'static str,
+        cx: &mut gpui::Context<Self>,
+    ) -> Option<AnyElement> {
+        let (icons, remove_game) = self.better_activities_status(user, guild, place, tint, cx);
+        self.presence_line_inner(user, guild, true, line, tint, icons, remove_game)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn presence_line_inner(
+        &self,
+        user: &User,
+        guild: Option<Id>,
+        compact: bool,
+        line: f32,
+        tint: &'static str,
+        icons: Option<AnyElement>,
+        remove_game: bool,
+    ) -> Option<AnyElement> {
         if self.is_blocked(user.id) || self.stores.is_ignored(user.id) {
             return None;
         }
@@ -171,7 +201,9 @@ impl Root {
             .line_height(px(line))
             .font_weight(FontWeight(500.))
             .text_color(color(tint));
-        if stream {
+        if remove_game {
+            // Not in the pinned client: BetterActivities' `removeGameActivityStatus`.
+        } else if stream {
             // `R`: the TV glyph and the game's name, or "Sharing their screen" (`eXan7B`).
             if !user.bot {
                 row = row.child(icon(
@@ -212,7 +244,8 @@ impl Root {
             }
         }
         // Only when nothing else leads: the voice entry is the last of the list and the first shown otherwise.
-        if !stream
+        if !remove_game
+            && !stream
             && first.is_none()
             && let Some(stage) = voice
         {
@@ -231,7 +264,7 @@ impl Root {
                 });
         }
         // `$`: "+N" for the entries after the first one, in the positive status colour beside a custom status text.
-        if !user.bot && total > 1 {
+        if !remove_game && !user.bot && total > 1 {
             row = row.child(
                 div()
                     .flex_none()
@@ -242,7 +275,7 @@ impl Root {
             );
         }
         if let Some(custom) = custom {
-            if total > 0 {
+            if total > 0 && !remove_game {
                 row = row.child(div().flex_none().child("•"));
             }
             if let Some(url) = emoji_source(&custom["emoji"]) {
@@ -260,7 +293,8 @@ impl Root {
                 row = row.child(div().min_w(px(0.)).text_ellipsis().child(text.to_owned()));
             }
         }
-        Some(row.into_any_element())
+        // Not in the pinned client: BetterActivities' icons close the line.
+        Some(row.children(icons).into_any_element())
     }
 }
 

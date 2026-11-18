@@ -2,6 +2,7 @@
 
 mod account_panel;
 mod always_animate;
+mod better_activities;
 mod better_role_context;
 mod better_role_dot;
 mod bigger_stream_preview;
