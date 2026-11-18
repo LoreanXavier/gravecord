@@ -106,6 +106,8 @@ enum Dialog {
     None,
     Mfa(Mfa),
     ForgotSent(String),
+    /// `forgotPassword` answered `ONE_TIME_LOGIN` (module 365225): a login link went out instead.
+    OneTimeLogin,
     Captcha(CaptchaChallenge),
     Disabled,
     Deletion,
@@ -422,6 +424,7 @@ impl LoginView {
                     cx,
                 );
             }
+            "one-time-login" => self.apply(Event::ForgotOneTimeLogin, cx),
             "captcha" => {
                 fill(self, cx);
                 self.apply(
@@ -597,10 +600,7 @@ impl LoginView {
                 }
             }
             Event::ForgotSent { login } => self.dialog = Dialog::ForgotSent(login),
-            Event::ForgotOneTimeLogin => {
-                let login = self.email.read(cx).text().trim().to_owned();
-                self.dialog = Dialog::ForgotSent(login);
-            }
+            Event::ForgotOneTimeLogin => self.dialog = Dialog::OneTimeLogin,
             Event::ForgotFields(errors) => self.show_field_errors(&errors),
             Event::Qr(event) => self.apply_qr(event),
         }
@@ -2232,6 +2232,20 @@ impl Render for LoginView {
                 );
                 (self.login_card(window, cx), Some(note))
             }
+            // Module 365225's ONE_TIME_LOGIN modal (189213): the title, the body in body-md (`--text-default`) and Okay.
+            Dialog::OneTimeLogin => {
+                let note = self.notice(
+                    "one-time-login",
+                    dc_intl::t("6Ecyts"),
+                    div()
+                        .text_color(color("--text-default"))
+                        .child(dc_intl::t("iAcrqV"))
+                        .into_any_element(),
+                    dc_intl::t("BddRzS"),
+                    cx,
+                );
+                (self.login_card(window, cx), Some(note))
+            }
             Dialog::Captcha(_) => (self.login_card(window, cx), Some(self.captcha_dialog(cx))),
             Dialog::PhoneVerification => {
                 let note = self.notice(
@@ -2282,6 +2296,11 @@ impl Render for LoginView {
             )
             .children(overlay.map(|dialog| {
                 let pose = crate::ui::motion::modal_pose("login-dialog");
+                // The login screen has no motion driver of its own (the main view's `motion::driver` is not in this
+                // tree): while the dialog comes in, the next frame is asked for here.
+                if pose.opacity < 1. || pose.scrim < 1. {
+                    window.request_animation_frame();
+                }
                 deferred(
                     div()
                         .id("login-scrim")

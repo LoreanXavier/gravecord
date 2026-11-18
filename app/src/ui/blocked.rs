@@ -10,6 +10,24 @@ use gpui::{AnyElement, Context, FontWeight, IntoElement, SharedString, div, img,
 
 pub(super) const RELATIONSHIP_BLOCKED: u64 = 2;
 
+/// `tL` of module 559868: the account whose DM carries the changelog.
+const CHANGELOG_USER: Id = 1_232_523_165_893_132_288;
+/// `Do` of module 559868, where Open Blog goes.
+const CHANGELOG_BLOG: &str = "https://discord.com/category/product";
+/// `getArticleURL(SYSTEM_DMS)` (`360036118732`, module 652215).
+const SYSTEM_DMS_ARTICLE: &str = "https://support.discord.com/hc/en-us/articles/360036118732";
+/// Module 388668, the system DM notice's picture.
+const SYSTEM_DM_ART: &str = "https://discord.com/assets/f13bb5d4ef6ec865.svg";
+
+/// The notice in place of the composer (module 544990).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(super) enum ChatBlocker {
+    /// A DM with a system account; `changelog` when it is the changelog account's.
+    System { changelog: bool },
+    /// The DM's other person is blocked.
+    Blocked(Id),
+}
+
 /// `+FcYM/`: "1 blocked message", "N blocked messages".
 pub(super) fn blocked_count(count: usize) -> String {
     match count {
@@ -141,6 +159,135 @@ impl Root {
                         cx.listener(move |this, _, _, cx| this.set_relationship(user, None, cx)),
                     )
                     .child("Unblock"),
+            )
+            .into_any_element()
+    }
+
+    /// What takes the composer's place in the open DM (module 544990): a system DM's notice before the blocked one,
+    /// which a group DM never shows.
+    pub(super) fn chat_blocker(&self) -> Option<ChatBlocker> {
+        let channel = self.current_dm()?;
+        if channel.kind != 1 {
+            return None;
+        }
+        let recipient = channel
+            .recipients
+            .first()
+            .and_then(|user| self.stores.users.get(user))?;
+        if recipient.system {
+            // `(0,g.A)(channel.id)`, module 343328: the DM with the changelog account.
+            return Some(ChatBlocker::System {
+                changelog: recipient.id == CHANGELOG_USER,
+            });
+        }
+        (channel.recipients.len() == 1 && self.is_blocked(recipient.id))
+            .then_some(ChatBlocker::Blocked(recipient.id))
+    }
+
+    /// `wrapper_ST_Y69` (module 786051) with module 544990's system DM content: the picture (40px, 8px into the
+    /// wrapper, 16px before the text), "This chat is reserved for official Discord notifications." in heading-sm
+    /// semibold over "Discord will never ask you for your password or account token." in body-xs muted, and Learn More
+    /// (Open Blog with the launch icon in the changelog DM). No capture shows this variant: the wrapper is the blocked
+    /// one's measurement and the rest comes from the `_ST_Y69` rules.
+    pub(super) fn system_dm_composer(&self, changelog: bool, cx: &mut Context<Self>) -> AnyElement {
+        let picture = self.images.get(SYSTEM_DM_ART).cloned();
+        if picture.is_none() {
+            self.want_image(SYSTEM_DM_ART.to_owned(), SYSTEM_DM_ART.to_owned(), cx);
+        }
+        div()
+            .parity_with_border("system-dm-composer", 1.)
+            .h(px(58.))
+            .py(px(12.))
+            .rounded(px(8.))
+            .border_1()
+            .border_color(color("--border-subtle"))
+            .bg(color("--background-base-low"))
+            .flex()
+            .items_center()
+            .justify_between()
+            .child(
+                div()
+                    .ml(px(16.))
+                    .h(px(20.))
+                    .flex_1()
+                    .min_w(px(0.))
+                    .flex()
+                    .items_center()
+                    .child(
+                        div()
+                            .ml(px(-8.))
+                            .mr(px(16.))
+                            .size(px(40.))
+                            .flex_none()
+                            .rounded(px(8.))
+                            .overflow_hidden()
+                            .children(picture.map(|image| img(image).size(px(40.)))),
+                    )
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w(px(0.))
+                            .max_h(px(40.))
+                            .overflow_hidden()
+                            .flex()
+                            .flex_col()
+                            .child(
+                                div()
+                                    .text_size(px(16.))
+                                    .line_height(px(20.))
+                                    .font_weight(FontWeight(600.))
+                                    .text_color(color("--text-strong"))
+                                    .w_full()
+                                    .flex_none()
+                                    .max_h(px(40.))
+                                    .overflow_hidden()
+                                    .child(dc_intl::t("Bt2N7D")),
+                            )
+                            .child(
+                                div()
+                                    .text_size(px(12.))
+                                    .line_height(px(16.))
+                                    .text_color(color("--text-muted"))
+                                    .child(dc_intl::t("n/Vzkw")),
+                            ),
+                    ),
+            )
+            .child(
+                div().mr(px(12.)).flex().child(
+                    div()
+                        .id("system-dm-button")
+                        .ml(px(12.))
+                        .h(px(32.))
+                        .px(px(11.))
+                        .rounded(px(8.))
+                        .border_1()
+                        .border_color(color("--control-secondary-border-default"))
+                        .bg(color("--control-secondary-background-default"))
+                        .cursor_pointer()
+                        .flex()
+                        .flex_none()
+                        .items_center()
+                        .gap(px(8.))
+                        .text_size(px(14.))
+                        .line_height(px(18.))
+                        .font_weight(FontWeight(500.))
+                        .text_color(color("--control-secondary-text-default"))
+                        .when(changelog, |this| {
+                            this.child(icon(
+                                "open_external",
+                                16.,
+                                "--control-secondary-text-default",
+                            ))
+                        })
+                        .on_click(move |_, _, cx| {
+                            cx.open_url(if changelog {
+                                CHANGELOG_BLOG
+                            } else {
+                                SYSTEM_DMS_ARTICLE
+                            })
+                        })
+                        .child(dc_intl::t(if changelog { "+KSnWX" } else { "hvVgAZ" })),
+                ),
             )
             .into_any_element()
     }

@@ -141,6 +141,20 @@ impl Stores {
         }
     }
 
+    /// `MESSAGE_SEND_FAILED_AUTOMOD` and `MESSAGE_EDIT_FAILED_AUTOMOD` (`S` of 93474): the message keeps its reason
+    /// under `id` (the send's message, or the edited one) with a new version.
+    pub fn automod_failed(&mut self, id: String, is_blocked_edit: bool, reason: String) {
+        self.automod.failed.insert(
+            id.clone(),
+            FailedMessage {
+                id,
+                is_blocked_edit,
+                error_message: Value::String(reason),
+            },
+        );
+        self.automod.version += 1;
+    }
+
     /// `getMessage(id)`.
     pub fn automod_message(&self, message: &str) -> Option<&FailedMessage> {
         self.automod.failed.get(message)

@@ -641,8 +641,32 @@ impl Root {
                     send_policy::explicit_media_notice(facts.is_dm, self.is_group_dm(channel));
                 self.clyde_says(channel, &notice.text, &notice.name);
             }
-            Followup::Automod | Followup::PowermodeDisabled | Followup::Nothing => {}
+            // `MESSAGE_SEND_FAILED_AUTOMOD`: the message keeps AutoMod's reason (module 469759 draws it). The store's key
+            // is the send's nonce, which is the message's id in the official client; here it is the row's own id.
+            Followup::Automod => {
+                let reason =
+                    send_policy::automod_notice(failure, self.automod_place(channel), false);
+                self.stores.automod_failed(id.to_string(), false, reason);
+            }
+            Followup::PowermodeDisabled | Followup::Nothing => {}
         }
+    }
+
+    /// What `PD` of module 753738 asks of the channel: a thread first, then a forum or media channel.
+    fn automod_place(&self, channel: Id) -> send_policy::AutomodPlace {
+        let guilds = self.stores.guilds.iter();
+        let mut place = send_policy::AutomodPlace::Other;
+        for guild in guilds {
+            if guild.threads.iter().any(|thread| thread.id == channel) {
+                return send_policy::AutomodPlace::Thread;
+            }
+            if guild.channels.iter().any(|known| {
+                known.id == channel && matches!(known.kind, dc_state::ChannelKind::Other(15 | 16))
+            }) {
+                place = send_policy::AutomodPlace::Post;
+            }
+        }
+        place
     }
 
     fn mark_failed(&mut self, channel: Id, id: Id) {
@@ -852,12 +876,15 @@ impl Root {
             .border_color(color("--background-mod-subtle"))
             .flex()
             .items_center()
-            .child({
-                let target = button(cx, "msg_retry", dc_intl::tr("Retry"), "toolbar-retry");
-                target.on_click(cx.listener(move |this, _, _, cx| {
-                    this.tip = None;
-                    this.retry_send(id, cx);
-                }))
+            // `nf`: no Retry while AutoMod's notice is on the message.
+            .when(!self.automod_blocked(id), |this| {
+                this.child({
+                    let target = button(cx, "msg_retry", dc_intl::tr("Retry"), "toolbar-retry");
+                    target.on_click(cx.listener(move |this, _, _, cx| {
+                        this.tip = None;
+                        this.retry_send(id, cx);
+                    }))
+                })
             })
             .child({
                 let target = button(
@@ -930,7 +957,14 @@ impl Root {
                     .and_then(|channel| self.stores.messages.get(&channel))
                     .into_iter()
                     .flatten()
-                    .map(|message| format!("{} {:?}", message.id, message.state))
+                    .map(|message| {
+                        let automod = if self.automod_blocked(message.id) {
+                            " AutoMod"
+                        } else {
+                            ""
+                        };
+                        format!("{} {:?}{automod}", message.id, message.state)
+                    })
                     .collect::<Vec<_>>()
                     .join("; ");
                 format!("send order: {order}")
@@ -975,7 +1009,12 @@ impl Root {
                 };
                 let nonce = self.send_ui.sends[&id].nonce.clone();
                 self.send_finished(channel, &nonce, Outcome::Failed(failure), cx);
-                format!("send: failed {nonce}")
+                let automod = if self.automod_blocked(id) {
+                    " (AutoMod notice)"
+                } else {
+                    ""
+                };
+                format!("send: failed {nonce} (message {id}){automod}")
             }
             // The notice of design/golden/windows/failed-message/clyde-notice-darker-cozy@1.png.
             ["clyde"] => {
