@@ -173,7 +173,9 @@ impl Session {
         let base = self.resume_url.as_deref().unwrap_or(pin::GATEWAY_ENDPOINT);
         let url = gateway_url(base);
         info!("gateway connecting to {base}");
-        let mut request = url.as_str().into_client_request()?;
+        dc_proto::replay::record_gateway_send("connect", None, &Value::Null);
+        let url = dc_proto::replay::rewrite(&url);
+        let mut request = url.as_ref().into_client_request()?;
         let headers = request.headers_mut();
         headers.insert("Origin", HeaderValue::from_static(pin::WEBAPP_ORIGIN));
         headers.insert("User-Agent", HeaderValue::from_static(pin::USER_AGENT));
@@ -193,7 +195,14 @@ impl Session {
         data: Value,
     ) -> Result<(), tungstenite::Error> {
         let bytes = etf::pack(&json!({"op": op as u8, "d": data}));
-        socket.send(Message::Binary(bytes.into())).await
+        if dc_proto::replay::recording() {
+            dc_proto::replay::record_gateway_send("send", Some(op as u64), &data);
+        }
+        let sent = socket.send(Message::Binary(bytes.into())).await;
+        if op == Op::Identify {
+            dc_proto::replay::stage("gw_identify_sent", Duration::ZERO);
+        }
+        sent
     }
 
     async fn flush_pending_sends(&mut self, socket: &mut Socket) -> Result<(), tungstenite::Error> {
@@ -334,7 +343,11 @@ impl Session {
                         None => return self.on_close(1006, "stream ended".to_owned()),
                     };
                     let decoding = Instant::now();
-                    let payload = match inflater.feed(&bytes).map(|raw| etf::unpack(&raw)) {
+                    let mut inflated = None;
+                    let payload = match inflater.feed(&bytes).map(|raw| {
+                        inflated = Some(Instant::now());
+                        etf::unpack(&raw)
+                    }) {
                         Ok(Ok(payload)) => payload,
                         Ok(Err(error)) => {
                             warn!("gateway payload did not decode: {error}");
@@ -345,6 +358,15 @@ impl Session {
                             return Next::Reconnect;
                         }
                     };
+                    dc_proto::replay::record_gateway_recv(decoding, &payload);
+                    if payload["t"] == "READY" {
+                        // Where the READY frame's time went: read off the socket, inflated, unpacked (`start_trace`).
+                        dc_proto::replay::stage("gw_ready_read", decoding.elapsed());
+                        if let Some(inflated) = inflated {
+                            dc_proto::replay::stage("gw_ready_inflated", inflated.elapsed());
+                        }
+                        dc_proto::replay::stage("gw_ready_unpacked", Duration::ZERO);
+                    }
                     let op = payload["op"].as_u64().and_then(Op::from_u64);
                     match op {
                         Some(Op::Hello) => {

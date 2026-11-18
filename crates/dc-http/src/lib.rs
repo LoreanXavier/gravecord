@@ -288,6 +288,7 @@ impl Client {
     ) -> Result<Response, Error> {
         let (route, reason) = split_audit_reason(route);
         let url = format!("{}{route}", self.api_base);
+        let url = dc_proto::replay::rewrite(&url).into_owned();
         let mut request = self
             .http()
             .request(method.clone(), url)
@@ -318,8 +319,10 @@ impl Client {
         let diagnostic = diagnostic_route(route);
         let mut last_retry_after = None;
         for attempt in 0..=MAX_RATE_LIMIT_RETRIES {
+            let asked = std::time::Instant::now();
             let response = self.send(&method, route, body).await?;
             let status = response.status();
+            let content_type = content_type(&response);
             debug!("{method} {}: {status}", log_path(route));
             if status == StatusCode::TOO_MANY_REQUESTS {
                 let body: Value = response.json().await.unwrap_or(Value::Null);
@@ -347,6 +350,14 @@ impl Client {
                 .text()
                 .await
                 .map_err(|error| transport_error(error, route))?;
+            dc_proto::replay::record_http(
+                method.as_str(),
+                &format!("{}{}", self.api_base, split_audit_reason(route).0),
+                status.as_u16(),
+                content_type.as_deref(),
+                asked.elapsed(),
+                text.as_bytes(),
+            );
             let value = if text.is_empty() {
                 Value::Null
             } else {
@@ -372,6 +383,7 @@ impl Client {
     /// (`GET /oauth2/@me`). The account's token is never sent: this is the activity's token, which the page handed over.
     pub async fn get_as_bearer(&self, route: &str, bearer: &str) -> Result<Value, Error> {
         let url = format!("{}{route}", self.api_base);
+        let url = dc_proto::replay::rewrite(&url).into_owned();
         let response = self
             .http()
             .get(url)
@@ -401,6 +413,7 @@ impl Client {
     /// each time.
     pub async fn post_form(&self, route: &str, form: &Form) -> Result<Value, Error> {
         let url = format!("{}{route}", self.api_base);
+        let url = dc_proto::replay::rewrite(&url).into_owned();
         let mut last_retry_after = None;
         for attempt in 0..=MAX_RATE_LIMIT_RETRIES {
             let file = reqwest::multipart::Part::bytes(form.file.clone())
@@ -468,6 +481,7 @@ impl Client {
         files: &[(String, Vec<u8>)],
     ) -> Result<Value, Error> {
         let url = format!("{}{route}", self.api_base);
+        let url = dc_proto::replay::rewrite(&url).into_owned();
         let mut body = reqwest::multipart::Form::new();
         for (name, bytes) in files {
             let part = reqwest::multipart::Part::bytes(bytes.clone())
@@ -506,8 +520,38 @@ impl Client {
 
     /// A public asset: no authorization, so tokens never reach a CDN.
     pub async fn fetch_public(&self, url: &str) -> Result<Vec<u8>, Error> {
-        let response = self.http().get(url).send().await?.error_for_status()?;
-        Ok(response.bytes().await?.to_vec())
+        let asked = std::time::Instant::now();
+        let response = self
+            .http()
+            .get(dc_proto::replay::rewrite(url).as_ref())
+            .send()
+            .await?;
+        let status = response.status();
+        let content_type = content_type(&response);
+        let response = match response.error_for_status() {
+            Ok(response) => response,
+            Err(error) => {
+                dc_proto::replay::record_http(
+                    "GET",
+                    url,
+                    status.as_u16(),
+                    content_type.as_deref(),
+                    asked.elapsed(),
+                    &[],
+                );
+                return Err(error.into());
+            }
+        };
+        let bytes = response.bytes().await?.to_vec();
+        dc_proto::replay::record_http(
+            "GET",
+            url,
+            status.as_u16(),
+            content_type.as_deref(),
+            asked.elapsed(),
+            &bytes,
+        );
+        Ok(bytes)
     }
 
     /// Public CDN GET with optional `If-None-Match` validation (no authorization headers sent).
@@ -516,7 +560,8 @@ impl Client {
         url: &str,
         etag: Option<&str>,
     ) -> Result<ConditionalGet, Error> {
-        let mut req = self.http().get(url);
+        let asked = std::time::Instant::now();
+        let mut req = self.http().get(dc_proto::replay::rewrite(url).as_ref());
         if let Some(tag) = etag {
             req = req.header(reqwest::header::IF_NONE_MATCH, tag);
         }
@@ -527,14 +572,26 @@ impl Client {
             .and_then(|v| v.to_str().ok())
             .map(str::to_owned);
         if response.status() == StatusCode::NOT_MODIFIED {
+            dc_proto::replay::record_http("GET", url, 304, None, asked.elapsed(), &[]);
             return Ok(ConditionalGet::NotModified {
                 etag: next_etag.or_else(|| etag.map(str::to_owned)),
             });
         }
+        let status = response.status();
+        let content_type = content_type(&response);
         let response = response.error_for_status()?;
+        let bytes = response.bytes().await?.to_vec();
+        dc_proto::replay::record_http(
+            "GET",
+            url,
+            status.as_u16(),
+            content_type.as_deref(),
+            asked.elapsed(),
+            &bytes,
+        );
         Ok(ConditionalGet::Ok {
             etag: next_etag,
-            bytes: response.bytes().await?.to_vec(),
+            bytes,
         })
     }
 
@@ -542,7 +599,7 @@ impl Client {
     /// authorization goes with it.
     pub async fn put_upload(&self, url: &str, bytes: Vec<u8>) -> Result<(), Error> {
         self.http()
-            .put(url)
+            .put(dc_proto::replay::rewrite(url).as_ref())
             .header("content-type", "application/octet-stream")
             .body(bytes)
             .send()
@@ -558,6 +615,15 @@ impl Client {
     pub async fn post(&self, route: &str, body: &Value) -> Result<Value, Error> {
         self.request(Method::POST, route, Some(body)).await
     }
+}
+
+/// The answer's `content-type`, for the replay recorder.
+fn content_type(response: &Response) -> Option<String> {
+    response
+        .headers()
+        .get(reqwest::header::CONTENT_TYPE)
+        .and_then(|value| value.to_str().ok())
+        .map(str::to_owned)
 }
 
 fn retry_after(body: &Value) -> Duration {

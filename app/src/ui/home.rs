@@ -855,7 +855,11 @@ impl Root {
                 .flex()
                 .items_center()
                 .justify_center()
-                .child(super::login::wandering_cubes())
+                // Hidden under the connecting screen, the cubes are not drawn: each of their frames asks for another and
+                // would rebuild the whole window at the display's rate behind it (the start's busiest work before READY).
+                .when(!self.splash_covers(), |page| {
+                    page.child(super::login::wandering_cubes())
+                })
                 .into_any_element();
         }
         let people = self.friends_people(window, cx);

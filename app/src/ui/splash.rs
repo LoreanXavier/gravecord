@@ -310,6 +310,9 @@ pub(super) struct Splash {
     shown: Option<(usize, Arc<RenderImage>)>,
     /// The width of a space in the tip's 16px text, for tips that flow as words.
     space: Option<f32>,
+    /// The redraw asked for the spinner's next frame (or the problems' slide), while none is due sooner.
+    /// Its moment: a redraw due sooner (the clip came in while the slide's was pending) replaces it.
+    tick: Option<(Instant, gpui::Task<()>)>,
 }
 
 impl Splash {
@@ -326,6 +329,7 @@ impl Splash {
             clip: None,
             shown: None,
             space: None,
+            tick: None,
         }
     }
 }
@@ -554,10 +558,44 @@ fn keeps_frames_after_done() -> bool {
     }
 }
 
+/// When the connecting screen must be drawn again.
+#[derive(Debug, PartialEq)]
+pub(super) enum Redraw {
+    EveryFrame,
+    After(Duration),
+}
+
+/// What the screen needs next at `elapsed`: every frame while it fades or its problems slide in, else the spinner's
+/// next frame (when the clip is in) or the slide's start, whichever comes first.
+pub(super) fn next_redraw(elapsed: Duration, fading: bool, clip: bool) -> Redraw {
+    let sliding_until = PROBLEMS_AFTER + PROBLEMS_SLIDE;
+    if fading || (elapsed >= PROBLEMS_AFTER && elapsed < sliding_until) {
+        return Redraw::EveryFrame;
+    }
+    let slide = (elapsed < PROBLEMS_AFTER).then(|| PROBLEMS_AFTER - elapsed);
+    let frame = clip.then(|| {
+        let period = 1. / spinner::FPS as f64;
+        let into = elapsed.as_secs_f64() % period;
+        // At least a millisecond, so a redraw that lands on the boundary does not ask for itself again.
+        Duration::from_secs_f64((period - into).max(0.001))
+    });
+    match (slide, frame) {
+        (Some(slide), Some(frame)) => Redraw::After(slide.min(frame)),
+        (Some(delay), None) | (None, Some(delay)) => Redraw::After(delay),
+        // Slid in, no clip: nothing moves until the fade.
+        (None, None) => Redraw::After(Duration::from_secs(3600)),
+    }
+}
+
 impl Root {
     pub(crate) fn ready_for_capture(&self) -> bool {
         // Home has no page to wait for: READY (or the cache's) is its content.
         (self.ready || (self.channel.is_none() && self.content_ready())) && self.splash.done
+    }
+
+    /// Whether the connecting screen hides the whole window right now: up, and not fading yet.
+    pub(super) fn splash_covers(&self) -> bool {
+        !self.splash.done && self.splash.loaded_at.is_none()
     }
 
     /// A start with nothing kept from the last run: the screen shows from the first frame until the first content is
@@ -605,15 +643,19 @@ impl Root {
         self.stores.current_user.is_some() && (self.channel.is_none() || self.ready)
     }
 
-    /// Called after every update: starts the fade once the content is ready.
+    /// Called after every update: starts the fade once READY is in. Module 596339's `NM` sets `hide` from `connected`
+    /// (`GatewayConnectionStore.isConnected`, the session established by READY), not from the channel's messages:
+    /// the official screen fades as READY lands and the channel shows its own loading state after that.
     pub(super) fn splash_check(&mut self) {
         #[cfg(feature = "capture")]
         if self.stores.current_user.is_some() {
             crate::perf::mark(&crate::perf::READY_MS);
         }
-        if self.splash.loaded_at.is_none() && self.content_ready() {
-            #[cfg(feature = "capture")]
+        #[cfg(feature = "capture")]
+        if self.content_ready() {
             crate::perf::mark(&crate::perf::CONTENT_MS);
+        }
+        if self.splash.loaded_at.is_none() && self.stores.current_user.is_some() {
             self.splash.loaded_at = Some(Instant::now());
         }
     }
@@ -666,7 +708,7 @@ impl Root {
     pub(super) fn splash_layer(
         &mut self,
         window: &mut Window,
-        cx: &mut gpui::App,
+        cx: &mut gpui::Context<Self>,
     ) -> Option<AnyElement> {
         if self.splash.done {
             return None;
@@ -691,8 +733,25 @@ impl Root {
             }
             return None;
         }
-        // The spinner and the slide are animations: ask for the next frame.
-        window.request_animation_frame();
+        // The fade and the problems' slide move every frame. Otherwise the only change is the spinner's next frame (the
+        // official `<video>` repaints at the clip's 60 fps, not at the display's rate): a redraw is asked for when it is
+        // due, and none at all while the clip is not in, until the slide starts. Every redraw builds the whole window.
+        match next_redraw(elapsed, faded.is_some(), self.splash.clip.is_some()) {
+            Redraw::EveryFrame => window.request_animation_frame(),
+            Redraw::After(delay) => {
+                let due = Instant::now() + delay;
+                if self.splash.tick.as_ref().is_none_or(|(at, _)| due < *at) {
+                    let task = cx.spawn(async move |this, cx| {
+                        cx.background_executor().timer(delay).await;
+                        let _ = this.update(cx, |this, cx| {
+                            this.splash.tick = None;
+                            cx.notify();
+                        });
+                    });
+                    self.splash.tick = Some((due, task));
+                }
+            }
+        }
         let space = *self.splash.space.get_or_insert_with(|| space_width(window));
         let frame = self.splash_frame(elapsed, window, cx);
         let tip = TIPS[self.splash.tip];
@@ -839,6 +898,29 @@ mod tests {
         assert!(end.container.abs() < 1e-4);
         // A capture's hold keeps it up whatever loaded.
         assert!(!look(Duration::from_secs(3), Some(Duration::from_secs(5)), true).gone);
+    }
+
+    #[test]
+    fn the_screen_redraws_at_the_clips_rate_not_the_displays() {
+        // Waiting with the clip in: the next of its 60 frames a second.
+        let Redraw::After(delay) = next_redraw(Duration::from_millis(1000), false, true) else {
+            panic!("a still screen waits");
+        };
+        assert!(delay > Duration::ZERO && delay <= Duration::from_secs_f64(1. / 60.));
+        // Without the clip nothing moves until the problems slide at ten seconds.
+        assert_eq!(
+            next_redraw(Duration::from_secs(4), false, false),
+            Redraw::After(Duration::from_secs(6))
+        );
+        // The slide and the fade are drawn every frame.
+        assert_eq!(
+            next_redraw(Duration::from_millis(10_100), false, false),
+            Redraw::EveryFrame
+        );
+        assert_eq!(
+            next_redraw(Duration::from_secs(2), true, true),
+            Redraw::EveryFrame
+        );
     }
 
     #[test]

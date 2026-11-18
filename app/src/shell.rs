@@ -184,7 +184,13 @@ impl Shell {
             .unwrap_or_default();
         // With nothing kept from the last run there is nothing true to draw before READY: the connecting screen
         // covers the window as the official's does (module 596339 `NU`), its spinner read or fetched off the UI thread.
-        if cached.is_none() {
+        // Capture builds: `GRAVECORD_NO_CONNECTING=1` starts as the build before the connecting screen did (a recording
+        // run keeps the screen's work out of the server times it records), `GRAVECORD_NO_SPINNER=1` shows the screen
+        // without fetching and decoding its clip.
+        let switch =
+            |name: &str| cfg!(feature = "capture") && std::env::var(name).as_deref() == Ok("1");
+        let connecting = cached.is_none() && !switch("GRAVECORD_NO_CONNECTING");
+        if connecting && !switch("GRAVECORD_NO_SPINNER") {
             let spinner_tx = hook_tx.clone();
             self.handle.spawn(async move {
                 let Ok(client) = dc_http::Client::new(Token::new(""), Identity::new()) else {
@@ -203,7 +209,8 @@ impl Shell {
             root.decode_start_pictures(window, cx);
             match cached {
                 Some(cached) => root.apply_cache(cached, cx),
-                None => root.show_connecting_screen(),
+                None if connecting => root.show_connecting_screen(),
+                None => {}
             }
         });
         if std::mem::take(&mut self.switched) {

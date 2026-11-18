@@ -46,6 +46,21 @@ pub fn mark(stage: &'static str) {
     tracing::debug!(target: "gravecord::start", stage, ms, "start stage");
 }
 
+/// Records `stage` as reached `ago` before now (a stage timed inside a network crate, `dc_proto::replay::stage`).
+pub fn mark_ago(stage: &'static str, ago: std::time::Duration) {
+    let Ok(mut stages) = STAGES.lock() else {
+        return;
+    };
+    if stages.iter().any(|(name, _)| *name == stage) {
+        return;
+    }
+    let ago: u64 = ago.as_millis().try_into().unwrap_or(u64::MAX);
+    let ms = now_ms().saturating_sub(ago);
+    stages.push((stage, ms));
+    drop(stages);
+    tracing::debug!(target: "gravecord::start", stage, ms, "start stage");
+}
+
 /// Records how long the first `work` of its kind took (a READY applied on the UI thread, say), as `dur_<work>`.
 pub fn took(work: &'static str, since: Instant) {
     let ms = since.elapsed().as_millis().try_into().unwrap_or(u64::MAX);
