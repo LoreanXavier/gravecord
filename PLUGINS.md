@@ -12,7 +12,7 @@ every setting changed), and with every plugin off, and fails on one differing pi
 The list is the plugins enabled in the owner's Equicord backup of 2026-09-21 (156). Sources were read in the local
 Equicord checkout of 2026-11-14 (`src/plugins` is Vencord's, `src/equicordplugins` Equicord's).
 
-Totals: 69 ported, 9 native, 33 planned, 45 not applicable.
+Totals: 70 ported, 9 native, 32 planned, 45 not applicable.
 
 Status: **ported** works and has its proof; **native** is what gravecord already does without a plugin;
 **planned** is not built yet (an import keeps its settings for when it is); **not applicable** has nothing to
@@ -166,7 +166,7 @@ port in a native client, or was removed upstream.
 | VCSupport | not applicable | (not in the 2026-11-14 checkout) |  | Equicord support-server helper. |  |
 | ViewIcons | ported | plugins/viewIcons/index.tsx | Makes avatars and banners in user profiles clickable, adds View Icon/Banner/Avatar Decoration entries in the user, server and group channel context menu. | plugin_hooks/view_icons.rs: View Avatar / View Server Avatar / View Avatar Decoration as a group before the user menu's last one, View Icon / View Banner in the server menu, View Icon in a group DM's menu, each opening the picture viewer (no sender or Forward) at imgSize in format (animated stays webp, client assets png), Open in Browser and Save at size=4096. GAP: the clickable profile avatars, banners and DM header icons. | `addresses_follow_open_image`, `settings_default_to_webp_at_1024`, `the_group_goes_before_the_last_one`; frames vi-menu (View Avatar group before Open in Mod View), vi-guild (no icon, no rows); plugins-off user-menu, channel-menu |
 | VoiceDownload | ported | plugins/voiceDownload/index.tsx | Adds a download to voice messages. (Opens a new browser tab) | voice_message.rs: a download arrow after a voice message's volume that opens the file in the browser (the original's desktop behaviour). | frames vd-on/vd-off/vd-pair; plugins-off chat (the voice message is in view) |
-| VoiceMessages | planned | plugins/voiceMessages/index.tsx | Allows you to send voice messages like on mobile. To do so, right click the upload button and click Send Voice Message | recording voice messages on desktop. |  |
+| VoiceMessages | ported | plugins/voiceMessages/index.tsx | Allows you to send voice messages like on mobile. To do so, right click the upload button and click Send Voice Message | plugin_hooks/voice_messages.rs: the + menu ends with Send Voice Message (Send Audio File as Voice Message beside the client's own Record Voice Message row; in a server with Send Messages and Send Voice Messages); Record Voice Message records from the microphone with the plugin's echoCancellation and noiseSuppression (Ogg Opus) or takes a chosen or dropped audio file, previews it in the voice message player (the plugin's RECORDING / ---- pill otherwise), decodes it off the UI thread for the plugin's own waveform and length, warns when it is not Ogg Opus, and sends it as a voice message with the pending reply and SilentMessageToggle's flag. GAP: the sending toast's clock icon; the warning's link drawn as text. | `the_waveform_follows_generate_waveform`; frames pending (live runs held) |
 | VoiceMessageTranscriber | planned | equicordplugins/voiceMessageTranscriber.desktop/index.tsx | On-device transcriptions for voice messages powered by Whisper | an on-device Whisper model runner. |  |
 | VoiceStats | ported | equicordplugins/voiceStats/index.tsx | Shows how long you've spent in voice with each user in their profile | plugin_hooks/voice_stats.rs: seconds with each person in your voice channel, saved every 30 s; "Voice Time" after Member Since in the DM sidebar and the full profile. An Equicord backup brings its totals (`VoiceStats_totals`, the one data store key read). | `plugin_hooks::voice_stats::tests` (5), backup import test; frames vs-dm-on/off, vs-full-on |
 | VolumeBooster | ported | plugins/volumeBooster/index.ts | Allows you to set the user and stream volume above the default maximum | User Volume (context menu, call tile menu, call tray) and Stream Volume sliders to their top x `multiplier`; the voice engine takes the higher gain. The app syncs no volumes to the account, so the original's 200% cap on the sync has nothing to cap. | `volume_booster_raises_the_slider_top_by_its_multiplier`; frames vb-off/vb-on; plugins-off user-volume |
@@ -363,5 +363,7 @@ Every setting of each original (`definePluginSettings`), its type and default th
 | UserMessagesPronouns | `showSelf` | BOOLEAN | `true` | ported |
 | ViewIcons | `format` | SELECT | `"webp"` | ported |
 | ViewIcons | `imgSize` | SELECT | `n === "1024" }))` | ported |
+| VoiceMessages | `noiseSuppression` | BOOLEAN | `true` | ported |
+| VoiceMessages | `echoCancellation` | BOOLEAN | `true` | ported |
 | VolumeBooster | `multiplier` | SLIDER | `2` | ported |
 | WhoReacted | `clickableAvatars` | BOOLEAN | `true` | ported |

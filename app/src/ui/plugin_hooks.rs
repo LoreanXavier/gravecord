@@ -49,6 +49,7 @@ mod unlocked_avatar_zoom;
 pub(in crate::ui) use unlocked_avatar_zoom::crop_max_zoom;
 mod valid_user;
 mod view_icons;
+mod voice_messages;
 mod voice_stats;
 mod who_reacted;
 mod zip_preview;

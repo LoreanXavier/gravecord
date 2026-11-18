@@ -147,6 +147,7 @@ assert len(idle) == idle_entries, f'IDLE_SETTINGS: read {len(idle)} of {idle_ent
 
 # How each ported plugin is built here, and its proof.
 PORTED = {
+    'VoiceMessages': "plugin_hooks/voice_messages.rs: the + menu ends with Send Voice Message (Send Audio File as Voice Message beside the client's own Record Voice Message row; in a server with Send Messages and Send Voice Messages); Record Voice Message records from the microphone with the plugin's echoCancellation and noiseSuppression (Ogg Opus) or takes a chosen or dropped audio file, previews it in the voice message player (the plugin's RECORDING / ---- pill otherwise), decodes it off the UI thread for the plugin's own waveform and length, warns when it is not Ogg Opus, and sends it as a voice message with the pending reply and SilentMessageToggle's flag. GAP: the sending toast's clock icon; the warning's link drawn as text.",
     'UnlockedAvatarZoom': "plugin_hooks/unlocked_avatar_zoom.rs: the image crop tool's zoom slider (every picture it edits, as the patched maxValue of module 142630) reaches zoomMultiplier instead of 2; the slider, the arrow keys and the clamp follow it.",
     'BetterQuickReact': "plugin_hooks/more_quick_reactions.rs (now MoreQuickReactions upstream): the hover bar shows reactionCount quick reactions; the message menu's row is uncut and becomes a grid of columns 44px cells (33px compact, button at 75% and emoji at 125%) showing rows rows, padded 4/1/6 and centred, the menu widening to fit; the wheel moves it a row at a time with scroll; frequentEmojis keeps the favourites out (off: they come first, as the pinned list has them).",
     'BypassStatus': "plugin_hooks/bypass_status.rs: while your status is statusToUse, a message that mentions you in a listed server or channel, or a listed person's DM (anywhere with allowOutsideOfDms when it mentions you), still notifies with the client mod's notification (title as the original builds it, mentions resolved, a click opens the message) and the message sound; own, empty, open-and-focused and (respectSilentPings) @silent messages excepted; the server, channel and user menus get Add/Remove Status Bypass with the ring icons as a group before their last one. GAP: no DM channel is created for a listed person without one (the original's getOrEnsurePrivateChannel, which changes no outcome); the lists are matched with spaces removed rather than rewritten on change.",
@@ -236,6 +237,7 @@ PORTED = {
                      'so the original\'s 200% cap on the sync has nothing to cap.',
 }
 TESTS = {
+    'VoiceMessages': '`the_waveform_follows_generate_waveform`; frames pending (live runs held)',
     'UnlockedAvatarZoom': '`the_slider_reaches_the_multiplier`; frames pending (live runs held)',
     'BetterQuickReact': '`the_grid_scrolls_a_row_at_a_time`; frames pending (live runs held)',
     'BypassStatus': '`ids_and_mentions_follow_the_original`; frames pending (live runs held)',
@@ -415,7 +417,6 @@ PLANNED = {
     'UserPFP': 'its third-party avatar service.',
     'USRBG': 'its third-party banner service.',
     'ValidReply': "the pinned client's \"Message could not be loaded\" reply bar first: a reply whose message the server did not embed draws no reply line here (GAP in the reply path: intl REPLY_QUOTE_MESSAGE_NOT_LOADED); ValidReply's hover fetch hangs on that bar.",
-    'VoiceMessages': 'recording voice messages on desktop.',
     'VoiceMessageTranscriber': 'an on-device Whisper model runner.',
     'ExpressionCloner': 'menu rows that clone, edit and delete emoji and stickers into your servers.',
     'IloveSpam': 'messages of users flagged as likely spammers shown as any other.',

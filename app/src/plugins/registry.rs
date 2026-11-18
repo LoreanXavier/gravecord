@@ -2227,6 +2227,28 @@ pub(crate) const DEFS: &[Def] = &[
         settings: &[],
     },
     Def {
+        id: "VoiceMessages",
+        name: "VoiceMessages",
+        description: "Allows you to send voice messages like on mobile. To do so, right click the upload button and click Send Voice Message",
+        origin: Origin::Vencord,
+        source: "src/plugins/voiceMessages/index.tsx",
+        default_on: false,
+        settings: &[
+            Setting {
+                key: "noiseSuppression",
+                label: "Noise Suppression",
+                description: "Noise Suppression",
+                kind: Kind::Switch { default: true },
+            },
+            Setting {
+                key: "echoCancellation",
+                label: "Echo Cancellation",
+                description: "Echo Cancellation",
+                kind: Kind::Switch { default: true },
+            },
+        ],
+    },
+    Def {
         id: "VoiceStats",
         name: "VoiceStats",
         description: "Shows how long you've spent in voice with each user in their profile.",

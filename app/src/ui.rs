@@ -11657,6 +11657,8 @@ impl Render for Root {
             .children(self.server_info_layer(cx))
             // Not in the pinned client: MessageTags' tag dialog (`plugin_hooks/message_tags.rs`).
             .children(self.message_tags_dialog(window, cx))
+            // Not in the pinned client: VoiceMessages' dialog (`plugin_hooks/voice_messages.rs`).
+            .children(self.voice_messages_dialog(cx))
             // Not in the pinned client: ZipPreview's file dialog (`plugin_hooks/zip_preview.rs`).
             .children(self.zip_preview_dialog(window, cx))
             .children(self.not_friend_modal(cx))

@@ -152,6 +152,16 @@ impl Recorder {
         Ok(recorder)
     }
 
+    /// The same with echo cancellation and noise cancellation as given instead of Voice & Video's.
+    pub fn start_microphone_with(echo: bool, noise: bool) -> Result<Self, &'static str> {
+        let recorder = Self::start_source(Microphone::open_with(echo, noise)?)?;
+        info!(
+            echo,
+            noise, "voice message recording started on the microphone"
+        );
+        Ok(recorder)
+    }
+
     /// Records from any frame source on its own thread. The microphone and the tests' scripted source both come
     /// through here, so what a real recording encodes is what the tests encode.
     fn start_source<S: FrameSource + Send + 'static>(mut source: S) -> Result<Self, &'static str> {

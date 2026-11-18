@@ -13,6 +13,9 @@ pub(crate) struct Microphone {
     ring: rtrb::Consumer<Frame>,
     gate: Arc<Gate>,
     processor: Processor,
+    /// Processing of its own instead of Voice & Video's (a recording that asks for its echo cancellation and noise
+    /// cancellation, as `startLocalAudioRecording` takes them).
+    own: Option<crate::process::ProcessingPrefs>,
 }
 
 impl Microphone {
@@ -28,13 +31,33 @@ impl Microphone {
             ring,
             gate,
             processor,
+            own: None,
         })
+    }
+
+    /// The microphone with Voice & Video's processing except echo cancellation and noise cancellation, which are as
+    /// given (noise cancellation is the official Krisp, DeepFilterNet here).
+    pub fn open_with(echo: bool, noise: bool) -> Result<Self, &'static str> {
+        let mut microphone = Self::open()?;
+        let own = crate::process::ProcessingPrefs::new();
+        let global = &prefs().processing;
+        own.set_room_echo(global.room_echo());
+        own.set_automatic_gain_control(global.automatic_gain_control());
+        own.set_echo_cancellation(echo);
+        own.set_suppression(if noise {
+            crate::process::Suppression::DeepFilterNet
+        } else {
+            crate::process::Suppression::None
+        });
+        microphone.own = Some(own);
+        Ok(microphone)
     }
 
     /// The next processed frame, if the microphone has delivered one.
     pub fn next(&mut self) -> Option<Frame> {
         let mut frame = self.ring.pop().ok()?;
-        self.processor.capture(&mut frame, &prefs().processing);
+        let processing = self.own.as_ref().unwrap_or(&prefs().processing);
+        self.processor.capture(&mut frame, processing);
         Some(frame)
     }
 

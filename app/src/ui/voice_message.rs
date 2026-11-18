@@ -140,7 +140,7 @@ impl Hub {
         }
     }
 
-    fn preload(&mut self, key: &str, clip: Arc<Clip>) {
+    pub(super) fn preload(&mut self, key: &str, clip: Arc<Clip>) {
         self.requested.insert(key.to_owned());
         if let Ok(mut loads) = self.loads.lock() {
             loads.insert(key.to_owned(), Load::Ready(clip));

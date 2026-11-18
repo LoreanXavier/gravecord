@@ -42,6 +42,8 @@ pub(super) enum Plus {
     RecordVoice,
     /// "Share a Clip": opens the Clips Gallery to pick a clip to share.
     ShareClip,
+    /// Not in the pinned client: VoiceMessages' "Send Voice Message" (`plugin_hooks/voice_messages.rs`).
+    PluginVoiceMessage,
 }
 
 pub(super) struct PollForm {
@@ -124,6 +126,7 @@ impl Root {
                 }
             }
             Plus::ShareClip => self.clips_open_gallery(super::clips::Facet::All, cx),
+            Plus::PluginVoiceMessage => self.voice_messages_open(cx),
             Plus::Schedule => {}
         }
         cx.notify();
@@ -408,7 +411,19 @@ impl Root {
                         )
                     },
                 ),
-            );
+            )
+            // Not in the pinned client: VoiceMessages' row, last (`plugin_hooks/voice_messages.rs`).
+            .children(self.voice_messages_plus_label().map(|label| {
+                row(
+                    "plus-plugin-voice-message",
+                    "cp_mic",
+                    label,
+                    Some(Plus::PluginVoiceMessage),
+                    false,
+                    false,
+                    cx,
+                )
+            }));
         let layer = div()
             .id("composer-plus-layer")
             .absolute()
