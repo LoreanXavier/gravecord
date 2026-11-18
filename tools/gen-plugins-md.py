@@ -147,6 +147,7 @@ assert len(idle) == idle_entries, f'IDLE_SETTINGS: read {len(idle)} of {idle_ent
 
 # How each ported plugin is built here, and its proof.
 PORTED = {
+    'SilentMessageToggle': "plugin_hooks/silent_message_toggle.rs: the chat bar's bell after PreviewMessage's eye (1.2 times larger, crossed out in the danger colour while off, Enable/Disable Silent Message); while on, a message that goes out gets the @silent prefix (the base's silentPrefix send turns it into SUPPRESS_NOTIFICATIONS) and a voice message the flag itself; autoDisable turns it off after one; persistState none resets it on a channel change, restarts keeps it in storage plugin-silent-message-toggle.",
     'MoreCommands': "plugin_hooks/more_commands.rs: its 50 commands in the Built-In section while it is on: system info, uptime, time, choose, dice, coin, ask, random cat/dog/neko/anime-boys pictures (their public APIs), random number, transform (case, repeat, reverse, NFC/NFD/NFKC/NFKD), word count, countdown, ping, echo, lenny, mock, slap, freaky (addFreakyEnding), morse, uwuify, gifroulette (a favourite GIF, refused in the Equicord and Vencord servers), friendcloud (the affinities' avatars drawn into affinities-cloud.png off the UI thread, waiting in the message box) and 22 kaomoji; Clyde answers where the plugin's sendBotMessage does, the Commands API's error text from Equicord otherwise; uwuEveryMessage uwuifies what you send and edit. GAP: /imgtogif always answers No Image specified! (slash commands take no file option here yet), uwuEverything is idle, /systeminfo's network reads 4g and /gettime writes the en-US form.",
     'MuteChannelMentions': "plugin_hooks/mute_channel_mentions.rs + dc-state ReadStates::hidden: the picked channels' mention badges are filtered wherever the app reads a channel's mentions (channel rows, server icons, overlay, keyboard), none at all or with onlyEveryone only your direct mentions since the last read; channel and thread menus get the Hide mention badge check after Mark As Read. Nothing is sent.",
     'AccountPanelServerProfile': "plugin_hooks/account_panel.rs: a right click on the account panel opens View Server Profile (your profile popout in the open server, disabled outside one) and the Prioritize Server Profile check; checked, a left click shows the server profile and the row reads View Account Profile.",
@@ -230,6 +231,7 @@ PORTED = {
                      'so the original\'s 200% cap on the sync has nothing to cap.',
 }
 TESTS = {
+    'SilentMessageToggle': '`the_prefix_and_settings_follow_the_original`, `auto_disable_takes_the_toggle_once`; frames pending (live runs held)',
     'MoreCommands': '`the_text_commands_follow_the_original`, `uwuify_replaces_words_and_keeps_links`, `transform_applies_case_form_reversal_and_repeats`, `the_cloud_follows_the_original_numbers`, `every_command_has_a_distinct_name`; frames pending (live runs held)',
     'MuteChannelMentions': '`ids_parse_as_the_original_splits_them`, dc-state `hidden_channels_show_nothing_or_only_direct_mentions_since_the_ack`; frame mcm-menu; plugins-off channel-menu, chat',
     'AccountPanelServerProfile': '`the_menu_names_the_other_popout_and_shows_the_check`; frames apsp-menu/apsp-profile; plugins-off account-panel',
@@ -397,7 +399,6 @@ PLANNED = {
     'SearchFix': 'its search request fix.',
     'SedEnhanced': "the pinned client's own sed rule first: a message `s/a/b` edits your last message (the `searchReplace` rule of the send path, module 857069), which the port does not have yet (GAP: main app); SedEnhanced only widens that rule's syntax and regex.",
     'ShowHiddenThings': "the pinned client's own pieces first: the chat timeout icon by a timed-out member's name (showCommunicationDisabledStyles) and the invites-paused tooltip on the server rail are not drawn by the port yet (GAPs in the official UI), so showTimeouts and showInvitesPaused would unlock nothing; showModView lifts the user menu's Open in Mod View permission check, which the port does not apply yet either (it shows the row in every server).",
-    'SilentMessageToggle': "the pinned client's `@silent` prefix first: its send path strips it and sets SUPPRESS_NOTIFICATIONS (the `silentPrefix` rule and the sends of modules 857069 and 92961); the app sends the text as typed, so the plugin's prefix would reach people as words.",
     'SpotifyCrack': 'listen along without Premium and no Spotify pause on voice.',
     'SteamStatusSync': 'status sync with the Steam client.',
     'Streaks': 'DM streak counts (its service login in the data store is not copied).',

@@ -1164,6 +1164,8 @@ impl Root {
             duration_secs: duration,
             waveform: waveform.clone(),
             reply: None,
+            // Not in the pinned client: SilentMessageToggle (`plugin_hooks/silent_message_toggle.rs`).
+            extra_flags: self.silent_message_take_flag(),
         });
         format!(
             "voice: send requested in {channel}, {duration:.3} s, waveform {} bytes ({waveform})",
@@ -1814,6 +1816,8 @@ impl Root {
             duration_secs: recording.duration_secs,
             waveform: recording.waveform,
             reply,
+            // Not in the pinned client: SilentMessageToggle (`plugin_hooks/silent_message_toggle.rs`).
+            extra_flags: self.silent_message_take_flag(),
         });
         cx.notify();
         format!("voice: send requested in {channel}")

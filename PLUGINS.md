@@ -12,7 +12,7 @@ every setting changed), and with every plugin off, and fails on one differing pi
 The list is the plugins enabled in the owner's Equicord backup of 2026-09-21 (156). Sources were read in the local
 Equicord checkout of 2026-11-14 (`src/plugins` is Vencord's, `src/equicordplugins` Equicord's).
 
-Totals: 63 ported, 9 native, 39 planned, 45 not applicable.
+Totals: 64 ported, 9 native, 38 planned, 45 not applicable.
 
 Status: **ported** works and has its proof; **native** is what gravecord already does without a plugin;
 **planned** is not built yet (an import keeps its settings for when it is); **not applicable** has nothing to
@@ -137,7 +137,7 @@ port in a native client, or was removed upstream.
 | Settings | not applicable | plugins/_core/settings.tsx | Adds Settings UI and debug info | its settings UI is the Gravecord settings group itself; `settingsLocation` not ported (the group sits before Developer). |  |
 | ShowConnections | ported | plugins/showConnections/index.tsx | Show connected accounts in user popouts and the DM sidebar | plugin_hooks/show_connections.rs: the connected accounts as platform icons (size, spacing) with their names as tooltips in the profile popout and the DM sidebar, and with showOnModal in place of the full profile's connection cards; a click opens the page or copies the name. | `spacing_and_settings_read_as_the_original`; frame sc-on; plugins-off profile-popout, voice-profile |
 | ShowHiddenThings | planned | plugins/showHiddenThings/index.ts | Displays various hidden & moderator-only things regardless of permissions. | the pinned client's own pieces first: the chat timeout icon by a timed-out member's name (showCommunicationDisabledStyles) and the invites-paused tooltip on the server rail are not drawn by the port yet (GAPs in the official UI), so showTimeouts and showInvitesPaused would unlock nothing; showModView lifts the user menu's Open in Mod View permission check, which the port does not apply yet either (it shows the row in every server). |  |
-| SilentMessageToggle | planned | plugins/silentMessageToggle/index.tsx | Adds a button to the chat bar to toggle sending a silent message. | the pinned client's `@silent` prefix first: its send path strips it and sets SUPPRESS_NOTIFICATIONS (the `silentPrefix` rule and the sends of modules 857069 and 92961); the app sends the text as typed, so the plugin's prefix would reach people as words. |  |
+| SilentMessageToggle | ported | plugins/silentMessageToggle/index.tsx | Adds a button to the chat bar to toggle sending a silent message. | plugin_hooks/silent_message_toggle.rs: the chat bar's bell after PreviewMessage's eye (1.2 times larger, crossed out in the danger colour while off, Enable/Disable Silent Message); while on, a message that goes out gets the @silent prefix (the base's silentPrefix send turns it into SUPPRESS_NOTIFICATIONS) and a voice message the flag itself; autoDisable turns it off after one; persistState none resets it on a channel change, restarts keeps it in storage plugin-silent-message-toggle. | `the_prefix_and_settings_follow_the_original`, `auto_disable_takes_the_toggle_once`; frames pending (live runs held) |
 | SpotifyCrack | planned | plugins/spotifyCrack/index.ts | Free listen along, no auto-pausing in voice chat, and allows activity to continue playing when idling | listen along without Premium and no Spotify pause on voice. |  |
 | SpotifyShareCommands | ported | plugins/spotifyShareCommands/index.ts | Share your current Spotify track, album or artist via slash command (/track, /album, /artist) | plugin_hooks/plugin_commands.rs: /track, /album and /artist among the built-in commands send open.spotify.com links of what your Spotify plays (album and first artist kept from the player state), after the optional message; without music Clyde says "You're not listening to any music.". GAP: a local file reads as no music. | `answers_read_as_the_original_writes_them`; frames ssc-commands, ssc-none (Clyde: not listening); plugins-off slash-list |
 | SteamStatusSync | planned | equicordplugins/steamStatusSync/index.tsx | Sync your status to Steam! (Online, Away, Invisible, or Offline.) | status sync with the Steam client. |  |
@@ -324,6 +324,8 @@ Every setting of each original (`definePluginSettings`), its type and default th
 | ShowConnections | `iconSpacing` | SELECT | `Spacing.COZY` | ported |
 | ShowConnections | `showGithubOrgs` | BOOLEAN | `true` | nothing to act on yet: the original asks api.github.com for the organisations of a GitHub account; plugin code sends nothing, so only the accounts Discord lists show |
 | ShowConnections | `showOnModal` | BOOLEAN | `true` | ported |
+| SilentMessageToggle | `persistState` | SELECT | `"none"` | ported |
+| SilentMessageToggle | `autoDisable` | BOOLEAN | `true` | ported |
 | SuperReactionTweaks | `superReactByDefault` | BOOLEAN | `true` | ported |
 | SuperReactionTweaks | `unlimitedSuperReactionPlaying` | BOOLEAN | `false` | nothing to act on yet: it lifts the cap on super reaction effects playing at once, and the app plays no super reaction effects yet |
 | SuperReactionTweaks | `superReactionPlayingLimit` | SLIDER | `20` | nothing to act on yet: it caps the super reaction effects playing at once, and the app plays no super reaction effects yet |

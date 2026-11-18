@@ -308,6 +308,8 @@ pub enum Request {
         duration_secs: f64,
         waveform: String,
         reply: Option<(Option<u64>, u64, bool)>,
+        /// Flags added to the voice flag: SilentMessageToggle's SUPPRESS_NOTIFICATIONS (a plugin), else 0.
+        extra_flags: u64,
     },
     /// `PATCH /channels/{channel}/messages/{message}`; the answer comes back as `Update::Fetched` under
     /// [`EDIT_KEY`]`{channel}:{message}`.
@@ -1224,6 +1226,7 @@ async fn send_voice(
     duration_secs: f64,
     waveform: &str,
     reply: Option<(Option<u64>, u64, bool)>,
+    extra_flags: u64,
 ) -> Value {
     let request = json!({"files": [{
         "filename": VOICE_FILENAME,
@@ -1256,7 +1259,7 @@ async fn send_voice(
     entry["duration_secs"] = json!(duration_secs);
     entry["waveform"] = json!(waveform);
     let mut body = send_body(channel, "", reply);
-    body["flags"] = json!(dc_state::VOICE_MESSAGE_FLAG);
+    body["flags"] = json!(dc_state::VOICE_MESSAGE_FLAG | extra_flags);
     body["attachments"] = json!([entry]);
     match client
         .post(&format!("/channels/{channel}/messages"), &body)
@@ -1987,10 +1990,19 @@ pub async fn run(token: Token, updates: mpsc::UnboundedSender<Update>, requests:
                 duration_secs,
                 waveform,
                 reply,
+                extra_flags,
             } => {
                 tokio::spawn(async move {
-                    let body =
-                        send_voice(&client, channel, file, duration_secs, &waveform, reply).await;
+                    let body = send_voice(
+                        &client,
+                        channel,
+                        file,
+                        duration_secs,
+                        &waveform,
+                        reply,
+                        extra_flags,
+                    )
+                    .await;
                     let _ = updates.send(Update::Fetched { key, body });
                 });
             }

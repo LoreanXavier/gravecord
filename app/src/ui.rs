@@ -4159,6 +4159,9 @@ impl Root {
         if content.is_empty() && self.pending_files.is_empty() && staged.is_none() {
             return;
         }
+        // Not in the pinned client: SilentMessageToggle's pre-send listener, for a message that goes out
+        // (`plugin_hooks/silent_message_toggle.rs`).
+        let content = self.silent_message_presend(content);
         let ping = self.reply_ping;
         let reply = self
             .replying
@@ -9522,7 +9525,7 @@ impl Root {
                     }),
             )
             .child(motion::hover_probe(motion::composer::hover_key()));
-        let tool = |name: &'static str, cx: &mut Context<Self>| {
+        let tool_sized = |name: &'static str, size: f32, cx: &mut Context<Self>| {
             self.header_stop(div().id(name), name, cx)
                 .size(px(32.))
                 .flex_none()
@@ -9543,10 +9546,11 @@ impl Root {
                 .child(
                     svg()
                         .path(format!("icons/{name}.svg"))
-                        .size(px(20.))
+                        .size(px(size))
                         .flex_none(),
                 )
         };
+        let tool = |name: &'static str, cx: &mut Context<Self>| tool_sized(name, 20., cx);
         // GIF opens the expression picker on its tab, from the same place as the emoji button.
         let gif_button = tool("gif", cx).on_click(cx.listener(move |this, _, window, cx| {
             let composer = this.tip_anchors.borrow().get("composer-box").copied();
@@ -9566,6 +9570,45 @@ impl Root {
         // Not in the pinned client: PreviewMessage's eye, first in the bar (`plugin_hooks/preview_message.rs`).
         let preview_button = self.preview_message_shown(cx).then(|| {
             tool("clips_eye", cx).on_click(cx.listener(|this, _, _, cx| this.preview_message(cx)))
+        });
+        // Not in the pinned client: SilentMessageToggle's bell after it, drawn 1.2 times larger (`scale: 1.2`), crossed
+        // out in the danger colour while off (`plugin_hooks/silent_message_toggle.rs`).
+        let silent_button = self.silent_message_state().map(|silent| {
+            let button = tool_sized(
+                if silent {
+                    "plugin_silent"
+                } else {
+                    "plugin_silent_off"
+                },
+                24.,
+                cx,
+            )
+            .relative()
+            .when(!silent, |this| {
+                this.child(
+                    svg()
+                        .path("icons/plugin_silent_slash.svg")
+                        .absolute()
+                        .left(px(4.))
+                        .top(px(4.))
+                        .size(px(24.))
+                        .text_color(color("--status-danger")),
+                )
+            })
+            .on_click(cx.listener(|this, _, _, cx| this.silent_message_toggle(cx)));
+            self.with_tip(
+                "silent-message-toggle",
+                tooltip::Tip::text(
+                    if silent {
+                        "Disable Silent Message"
+                    } else {
+                        "Enable Silent Message"
+                    },
+                    tooltip::Side::Top,
+                ),
+                button,
+                cx,
+            )
         });
         let sticker_button =
             tool("sticker", cx).on_click(cx.listener(move |this, _, window, cx| {
@@ -9782,6 +9825,7 @@ impl Root {
                                         window.prevent_default();
                                     })
                                     .children(preview_button)
+                                    .children(silent_button)
                                     .when(!docked, |this| {
                                         this.child(gift_button)
                                             .child(gif_button)

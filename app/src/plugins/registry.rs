@@ -1773,6 +1773,38 @@ pub(crate) const DEFS: &[Def] = &[
         ],
     },
     Def {
+        id: "SilentMessageToggle",
+        name: "SilentMessageToggle",
+        description: "Adds a button to the chat bar to toggle sending a silent message.",
+        origin: Origin::Vencord,
+        source: "src/plugins/silentMessageToggle/index.tsx",
+        default_on: false,
+        settings: &[
+            Setting {
+                key: "persistState",
+                label: "Persist State",
+                description: "How to persist the silent message toggle state",
+                kind: Kind::Select {
+                    options: &[
+                        ("Don't persist (reset on channel change)", Lit::Str("none")),
+                        ("Persist between channels", Lit::Str("channels")),
+                        (
+                            "Persist between channels and restarts",
+                            Lit::Str("restarts"),
+                        ),
+                    ],
+                    default: 0,
+                },
+            },
+            Setting {
+                key: "autoDisable",
+                label: "Auto Disable",
+                description: "Automatically disable the silent message toggle again after sending one",
+                kind: Kind::Switch { default: true },
+            },
+        ],
+    },
+    Def {
         id: "SpotifyShareCommands",
         name: "SpotifyShareCommands",
         description: "Share your current Spotify track, album or artist via slash command (/track, /album, /artist)",

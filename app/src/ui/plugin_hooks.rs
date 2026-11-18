@@ -33,6 +33,7 @@ mod role_color_everywhere;
 mod server_info;
 mod server_list_indicators;
 mod show_connections;
+mod silent_message_toggle;
 mod super_reaction_tweaks;
 mod typing_indicator;
 mod typing_tweaks;
