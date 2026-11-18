@@ -245,6 +245,12 @@ pub(crate) const IDLE_SETTINGS: &[(&str, &str, &str)] = &[
         "the app does not show the pinned client's \"Potentially Dangerous Download\" dialog yet (module 432518, opened from module 889558), so there is no dialog to remove",
     ),
     (
+        "GameActivityToggle",
+        "location",
+        "the original only reads it while EquicordToolbox is on, which is not ported; the button stays next to \
+         Mute/Deafen as with the default",
+    ),
+    (
         "CallTimer",
         "watchLargeGuilds",
         "the original subscribes to every server's events for it (`GUILD_SUBSCRIPTIONS_FLUSH`); plugin code sends \
@@ -496,6 +502,35 @@ pub(crate) const DEFS: &[Def] = &[
             description: "Also load the original image in chat. Animated images then always play, and it may be slow.",
             kind: Kind::Switch { default: false },
         }],
+    },
+    Def {
+        id: "GameActivityToggle",
+        name: "GameActivityToggle",
+        description: "Adds a button next to the mic and deafen button to toggle game activity. Right click it to \
+                      toggle Spotify activity.",
+        origin: Origin::Vencord,
+        source: "src/plugins/gameActivityToggle/index.tsx",
+        default_on: false,
+        settings: &[
+            Setting {
+                key: "oldIcon",
+                label: "Old icon",
+                description: "Use the old icon style before Discord icon redesign",
+                kind: Kind::Switch { default: false },
+            },
+            Setting {
+                key: "location",
+                label: "Location",
+                description: "Where to show the game activity toggle button",
+                kind: Kind::Select {
+                    options: &[
+                        ("Next to Mute/Deafen", Lit::Str("PANEL")),
+                        ("Equicord Toolbox", Lit::Str("TOOLBOX")),
+                    ],
+                    default: 0,
+                },
+            },
+        ],
     },
     Def {
         id: "GifPaste",

@@ -1,6 +1,7 @@
 //! Where the built-in plugins (`crate::plugins`) act on the chat. Not part of the pinned client.
 
 mod call_timer;
+mod game_activity_toggle;
 mod member_count;
 mod message_clicks;
 mod message_peek;

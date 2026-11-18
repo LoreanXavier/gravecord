@@ -5447,6 +5447,10 @@ impl Root {
         let mic_muted = self.self_mute || self.self_deaf;
         let mic_chevron = chevron(mic_muted, audio_menu::Side::Input);
         let headphones_chevron = chevron(self.self_deaf, audio_menu::Side::Output);
+        // Not in the pinned client: GameActivityToggle's button before the microphone
+        // (`plugin_hooks/game_activity_toggle.rs`).
+        let game_toggle = self.game_activity_toggle(cx);
+        let extra = if game_toggle.is_some() { 40. } else { 0. };
         let row = div()
             .relative()
             .h(px(56.))
@@ -5461,7 +5465,7 @@ impl Root {
                     .id("panel-who-hover")
                     .absolute()
                     .left(px(7.))
-                    .right(px(166.))
+                    .right(px(166. + extra))
                     .top(px(6.))
                     .h(px(42.))
                     .rounded(px(4.))
@@ -5600,11 +5604,12 @@ impl Root {
                             }),
                     ),
             )
+            .children(game_toggle)
             .child(
                 div()
                     .id("mic-pair")
                     .group("mic-pair")
-                    .ml(px(12.))
+                    .ml(px(if extra > 0. { 8. } else { 12. }))
                     .flex_none()
                     .flex()
                     .items_center()

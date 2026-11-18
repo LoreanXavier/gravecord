@@ -12,7 +12,7 @@ every setting changed), and with every plugin off, and fails on one differing pi
 The list is the plugins enabled in the owner's Equicord backup of 2026-09-21 (156). Sources were read in the local
 Equicord checkout of 2026-11-14 (`src/plugins` is Vencord's, `src/equicordplugins` Equicord's).
 
-Totals: 29 ported, 5 native, 77 planned, 45 not applicable.
+Totals: 30 ported, 5 native, 76 planned, 45 not applicable.
 
 Status: **ported** works and has its proof; **native** is what gravecord already does without a plugin;
 **planned** is not built yet (an import keeps its settings for when it is); **not applicable** has nothing to
@@ -75,7 +75,7 @@ port in a native client, or was removed upstream.
 | FriendsSince | not applicable | (not in the 2026-11-14 checkout) |  | removed from Equicord in 36c7a837: "now a stock Discord feature"; gravecord shows Friends Since in profiles. |  |
 | FullSearchContext | planned | plugins/fullSearchContext/index.tsx | Makes the message context menu in message search results have all options you'd expect | the full message menu on search results. |  |
 | FullVCPFP | planned | equicordplugins/fullVcPfp/index.tsx | Makes avatars take up the entire vc tile | avatars filling voice call tiles. |  |
-| GameActivityToggle | planned | plugins/gameActivityToggle/index.tsx | Adds a button next to the mic and deafen button to toggle game activity. Right click it to toggle Spotify activity. | a panel button that turns game activity on and off. |  |
+| GameActivityToggle | ported | plugins/gameActivityToggle/index.tsx | Adds a button next to the mic and deafen button to toggle game activity. Right click it to toggle Spotify activity. | plugin_hooks/game_activity_toggle.rs: a panel button before the microphone that turns Share my activity on and off (the account setting, so the presence changes at once), red with the struck-through gamepad while off; oldIcon draws the old line. Not 1:1: the right-click Share Spotify Activity menu is missing, because the app has no Spotify connection show_activity request yet. | `the_button_reads_its_settings_and_names_the_next_state`; frames gat-on/gat-off/gat-old; plugins-off chat (user panel) |
 | GifMaker | planned | equicordplugins/gifMaker/index.tsx | Create and caption GIFs from any media in chat or the GIF picker. | a GIF encoder and its editor. |  |
 | GifPaste | ported | plugins/gifPaste/index.ts | Makes picking a gif in the gif picker insert a link into the chatbox instead of instantly sending it | gifs.rs: picking a GIF inserts its link and a space in the composer and closes the picker. | `switch_only_plugins_follow_their_switch_and_the_master`; frames gifpaste-off/on; plugins-off gif-picker |
 | GlobalBadges | planned | equicordplugins/globalBadges/index.tsx | Adds global badges from other client mods | its third-party badge service. |  |
@@ -199,8 +199,10 @@ Every setting of each original (`definePluginSettings`), its type and default th
 | CallTimer | `showRoleColor` | BOOLEAN | `false` | ported |
 | CallTimer | `trackSelf` | BOOLEAN | `false` | ported |
 | CallTimer | `showSeconds` | BOOLEAN | `false` | ported |
-| CallTimer | `watchLargeGuilds` | BOOLEAN | `false` | ported |
+| CallTimer | `watchLargeGuilds` | BOOLEAN | `false` | nothing to act on yet: the original subscribes to every server's events for it (`GUILD_SUBSCRIPTIONS_FLUSH`); plugin code sends nothing, so times come from the voice states the app already receives |
 | FixImagesQuality | `originalImagesInChat` | BOOLEAN | `false` | ported |
+| GameActivityToggle | `oldIcon` | BOOLEAN | `false` | ported |
+| GameActivityToggle | `location` | SELECT | `"PANEL"` | nothing to act on yet: the original only reads it while EquicordToolbox is on, which is not ported; the button stays next to Mute/Deafen as with the default |
 | MemberCount | `toolTip` | BOOLEAN | `true` | ported |
 | MemberCount | `memberList` | BOOLEAN | `true` | ported |
 | MemberCount | `voiceActivity` | BOOLEAN | `true` | ported |
@@ -243,7 +245,7 @@ Every setting of each original (`definePluginSettings`), its type and default th
 | ServerListIndicators | `mode` | SELECT | `IndicatorType.FRIEND` | ported |
 | ShowConnections | `iconSize` | NUMBER | `32` | ported |
 | ShowConnections | `iconSpacing` | SELECT | `Spacing.COZY` | ported |
-| ShowConnections | `showGithubOrgs` | BOOLEAN | `true` | ported |
+| ShowConnections | `showGithubOrgs` | BOOLEAN | `true` | nothing to act on yet: the original asks api.github.com for the organisations of a GitHub account; plugin code sends nothing, so only the accounts Discord lists show |
 | ShowConnections | `showOnModal` | BOOLEAN | `true` | ported |
 | TypingIndicator | `includeCurrentChannel` | BOOLEAN | `true` | ported |
 | TypingIndicator | `includeMutedChannels` | BOOLEAN | `false` | ported |

@@ -122,11 +122,17 @@ ours = {}
 for m in re.finditer(r'\n    Def \{\n        id: "([^"]+)"', registry):
     block = balanced(registry, m.start() + len('\n    Def '))
     ours[m.group(1)] = re.findall(r'key: "([^"]+)"', block)
-idle = {(a, b): why.replace('\\"', '"') for a, b, why in re.findall(
-    r'\(\s*"([^"]+)",\s*"([^"]+)",\s*"((?:[^"\\]|\\.)*)",\s*\)', registry.split('IDLE_SETTINGS')[1].split('];')[0])}
+idle_src = registry.split('IDLE_SETTINGS')[1].split('];')[0]
+# A reason may go on over lines with Rust's backslash-newline, which also drops the next line's indent.
+idle = {(a, b): re.sub(r'\\\n\s*', '', why).replace('\\"', '"') for a, b, why in re.findall(
+    r'\(\s*"([^"]+)",\s*"([^"]+)",\s*"((?:[^"\\]|\\.)*)",\s*\)', idle_src, re.S)}
+# Every entry must be read, or its reason would drop out of PLUGINS.md without a word.
+idle_entries = idle_src.count('\n    (')
+assert len(idle) == idle_entries, f'IDLE_SETTINGS: read {len(idle)} of {idle_entries} entries'
 
 # How each ported plugin is built here, and its proof.
 PORTED = {
+    'GameActivityToggle': "plugin_hooks/game_activity_toggle.rs: a panel button before the microphone that turns Share my activity on and off (the account setting, so the presence changes at once), red with the struck-through gamepad while off; oldIcon draws the old line. Not 1:1: the right-click Share Spotify Activity menu is missing, because the app has no Spotify connection show_activity request yet.",
     'CancelFriendRequest': "profile_menu.rs, profile_other.rs, dm.rs: for an outgoing request the profile's friend button turns red and cancels it, the DM's text button reads 'Cancel Outgoing Friend Request' (critical), and the profile More menu ends with that row; each removes the relationship as the friends list's Cancel does.",
     'ServerListIndicators': "plugin_hooks/server_list_indicators.rs: under the Home button an item with the friends online and/or the servers (mode), and the same as its tooltip. Pending join requests of servers not joined are not counted yet (the app keeps no UserGuildJoinRequestStore id list).",
     'ShowConnections': "plugin_hooks/show_connections.rs: the connected accounts as platform icons (size, spacing) with their names as tooltips in the profile popout and the DM sidebar, and with showOnModal in place of the full profile's connection cards; a click opens the page or copies the name.",
@@ -176,6 +182,7 @@ PORTED = {
                      'so the original\'s 200% cap on the sync has nothing to cap.',
 }
 TESTS = {
+    'GameActivityToggle': '`the_button_reads_its_settings_and_names_the_next_state`; frames gat-on/gat-off/gat-old; plugins-off chat (user panel)',
     'CancelFriendRequest': 'frames cfr-on/cfr-off (an outgoing request set locally); plugins-off voice-profile, profile-popout',
     'ServerListIndicators': '`the_item_says_what_its_mode_counts`; frame sli-on; plugins-off chat (rail)',
     'ShowConnections': '`spacing_and_settings_read_as_the_original`; frame sc-on; plugins-off profile-popout, voice-profile',
@@ -275,7 +282,6 @@ PLANNED = {
     'FriendInvites': 'slash commands for friend invite links.',
     'FullSearchContext': 'the full message menu on search results.',
     'FullVCPFP': 'avatars filling voice call tiles.',
-    'GameActivityToggle': 'a panel button that turns game activity on and off.',
     'GifMaker': 'a GIF encoder and its editor.',
     'GlobalBadges': 'its third-party badge service.',
     'GreetStickerPicker': 'a sticker choice for the "Wave to say hi!" button.',
