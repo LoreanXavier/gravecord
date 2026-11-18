@@ -9525,6 +9525,10 @@ impl Root {
         // The gift button opens the gift purchase modal (`openGiftModal`, module 194509, location "gift-button").
         let gift_button = tool("gift", cx)
             .on_click(cx.listener(move |this, _, _, cx| this.open_purchase(true, cx)));
+        // Not in the pinned client: PreviewMessage's eye, first in the bar (`plugin_hooks/preview_message.rs`).
+        let preview_button = self.preview_message_shown(cx).then(|| {
+            tool("clips_eye", cx).on_click(cx.listener(|this, _, _, cx| this.preview_message(cx)))
+        });
         let sticker_button =
             tool("sticker", cx).on_click(cx.listener(move |this, _, window, cx| {
                 let composer = this.tip_anchors.borrow().get("composer-box").copied();
@@ -9739,6 +9743,7 @@ impl Root {
                                     .on_mouse_down(MouseButton::Left, |_, window, _| {
                                         window.prevent_default();
                                     })
+                                    .children(preview_button)
                                     .when(!docked, |this| {
                                         this.child(gift_button)
                                             .child(gif_button)

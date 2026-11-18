@@ -744,6 +744,17 @@ impl Root {
         }
     }
 
+    /// Not in the pinned client: a local message only you see, kept as Clyde's notices are (PreviewMessage,
+    /// `plugin_hooks/preview_message.rs`).
+    pub(in crate::ui) fn show_local_only(&mut self, message: Message) {
+        self.send_ui.remember_notice(message.clone());
+        self.insert_local(message);
+        self.rebuild_rows();
+        if self.list.is_scrolled_to_end() != Some(false) {
+            self.list.scroll_to_end();
+        }
+    }
+
     /// `sendBotMessage`: a private message from Clyde, kept here only.
     pub(super) fn clyde_says(&mut self, channel: Id, text: &str, name: &str) {
         let now = chrono::Utc::now();

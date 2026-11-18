@@ -1394,6 +1394,15 @@ pub(crate) const DEFS: &[Def] = &[
         ],
     },
     Def {
+        id: "PreviewMessage",
+        name: "PreviewMessage",
+        description: "Lets you preview your message before sending it.",
+        origin: Origin::Vencord,
+        source: "src/plugins/previewMessage/index.tsx",
+        default_on: false,
+        settings: &[],
+    },
+    Def {
         id: "QuickMention",
         name: "QuickMention",
         description: "Adds a quick mention button to the message actions bar.",

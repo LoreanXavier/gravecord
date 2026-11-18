@@ -22,6 +22,7 @@ mod new_guild_settings;
 mod open_in_app;
 mod pin_dms;
 mod platform_indicators;
+mod preview_message;
 mod plugin_commands;
 mod read_all;
 mod role_color_everywhere;
@@ -42,6 +43,7 @@ pub(in crate::ui) use download_all::{DOWNLOAD_ALL, download_all};
 
 pub(super) use message_clicks::follow as follow_message_clicks;
 pub(super) use message_peek::Peek;
+pub(in crate::ui) use preview_message::File as PreviewFile;
 pub(in crate::ui) use pin_dms::{
     Category as PinCategory, DEFAULT_COLOR as PIN_DEFAULT_COLOR, PinCategoryDraft,
 };
