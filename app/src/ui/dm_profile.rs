@@ -19,6 +19,14 @@ use gpui::{
 };
 use serde_json::Value;
 
+thread_local! {
+    /// The people whose DM profile has been drawn: `oD`'s `c`, which keeps it up after a later read fails.
+    static SHOWN_SIDEBARS: std::cell::RefCell<std::collections::HashSet<Id>> = Default::default();
+}
+
+/// `lineClamp` of module 501925 (6 unless given), as the classic sidebar draws the bio.
+const CLASSIC_BIO_LINES: usize = 6;
+
 /// `rP` of module 289287: the redesigned sidebar (variation 1).
 pub(super) const SIDEBAR_REDESIGN: &str = "2026-06-user-profile-sidebar-redesign";
 /// `r2` of module 289287: variation 1 hides "View Full Profile" in the redesigned footer.
@@ -407,6 +415,55 @@ impl Root {
                 }
             })
         }))
+    }
+
+    /// The bio clamped to `lines` lines, the last ending in an ellipsis when more follows (`-webkit-line-clamp` of
+    /// `descriptionClamp_BcddaK` and of the `lineClamp` Text of module 501925). The clamp counts the lines of every
+    /// paragraph, so the paragraphs are one text here, a line break between them. `cut` says whether lines were left
+    /// out.
+    pub(super) fn bio_clamped(
+        &self,
+        bio: &str,
+        text: Hsla,
+        lines: usize,
+        cut: std::rc::Rc<std::cell::Cell<bool>>,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let blocks = dc_markdown::parse(bio);
+        let mut pieces: Vec<crate::inline::Piece> = Vec::new();
+        let mut links = Vec::new();
+        for (at, block) in blocks.iter().enumerate() {
+            let spans = super::block_spans(block).to_vec();
+            let block_pieces: Vec<crate::inline::Piece> = spans
+                .iter()
+                .map(|span| self.piece(span, text, 14., 400., 18.))
+                .collect();
+            if at > 0
+                && let Some(first) = block_pieces.iter().find(|piece| piece.image.is_none())
+            {
+                let mut gap = first.clone();
+                gap.text = "\n".to_owned();
+                gap.boxed = None;
+                gap.hover = None;
+                gap.hover_underline = false;
+                gap.underline = false;
+                gap.strike = false;
+                gap.gradient = None;
+                pieces.push(gap);
+                links.push(None);
+            }
+            links.extend(super::link_runs(&spans));
+            pieces.extend(block_pieces);
+        }
+        let root = cx.weak_entity();
+        crate::inline::inline(pieces, px(18.))
+            .line_clamp(lines, cut)
+            .on_piece_click(move |piece, _, cx| {
+                if let Some(Some((url, label))) = links.get(piece).cloned() {
+                    let _ = root.update(cx, |this, cx| this.follow_link(&url, &label, cx));
+                }
+            })
+            .into_any_element()
     }
 
     /// `avatars_NbMTpy` at size 16: up to three mutual friends, each overlapping the next by 3px (module 791556).
@@ -896,6 +953,9 @@ impl Root {
     /// Asks for the game data, icons and wishlist a profile's cards need (module 312294's `x`, the wishlist read of
     /// `fw`), each once.
     pub(super) fn request_profile_cards(&mut self, user: Id) {
+        // The games the request notices and the Game Friend section name (`friend_request_notice.rs`).
+        self.request_friend_notice_apps(user);
+        self.request_profile_commands(user);
         let Some(body) = self.fetched.get(&format!("profile:{user}")).cloned() else {
             return;
         };
@@ -1364,10 +1424,15 @@ impl Root {
             );
         }
         let redesign = self.sidebar_redesign();
-        // `oD` draws nothing in the redesign until the profile has loaded (no skeleton, no jump).
+        // `oD` draws nothing in the redesign until the profile has loaded (no skeleton, no jump); once drawn it stays
+        // (`c`), so a later failed read shows its warning in place (module 559506).
         let loaded = self.fetched.contains_key(&format!("profile:{}", user.id));
-        if redesign && !loaded {
+        let shown = SHOWN_SIDEBARS.with(|set| set.borrow().contains(&user.id));
+        if redesign && !loaded && !shown {
             return None;
+        }
+        if !shown {
+            SHOWN_SIDEBARS.with(|set| set.borrow_mut().insert(user.id));
         }
         self.request_profile_cards(user.id);
         if redesign {
@@ -1402,9 +1467,17 @@ impl Root {
             .flatten();
         let private =
             is_private.then(|| super::profile_board::private_notice(user.display_name(), palette));
+        // The redesign draws module 442228 (three lines and View Full Bio); the classic sidebar module 501925's
+        // `lineClamp` of six lines.
+        let redesign = self.sidebar_redesign();
         let bio = bio.map(|bio| {
-            self.bio(&bio, palette.token("--text-strong").into(), cx)
-                .into_any_element()
+            let strong = palette.token("--text-strong").into();
+            if redesign {
+                self.clamped_bio(user_id, &bio, strong, palette, cx)
+            } else {
+                let cut = std::rc::Rc::new(std::cell::Cell::new(false));
+                self.bio_clamped(&bio, strong, CLASSIC_BIO_LINES, cut, cx)
+            }
         });
         // `rK.A` heading `text-strong` over `rq.A` (module 743987) in `body-sm/normal`.
         let member_since = div()
@@ -1433,9 +1506,14 @@ impl Root {
                     .child(member_since(user_id)),
             )
             .into_any_element();
+        let warning = self.profile_fetch_warning(user_id);
         if non_user_bot {
             return SidebarParts {
+                warning,
                 names,
+                requests: Vec::new(),
+                game_friends: None,
+                commands: None,
                 mutuals,
                 private,
                 bio,
@@ -1464,8 +1542,15 @@ impl Root {
             cx,
         );
         let wishlist = self.wishlist_breadcrumb("dm-profile", user_id, palette, window, cx);
+        let requests = self.friend_request_notices(user, palette, cx);
+        let game_friends = self.game_friends_section(user_id, palette);
+        let commands = self.profile_commands_section(user_id, palette, cx);
         SidebarParts {
+            warning,
             names,
+            requests,
+            game_friends,
+            commands,
             mutuals,
             private,
             bio,
@@ -1541,14 +1626,18 @@ impl Root {
             .gap(px(8.))
             .children(self.sidebar_banner_buttons(user, cx));
         let effect = self.sidebar_effect(window, cx, user_id, 300.);
-        let has_cards =
-            parts.games.is_some() || !parts.activity.is_empty() || parts.wishlist.is_some();
+        let has_cards = parts.games.is_some()
+            || !parts.activity.is_empty()
+            || parts.commands.is_some()
+            || parts.game_friends.is_some()
+            || parts.wishlist.is_some();
         // `body_A7qlid`: 16px in from each side, 20px between sections in the redesign.
         let body = div()
             .mx(px(16.))
             .flex()
             .flex_col()
             .gap(px(20.))
+            .children(parts.warning)
             .child(
                 div()
                     .flex()
@@ -1557,6 +1646,7 @@ impl Root {
                     .child(parts.names)
                     .children(parts.mutuals),
             )
+            .children(parts.requests)
             .children(parts.private)
             .children(parts.bio)
             .child(parts.member_since)
@@ -1570,6 +1660,8 @@ impl Root {
                         .gap(px(8.))
                         .children(parts.games)
                         .children(parts.activity)
+                        .children(parts.commands)
+                        .children(parts.game_friends)
                         .children(parts.wishlist),
                 )
             });
@@ -1771,6 +1863,8 @@ impl Root {
                     )
                     .child(bio)
             }))
+            .children(parts.commands)
+            .children(parts.game_friends)
             .child(parts.member_since)
             .children(parts.voice_time)
             .children(parts.connections);
@@ -1779,7 +1873,9 @@ impl Root {
             .flex()
             .flex_col()
             .gap(px(12.))
+            .children(parts.warning)
             .child(parts.names)
+            .children(parts.requests)
             .children(parts.private)
             .children(parts.activity)
             .child(overlay_box);
@@ -1881,7 +1977,15 @@ fn card_end(palette: &Palette) -> Rgba {
 }
 
 struct SidebarParts {
+    /// "Unable to load parts of profile" (module 559506, `aF` at the top of `oE`).
+    warning: Option<AnyElement>,
     names: AnyElement,
+    /// The friend request notices of module 477534 under the names (`friend_request_notice.rs`).
+    requests: Vec<AnyElement>,
+    /// The Game Friend section of module 361311.
+    game_friends: Option<AnyElement>,
+    /// A bot's popular commands (module 612770, `profile_commands.rs`).
+    commands: Option<AnyElement>,
     mutuals: Option<AnyElement>,
     /// i?.private: the notice of module 501193 (289287), under the names.
     private: Option<AnyElement>,
@@ -1948,6 +2052,36 @@ impl Root {
             self.fetched.insert(key, body);
             cx.notify();
             return "profile demo: bio set".to_owned();
+        }
+        // `commands`: the profile answer names popular commands of an application (module 612770) and the DM's
+        // command index has them, as a bot's DM would.
+        if variant == "commands" {
+            let key = format!("profile:{user}");
+            let mut body = self
+                .fetched
+                .get(&key)
+                .cloned()
+                .unwrap_or_else(|| serde_json::json!({}));
+            body["application"] = serde_json::json!({
+                "id": user.to_string(),
+                "popular_application_command_ids": ["1300000000000000101", "1300000000000000102", "1300000000000000103"],
+            });
+            self.fetched.insert(key, body);
+            if let Some(channel) = self.channel {
+                self.fetched.insert(
+                    format!("command-index:channel:{channel}"),
+                    serde_json::json!({
+                        "applications": [{"id": user.to_string(), "name": "Fixture App"}],
+                        "application_commands": [
+                            {"id": "1300000000000000101", "application_id": user.to_string(), "name": "play", "description": "Plays a song", "type": 1, "version": "1"},
+                            {"id": "1300000000000000102", "application_id": user.to_string(), "name": "settings", "description": "", "type": 1, "version": "1", "options": [{"type": 1, "name": "show", "description": "x"}]},
+                            {"id": "1300000000000000103", "application_id": user.to_string(), "name": "queue", "description": "Shows the queue", "type": 1, "version": "1"}
+                        ]
+                    }),
+                );
+            }
+            cx.notify();
+            return "profile demo: commands set".to_owned();
         }
         if variant == "failed" {
             let key = format!("profile:{user}");

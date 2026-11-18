@@ -112,6 +112,8 @@ pub(super) struct Open {
     widget_confirm_remove: Option<usize>,
     panel_collapsed: bool,
     upsell_closed: bool,
+    /// The Nitro dialog of a picker's footer upsell (module 393027 from 571827) is up for this kind.
+    item_upsell: Option<Kind>,
     /// The per-server profile upsell (module 63473) is up (`servers.rs`).
     guild_upsell: bool,
     /// The status bubble's prompt, drawn once per open from the prompt list (module 645507).
@@ -279,6 +281,7 @@ impl Root {
             widget_confirm_remove: None,
             panel_collapsed: false,
             upsell_closed: false,
+            item_upsell: None,
             guild_upsell: false,
             prompt: preview::random_prompt(),
             geometry: geometry::Geometry::of(1280., 720.),
@@ -1148,12 +1151,59 @@ impl Root {
                     "effect" => Kind::Effect,
                     _ => Kind::Frame,
                 };
-                self.profile_editor_script_pick(
-                    kind,
-                    sku.first().and_then(|sku| sku.parse().ok()),
-                    cx,
-                );
+                // `nitro` takes the first item of "Exclusive to Nitro" (the footer upsell of module 571827).
+                let sku = match sku.first().copied() {
+                    Some("nitro") => {
+                        let premium = self.profile_editor_premium();
+                        self.profile_editor
+                            .as_ref()
+                            .and_then(|open| picker::first_nitro_sku(open, kind, premium))
+                    }
+                    other => other.and_then(|sku| sku.parse().ok()),
+                };
+                self.profile_editor_script_pick(kind, sku, cx);
             }
+            // `item-upsell <decoration|effect|nameplate>`: the Nitro dialog of the picker's footer link (393027).
+            ["item-upsell", kind] => {
+                if let Some(open) = self.profile_editor.as_mut() {
+                    open.item_upsell = Some(match *kind {
+                        "nameplate" => Kind::Nameplate,
+                        "effect" => Kind::Effect,
+                        _ => Kind::Decoration,
+                    });
+                }
+            }
+            // `fake-avatars`: the account and its open server profile both seem to have an avatar, so the server
+            // profile's tile offers Reset to Default (module 487233). Local only; nothing is sent.
+            ["fake-avatars"] => {
+                let hash = "0".repeat(32);
+                let me = self.stores.current_user.as_mut().map(|me| {
+                    me.avatar = Some(hash.clone());
+                    me.clone()
+                });
+                if let (Some(me), Some(guild)) =
+                    (me, self.profile_editor.as_ref().and_then(|open| open.guild))
+                {
+                    let roles = self
+                        .stores
+                        .members
+                        .get(guild, me.id)
+                        .map(|member| member.roles.clone())
+                        .unwrap_or_default();
+                    self.stores.dispatch(
+                        "GUILD_MEMBER_UPDATE",
+                        &serde_json::json!({
+                            "guild_id": guild.to_string(),
+                            "user": {"id": me.id.to_string(), "username": me.username},
+                            "roles": roles.iter().map(|role| role.to_string()).collect::<Vec<_>>(),
+                            "avatar": hash,
+                        }),
+                    );
+                }
+            }
+            // `try-it-out`: "Reimagine your profile with Nitro" (module 536015), whose callers are the legacy
+            // profile settings and the design system's playground.
+            ["try-it-out"] => self.open_try_it_out_upsell(cx),
             ["tab", which] => {
                 if let Some(open) = self.profile_editor.as_mut() {
                     open.tab = match *which {

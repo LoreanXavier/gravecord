@@ -633,6 +633,11 @@ impl Root {
                     .pb(px(18.))
                     .flex()
                     .flex_col()
+                    // "Unable to load parts of profile" (module 559506, `nn` first in `body_nitlyF`, 12px apart).
+                    .children(
+                        self.profile_fetch_warning(user.id)
+                            .map(|warning| div().mb(px(12.)).child(warning)),
+                    )
                     .child(names)
                     .when(self.profile_upsell_shown(), |this| {
                         this.child(div().mt(px(6.)).child(super::profile::upsell_card_for(

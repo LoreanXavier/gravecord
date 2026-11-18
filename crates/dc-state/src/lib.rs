@@ -2247,6 +2247,10 @@ pub struct Stores {
     pub relationships: HashMap<Id, u64>,
     pub relationship_nicknames: HashMap<Id, String>,
     pub relationship_since: HashMap<Id, String>,
+    /// The message sent with a friend request (`relationship.note`, RelationshipStore `getNote` of module 994500).
+    pub relationship_notes: HashMap<Id, String>,
+    /// The game a friend request was sent from (`origin_application_id`, `getOriginApplicationId`).
+    pub relationship_origin_apps: HashMap<Id, Id>,
     /// RelationshipStore's spam-request and ignored-pending counters are separate sets.
     pub spam_relationships: HashSet<Id>,
     pub ignored_pending_relationships: HashSet<Id>,
@@ -2796,6 +2800,17 @@ impl Stores {
                     } else if name == "RELATIONSHIP_UPDATE" {
                         self.relationship_since.remove(&user);
                     }
+                    // 994500: ADD keeps an absent note or origin, UPDATE drops it.
+                    if let Some(note) = text(&data["note"]) {
+                        self.relationship_notes.insert(user, note);
+                    } else if name == "RELATIONSHIP_UPDATE" {
+                        self.relationship_notes.remove(&user);
+                    }
+                    if let Some(app) = id(&data["origin_application_id"]) {
+                        self.relationship_origin_apps.insert(user, app);
+                    } else if name == "RELATIONSHIP_UPDATE" {
+                        self.relationship_origin_apps.remove(&user);
+                    }
                     if data["is_spam_request"] == true {
                         self.spam_relationships.insert(user);
                     } else {
@@ -2840,6 +2855,8 @@ impl Stores {
                     self.relationship_nicknames.remove(&user);
                     self.clear_relationship_request_flags(user);
                     self.relationship_since.remove(&user);
+                    self.relationship_notes.remove(&user);
+                    self.relationship_origin_apps.remove(&user);
                     if data["user_ignored"] != true {
                         self.ignored.remove(&user);
                     }
@@ -3524,6 +3541,18 @@ impl Stores {
             .into_iter()
             .flatten()
             .filter_map(|entry| Some((id(&entry["id"])?, text(&entry["since"])?)))
+            .collect();
+        self.relationship_notes = data["relationships"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(|entry| Some((id(&entry["id"])?, text(&entry["note"])?)))
+            .collect();
+        self.relationship_origin_apps = data["relationships"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(|entry| Some((id(&entry["id"])?, id(&entry["origin_application_id"])?)))
             .collect();
         self.ignored = data["relationships"]
             .as_array()
@@ -5300,6 +5329,32 @@ mod tests {
         );
         stores.dispatch("READY", &json!({"users":[],"relationships":[]}));
         assert!(stores.relationship_since.is_empty());
+    }
+
+    #[test]
+    fn request_notes_and_origin_games_follow_ready_add_update_and_removal() {
+        let mut stores = Stores::default();
+        stores.dispatch(
+            "READY",
+            &json!({"users":[],"relationships":[
+                {"id":"30","type":3,"note":"hi from the fair","origin_application_id":"700"},
+                {"id":"31","type":3}
+            ]}),
+        );
+        assert_eq!(
+            stores.relationship_notes.get(&30).map(String::as_str),
+            Some("hi from the fair")
+        );
+        assert_eq!(stores.relationship_origin_apps.get(&30), Some(&700));
+        // ADD keeps what it does not carry; UPDATE replaces it.
+        stores.dispatch("RELATIONSHIP_ADD", &json!({"id":"30","type":3}));
+        assert!(stores.relationship_notes.contains_key(&30));
+        stores.dispatch("RELATIONSHIP_UPDATE", &json!({"id":"30","type":3}));
+        assert!(!stores.relationship_notes.contains_key(&30));
+        assert!(!stores.relationship_origin_apps.contains_key(&30));
+        stores.dispatch("RELATIONSHIP_ADD", &json!({"id":"31","type":3,"note":"x"}));
+        stores.dispatch("RELATIONSHIP_REMOVE", &json!({"id":"31"}));
+        assert!(stores.relationship_notes.is_empty());
     }
 
     #[test]
