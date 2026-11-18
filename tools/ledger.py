@@ -74,8 +74,7 @@ def citations():
                     continue
                 path = os.path.join(folder, name)
                 with open(path, encoding="utf8", errors="ignore") as handle:
-                    text = "
-".join(
+                    text = chr(10).join(
                         line for line in handle.read().splitlines() if not any(marker in line for marker in GAP_MARKERS)
                     )
                 relative = os.path.relpath(path, REPO).replace(os.sep, "/")
@@ -113,6 +112,9 @@ def main():
         files = sorted(cited.get(module, ()))
         chunk, size = index.get(module, ("", str(len(source))))
         status = "ported" if files else triage.get(module, ("untriaged", ""))[0]
+        # A partial or missing triage row wins over a citation that covers only a piece of the module.
+        if triage.get(module, ("", ""))[0] in ("partial", "missing"):
+            status = triage[module][0]
         if not files and status == "ported":
             files = [triage[module][1]]
         sample = " | ".join(texts.get(key, key).replace("\t", " ").replace("\n", " ")[:60] for key in keys[:4])

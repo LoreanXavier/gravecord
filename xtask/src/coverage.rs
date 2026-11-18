@@ -299,12 +299,12 @@ fn triage_errors(
         else {
             continue;
         };
-        if cited.contains(&id) {
-            continue;
-        }
+        // A triage row of `partial` or `missing` keeps a module in the backlog even when the code cites it: a citation
+        // can cover one piece of a module (142630's crop dialog was cited for one sentence about banners).
         match rows.get(&id).map(String::as_str) {
             Some("missing") => backlog.0 += 1,
             Some("partial") => backlog.1 += 1,
+            _ if cited.contains(&id) => {}
             Some(_) => {}
             None => {
                 let source = fs::read_to_string(&path).unwrap_or_default();
