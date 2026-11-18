@@ -3,12 +3,14 @@
 mod call_timer;
 mod member_count;
 mod message_clicks;
+mod message_peek;
 mod platform_indicators;
 mod read_all;
 mod typing_indicator;
 mod voice_stats;
 
 pub(super) use message_clicks::follow as follow_message_clicks;
+pub(super) use message_peek::Peek;
 pub(super) use platform_indicators::{Place as PlatformPlace, mobile_status};
 pub(in crate::ui) use voice_stats::import_totals as import_voice_totals;
 
@@ -727,7 +729,25 @@ mod tests {
                 def.id
             );
             for setting in def.settings {
-                let read = hooks.contains(&format!("\"{}\"", setting.key));
+                // A read is the key handed to the state: `value(ID, "key")`, `value("Plugin", "key")`, or one of
+                // the hooks' small readers (`flag("key")`, `text("key")`, ...), never the word alone.
+                let key = setting.key;
+                let read = [
+                    format!("ID, \"{key}\")"),
+                    format!("\"{}\", \"{key}\")", def.id),
+                    format!("flag(\"{key}\")"),
+                    format!("text(\"{key}\")"),
+                    format!("key(\"{key}\")"),
+                    format!("ms(\"{key}\")"),
+                    format!("action(\"{key}\")"),
+                    format!("hide_count(\"{key}\")"),
+                ]
+                .iter()
+                .any(|pattern| hooks.contains(pattern.as_str()))
+                    // A key chosen by a match arm over the place, then read (`PlatformIndicators`).
+                    || hooks.lines().any(|line| {
+                        line.contains("Place::") && line.contains(&format!("=> \"{key}\","))
+                    });
                 let idle = crate::plugins::IDLE_SETTINGS
                     .iter()
                     .any(|(id, key, _)| *id == def.id && *key == setting.key);

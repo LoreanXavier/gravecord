@@ -12,7 +12,7 @@ every setting changed), and with every plugin off, and fails on one differing pi
 The list is the plugins enabled in the owner's Equicord backup of 2026-09-21 (156). Sources were read in the local
 Equicord checkout of 2026-11-14 (`src/plugins` is Vencord's, `src/equicordplugins` Equicord's).
 
-Totals: 25 ported, 3 native, 83 planned, 45 not applicable.
+Totals: 26 ported, 3 native, 82 planned, 45 not applicable.
 
 Status: **ported** works and has its proof; **native** is what gravecord already does without a plugin;
 **planned** is not built yet (an import keeps its settings for when it is); **not applicable** has nothing to
@@ -94,7 +94,7 @@ port in a native client, or was removed upstream.
 | MessageDecorationsAPI | not applicable | plugins/_api/messageDecorations/index.tsx | API to add decorations to messages | client-mod plumbing (an API for other plugins), nothing to port. |  |
 | MessageEventsAPI | not applicable | plugins/_api/messageEvents.ts | Api required by anything using message events. | client-mod plumbing (an API for other plugins), nothing to port. |  |
 | MessageLogger | planned | plugins/messageLogger/index.tsx | Temporarily logs deleted and edited messages. | a store of deleted and edited messages and their red/edited display. |  |
-| MessagePeek | planned | equicordplugins/messagePeek/index.tsx | Shows the last message preview and timestamp in the Direct Messages list. | the last message and its time under each DM in the list. |  |
+| MessagePeek | ported | equicordplugins/messagePeek/index.tsx | Shows the last message preview and timestamp in the Direct Messages list. | plugin_hooks/message_peek.rs: under each DM and group the last message the app holds (author: first line, GIF, voice message, attachments, sticker), its age at the right (hidden under the pointer); an activity instead when the message is over an hour old; hideMuted. Not ported: the startup fetch of the 25 newest DMs' last message (plugin code sends nothing), the inline markdown of the preview (plain first line) and BetterActivities' icons. | `plugin_hooks::message_peek::tests` (2); frame mp-on; plugins-off dm-list |
 | MessagePopoverAPI | not applicable | plugins/_api/messagePopover.ts | API to add buttons to message popovers. | client-mod plumbing (an API for other plugins), nothing to port. |  |
 | MessageTags | planned | plugins/customCommands/index.ts | Allows you to create custom slash commands / tags | now CustomCommands upstream. saved tags sent as custom slash commands. |  |
 | MessageUpdaterAPI | not applicable | plugins/_api/messageUpdater.ts | API for updating and re-rendering messages. | client-mod plumbing (an API for other plugins), nothing to port. |  |
@@ -224,6 +224,7 @@ Every setting of each original (`definePluginSettings`), its type and default th
 | MessageClickActions | `selectionHoldTimeout` | NUMBER | `300` | ported |
 | MessageClickActions | `quoteWithReply` | BOOLEAN | `true` | ported |
 | MessageClickActions | `useSelectionForQuote` | BOOLEAN | `false` | ported |
+| MessagePeek | `hideMuted` | BOOLEAN | `false` | ported |
 | NoPendingCount | `hideFriendRequestsCount` | BOOLEAN | `true` | ported |
 | NoPendingCount | `hideMessageRequestsCount` | BOOLEAN | `true` | ported |
 | NoPendingCount | `hidePremiumOffersCount` | BOOLEAN | `true` | nothing to act on yet: the app's Home badge does not count unseen Nitro offers yet (`getUnacknowledgedOffers`), so there is no count to hide |

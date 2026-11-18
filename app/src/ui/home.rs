@@ -371,6 +371,10 @@ impl Root {
                 .child(
                     div()
                         .id(SharedString::from(format!("dm-inner-{id}")))
+                        // Not in the pinned client: MessagePeek's age of the last message
+                        // (`plugin_hooks/message_peek.rs`).
+                        .relative()
+                        .children(self.message_peek_time(id, hovered))
                         .h(px(42.))
                         .w(px(self.sidebar_row_width()))
                         .pl(px(8.))
@@ -466,9 +470,17 @@ impl Root {
                                         })),
                                 )
                                 // `activityStatusText_zln_tS` is `color: inherit`: the line takes the row's text colour.
-                                .children(
-                                    self.presence_line_with(&recipient, None, true, 16., look.text),
-                                ),
+                                // Not in the pinned client: MessagePeek's last message in its place
+                                // (`plugin_hooks/message_peek.rs`).
+                                .children({
+                                    let presence =
+                                        self.presence_line_with(&recipient, None, true, 16., look.text);
+                                    match self.message_peek(channel, presence.is_some()) {
+                                        super::plugin_hooks::Peek::Keep => presence,
+                                        super::plugin_hooks::Peek::Empty => None,
+                                        super::plugin_hooks::Peek::Line(line) => Some(line),
+                                    }
+                                }),
                         )
                         // `callDuration_zln_tS` in `iconsContainer_zln_tS` (4px before, 8px after): the running call's
                         // time, `body-xs/normal` 12px / 16px in the code font, `--text-feedback-positive`.

@@ -684,6 +684,20 @@ pub(crate) const DEFS: &[Def] = &[
         ],
     },
     Def {
+        id: "MessagePeek",
+        name: "MessagePeek",
+        description: "Shows the last message preview and timestamp in the Direct Messages list.",
+        origin: Origin::Equicord,
+        source: "src/equicordplugins/messagePeek/index.tsx",
+        default_on: false,
+        settings: &[Setting {
+            key: "hideMuted",
+            label: "Hide muted",
+            description: "Hide message previews and timestamps for muted DMs and group chats.",
+            kind: Kind::Switch { default: false },
+        }],
+    },
+    Def {
         id: "NoPendingCount",
         name: "NoPendingCount",
         description: "Removes the ping count of incoming friend requests, message requests, and Nitro offers.",

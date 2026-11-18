@@ -341,14 +341,23 @@ impl Root {
                                     .font_weight(look.weight())
                                     .child(self.private_channel_name(channel)),
                             )
-                            .child(
-                                div()
-                                    .mt(px(-2.))
-                                    .text_size(px(12.))
-                                    .line_height(px(16.))
-                                    .font_weight(FontWeight(500.))
-                                    .child(member_count_text(channel)),
-                            ),
+                            // Not in the pinned client: MessagePeek's last message in place of the member count
+                            // (`plugin_hooks/message_peek.rs`).
+                            .children(match self.message_peek(channel, false) {
+                                super::plugin_hooks::Peek::Keep => Some(
+                                    div()
+                                        .mt(px(-2.))
+                                        .text_size(px(12.))
+                                        .line_height(px(16.))
+                                        .font_weight(FontWeight(500.))
+                                        .child(member_count_text(channel))
+                                        .into_any_element(),
+                                ),
+                                super::plugin_hooks::Peek::Empty => None,
+                                super::plugin_hooks::Peek::Line(line) => {
+                                    Some(div().mt(px(-2.)).child(line).into_any_element())
+                                }
+                            }),
                     )
                     .child(
                         div()
