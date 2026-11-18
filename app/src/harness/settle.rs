@@ -1,5 +1,6 @@
 //! `settle <max ms>`: waits until the window stops changing. The window is drawn every 250ms; once four drawings in a
-//! row (one second) are the same picture the step ends, at the latest after `max ms`. Scripts whose frame depends on
+//! row (one second) are the same picture and no image or fetch request is on its way (`net::in_flight`), the step
+//! ends, at the latest after `max ms`. Scripts whose frame depends on
 //! loads that finish at their own pace (pictures, GIF results, call tiles) use it in place of a guessed `wait`, so a
 //! loaded machine only makes the step longer, not the frame different.
 
@@ -56,14 +57,20 @@ pub(super) async fn run(rest: &[&str], window: AnyWindowHandle, cx: &mut AsyncAp
                 .ok()
                 .flatten()
         });
+        // A picture or answer still on its way would change the window after the run; it does not count as still.
+        let waiting = crate::net::in_flight();
         if let Some(image) = image
-            && run.push(hash_of(&image))
+            && run.push(hash_of(&image) ^ waiting as u64)
+            && waiting == 0
         {
             return format!("settle: still after {} ms", started.elapsed().as_millis());
         }
         cx.background_executor().timer(STEP).await;
     }
-    format!("settle: still changing after {max} ms")
+    format!(
+        "settle: still changing after {max} ms ({} requests on their way)",
+        crate::net::in_flight()
+    )
 }
 
 #[cfg(test)]

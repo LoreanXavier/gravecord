@@ -2039,7 +2039,9 @@ pub async fn run(token: Token, updates: mpsc::UnboundedSender<Update>, requests:
                 });
             }
             Request::Fetch { key, route } => {
+                let flight = InFlight::start();
                 tokio::spawn(async move {
+                    let _flight = flight;
                     match client.get(&route).await {
                         Ok(body) => {
                             let _ = updates.send(Update::Fetched { key, body });
@@ -2322,7 +2324,9 @@ pub async fn run(token: Token, updates: mpsc::UnboundedSender<Update>, requests:
                 }
             }
             Request::Image { key, url } => {
+                let flight = InFlight::start();
                 tokio::spawn(async move {
+                    let _flight = flight;
                     // A Shop or CDN picture kept on disk is drawn at once; a stale one is fetched again behind it.
                     let shop_box = shop_art_box(&key);
                     let cache_raw =
@@ -2682,6 +2686,31 @@ async fn save_all_into(
             0
         }
     }
+}
+
+/// Image and fetch requests whose task has not ended yet (`settle` in the capture harness waits for none).
+static IN_FLIGHT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
+/// One request counted in [`IN_FLIGHT`] from its start until its task ends (the guard is dropped with it).
+struct InFlight;
+
+impl InFlight {
+    fn start() -> Self {
+        IN_FLIGHT.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        Self
+    }
+}
+
+impl Drop for InFlight {
+    fn drop(&mut self) {
+        IN_FLIGHT.fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
+    }
+}
+
+/// How many image and fetch requests are still on their way.
+#[cfg(feature = "capture")]
+pub(crate) fn in_flight() -> usize {
+    IN_FLIGHT.load(std::sync::atomic::Ordering::SeqCst)
 }
 
 fn cached_image_bytes(key: &str, bytes: Vec<u8>) -> Option<Vec<u8>> {
