@@ -12,7 +12,7 @@ every setting changed), and with every plugin off, and fails on one differing pi
 The list is the plugins enabled in the owner's Equicord backup of 2026-09-21 (156). Sources were read in the local
 Equicord checkout of 2026-11-14 (`src/plugins` is Vencord's, `src/equicordplugins` Equicord's).
 
-Totals: 22 ported, 3 native, 86 planned, 45 not applicable.
+Totals: 23 ported, 3 native, 85 planned, 45 not applicable.
 
 Status: **ported** works and has its proof; **native** is what gravecord already does without a plugin;
 **planned** is not built yet (an import keeps its settings for when it is); **not applicable** has nothing to
@@ -33,7 +33,7 @@ port in a native client, or was removed upstream.
 | BetterCommands | planned | equicordplugins/betterCommands/index.ts | Enhances the command system with miscellaneous improvements. | changes to the slash command UI. |  |
 | BetterFolders | planned | plugins/betterFolders/index.tsx | Shows server folders on dedicated sidebar and adds folder related improvements | a second server sidebar for folders. |  |
 | BetterForwards | planned | equicordplugins/betterForwards/index.tsx | Message forward utilities including NSFW bypass and UI improvements. | forward dialog tweaks. |  |
-| BetterGifAltText | planned | plugins/betterGifAltText/index.ts | Change GIF alt text from simply being 'GIF' to containing the gif tags / filename | GIF alt text from the tags or file name. |  |
+| BetterGifAltText | planned | plugins/betterGifAltText/index.ts | Change GIF alt text from simply being 'GIF' to containing the gif tags / filename | a place where alt text shows: the original changes the `alt` that screen readers read, and the app draws images without an accessibility tree. |  |
 | BetterNotesBox | not applicable | (not in the 2026-11-14 checkout) |  | removed from Equicord (last seen in dbca8ef2); the private note box is the client's own here. |  |
 | BetterPlusReacts | planned | equicordplugins/betterPlusReacts/index.ts | The amount of plus before :emoji: is the message to add it to | "+:emoji:" reacting to the Nth message above, in the composer's send path. |  |
 | BetterQuickReact | planned | plugins/moreQuickReactions/index.ts | Improves the quick react buttons in the message context menu. | now MoreQuickReactions upstream. more quick reaction buttons in the message context menu. |  |
@@ -124,7 +124,7 @@ port in a native client, or was removed upstream.
 | QuickMention | ported | plugins/quickMention/index.tsx | Adds a quick mention button to the message actions bar | hover_bar.rs: an @ button after the quick reactions and before Add Reaction, where you may write; inserts `<@ID> ` in the composer (shown as text: the composer draws no mention pill for typed syntax). | `quick_mention_sits_before_add_reaction`; frames qm-on, qm-click; plugins-off hover-bar |
 | Quoter | planned | equicordplugins/quoter/index.tsx | Adds the ability to create an inspirational quote image from a message. | a quote image made from a message. |  |
 | ReactErrorDecoder | not applicable | plugins/reactErrorDecoder/index.ts |  | decodes minified React errors; there is no React here. |  |
-| ReadAllNotificationsButton | planned | plugins/readAllNotificationsButton/index.tsx | Read all server notifications with a single button click! | a button that marks every server read. |  |
+| ReadAllNotificationsButton | ported | plugins/readAllNotificationsButton/index.tsx | Read all server notifications with a single button click! | plugin_hooks/read_all.rs: a Read All tile (or compact text) under the Home button; one BULK_ACK of every server's unread channels and joined threads (the app's own bulk ack). | `the_button_is_a_tile_or_compact_text`; frame ranb-on; plugins-off chat (rail) |
 | RelationshipNotifier | planned | plugins/relationshipNotifier/index.ts | Notifies you when a friend, group chat, or server removes you. | notices when a friend, group or server removes you (its data store lists are not copied). |  |
 | RevealAllSpoilers | ported | plugins/revealAllSpoilers/index.ts | Reveal all spoilers in a message by Ctrl-clicking a spoiler, or in the chat with Ctrl+Shift-click | ui.rs: Ctrl-click a hidden spoiler opens every text spoiler of its message, Ctrl+Shift-click those of every message the chat holds now (later ones stay hidden). | `ctrl_reveals_the_message_and_ctrl_shift_every_loaded_message`; frames spoilers-off/on |
 | ReverseImageSearch | ported | plugins/reverseImageSearch/index.tsx | Adds ImageSearch to image context menus | menu.rs: "Search Image" at the end of the link group when a picture is right-clicked; a submenu of its seven engines and All, opened in the browser. The engine favicons (fetched from DuckDuckGo by the original) are not drawn: plugin code fetches nothing. | `image_search_opens_each_engine_with_the_encoded_address`; frame ris-on; plugins-off image-menu |
@@ -155,7 +155,7 @@ port in a native client, or was removed upstream.
 | TypingIndicator | planned | plugins/typingIndicator/index.tsx | Adds an indicator if someone is typing on a channel. | typing dots by channels in the channel list. |  |
 | TypingTweaks | planned | plugins/typingTweaks/index.tsx | Show avatars and role colours in the typing indicator | avatars and role colours in the typing line. |  |
 | UnlimitedAccounts | ported | equicordplugins/unlimitedAccounts/index.ts | Increases the amount of accounts you can add. | account_switcher.rs: `maxAccounts` (0 = no limit) for the list and the Add button. | `unlimited_accounts_lifts_the_five_account_limit`; frames ua-off/ua-on; plugins-off accounts |
-| UnlockedAvatarZoom | planned | plugins/unlockedAvatarZoom/index.ts | Allows you to zoom in further in the image crop tool when changing your avatar | a wider zoom in the avatar crop tool. |  |
+| UnlockedAvatarZoom | planned | plugins/unlockedAvatarZoom/index.ts | Allows you to zoom in further in the image crop tool when changing your avatar | the avatar crop tool (Edit Image of a new avatar), which the app does not have yet; the plugin only raises its zoom slider's maximum. |  |
 | UserAreaAPI | not applicable | equicordplugins/_api/userArea.ts | API to add buttons to the user area panel. | client-mod plumbing (an API for other plugins), nothing to port. |  |
 | UserMessagesPronouns | planned | plugins/userMessagesPronouns/index.ts | Adds pronouns to chat user messages | pronouns by names in chat. |  |
 | UserPFP | planned | equicordplugins/userpfp/index.tsx | Allows you to set local static or animated avatars for yourself and other users | its third-party avatar service. |  |
@@ -232,5 +232,6 @@ Every setting of each original (`definePluginSettings`), its type and default th
 | OnePingPerDM | `allowEveryone` | BOOLEAN | `false` | ported |
 | OnePingPerDM | `ignoreUsers` | STRING | `""` | ported |
 | OnePingPerDM | `alwaysPlaySound` | BOOLEAN | `false` | ported |
+| ReadAllNotificationsButton | `compact` | BOOLEAN | `false` | ported |
 | UnlimitedAccounts | `maxAccounts` | NUMBER | `0` | ported |
 | VolumeBooster | `multiplier` | SLIDER | `2` | ported |

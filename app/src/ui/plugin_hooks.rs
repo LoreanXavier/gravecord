@@ -3,6 +3,7 @@
 mod call_timer;
 mod member_count;
 mod message_clicks;
+mod read_all;
 mod voice_stats;
 
 pub(super) use message_clicks::follow as follow_message_clicks;

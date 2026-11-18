@@ -780,6 +780,20 @@ pub(crate) const DEFS: &[Def] = &[
         settings: &[],
     },
     Def {
+        id: "ReadAllNotificationsButton",
+        name: "ReadAllNotificationsButton",
+        description: "Read all server notifications with a single button click!",
+        origin: Origin::Vencord,
+        source: "src/plugins/readAllNotificationsButton/index.tsx",
+        default_on: false,
+        settings: &[Setting {
+            key: "compact",
+            label: "Compact",
+            description: "Show a small text button instead of a server list icon.",
+            kind: Kind::Switch { default: false },
+        }],
+    },
+    Def {
         id: "RevealAllSpoilers",
         name: "RevealAllSpoilers",
         description: "Ctrl-click a spoiler to open every spoiler in its message, Ctrl+Shift-click for the whole channel.",

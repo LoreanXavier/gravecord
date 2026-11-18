@@ -127,6 +127,7 @@ idle = {(a, b): why.replace('\\"', '"') for a, b, why in re.findall(
 
 # How each ported plugin is built here, and its proof.
 PORTED = {
+    'ReadAllNotificationsButton': "plugin_hooks/read_all.rs: a Read All tile (or compact text) under the Home button; one BULK_ACK of every server's unread channels and joined threads (the app's own bulk ack).",
     'FixImagesQuality': "media_image.rs, lightbox.rs: attachment pictures without the proxy's size in chat (scaled only past 2000 x 1200), the original file in the viewer (and in chat with originalImagesInChat).",
     'OnePingPerDM': "notifications.rs: in the DMs it affects only the oldest unread message (the first after the channel's ack) plays the sound; ignored users, allowed mentions and @everyone still ping; the desktop notification is left alone; alwaysPlaySound plays the message sound for any message that notifies.",
     'VoiceDownload': "voice_message.rs: a download arrow after a voice message's volume that opens the file in the browser (the original's desktop behaviour).",
@@ -169,6 +170,7 @@ PORTED = {
                      'so the original\'s 200% cap on the sync has nothing to cap.',
 }
 TESTS = {
+    'ReadAllNotificationsButton': '`the_button_is_a_tile_or_compact_text`; frame ranb-on; plugins-off chat (rail)',
     'FixImagesQuality': '`fix_images_quality_loads_full_resolution`; plugins-off image-menu (an attachment picture)',
     'OnePingPerDM': '`one_ping_per_dm_lets_the_oldest_unread_ping`; no frame (a sound, not a picture)',
     'VoiceDownload': 'frames vd-on/vd-off/vd-pair; plugins-off chat (the voice message is in view)',
@@ -239,7 +241,7 @@ PLANNED = {
     'BetterCommands': 'changes to the slash command UI.',
     'BetterFolders': 'a second server sidebar for folders.',
     'BetterForwards': 'forward dialog tweaks.',
-    'BetterGifAltText': 'GIF alt text from the tags or file name.',
+    'BetterGifAltText': "a place where alt text shows: the original changes the `alt` that screen readers read, and the app draws images without an accessibility tree.",
     'BetterPlusReacts': '"+:emoji:" reacting to the Nth message above, in the composer\'s send path.',
     'BetterRoleContext': 'role context menu rows (copy colour, edit role, view icon).',
     'BetterRoleDot': 'copy a role colour on its dot; dots and coloured names together.',
@@ -279,7 +281,6 @@ PLANNED = {
     'PlatformIndicators': 'desktop, mobile and web icons by names.',
     'PreviewMessage': 'a preview of the message before sending.',
     'Quoter': 'a quote image made from a message.',
-    'ReadAllNotificationsButton': 'a button that marks every server read.',
     'RelationshipNotifier': 'notices when a friend, group or server removes you (its data store lists are not copied).',
     'RoleColorEverywhere': 'role colours in mentions, lists, voice and reactions.',
     'SearchFix': 'its search request fix.',
@@ -299,7 +300,7 @@ PLANNED = {
     'Translate+': 'message translation (needs a translation service).',
     'TypingIndicator': 'typing dots by channels in the channel list.',
     'TypingTweaks': 'avatars and role colours in the typing line.',
-    'UnlockedAvatarZoom': 'a wider zoom in the avatar crop tool.',
+    'UnlockedAvatarZoom': "the avatar crop tool (Edit Image of a new avatar), which the app does not have yet; the plugin only raises its zoom slider's maximum.",
     'UserMessagesPronouns': 'pronouns by names in chat.',
     'UserPFP': 'its third-party avatar service.',
     'USRBG': 'its third-party banner service.',

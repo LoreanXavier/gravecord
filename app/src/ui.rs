@@ -4316,6 +4316,8 @@ impl Root {
                 .items_center()
                 .gap(px(8.))
                 .child(self.home_tile(cx))
+                // Not in the pinned client: ReadAllNotificationsButton (`plugin_hooks/read_all.rs`).
+                .children(self.read_all_button(cx))
                 .children(self.favorites_tile(cx))
                 .children(self.unread_dm_rail(cx))
                 .child(
