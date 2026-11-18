@@ -468,6 +468,15 @@ pub(crate) const DEFS: &[Def] = &[
         ],
     },
     Def {
+        id: "BetterBlockedUsers",
+        name: "BetterBlockedUsers",
+        description: "Allows you to search in blocked users list, make names selectable in settings, skips blocked profile prompt, and groups blocked / ignored messages.",
+        origin: Origin::Equicord,
+        source: "src/equicordplugins/betterBlockedUsers/index.tsx",
+        default_on: false,
+        settings: &[],
+    },
+    Def {
         id: "BetterCommands",
         name: "BetterCommands",
         description: "Enhances the command system with miscellaneous improvements.",

@@ -3681,6 +3681,11 @@ impl Root {
             && !self.current_dm().is_some_and(|channel| channel.kind == 1);
         // The run being folded: its first id, whether it is open, and its kind.
         let mut run: Option<(Id, bool, blocked::Fold)> = None;
+        // Not in the pinned client: BetterBlockedUsers folds every blocked (and every ignored) message of a hidden
+        // stretch into one row (`mergeHiddenMessages`, `plugin_hooks.rs`): each kind's first row of the stretch, by
+        // `Fold` (the spam fold is never merged).
+        let merge = plugin_hooks::merge_hidden_messages();
+        let mut stretch: [Option<Id>; blocked::FOLDS] = [None; blocked::FOLDS];
         for (index, message) in messages.iter().enumerate() {
             let local = message.local_time();
             let day = (local.year(), local.ordinal());
@@ -3688,6 +3693,7 @@ impl Root {
             if new_day {
                 self.rows.push(Row::Divider(timestamps::long_date(local)));
                 last_day = Some(day);
+                stretch = [None; blocked::FOLDS];
             }
             let fold = if blocked.contains(&message.author.id) {
                 Some(blocked::Fold::Blocked)
@@ -3699,6 +3705,8 @@ impl Root {
                 None
             };
             if let Some(kind) = fold {
+                let merged = stretch[kind as usize]
+                    .filter(|_| merge && !new_day && matches!(kind, blocked::Fold::Blocked | blocked::Fold::Ignored));
                 let open = match run {
                     Some((first, open, run_kind)) if !new_day && run_kind == kind => {
                         if let Some(Row::Blocked { count, .. }) = self
@@ -3711,8 +3719,24 @@ impl Root {
                         }
                         open
                     }
+                    // Not in the pinned client: the kind's row of this stretch takes the message (BetterBlockedUsers).
+                    _ if merged.is_some() => {
+                        let first = merged.unwrap_or(message.id);
+                        if let Some(Row::Blocked { count, .. }) = self
+                            .rows
+                            .iter_mut()
+                            .rev()
+                            .find(|row| matches!(row, Row::Blocked { first: known, .. } if *known == first))
+                        {
+                            *count += 1;
+                        }
+                        let open = self.shown_blocked.contains(&first);
+                        run = Some((first, open, kind));
+                        open
+                    }
                     _ => {
                         let open = self.shown_blocked.contains(&message.id);
+                        stretch[kind as usize] = Some(message.id);
                         self.rows.push(Row::Blocked {
                             first: message.id,
                             count: 1,
@@ -3728,6 +3752,7 @@ impl Root {
                 continue;
             }
             run = None;
+            stretch = [None; blocked::FOLDS];
             let mut head = new_day || index == 0 || starts_group(&messages[index - 1], message);
             if !divided && divider.is_some_and(|acked| message.id > acked) {
                 // The divider starts a new group, as the official list breaks one there.

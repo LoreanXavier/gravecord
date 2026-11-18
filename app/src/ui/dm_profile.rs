@@ -1386,7 +1386,8 @@ impl Root {
             return 0.;
         };
         let ignored = !self.is_blocked(user.id) && self.stores.is_ignored(user.id);
-        let gated = (self.is_blocked(user.id)
+        // Not in the pinned client: BetterBlockedUsers skips the blocked person's question (`plugin_hooks.rs`).
+        let gated = ((self.is_blocked(user.id) && !super::plugin_hooks::skip_blocked_prompt())
             || (ignored && !self.stores.ignore_speedbump_disabled))
             && !self.shown_blocked_profiles.contains(&user.id);
         if gated {

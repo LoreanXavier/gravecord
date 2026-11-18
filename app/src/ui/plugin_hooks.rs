@@ -657,6 +657,20 @@ pub(super) fn all_spoilers_revealed(
     !crate::plugins::bypassed() && revealed.contains(&(message, ALL_OF_MESSAGE.0, ALL_OF_MESSAGE.1))
 }
 
+/// BetterBlockedUsers (Equicord `src/equicordplugins/betterBlockedUsers`): every blocked (and every ignored) message of a
+/// hidden stretch (no message shown between them, the same day) folds into the kind's first row of that stretch
+/// (`mergeHiddenMessages`), so "N blocked messages" is not split by an ignored run; and a blocked person's profile
+/// opens without "Show Profile?" (`isBlocked: false`; an ignored person's question stays). GAP: the search field and
+/// the Show User Profile buttons of the settings' blocked users list, which the app does not have yet.
+pub(in crate::ui) fn merge_hidden_messages() -> bool {
+    !crate::plugins::bypassed() && crate::plugin_on!("BetterBlockedUsers")
+}
+
+/// BetterBlockedUsers: no "Show Profile?" before a blocked person's profile (see `merge_hidden_messages`).
+pub(in crate::ui) fn skip_blocked_prompt() -> bool {
+    !crate::plugins::bypassed() && crate::plugin_on!("BetterBlockedUsers")
+}
+
 /// Plugins whose settings page has a section of their own (the original's `OptionType.COMPONENT`).
 pub(in crate::ui) fn has_own_section(id: &str) -> bool {
     matches!(id, "MessageTags" | "ClipsEnhancements")

@@ -37,6 +37,10 @@ pub(super) enum Fold {
     Spammer,
 }
 
+/// Not in the pinned client: how many kinds of fold there are, for BetterBlockedUsers' rows by kind
+/// (`plugin_hooks/better_blocked_users.rs`).
+pub(super) const FOLDS: usize = 3;
+
 /// `2021-12_inferno_spam_redaction` (module 891522 `en`): treatment 1 collapses guild channel messages from likely
 /// spammers; the default (no assignment) leaves them.
 pub(super) const SPAM_REDACTION: &str = "2021-12_inferno_spam_redaction";

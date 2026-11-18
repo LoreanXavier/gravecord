@@ -12,7 +12,7 @@ every setting changed), and with every plugin off, and fails on one differing pi
 The list is the plugins enabled in the owner's Equicord backup of 2026-09-21 (156). Sources were read in the local
 Equicord checkout of 2026-11-14 (`src/plugins` is Vencord's, `src/equicordplugins` Equicord's).
 
-Totals: 59 ported, 9 native, 43 planned, 45 not applicable.
+Totals: 60 ported, 9 native, 42 planned, 45 not applicable.
 
 Status: **ported** works and has its proof; **native** is what gravecord already does without a plugin;
 **planned** is not built yet (an import keeps its settings for when it is); **not applicable** has nothing to
@@ -29,7 +29,7 @@ port in a native client, or was removed upstream.
 | BadgeAPI | not applicable | plugins/_api/badges/index.tsx | API to add badges to users | client-mod plumbing (an API for other plugins), nothing to port. |  |
 | BetterActivities | planned | equicordplugins/betterActivities/index.tsx | Shows activity icons in the member list and allows showing all activities | activity icons in member list rows and every activity in the profile popout. |  |
 | BetterAudioPlayer | planned | equicordplugins/betterAudioPlayer.desktop/index.tsx | Adds a spectrograph and oscilloscope visualizer to audio attachment players. | a spectrograph and oscilloscope in the audio attachment player (needs the decoded samples). |  |
-| BetterBlockedUsers | planned | equicordplugins/betterBlockedUsers/index.tsx | Allows you to search in blocked users list, make names selectable in settings, skips blocked profile prompt, and groups blocked / ignored messages. | search in the blocked list, selectable names, no blocked-profile prompt, grouped blocked messages. |  |
+| BetterBlockedUsers | ported | equicordplugins/betterBlockedUsers/index.tsx | Allows you to search in blocked users list, make names selectable in settings, skips blocked profile prompt, and groups blocked / ignored messages. | plugin_hooks.rs (merge_hidden_messages, skip_blocked_prompt): every blocked and every ignored message of a hidden stretch folds into its kind's first row (no split by an ignored run), and a blocked person's profile opens without Show Profile? (an ignored person's question stays). GAP: the search field and Show User Profile buttons of the settings' blocked users list, which the app does not have. | plugins-off chat, dm-list (the hooks return false off); frames pending (fixture token answers 401) |
 | BetterCommands | ported | equicordplugins/betterCommands/index.ts | Enhances the command system with miscellaneous improvements. | plugin_hooks/plugin_commands.rs: /refresh among the built-in commands fetches the open channel's or server's command index again, with Clyde's before and after lines; autoFillArguments is idle (the app's command flow already asks every option). GAP: the user option's per-application index. | command table test (`every_plugin_with_commands_is_defined`); frames pending (fixture token answers 401) |
 | BetterFolders | planned | plugins/betterFolders/index.tsx | Shows server folders on dedicated sidebar and adds folder related improvements | a second server sidebar for folders. |  |
 | BetterForwards | planned | equicordplugins/betterForwards/index.tsx | Message forward utilities including NSFW bypass and UI improvements. | forward dialog tweaks. |  |
