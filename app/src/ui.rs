@@ -51,6 +51,7 @@ mod call_background;
 mod call_menus;
 mod call_popout;
 mod call_volume;
+mod camera_failed;
 #[cfg(feature = "capture")]
 pub(crate) mod callsim;
 mod carousel;
@@ -615,6 +616,8 @@ pub struct Root {
     /// (`stage_requests`).
     stage_requests_open: bool,
     stage_video_upsell_dismissed: std::collections::HashSet<Id>,
+    /// Videos waiting for their first picture, and the ones that never showed (`camera_failed`).
+    video_ready: std::cell::RefCell<camera_failed::VideoReady>,
     /// The menu over a speaker's or audience member's tile (module 106401 and 237749's rows), where it was opened.
     stage_tile_menu: Option<stage::TileMenu>,
     /// Stage instances whose Live Now card was closed with its X.
@@ -1048,6 +1051,7 @@ impl Root {
             warning_dismissals: voice_blocked::WarningDismissals::load(),
             stage_requests_open: false,
             stage_video_upsell_dismissed: Default::default(),
+            video_ready: Default::default(),
             stage_tile_menu: None,
             live_now_closed: Vec::new(),
             publish_confirm: None,

@@ -1574,6 +1574,24 @@ impl Root {
         } else {
             video_tiles::shows_video(&person.tile) && !video
         };
+        // A person's video still without a picture after 20 seconds: "Failed to start camera" (module 566566).
+        let camera_failed = !stream_tile && !outside && {
+            let (failed, began) = self.video_ready.borrow_mut().observe(
+                user_id,
+                loading,
+                std::time::Instant::now(),
+            );
+            if began {
+                cx.spawn(async move |this, cx| {
+                    cx.background_executor()
+                        .timer(super::camera_failed::READY_TIMEOUT)
+                        .await;
+                    let _ = this.update(cx, |_, cx| cx.notify());
+                })
+                .detach();
+            }
+            failed
+        };
         let background = if stream_tile || video_tiles::shows_video(&person.tile) {
             mid("--primary-700")
         } else {
@@ -1743,7 +1761,12 @@ impl Root {
             .when(person.ended, |this| {
                 this.child(self.ended_stream_content(layout.tile_width, cx))
             })
-            .when(loading && !person.hidden, |this| this.child(spinner()))
+            .when(camera_failed, |this| {
+                this.child(self.camera_failed_content(user_id, layout.tile_width, is_focus, cx))
+            })
+            .when(loading && !person.hidden && !camera_failed, |this| {
+                this.child(spinner())
+            })
             .when(waiting, |this| {
                 let (guild, channel) = self.vv.shown_call;
                 this.children(
