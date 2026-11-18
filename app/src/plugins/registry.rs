@@ -1108,6 +1108,40 @@ pub(crate) const DEFS: &[Def] = &[
         ],
     },
     Def {
+        id: "TypingTweaks",
+        name: "TypingTweaks",
+        description: "Show avatars and role colours in the typing indicator",
+        origin: Origin::Vencord,
+        source: "src/plugins/typingTweaks/index.tsx",
+        default_on: false,
+        settings: &[
+            Setting {
+                key: "showAvatars",
+                label: "Avatars",
+                description: "Show avatars in the typing indicator",
+                kind: Kind::Switch { default: true },
+            },
+            Setting {
+                key: "showRoleColors",
+                label: "Role colours",
+                description: "Show role colors in the typing indicator",
+                kind: Kind::Switch { default: true },
+            },
+            Setting {
+                key: "alternativeFormatting",
+                label: "Alternative line",
+                description: "Show a more useful message when several users are typing",
+                kind: Kind::Switch { default: true },
+            },
+            Setting {
+                key: "amITyping",
+                label: "Am I typing",
+                description: "Shows you if other people can see you typing",
+                kind: Kind::Switch { default: false },
+            },
+        ],
+    },
+    Def {
         id: "UnlimitedAccounts",
         name: "UnlimitedAccounts",
         description: "Lets the account switcher hold more than five accounts.",

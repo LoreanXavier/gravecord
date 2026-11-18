@@ -13,6 +13,7 @@ mod read_all;
 mod server_list_indicators;
 mod show_connections;
 mod typing_indicator;
+mod typing_tweaks;
 mod voice_stats;
 
 pub(in crate::ui) use always_animate::{Part as AnimatePart, always_animate};

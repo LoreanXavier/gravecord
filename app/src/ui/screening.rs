@@ -224,7 +224,7 @@ impl Root {
             .mt(px(-16.))
             .px(px(8.))
             .pb(px(8.))
-            .children(self.typing_bar())
+            .children(self.typing_bar(cx))
             .children(self.slowmode_notice(cx))
             .child(
                 div()

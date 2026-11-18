@@ -12,7 +12,7 @@ every setting changed), and with every plugin off, and fails on one differing pi
 The list is the plugins enabled in the owner's Equicord backup of 2026-09-21 (156). Sources were read in the local
 Equicord checkout of 2026-11-14 (`src/plugins` is Vencord's, `src/equicordplugins` Equicord's).
 
-Totals: 33 ported, 5 native, 73 planned, 45 not applicable.
+Totals: 34 ported, 5 native, 72 planned, 45 not applicable.
 
 Status: **ported** works and has its proof; **native** is what gravecord already does without a plugin;
 **planned** is not built yet (an import keeps its settings for when it is); **not applicable** has nothing to
@@ -153,7 +153,7 @@ port in a native client, or was removed upstream.
 | TimeBarAllActivities | not applicable | (not in the 2026-11-14 checkout) |  | removed from Equicord in bcfef05a: "now a stock feature". |  |
 | Translate+ | planned | equicordplugins/translatePlus/index.tsx | Vencord's translate plugin but with support for artistic languages! | message translation (needs a translation service). |  |
 | TypingIndicator | ported | plugins/typingIndicator/index.tsx | Adds an indicator if someone is typing on a channel. | plugin_hooks/typing_indicator.rs: by a channel's name, up to three 16px avatars and the dots of who is typing, the chat's typing line as the tooltip. Not ported: thread rows (the original also patches the thread spine), and TypingTweaks' several-users line (TypingTweaks is not built yet). | `the_indicator_leaves_out_who_its_settings_leave_out`; frames ti-on/ti-off; plugins-off channel-typing |
-| TypingTweaks | planned | plugins/typingTweaks/index.tsx | Show avatars and role colours in the typing indicator | avatars and role colours in the typing line. |  |
+| TypingTweaks | ported | plugins/typingTweaks/index.tsx | Show avatars and role colours in the typing indicator | plugin_hooks/typing_tweaks.rs: in the typing line every bold name is the person, with a 16px avatar (showAvatars), the role colour (showRoleColors) and a click to the full profile; over three people the alternative line (alternativeFormatting, with the original's count); amITyping keeps you in the list; blocked and ignored people are left out as useTypingUsers does. | `bold_runs_become_people_and_many_use_the_alternative_line`; frames tt-on/tt-off; plugins-off typing |
 | UnlimitedAccounts | ported | equicordplugins/unlimitedAccounts/index.ts | Increases the amount of accounts you can add. | account_switcher.rs: `maxAccounts` (0 = no limit) for the list and the Add button. | `unlimited_accounts_lifts_the_five_account_limit`; frames ua-off/ua-on; plugins-off accounts |
 | UnlockedAvatarZoom | planned | plugins/unlockedAvatarZoom/index.ts | Allows you to zoom in further in the image crop tool when changing your avatar | the avatar crop tool (Edit Image of a new avatar), which the app does not have yet; the plugin only raises its zoom slider's maximum. |  |
 | UserAreaAPI | not applicable | equicordplugins/_api/userArea.ts | API to add buttons to the user area panel. | client-mod plumbing (an API for other plugins), nothing to port. |  |
@@ -258,6 +258,10 @@ Every setting of each original (`definePluginSettings`), its type and default th
 | TypingIndicator | `includeIgnoredUsers` | BOOLEAN | `false` | ported |
 | TypingIndicator | `includeBlockedUsers` | BOOLEAN | `false` | ported |
 | TypingIndicator | `indicatorMode` | SELECT | `IndicatorMode.Dots | IndicatorMode.Avatars` | ported |
+| TypingTweaks | `showAvatars` | BOOLEAN | `true` | ported |
+| TypingTweaks | `showRoleColors` | BOOLEAN | `true` | ported |
+| TypingTweaks | `alternativeFormatting` | BOOLEAN | `true` | ported |
+| TypingTweaks | `amITyping` | BOOLEAN | `false` | ported |
 | UnlimitedAccounts | `maxAccounts` | NUMBER | `0` | ported |
 | UserMessagesPronouns | `pronounsFormat` | SELECT | `PronounsFormat.Lowercase` | ported |
 | UserMessagesPronouns | `showSelf` | BOOLEAN | `true` | ported |

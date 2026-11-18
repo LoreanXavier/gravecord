@@ -3716,9 +3716,13 @@ impl Root {
             .into_any_element()
     }
 
-    fn typing_bar(&self) -> Option<AnyElement> {
+    fn typing_bar(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
         let channel = self.channel?;
-        let users = self.stores.typing_users(channel, Instant::now());
+        // Not in the pinned client: TypingTweaks' list and line (`plugin_hooks/typing_tweaks.rs`).
+        let tweaks = self.typing_tweaks_users(channel);
+        let users = tweaks
+            .clone()
+            .unwrap_or_else(|| self.stores.typing_users(channel, Instant::now()));
         let names: Vec<String> = users
             .iter()
             .filter_map(|user| self.stores.users.get(user))
@@ -3763,14 +3767,17 @@ impl Root {
                         .ml(px(24.))
                         .flex()
                         .whitespace_nowrap()
-                        .children(runs.into_iter().map(|(text, tag)| {
-                            div()
-                                .when(tag.as_deref() == Some("$b"), |this| {
-                                    this.font_weight(FontWeight(600.))
-                                        .text_color(color("--text-default"))
-                                })
-                                .child(text)
-                        })),
+                        .map(|this| match tweaks {
+                            Some(users) => this.children(self.typing_tweaks_line(&users, runs, cx)),
+                            None => this.children(runs.into_iter().map(|(text, tag)| {
+                                div()
+                                    .when(tag.as_deref() == Some("$b"), |this| {
+                                        this.font_weight(FontWeight(600.))
+                                            .text_color(color("--text-default"))
+                                    })
+                                    .child(text)
+                            })),
+                        }),
                 )
                 .into_any_element(),
         )
@@ -8972,7 +8979,7 @@ impl Root {
             .mt(px(-16.))
             .px(px(8.))
             .pb(px(8.))
-            .children(self.typing_bar())
+            .children(self.typing_bar(cx))
             .children(self.slowmode_notice(cx))
             .child(self.regions.composer_probe())
             .child(
