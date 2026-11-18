@@ -424,6 +424,69 @@ pub(super) fn one_ping_per_dm(
     decision
 }
 
+/// FixImagesQuality (Vencord `src/plugins/fixImagesQuality`, `getSrc`): an attachment picture at its own resolution.
+/// In the chat the media proxy's picture without a size, scaled down only past 2000 x 1200 pixels; in the viewer, or
+/// in the chat too with `originalImagesInChat`, the original file on cdn.discordapp.com. `animated` is the
+/// original's `!freeze`; a frozen GIF asks for WebP. `None` leaves the app's own address.
+fn fixed_image_url_in(
+    state: &State,
+    src: &str,
+    (width, height): (u32, u32),
+    animated: bool,
+    modal: bool,
+) -> Option<String> {
+    const ID: &str = "FixImagesQuality";
+    if !state.is_on(ID) || src.starts_with("data:") {
+        return None;
+    }
+    let mut url = url::Url::parse(src).ok()?;
+    if !url.path().starts_with("/attachments/") {
+        return None;
+    }
+    let mut pairs: Vec<(String, String)> = url
+        .query_pairs()
+        .filter(|(key, _)| key != "animated" && key != "width" && key != "height")
+        .map(|(key, value)| (key.into_owned(), value.into_owned()))
+        .collect();
+    pairs.push(("animated".to_owned(), animated.to_string()));
+    if !animated && url.path().ends_with(".gif") {
+        pairs.retain(|(key, _)| key != "format");
+        pairs.push(("format".to_owned(), "webp".to_owned()));
+    }
+    let original = state.value(ID, "originalImagesInChat") == Value::Bool(true);
+    if !original && !modal {
+        let pixels = f64::from(width) * f64::from(height);
+        let limit = 2000. * 1200.;
+        if pixels > limit {
+            let scale = (pixels / limit).sqrt();
+            pairs.push((
+                "width".to_owned(),
+                (f64::from(width) / scale).round().to_string(),
+            ));
+            pairs.push((
+                "height".to_owned(),
+                (f64::from(height) / scale).round().to_string(),
+            ));
+        }
+    } else {
+        url.set_host(Some("cdn.discordapp.com")).ok()?;
+    }
+    url.query_pairs_mut().clear().extend_pairs(pairs);
+    Some(url.to_string())
+}
+
+pub(super) fn fixed_image_url(
+    src: &str,
+    size: (u32, u32),
+    animated: bool,
+    modal: bool,
+) -> Option<String> {
+    if crate::plugins::bypassed() {
+        return None;
+    }
+    crate::plugins::with(|state| fixed_image_url_in(state, src, size, animated, modal))
+}
+
 /// AlwaysTrust's `noDeleteSafety` and `confirmModal`: how a server is deleted.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum DeleteSafety {
@@ -944,5 +1007,56 @@ mod tests {
         let mut everyone = message(6, "9");
         everyone["mention_everyone"] = json!(true);
         assert!(ping_allowed_in(&state, &everyone, 1, Some(3), Some(5)));
+    }
+
+    #[test]
+    fn fix_images_quality_loads_full_resolution() {
+        let src = "https://media.discordapp.net/attachments/1/2/cat.png?ex=a&is=b&hm=c&width=400&height=300";
+        assert_eq!(
+            fixed_image_url_in(&State::default(), src, (800, 600), false, false),
+            None
+        );
+        let mut state = with_on("FixImagesQuality");
+        assert_eq!(
+            fixed_image_url_in(&state, src, (800, 600), false, false).as_deref(),
+            Some(
+                "https://media.discordapp.net/attachments/1/2/cat.png?ex=a&is=b&hm=c&animated=false"
+            )
+        );
+        // Past 2000 x 1200 the size is scaled down to that many pixels.
+        assert_eq!(
+            fixed_image_url_in(&state, src, (4000, 2400), true, false).as_deref(),
+            Some(
+                "https://media.discordapp.net/attachments/1/2/cat.png?ex=a&is=b&hm=c&animated=true&width=2000&height=1200"
+            )
+        );
+        // The viewer, or the chat with originalImagesInChat, loads the original file.
+        let original =
+            "https://cdn.discordapp.com/attachments/1/2/cat.png?ex=a&is=b&hm=c&animated=true";
+        assert_eq!(
+            fixed_image_url_in(&state, src, (4000, 2400), true, true).as_deref(),
+            Some(original)
+        );
+        state.set_value("FixImagesQuality", "originalImagesInChat", &json!(true));
+        assert_eq!(
+            fixed_image_url_in(&state, src, (4000, 2400), true, false).as_deref(),
+            Some(original)
+        );
+        // A frozen GIF asks for WebP; anything not an attachment is left alone.
+        let gif = "https://media.discordapp.net/attachments/1/2/a.gif";
+        assert_eq!(
+            fixed_image_url_in(&state, gif, (10, 10), false, true).as_deref(),
+            Some("https://cdn.discordapp.com/attachments/1/2/a.gif?animated=false&format=webp")
+        );
+        assert_eq!(
+            fixed_image_url_in(
+                &state,
+                "https://media.discordapp.net/external/x.png",
+                (1, 1),
+                true,
+                true
+            ),
+            None
+        );
     }
 }

@@ -469,6 +469,20 @@ pub(crate) const DEFS: &[Def] = &[
         settings: &[],
     },
     Def {
+        id: "FixImagesQuality",
+        name: "FixImagesQuality",
+        description: "Improves quality of images by loading them at their original resolution.",
+        origin: Origin::Vencord,
+        source: "src/plugins/fixImagesQuality/index.tsx",
+        default_on: false,
+        settings: &[Setting {
+            key: "originalImagesInChat",
+            label: "Original images in chat",
+            description: "Also load the original image in chat. Animated images then always play, and it may be slow.",
+            kind: Kind::Switch { default: false },
+        }],
+    },
+    Def {
         id: "GifPaste",
         name: "GifPaste",
         description: "Picking a GIF puts its link in the message box instead of sending it.",

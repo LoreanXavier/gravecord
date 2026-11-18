@@ -286,14 +286,27 @@ impl Root {
             })
             .map(|delta| {
                 let item = &open.items[step(open.index, open.items.len(), *delta)];
+                // Not in the pinned client: FixImagesQuality loads the original file (`plugin_hooks.rs`).
+                let fixed = (!item.is_video)
+                    .then(|| {
+                        super::plugin_hooks::fixed_image_url(
+                            &item.proxy,
+                            (item.width, item.height),
+                            item.animated,
+                            true,
+                        )
+                    })
+                    .flatten();
                 (
                     format!("lightbox:original:{}", item.key),
-                    super::media_image::image_url(
-                        &item.proxy,
-                        item.animated,
-                        item.width,
-                        item.height,
-                    ),
+                    fixed.unwrap_or_else(|| {
+                        super::media_image::image_url(
+                            &item.proxy,
+                            item.animated,
+                            item.width,
+                            item.height,
+                        )
+                    }),
                 )
             })
             .collect();

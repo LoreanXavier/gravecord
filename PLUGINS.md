@@ -12,7 +12,7 @@ every setting changed), and with every plugin off, and fails on one differing pi
 The list is the plugins enabled in the owner's Equicord backup of 2026-09-21 (156). Sources were read in the local
 Equicord checkout of 2026-11-14 (`src/plugins` is Vencord's, `src/equicordplugins` Equicord's).
 
-Totals: 21 ported, 3 native, 87 planned, 45 not applicable.
+Totals: 22 ported, 3 native, 86 planned, 45 not applicable.
 
 Status: **ported** works and has its proof; **native** is what gravecord already does without a plugin;
 **planned** is not built yet (an import keeps its settings for when it is); **not applicable** has nothing to
@@ -68,7 +68,7 @@ port in a native client, or was removed upstream.
 | ExtraContextMenusAPI | not applicable | (not in the 2026-11-14 checkout) |  | client-mod plumbing (an API for other plugins), nothing to port. |  |
 | FavoriteEmojiFirst | planned | plugins/favEmojiFirst/index.tsx | Puts your favorite emoji first in the emoji autocomplete and also has emoji alias. | favourite emoji first in the emoji autocomplete. |  |
 | FavoriteGifSearch | not applicable | (not in the 2026-11-14 checkout) |  | removed from Equicord in 0001bab8: "now a default Discord feature". |  |
-| FixImagesQuality | planned | plugins/fixImagesQuality/index.tsx | Improves quality of images by loading them at their original resolution | original-resolution image requests in the image pipeline. |  |
+| FixImagesQuality | ported | plugins/fixImagesQuality/index.tsx | Improves quality of images by loading them at their original resolution | media_image.rs, lightbox.rs: attachment pictures without the proxy's size in chat (scaled only past 2000 x 1200), the original file in the viewer (and in chat with originalImagesInChat). | `fix_images_quality_loads_full_resolution`; plugins-off image-menu (an attachment picture) |
 | FixYoutubeEmbeds | planned | plugins/fixYoutubeEmbeds.desktop/index.tsx | Bypasses youtube videos being blocked from display on Discord (for example by UMG) | the YouTube embed workaround inside the web host. |  |
 | ForceOwnerCrown | native | plugins/forceOwnerCrown/index.ts | Force the owner crown next to usernames even if the server is large. | the member list shows the owner crown at any server size. |  |
 | FriendInvites | planned | plugins/friendInvites/index.ts | Create and manage friend invite links via slash commands (/create friend invite, /view friend invites, /revoke friend invites). | slash commands for friend invite links. |  |
@@ -200,6 +200,7 @@ Every setting of each original (`definePluginSettings`), its type and default th
 | CallTimer | `trackSelf` | BOOLEAN | `false` | ported |
 | CallTimer | `showSeconds` | BOOLEAN | `false` | ported |
 | CallTimer | `watchLargeGuilds` | BOOLEAN | `false` | ported |
+| FixImagesQuality | `originalImagesInChat` | BOOLEAN | `false` | ported |
 | MemberCount | `toolTip` | BOOLEAN | `true` | ported |
 | MemberCount | `memberList` | BOOLEAN | `true` | ported |
 | MemberCount | `voiceActivity` | BOOLEAN | `true` | ported |
