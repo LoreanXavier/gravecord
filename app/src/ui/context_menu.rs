@@ -27,6 +27,8 @@ pub(super) enum Target {
         role: Id,
         guild: Id,
     },
+    /// Not in the pinned client: a PinDMs category header, by its place (`plugin_hooks/pin_dms.rs`).
+    PinCategory(u16),
     InventoryFeed,
     InventoryFeedAtPointer,
     InventoryAuthor {
@@ -296,6 +298,12 @@ pub(super) enum Act {
     PluginServerInfo,
     /// Not in the pinned client: BiggerStreamPreview's row (`plugin_hooks/bigger_stream_preview.rs`).
     PluginViewStreamPreview,
+    /// Not in the pinned client: PinDMs' rows (`plugin_hooks/pin_dms.rs`).
+    PluginPinDms,
+    PluginPinEditCategory,
+    PluginPinCategoryUp,
+    PluginPinCategoryDown,
+    PluginPinDeleteCategory,
 }
 
 impl Act {
@@ -438,6 +446,11 @@ impl Act {
         Act::ToggleProgressBar,
         Act::ModerationSettings,
         Act::ReportRaid,
+        Act::PluginPinDms,
+        Act::PluginPinEditCategory,
+        Act::PluginPinCategoryUp,
+        Act::PluginPinCategoryDown,
+        Act::PluginPinDeleteCategory,
     ];
 
     #[cfg(test)]
@@ -578,6 +591,11 @@ impl Act {
             Act::ToggleProgressBar => 132,
             Act::ModerationSettings => 133,
             Act::ReportRaid => 134,
+            Act::PluginPinDms => 130,
+            Act::PluginPinEditCategory => 131,
+            Act::PluginPinCategoryUp => 132,
+            Act::PluginPinCategoryDown => 133,
+            Act::PluginPinDeleteCategory => 134,
         }
     }
 }
@@ -615,7 +633,12 @@ pub(super) fn status(act: Act) -> Status {
         | Act::PluginViewIcon
         | Act::PluginViewBanner
         | Act::PluginServerInfo
-        | Act::PluginViewStreamPreview => Wired,
+        | Act::PluginViewStreamPreview
+        | Act::PluginPinDms
+        | Act::PluginPinEditCategory
+        | Act::PluginPinCategoryUp
+        | Act::PluginPinCategoryDown
+        | Act::PluginPinDeleteCategory => Wired,
         Act::InventoryAbout
         | Act::InventoryHide
         | Act::ViewAllActivity
@@ -2971,6 +2994,7 @@ impl Root {
         let items = match target {
             Target::AccountPanel => self.account_panel_items(),
             Target::Role { role, guild } => self.better_role_items(role, guild),
+            Target::PinCategory(index) => self.pin_category_items(usize::from(index)),
             Target::SpotifyActivity { user, popout } => spotify_activity_items(
                 self.stores
                     .current_user
@@ -3408,6 +3432,8 @@ impl Root {
         let items = self.with_server_info_row(items, target);
         // Not in the pinned client: BiggerStreamPreview's row (`plugin_hooks/bigger_stream_preview.rs`).
         let items = self.with_stream_preview_row(items, target);
+        // Not in the pinned client: PinDMs' "Pin DMs" row (`plugin_hooks/pin_dms.rs`).
+        let items = self.with_pin_dms_row(items, target);
         self.close_all_context_menus();
         self.menu_scroll.set_offset(gpui::point(px(0.), px(0.)));
         let at = flip_above(at, menu_height(&items), self.viewport.1);
@@ -3620,6 +3646,16 @@ impl Root {
             // Not in the pinned client: ServerInfo (`plugin_hooks/server_info.rs`).
             (Act::PluginServerInfo, Target::Guild(guild)) => {
                 self.server_info_open(guild, cx);
+            }
+            // Not in the pinned client: PinDMs' category menu (`plugin_hooks/pin_dms.rs`).
+            (
+                Act::PluginPinEditCategory
+                | Act::PluginPinCategoryUp
+                | Act::PluginPinCategoryDown
+                | Act::PluginPinDeleteCategory,
+                Target::PinCategory(index),
+            ) => {
+                self.pin_category_run(act, usize::from(index), cx);
             }
             // Not in the pinned client: BiggerStreamPreview (`plugin_hooks/bigger_stream_preview.rs`).
             (Act::PluginViewStreamPreview, Target::User { user, .. }) => {
@@ -3946,6 +3982,7 @@ impl Root {
                     Target::ProgressBar(guild) | Target::RaidAlert(guild) => guild,
                     Target::RtcChannel { channel, .. } => channel,
                     Target::Role { role, .. } => role,
+                    Target::PinCategory(_) => return,
                     Target::ProfileWidget { .. }
                     | Target::AttachmentLink
                     | Target::AccountPanel
@@ -4796,6 +4833,8 @@ impl Root {
                 rows
             }
             Act::MoveTo => self.move_rows(target),
+            // Not in the pinned client: PinDMs' submenu (`plugin_hooks/pin_dms.rs`).
+            Act::PluginPinDms => self.pin_dms_sub_rows(target),
             _ => Vec::new(),
         }
     }
@@ -4976,6 +5015,10 @@ impl Root {
     ) {
         let row = self.context_sub_rows(act, target).into_iter().nth(index);
         match act {
+            // Not in the pinned client: PinDMs' submenu (`plugin_hooks/pin_dms.rs`).
+            Act::PluginPinDms => {
+                self.pin_dms_run_sub(target, index, cx);
+            }
             Act::AiTranslate => {
                 if let Some((code, name)) = super::composer_ai::languages().into_iter().nth(index) {
                     self.composer_translate(Some((code, name)), cx);

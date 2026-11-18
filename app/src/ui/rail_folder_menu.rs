@@ -56,6 +56,8 @@ pub(super) struct FolderSettings {
     color: Option<u64>,
     picker: Option<Picker>,
     _events: Subscription,
+    /// Not in the pinned client: the dialog edits a PinDMs category instead of a folder (`plugin_hooks/pin_dms.rs`).
+    plugin: Option<super::plugin_hooks::PinCategoryDraft>,
 }
 
 fn to_hsv(rgb: u32) -> (f32, f32, f32) {
@@ -351,6 +353,54 @@ impl Root {
             color: current.color,
             picker: None,
             _events: events,
+            plugin: None,
+        });
+        cx.notify();
+    }
+
+    /// Not in the pinned client: PinDMs' category dialog (`NewCategoryModal`, `plugin_hooks/pin_dms.rs`): New
+    /// Category with its first conversation, or Edit Category, in this dialog's layout (Name, Color without the
+    /// default swatch, Create or Save).
+    pub(in crate::ui) fn open_pin_category_dialog(
+        &mut self,
+        category: Option<super::plugin_hooks::PinCategory>,
+        channel: Option<dc_state::Id>,
+        cx: &mut Context<Self>,
+    ) {
+        let text = category.as_ref().map_or_else(
+            || self.pin_category_default_name(),
+            |category| category.name.clone(),
+        );
+        let name = cx.new(|cx| {
+            let mut editor = Editor::new(editor_style(), cx);
+            editor.set_single_line(true);
+            editor.set_text(&text);
+            editor
+        });
+        let events = cx.subscribe(&name, |this, _, event: &EditorEvent, cx| {
+            match event {
+                EditorEvent::Submit(_) => this.finish_folder_settings(cx),
+                EditorEvent::Cancel => this.rail_folders.settings = None,
+                EditorEvent::Edited => {}
+            }
+            cx.notify();
+        });
+        self.rail_folders.settings = Some(FolderSettings {
+            folder: 0,
+            name,
+            color: Some(u64::from(
+                category
+                    .as_ref()
+                    .map_or(super::plugin_hooks::PIN_DEFAULT_COLOR, |category| {
+                        category.color
+                    }),
+            )),
+            picker: None,
+            _events: events,
+            plugin: Some(super::plugin_hooks::PinCategoryDraft {
+                editing: category.map(|category| category.id),
+                channel,
+            }),
         });
         cx.notify();
     }
@@ -361,6 +411,18 @@ impl Root {
             return;
         };
         let name = open.name.read(cx).text().trim().to_owned();
+        // Not in the pinned client: PinDMs' category (`plugin_hooks/pin_dms.rs`).
+        if let Some(draft) = &open.plugin {
+            let color = open
+                .color
+                .map_or(super::plugin_hooks::PIN_DEFAULT_COLOR, |value| value as u32);
+            if name.is_empty() {
+                self.rail_folders.settings = Some(open);
+                return;
+            }
+            self.pin_category_save(draft, name, color, cx);
+            return;
+        }
         if self
             .stores
             .folders
@@ -493,38 +555,44 @@ impl Root {
                 }))
         };
         let mut control = div().relative().h(px(110.)).w_full();
+        // Not in the pinned client: PinDMs' dialog has no default swatch (`renderDefaultButton={() => null}`), so
+        // its custom swatch takes the first place.
+        let pin = open.plugin.as_ref();
+        let custom_left = if pin.is_some() { 0. } else { 80. };
         // `defaultContainer_BorJ2C` and `customContainer_BorJ2C`: two 70x50 swatches, 10px apart.
-        control = control.child(
-            div()
-                .id("folder-colour-default")
-                .absolute()
-                .left(px(0.))
-                .top(px(0.))
-                .w(px(70.))
-                .h(px(50.))
-                .rounded(px(8.))
-                .cursor_pointer()
-                .bg(rgba((DEFAULT_COLOUR << 8) | 0xff))
-                .flex()
-                .items_center()
-                .justify_center()
-                .when(current.is_none(), |this| {
-                    this.child(icon("checkmark_large", 25.83, "--white"))
-                })
-                .on_click(cx.listener(|this, _, _, cx| {
-                    if let Some(open) = this.rail_folders.settings.as_mut() {
-                        open.color = None;
-                        open.picker = None;
-                    }
-                    cx.notify();
-                })),
-        );
+        if pin.is_none() {
+            control = control.child(
+                div()
+                    .id("folder-colour-default")
+                    .absolute()
+                    .left(px(0.))
+                    .top(px(0.))
+                    .w(px(70.))
+                    .h(px(50.))
+                    .rounded(px(8.))
+                    .cursor_pointer()
+                    .bg(rgba((DEFAULT_COLOUR << 8) | 0xff))
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .when(current.is_none(), |this| {
+                        this.child(icon("checkmark_large", 25.83, "--white"))
+                    })
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        if let Some(open) = this.rail_folders.settings.as_mut() {
+                            open.color = None;
+                            open.picker = None;
+                        }
+                        cx.notify();
+                    })),
+            );
+        }
         let custom_fill = current.filter(|_| true);
         control = control.child(
             div()
                 .id("folder-colour-custom")
                 .absolute()
-                .left(px(80.))
+                .left(px(custom_left))
                 .top(px(0.))
                 .w(px(70.))
                 .h(px(50.))
@@ -578,30 +646,52 @@ impl Root {
             .flex()
             .items_center()
             .child(div().flex_1().min_w(px(0.)).child(open.name.clone()));
+        // Not in the pinned client: PinDMs' labels (`plugin_hooks/pin_dms.rs`).
+        let editing = pin.is_some_and(|draft| draft.editing.is_some());
+        let (title, name_label, color_label, done) = match pin {
+            None => (
+                dc_intl::tr("Folder Settings"),
+                dc_intl::tr("Folder Name"),
+                dc_intl::tr("Folder Color"),
+                dc_intl::tr("Done"),
+            ),
+            Some(_) if editing => (
+                dc_intl::tr("Edit Category"),
+                dc_intl::tr("Name"),
+                dc_intl::tr("Color"),
+                dc_intl::tr("Save"),
+            ),
+            Some(_) => (
+                dc_intl::tr("New Category"),
+                dc_intl::tr("Name"),
+                dc_intl::tr("Color"),
+                dc_intl::tr("Create"),
+            ),
+        };
         let body = div()
             .flex()
             .flex_col()
             .gap(px(16.))
             .child(
                 div()
-                    .child(text_line(dc_intl::tr("Folder Name"), 500., "--text-strong").mb(px(8.)))
+                    .child(text_line(name_label, 500., "--text-strong").mb(px(8.)))
                     .child(field),
             )
             .child(
                 div()
                     .h(px(140.))
-                    .child(text_line(dc_intl::tr("Folder Color"), 500., "--text-strong").mb(px(8.)))
+                    .child(text_line(color_label, 500., "--text-strong").mb(px(8.)))
                     .child(control),
             )
             .into_any_element();
         let spec = modal::Spec {
             id: "folder-settings",
-            title: dc_intl::tr("Folder Settings").into(),
+            title: title.into(),
             subtitle: None,
             body: Some(body),
             buttons: vec![modal::button(
                 "folder-settings-done",
-                dc_intl::tr("Done"),
+                done,
                 modal::Tone::Primary,
                 |this, _, cx| this.finish_folder_settings(cx),
             )],

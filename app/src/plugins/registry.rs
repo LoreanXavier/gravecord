@@ -240,6 +240,11 @@ const fn millis(default: f64) -> Kind {
 /// by the code (a test checks both ways), so a setting can never sit in the page doing nothing unnoticed.
 pub(crate) const IDLE_SETTINGS: &[(&str, &str, &str)] = &[
     (
+        "PinDMs",
+        "friendsSidebarGroupDms",
+        "it lists pinned group DMs in the friends sidebar's pinned sections, and the app has no friends sidebar yet",
+    ),
+    (
         "SuperReactionTweaks",
         "unlimitedSuperReactionPlaying",
         "it lifts the cap on super reaction effects playing at once, and the app plays no super reaction effects yet",
@@ -290,12 +295,17 @@ pub(crate) const IDLE_SETTINGS: &[(&str, &str, &str)] = &[
     ),
 ];
 
-/// Settings shown only while a switch of the same plugin is on (`hidden` in the original).
-pub(crate) const SHOWN_WHEN: &[(&str, &str, &str)] = &[(
-    "MessageClickActions",
-    "additionalReactEmojis",
-    "addAdditionalReacts",
-)];
+/// Settings shown only while a switch of the same plugin is on (`hidden` in the original); an empty switch is never
+/// on, so its setting is never listed (`hidden: true`).
+pub(crate) const SHOWN_WHEN: &[(&str, &str, &str)] = &[
+    (
+        "MessageClickActions",
+        "additionalReactEmojis",
+        "addAdditionalReacts",
+    ),
+    // Folded by a click on the "Direct Messages" title.
+    ("PinDMs", "dmSectionCollapsed", ""),
+];
 
 /// Every plugin, in the order the Plugins page lists them (by name).
 pub(crate) const DEFS: &[Def] = &[
@@ -1082,6 +1092,46 @@ pub(crate) const DEFS: &[Def] = &[
                 label: "Always play the sound",
                 description: "Play the message notification sound even when it is disabled.",
                 kind: Kind::Switch { default: false },
+            },
+        ],
+    },
+    Def {
+        id: "PinDMs",
+        name: "PinDMs",
+        description: "Allows you to pin private channels to the top of your DM list. To pin/unpin or re-order pins, right click DMs",
+        origin: Origin::Vencord,
+        source: "src/plugins/pinDms/index.tsx",
+        default_on: false,
+        settings: &[
+            Setting {
+                key: "pinOrder",
+                label: "Pin Order",
+                description: "Which order should pinned DMs be displayed in?",
+                kind: Kind::Select {
+                    options: &[
+                        ("Most recent message", Lit::Int(0)),
+                        ("Custom (right click channels to reorder)", Lit::Int(1)),
+                    ],
+                    default: 0,
+                },
+            },
+            Setting {
+                key: "canCollapseDmSection",
+                label: "Can Collapse DM Section",
+                description: "Allow uncategorised DMs section to be collapsable",
+                kind: Kind::Switch { default: false },
+            },
+            Setting {
+                key: "dmSectionCollapsed",
+                label: "DM Section Collapsed",
+                description: "Collapse DM section",
+                kind: Kind::Switch { default: false },
+            },
+            Setting {
+                key: "friendsSidebarGroupDms",
+                label: "Friends Sidebar Group Dms",
+                description: "Show pinned group DMs in the friends sidebar.",
+                kind: Kind::Switch { default: true },
             },
         ],
     },

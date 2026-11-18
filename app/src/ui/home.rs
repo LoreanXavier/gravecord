@@ -649,10 +649,37 @@ impl Root {
         let nitro_selected = self.guild.is_none() && self.channel.is_none() && self.nitro_open;
         // 645959: a message request or spam channel is in neither sorted list; pinned conversations (`FAVORITE`, the
         // "@me" override flag) come first, each group newest first.
-        let listed = dc_state::private_channels::sorted_channels(&self.stores);
+        #[allow(unused_mut)]
+        let mut listed = dc_state::private_channels::sorted_channels(&self.stores);
         let no_private_channels = listed.is_empty();
+        // Not in the pinned client: PinDMs' categories above the plain list, whose pinned conversations leave it
+        // (`plugin_hooks/pin_dms.rs`). `None` while the plugin is off.
+        let pins = self.pin_dms_layout();
+        let mut pin_sections: Vec<AnyElement> = Vec::new();
+        let mut dm_collapsed = false;
+        let mut dm_foldable = false;
+        if let Some(layout) = &pins {
+            listed.retain(|channel| !layout.pinned.contains(&channel.id));
+            dm_foldable = layout.look.can_collapse;
+            dm_collapsed = layout.look.can_collapse && layout.look.dm_collapsed;
+            for (index, category, channels) in &layout.sections {
+                pin_sections.push(self.pin_dms_header(*index, category, cx));
+                for id in channels {
+                    if category.collapsed && self.channel != Some(*id) {
+                        continue;
+                    }
+                    if let Some(channel) =
+                        self.stores.private_channels.iter().find(|dm| dm.id == *id)
+                        && let Some(row) = self.dm_row(channel, cx)
+                    {
+                        pin_sections.push(row);
+                    }
+                }
+            }
+        }
         let rows: Vec<AnyElement> = listed
             .into_iter()
+            .filter(|_| !dm_collapsed)
             .filter_map(|channel| self.dm_row(channel, cx))
             .collect();
         div()
@@ -796,6 +823,7 @@ impl Root {
                     .h(px(1.))
                     .bg(color("--background-mod-subtle")),
             )
+            .children(pin_sections)
             .child(
                 div()
                     .flex_none()
@@ -812,7 +840,20 @@ impl Root {
                     .text_color(color("--channels-default"))
                     // `.privateChannelsHeaderContainer_Bce46W:hover` (814796).
                     .hover(|style| style.text_color(color("--interactive-text-hover")))
-                    .child(dc_intl::tr("Direct Messages"))
+                    // Not in the pinned client: PinDMs' `canCollapseDmSection` makes the title fold the list
+                    // (`makeSpanProps`, `plugin_hooks/pin_dms.rs`).
+                    .child(if dm_foldable {
+                        div()
+                            .id("dm-header-fold")
+                            .cursor_pointer()
+                            .on_click(
+                                cx.listener(|this, _, _, cx| this.pin_dms_fold_dm_section(cx)),
+                            )
+                            .child(dc_intl::tr("Direct Messages"))
+                            .into_any_element()
+                    } else {
+                        dc_intl::tr("Direct Messages").into_any_element()
+                    })
                     .child(div().flex_1())
                     .child(
                         // "Create DM": the same New Message picker as the Friends page's New Group DM.

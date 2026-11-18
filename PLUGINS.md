@@ -12,7 +12,7 @@ every setting changed), and with every plugin off, and fails on one differing pi
 The list is the plugins enabled in the owner's Equicord backup of 2026-09-21 (156). Sources were read in the local
 Equicord checkout of 2026-11-14 (`src/plugins` is Vencord's, `src/equicordplugins` Equicord's).
 
-Totals: 49 ported, 6 native, 56 planned, 45 not applicable.
+Totals: 50 ported, 6 native, 55 planned, 45 not applicable.
 
 Status: **ported** works and has its proof; **native** is what gravecord already does without a plugin;
 **planned** is not built yet (an import keeps its settings for when it is); **not applicable** has nothing to
@@ -117,7 +117,7 @@ port in a native client, or was removed upstream.
 | OpenInApp | planned | plugins/openInApp/index.ts | Open links in their respective apps instead of your browser | Spotify, Steam and other links opened in their apps. |  |
 | PermissionFreeWill | planned | plugins/permissionFreeWill/index.ts | Disables the client-side restrictions for channel permission management. | no client-side limits in channel permission editing. |  |
 | PermissionsViewer | planned | plugins/permissionsViewer/index.tsx | View the permissions a user or channel has, and the roles of a server | a permission breakdown in profiles and menus. |  |
-| PinDMs | planned | plugins/pinDms/index.tsx | Allows you to pin private channels to the top of your DM list. To pin/unpin or re-order pins, right click DMs | pinned DM categories in the DM list. |  |
+| PinDMs | ported | plugins/pinDms/index.tsx | Allows you to pin private channels to the top of your DM list. To pin/unpin or re-order pins, right click DMs | plugin_hooks/pin_dms.rs: categories at the top of the DM list (header in the category colour with a chevron, a click folds it, the open conversation stays), pinned conversations leave the plain list; pinOrder by recent message or custom; canCollapseDmSection folds the plain list from its title (dmSectionCollapsed hidden). Pin DMs submenu in the DM/user menus (Add Category, categories; Unpin DM, Move Up/Down), category menu (Edit, Move Up/Down, Delete), New/Edit Category dialog in the folder dialog's layout without the default swatch. Categories per account in storage. GAP: the friends sidebar, the quick switcher order, submenu row tints. | `categories_round_trip_and_order_by_recency_or_as_kept`, `the_pin_menu_offers_categories_or_unpin_and_moves`, `swaps_stay_inside_the_list_and_settings_default_off`; frames pd-menu, pd-sub, pd-dialog, pd-list, pd-folded, pd-catmenu; plugins-off dm-list, user-menu |
 | PlatformIndicators | ported | plugins/platformIndicators/index.tsx | Adds platform indicators (Desktop, Mobile, Web...) to users | plugin_hooks/platform_indicators.rs: an icon per client and its status colour (with tooltips) after names in the member list, in message headers, and before the pronouns in the DM sidebar profile; the phone for anyone on mobile with colorMobileIndicator. Your own clients are the presence the server sent, else this desktop (the app keeps no session client list). Not yet in the popout and full profile (only the DM sidebar has the pronoun line the original patches the same way). | `plugin_hooks::platform_indicators::tests` (2); frames pi-on/pi-off; plugins-off member-list, chat, dm-list |
 | PreviewMessage | planned | plugins/previewMessage/index.tsx | Lets you preview your message before sending it. | a preview of the message before sending. |  |
 | ProfileSectionsAPI | not applicable | equicordplugins/_api/profileSections.ts | API to add sections near the 'Member Since' area of user profile panels. | client-mod plumbing (an API for other plugins), nothing to port. |  |
@@ -258,6 +258,11 @@ Every setting of each original (`definePluginSettings`), its type and default th
 | OnePingPerDM | `allowEveryone` | BOOLEAN | `false` | ported |
 | OnePingPerDM | `ignoreUsers` | STRING | `""` | ported |
 | OnePingPerDM | `alwaysPlaySound` | BOOLEAN | `false` | ported |
+| PinDMs | `pinOrder` | SELECT | `PinOrder.LastMessage` | ported |
+| PinDMs | `canCollapseDmSection` | BOOLEAN | `false` | ported |
+| PinDMs | `dmSectionCollapsed` | BOOLEAN | `false` | ported |
+| PinDMs | `friendsSidebarGroupDms` | BOOLEAN | `true` | nothing to act on yet: it lists pinned group DMs in the friends sidebar's pinned sections, and the app has no friends sidebar yet |
+| PinDMs | `userBasedCategoryList` | CUSTOM | `{} as Record<string` | not ported: kept apart from the settings (storage key plugin-pin-dms, per account), written by the Pin DMs menus and the category dialog. |
 | PlatformIndicators | `list` | BOOLEAN | `true` | ported |
 | PlatformIndicators | `profiles` | BOOLEAN | `true` | ported |
 | PlatformIndicators | `messages` | BOOLEAN | `true` | ported |

@@ -15,6 +15,7 @@ mod message_clicks;
 mod message_peek;
 mod message_pronouns;
 mod mute_channel_mentions;
+mod pin_dms;
 mod platform_indicators;
 mod read_all;
 mod role_color_everywhere;
@@ -35,6 +36,9 @@ pub(in crate::ui) use download_all::{DOWNLOAD_ALL, download_all};
 
 pub(super) use message_clicks::follow as follow_message_clicks;
 pub(super) use message_peek::Peek;
+pub(in crate::ui) use pin_dms::{
+    Category as PinCategory, DEFAULT_COLOR as PIN_DEFAULT_COLOR, PinCategoryDraft,
+};
 pub(super) use platform_indicators::{Place as PlatformPlace, mobile_status};
 pub(in crate::ui) use role_color_everywhere::{
     Place as RolePlace, label as role_colored_label, paint as role_colored,
