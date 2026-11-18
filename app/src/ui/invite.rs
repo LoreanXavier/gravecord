@@ -18,6 +18,10 @@ use std::collections::HashSet;
 pub(super) const CREATE_KEY: &str = "invite-create";
 /// Thirty days, the default the recording sends.
 const MAX_AGE: u64 = 2_592_000;
+/// `TOO_MANY_INVITES` (module 652215).
+const TOO_MANY_INVITES: u64 = 30016;
+/// `INVITES_HELP` (module 652215).
+const INVITES_HELP: &str = "https://support.discord.com/hc/en-us/articles/208866998-Invites-101";
 
 pub(crate) struct Invite {
     pub channel: Id,
@@ -27,6 +31,33 @@ pub(crate) struct Invite {
     pub code: Option<String>,
     /// People this dialog already sent the link to.
     pub sent: HashSet<Id>,
+    /// The invite could not be made (`networkError` of module 312556).
+    pub error: Option<InviteError>,
+}
+
+/// Why the invite could not be made, as `v` of module 312556 words it.
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) enum InviteError {
+    /// `TOO_MANY_INVITES` (30016).
+    TooMany,
+    Message(String),
+}
+
+/// `v` of module 312556: the API's `TOO_MANY_INVITES`, its message, or `eAn6z2`.
+pub(super) fn invite_error(report: &Value) -> Option<InviteError> {
+    if report["ok"] == true {
+        return None;
+    }
+    let body = &report["body"];
+    if body["code"].as_u64() == Some(TOO_MANY_INVITES) {
+        return Some(InviteError::TooMany);
+    }
+    Some(InviteError::Message(
+        body["message"]
+            .as_str()
+            .map(str::to_owned)
+            .unwrap_or_else(|| dc_intl::t("eAn6z2").to_owned()),
+    ))
 }
 
 impl Root {
@@ -81,11 +112,19 @@ impl Root {
             query: String::new(),
             code: previous,
             sent: HashSet::new(),
+            error: None,
         });
         cx.notify();
     }
 
     pub(super) fn invite_created(&mut self, report: &Value, cx: &mut Context<Self>) {
+        if let Some(error) = invite_error(report)
+            && let Some(invite) = self.invite.as_mut()
+        {
+            invite.error = Some(error);
+            cx.notify();
+            return;
+        }
         let Some(code) = report["body"]["code"].as_str().map(str::to_owned) else {
             return;
         };
@@ -222,6 +261,67 @@ impl Root {
                     .child(if sent { "Sent" } else { "Invite" }),
             )
             .into_any_element()
+    }
+
+    /// `v` of module 312556 under the link (`errorMessage_COIWNl`, 8px down, body-xs in `--text-feedback-critical`):
+    /// too many invites names the server's invite list and the help article to someone who may manage the server, and
+    /// only the cause to anyone else; another failure shows its message.
+    fn invite_error_line(&self, error: InviteError, cx: &mut Context<Self>) -> AnyElement {
+        let line = div()
+            .mt(px(8.))
+            .text_size(px(12.))
+            .line_height(px(16.))
+            .text_color(color("--text-feedback-critical"));
+        let manage = self.guild.is_some_and(|guild| {
+            self.my_permission(guild, None, dc_state::permissions::MANAGE_GUILD)
+        });
+        match error {
+            InviteError::Message(message) => line.child(message).into_any_element(),
+            InviteError::TooMany if !manage => line.child(dc_intl::t("/FxH6G")).into_any_element(),
+            InviteError::TooMany => {
+                // `H/RUY1` with its two hooks.
+                let lead = "The maximum number of server invites have been generated. ";
+                let list = "View invites for this server.";
+                let help = "Learn more";
+                let text =
+                    format!("{lead}{list} {help} about how server invitations work on Discord!");
+                let list_at = lead.len()..lead.len() + list.len();
+                let help_at = list_at.end + 1..list_at.end + 1 + help.len();
+                let link = gpui::HighlightStyle {
+                    color: Some(color("--text-link").into()),
+                    ..Default::default()
+                };
+                let root = cx.entity().downgrade();
+                let guild = self.guild;
+                line.child(
+                    gpui::InteractiveText::new(
+                        "invite-error",
+                        gpui::StyledText::new(text).with_highlights(vec![
+                            (list_at.clone(), link),
+                            (help_at.clone(), link),
+                        ]),
+                    )
+                    .on_click(vec![list_at, help_at], move |at, _, cx| {
+                        if at == 1 {
+                            cx.open_url(INVITES_HELP);
+                            return;
+                        }
+                        let _ = root.update(cx, |this, cx| {
+                            this.invite = None;
+                            if let Some(guild) = guild {
+                                this.open_server_settings_at(
+                                    guild,
+                                    super::server_settings::Page::Invites,
+                                    cx,
+                                );
+                            }
+                            cx.notify();
+                        });
+                    }),
+                )
+                .into_any_element()
+            }
+        }
     }
 
     pub(super) fn invite_modal(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
@@ -390,6 +490,12 @@ impl Root {
                                     .text_color(color("--text-link"))
                                     .child("Edit invite link."),
                             ),
+                    )
+                    .children(
+                        invite
+                            .error
+                            .clone()
+                            .map(|error| self.invite_error_line(error, cx)),
                     ),
             )
             .into_any_element();
@@ -420,3 +526,34 @@ impl Root {
 }
 
 pub(super) const DM_KEY: &str = "invite-dm:";
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_failed_invite_says_why_as_the_modal_does() {
+        assert_eq!(
+            invite_error(&json!({"ok": true, "body": {"code": "abc"}})),
+            None
+        );
+        assert_eq!(
+            invite_error(
+                &json!({"ok": false, "status": 400, "body": {"code": 30016, "message": "Maximum"}})
+            ),
+            Some(InviteError::TooMany)
+        );
+        assert_eq!(
+            invite_error(
+                &json!({"ok": false, "status": 403, "body": {"code": 50013, "message": "Missing Permissions"}})
+            ),
+            Some(InviteError::Message("Missing Permissions".into()))
+        );
+        assert_eq!(
+            invite_error(&json!({"ok": false, "status": 0, "body": null})),
+            Some(InviteError::Message(
+                "Seems like something's gone wrong. Sorry about that.".into()
+            ))
+        );
+    }
+}

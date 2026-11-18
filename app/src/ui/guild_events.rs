@@ -11,6 +11,7 @@ mod detail;
 mod list;
 mod menu;
 pub(super) mod pickers;
+mod prompt;
 pub(super) mod schedule;
 
 use super::{Root, color, icon};
