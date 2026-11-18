@@ -140,6 +140,8 @@ pub(super) struct Caps {
     pub quick_mention: bool,
     /// Not in the pinned client: the DownloadAllAttachments plugin's button (`plugin_hooks/download_all.rs`).
     pub download_all: bool,
+    /// Not in the pinned client: Translate+'s button (`plugin_hooks/translate_plus.rs`).
+    pub translate: bool,
 }
 
 /// One button of the bar, in its order.
@@ -165,6 +167,8 @@ pub(super) enum Button {
     QuickMention,
     /// Not in the pinned client: DownloadAllAttachments (`plugin_hooks/download_all.rs`).
     DownloadAll,
+    /// Not in the pinned client: Translate+ (`plugin_hooks/translate_plus.rs`).
+    Translate,
 }
 
 /// The buttons of `nA`, left to right. The expanded bar (Shift held) leads with the shortcuts and drops the quick
@@ -200,6 +204,9 @@ pub(super) fn buttons(caps: Caps) -> Vec<Button> {
     }
     if caps.quick_mention {
         out.push(Button::QuickMention);
+    }
+    if caps.translate {
+        out.push(Button::Translate);
     }
     if caps.can_react {
         out.push(Button::AddReaction);
@@ -347,6 +354,7 @@ impl Root {
             expanded: false,
             quick_mention: super::plugin_hooks::quick_mention(private || can(SEND_MESSAGES)),
             download_all: super::plugin_hooks::download_all(message),
+            translate: super::plugin_hooks::translate_plus(&message.content),
         }
     }
 }
@@ -386,6 +394,7 @@ pub(super) fn label_icon(button: Button, caps: Caps) -> (&'static str, &'static 
         Button::More => (dc_intl::tr("More"), "msg_more"),
         Button::QuickMention => ("Quick Mention", "plugin_mention"),
         Button::DownloadAll => (super::plugin_hooks::DOWNLOAD_ALL, "plugin_cloud_download"),
+        Button::Translate => ("Translate", "plugin_translate"),
     }
 }
 

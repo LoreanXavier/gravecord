@@ -244,6 +244,18 @@ pub enum Request {
         height: u32,
         avatars: Vec<CloudAvatar>,
     },
+    /// Not in the pinned client: Translate+'s translation of a message's text (`plugins::translate_plus`): Google
+    /// Translate, the Toki Pona translator and the two dictionaries, none with authorization. The answer comes under
+    /// `key` as `Update::Fetched` (`{src, text}`, or `null` when the Toki Pona call failed, as the original then shows
+    /// nothing).
+    PluginTranslate {
+        key: String,
+        text: String,
+        target: String,
+        toki: bool,
+        sitelen: bool,
+        shavian: bool,
+    },
     /// Not in the pinned client: GifProviderSwitcher's GIF calls to Tenor or Giphy (no authorization), their answer
     /// in the shape of Discord's own (`plugins::gif_provider`) under `key` as `Update::Fetched` (`null` on failure).
     GifProvider {
@@ -845,6 +857,7 @@ impl Request {
             Request::FriendCloud { .. } => "FriendCloud",
             Request::FetchZip { .. } => "FetchZip",
             Request::GifProvider { .. } => "GifProvider",
+            Request::PluginTranslate { .. } => "PluginTranslate",
             Request::ResolveRedirect { .. } => "ResolveRedirect",
             Request::Typing { .. } => "Typing",
             Request::React { .. } => "React",
@@ -886,6 +899,7 @@ impl Request {
             | Request::FriendCloud { .. }
             | Request::FetchZip { .. }
             | Request::GifProvider { .. }
+            | Request::PluginTranslate { .. }
             | Request::ResolveRedirect { .. }
             | Request::LoadMessages { .. }
             | Request::PrefetchMessages { .. }
@@ -2516,6 +2530,21 @@ pub async fn run(token: Token, updates: mpsc::UnboundedSender<Update>, requests:
                     });
                 });
             }
+            Request::PluginTranslate {
+                key,
+                text,
+                target,
+                toki,
+                sitelen,
+                shavian,
+            } => {
+                tokio::spawn(async move {
+                    let body = translate_plus(&client, text, &target, toki, sitelen, shavian)
+                        .await
+                        .unwrap_or(Value::Null);
+                    let _ = updates.send(Update::Fetched { key, body });
+                });
+            }
             Request::GifProvider {
                 key,
                 provider,
@@ -3319,6 +3348,87 @@ fn guild_member_requests(guilds: &[u64], query: &str, limit: u64, user_ids: &[u6
             json!({"guild_id": ids, "user_ids": users, "presences": true})
         })
         .collect()
+}
+
+/// Not in the pinned client: Translate+'s `translate` (`plugins::translate_plus`). The dictionaries are kept once
+/// fetched (the original fetches them again each time).
+async fn translate_plus(
+    client: &Client,
+    text: String,
+    target: &str,
+    toki: bool,
+    sitelen: bool,
+    shavian: bool,
+) -> Option<Value> {
+    use crate::plugins::translate_plus::{self as tp, Route};
+    static DICTIONARIES: std::sync::Mutex<Vec<(&'static str, Value)>> =
+        std::sync::Mutex::new(Vec::new());
+    let dictionary = |url: &'static str| async move {
+        let kept = DICTIONARIES
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .iter()
+            .find(|(at, _)| *at == url)
+            .map(|(_, value)| value.clone());
+        if let Some(kept) = kept {
+            return Some(kept);
+        }
+        let bytes = client.fetch_public(url).await.ok()?;
+        let value: Value = serde_json::from_slice(&bytes).ok()?;
+        DICTIONARIES
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .push((url, value.clone()));
+        Some(value)
+    };
+    // `google`: an empty text stays empty, a failure is the original's notice.
+    let google = |text: String| async move {
+        if text.is_empty() {
+            return (String::new(), String::new());
+        }
+        match client.fetch_public(&tp::google_url(target, &text)).await {
+            Ok(bytes) => match serde_json::from_slice::<Value>(&bytes) {
+                Ok(body) => tp::google_answer(&body),
+                Err(_) => ("en".to_owned(), tp::FAILED.to_owned()),
+            },
+            Err(_) => ("en".to_owned(), tp::FAILED.to_owned()),
+        }
+    };
+    let (src, out) = match tp::route(&text, toki, sitelen, shavian) {
+        Route::Toki { sitelen } => {
+            let text = if sitelen {
+                tp::translate_sitelen(&text, &dictionary(tp::SITELEN_URL).await?)
+            } else {
+                text
+            };
+            let bytes = client
+                .post_public_json(
+                    tp::TOKI_URL,
+                    &json!({"text": text, "src": "tl", "target": "en"}),
+                )
+                .await
+                .ok()?;
+            let answer: Value = serde_json::from_slice(&bytes).ok()?;
+            let english = answer["translation"][0].as_str()?.to_owned();
+            let out = if target == "en" {
+                english
+            } else {
+                google(english).await.1
+            };
+            ("tp".to_owned(), out)
+        }
+        Route::Shavian => {
+            let english = tp::translate_shavian(&text, &dictionary(tp::SHAVIAN_URL).await?);
+            let out = if target == "en" {
+                english
+            } else {
+                google(english).await.1
+            };
+            ("sh".to_owned(), out)
+        }
+        Route::Google => google(text).await,
+    };
+    Some(json!({"src": src, "text": out}))
 }
 
 #[cfg(test)]

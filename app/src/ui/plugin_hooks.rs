@@ -60,6 +60,8 @@ mod steam_status_sync;
 mod streaming_codec_disabler;
 pub(in crate::ui) use streaming_codec_disabler::sync_streaming_codecs;
 mod super_reaction_tweaks;
+mod translate_plus;
+pub(in crate::ui) use translate_plus::translate_plus;
 mod typing_indicator;
 mod typing_tweaks;
 mod userpfp;

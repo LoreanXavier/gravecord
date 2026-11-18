@@ -98,6 +98,8 @@ pub(super) enum Action {
     SaveImage,
     /// Not in the pinned client: ReverseImageSearch's "Search Image" submenu (`plugin_hooks.rs`).
     SearchImage,
+    /// Not in the pinned client: Translate+'s "Translate" (`plugin_hooks/translate_plus.rs`).
+    PluginTranslate,
     /// "Save File" of a voice message (module 761304 `save-voice-message-audio`): its audio file is downloaded.
     SaveVoiceFile,
     /// "Favorite Emoji" / "Unfavorite Emoji" of the emoji under the pointer (module 253925).
@@ -150,6 +152,8 @@ pub(super) struct SavedState {
     pub image: bool,
     /// Not in the pinned client: ReverseImageSearch offers "Search Image" for the picture under the pointer.
     pub search_image: bool,
+    /// Not in the pinned client: Translate+ offers "Translate" for a message with text.
+    pub translate: bool,
     /// A voice message with its audio file: Save File joins the picture rows' group.
     pub voice_file: bool,
     /// The pointer was on a video: "Stats for Nerds" ends the picture rows' group.
@@ -382,6 +386,15 @@ pub(super) fn message_items_saved(own: bool, saved: SavedState) -> Vec<Item> {
             "Copy Text",
             "menu_copy_text",
             Action::CopyText,
+            false,
+        ));
+    }
+    // Not in the pinned client: Translate+, right after Copy Text (`plugin_hooks/translate_plus.rs`).
+    if saved.translate {
+        actions.push(Item::Entry(
+            "Translate",
+            "plugin_translate",
+            Action::PluginTranslate,
             false,
         ));
     }
@@ -721,6 +734,8 @@ impl Root {
             .and_then(|channel| self.stores.messages.get(&channel))
             .and_then(|list| list.iter().find(|known| known.id == message));
         let empty = found.is_some_and(|known| known.content.is_empty());
+        let translate =
+            found.is_some_and(|known| super::plugin_hooks::translate_plus(&known.content));
         let pinned = found.is_some_and(|known| known.pinned);
         let reacted = found.is_some_and(|known| !known.reactions.is_empty());
         let channel = self.current_channel();
@@ -735,6 +750,7 @@ impl Root {
             reminder: state.is_some_and(|due| due.is_some()),
             speaking: self.speaking_message == Some(message),
             empty,
+            translate,
             pinned,
             reacted,
             manage_reactions: reacted
@@ -880,6 +896,8 @@ impl Root {
         match action {
             Action::Edit => self.begin_edit(message, &found.content, window, cx),
             Action::Reply => self.begin_reply(found, window, cx),
+            // Not in the pinned client: Translate+ (`plugin_hooks/translate_plus.rs`).
+            Action::PluginTranslate => self.translate_plus_start(message, found.content.clone()),
             Action::CopyText => {
                 let text = if found.content.is_empty() {
                     parse_block_text(&found.content)
@@ -1397,7 +1415,12 @@ impl Root {
                 .text_color(label_tint)
                 // `label_M3qk4j`: one line, cut with an ellipsis.
                 .truncate()
-                .child(dc_intl::tr(label)),
+                // Not in the pinned client: a plugin's row keeps its English label, as the original does.
+                .child(if run == Action::PluginTranslate {
+                    label
+                } else {
+                    dc_intl::tr(label)
+                }),
         )
         // The keyboard shortcut of Copy (module 373963 `keyCombo`).
         .when(run == Action::CopySelection, |this| {
@@ -1414,6 +1437,19 @@ impl Root {
                     } else {
                         "Ctrl+C"
                     }),
+            )
+        })
+        // Not in the pinned client: Translate+ gives its row the icon after the label as well (`icon` and
+        // `leadingAccessory`).
+        .when(run == Action::PluginTranslate, |this| {
+            this.child(
+                svg()
+                    .path("icons/plugin_translate.svg")
+                    .size(px(18.))
+                    .flex_none()
+                    .ml(px(8.))
+                    .text_color(icon_tint)
+                    .group_hover(group.clone(), move |style| style.text_color(hover_icon)),
             )
         })
         .when(run == Action::VideoStats, |this| {

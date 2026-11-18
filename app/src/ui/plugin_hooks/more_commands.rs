@@ -946,7 +946,8 @@ impl Root {
                 self.more_send(info);
             }
             Does::Uptime => {
-                let minutes = crate::perf::since_process_start_ms() / 60_000;
+                // `performance.now()`: the time since the process started.
+                let minutes = crate::start_trace::now_ms() / 60_000;
                 self.more_send(format!("> **System Uptime**: {minutes} minutes"));
             }
             Does::Time => {

@@ -147,6 +147,7 @@ assert len(idle) == idle_entries, f'IDLE_SETTINGS: read {len(idle)} of {idle_ent
 
 # How each ported plugin is built here, and its proof.
 PORTED = {
+    'Translate+': "plugin_hooks/translate_plus.rs + plugins/translate_plus.rs: Translate after Copy Text in a message's menu (icon before and after the label) and a hover bar button, for a message with text; Toki Pona (isTokiPona's word share), sitelen pona glyphs (read back with the pinned sitelen-pona dictionary when sitelen is on) and Shavian (the pinned shavian dictionary, one punctuation mark off each end) as the original detects them, the Toki Pona translator for the first, Google Translate (gtx) to target for the rest and for a non-English target; the translation is drawn last under the message as icon, markdown text and (translated from <language> - Dismiss) in muted italic; a failed Google call shows the original's notice, a failed Toki Pona call nothing.",
     'SteamStatusSync': "plugin_hooks/steam_status_sync.rs: a change of your status (or of game activity sharing) opens steam://friends/status/ with the Steam status chosen for it (Disabled leaves Steam alone; Invisible while game activity is hidden with goInvisibleIfActivityIsHidden); the first status seen only starts the watch, a capture run opens nothing.",
     'FixYoutubeEmbeds': "plugin_hooks/fix_youtube_embeds.rs: youtubeDescription shows a video embed's description, folded to 20 characters and ... (a click opens and folds it). The Referer fix for YouTube's embedded player page has no request to change here: this client opens no player page.",
     'TenorGifSearch': "plugin_hooks/gif_provider_switcher.rs + plugins/gif_provider.rs (now GifProviderSwitcher upstream): the GIF picker's category tiles, trending results, searches and shares go to Tenor or Giphy (provider; Klipy keeps Discord's), their answers turned into Discord's shapes off the UI thread (Request::GifProvider, paged to the picker's 50); the search field reads Search Tenor and each result tile has its source's badge (in the pinned client's primary badge colours: the client mod's --badge-background-brand is not a token of this Discord build). GAP: the provider choice beside the search field and several providers at once (provider is set in the plugin settings), search suggestions and the /tenor command (the app has neither).",
@@ -246,6 +247,7 @@ PORTED = {
                      'so the original\'s 200% cap on the sync has nothing to cap.',
 }
 TESTS = {
+    'Translate+': '`languages_are_found_as_the_original_finds_them`, `dictionaries_apply_as_in_the_original`, `nothing_is_offered_while_off`; frames pending (live runs held)',
     'SteamStatusSync': '`statuses_map_as_the_original`',
     'FixYoutubeEmbeds': '`long_descriptions_fold_to_twenty_characters`; frames pending (live runs held)',
     'TenorGifSearch': '`the_provider_and_badges_follow_the_original`, `answers_take_discord_shapes`; frames pending (live runs held)',
@@ -429,7 +431,6 @@ PLANNED = {
     'SedEnhanced': "the pinned client's own sed rule first: a message `s/a/b` edits your last message (the `searchReplace` rule of the send path, module 857069), which the port does not have yet (GAP: main app); SedEnhanced only widens that rule's syntax and regex.",
     'ShowHiddenThings': "the pinned client's own pieces first: the chat timeout icon by a timed-out member's name (showCommunicationDisabledStyles) and the invites-paused tooltip on the server rail are not drawn by the port yet (GAPs in the official UI), so showTimeouts and showInvitesPaused would unlock nothing; showModView lifts the user menu's Open in Mod View permission check, which the port does not apply yet either (it shows the row in every server).",
     'Streaks': 'DM streak counts (its service login in the data store is not copied).',
-    'Translate+': 'message translation (needs a translation service).',
     'ValidReply': "the pinned client's \"Message could not be loaded\" reply bar first: a reply whose message the server did not embed draws no reply line here (GAP in the reply path: intl REPLY_QUOTE_MESSAGE_NOT_LOADED); ValidReply's hover fetch hangs on that bar.",
     'VoiceMessageTranscriber': 'an on-device Whisper model runner.',
     'ExpressionCloner': 'menu rows that clone, edit and delete emoji and stickers into your servers.',

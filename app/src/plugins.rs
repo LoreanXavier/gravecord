@@ -17,6 +17,7 @@ pub(crate) mod gif_provider;
 mod registry;
 mod state;
 pub(crate) mod zip;
+pub(crate) mod translate_plus;
 pub(crate) mod zip_preview;
 
 pub(crate) use backup::{Report, export, import};

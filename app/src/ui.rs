@@ -287,9 +287,9 @@ pub(crate) mod start_cache;
 mod status_menu;
 mod stream_failed;
 mod video_pip;
-#[cfg(feature = "capture")]
 pub(crate) use plugin_hooks::more_commands_outgoing;
 pub(crate) use plugin_hooks::spotify_premium_forced;
+#[cfg(feature = "capture")]
 pub(crate) use server_discovery::FORCE_ELIGIBLE;
 mod server_discovery_form;
 mod server_emoji;
@@ -1509,7 +1509,8 @@ impl Root {
             Update::OverlayFocus(foreground) => self.overlay_focus_changed(foreground, cx),
             Update::Rpc(event) => self.rpc_event(event, cx),
             // Not in the pinned client: a plugin's desktop notification (`plugin_hooks/plugin_notifications.rs`).
-            Update::NotificationClicked(channel) if self.plugin_notification_clicked(channel, cx) => {}
+            Update::NotificationClicked(channel)
+                if self.plugin_notification_clicked(channel, cx) => {}
             Update::NotificationClicked(channel) => self.open_notification_channel(channel, cx),
             Update::Tray(action) => self.tray_action(action, cx),
             Update::Updater => cx.notify(),
@@ -2004,6 +2005,10 @@ impl Root {
                 }
                 // Not in the pinned client: GlobalBadges' list (`plugin_hooks/global_badges.rs`).
                 if self.global_badges_fetched(&key, &body, cx) {
+                    return;
+                }
+                // Not in the pinned client: Translate+'s translations (`plugin_hooks/translate_plus.rs`).
+                if self.translate_plus_fetched(&key, &body, cx) {
                     return;
                 }
                 // Not in the pinned client: UserPFP's list (`plugin_hooks/userpfp.rs`).
@@ -8654,6 +8659,9 @@ impl Root {
                         .children(self.accessories(message, cx))
                         .children((!is_starter).then(|| self.reactions(message, cx)).flatten())
                         .children(self.ephemeral_notice(message, cx))
+                        // Not in the pinned client: Translate+'s translation, the last of the accessories
+                        // (`plugin_hooks/translate_plus.rs`).
+                        .children(self.translate_plus_accessory(message, cx))
                         .into_any_element(),
                 };
                 let row = div().pr(px(16.));
@@ -9319,6 +9327,15 @@ impl Root {
                     })))
                 }
                 // Not in the pinned client: DownloadAllAttachments (`plugin_hooks/download_all.rs`).
+                // Not in the pinned client: Translate+ (`plugin_hooks/translate_plus.rs`).
+                Button::Translate => {
+                    let content = message.content.clone();
+                    bar.child(tipped(cx).on_click(cx.listener(move |this, _, _, cx| {
+                        this.tip = None;
+                        this.translate_plus_start(id, content.clone());
+                        cx.notify();
+                    })))
+                }
                 Button::DownloadAll => {
                     let attachments = message.attachments.clone();
                     bar.child(tipped(cx).on_click(cx.listener(move |this, _, _, cx| {

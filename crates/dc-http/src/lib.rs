@@ -564,6 +564,19 @@ impl Client {
         Ok(bytes)
     }
 
+    /// A public JSON POST: no authorization, so tokens never reach the other host.
+    pub async fn post_public_json(&self, url: &str, body: &Value) -> Result<Vec<u8>, Error> {
+        let response = self
+            .http()
+            .post(url)
+            .header(reqwest::header::ACCEPT, "application/json")
+            .json(body)
+            .send()
+            .await?
+            .error_for_status()?;
+        Ok(response.bytes().await?.to_vec())
+    }
+
     /// Public GET (no authorization) reading at most `limit` bytes of the body: an error status, or a body over the
     /// limit (by its length header or as it streams), comes back as [`LimitedGet`] instead of the bytes.
     pub async fn fetch_public_limited(&self, url: &str, limit: usize) -> Result<LimitedGet, Error> {

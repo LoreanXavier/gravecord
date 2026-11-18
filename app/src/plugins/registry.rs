@@ -2351,6 +2351,43 @@ pub(crate) const DEFS: &[Def] = &[
         }],
     },
     Def {
+        id: "Translate+",
+        name: "Translate+",
+        description: "Vencord's translate plugin but with support for artistic languages!",
+        origin: Origin::Equicord,
+        source: "src/equicordplugins/translatePlus/index.tsx",
+        default_on: false,
+        settings: &[
+            Setting {
+                key: "target",
+                label: "Target",
+                description: "Target language",
+                kind: Kind::Text {
+                    default: "en",
+                    max_len: 200,
+                },
+            },
+            Setting {
+                key: "toki",
+                label: "Toki",
+                description: "Enable Toki Pona",
+                kind: Kind::Switch { default: true },
+            },
+            Setting {
+                key: "sitelen",
+                label: "Sitelen",
+                description: "Enable Sitelen Pona",
+                kind: Kind::Switch { default: true },
+            },
+            Setting {
+                key: "shavian",
+                label: "Shavian",
+                description: "Enable Shavian",
+                kind: Kind::Switch { default: true },
+            },
+        ],
+    },
+    Def {
         id: "TypingIndicator",
         name: "TypingIndicator",
         description: "Adds an indicator if someone is typing on a channel.",
