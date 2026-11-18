@@ -41,8 +41,11 @@ pub(super) fn activity_for_profile(profile: u64) -> u64 {
     }
 }
 
-/// An account that never chose a default (`ACTIVITY_STATUS_UNSET`) sees the page's first option, Share in all
-/// servers (`ACTIVITY_STATUS_OFF`), and the change is weighed from there.
+/// An account that never chose a default (`ACTIVITY_STATUS_UNSET`): module 253932's `eX` reads it as null and falls
+/// back to `ineligibleDefault`, `ACTIVITY_STATUS_OFF` (Share in all servers, the option the captured page shows
+/// selected); GAP: `eligibleDefault` (ON_FOR_LARGE_GUILDS) applies with the GUILD_ACTIVITY_STATUS eligibility, which is
+/// not tracked here. An unset profile visibility likewise reads as FRIENDS_AND_ALL_GUILDS (`eN`), which
+/// `activity_for_profile` already maps from 0.
 fn shown_default(value: u64) -> u64 {
     if value == 0 {
         ACTIVITY_STATUS_OFF

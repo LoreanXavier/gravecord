@@ -711,9 +711,7 @@ impl Root {
             motion::css(200., motion::Ease::EaseOut),
         );
         let full_motion = !motion::reduced();
-        if animating && full_motion {
-            motion::keep_animating();
-        }
+        // No art is drawn yet (see below), so nothing asks for a frame per tick.
         let [
             inner_opacity,
             inner_scale,
@@ -723,20 +721,16 @@ impl Root {
             dot_y,
         ] = pulse(motion::now(), definition.high_priority, full_motion);
         // GAP: the four SVGs of `indicator_hqoWiU` (c200a7504d42173d, 5c37dde2c8764c10, dabf5fea0bb87bf8,
-        // fd5f7ebed980d3e1) are not in the snapshot; brand discs stand in for the circles, exclaim and dot.
-        // A disc `side` wide at `from` in the box, under `transform: scale()` about its centre.
-        let disc = |side: f32, from: f32, scale: f32, alpha: f32| {
-            let grown = side * scale;
-            let shift = from - (grown - side) / 2.;
-            div()
-                .absolute()
-                .left(px(shift))
-                .top(px(shift))
-                .size(px(grown))
-                .rounded_full()
-                .bg(color("--background-brand"))
-                .opacity(alpha)
-        };
+        // fd5f7ebed980d3e1) are not in the snapshot, so the indicator keeps its box, anchor and click but draws no
+        // art rather than a guessed one; the pulse values stay computed for when the art is added.
+        let _ = (
+            inner_opacity,
+            inner_scale,
+            outer_opacity,
+            outer_scale,
+            exclaim_y,
+            dot_y,
+        );
         let placed = match inset {
             Inset::Left(x, y) => div().absolute().left(px(x)).top(px(y)),
             Inset::Right(x, y) => div().absolute().right(px(x)).top(px(y)),
@@ -748,29 +742,6 @@ impl Root {
             .size(px(INDICATOR))
             .opacity(opacity)
             .child(self.anchor_probe(format!("tutorial-{id}")))
-            .child(disc(INDICATOR, 0., outer_scale, outer_opacity))
-            .child(disc(30., 3., inner_scale, inner_opacity))
-            .when(definition.high_priority, |this| {
-                this.child(
-                    div()
-                        .absolute()
-                        .left(px(18.5))
-                        .top(px(-10. + exclaim_y))
-                        .w(px(9.))
-                        .h(px(22.))
-                        .rounded(px(4.5))
-                        .bg(color("--background-brand")),
-                )
-                .child(
-                    div()
-                        .absolute()
-                        .left(px(14.))
-                        .top(px(14. + dot_y))
-                        .size(px(8.))
-                        .rounded_full()
-                        .bg(color("--background-brand")),
-                )
-            })
             .on_click(cx.listener(move |this, _: &gpui::ClickEvent, _, cx| {
                 // The popout's target toggles it (`onClick` of module 600160 `E`, the Popout of 265872); the row or
                 // button under it does not take the click.

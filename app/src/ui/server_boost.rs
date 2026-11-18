@@ -58,6 +58,19 @@ const INVITE_PERKS: [(&str, &str); 4] = [
     ("boost_perk_gif", "Stand out with an animated server icon"),
     POWERFUL,
 ];
+/// `Pf` of module 598933: what an animated banner's upsell (module 13808) lists.
+const ANIMATED_BANNER_PERKS: [(&str, &str); 4] = [
+    (
+        "boost_perk_1",
+        "Upload up to 60 custom stickers and 250 custom emoji",
+    ),
+    ("boost_perk_upload", "Increased file upload limit to 100MB"),
+    (
+        "boost_perk_v0",
+        "Easily add new members with a Custom Invite Link",
+    ),
+    POWERFUL,
+];
 const VANITY_PERKS: [(&str, &str); 4] = [
     (
         "boost_perk_v0",
@@ -874,9 +887,9 @@ impl Root {
             this.close_perks();
             cx.notify();
         });
-        // Module 13808's perks: the banner list, or for an animated banner the animated icon's (`Pf`).
+        // Module 13808's perks: the banner list (`QR`), or for an animated banner `Pf`.
         let list = match &preview {
-            Some((_, true)) => INVITE_PERKS,
+            Some((_, true)) => ANIMATED_BANNER_PERKS,
             _ => perks.list(),
         };
         let rows: Vec<AnyElement> = list
