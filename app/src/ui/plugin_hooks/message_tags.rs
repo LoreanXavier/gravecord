@@ -134,6 +134,8 @@ struct Dialog {
     message: Entity<Editor>,
     editing: Option<String>,
     guide: bool,
+    /// The name has not taken the keys yet (`autoFocus`): the first drawing gives them to it.
+    focus: bool,
     _subs: Vec<Subscription>,
 }
 
@@ -286,6 +288,7 @@ impl Root {
                 message,
                 editing: tag.map(|tag| tag.name),
                 guide: false,
+                focus: true,
                 _subs: subs,
             });
         });
@@ -328,7 +331,22 @@ impl Root {
     }
 
     /// The tag dialog over everything, while it is open.
-    pub(in crate::ui) fn message_tags_dialog(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
+    pub(in crate::ui) fn message_tags_dialog(
+        &self,
+        window: &mut gpui::Window,
+        cx: &mut Context<Self>,
+    ) -> Option<AnyElement> {
+        // `autoFocus`: the name takes the keys once, when the dialog is first drawn.
+        let first = DIALOG.with(|dialog| {
+            dialog
+                .borrow_mut()
+                .as_mut()
+                .and_then(|open| std::mem::take(&mut open.focus).then(|| open.name.clone()))
+        });
+        if let Some(name) = first {
+            let handle = gpui::Focusable::focus_handle(name.read(cx), cx);
+            window.focus(&handle, cx);
+        }
         let (name, message, editing, guide) = DIALOG.with(|dialog| {
             dialog.borrow().as_ref().map(|open| {
                 (
@@ -354,7 +372,12 @@ impl Root {
             None
         };
         let field = |editor: Entity<Editor>, tall: bool| {
+            let handle = gpui::Focusable::focus_handle(editor.read(cx), cx);
             div()
+                .cursor_text()
+                .on_mouse_down(gpui::MouseButton::Left, move |_, window, cx| {
+                    window.focus(&handle, cx);
+                })
                 .min_h(px(if tall { 80. } else { 40. }))
                 .rounded(px(8.))
                 .border_1()
@@ -405,7 +428,7 @@ impl Root {
                     .gap(px(8.))
                     .text_size(px(14.))
                     .text_color(color("--text-default"))
-                    .child(super::super::icon("settings_info", 16., "--text-muted"))
+                    .child(super::super::icon("circle_info", 16., "--text-muted"))
                     .child("View Arguments guide")
                     .on_click(cx.listener(|_, _, _, cx| {
                         DIALOG.with(|dialog| {
