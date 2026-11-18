@@ -2,6 +2,7 @@
 
 mod always_animate;
 mod call_timer;
+mod download_all;
 mod game_activity_toggle;
 mod member_count;
 mod message_clicks;
@@ -14,6 +15,7 @@ mod typing_indicator;
 mod voice_stats;
 
 pub(in crate::ui) use always_animate::{Part as AnimatePart, always_animate};
+pub(in crate::ui) use download_all::{DOWNLOAD_ALL, download_all};
 
 pub(super) use message_clicks::follow as follow_message_clicks;
 pub(super) use message_peek::Peek;
@@ -920,6 +922,7 @@ mod tests {
             can_react: true,
             can_reply: true,
             quick_mention: true,
+            download_all: false,
             ..Caps::default()
         };
         assert_eq!(
@@ -929,6 +932,7 @@ mod tests {
         let caps = Caps {
             can_reply: true,
             quick_mention: true,
+            download_all: false,
             ..Caps::default()
         };
         assert_eq!(buttons(caps)[0], Button::QuickMention);

@@ -541,6 +541,20 @@ pub(crate) const DEFS: &[Def] = &[
         settings: &[],
     },
     Def {
+        id: "DownloadAllAttachments",
+        name: "DownloadAllAttachments",
+        description: "Adds a popover button to download all attachments in a message at once.",
+        origin: Origin::Equicord,
+        source: "src/equicordplugins/downloadAllAttachments/index.tsx",
+        default_on: false,
+        settings: &[Setting {
+            key: "downloadAllFileTypes",
+            label: "All file types",
+            description: "Also download non-media attachments. Only enable this if you trust what people send you.",
+            kind: Kind::Switch { default: false },
+        }],
+    },
+    Def {
         id: "FixImagesQuality",
         name: "FixImagesQuality",
         description: "Improves quality of images by loading them at their original resolution.",

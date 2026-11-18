@@ -1757,6 +1757,10 @@ impl Root {
                 if self.spotify_metadata_fetched(&key, &body, cx) {
                     return;
                 }
+                // Not in the pinned client: DownloadAllAttachments' outcome (`plugin_hooks/download_all.rs`).
+                if self.download_all_answered(&key, &body, cx) {
+                    return;
+                }
                 self.active_now_fetched(&key, &body);
                 if key.starts_with(chat_notices::KEY_PREFIX) {
                     self.thread_step_fetched(&key, &body);
@@ -8592,6 +8596,14 @@ impl Root {
                         this.composer
                             .update(cx, |composer, cx| composer.insert(&text, cx));
                         cx.notify();
+                    })))
+                }
+                // Not in the pinned client: DownloadAllAttachments (`plugin_hooks/download_all.rs`).
+                Button::DownloadAll => {
+                    let attachments = message.attachments.clone();
+                    bar.child(tipped(cx).on_click(cx.listener(move |this, _, _, cx| {
+                        this.tip = None;
+                        this.download_all_attachments(id, &attachments, cx);
                     })))
                 }
                 Button::More => {

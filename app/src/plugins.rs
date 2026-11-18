@@ -15,6 +15,7 @@ mod backup;
 pub(crate) mod clear_urls;
 mod registry;
 mod state;
+pub(crate) mod zip;
 
 pub(crate) use backup::{Report, export, import};
 pub(crate) use registry::{DEFS, Def, IDLE_SETTINGS, Kind, SHOWN_WHEN, Setting, def};

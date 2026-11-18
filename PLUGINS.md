@@ -12,7 +12,7 @@ every setting changed), and with every plugin off, and fails on one differing pi
 The list is the plugins enabled in the owner's Equicord backup of 2026-09-21 (156). Sources were read in the local
 Equicord checkout of 2026-11-14 (`src/plugins` is Vencord's, `src/equicordplugins` Equicord's).
 
-Totals: 31 ported, 5 native, 75 planned, 45 not applicable.
+Totals: 32 ported, 5 native, 74 planned, 45 not applicable.
 
 Status: **ported** works and has its proof; **native** is what gravecord already does without a plugin;
 **planned** is not built yet (an import keeps its settings for when it is); **not applicable** has nothing to
@@ -60,7 +60,7 @@ port in a native client, or was removed upstream.
 | Decor | planned | plugins/decor/index.tsx | Create and use your own custom avatar decorations, or pick your favorite from the presets. | its third-party avatar decorations service (decor-auth in the backup's data store is not copied). |  |
 | DisableCallIdle | ported | plugins/disableCallIdle/index.ts | Disables automatically getting kicked from a DM voice call after 3 minutes and being moved to an AFK voice channel. | dm_call.rs: no leave after 3 minutes alone in a DM call. The pinned client's other idle rule (`handleIdleUpdate`: leave voice after 5 h idle, move to the AFK channel) is not in the app yet, so there is nothing more to disable. | `switch_only_plugins_follow_their_switch_and_the_master`; frames idle-off/on (195 s alone) |
 | DisableDeepLinks | not applicable | plugins/noDeepLinks.web/index.ts | Disables Discord's stupid deep linking feature which tries to force you to use their Desktop App | web build only. |  |
-| DownloadAllAttachments | planned | equicordplugins/downloadAllAttachments/index.tsx | Adds a popover button to download all attachments in a message at once. | a hover-bar button that saves every attachment of a message. |  |
+| DownloadAllAttachments | ported | equicordplugins/downloadAllAttachments/index.tsx | Adds a popover button to download all attachments in a message at once. | plugin_hooks/download_all.rs: a hover bar button on messages with attachments (before QuickMention's, in plugin order); over 1 GiB a critical toast, else every attachment from its proxy URL (and with downloadAllFileTypes its URL after it), four at a time, saved into Downloads as the one file or a stored ZIP attachments-<id>.zip with unique names, then the original's success or failure toast. The app has no save dialog, so the file goes where its other downloads go. | `names_are_made_unique_as_the_original_does`, `the_archive_holds_each_file_stored_with_its_crc`, `sources_size_check_and_toasts_follow_the_original`, `download_all_saves_what_answered_as_a_zip_or_one_file` (local server); frame daa-on; plugins-off attachment-hover, hover-bar |
 | DynamicImageModalAPI | not applicable | plugins/_api/dynamicImageModalApi.ts | Allows you to omit either width or height when opening an image modal | client-mod plumbing (an API for other plugins), nothing to port. |  |
 | EquicordHelper | not applicable | equicordplugins/equicordHelper/index.tsx | Used to provide support and fix discord caused crashes. | workarounds for Discord web crashes in the mod. |  |
 | Experiments | planned | plugins/experiments/index.tsx | Enable Access to Experiments & other dev-only features in Discord! | the experiments and developer pages. |  |
@@ -205,6 +205,7 @@ Every setting of each original (`definePluginSettings`), its type and default th
 | CallTimer | `trackSelf` | BOOLEAN | `false` | ported |
 | CallTimer | `showSeconds` | BOOLEAN | `false` | ported |
 | CallTimer | `watchLargeGuilds` | BOOLEAN | `false` | nothing to act on yet: the original subscribes to every server's events for it (`GUILD_SUBSCRIPTIONS_FLUSH`); plugin code sends nothing, so times come from the voice states the app already receives |
+| DownloadAllAttachments | `downloadAllFileTypes` | BOOLEAN | `false` | ported |
 | FixImagesQuality | `originalImagesInChat` | BOOLEAN | `false` | ported |
 | GameActivityToggle | `oldIcon` | BOOLEAN | `false` | ported |
 | GameActivityToggle | `location` | SELECT | `"PANEL"` | nothing to act on yet: the original only reads it while EquicordToolbox is on, which is not ported; the button stays next to Mute/Deafen as with the default |

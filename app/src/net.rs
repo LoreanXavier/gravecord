@@ -348,6 +348,16 @@ pub enum Request {
         /// When set, the outcome comes back as `Update::Fetched { key, body: {"ok": bool} }`.
         done: Option<String>,
     },
+    /// Not in the pinned client: DownloadAllAttachments (`app/src/ui/plugin_hooks/download_all.rs`). Each file is
+    /// fetched from its first source that answers (four at a time); one file is saved as it is, several as a stored
+    /// ZIP named `archive`, into Downloads under a free name. The outcome comes back as
+    /// `Update::Fetched { key, body: {"saved": n, "total": m} }`.
+    DownloadAll {
+        /// Each file's sources in order, and its (already unique) name.
+        files: Vec<(Vec<String>, String)>,
+        archive: String,
+        key: String,
+    },
     /// `GET` with an application's own access token as the bearer (never the account token). The outcome comes
     /// back as `Update::Fetched { key, body }` shaped like `Request::Rest`'s.
     BearerGet {
@@ -691,6 +701,7 @@ impl Request {
             Request::SoundboardSounds { .. } => "SoundboardSounds",
             Request::GuildMembers { .. } => "GuildMembers",
             Request::Download { .. } => "Download",
+            Request::DownloadAll { .. } => "DownloadAll",
             Request::BearerGet { .. } => "BearerGet",
             Request::Interaction { .. } => "Interaction",
             Request::Pin { .. } => "Pin",
@@ -753,6 +764,7 @@ impl Request {
             | Request::Save { .. }
             | Request::GuildSettings { .. }
             | Request::Download { .. }
+            | Request::DownloadAll { .. }
             | Request::Interaction { .. }
             | Request::Pin { .. } => Inert::Deny,
             #[cfg(feature = "capture")]
@@ -1906,6 +1918,21 @@ pub async fn run(token: Token, updates: mpsc::UnboundedSender<Update>, requests:
                     }
                 });
             }
+            Request::DownloadAll {
+                files,
+                archive,
+                key,
+            } => {
+                let updates = updates.clone();
+                tokio::spawn(async move {
+                    let total = files.len();
+                    let saved = save_all(files, &archive).await;
+                    let _ = updates.send(Update::Fetched {
+                        key,
+                        body: json!({"saved": saved, "total": total}),
+                    });
+                });
+            }
             Request::BearerGet { key, route, bearer } => {
                 let updates = updates.clone();
                 tokio::spawn(async move {
@@ -2586,6 +2613,77 @@ async fn save_download(url: &str, filename: &str) -> bool {
     }
 }
 
+/// The first source of a file that answers with success.
+async fn fetch_first(sources: &[String]) -> Option<Vec<u8>> {
+    for source in sources {
+        match reqwest::get(source).await {
+            Ok(response) if response.status().is_success() => match response.bytes().await {
+                Ok(bytes) => return Some(bytes.to_vec()),
+                Err(error) => warn!("attachment download failed: {error}"),
+            },
+            Ok(response) => warn!("attachment download failed: {}", response.status()),
+            Err(error) => warn!("attachment download failed: {error}"),
+        }
+    }
+    None
+}
+
+/// `downloadAll` of DownloadAllAttachments after its size check: the files four at a time (`pLimit(4)`), then one
+/// file or the stored ZIP into Downloads. The number saved; 0 when nothing could be fetched or written.
+async fn save_all(files: Vec<(Vec<String>, String)>, archive: &str) -> usize {
+    let Some(folder) = std::env::var_os("USERPROFILE")
+        .map(|home| std::path::PathBuf::from(home).join("Downloads"))
+    else {
+        return 0;
+    };
+    save_all_into(&folder, files, archive).await
+}
+
+/// [`save_all`] into `folder`.
+async fn save_all_into(
+    folder: &std::path::Path,
+    files: Vec<(Vec<String>, String)>,
+    archive: &str,
+) -> usize {
+    let limit = std::sync::Arc::new(tokio::sync::Semaphore::new(4));
+    let mut set = tokio::task::JoinSet::new();
+    for (index, (sources, name)) in files.into_iter().enumerate() {
+        let limit = limit.clone();
+        set.spawn(async move {
+            let _permit = limit.acquire_owned().await.ok()?;
+            fetch_first(&sources)
+                .await
+                .map(|bytes| (index, name, bytes))
+        });
+    }
+    let mut fetched = Vec::new();
+    while let Some(done) = set.join_next().await {
+        if let Ok(Some(file)) = done {
+            fetched.push(file);
+        }
+    }
+    fetched.sort_by_key(|(index, ..)| *index);
+    let (name, bytes) = match fetched.as_slice() {
+        [] => return 0,
+        [(_, name, bytes)] => (name.clone(), bytes.clone()),
+        _ => {
+            let files: Vec<(String, Vec<u8>)> = fetched
+                .iter()
+                .map(|(_, name, bytes)| (name.clone(), bytes.clone()))
+                .collect();
+            (archive.to_owned(), crate::plugins::zip::stored(&files))
+        }
+    };
+    let target = free_name(folder, &name, |path| path.exists());
+    match std::fs::write(&target, &bytes) {
+        Ok(()) => fetched.len(),
+        Err(error) => {
+            warn!("attachments not saved: {error}");
+            0
+        }
+    }
+}
+
 fn cached_image_bytes(key: &str, bytes: Vec<u8>) -> Option<Vec<u8>> {
     if (key.starts_with("gif:") || key.starts_with("gif-category:"))
         && bytes.get(4..8) == Some(b"ftyp")
@@ -2635,6 +2733,78 @@ fn guild_member_requests(guilds: &[u64], query: &str, limit: u64, user_ids: &[u6
 
 #[cfg(test)]
 mod tests {
+    /// DownloadAllAttachments' path: first source that answers, the stored ZIP of what came, one file alone.
+    #[test]
+    fn download_all_saves_what_answered_as_a_zip_or_one_file() {
+        use std::io::{Read as _, Write as _};
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let base = format!("http://{}", listener.local_addr().unwrap());
+        std::thread::spawn(move || {
+            for stream in listener.incoming().flatten() {
+                let mut stream = stream;
+                let mut request = [0u8; 1024];
+                let read = stream.read(&mut request).unwrap_or(0);
+                let line = String::from_utf8_lossy(&request[..read]).to_string();
+                let path = line.split_whitespace().nth(1).unwrap_or("").to_owned();
+                let (status, body) = match path.as_str() {
+                    "/a" => ("200 OK", "AAA"),
+                    "/b" => ("200 OK", "BB"),
+                    _ => ("404 Not Found", ""),
+                };
+                let _ = write!(
+                    stream,
+                    "HTTP/1.1 {status}
+Content-Length: {}
+Connection: close
+
+{body}",
+                    body.len()
+                );
+            }
+        });
+        let folder = std::env::temp_dir().join(format!("gc-download-all-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&folder);
+        std::fs::create_dir_all(&folder).unwrap();
+        let url = |path: &str| format!("{base}{path}");
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let saved = runtime.block_on(super::save_all_into(
+            &folder,
+            vec![
+                (vec![url("/missing"), url("/a")], "a.txt".to_owned()),
+                (vec![url("/b")], "b.txt".to_owned()),
+                (vec![url("/missing")], "c.txt".to_owned()),
+            ],
+            "attachments-1.zip",
+        ));
+        assert_eq!(saved, 2);
+        let zip = std::fs::read(folder.join("attachments-1.zip")).unwrap();
+        assert_eq!(
+            zip,
+            crate::plugins::zip::stored(&[
+                ("a.txt".to_owned(), b"AAA".to_vec()),
+                ("b.txt".to_owned(), b"BB".to_vec()),
+            ])
+        );
+        let one = runtime.block_on(super::save_all_into(
+            &folder,
+            vec![(vec![url("/b")], "b.txt".to_owned())],
+            "attachments-2.zip",
+        ));
+        assert_eq!(one, 1);
+        assert_eq!(std::fs::read(folder.join("b.txt")).unwrap(), b"BB");
+        assert!(!folder.join("attachments-2.zip").exists());
+        let none = runtime.block_on(super::save_all_into(
+            &folder,
+            vec![(vec![url("/missing")], "c.txt".to_owned())],
+            "attachments-3.zip",
+        ));
+        assert_eq!(none, 0);
+        let _ = std::fs::remove_dir_all(&folder);
+    }
+
     #[test]
     fn cached_gif_video_is_decoded_before_it_becomes_an_image() {
         let video = crate::video_vod::synthetic_mp4(32, 32, 30, &[[220, 40, 20]], 1).unwrap();
