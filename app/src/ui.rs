@@ -75,6 +75,7 @@ mod context_menu;
 #[cfg(feature = "capture")]
 mod crawl_reset;
 mod create_channel;
+mod dangerous_link;
 mod deep_link_route;
 mod destructive;
 mod dm;
@@ -2015,6 +2016,10 @@ impl Root {
                     self.insights_fetched(&key, cx);
                     return;
                 }
+                if key == dangerous_link::BAD_DOMAINS_KEY {
+                    self.blocked_domains_fetched(&body);
+                    return;
+                }
                 if key.starts_with(server_automod::AUTOMOD_PREFIX) {
                     self.fetched.insert(key.clone(), body.clone());
                     self.automod_fetched(&key, cx);
@@ -2361,6 +2366,7 @@ impl Root {
     }
 
     fn after_ready(&mut self) {
+        self.request_blocked_domains();
         // The app starts where it was closed: the server last shown on the channel it was left on, or Home. A first
         // start, and a server that is gone, open Home as the official client does: opening a server marks its
         // channel read, and nobody chose that server.
@@ -7815,8 +7821,11 @@ impl Root {
                                 // `isFailed` colours the text, the links and the inline code; `isSending` fades the
                                 // content (module 74096).
                                 let state = self.send_state_of(id);
-                                self.failed_tint
-                                    .set(state == Some(send_state::SendState::Failed));
+                                // `blockedSend_REFxkR` keeps an AutoMod-blocked message in `--text-default`.
+                                self.failed_tint.set(
+                                    state == Some(send_state::SendState::Failed)
+                                        && !self.automod_blocked(id),
+                                );
                                 self.official_text.set(official.and_then(|look| look.text));
                                 let content = self.content(message);
                                 self.failed_tint.set(false);
@@ -7837,6 +7846,7 @@ impl Root {
                         .children(self.accessories(message, cx))
                         .children((!is_starter).then(|| self.reactions(message, cx)).flatten())
                         .children(self.ephemeral_notice(message, cx))
+                        .children(self.automod_blocked_notice(message, compact, cx))
                         .into_any_element(),
                 };
                 let row = div().pr(px(16.));
@@ -10541,39 +10551,37 @@ impl Render for Root {
                                                     regions::Kind::Messages,
                                                     regions::style_of(regions::Kind::Messages),
                                                 ))
-                                                .child(
-                                                    match self
-                                                        .current_dm()
-                                                        .and_then(|channel| {
-                                                            self.stores.dm_recipient(channel)
+                                                .child(match self.chat_blocker() {
+                                                    // `wrapper_ST_Y69` sits where the composer's form does: 8px in
+                                                    // and over the list's last 16px.
+                                                    Some(blocker) => div()
+                                                        .flex_none()
+                                                        .mt(px(-16.))
+                                                        .px(px(8.))
+                                                        .pb(px(8.))
+                                                        .child(match blocker {
+                                                            blocked::ChatBlocker::System {
+                                                                changelog,
+                                                            } => self
+                                                                .system_dm_composer(changelog, cx),
+                                                            blocked::ChatBlocker::Blocked(user) => {
+                                                                self.blocked_composer(user, cx)
+                                                            }
                                                         })
-                                                        .map(|user| user.id)
-                                                        .filter(|user| self.is_blocked(*user))
-                                                    {
-                                                        // `wrapper_ST_Y69` sits where the composer's form does: 8px in
-                                                        // and over the list's last 16px.
-                                                        Some(user) => div()
-                                                            .flex_none()
-                                                            .mt(px(-16.))
-                                                            .px(px(8.))
-                                                            .pb(px(8.))
-                                                            .child(self.blocked_composer(user, cx))
-                                                            .into_any_element(),
-                                                        None if self.screening_pending() => {
-                                                            self.screening_composer(cx)
-                                                        }
-                                                        None if self.follow_blocker_applies() => {
-                                                            self.follow_composer(cx)
-                                                        }
-                                                        None => self
-                                                            .regions
-                                                            .place_composer()
-                                                            .unwrap_or_else(|| {
-                                                                self.composer_bar(cx)
-                                                                    .into_any_element()
-                                                            }),
-                                                    },
-                                                ),
+                                                        .into_any_element(),
+                                                    None if self.screening_pending() => {
+                                                        self.screening_composer(cx)
+                                                    }
+                                                    None if self.follow_blocker_applies() => {
+                                                        self.follow_composer(cx)
+                                                    }
+                                                    None => self
+                                                        .regions
+                                                        .place_composer()
+                                                        .unwrap_or_else(|| {
+                                                            self.composer_bar(cx).into_any_element()
+                                                        }),
+                                                }),
                                         )
                                         .children(self.search_panel(cx))
                                         .when(

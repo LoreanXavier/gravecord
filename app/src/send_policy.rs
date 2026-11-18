@@ -134,6 +134,40 @@ pub fn followup(failure: &Failure, suppress_clyde: bool) -> Followup {
     }
 }
 
+/// Where a message AutoMod blocked was going, as `PD` of module 753738 reads the channel.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum AutomodPlace {
+    /// Any thread, a forum post too (`isThread` is checked first).
+    Thread,
+    /// A forum or media channel itself.
+    Post,
+    Other,
+}
+
+/// `PD(messageData, errorResponseBody)` of module 753738: the reason under a message AutoMod blocked. The response's
+/// own message wins for the three AutoMod codes; then a blocked edit, a thread, a post, and the plain message say why.
+pub fn automod_notice(failure: &Failure, place: AutomodPlace, blocked_edit: bool) -> String {
+    let automod = matches!(
+        failure.code,
+        Some(
+            AUTOMOD_MESSAGE_BLOCKED | AUTOMOD_TITLE_BLOCKED | AUTOMOD_INVALID_RUST_SERVICE_RESPONSE
+        )
+    );
+    if automod && let Some(message) = &failure.message {
+        return message.clone();
+    }
+    let key = if blocked_edit {
+        "bU6o0z"
+    } else {
+        match place {
+            AutomodPlace::Thread => "DVdG9E",
+            AutomodPlace::Post => "ipgKDg",
+            AutomodPlace::Other => "zQ69pv",
+        }
+    };
+    dc_intl::t(key).to_owned()
+}
+
 /// `DM_COULD_NOT_BE_DELIVERED` (module 652215) as the help center article address.
 const DELIVERY_HELP: &str = "https://support.discord.com/hc/en-us/articles/360060145013";
 /// `ew.YK` of module 292348: the most a message's files may weigh together, in MB.
@@ -353,6 +387,44 @@ mod tests {
             message: None,
             retry_after: None,
         }
+    }
+
+    #[test]
+    fn the_automod_reason_is_the_servers_or_the_places() {
+        let with_text = Failure {
+            message: Some("No links here".into()),
+            ..client_error(200000)
+        };
+        assert_eq!(
+            automod_notice(&with_text, AutomodPlace::Thread, false),
+            "No links here"
+        );
+        let bare = client_error(200000);
+        assert!(
+            automod_notice(&bare, AutomodPlace::Other, false)
+                .starts_with("This message can't be posted")
+        );
+        assert!(
+            automod_notice(&bare, AutomodPlace::Thread, false)
+                .starts_with("This thread cannot be sent")
+        );
+        assert!(
+            automod_notice(&bare, AutomodPlace::Post, false)
+                .starts_with("This post cannot be sent")
+        );
+        assert!(
+            automod_notice(&bare, AutomodPlace::Thread, true)
+                .starts_with("This message can't be edited")
+        );
+        // Another code's message is not AutoMod's reason.
+        let other = Failure {
+            message: Some("Missing Access".into()),
+            ..client_error(50001)
+        };
+        assert!(
+            automod_notice(&other, AutomodPlace::Other, false)
+                .starts_with("This message can't be posted")
+        );
     }
 
     #[test]

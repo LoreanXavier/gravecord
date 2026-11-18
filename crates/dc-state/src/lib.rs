@@ -88,6 +88,8 @@ pub struct User {
     /// `primary_guild`: the server tag shown after the name, when the user turned it on.
     pub tag: Option<ServerTag>,
     pub bot: bool,
+    /// `system`: an official Discord account; a DM with one is a system DM (`isSystemDM`, module 95701).
+    pub system: bool,
     pub nameplate: Option<collectibles::Nameplate>,
     pub avatar_decoration: Option<Box<collectibles::AvatarDecoration>>,
     /// `flags` and `public_flags` of the user object; 619019's `hasFlag` reads both.
@@ -142,6 +144,7 @@ impl User {
             tag: ServerTag::from_value(&value["primary_guild"])
                 .or_else(|| ServerTag::from_value(&value["clan"])),
             bot: value["bot"].as_bool().unwrap_or(false),
+            system: value["system"].as_bool().unwrap_or(false),
             nameplate: collectibles::Nameplate::from_value(&value["collectibles"]["nameplate"]),
             avatar_decoration: collectibles::AvatarDecoration::from_value(
                 &value["avatar_decoration_data"],
@@ -5211,6 +5214,28 @@ mod tests {
         assert!(stores.guilds[0].channels.is_empty());
         stores.dispatch("CHANNEL_DELETE", &json!({"id": "40", "type": 1}));
         assert!(stores.private_channels.is_empty());
+    }
+
+    #[test]
+    fn a_dm_with_an_official_account_knows_it_is_a_system_dm() {
+        let mut stores = Stores::default();
+        stores.dispatch(
+            "CHANNEL_CREATE",
+            &json!({"id": "41", "type": 1, "recipients": [{"id": "643945264868098049", "username": "discord", "system": true}]}),
+        );
+        stores.dispatch(
+            "CHANNEL_CREATE",
+            &json!({"id": "42", "type": 1, "recipients": [{"id": "31", "username": "someone"}]}),
+        );
+        let system = |channel: Id| {
+            let known = stores
+                .private_channels
+                .iter()
+                .find(|known| known.id == channel);
+            stores.users[&known.unwrap().recipients[0]].system
+        };
+        assert!(system(41));
+        assert!(!system(42));
     }
 
     #[test]

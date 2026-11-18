@@ -221,6 +221,12 @@ pub enum Request {
         key: String,
         route: String,
     },
+    /// GET a public JSON file (no authorization) and hand it back under `key` as `Update::Fetched`; a failure hands back
+    /// `null`.
+    FetchPublicJson {
+        key: String,
+        url: String,
+    },
     /// Conditionally GET a public CDN JSON list and parse it off the UI thread.
     FetchCdn {
         key: String,
@@ -663,6 +669,7 @@ impl Request {
             Request::Schedule { .. } => "Schedule",
             Request::Fetch { .. } => "Fetch",
             Request::FetchCdn { .. } => "FetchCdn",
+            Request::FetchPublicJson { .. } => "FetchPublicJson",
             Request::Typing { .. } => "Typing",
             Request::React { .. } => "React",
             Request::LoadMessages { .. } => "LoadMessages",
@@ -697,6 +704,7 @@ impl Request {
         match self {
             Request::Fetch { .. }
             | Request::FetchCdn { .. }
+            | Request::FetchPublicJson { .. }
             | Request::LoadMessages { .. }
             | Request::FetchMessages { .. }
             | Request::SoundboardSounds { .. }
@@ -1996,6 +2004,23 @@ pub async fn run(token: Token, updates: mpsc::UnboundedSender<Update>, requests:
                             let _ = updates.send(Update::Fetched { key, body });
                         }
                     }
+                });
+            }
+            Request::FetchPublicJson { key, url } => {
+                tokio::spawn(async move {
+                    let body = match client.fetch_public(&url).await {
+                        Ok(bytes) => {
+                            serde_json::from_slice::<Value>(&bytes).unwrap_or_else(|error| {
+                                warn!("public json not parsed: {error}");
+                                Value::Null
+                            })
+                        }
+                        Err(error) => {
+                            warn!("public json fetch failed: {error}");
+                            Value::Null
+                        }
+                    };
+                    let _ = updates.send(Update::Fetched { key, body });
                 });
             }
             Request::FetchCdn { key, url, etag } => {

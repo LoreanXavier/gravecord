@@ -1363,6 +1363,8 @@ impl Root {
             })
             .children(activity_stage.then(|| self.activity_leave_button(cx)))
             .child(self.call_bar(guild, channel, shown, cx))
+            // Module 394412 in `eventPromptsContainer_9bvEB0`, which fades with the controls.
+            .children(self.event_prompts(guild, channel, self.call_idle_t(shown), cx))
             .children(self.voice_menus(channel, width, height, cx))
             .children(self.soundboard_suggest(cx))
             .into_any_element()

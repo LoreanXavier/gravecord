@@ -132,7 +132,7 @@ fn without_gaps(sources: &str) -> String {
 /// Module ids the code cites: 4 to 6 digit numbers standing alone in the sources.
 fn cited_modules(repo: &Path) -> Result<BTreeSet<String>> {
     let mut all = String::new();
-    for base in ["app", "crates", "xtask"] {
+    for base in ["app", "crates"] {
         collect(&repo.join(base), &mut all)?;
     }
     let sources = without_gaps(&all);

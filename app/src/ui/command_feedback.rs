@@ -7,6 +7,10 @@
 //!   carries the LOADING flag.
 //! * `376767`: a private reply (flag 64) ends with "Only you can see this • Dismiss message"; Dismiss deletes it
 //!   here only, as `dismissAutomatedMessage` does.
+//! * `469759`: a message AutoMod refused to post keeps its text in `--text-default` with the shield, the reason and
+//!   that private line plus "• Learn more" under it.
+//!
+//! GAP: a blocked edit's "(reverted)" and its notice need the edit request's answer, which `Request::Edit` drops.
 
 use super::components::dots;
 use super::{Root, color, icon};
@@ -20,6 +24,8 @@ use serde_json::{Value, json};
 const REPLY_TIMEOUT_MS: i64 = 15 * 60 * 1000;
 /// Discord's epoch, for the time a message id carries.
 const DISCORD_EPOCH_MS: i64 = 1_420_070_400_000;
+/// `getArticleURL(GUILD_AUTOMOD_BLOCKED_MESSAGE)` (module 652215), Learn more under a blocked message.
+const AUTOMOD_BLOCKED_ARTICLE: &str = "https://support.discord.com/hc/en-us/articles/4421269296535";
 
 /// The message a command shows before the application has replied.
 #[derive(Clone, Debug)]
@@ -243,7 +249,8 @@ impl Root {
         message: &Message,
         cx: &mut Context<Self>,
     ) -> Option<AnyElement> {
-        if message.flags & FLAG_EPHEMERAL == 0 {
+        // A message AutoMod blocked draws this line inside its notice (module 469759) instead.
+        if message.flags & FLAG_EPHEMERAL == 0 || self.automod_blocked(message.id) {
             return None;
         }
         let (channel, id) = (message.channel_id, message.id);
@@ -274,6 +281,114 @@ impl Root {
                 )
                 .into_any_element(),
         )
+    }
+
+    /// Whether AutoMod blocked this message (GuildAutomodMessageStore `getMessage`, module 93474): its hover bar has no
+    /// Retry and module 469759 draws its reason.
+    pub(super) fn automod_blocked(&self, message: Id) -> bool {
+        self.stores.automod_message(&message.to_string()).is_some()
+    }
+
+    /// Module 469759 under a message AutoMod blocked (`blockedNoticeContainer_REFxkR`, 8px down, 4px gaps): the 16px
+    /// shield in `--text-feedback-critical` and the reason (body-sm, `--interactive-text-default`), then the private
+    /// line of module 376767 4px higher (`ephemeralAccessories_REFxkR`) with "• Learn more" 3px after Dismiss. Dismiss
+    /// deletes the message here only.
+    pub(super) fn automod_blocked_notice(
+        &self,
+        message: &Message,
+        compact: bool,
+        cx: &mut Context<Self>,
+    ) -> Option<AnyElement> {
+        let failed = self.stores.automod_message(&message.id.to_string())?;
+        let reason = match &failed.error_message {
+            Value::String(text) => text.clone(),
+            _ => dc_intl::t("zQ69pv").to_owned(),
+        };
+        let (channel, id) = (message.channel_id, message.id);
+        Some(
+            div()
+                .w_full()
+                .flex()
+                .flex_col()
+                .child(
+                    div()
+                        .w_full()
+                        .mt(px(8.))
+                        .when(compact, |this| this.ml(px(-8.)))
+                        .flex()
+                        .flex_row()
+                        .items_center()
+                        .gap(px(4.))
+                        .child(icon("oauth_entry_shield", 16., "--text-feedback-critical"))
+                        .child(
+                            div()
+                                .flex_1()
+                                .min_w(px(0.))
+                                .text_size(px(14.))
+                                .line_height(px(18.))
+                                .text_color(color("--interactive-text-default"))
+                                .child(reason),
+                        ),
+                )
+                .child(
+                    div()
+                        .mt(px(-4.))
+                        .when(compact, |this| this.ml(px(-8.)))
+                        .child(
+                            div()
+                                .mt(px(4.))
+                                .flex()
+                                .items_center()
+                                .text_size(px(12.))
+                                .line_height(px(16.))
+                                .text_color(color("--text-muted"))
+                                .child(div().mr(px(4.)).child(icon(
+                                    "clips_eye",
+                                    16.,
+                                    "--text-muted",
+                                )))
+                                .child("Only you can see this \u{2022} ")
+                                .child(
+                                    div()
+                                        .id(SharedString::from(format!("automod-dismiss-{id}")))
+                                        .cursor_pointer()
+                                        .text_color(color("--text-link"))
+                                        .hover(|style| style.underline())
+                                        .child("Dismiss message")
+                                        .on_click(cx.listener(move |this, _, _, cx| {
+                                            this.dismiss_automod_blocked(channel, id, cx);
+                                        })),
+                                )
+                                .child(
+                                    div().ml(px(3.)).flex().child("\u{2022} ").child(
+                                        div()
+                                            .id(SharedString::from(format!("automod-learn-{id}")))
+                                            .cursor_pointer()
+                                            .text_color(color("--text-link"))
+                                            .hover(|style| style.underline())
+                                            .child(dc_intl::tr("Learn more"))
+                                            .on_click(|_, _, cx| {
+                                                cx.open_url(AUTOMOD_BLOCKED_ARTICLE)
+                                            }),
+                                    ),
+                                ),
+                        ),
+                )
+                .into_any_element(),
+        )
+    }
+
+    /// Dismiss under a blocked message: `deleteMessage(channel, id, true)` for a send, which is local; the notice
+    /// goes with it.
+    fn dismiss_automod_blocked(&mut self, channel: Id, id: Id, cx: &mut Context<Self>) {
+        self.stores.automod_notice_removed(&id.to_string());
+        self.delete_failed(id, cx);
+        // A blocked message that is not a failed send of this run is only local.
+        if let Some(list) = self.stores.messages.get_mut(&channel) {
+            list.retain(|known| known.id != id);
+        }
+        self.rebuild_rows();
+        cx.notify();
     }
 
     /// `dismissAutomatedMessage`: the message leaves this client only.

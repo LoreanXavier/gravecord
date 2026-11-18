@@ -65,7 +65,8 @@ def chunks():
 
 def citations():
     cited = collections.defaultdict(set)
-    for base in ("app", "crates", "xtask"):
+    # xtask is tooling: its tests name modules as data, not as ports.
+    for base in ("app", "crates"):
         for folder, _, files in os.walk(os.path.join(REPO, base)):
             if "target" in folder.split(os.sep):
                 continue

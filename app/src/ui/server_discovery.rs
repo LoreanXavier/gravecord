@@ -35,6 +35,8 @@ const CLIPBOARD_PASSING: &str = "https://discord.com/assets/eaee201e4840b582.svg
 /// The banner behind the preview card before one is chosen.
 pub(super) const DEFAULT_SPLASH: &str = "https://discord.com/assets/b00e3f0a7090b61f.svg";
 const TERMS_URL: &str = "https://discord.com/terms";
+/// `maxTags` of the tags field in `AZ`.
+pub(super) const MAX_TAGS: usize = 10;
 
 /// `AW.v`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -266,6 +268,27 @@ impl Select {
             Self::Subcategories => "discovery-subcategories",
             Self::Language => "discovery-language",
         }
+    }
+}
+
+impl Discovery {
+    /// `f` of the tags field (module 513521) with `AZ`'s `o`: an empty entry does nothing; with `maxTags` reached the
+    /// typed text stays and `onAddTagError` says "Cannot add anymore tags."; otherwise a new tag is added, the error
+    /// goes and the field empties. Returns what the field holds afterwards.
+    pub(super) fn submit_tag(&mut self, typed: &str) -> String {
+        let tag = typed.trim();
+        if tag.is_empty() {
+            return typed.to_owned();
+        }
+        if self.meta.keywords.len() >= MAX_TAGS {
+            self.tag_error = Some(dc_intl::t("Xx7XeB").to_owned());
+            return typed.to_owned();
+        }
+        if !self.meta.keywords.iter().any(|known| known == tag) {
+            self.meta.keywords.push(tag.to_owned());
+            self.tag_error = None;
+        }
+        String::new()
     }
 }
 
@@ -961,9 +984,8 @@ impl Root {
             let text = editor.read(cx).text().to_owned();
             match event {
                 EditorEvent::Submit(submitted) => {
-                    let tag = submitted.trim().to_owned();
-                    editor.update(cx, |editor, _| editor.set_text(""));
-                    this.discovery_add_tag(tag, cx);
+                    let submitted = submitted.clone();
+                    this.discovery_submit_tag(&editor, &submitted, cx);
                 }
                 EditorEvent::Edited => {
                     let cut: String = text.chars().take(30).collect();
@@ -992,15 +1014,32 @@ impl Root {
         self.landing_sync(cx);
     }
 
-    /// `o` in `AZ`: ten tags at most, none twice.
+    /// `o` in `AZ`: ten tags at most, none twice; an added tag clears the field's error.
     pub(super) fn discovery_add_tag(&mut self, tag: String, cx: &mut Context<Self>) {
         if let Some(discovery) = self.discovery_mut()
             && !tag.is_empty()
-            && discovery.meta.keywords.len() < 10
+            && discovery.meta.keywords.len() < MAX_TAGS
             && !discovery.meta.keywords.contains(&tag)
         {
             discovery.meta.keywords.push(tag);
+            discovery.tag_error = None;
         }
+        cx.notify();
+    }
+
+    /// `f` of the tags field (module 513521): with `maxTags` reached the typed tag stays in the field and
+    /// `onAddTagError` shows "Cannot add anymore tags."; otherwise it is added and the field empties.
+    fn discovery_submit_tag(
+        &mut self,
+        editor: &Entity<Editor>,
+        typed: &str,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(discovery) = self.discovery_mut() else {
+            return;
+        };
+        let kept = discovery.submit_tag(typed);
+        editor.update(cx, |editor, _| editor.set_text(&kept));
         cx.notify();
     }
 
@@ -1525,6 +1564,23 @@ mod tests {
             .map(|c| c.name.as_str())
             .collect();
         assert_eq!(every, ["Esports", "Gaming", "Music"]);
+    }
+
+    #[test]
+    fn an_eleventh_tag_stays_typed_and_says_no_more_tags() {
+        let mut state = Discovery::default();
+        for index in 0..MAX_TAGS {
+            assert_eq!(state.submit_tag(&format!(" tag{index} ")), "");
+        }
+        assert_eq!(state.meta.keywords.len(), MAX_TAGS);
+        assert_eq!(state.meta.keywords[0], "tag0");
+        assert_eq!(state.submit_tag("one more"), "one more");
+        assert_eq!(state.tag_error.as_deref(), Some("Cannot add anymore tags."));
+        assert_eq!(state.meta.keywords.len(), MAX_TAGS);
+        // A removed tag makes room; the next one clears the error.
+        state.meta.keywords.pop();
+        assert_eq!(state.submit_tag("one more"), "");
+        assert!(state.tag_error.is_none());
     }
 
     #[test]
