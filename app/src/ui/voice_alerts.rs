@@ -85,20 +85,18 @@ const INVITED_ART: super::graphic_modal::Graphic = super::graphic_modal::Graphic
 };
 
 /// `Pd` of module 147036 for a voice channel that is not a Stage: full when it has video and as many people as the
-/// guild's video seats (one more for someone who may move members and connect), or as many as its `user_limit`
-/// unless this account may move members.
+/// guild's video seats (one more for a `mover`, someone who may move members and connect: `c`), or as many as its
+/// `user_limit` unless this account is such a mover (`E && !c`).
 pub(super) fn voice_channel_full(
     present: u64,
     user_limit: u64,
     has_video: bool,
     video_seats: u64,
-    can_move: bool,
-    can_move_and_connect: bool,
+    mover: bool,
 ) -> bool {
-    let video_full =
-        has_video && video_seats > 0 && present >= video_seats + u64::from(can_move_and_connect);
+    let video_full = has_video && video_seats > 0 && present >= video_seats + u64::from(mover);
     let limit_full = user_limit > 0 && present >= user_limit;
-    video_full || (limit_full && !can_move)
+    video_full || (limit_full && !mover)
 }
 
 /// `disableCallUserConfirmationPrompt` of `UnsyncedUserSettingsStore` (module 964404), off until ticked.
@@ -286,7 +284,7 @@ impl Root {
         let states = self.stores.voice_members(guild, channel);
         let video = states
             .iter()
-            .any(|state| state.self_video || state.self_stream);
+            .any(|state| state.self_video || (state.self_stream && !state.suppress));
         let seats = known.max_stage_video_channel_users;
         video && seats > 0 && states.len() as u64 >= seats
     }
@@ -372,14 +370,12 @@ impl Root {
         };
         let can = |bit| permissions::can_in_channel(known, target, me, bit);
         let states = self.stores.voice_members(guild, channel);
-        let can_move = can(permissions::MOVE_MEMBERS);
         voice_channel_full(
             states.len() as u64,
             target.user_limit,
             states.iter().any(|state| state.self_video),
             known.max_video_channel_users,
-            can_move,
-            can_move && can(permissions::CONNECT),
+            can(permissions::MOVE_MEMBERS) && can(permissions::CONNECT),
         )
     }
 
@@ -955,15 +951,15 @@ mod tests {
     #[test]
     fn a_voice_channel_is_full_by_its_limit_or_its_video_seats() {
         // 5 of a limit of 5: full, unless this account may move members.
-        assert!(voice_channel_full(5, 5, false, 25, false, false));
-        assert!(!voice_channel_full(5, 5, false, 25, true, true));
-        assert!(!voice_channel_full(4, 5, false, 25, false, false));
+        assert!(voice_channel_full(5, 5, false, 25, false));
+        assert!(!voice_channel_full(5, 5, false, 25, true));
+        assert!(!voice_channel_full(4, 5, false, 25, false));
         // No limit: only video seats count, and only while someone shows video.
-        assert!(!voice_channel_full(25, 0, false, 25, false, false));
-        assert!(voice_channel_full(25, 0, true, 25, false, false));
+        assert!(!voice_channel_full(25, 0, false, 25, false));
+        assert!(voice_channel_full(25, 0, true, 25, false));
         // A member mover gets one seat more.
-        assert!(!voice_channel_full(25, 0, true, 25, true, true));
-        assert!(voice_channel_full(26, 0, true, 25, true, true));
+        assert!(!voice_channel_full(25, 0, true, 25, true));
+        assert!(voice_channel_full(26, 0, true, 25, true));
     }
 
     #[test]

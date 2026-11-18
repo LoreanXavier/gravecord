@@ -1434,6 +1434,7 @@ impl Root {
                     self.blocked_relationship_changed(&data, cx);
                 }
                 if name == "VOICE_STATE_UPDATE" {
+                    self.ended_stream_voice_state();
                     self.stage_invite_check(&data, cx);
                     self.voice_state_of_other_session(&data, cx);
                     // Not in the pinned client: the VoiceStats plugin (`plugin_hooks/voice_stats.rs`).

@@ -509,11 +509,12 @@ impl Root {
         let me = self.stores.current_user.as_ref()?.id;
         let community = known.features.iter().any(|feature| feature == "COMMUNITY");
         let seats = known.max_stage_video_channel_users;
+        // `qT` of module 96566: someone's camera is on in the Stage, or a speaker streams.
         let video = self
             .stores
             .voice_members(guild, channel.id)
             .iter()
-            .any(|state| state.self_video || state.self_stream);
+            .any(|state| state.self_video || (state.self_stream && !state.suppress));
         if !video_stage_full(
             video,
             self.stage_video_upsell_dismissed.contains(&channel.id),

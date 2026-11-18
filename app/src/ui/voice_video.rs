@@ -982,6 +982,23 @@ impl Root {
         }
     }
 
+    /// After a voice state: the ended stream is forgotten once its owner streams again or leaves the channel, so a
+    /// later end of a stream never watched does not bring its tile back.
+    pub(super) fn ended_stream_voice_state(&mut self) {
+        let Some(key) = self.video.ended_focus else {
+            return;
+        };
+        let streaming = self
+            .stores
+            .voice_members(key.guild().unwrap_or(0), key.channel())
+            .iter()
+            .find(|state| state.user_id == key.owner())
+            .map(|state| state.self_stream);
+        if streaming != Some(false) {
+            self.video.ended_focus = None;
+        }
+    }
+
     /// Close Stream of the ended stream's tile (`Xi` of module 401843, `STREAM_CLOSE`): the tile goes, and the view
     /// with it.
     pub(super) fn close_ended_stream(&mut self, cx: &mut Context<Self>) {
