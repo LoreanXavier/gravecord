@@ -4,8 +4,10 @@
 //! files and posts each as module 810877 `W` does for a dropped file: the name is the file's stem through
 //! `sanitizeEmojiName` (module 690521), the image a data URI (`POST /guilds/{id}/emojis`). A name edited in its row is
 //! committed with Enter (`PATCH /guilds/{id}/emojis/{emoji}`), the trash deletes (`DELETE`). The button's Emoji Studio
-//! cropper is not drawn: picked files upload as dropped ones do.
+//! cropper is not drawn: picked files upload as dropped ones do. Several files post one after the other (`UD` of
+//! module 824832) and the ones refused are listed in "Failed to upload files" (module 940372, rows of module 534606).
 
+use super::chat_notices::upload_errors_alert;
 use super::{Root, avatar_source, color, icon};
 use crate::editor::{Editor, EditorEvent};
 use crate::net::Request;
@@ -28,6 +30,77 @@ pub(crate) struct EmojiState {
     names: HashMap<String, (Entity<Editor>, Subscription)>,
     /// The emoji whose name is being edited; the others show `:name:` hugging its text.
     editing: Option<String>,
+    bulk: BulkUpload,
+}
+
+/// `o` of module 534606: why one file of a bulk upload did not become an emoji.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum UploadError {
+    TooBig,
+    RateLimit,
+    TooManyEmoji,
+    TooManyAnimatedEmoji,
+    WrongType,
+    ResizeAnimated,
+}
+
+/// `TOO_MANY_EMOJI`, `TOO_MANY_ANIMATED_EMOJI`, `INVALID_FILE_ASSET_SIZE` and its `_RESIZE_ANIMATED` (module 652215).
+const TOO_MANY_EMOJI: u64 = 30008;
+const TOO_MANY_ANIMATED_EMOJI: u64 = 30018;
+const INVALID_FILE_ASSET_SIZE: u64 = 50045;
+const INVALID_FILE_ASSET_SIZE_RESIZE_ANIMATED: u64 = 50138;
+/// `isFileTooBig` of module 690521: 2 MiB.
+const MAX_FILE_BYTES: u64 = 2_097_152;
+
+impl UploadError {
+    /// The catch of module 810877 `W`: the body's code (or an `image` field error), then a 429 over all of them.
+    pub(super) fn from_answer(status: u64, body: &Value) -> Option<Self> {
+        let mut kind = None;
+        if !body.is_null() {
+            let code = body["code"].as_u64();
+            kind = if code == Some(TOO_MANY_EMOJI) {
+                Some(Self::TooManyEmoji)
+            } else if code == Some(TOO_MANY_ANIMATED_EMOJI) {
+                Some(Self::TooManyAnimatedEmoji)
+            } else if !body["image"].is_null() || code == Some(INVALID_FILE_ASSET_SIZE) {
+                Some(Self::TooBig)
+            } else if code == Some(INVALID_FILE_ASSET_SIZE_RESIZE_ANIMATED) {
+                Some(Self::ResizeAnimated)
+            } else {
+                None
+            };
+        }
+        if status == 429 {
+            kind = Some(Self::RateLimit);
+        }
+        kind
+    }
+
+    /// `p` of module 534606: the file icon, the description, the error circle's colour and its tooltip.
+    fn look(self) -> (&'static str, &'static str, &'static str, &'static str) {
+        match self {
+            Self::TooBig => ("emoji_error_file_warning", "YbdEFK", "--red-400", "PanA4J"),
+            Self::WrongType => ("emoji_error_file_deny", "01Papm", "--red-400", "PanA4J"),
+            Self::ResizeAnimated => ("emoji_error_resize", "6WN/qk", "--red-400", "PanA4J"),
+            Self::RateLimit => (
+                "emoji_error_speedometer",
+                "4rjikl",
+                "--orange-345",
+                "dq9aTi",
+            ),
+            Self::TooManyEmoji => ("circle_info", "5VmbbF", "--red-400", "PanA4J"),
+            Self::TooManyAnimatedEmoji => ("circle_info", "rjFOZ2", "--red-400", "PanA4J"),
+        }
+    }
+}
+
+/// A bulk upload in progress (`UD` of module 824832): the files still to post one after the other, the one posting,
+/// and the failures so far.
+#[derive(Default)]
+pub(crate) struct BulkUpload {
+    queue: std::collections::VecDeque<std::path::PathBuf>,
+    posting: Option<String>,
+    errors: Vec<(UploadError, String)>,
 }
 
 impl EmojiState {
@@ -75,6 +148,8 @@ impl Root {
     pub(super) fn emojis_fetched(&mut self, key: &str, cx: &mut Context<Self>) {
         if let Some(guild) = key.strip_prefix(UPLOADED_PREFIX) {
             if let Ok(guild) = guild.parse::<Id>() {
+                let answer = self.fetched.get(key).cloned().unwrap_or(Value::Null);
+                self.emoji_upload_answered(guild, &answer, cx);
                 self.request_emojis(guild);
             }
             return;
@@ -227,31 +302,182 @@ impl Root {
         });
         cx.spawn(async move |this, cx| {
             if let Ok(Ok(Some(paths))) = picked.await {
-                let _ = this.update(cx, |this, _| {
-                    for path in paths {
-                        this.upload_emoji(guild, &path);
-                    }
-                });
+                let _ = this.update(cx, |this, cx| this.upload_emojis(guild, paths, cx));
             }
         })
         .detach();
     }
 
-    pub(super) fn upload_emoji(&mut self, guild: Id, path: &std::path::Path) {
-        let Some(image) = super::server_settings::data_uri(path) else {
+    fn bulk_upload(&mut self) -> Option<&mut BulkUpload> {
+        self.server_settings
+            .as_mut()
+            .map(|open| &mut open.emoji.get_or_insert_with(EmojiState::default).bulk)
+    }
+
+    /// `UD` of module 824832: the files post one after the other; each failure is kept with the file's name, and
+    /// "Failed to upload files" lists them once the last one has its answer.
+    pub(super) fn upload_emojis(
+        &mut self,
+        guild: Id,
+        paths: Vec<std::path::PathBuf>,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(bulk) = self.bulk_upload() else {
             return;
         };
-        let stem = path
-            .file_stem()
-            .and_then(|stem| stem.to_str())
-            .unwrap_or_default();
-        let name = sanitize_emoji_name(stem.split('.').next().unwrap_or_default());
-        let _ = self.requests.send(Request::Rest {
-            key: Some(format!("{UPLOADED_PREFIX}{guild}")),
-            method: reqwest::Method::POST,
-            route: format!("/guilds/{guild}/emojis"),
-            body: Some(serde_json::json!({"image": image, "name": name})),
-        });
+        bulk.queue.extend(paths);
+        if bulk.posting.is_none() {
+            self.next_emoji_upload(guild, cx);
+        }
+    }
+
+    fn next_emoji_upload(&mut self, guild: Id, cx: &mut Context<Self>) {
+        loop {
+            let Some(bulk) = self.bulk_upload() else {
+                return;
+            };
+            let Some(path) = bulk.queue.pop_front() else {
+                bulk.posting = None;
+                let errors = std::mem::take(&mut bulk.errors);
+                if !errors.is_empty() {
+                    self.chat_extra.alert = Some(upload_errors_alert(errors));
+                    cx.notify();
+                }
+                return;
+            };
+            let filename = path
+                .file_name()
+                .and_then(|name| name.to_str())
+                .unwrap_or_default()
+                .to_owned();
+            // The image does not read as one: `WRONG_TYPE` before anything is posted.
+            let Some(image) = super::server_settings::data_uri(&path) else {
+                bulk.errors.push((UploadError::WrongType, filename));
+                continue;
+            };
+            // `W`: a GIF, WebP or AVIF over 2 MiB is too big as it is. GAP: other images over 2 MiB are not resized
+            // to 128x128 first (`h_`); they are posted as they are and the server's answer says why.
+            let size = std::fs::metadata(&path).map_or(0, |meta| meta.len());
+            let animated_kind = image.starts_with("data:image/gif")
+                || image.starts_with("data:image/webp")
+                || image.starts_with("data:image/avif");
+            if size > MAX_FILE_BYTES && animated_kind {
+                bulk.errors.push((UploadError::TooBig, filename));
+                continue;
+            }
+            bulk.posting = Some(filename);
+            let stem = path
+                .file_stem()
+                .and_then(|stem| stem.to_str())
+                .unwrap_or_default();
+            let name = sanitize_emoji_name(stem.split('.').next().unwrap_or_default());
+            let _ = self.requests.send(Request::Rest {
+                key: Some(format!("{UPLOADED_PREFIX}{guild}")),
+                method: reqwest::Method::POST,
+                route: format!("/guilds/{guild}/emojis"),
+                body: Some(serde_json::json!({"image": image, "name": name})),
+            });
+            return;
+        }
+    }
+
+    /// One file's answer (`Request::Rest`'s `{ok, status, body}`): a refusal becomes its row, then the next file goes.
+    fn emoji_upload_answered(&mut self, guild: Id, answer: &Value, cx: &mut Context<Self>) {
+        let Some(bulk) = self.bulk_upload() else {
+            return;
+        };
+        let Some(filename) = bulk.posting.take() else {
+            return;
+        };
+        if answer["ok"].as_bool() != Some(true)
+            && let Some(kind) =
+                UploadError::from_answer(answer["status"].as_u64().unwrap_or(0), &answer["body"])
+        {
+            bulk.errors.push((kind, filename));
+        }
+        self.next_emoji_upload(guild, cx);
+    }
+
+    /// Capture only: `emoji bulk-errors` lists one row of each kind in the dialog, as a bulk upload ends.
+    #[cfg(feature = "capture")]
+    pub(crate) fn script_emoji_bulk_errors(&mut self, cx: &mut Context<Self>) -> String {
+        let errors = vec![
+            (UploadError::TooBig, "huge_party.gif".to_owned()),
+            (UploadError::WrongType, "notes.txt".to_owned()),
+            (UploadError::ResizeAnimated, "spinning.gif".to_owned()),
+            (UploadError::RateLimit, "wave.png".to_owned()),
+            (UploadError::TooManyEmoji, "cat.png".to_owned()),
+            (UploadError::TooManyAnimatedEmoji, "dance.gif".to_owned()),
+        ];
+        self.chat_extra.alert = Some(upload_errors_alert(errors));
+        cx.notify();
+        "emoji: Failed to upload files shown".to_owned()
+    }
+
+    /// `A` of module 534606, one row of the dialog (`emojiErrorItem__z-z-q`): `--background-base-lower`, 4px
+    /// corners, 16px inside; the file icon in `--primary-300` 18px from the name (16px `--text-default`, lowercase, one
+    /// line, at most 256 wide, 4px over the description in body-sm `--text-subtle`), then the 20px error circle whose
+    /// tooltip says what to do.
+    pub(super) fn emoji_upload_error_row(
+        &self,
+        index: usize,
+        kind: UploadError,
+        filename: &str,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let (file_icon, description, tint, tip) = kind.look();
+        let file_icon = if kind == UploadError::ResizeAnimated {
+            gpui::svg()
+                .path(format!("icons/{file_icon}.svg"))
+                .w(px(18.))
+                .h(px(22.))
+                .flex_none()
+                .text_color(color("--primary-300"))
+        } else {
+            icon(file_icon, 24., "--primary-300")
+        };
+        div()
+            .p(px(16.))
+            .rounded(px(4.))
+            .bg(color("--background-base-lower"))
+            .flex()
+            .items_center()
+            .justify_center()
+            .child(div().mr(px(18.)).child(file_icon))
+            .child(
+                div()
+                    .flex_1()
+                    .min_w(px(0.))
+                    .child(
+                        div()
+                            .mb(px(4.))
+                            .max_w(px(256.))
+                            .overflow_hidden()
+                            .whitespace_nowrap()
+                            .text_ellipsis()
+                            .text_size(px(16.))
+                            .line_height(px(20.))
+                            .text_color(color("--text-default"))
+                            .child(filename.to_lowercase()),
+                    )
+                    .child(
+                        div()
+                            .text_size(px(14.))
+                            .line_height(px(18.))
+                            .text_color(color("--text-subtle"))
+                            .child(dc_intl::t(description)),
+                    ),
+            )
+            .child(self.with_tip(
+                format!("emoji-upload-error-{index}"),
+                super::tooltip::Tip::body(
+                    super::tooltip::Body::Text(dc_intl::t(tip).into()),
+                    super::tooltip::Side::Right,
+                ),
+                icon("standing_circle_error", 20., tint),
+                cx,
+            ))
+            .into_any_element()
     }
 
     /// One `of` row (`emojiRow_XTvD56`): the picture, the `:name:` field, who uploaded it, and the trash on hover.
@@ -535,9 +761,7 @@ impl Root {
             .id("server-emoji-page")
             // Files dropped on the page upload under their names (`a6`'s onDrop).
             .on_drop(cx.listener(move |this, paths: &gpui::ExternalPaths, _, cx| {
-                for path in paths.paths() {
-                    this.upload_emoji(guild, path);
-                }
+                this.upload_emojis(guild, paths.paths().to_vec(), cx);
                 cx.notify();
             }))
             .flex()
@@ -619,5 +843,36 @@ mod tests {
         assert_eq!(sanitize_emoji_name(&"x".repeat(40)).len(), 32);
         assert_eq!(slots_available(49), "49 slots available");
         assert_eq!(slots_available(1), "1 slot available");
+    }
+
+    #[test]
+    fn refusals_map_like_module_810877() {
+        use serde_json::json;
+        let of = |status, body: Value| UploadError::from_answer(status, &body);
+        assert_eq!(
+            of(400, json!({"code": 30008})),
+            Some(UploadError::TooManyEmoji)
+        );
+        assert_eq!(
+            of(400, json!({"code": 30018})),
+            Some(UploadError::TooManyAnimatedEmoji)
+        );
+        assert_eq!(of(400, json!({"code": 50045})), Some(UploadError::TooBig));
+        assert_eq!(
+            of(400, json!({"code": 50035, "image": ["too big"]})),
+            Some(UploadError::TooBig)
+        );
+        assert_eq!(
+            of(400, json!({"code": 50138})),
+            Some(UploadError::ResizeAnimated)
+        );
+        // A 429 wins over the body; other refusals list nothing.
+        assert_eq!(
+            of(429, json!({"code": 30008})),
+            Some(UploadError::RateLimit)
+        );
+        assert_eq!(of(429, Value::Null), Some(UploadError::RateLimit));
+        assert_eq!(of(403, json!({"code": 50013})), None);
+        assert_eq!(of(0, Value::Null), None);
     }
 }

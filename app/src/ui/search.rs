@@ -27,6 +27,20 @@ pub(crate) struct Search {
     pub oldest_first: bool,
     /// The method and route of the last search request, for the harness.
     pub last_route: Option<String>,
+    /// The offset of the page shown (`getSearchResultsOffset`): 25 times the page index.
+    pub offset: u64,
+    /// While a page of the same query and sort loads, the count of the answer before it (module 477654 keeps it
+    /// under `searchResultsPaginationKey`, `{mode}:{query}`), so the pager stays.
+    pub carried_total: Option<u64>,
+    /// The page number field a gap of the pager opened.
+    pub jump: Option<super::search_pager::Jump>,
+    /// The results scroller, back at the top for each page.
+    pub scroll: gpui::ScrollHandle,
+}
+
+/// The count of an answer, either search's.
+pub(super) fn total_of(fetched: &serde_json::Value) -> Option<u64> {
+    results_body(fetched)["total_results"].as_u64()
 }
 
 /// The words of the query outside operators, which the results highlight.
@@ -235,6 +249,10 @@ impl Root {
             shown: None,
             oldest_first: false,
             last_route: None,
+            offset: 0,
+            carried_total: None,
+            jump: None,
+            scroll: gpui::ScrollHandle::new(),
         });
         field
     }
@@ -268,9 +286,25 @@ impl Root {
     }
 
     pub(super) fn run_search(&mut self, query: String, cx: &mut Context<Self>) {
+        self.run_search_at(query, 0, cx);
+    }
+
+    /// A search for one page of results: `offset` is 25 times the page index.
+    pub(super) fn run_search_at(&mut self, query: String, offset: u64, cx: &mut Context<Self>) {
         if query.trim().is_empty() {
             return;
         }
+        // `searchResultsPaginationKey`: the same query in the same sort keeps the count while the page loads.
+        let carried = self.search.as_ref().and_then(|search| {
+            (search.shown.as_deref() == Some(query.as_str()))
+                .then(|| {
+                    self.fetched
+                        .get(RESULTS_KEY)
+                        .and_then(total_of)
+                        .or(search.carried_total)
+                })
+                .flatten()
+        });
         let (found, content) = operators(&query);
         let mut params: Vec<String> = Vec::new();
         if !content.is_empty() {
@@ -334,10 +368,14 @@ impl Root {
             "sort_order={}",
             if oldest_first { "asc" } else { "desc" }
         ));
-        params.push("offset=0".to_owned());
+        params.push(format!("offset={offset}"));
         self.fetched.remove(RESULTS_KEY);
         let all_dms = self.search_all_dms();
         if let Some(search) = self.search.as_mut() {
+            search.offset = offset;
+            search.carried_total = carried;
+            search.jump = None;
+            search.scroll.set_offset(gpui::point(px(0.), px(0.)));
             search.last_route = Some(if all_dms {
                 format!("POST {DMS_TABS_ROUTE}")
             } else {
@@ -763,6 +801,10 @@ impl Root {
             index = end;
         }
         let oldest_first = search.oldest_first;
+        // Module 477654: the count the pager pages and whether page 400's warning stands.
+        let pager_total = self.search_pager_total(total);
+        let page_warning =
+            total.is_some() && super::search_pager::limits(pager_total, search.offset).warning;
         let button = |id: &'static str, name: &'static str, label: &'static str| {
             div()
                 .id(id)
@@ -850,7 +892,10 @@ impl Root {
                                     cx.listener(move |this, _, _, cx| {
                                         if let Some(search) = this.search.as_mut() {
                                             search.oldest_first = !oldest_first;
+                                            // Another sort is another pagination key: no count is carried.
+                                            search.carried_total = None;
                                         }
+                                        this.fetched.remove(RESULTS_KEY);
                                         this.run_search(shown.clone(), cx);
                                     }),
                                 )),
@@ -862,10 +907,14 @@ impl Root {
                         .flex_1()
                         .min_h(px(0.))
                         .overflow_y_scroll()
+                        .track_scroll(&search.scroll)
                         .px(px(16.))
                         .pt(px(16.))
+                        // `w && !s.isSearching`: the 400-page warning over the results.
+                        .when(page_warning, |this| this.child(self.search_page_warning()))
                         .children(groups),
                 )
+                .children(self.search_pager(pager_total, search.offset, cx))
                 .into_any_element(),
         )
     }

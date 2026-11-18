@@ -398,6 +398,13 @@ impl Root {
                                     .flex()
                                     .flex_col()
                                     .gap(px(8.))
+                                    // Module 394412 with `showDismiss: false`, before the cards (module 895903).
+                                    .children(self.event_prompt_cards(
+                                        guild.unwrap_or_default(),
+                                        target,
+                                        false,
+                                        cx,
+                                    ))
                                     .children(moderator.then(|| {
                                         self.stage_card(
                                             "stage-start-card",

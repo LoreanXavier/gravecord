@@ -155,6 +155,36 @@ impl Stores {
         self.automod.version += 1;
     }
 
+    /// `MESSAGE_EDIT_FAILED_AUTOMOD` (module 469759's blocked edit): GuildAutomodMessageStore keeps the reason under the
+    /// edited message with `isBlockedEdit`, and MessageStore's `q` (module 596344) empties the message's embeds when
+    /// one of them is not AutoMod's own (`auto_moderation_message` / `auto_moderation_notification`). The message keeps
+    /// its old text: the server never took the edit.
+    pub fn automod_edit_failed(&mut self, channel: Id, message: Id, reason: String) {
+        if let Some(known) = self
+            .messages
+            .get_mut(&channel)
+            .and_then(|list| list.iter_mut().find(|known| known.id == message))
+            && known.embeds.iter().any(|embed| {
+                embed.kind != "auto_moderation_message"
+                    && embed.kind != "auto_moderation_notification"
+            })
+        {
+            known.embeds.clear();
+        }
+        self.automod_failed(message.to_string(), true, reason);
+    }
+
+    /// `MESSAGE_END_EDIT {response}` of 93474: an edit the server took (its answer carries the message id and no
+    /// `AUTOMOD_MESSAGE_BLOCKED` code) drops the message's notice.
+    pub fn automod_edit_ended(&mut self, response: &Value) {
+        if response["code"].as_u64() == Some(200_000) {
+            return;
+        }
+        if let Some(id) = text(&response["id"]) {
+            self.automod_notice_removed(&id);
+        }
+    }
+
     /// `getMessage(id)`.
     pub fn automod_message(&self, message: &str) -> Option<&FailedMessage> {
         self.automod.failed.get(message)
@@ -238,6 +268,31 @@ mod tests {
             &json!({"channel_id": "2", "message": message("62", "2"), "thread": {"id": "5"}, "notice": "n"}),
         );
         assert!(stores.automod_removal_notice(62).is_none());
+    }
+
+    #[test]
+    fn a_blocked_edit_keeps_the_old_text_and_its_notice_until_an_edit_goes_through() {
+        let mut stores = Stores::default();
+        stores.load_messages(
+            2,
+            &json!([{"id": "70", "channel_id": "2", "content": "old", "type": 0, "flags": 0,
+                "timestamp": "2026-11-17T21:00:00+00:00",
+                "author": {"id": "9", "username": "a", "discriminator": "0"},
+                "embeds": [{"type": "rich", "title": "t"}]}]),
+        );
+        stores.automod_edit_failed(2, 70, "blocked".to_owned());
+        let failed = stores.automod_message("70").unwrap();
+        assert!(failed.is_blocked_edit);
+        assert_eq!(failed.error_message, json!("blocked"));
+        let known = &stores.messages[&2][0];
+        assert_eq!(known.content, "old");
+        assert!(known.embeds.is_empty());
+        assert_eq!(known.flags & EPHEMERAL, 0);
+        // A second refusal's answer keeps the notice; an edit the server took drops it.
+        stores.automod_edit_ended(&json!({"code": 200000, "message": "no"}));
+        assert!(stores.automod_message("70").is_some());
+        stores.automod_edit_ended(&json!({"id": "70", "content": "new"}));
+        assert!(stores.automod_message("70").is_none());
     }
 
     #[test]

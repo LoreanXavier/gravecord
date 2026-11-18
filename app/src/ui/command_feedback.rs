@@ -8,9 +8,9 @@
 //! * `376767`: a private reply (flag 64) ends with "Only you can see this • Dismiss message"; Dismiss deletes it
 //!   here only, as `dismissAutomatedMessage` does.
 //! * `469759`: a message AutoMod refused to post keeps its text in `--text-default` with the shield, the reason and
-//!   that private line plus "• Learn more" under it.
-//!
-//! GAP: a blocked edit's "(reverted)" and its notice need the edit request's answer, which `Request::Edit` drops.
+//!   that private line plus "• Learn more" under it. A blocked edit (`MESSAGE_EDIT_FAILED_AUTOMOD` from the edit's
+//!   answer, `editMessage` of module 138399) keeps the old text with "(reverted)" after it and the edit reason;
+//!   its Dismiss only drops the notice (`REMOVE_AUTOMOD_MESSAGE_NOTICE`).
 
 use super::components::dots;
 use super::{Root, color, icon};
@@ -378,10 +378,61 @@ impl Root {
         )
     }
 
-    /// Dismiss under a blocked message: `deleteMessage(channel, id, true)` for a send, which is local; the notice
-    /// goes with it.
+    /// Whether the message's notice is a blocked edit's (`isBlockedEdit`, module 469759).
+    pub(super) fn automod_blocked_edit(&self, message: Id) -> bool {
+        self.stores
+            .automod_message(&message.to_string())
+            .is_some_and(|failed| failed.is_blocked_edit)
+    }
+
+    /// The answer of an edit (`editMessage` of module 138399), under `message-edit:{channel}:{message}`: a refusal
+    /// with one of AutoMod's codes dispatches `MESSAGE_EDIT_FAILED_AUTOMOD` with `PD`'s reason (module 753738), and
+    /// `MESSAGE_END_EDIT {response}` drops the notice of an edit the server took.
+    pub(super) fn edit_answered(&mut self, rest: &str, body: &Value, cx: &mut Context<Self>) {
+        let mut parts = rest.split(':').map(|part| part.parse::<Id>().ok());
+        let (Some(Some(channel)), Some(Some(message))) = (parts.next(), parts.next()) else {
+            return;
+        };
+        let status = body["status"].as_u64().unwrap_or(0) as u16;
+        let response = &body["body"];
+        // `!n.hasErr`: a transport failure (no status) never counts as AutoMod's.
+        if status != 0 && !body["ok"].as_bool().unwrap_or(false) {
+            use crate::send_policy::{
+                AUTOMOD_INVALID_RUST_SERVICE_RESPONSE, AUTOMOD_MESSAGE_BLOCKED,
+                AUTOMOD_TITLE_BLOCKED,
+            };
+            let failure = crate::send_policy::Failure::from_response(status, response);
+            // `v.yf` of module 753738.
+            if matches!(
+                failure.code,
+                Some(
+                    AUTOMOD_MESSAGE_BLOCKED
+                        | AUTOMOD_TITLE_BLOCKED
+                        | AUTOMOD_INVALID_RUST_SERVICE_RESPONSE
+                )
+            ) {
+                let reason =
+                    crate::send_policy::automod_notice(&failure, self.automod_place(channel), true);
+                self.stores.automod_edit_failed(channel, message, reason);
+            }
+        }
+        if status != 0 {
+            self.stores.automod_edit_ended(response);
+        }
+        self.rebuild_rows();
+        cx.notify();
+    }
+
+    /// Dismiss under a blocked message: a blocked edit only drops its notice (`REMOVE_AUTOMOD_MESSAGE_NOTICE`); a
+    /// send is `deleteMessage(channel, id, true)`, which is local, and the notice goes with it.
     fn dismiss_automod_blocked(&mut self, channel: Id, id: Id, cx: &mut Context<Self>) {
+        let blocked_edit = self.automod_blocked_edit(id);
         self.stores.automod_notice_removed(&id.to_string());
+        if blocked_edit {
+            self.rebuild_rows();
+            cx.notify();
+            return;
+        }
         self.delete_failed(id, cx);
         // A blocked message that is not a failed send of this run is only local.
         if let Some(list) = self.stores.messages.get_mut(&channel) {

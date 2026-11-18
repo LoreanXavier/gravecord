@@ -7,7 +7,12 @@
 //! active event (`Qs` of module 508654). Sizes from `container__B7Y3X` (400 wide, 16px padding, 12px corners,
 //! `--opacity-black-52`, darker on hover); no capture shows this prompt.
 //!
-//! GAP: the stage channel's places for these prompts (stage modules 717965 and 895903) are not drawn.
+//! A Stage channel shows them too: the waiting view (module 895903) lists them first among its cards with
+//! `showDismiss: false` (a chevron in place of the close button, as module 47868 draws a card without `onDismiss`)
+//! while the Stage is not live.
+//!
+//! GAP: the Stage controls' `eventPrompts_Z_HbQM` holds them for a speaker or a member who can mute while the Stage
+//! is joined but not live and the start screen is left; this client shows the waiting view until the Stage is live.
 
 use super::super::{Root, color, icon};
 use super::list::can_manage;
@@ -107,23 +112,11 @@ impl Root {
         opacity: f32,
         cx: &mut Context<Self>,
     ) -> Option<AnyElement> {
-        if guild == 0 {
+        let cards = self.event_prompt_cards(guild, channel, true, cx);
+        if cards.is_empty() {
             return None;
         }
-        let events = self.prompt_events(guild, channel);
-        if events.is_empty() {
-            return None;
-        }
-        let manage = |event: &ScheduledEvent| {
-            self.stores
-                .guild(guild)
-                .zip(self.stores.me())
-                .is_some_and(|(known, me)| can_manage(known, me, event))
-        };
-        let cards: Vec<AnyElement> = events
-            .iter()
-            .map(|event| self.event_prompt(event, manage(event), cx))
-            .collect();
+        // `eventPrompt_m5zWGJ`: 8px over each card.
         Some(
             div()
                 .absolute()
@@ -131,18 +124,45 @@ impl Root {
                 .right_0()
                 .bottom(px(16. + 104.))
                 .opacity(opacity)
+                .pt(px(8.))
                 .flex()
                 .flex_col()
                 .items_center()
+                .gap(px(8.))
                 .children(cards)
                 .into_any_element(),
         )
+    }
+
+    /// Module 394412's cards for one channel, soonest first; `show_dismiss` false (the Stage waiting view) ends each
+    /// with a chevron instead of the close button.
+    pub(in crate::ui) fn event_prompt_cards(
+        &self,
+        guild: Id,
+        channel: Id,
+        show_dismiss: bool,
+        cx: &mut Context<Self>,
+    ) -> Vec<AnyElement> {
+        if guild == 0 {
+            return Vec::new();
+        }
+        let manage = |event: &ScheduledEvent| {
+            self.stores
+                .guild(guild)
+                .zip(self.stores.me())
+                .is_some_and(|(known, me)| can_manage(known, me, event))
+        };
+        self.prompt_events(guild, channel)
+            .iter()
+            .map(|event| self.event_prompt(event, manage(event), show_dismiss, cx))
+            .collect()
     }
 
     fn event_prompt(
         &self,
         event: &ScheduledEvent,
         manage: bool,
+        show_dismiss: bool,
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let id = event.id;
@@ -165,7 +185,6 @@ impl Root {
         };
         div()
             .id(SharedString::from(format!("event-prompt-{id}")))
-            .mt(px(8.))
             .w(px(400.))
             .p(px(16.))
             .rounded(px(12.))
@@ -208,22 +227,33 @@ impl Root {
                             }),
                     ),
             )
-            .child(
-                div()
-                    .id(SharedString::from(format!("event-prompt-dismiss-{id}")))
-                    .ml_auto()
-                    .size(px(16.))
-                    .flex()
-                    .items_center()
-                    .justify_center()
-                    .cursor_pointer()
-                    .on_click(cx.listener(move |_, _, _, cx| {
-                        cx.stop_propagation();
-                        dismiss(id);
-                        cx.notify();
-                    }))
-                    .child(icon("modal_close", 16., "--interactive-text-default")),
-            )
+            .map(|this| {
+                if show_dismiss {
+                    this.child(
+                        div()
+                            .id(SharedString::from(format!("event-prompt-dismiss-{id}")))
+                            .ml_auto()
+                            .size(px(16.))
+                            .flex()
+                            .items_center()
+                            .justify_center()
+                            .cursor_pointer()
+                            .on_click(cx.listener(move |_, _, _, cx| {
+                                cx.stop_propagation();
+                                dismiss(id);
+                                cx.notify();
+                            }))
+                            .child(icon("modal_close", 16., "--interactive-text-default")),
+                    )
+                } else {
+                    // `ChevronSmallRightIcon` (xs) at the end, as the waiting view's other cards end.
+                    this.child(div().ml_auto().child(icon(
+                        "inventory_chevron_right",
+                        16.,
+                        "--white",
+                    )))
+                }
+            })
             .into_any_element()
     }
 

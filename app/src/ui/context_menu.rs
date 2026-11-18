@@ -118,6 +118,8 @@ pub(super) enum Act {
     /// "Pin Post" / "Unpin Post" of a forum post (module 41402).
     PinPost,
     UnpinPost,
+    /// "Anyone can invite" of a private thread (module 707653 `toggle-thread-invitable`).
+    ToggleInvitable,
     LeaveThread,
     /// "Join Thread" (module 660273): `joinThread`, shown for a thread the account has not joined.
     JoinThread,
@@ -210,7 +212,7 @@ impl Act {
     /// Every row kind once (`Correction` with its first index). `ordinal` is an exhaustive match, so adding a variant
     /// without listing it here fails the build or the `act_list_is_complete` test.
     #[cfg(test)]
-    pub(super) const ALL: [Act; 104] = [
+    pub(super) const ALL: [Act; 105] = [
         Act::InventoryAbout,
         Act::InventoryHide,
         Act::ReportApp,
@@ -315,6 +317,7 @@ impl Act {
         Act::UnlockThread,
         Act::PinPost,
         Act::UnpinPost,
+        Act::ToggleInvitable,
     ];
 
     #[cfg(test)]
@@ -424,6 +427,7 @@ impl Act {
             Act::UnpinPost => 101,
             Act::JoinQuiet => 102,
             Act::ReportStage => 103,
+            Act::ToggleInvitable => 104,
         }
     }
 }
@@ -483,6 +487,7 @@ pub(super) fn status(act: Act) -> Status {
         | Act::UnlockThread
         | Act::PinPost
         | Act::UnpinPost
+        | Act::ToggleInvitable
         | Act::LeaveThread
         | Act::JoinThread
         | Act::Profile
@@ -1268,6 +1273,9 @@ pub(super) struct ThreadFacts {
     pub can_send: bool,
     /// A post of a media channel (`isMediaThread`): it never offers Open.
     pub media: bool,
+    /// A private thread (type 12) and its `thread_metadata.invitable`.
+    pub private_thread: bool,
+    pub invitable: bool,
 }
 
 /// `lK` of module 406704 (`R(thread, canSend, manage)`): an archived thread may be opened again by whoever can send in
@@ -1373,8 +1381,14 @@ pub(super) fn thread_items(facts: ThreadFacts, level: &str) -> Vec<Entry> {
                 .caret(),
         ],
     );
-    // `admin-actions`: Pin Post (module 41402: a post of a forum, with MANAGE_THREADS), then Delete (307623).
+    // `admin-actions`: Anyone can invite (module 707653: a private thread, with MANAGE_THREADS), Pin Post (module
+    // 41402: a post of a forum, with MANAGE_THREADS), then Delete (307623).
     let mut admin = Vec::new();
+    if facts.private_thread && manage {
+        admin.push(
+            Row::new(Act::ToggleInvitable, dc_intl::tr("Anyone can invite")).check(facts.invitable),
+        );
+    }
     if facts.forum_post && manage {
         admin.push(if facts.pinned {
             Row::new(Act::UnpinPost, dc_intl::tr("Unpin Post"))
@@ -2753,6 +2767,8 @@ impl Root {
                                 )
                         }),
                         media: parent.as_ref().is_some_and(Channel::is_media),
+                        private_thread: thread.kind == 12,
+                        invitable: thread.invitable,
                     },
                     level_label(
                         THREAD_LEVELS
@@ -3304,7 +3320,9 @@ impl Root {
                 ));
             }
             // Not in the pinned client: CopyUserURLs' "Copy User URL" (`plugin_hooks.rs`).
-            (Act::CopyLink, Target::User { user, .. }) => super::plugin_hooks::copy_user_url(user, cx),
+            (Act::CopyLink, Target::User { user, .. }) => {
+                super::plugin_hooks::copy_user_url(user, cx)
+            }
             (Act::CopyLink, Target::Dm(channel)) => {
                 if let Some(user) = self.dm_user(channel) {
                     super::plugin_hooks::copy_user_url(user, cx);
@@ -3462,6 +3480,23 @@ impl Root {
                 self.run_thread_step(thread, step);
             }
             (Act::PinPost, Target::Thread(thread)) => self.pin_post(thread),
+            // Module 707653: `setInvitable(thread, !invitable)`, `PATCH /channels/:id {invitable}` (module 7909); the
+            // gateway's THREAD_UPDATE brings the new value back.
+            (Act::ToggleInvitable, Target::Thread(thread)) => {
+                let invitable = self
+                    .stores
+                    .guilds
+                    .iter()
+                    .flat_map(|guild| guild.threads.iter())
+                    .find(|known| known.id == thread)
+                    .is_none_or(|known| known.invitable);
+                let _ = self.requests.send(Request::Rest {
+                    key: None,
+                    method: reqwest::Method::PATCH,
+                    route: format!("/channels/{thread}"),
+                    body: Some(serde_json::json!({ "invitable": !invitable })),
+                });
+            }
             // `joinThread` (module 7909): `POST /channels/:id/thread-members/@me?location=Context Menu`; the gateway's
             // THREAD_MEMBER_UPDATE puts the account into the joined-threads store.
             (Act::JoinThread, Target::Thread(thread)) => {
@@ -5564,6 +5599,55 @@ mod tests {
         let apart = labels(&thread_items(ThreadFacts::default(), "x"));
         assert!(apart.contains(&"Join Thread".to_owned()));
         assert!(!apart.contains(&"Leave Thread".to_owned()));
+    }
+
+    #[test]
+    fn anyone_can_invite_is_a_checkbox_of_private_threads_for_managers() {
+        let row = |facts: ThreadFacts| {
+            thread_items(facts, "x")
+                .into_iter()
+                .find_map(|entry| match entry {
+                    Entry::Row(row) if row.act == Act::ToggleInvitable => Some(row),
+                    _ => None,
+                })
+        };
+        let private = ThreadFacts {
+            manage: true,
+            private_thread: true,
+            invitable: true,
+            ..ThreadFacts::default()
+        };
+        let shown = row(private).unwrap();
+        assert_eq!(shown.label, "Anyone can invite");
+        assert_eq!(shown.check, Some(true));
+        assert_eq!(
+            row(ThreadFacts {
+                invitable: false,
+                ..private
+            })
+            .unwrap()
+            .check,
+            Some(false)
+        );
+        // A public thread, or no Manage Threads: no row.
+        assert!(
+            row(ThreadFacts {
+                private_thread: false,
+                ..private
+            })
+            .is_none()
+        );
+        assert!(
+            row(ThreadFacts {
+                manage: false,
+                ..private
+            })
+            .is_none()
+        );
+        // It leads the admin group, before Delete.
+        let labels = labels(&thread_items(private, "x"));
+        let at = |label: &str| labels.iter().position(|known| known == label).unwrap();
+        assert!(at("Anyone can invite") < at("Delete Thread"));
     }
 
     #[test]

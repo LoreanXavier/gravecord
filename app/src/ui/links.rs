@@ -187,6 +187,15 @@ impl Root {
             cx.notify();
             return;
         }
+        // A file kind that can harm the device asks first (module 432518, "Potential Dangerous Download" of 574563).
+        if super::graphic_dialogs::dangerous_extension(url).is_some() {
+            self.chat_extra.graphic =
+                Some(super::graphic_dialogs::GraphicDialog::DangerousDownload {
+                    url: url.to_owned(),
+                });
+            cx.notify();
+            return;
+        }
         // `W`: the text being the address trusts it, except in a DM with someone who is not a friend.
         let friendly = self
             .current_dm()
