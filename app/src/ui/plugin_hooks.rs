@@ -12,6 +12,10 @@ pub(in crate::ui) mod clips_enhancements;
 mod download_all;
 mod full_vc_pfp;
 mod game_activity_toggle;
+mod gif_provider_switcher;
+pub(in crate::ui) use gif_provider_switcher::{
+    gif_provider, gif_provider_badge, gif_provider_placeholder,
+};
 mod global_badges;
 mod greet_sticker_picker;
 mod ignore_activities;

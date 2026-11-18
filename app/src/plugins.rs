@@ -13,6 +13,7 @@
 
 mod backup;
 pub(crate) mod clear_urls;
+pub(crate) mod gif_provider;
 mod registry;
 mod state;
 pub(crate) mod zip;

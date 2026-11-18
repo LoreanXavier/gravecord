@@ -244,6 +244,14 @@ pub enum Request {
         height: u32,
         avatars: Vec<CloudAvatar>,
     },
+    /// Not in the pinned client: GifProviderSwitcher's GIF calls to Tenor or Giphy (no authorization), their answer
+    /// in the shape of Discord's own (`plugins::gif_provider`) under `key` as `Update::Fetched` (`null` on failure).
+    GifProvider {
+        key: String,
+        provider: crate::plugins::gif_provider::Provider,
+        ask: crate::plugins::gif_provider::Ask,
+        limit: u32,
+    },
     /// Not in the pinned client: ZipPreview's archive. `native` is the Discord attachment path its native helper
     /// fetches from `cdn.discordapp.com` (after the user agreed); else `url` is fetched as it is. At most 50 MB is read
     /// and the archive is parsed off the UI thread into `plugins::zip_preview`, then `Update::Fetched` under `key`.
@@ -836,6 +844,7 @@ impl Request {
             Request::FetchPublicJson { .. } => "FetchPublicJson",
             Request::FriendCloud { .. } => "FriendCloud",
             Request::FetchZip { .. } => "FetchZip",
+            Request::GifProvider { .. } => "GifProvider",
             Request::ResolveRedirect { .. } => "ResolveRedirect",
             Request::Typing { .. } => "Typing",
             Request::React { .. } => "React",
@@ -876,6 +885,7 @@ impl Request {
             | Request::FetchPublicJson { .. }
             | Request::FriendCloud { .. }
             | Request::FetchZip { .. }
+            | Request::GifProvider { .. }
             | Request::ResolveRedirect { .. }
             | Request::LoadMessages { .. }
             | Request::PrefetchMessages { .. }
@@ -2504,6 +2514,77 @@ pub async fn run(token: Token, updates: mpsc::UnboundedSender<Update>, requests:
                         key,
                         body: json!({"path": path.map(|path| path.display().to_string())}),
                     });
+                });
+            }
+            Request::GifProvider {
+                key,
+                provider,
+                ask,
+                limit,
+            } => {
+                tokio::spawn(async move {
+                    use crate::plugins::gif_provider::{self as gif, Ask, Provider};
+                    let json = |url: String| {
+                        let client = client.clone();
+                        async move {
+                            let bytes = client.fetch_public(&url).await.ok()?;
+                            serde_json::from_slice::<Value>(&bytes).ok()
+                        }
+                    };
+                    let body = match &ask {
+                        Ask::Share { .. } => {
+                            if let Some(url) = gif::address(provider, &ask, 0, "", 0) {
+                                let _ = json(url).await;
+                            }
+                            return;
+                        }
+                        Ask::Categories => match gif::address(provider, &ask, 0, "", 0) {
+                            Some(url) => json(url)
+                                .await
+                                .map_or(Value::Null, |body| gif::categories(provider, &body)),
+                            None => Value::Null,
+                        },
+                        Ask::Trending | Ask::Search(_) => {
+                            // `fetchTenorResults` follows `next` until the limit; Giphy pages by offset.
+                            let mut items: Vec<Value> = Vec::new();
+                            let mut pos = String::new();
+                            let mut offset = 0;
+                            let mut failed = false;
+                            while (items.len() as u32) < limit {
+                                let size = (limit - items.len() as u32).min(gif::PAGE);
+                                let Some(url) = gif::address(provider, &ask, size, &pos, offset)
+                                else {
+                                    break;
+                                };
+                                let Some(body) = json(url).await else {
+                                    failed = items.is_empty();
+                                    break;
+                                };
+                                let (page, next) = gif::page(provider, &body);
+                                if page.is_empty() {
+                                    break;
+                                }
+                                let before = items.len();
+                                items.extend(page);
+                                offset += size;
+                                match (provider, next) {
+                                    (Provider::Tenor, Some(next))
+                                        if next != pos && items.len() > before =>
+                                    {
+                                        pos = next
+                                    }
+                                    (Provider::Giphy, _) if items.len() > before => {}
+                                    _ => break,
+                                }
+                            }
+                            if failed {
+                                Value::Null
+                            } else {
+                                gif::results(provider, &items, limit as usize)
+                            }
+                        }
+                    };
+                    let _ = updates.send(Update::Fetched { key, body });
                 });
             }
             Request::FetchZip { key, url, native } => {

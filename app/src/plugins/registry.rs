@@ -2240,6 +2240,27 @@ pub(crate) const DEFS: &[Def] = &[
         ],
     },
     Def {
+        id: "TenorGifSearch",
+        name: "GifProviderSwitcher",
+        description: "Allows you to use Tenor or Giphy GIF search instead of Klipy",
+        origin: Origin::Vencord,
+        source: "src/plugins/gifProviderSwitcher/index.tsx",
+        default_on: false,
+        settings: &[Setting {
+            key: "provider",
+            label: "Provider",
+            description: "The GIF search the picker uses",
+            kind: Kind::Select {
+                options: &[
+                    ("Tenor", Lit::Str("tenor")),
+                    ("Giphy", Lit::Str("giphy")),
+                    ("Klipy", Lit::Str("klipy")),
+                ],
+                default: 0,
+            },
+        }],
+    },
+    Def {
         id: "TypingIndicator",
         name: "TypingIndicator",
         description: "Adds an indicator if someone is typing on a channel.",

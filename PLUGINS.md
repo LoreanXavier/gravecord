@@ -12,7 +12,7 @@ every setting changed), and with every plugin off, and fails on one differing pi
 The list is the plugins enabled in the owner's Equicord backup of 2026-09-21 (156). Sources were read in the local
 Equicord checkout of 2026-11-14 (`src/plugins` is Vencord's, `src/equicordplugins` Equicord's).
 
-Totals: 76 ported, 9 native, 26 planned, 45 not applicable.
+Totals: 77 ported, 9 native, 25 planned, 45 not applicable.
 
 Status: **ported** works and has its proof; **native** is what gravecord already does without a plugin;
 **planned** is not built yet (an import keeps its settings for when it is); **not applicable** has nothing to
@@ -148,7 +148,7 @@ port in a native client, or was removed upstream.
 | Summaries | not applicable | (not in the 2026-11-14 checkout) |  | removed from Equicord in 452241cf: "Discord killed this feature". |  |
 | SuperReactionTweaks | ported | plugins/superReactionTweaks/index.ts | Customize the limit of Super Reactions playing at once, and super react by default | plugin_hooks/super_reaction_tweaks.rs: superReactByDefault opens the reaction picker with its Super Reactions toggle on, for an account with real Nitro (not the plugins' override). The two playing-limit settings are idle (no super reaction effects play in the app yet). | `super_reactions_start_on_only_with_the_switch`; plugins-off reactions |
 | SupportHelper | not applicable | plugins/_core/supportHelper.tsx | Helps us provide support to you | support-channel helper of the mod. |  |
-| TenorGifSearch | planned | plugins/gifProviderSwitcher/index.tsx | Allows you to use Tenor or Giphy GIF search instead of Klipy | now GifProviderSwitcher upstream. Tenor or Giphy as the GIF search instead of the default provider. |  |
+| TenorGifSearch | ported | plugins/gifProviderSwitcher/index.tsx | Allows you to use Tenor or Giphy GIF search instead of Klipy | plugin_hooks/gif_provider_switcher.rs + plugins/gif_provider.rs (now GifProviderSwitcher upstream): the GIF picker's category tiles, trending results, searches and shares go to Tenor or Giphy (provider; Klipy keeps Discord's), their answers turned into Discord's shapes off the UI thread (Request::GifProvider, paged to the picker's 50); the search field reads Search Tenor and each result tile has its source's badge (in the pinned client's primary badge colours: the client mod's --badge-background-brand is not a token of this Discord build). GAP: the provider choice beside the search field and several providers at once (provider is set in the plugin settings), search suggestions and the /tenor command (the app has neither). | `the_provider_and_badges_follow_the_original`, `answers_take_discord_shapes`; frames pending (live runs held) |
 | ThemeAttributes | not applicable | plugins/themeAttributes/index.ts | Adds data attributes to various elements for theming purposes | adds DOM attributes for CSS themes; there is no DOM or CSS here. |  |
 | TimeBarAllActivities | not applicable | (not in the 2026-11-14 checkout) |  | removed from Equicord in bcfef05a: "now a stock feature". |  |
 | Translate+ | planned | equicordplugins/translatePlus/index.tsx | Vencord's translate plugin but with support for artistic languages! | message translation (needs a translation service). |  |
@@ -374,6 +374,7 @@ Every setting of each original (`definePluginSettings`), its type and default th
 | SuperReactionTweaks | `superReactByDefault` | BOOLEAN | `true` | ported |
 | SuperReactionTweaks | `unlimitedSuperReactionPlaying` | BOOLEAN | `false` | nothing to act on yet: it lifts the cap on super reaction effects playing at once, and the app plays no super reaction effects yet |
 | SuperReactionTweaks | `superReactionPlayingLimit` | SLIDER | `20` | nothing to act on yet: it caps the super reaction effects playing at once, and the app plays no super reaction effects yet |
+| TenorGifSearch | `provider` | COMPONENT | `defineDefault<Provider | Provider[]>(["tenor"])` | ported |
 | TypingIndicator | `includeCurrentChannel` | BOOLEAN | `true` | ported |
 | TypingIndicator | `includeMutedChannels` | BOOLEAN | `false` | ported |
 | TypingIndicator | `includeIgnoredUsers` | BOOLEAN | `false` | ported |

@@ -147,6 +147,7 @@ assert len(idle) == idle_entries, f'IDLE_SETTINGS: read {len(idle)} of {idle_ent
 
 # How each ported plugin is built here, and its proof.
 PORTED = {
+    'TenorGifSearch': "plugin_hooks/gif_provider_switcher.rs + plugins/gif_provider.rs (now GifProviderSwitcher upstream): the GIF picker's category tiles, trending results, searches and shares go to Tenor or Giphy (provider; Klipy keeps Discord's), their answers turned into Discord's shapes off the UI thread (Request::GifProvider, paged to the picker's 50); the search field reads Search Tenor and each result tile has its source's badge (in the pinned client's primary badge colours: the client mod's --badge-background-brand is not a token of this Discord build). GAP: the provider choice beside the search field and several providers at once (provider is set in the plugin settings), search suggestions and the /tenor command (the app has neither).",
     'SpotifyCrack': "plugin_hooks/spotify_crack.rs: every Spotify account reads as Premium in SPOTIFY_PROFILE_UPDATE (listen along without Premium); noSpotifyAutoPause keeps speaking in voice from pausing Spotify after 30 seconds. keepSpotifyActivityOnIdle is idle: this client does not send your Spotify activity yet.",
     'SearchFix': "plugin_hooks/search_fix.rs: a search page past offset 5000 is asked for in the other sort order from offset 0, as the plugin rewrites the query; the card carries its note.",
     'GlobalBadges': "plugin_hooks/global_badges.rs: the badges of other client mods (apiUrl/users, fetched while on and every 30 minutes; Vencord's and Equicord's left out, each mod behind its Show switch) lead a profile's badge row, round at 90% with their text as tooltip and Copy Badge Name / Copy Badge Image Link on a right click; the card has Join GlobalBadges Server. GAP: the badge directory entry a click opens in the original, the toolbox's Refetch, the Allow Host notice; the Show switches are listed instead of the multi-select.",
@@ -243,6 +244,7 @@ PORTED = {
                      'so the original\'s 200% cap on the sync has nothing to cap.',
 }
 TESTS = {
+    'TenorGifSearch': '`the_provider_and_badges_follow_the_original`, `answers_take_discord_shapes`; frames pending (live runs held)',
     'SpotifyCrack': '`the_defaults_follow_the_original`',
     'SearchFix': '`past_5000_the_order_flips_from_the_start`',
     'GlobalBadges': '`badges_follow_the_switches_and_blocked_mods`; frames pending (live runs held)',
@@ -431,7 +433,6 @@ PLANNED = {
     'ExpressionCloner': 'menu rows that clone, edit and delete emoji and stickers into your servers.',
     'IloveSpam': 'messages of users flagged as likely spammers shown as any other.',
     'LimitMiddleClickPaste': 'middle-click paste only into a focused text box, and middle-click link opening.',
-    'TenorGifSearch': 'Tenor or Giphy as the GIF search instead of the default provider.',
 }
 
 errors = []
