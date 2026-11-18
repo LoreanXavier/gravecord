@@ -138,6 +138,7 @@ mod schedule_message;
 mod sent_attachment;
 mod spotify_activity;
 mod stage;
+mod stage_requests;
 mod sticker_player;
 mod sticker_popout;
 mod stickers;
@@ -610,6 +611,10 @@ pub struct Root {
     /// Blocked and ignored people in voice channels, and when warnings about them were dismissed (`voice_blocked`).
     blocked_in_voice: voice_blocked::BlockedInVoice,
     warning_dismissals: voice_blocked::WarningDismissals,
+    /// The Stage's Requests to Speak sidebar is open, and the Stages whose full video notice was dismissed
+    /// (`stage_requests`).
+    stage_requests_open: bool,
+    stage_video_upsell_dismissed: std::collections::HashSet<Id>,
     /// The menu over a speaker's or audience member's tile (module 106401 and 237749's rows), where it was opened.
     stage_tile_menu: Option<stage::TileMenu>,
     /// Stage instances whose Live Now card was closed with its X.
@@ -1041,6 +1046,8 @@ impl Root {
             stream_full_seen: Default::default(),
             blocked_in_voice: Default::default(),
             warning_dismissals: voice_blocked::WarningDismissals::load(),
+            stage_requests_open: false,
+            stage_video_upsell_dismissed: Default::default(),
             stage_tile_menu: None,
             live_now_closed: Vec::new(),
             publish_confirm: None,

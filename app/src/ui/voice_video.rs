@@ -753,6 +753,13 @@ impl Root {
                 cx.notify();
                 format!("streamer mode on, hides personal information={}", self.streamer_hides_personal())
             }
+            // The Stage's Requests to Speak sidebar, as its header toggle opens it.
+            ["stage-requests", "open"] => {
+                self.stage_requests_open = true;
+                self.request_stage_requests_art();
+                cx.notify();
+                "stage requests open".to_owned()
+            }
             ["participants", "open"] => {
                 self.vv.participants_open = true;
                 cx.notify();
