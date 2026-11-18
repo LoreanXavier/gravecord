@@ -12,7 +12,7 @@ every setting changed), and with every plugin off, and fails on one differing pi
 The list is the plugins enabled in the owner's Equicord backup of 2026-09-21 (156). Sources were read in the local
 Equicord checkout of 2026-11-14 (`src/plugins` is Vencord's, `src/equicordplugins` Equicord's).
 
-Totals: 28 ported, 3 native, 80 planned, 45 not applicable.
+Totals: 28 ported, 5 native, 78 planned, 45 not applicable.
 
 Status: **ported** works and has its proof; **native** is what gravecord already does without a plugin;
 **planned** is not built yet (an import keeps its settings for when it is); **not applicable** has nothing to
@@ -106,12 +106,12 @@ port in a native client, or was removed upstream.
 | NoDevtoolsWarning | not applicable | plugins/noDevtoolsWarning/index.ts | Disables the 'HOLD UP' banner in the console. As a side effect, also prevents Discord from hiding your token, which prevents random logouts. | no web console in a native client. |  |
 | NoNitroUpsell | planned | equicordplugins/noNitroUpsell/index.ts | Removes all of Discord's nitro upsells by tricking the client into thinking you have nitro. | every Nitro upsell hidden (the app draws them from the pinned client). |  |
 | NoPendingCount | ported | plugins/noPendingCount/index.ts | Removes the ping count of incoming friend requests, message requests, and nitro offers. | unread_badges.rs and home.rs: friend request count 0, no Message Requests badge (the row stays). | `no_pending_count_hides_each_badge_by_its_setting`; frames pending-off/on; plugins-off requests |
-| NoPushToTalk | planned | equicordplugins/noPushToTalk/index.ts | Bypasses the push-to-talk requirement for voice activity in channels that enforce it. | voice activity allowed where push to talk is required. |  |
+| NoPushToTalk | native | equicordplugins/noPushToTalk/index.ts | Bypasses the push-to-talk requirement for voice activity in channels that enforce it. | the app does not enforce Use Voice Activity yet (the pinned client's PermissionVADStore and its warning), so voice activity already works where a server requires push to talk; when the app adds the rule, this plugin needs its hook there. |  |
 | NormalizeMessageLinks | native | equicordplugins/normalizeMessageLinks/index.ts | Strip canary/ptb from message links | Copy Message Link already writes discord.com links. |  |
 | NoticesAPI | not applicable | plugins/_api/notices.ts | Fixes notices being automatically dismissed | client-mod plumbing (an API for other plugins), nothing to port. |  |
 | NoTrack | native | plugins/_core/noTrack.ts | Disable Discord's tracking (analytics/'science'), metrics and Sentry crash reporting | gravecord sends no analytics, metrics or Sentry reports; its only `/science` post is the overlay problem report the user submits. |  |
 | NoTypingAnimation | ported | plugins/noTypingAnimation/index.ts | Disables the CPU-intensive typing dots animation | typing_avatar.rs: every typing indicator draws still dots and asks for no animation frames. | `switch_only_plugins_follow_their_switch_and_the_master`; plugins-off typing |
-| NoUnblockToJump | planned | plugins/noUnblockToJump/index.ts | Allows you to jump to messages of blocked or ignored users and likely spammers without unblocking them | jumping to blocked users' messages without unblocking. |  |
+| NoUnblockToJump | native | plugins/noUnblockToJump/index.ts | Allows you to jump to messages of blocked or ignored users and likely spammers without unblocking them | the app has no 'unblock to jump' dialog yet, so jumping to a blocked or ignored user's message already works; when the app adds the dialog, this plugin needs its hook there. |  |
 | NSFWGateBypass | not applicable | (not in the 2026-11-14 checkout) |  | removed from Equicord in 9a3c66ab. |  |
 | OnePingPerDM | ported | plugins/onePingPerDM/index.ts | If unread messages are sent by a user in DMs multiple times, you'll only receive one audio ping. Read the messages to reset the limit | notifications.rs: in the DMs it affects only the oldest unread message (the first after the channel's ack) plays the sound; ignored users, allowed mentions and @everyone still ping; the desktop notification is left alone; alwaysPlaySound plays the message sound for any message that notifies. | `one_ping_per_dm_lets_the_oldest_unread_ping`; no frame (a sound, not a picture) |
 | OpenInApp | planned | plugins/openInApp/index.ts | Open links in their respective apps instead of your browser | Spotify, Steam and other links opened in their apps. |  |

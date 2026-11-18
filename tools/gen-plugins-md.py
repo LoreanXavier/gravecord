@@ -216,6 +216,11 @@ NATIVE = {
                'report the user submits.',
     'ForceOwnerCrown': 'the member list shows the owner crown at any server size.',
     'NormalizeMessageLinks': 'Copy Message Link already writes discord.com links.',
+    'NoPushToTalk': "the app does not enforce Use Voice Activity yet (the pinned client's PermissionVADStore and its "
+                    "warning), so voice activity already works where a server requires push to talk; when the app adds "
+                    "the rule, this plugin needs its hook there.",
+    'NoUnblockToJump': "the app has no 'unblock to jump' dialog yet, so jumping to a blocked or ignored user's message "
+                       "already works; when the app adds the dialog, this plugin needs its hook there.",
 }
 
 # Plumbing of the client mod itself: nothing to port.
@@ -281,8 +286,6 @@ PLANNED = {
     'MuteChannelMentions': 'mention badges hidden for chosen channels.',
     'NewGuildSettings': 'notification defaults applied when joining a server.',
     'NoNitroUpsell': 'every Nitro upsell hidden (the app draws them from the pinned client).',
-    'NoPushToTalk': 'voice activity allowed where push to talk is required.',
-    'NoUnblockToJump': 'jumping to blocked users\' messages without unblocking.',
     'OpenInApp': 'Spotify, Steam and other links opened in their apps.',
     'PermissionFreeWill': 'no client-side limits in channel permission editing.',
     'PermissionsViewer': 'a permission breakdown in profiles and menus.',
