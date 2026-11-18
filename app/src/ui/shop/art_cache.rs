@@ -26,7 +26,7 @@ pub(crate) struct Cached {
 }
 
 fn dir_for(folder: &str) -> Option<PathBuf> {
-    let dir = crate::storage::data_dir()?.join(folder);
+    let dir = crate::storage::cache_dir()?.join(folder);
     std::fs::create_dir_all(&dir).ok()?;
     Some(dir)
 }

@@ -318,6 +318,7 @@ impl Session {
                         }
                         None => return self.on_close(1006, "stream ended".to_owned()),
                     };
+                    let decoding = Instant::now();
                     let payload = match inflater.feed(&bytes).map(|raw| etf::unpack(&raw)) {
                         Ok(Ok(payload)) => payload,
                         Ok(Err(error)) => {
@@ -385,6 +386,13 @@ impl Session {
                             }
                             let name = payload["t"].as_str().unwrap_or_default().to_owned();
                             let data = payload.get("d").cloned().unwrap_or(Value::Null);
+                            let decode_ms = decoding.elapsed().as_millis();
+                            if decode_ms >= 5 {
+                                debug!(
+                                    "gateway {name} decoded in {decode_ms} ms from {} compressed bytes",
+                                    bytes.len()
+                                );
+                            }
                             self.on_dispatch(&name, &data);
                             self.emit(Event::Dispatch { name, data });
                         }
@@ -467,9 +475,6 @@ mod tests {
         }
         assert_eq!(queue.len(), MAX_PENDING_SENDS);
         assert_eq!(queue.front().unwrap().1["n"], json!(5));
-        assert_eq!(
-            queue.back().unwrap().1["n"],
-            json!(MAX_PENDING_SENDS + 4)
-        );
+        assert_eq!(queue.back().unwrap().1["n"], json!(MAX_PENDING_SENDS + 4));
     }
 }

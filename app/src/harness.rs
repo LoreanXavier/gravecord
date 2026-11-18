@@ -1540,14 +1540,40 @@ pub async fn run(
             ["perf", "start"] => {
                 let _ = writeln!(
                     output,
-                    "perf start: fonts_ms={} window_ms={} ready_ms={} content_ms={} splash_done_ms={} {}",
+                    "perf start: fonts_ms={} window_ms={} ready_ms={} content_ms={} splash_done_ms={} {} {}",
                     crate::perf::FONTS_MS.load(std::sync::atomic::Ordering::Relaxed),
                     crate::perf::WINDOW_MS.load(std::sync::atomic::Ordering::Relaxed),
                     crate::perf::READY_MS.load(std::sync::atomic::Ordering::Relaxed),
                     crate::perf::CONTENT_MS.load(std::sync::atomic::Ordering::Relaxed),
                     crate::perf::SPLASH_DONE_MS.load(std::sync::atomic::Ordering::Relaxed),
                     crate::perf::checkpoints(),
+                    crate::start_trace::fields(),
                 );
+            }
+            // `perf timeline`: every start stage reached so far (`start_trace`), in milliseconds since the process
+            // started.
+            ["perf", "timeline"] => {
+                let _ = writeln!(output, "perf timeline: {}", crate::start_trace::fields());
+            }
+            // `perf pictures`: how many of the pictures the start waits for are absent, queued, decoding or decoded,
+            // by the kind of key (the part before its first `:`).
+            ["perf", "pictures"] => {
+                let states = window
+                    .update(cx, |_, window, cx| {
+                        root.update(cx, |root, cx| root.start_picture_states(window, cx))
+                    })
+                    .unwrap_or_default();
+                let mut counts: std::collections::BTreeMap<String, usize> = Default::default();
+                for (key, state) in states {
+                    let kind = if key.starts_with("http") {
+                        "url"
+                    } else {
+                        key.split(':').next().unwrap_or("")
+                    };
+                    *counts.entry(format!("{kind}.{state}")).or_default() += 1;
+                }
+                let line: Vec<String> = counts.iter().map(|(k, n)| format!("{k}={n}")).collect();
+                let _ = writeln!(output, "perf pictures: {}", line.join(" "));
             }
             ["perf", "threads", which] => {
                 let line = crate::perf::threads_report(*which == "begin");

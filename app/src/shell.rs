@@ -54,6 +54,7 @@ impl Shell {
         handle: Handle,
         start: Start,
         cached: Option<crate::ui::start_cache::Cached>,
+        session: Option<net::Session>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
@@ -70,7 +71,7 @@ impl Shell {
             switched: false,
         };
         match start {
-            Start::Token(token) => this.start_session(token, cached, window, cx),
+            Start::Token(token) => this.start_session(token, cached, session, window, cx),
             Start::Login => this.show_login(false, window, cx),
             Start::Preview(state) => {
                 this.show_login(true, window, cx);
@@ -122,6 +123,22 @@ impl Shell {
             cx.quit();
             return;
         }
+        // Whether the start cache's key (the account read from the login) is READY's account. Only the answer is
+        // kept, never the id: a token of another shape would make every start a cold one without this saying so.
+        if let Update::Dispatch { name, data } = &update
+            && name == "READY"
+        {
+            let keyed = self
+                .token
+                .as_ref()
+                .and_then(|token| crate::ui::start_cache::token_account(token.expose()));
+            let live = data["user"]["id"].as_str().and_then(|id| id.parse().ok());
+            crate::start_trace::mark(if keyed.is_some() && keyed == live {
+                "cache_key_matches"
+            } else {
+                "cache_key_differs"
+            });
+        }
         match (update, &self.screen) {
             (Update::AuthFailed, Screen::Main(root)) => {
                 debug!("the stored login is dead");
@@ -143,17 +160,22 @@ impl Shell {
         &mut self,
         token: Token,
         preloaded: Option<crate::ui::start_cache::Cached>,
+        session: Option<net::Session>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let (update_tx, mut update_rx) = mpsc::unbounded_channel();
-        let (request_tx, request_rx) = net::request_channel();
-        let hook_tx = update_tx.clone();
-        let cached = preloaded.or_else(crate::ui::start_cache::load);
-        self.session = Some(
-            self.handle
-                .spawn(net::run(token.clone(), update_tx, request_rx)),
-        );
+        // A start with a stored login began its session before the window (`main.rs`); a sign in starts it here.
+        let net::Session {
+            updates: hook_tx,
+            mut update_rx,
+            requests: request_tx,
+            task,
+        } = session.unwrap_or_else(|| net::Session::start(&self.handle, token.clone()));
+        let account = crate::ui::start_cache::token_account(token.expose());
+        let cached = preloaded
+            .filter(|cached| cached.account() == account)
+            .or_else(|| crate::ui::start_cache::load(account));
+        self.session = Some(task);
         self.token = Some(token);
         let root = cx.new(|cx| {
             let mut root = Root::new(request_tx, hook_tx, cx);
@@ -162,6 +184,8 @@ impl Shell {
             }
             root
         });
+        // The cached pictures start decoding now, beside the rest of the start, so the first frame has them.
+        root.update(cx, |root, cx| root.decode_start_pictures(window, cx));
         if std::mem::take(&mut self.switched) {
             root.update(cx, |root, _| root.announce_switch());
         }
@@ -358,7 +382,7 @@ impl Shell {
                 }
             });
         }
-        self.start_session(token, None, window, cx);
+        self.start_session(token, None, None, window, cx);
     }
 }
 
