@@ -24,8 +24,8 @@ use std::time::Duration;
 mod crawl;
 mod grab;
 mod hitch;
-mod settle;
 pub(crate) mod native;
+mod settle;
 mod ticks;
 
 const STEP_GAP: Duration = Duration::from_millis(60);
@@ -534,6 +534,22 @@ pub async fn run(
                     Err(error) => format!("gw: not json: {error}"),
                 };
                 let _ = writeln!(output, "{note}");
+            }
+            // Capture only: `join-request <SUBMITTED|REJECTED|none> [reason...]` makes the account a pending member of
+            // the open server with that request of its own (`ui/screening.rs`), nothing sent.
+            ["join-request", rest @ ..] => {
+                let line = root.update(cx, |root, cx| root.script_join_request(rest, cx));
+                let _ = writeln!(output, "join-request: {line}");
+            }
+            // Capture only: `invite-error <code>`: an invite card's Join answered with that abort code.
+            // Capture only: the header invite as an account without Create Invite sees it (module 132610).
+            ["invite-permission"] => {
+                root.update(cx, |root, cx| root.script_invite_permission(cx));
+                let _ = writeln!(output, "invite-permission: shown");
+            }
+            ["invite-error", code] => {
+                let line = root.update(cx, |root, cx| root.script_invite_error(code, cx));
+                let _ = writeln!(output, "invite-error: {line}");
             }
             ["friends", tab] => {
                 let note = cx.update(|cx| {

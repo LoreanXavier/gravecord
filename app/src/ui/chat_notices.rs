@@ -24,6 +24,17 @@ pub(super) const KEY_PREFIX: &str = "thread-step:";
 /// `--radius-sm` of the design system (module 952007): 8px.
 const RADIUS_SM: f32 = 8.;
 
+/// `OPT_IN_CHANNELS_ON` of a server's notification settings flags, `OPT_IN_ENABLED` of a channel override's (module
+/// 395504 `WW`, `vv`).
+const OPT_IN_CHANNELS_ON: u64 = 1 << 14;
+const OPT_IN_ENABLED: u64 = 1 << 12;
+
+/// Module 228098 (without its resource-channel exemption): the server browses picked channels only and neither the
+/// channel nor its category is picked.
+pub(super) fn opt_in_notice_shown(opt_in_on: bool, channel: bool, parent: bool) -> bool {
+    opt_in_on && !channel && !parent
+}
+
 /// `ChannelFlags.PINNED` (module 746080 `lx`).
 pub(super) const PINNED: u64 = 1 << 1;
 
@@ -64,6 +75,14 @@ pub(super) enum Then {
         name: String,
         id: u64,
     },
+    /// Confirm of Withdraw Application (module 678655 `handleCancelApplication`): `removeGuildJoinRequest`.
+    WithdrawApplication {
+        guild: Id,
+    },
+    /// Reapply of module 267.
+    Reapply {
+        guild: Id,
+    },
 }
 
 /// Module 987176 as module 190857 opens it before a message request is accepted: the title, its subtitle, Cancel and
@@ -78,13 +97,13 @@ pub(super) fn accept_request_alert(channel: Id) -> Alert {
             AlertButton {
                 id: "message-request-confirm-cancel",
                 label: dc_intl::t("ETE/oC").to_owned(),
-                secondary: true,
+                tone: Tone::Secondary,
                 then: Then::Close,
             },
             AlertButton {
                 id: "message-request-confirm-accept",
                 label: dc_intl::t("cY+Oob").to_owned(),
-                secondary: false,
+                tone: Tone::Primary,
                 then: Then::AcceptMessageRequest { channel },
             },
         ],
@@ -127,13 +146,13 @@ pub(super) fn raid_report_alert(guild: Id) -> Alert {
             AlertButton {
                 id: "report-raid-cancel",
                 label: dc_intl::t("ETE/oC").to_owned(),
-                secondary: true,
+                tone: Tone::Secondary,
                 then: Then::Close,
             },
             AlertButton {
                 id: "report-raid-submit",
                 label: dc_intl::t("geKm7t").to_owned(),
-                secondary: false,
+                tone: Tone::Primary,
                 then: Then::ReportRaid { guild },
             },
         ],
@@ -152,11 +171,27 @@ pub(super) fn raid_report_request(guild: Id, alerts_channel: Option<Id>) -> Opti
     })
 }
 
+/// "Invite permission required" (module 132610): the title, its subtitle and Got It.
+pub(super) fn invite_permission_alert() -> Alert {
+    Alert {
+        id: "invite-permission-required",
+        title: dc_intl::t("xSV3nU").to_owned(),
+        subtitle: Some(vec![(dc_intl::t("jPMGbB").to_owned(), false)]),
+        content: None,
+        buttons: vec![AlertButton {
+            id: "invite-permission-got-it",
+            label: dc_intl::t("NX+WJN").to_owned(),
+            tone: Tone::Primary,
+            then: Then::Close,
+        }],
+    }
+}
+
 #[derive(Clone, Debug)]
 pub(super) struct AlertButton {
     pub id: &'static str,
     pub label: String,
-    pub secondary: bool,
+    pub tone: Tone,
     pub then: Then,
 }
 
@@ -176,6 +211,8 @@ pub(super) enum Content {
     SoundboardKeybind { original: Option<Vec<[u32; 3]>> },
     /// Module 935074's checkbox group, with the indices of `RAID_KINDS` chosen.
     RaidReport { chosen: Vec<usize> },
+    /// Module 267: "Reason:" (4px from it) and the moderators' reason, `body-md/medium` in `text-default`.
+    RejectionReason(String),
 }
 
 /// The Soundboard Keybind modal (module 29681): "Soundboard Keybind", Cancel and Save.
@@ -189,13 +226,13 @@ pub(super) fn soundboard_keybind_alert(original: Option<Vec<[u32; 3]>>) -> Alert
             AlertButton {
                 id: "soundboard-keybind-cancel",
                 label: dc_intl::t("ETE/oC").to_owned(),
-                secondary: true,
+                tone: Tone::Secondary,
                 then: Then::Close,
             },
             AlertButton {
                 id: "soundboard-keybind-save",
                 label: dc_intl::t("R3BPH+").to_owned(),
-                secondary: false,
+                tone: Tone::Primary,
                 then: Then::SaveSoundboardKeybind,
             },
         ],
@@ -214,7 +251,7 @@ pub(super) fn upload_errors_alert(
         buttons: vec![AlertButton {
             id: "emoji-upload-errors-ok",
             label: dc_intl::t("NX+WJN").to_owned(),
-            secondary: true,
+            tone: Tone::Secondary,
             then: Then::Close,
         }],
     }
@@ -248,14 +285,14 @@ impl Alert {
             buttons.push(AlertButton {
                 id: "alert-cancel",
                 label: cancel,
-                secondary: true,
+                tone: Tone::Secondary,
                 then: Then::Close,
             });
         }
         buttons.push(AlertButton {
             id: "alert-confirm",
             label: confirm.unwrap_or_else(|| dc_intl::tr("Okay").to_owned()),
-            secondary: false,
+            tone: Tone::Primary,
             then,
         });
         Self {
@@ -298,13 +335,13 @@ pub(super) fn forward_failed_alert(
             AlertButton {
                 id: "forward-failed-cancel",
                 label: dc_intl::tr("Cancel").to_owned(),
-                secondary: true,
+                tone: Tone::Secondary,
                 then: Then::Close,
             },
             AlertButton {
                 id: "forward-failed-retry",
                 label: dc_intl::tr("Retry").to_owned(),
-                secondary: false,
+                tone: Tone::Primary,
                 then: Then::RetryForward {
                     message: Box::new(message),
                     destinations,
@@ -478,6 +515,97 @@ impl Root {
         )
     }
 
+    /// "This channel is not on your channel list." (module 157259, shown by module 626977 when `228098` holds): the
+    /// account browses only the channels it picked (`OPT_IN_CHANNELS_ON` of the server's settings) and neither the
+    /// channel nor its category is picked (`OPT_IN_ENABLED` of their overrides); never for a thread. Module 859937's
+    /// `chatHeaderBar` (`--background-surface-high`, a `--border-muted` rule under it, 8px 16px inside with 28px at the
+    /// start), the line in `body-sm/normal` and a `sm` primary "Add to Channel List" with the plus icon.
+    pub(super) fn opt_in_channel_notice(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
+        let (guild, channel) = (self.guild?, self.channel?);
+        let server = self.stores.guild(guild)?;
+        let parent_id = server
+            .channels
+            .iter()
+            .find(|known| known.id == channel)?
+            .parent_id;
+        // `jN` of module 395504: opt-in counts only in a Community server, or for staff.
+        let community = server.features.iter().any(|feature| feature == "COMMUNITY")
+            || self
+                .stores
+                .current_user
+                .as_ref()
+                .is_some_and(|user| user.has_flag(dc_state::USER_FLAG_STAFF));
+        let settings = self.stores.guild_settings.guilds.get(&guild)?;
+        let picked = |id: Option<Id>| {
+            id.and_then(|id| settings.channels.get(&id))
+                .is_some_and(|own| own.flags & OPT_IN_ENABLED != 0)
+        };
+        // GAP: the Server Guide resource-channel exemption (`IS_GUILD_RESOURCE_CHANNEL` behind `473529 d`) is not read.
+        if !opt_in_notice_shown(
+            community && settings.flags & OPT_IN_CHANNELS_ON != 0,
+            picked(Some(channel)),
+            picked(parent_id),
+        ) {
+            return None;
+        }
+        Some(
+            div()
+                .flex_none()
+                .relative()
+                .py(px(8.))
+                .pr(px(16.))
+                .pl(px(28.))
+                .bg(super::color("--background-surface-high"))
+                .border_b_1()
+                .border_color(super::color("--border-muted"))
+                .flex()
+                .items_center()
+                .justify_between()
+                .child(
+                    div()
+                        .flex_1()
+                        .mr(px(16.))
+                        .text_size(px(14.))
+                        .line_height(px(18.))
+                        .text_color(super::color("--text-default"))
+                        .child(dc_intl::t("iOWmmB")),
+                )
+                .child(
+                    super::dm::small_button(
+                        "opt-in-add-channel",
+                        dc_intl::t("ZtIlQo"),
+                        super::dm::Tone::Primary,
+                        true,
+                    )
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        this.add_to_channel_list(guild, channel);
+                        cx.notify();
+                    })),
+                )
+                .into_any_element(),
+        )
+    }
+
+    /// `AC(guild, channel, true)` of module 816662: the channel's override gains `OPT_IN_ENABLED`, at once and through
+    /// `PATCH /users/@me/guilds/settings`.
+    fn add_to_channel_list(&mut self, guild: Id, channel: Id) {
+        let Some(settings) = self.stores.guild_settings.guilds.get_mut(&guild) else {
+            return;
+        };
+        // A channel without an override inherits its notifications (`INHERIT`), as `from_value` reads one.
+        let own = settings.channels.entry(channel).or_insert_with(|| {
+            dc_state::guild_settings::Override {
+                message_notifications: dc_state::guild_settings::INHERIT,
+                ..Default::default()
+            }
+        });
+        own.flags |= OPT_IN_ENABLED;
+        let flags = own.flags;
+        let _ = self.requests.send(Request::GuildSettings {
+            body: json!({"guilds": {guild.to_string(): {"channel_overrides": {channel.to_string(): {"flags": flags}}}}}),
+        });
+    }
+
     /// Runs a context menu thread action; the bodies go one after the other.
     pub(super) fn run_thread_step(&mut self, thread: Id, step: ThreadStep) {
         let (archived, flags) = self.thread_state(thread).unwrap_or_default();
@@ -628,6 +756,8 @@ impl Root {
                 tracing::debug!("raid report submitted");
             }
             Then::UseCommand { name, id } => self.use_command_mention(&name, id, window, cx),
+            Then::WithdrawApplication { guild } => self.remove_join_request(guild),
+            Then::Reapply { guild } => self.reapply(guild),
         }
     }
 
@@ -666,11 +796,7 @@ impl Root {
                 modal::button(
                     button.id,
                     button.label,
-                    if button.secondary {
-                        Tone::Secondary
-                    } else {
-                        Tone::Primary
-                    },
+                    button.tone,
                     move |this, window, cx| this.alert_then(then.clone(), window, cx),
                 )
             })
@@ -739,6 +865,16 @@ impl Root {
                     .into_any_element()
             }
             Content::AffectedGuild(guild) => self.affected_guild(guild),
+            Content::RejectionReason(reason) => div()
+                .flex()
+                .flex_wrap()
+                .text_size(px(16.))
+                .line_height(px(20.))
+                .font_weight(FontWeight(500.))
+                .text_color(super::color("--text-default"))
+                .child(div().mr(px(4.)).child(dc_intl::t("cf1psW")))
+                .child(reason)
+                .into_any_element(),
             Content::EmojiUploadErrors(errors) => div()
                 .flex()
                 .flex_col()
@@ -879,7 +1015,7 @@ impl Root {
                     buttons: vec![AlertButton {
                         id: "automod-removed-okay",
                         label: dc_intl::tr("Okay").to_owned(),
-                        secondary: false,
+                        tone: Tone::Primary,
                         then: Then::Close,
                     }],
                 });
@@ -932,13 +1068,13 @@ impl Root {
                 AlertButton {
                     id: "dm-upsell-keep",
                     label: dc_intl::tr("No, keep them on").to_owned(),
-                    secondary: true,
+                    tone: Tone::Secondary,
                     then: Then::Close,
                 },
                 AlertButton {
                     id: "dm-upsell-off",
                     label: dc_intl::tr("Yes, turn them off").to_owned(),
-                    secondary: false,
+                    tone: Tone::Primary,
                     then: Then::DmsOff { guild },
                 },
             ],
@@ -956,6 +1092,28 @@ impl Root {
         }
         self.set_ids(&dc_proto::settings::DM_RESTRICTED_GUILDS, &ids);
         self.show_success_toast(dc_intl::tr("Settings changed").to_owned(), cx);
+    }
+
+    /// The server header's invite button (module 182179): `K` of module 855687 (Create Invite in the server, or a
+    /// custom invite link) opens Invite to Server; anyone else sees "Invite permission required" (module 132610),
+    /// its subtitle and Got It.
+    pub(super) fn header_invite(&mut self, cx: &mut Context<Self>) {
+        let Some(guild) = self.guild else { return };
+        let vanity = self
+            .stores
+            .guild(guild)
+            .is_some_and(|known| known.vanity_url_code.is_some());
+        if vanity || self.my_permission(guild, None, dc_state::permissions::CREATE_INSTANT_INVITE) {
+            self.open_invite(cx);
+            return;
+        }
+        self.script_invite_permission(cx);
+    }
+
+    /// The header invite's refusal; the harness shows it for an account that may invite.
+    pub(crate) fn script_invite_permission(&mut self, cx: &mut Context<Self>) {
+        self.chat_extra.alert = Some(invite_permission_alert());
+        cx.notify();
     }
 
     /// Limited access (module 218642, opened by module 700241 from the request interceptor of module 596339 for a
@@ -1159,6 +1317,17 @@ mod tests {
     }
 
     #[test]
+    fn the_channel_list_bar_shows_for_an_unpicked_channel_of_an_opt_in_server() {
+        assert!(opt_in_notice_shown(true, false, false));
+        assert!(!opt_in_notice_shown(true, true, false));
+        assert!(!opt_in_notice_shown(true, false, true));
+        assert!(!opt_in_notice_shown(false, false, false));
+        let alert = invite_permission_alert();
+        assert_eq!(alert.title, "Invite permission required");
+        assert_eq!(alert.buttons[0].label, "Got It");
+    }
+
+    #[test]
     fn locking_an_archived_thread_unarchives_it_first() {
         assert_eq!(
             thread_bodies(ThreadStep::Lock, true, 0),
@@ -1269,7 +1438,7 @@ mod tests {
             Some("Go".into()),
             Then::Close,
         );
-        assert!(alert.buttons[0].secondary);
+        assert_eq!(alert.buttons[0].tone, Tone::Secondary);
         assert_eq!(alert.buttons[1].label, "Go");
     }
 }

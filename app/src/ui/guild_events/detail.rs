@@ -121,11 +121,42 @@ impl Root {
             )
     }
 
+    /// The location line of the Event Info tab (module 167630): `locationText` in `--text-default`; a voice or Stage
+    /// event's channel is `channelLocation` (a pointer, underlined on hover) and a click joins it (`GI` of module
+    /// 427080: `selectVoiceChannel`, or the Stage), then the detail closes. An outside location stays plain text.
+    fn event_location_text(
+        &self,
+        event: &ScheduledEvent,
+        place: String,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let channel = (event.entity_type != dc_state::scheduled_events::ENTITY_EXTERNAL)
+            .then_some(event.channel_id)
+            .flatten();
+        let guild = event.guild_id;
+        div()
+            .id("event-detail-location")
+            .when_some(channel, |this, channel| {
+                this.cursor_pointer()
+                    .hover(|style| style.underline())
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        cx.stop_propagation();
+                        if let Some(open) = this.guild_events.as_mut() {
+                            open.detail = None;
+                        }
+                        this.request_join_voice(guild, channel, cx);
+                    }))
+            })
+            .child(place)
+            .into_any_element()
+    }
+
     fn event_info_panel(
         &self,
         event: &ScheduledEvent,
         now: NaiveDateTime,
         count: i64,
+        cx: &mut Context<Self>,
     ) -> AnyElement {
         let status = event_status(event, now, true);
         let creator = event
@@ -196,7 +227,7 @@ impl Root {
                     .child(self.event_info_row(server_icon, guild_name.into_any_element(), false))
                     .child(self.event_info_row(
                         icon(place_icon, 20., "--icon-muted").into_any_element(),
-                        place.into_any_element(),
+                        self.event_location_text(event, place, cx),
                         false,
                     ))
                     .child(self.event_info_row(
@@ -326,7 +357,7 @@ impl Root {
             .clone();
         let count = self.stores.scheduled_events.get_user_count(event.id, None);
         let panel = match detail.tab {
-            Tab::Info => self.event_info_panel(&event, now, count),
+            Tab::Info => self.event_info_panel(&event, now, count, cx),
             Tab::Interested => self.event_interested_panel(event.id),
         };
         let header = div()

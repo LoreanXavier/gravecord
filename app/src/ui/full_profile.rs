@@ -3359,6 +3359,8 @@ impl Root {
                 .children(servers.into_iter().filter_map(|(guild, nick)| {
                     let known = self.stores.guilds.iter().find(|known| known.id == guild)?;
                     let name = known.name.clone();
+                    // Module 51943: the row reads "{guildName}, go to server".
+                    let label = dc_intl::t!("Ce2iXp", guildName = name.clone()).to_string();
                     let picture = self.images.get(&format!("guild:{guild}")).cloned();
                     let leading = div()
                         .size(px(40.))
@@ -3384,6 +3386,7 @@ impl Root {
                             strong,
                             row_hover,
                         )
+                        .aria_label(label)
                         .children(nick.map(|nick| {
                             div()
                                 .text_size(px(12.))

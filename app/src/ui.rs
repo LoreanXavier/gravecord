@@ -464,6 +464,8 @@ pub struct Root {
     guild: Option<Id>,
     channel: Option<Id>,
     screening: Option<screening::Screening>,
+    /// Reapply of a pending member (module 267): the server whose verification form opens once its old request is gone.
+    reapply_after_remove: Option<Id>,
     slowmode: dc_state::slowmode::SlowmodeStore,
     slowmode_ticking: bool,
     presence_ticking: bool,
@@ -973,6 +975,7 @@ impl Root {
             guild: None,
             channel: None,
             screening: None,
+            reapply_after_remove: None,
             slowmode: Default::default(),
             slowmode_ticking: false,
             presence_ticking: false,
@@ -2029,6 +2032,12 @@ impl Root {
                     return;
                 }
                 if self.screening_fetched(&key, &body, cx) {
+                    return;
+                }
+                if self.join_request_answered(&key, &body, cx) {
+                    return;
+                }
+                if self.invite_accept_answered(&key, &body, cx) {
                     return;
                 }
                 if self.thread_browser_fetched(&key, &body, cx) {
@@ -5367,7 +5376,7 @@ impl Root {
                                     .flex()
                                     .items_center()
                                     .justify_center()
-                                    .on_click(cx.listener(|this, _, _, cx| this.open_invite(cx)))
+                                    .on_click(cx.listener(|this, _, _, cx| this.header_invite(cx)))
                                     .child(icon("invite", 20., "--text-strong")),
                             ),
                     ),
@@ -10918,6 +10927,7 @@ impl Render for Root {
                                                 // notice of a channel just marked unread for every message.
                                                 .children(self.thread_lock_notice(cx))
                                                 .children(self.unread_settings_notice(cx))
+                                                .children(self.opt_in_channel_notice(cx))
                                                 .child(self.regions.place(
                                                     regions::Kind::Messages,
                                                     regions::style_of(regions::Kind::Messages),

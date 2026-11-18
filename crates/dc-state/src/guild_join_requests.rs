@@ -250,6 +250,22 @@ impl Stores {
                     self.join_requests.forget_own(guild);
                 }
             }
+            // Module 624458's `removeGuildJoinRequest` (`request: null`) and `resetGuildJoinRequest` (the answer's
+            // request) dispatch this after their request succeeds.
+            "USER_GUILD_JOIN_REQUEST_UPDATE" => {
+                let Some(guild) = id(&data["guildId"]) else {
+                    return;
+                };
+                let store = &mut self.join_requests;
+                if data["request"].is_object() {
+                    store
+                        .own
+                        .insert(guild, JoinRequest::from_value(&data["request"]));
+                } else {
+                    store.forget_own(guild);
+                }
+                store.version += 1;
+            }
             _ => {}
         }
     }
@@ -394,6 +410,28 @@ mod tests {
             &event(request("101", "10", SUBMITTED), SUBMITTED),
         );
         stores.dispatch("GUILD_DELETE", &json!({"id": "5"}));
+        assert!(stores.join_requests.get_request(5).is_none());
+    }
+
+    #[test]
+    fn withdraw_and_reapply_replace_the_accounts_own_request() {
+        let mut stores = Stores::default();
+        me(&mut stores);
+        stores.dispatch(
+            "USER_GUILD_JOIN_REQUEST_UPDATE",
+            &json!({"guildId": "5", "request": request("100", "10", REJECTED)}),
+        );
+        assert_eq!(
+            stores
+                .join_requests
+                .get_request(5)
+                .and_then(|known| known.application_status.as_deref()),
+            Some(REJECTED)
+        );
+        stores.dispatch(
+            "USER_GUILD_JOIN_REQUEST_UPDATE",
+            &json!({"guildId": "5", "request": null}),
+        );
         assert!(stores.join_requests.get_request(5).is_none());
     }
 }
