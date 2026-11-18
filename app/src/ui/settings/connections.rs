@@ -578,6 +578,10 @@ impl Root {
             cx.notify();
             return true;
         }
+        if let Some(rest) = key.strip_prefix(super::connection_link::LINK_KEY) {
+            self.connection_link_answered(rest, body, cx);
+            return true;
+        }
         if !key.starts_with(AUTHORIZE_KEY) {
             return false;
         }
@@ -585,7 +589,14 @@ impl Root {
         if let Some(url) = url {
             self.settings_open_url(url, cx);
         }
-        self.connection_authorized(url.is_some(), cx);
+        if matches!(
+            self.settings_extra.conn,
+            Some(super::connection_dialogs::Dlg::Info(_))
+        ) {
+            self.connection_link_authorized(url, cx);
+        } else {
+            self.connection_authorized(url.is_some(), cx);
+        }
         true
     }
 

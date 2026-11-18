@@ -1,14 +1,11 @@
 //! The dialogs the connection buttons open before anything leaves the app (module 80320 `d`).
 //!
 //! - Crunchyroll, Xbox and PlayStation Network: a 408 wide info dialog (modules 95895, 35352, 158375 over the shared
-//!   landing slide 458172). Continue goes to the pre-connect slide (873885, "Step 1 of 2"), whose button starts
-//!   `GET /connections/{type}/authorize` and opens the address it answers; the waiting slide follows. The browser's
-//!   sign-in comes back as the gateway's `USER_CONNECTIONS_CALLBACK` (`connection_card.rs` posts it), the account
-//!   appears in the next `GET /users/@me/connections` and the dialog closes.
-//!   GAP: the official dialogs ask for a two-way link (`two_way_link_type=desktop`, module 873885) and finish it with
-//!   `USER_CONNECTIONS_LINK_CALLBACK` and the in-dialog Discord consent slide (module 910316 over the OAuth2 hook
-//!   610056, "Step 2 of 2"), which is not built; the request here is the plain one-way link, so console voice
-//!   features need the official client.
+//!   landing slide 458172, the slides of 52643 run by 670404). Continue goes to the pre-connect slide (873885, "Step 1
+//!   of 2"), whose button asks for a two-way link and opens the address it answers; the waiting slide follows until the
+//!   gateway's `USER_CONNECTIONS_LINK_CALLBACK`, then the Discord consent slide (910316, "Step 2 of 2") and the success
+//!   slide (162185). The requests are in `connection_link.rs`. The landing title offers a relink when the account is
+//!   linked one way (`twoWayLink === false`).
 //! - Bluesky (module 343946): Handle form, Next sends the authorize request with `handle=`.
 //! - Domain (module 683286): Domain form; Next is `POST /users/@me/connections/domain/{domain}`, a `proof` in the
 //!   error answer opens the DNS / HTTPS proof slide whose Verify sends the same request again.
@@ -31,17 +28,36 @@ use serde_json::{Value, json};
 pub(super) const DOMAIN_KEY: &str = "settings-connection-domain";
 
 /// The slides of an info dialog (`52643.N`).
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(in crate::ui) enum Slide {
     Landing,
     Connect,
     Waiting,
+    /// `DISCORD_CONSENT` (module 910316).
+    Consent,
     Error,
+    Success,
 }
 
 pub(in crate::ui) struct Info {
-    kind: &'static str,
-    slide: Slide,
+    pub(super) kind: &'static str,
+    pub(super) slide: Slide,
+    /// `expectedCallbackState`: the `state` of the authorize address the browser opened.
+    pub(super) expected: Option<String>,
+    /// `callbackData`: the link callback's code and state.
+    pub(super) callback: Option<(String, String)>,
+    /// `errorCode` of the last failure.
+    pub(super) error_code: Option<i64>,
+    pub(super) consent: Box<super::connection_link::Consent>,
+}
+
+impl Info {
+    /// `gotoError(code)` of module 670404.
+    pub(super) fn go_error(&mut self, code: Option<i64>) {
+        self.expected = None;
+        self.error_code = code;
+        self.slide = Slide::Error;
+    }
 }
 
 pub(in crate::ui) struct Handle {
@@ -274,6 +290,24 @@ const ERROR_ART: (&str, &str, f32, f32) = (
     127.,
 );
 
+/// The success slides' pictures (module 326513 for the consoles, 124 by 160; Crunchyroll's 224 by 104).
+const SUCCESS_ART: &[(&str, &str)] = &[
+    (
+        "conn-console-success",
+        "https://cdn.discordapp.com/assets/content/78f63623b9a823fb08b553c956ad16d032c46e4375c55f374e1e6bc791b8a1a7.png",
+    ),
+    (
+        "conn-crunchyroll-success",
+        "https://discord.com/assets/f57d187b12fee97a.png",
+    ),
+];
+
+/// Xbox's `icon.whiteSVG` (module 278922), in the Get the Xbox App box.
+const XBOX_WHITE: &str = "c4f09fda61827e19.svg";
+
+/// The Xbox app's page the success slide's code points to (`EY` of module 544105).
+const XBOX_APP_URL: &str = "https://www.xbox.com/en-US/apps/xbox-app-for-mobile";
+
 /// Every picture the info dialogs draw, as `(name, url)`: requested when a dialog opens.
 fn art_of(kind: &str) -> Vec<(&'static str, &'static str)> {
     let l = landing(kind);
@@ -348,17 +382,6 @@ fn new_editor(
 }
 
 impl Root {
-    /// The connections came back: an info dialog waiting on its platform closes once that account is there.
-    pub(super) fn connection_dialog_linked(&mut self) {
-        let Some(Dlg::Info(info)) = self.settings_extra.conn.as_ref() else {
-            return;
-        };
-        let kind = info.kind;
-        if info.slide == Slide::Waiting && self.linked_platforms().contains(&kind) {
-            self.settings_extra.conn = None;
-        }
-    }
-
     /// Harness only: `connect-error <xbox|playstation|crunchyroll>` opens that dialog with its authorize request
     /// failed, as a refused `GET /connections/<type>/authorize` leaves it (the error slide of module 478474).
     #[cfg(feature = "capture")]
@@ -369,10 +392,47 @@ impl Root {
             "crunchyroll" => "crunchyroll",
             _ => return "usage: connect-error xbox|playstation|crunchyroll".to_owned(),
         };
-        self.open_settings_page("connections", cx);
+        self.open_settings_page("connected-apps", cx);
         self.open_connection_dialog(kind, cx);
         self.connection_authorized(false, cx);
         format!("connect-error: {kind} on its error slide")
+    }
+
+    /// Harness only: `connect-open <xbox|playstation|crunchyroll>` opens Connections with that platform's dialog on
+    /// its landing slide, as its connect button does.
+    #[cfg(feature = "capture")]
+    pub(crate) fn script_connect_open(&mut self, kind: &str, cx: &mut Context<Self>) -> String {
+        let kind: &'static str = match kind {
+            "xbox" => "xbox",
+            "playstation" => "playstation",
+            "crunchyroll" => "crunchyroll",
+            _ => return "usage: connect-open xbox|playstation|crunchyroll".to_owned(),
+        };
+        self.open_settings_page("connected-apps", cx);
+        self.open_connection_dialog(kind, cx);
+        format!("connect-open: {kind} on its landing slide")
+    }
+
+    /// Harness only: the open info dialog's slide, its expected state and its last request.
+    #[cfg(feature = "capture")]
+    pub(crate) fn script_connect_state(&self) -> String {
+        match self.settings_extra.conn.as_ref() {
+            Some(Dlg::Info(info)) => format!(
+                "connect-state: {} slide={:?} expected={:?} consent_loaded={} loading={} failed={:?} last={:?}",
+                info.kind,
+                info.slide,
+                info.expected,
+                info.consent.get.is_some(),
+                info.consent.loading,
+                info.consent.failed,
+                self.settings_extra.last_url
+            ),
+            Some(_) => "connect-state: a form dialog".to_owned(),
+            None => format!(
+                "connect-state: closed last={:?}",
+                self.settings_extra.last_url
+            ),
+        }
     }
 
     /// A connection button whose first step is a dialog of its own (module 80320).
@@ -411,9 +471,20 @@ impl Root {
                 for (name, url) in art_of(kind) {
                     self.request_image(crate::ui::nitro::art_key(name), url.to_owned());
                 }
+                for (name, url) in SUCCESS_ART {
+                    self.request_image(crate::ui::nitro::art_key(name), (*url).to_owned());
+                }
+                self.request_image(
+                    crate::ui::platform_presence::asset_key(XBOX_WHITE),
+                    crate::ui::platform_presence::asset_url(XBOX_WHITE),
+                );
                 self.settings_extra.conn = Some(Dlg::Info(Info {
                     kind,
                     slide: Slide::Landing,
+                    expected: None,
+                    callback: None,
+                    error_code: None,
+                    consent: Default::default(),
                 }));
             }
         }
@@ -539,10 +610,13 @@ impl Root {
         cx: &mut Context<Self>,
     ) {
         if crate::storage::is_capture_run() {
-            // The route creates an authorization state at the server; a harness run never starts one.
+            // The route creates an authorization state at the server; a harness run never starts one. An info
+            // dialog waits for its answer (`fetched settings-connection-authorize-<type> {"url": ...}`).
             tracing::info!("connection {kind}: hand-off skipped, GET {route} then the browser");
             self.settings_extra.last_url = Some(route);
-            self.connection_authorized(true, cx);
+            if !matches!(self.settings_extra.conn, Some(Dlg::Info(_))) {
+                self.connection_authorized(true, cx);
+            }
             return;
         }
         let _ = self.requests.send(Request::Fetch {
@@ -556,7 +630,11 @@ impl Root {
     pub(super) fn connection_authorized(&mut self, ok: bool, cx: &mut Context<Self>) {
         match self.settings_extra.conn.as_mut() {
             Some(Dlg::Info(info)) => {
-                info.slide = if ok { Slide::Waiting } else { Slide::Error };
+                if ok {
+                    info.slide = Slide::Waiting;
+                } else {
+                    info.go_error(None);
+                }
             }
             Some(Dlg::Handle(form)) => {
                 form.working = false;
@@ -918,10 +996,298 @@ impl Root {
             .into_any_element()
     }
 
+    /// The full-width footer button of a slide (`footerButton_N-Y7ZJ`: `align-self: stretch`).
+    fn slide_button(
+        id: &'static str,
+        label: &'static str,
+        tone: modal::Tone,
+        run: fn(&mut Root, &mut Context<Root>),
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        div()
+            .w_full()
+            .flex()
+            .child(modal::footer_button(
+                modal::button(id, label, tone, move |this, _, cx| {
+                    run(this, cx);
+                    cx.notify();
+                }),
+                cx,
+            ))
+            .into_any_element()
+    }
+
+    /// `DISCORD_CONSENT` (module 910316): "Step 2 of 2" and the close button; the hook's header in
+    /// `consentHeader_N-Y7ZJ` (32px above and below), its scope list and details; one Authorize and Continue.
+    fn consent_slide(
+        &self,
+        info: &Info,
+        step: AnyElement,
+        cx: &mut Context<Self>,
+    ) -> (AnyElement, AnyElement, AnyElement) {
+        let consent = &info.consent;
+        let header = div()
+            .flex()
+            .flex_col()
+            .items_center()
+            .child(step)
+            .into_any_element();
+        let body: AnyElement = if let Some(message) = consent.failed.clone() {
+            // The hook's error for a two-way consent: `Error` (body-lg/semibold, text-strong) over the message.
+            div()
+                .flex()
+                .flex_col()
+                .child(
+                    div()
+                        .py(px(32.))
+                        .text_size(px(20.))
+                        .line_height(px(24.))
+                        .font_weight(FontWeight(600.))
+                        .text_color(color("--text-strong"))
+                        .child(dc_intl::t("j2d6Km")),
+                )
+                .child(
+                    div()
+                        .text_size(px(16.))
+                        .line_height(px(20.))
+                        .text_color(color("--text-default"))
+                        .child(message),
+                )
+                .into_any_element()
+        } else if let Some(get) = consent.get.clone() {
+            let requested = super::connection_link::consent_args(info.kind)
+                .map(|args| crate::ui::oauth::requested_scopes(&args.scopes))
+                .unwrap_or_default();
+            let data = crate::ui::oauth::ConsentData {
+                get,
+                disclosures: crate::ui::oauth::disclosure_ids(consent.disclosures.as_ref()),
+                requested,
+                integration: crate::ui::oauth::GUILD_INSTALL,
+                fake: consent.fake,
+                trusted_name: true,
+            };
+            let (head, scopes, details) = self.oauth_consent_parts(&data, cx);
+            div()
+                .flex()
+                .flex_col()
+                .child(div().py(px(32.)).child(head))
+                .child(scopes)
+                .child(details)
+                .into_any_element()
+        } else {
+            // `e9`: the hook's spinner while its request is out.
+            div()
+                .h(px(120.))
+                .flex()
+                .items_center()
+                .justify_center()
+                .child(crate::ui::login::wandering_cubes())
+                .into_any_element()
+        };
+        let footer = Self::slide_button(
+            "settings-connect-authorize",
+            dc_intl::t("ZN4hkc"),
+            if consent.loading {
+                modal::Tone::PrimaryLoading
+            } else {
+                modal::Tone::Primary
+            },
+            |this, cx| this.connection_consent_authorize(cx),
+            cx,
+        );
+        (header, body, footer)
+    }
+
+    /// `SUCCESS` (module 162185 with each platform's picture, title, body and extra content); Done closes.
+    fn success_slide(
+        &self,
+        kind: &'static str,
+        cx: &mut Context<Self>,
+    ) -> (AnyElement, AnyElement, AnyElement) {
+        #[allow(clippy::type_complexity)]
+        let (art, heading, text): ((&str, f32, f32), &str, &str) = match kind {
+            "xbox" => (
+                ("conn-console-success", 124., 160.),
+                dc_intl::t("7QsHmh"),
+                dc_intl::t("byYNPX"),
+            ),
+            "playstation" => (
+                ("conn-console-success", 124., 160.),
+                dc_intl::t("e6SOl0"),
+                dc_intl::t("QjAZAQ"),
+            ),
+            _ => (
+                ("conn-crunchyroll-success", 224., 104.),
+                dc_intl::t("Fnvxvk"),
+                dc_intl::t("YwXceg"),
+            ),
+        };
+        let header = div()
+            .flex()
+            .flex_col()
+            .items_center()
+            .child(
+                div()
+                    .mb(px(16.))
+                    .flex()
+                    .justify_center()
+                    .child(self.nitro_art(art.0, art.1, art.2)),
+            )
+            .child(
+                div()
+                    .text_size(px(24.))
+                    .line_height(px(32.))
+                    .font_weight(FontWeight(600.))
+                    .text_color(color("--text-strong"))
+                    .text_center()
+                    .child(heading),
+            )
+            .into_any_element();
+        // `Anchor` (body-sm/medium) to the platform's help article.
+        let article = if kind == "xbox" {
+            "360003953831"
+        } else {
+            "9929188048023"
+        };
+        let learn_more = div()
+            .id("settings-connect-success-learn")
+            .text_size(px(14.))
+            .line_height(px(18.))
+            .font_weight(FontWeight(500.))
+            .text_color(color("--text-link"))
+            .cursor_pointer()
+            .child(dc_intl::t("hvVgAZ"))
+            .on_click(cx.listener(move |this, _, _, cx| {
+                this.settings_open_url(&format!("{HELP}{article}"), cx);
+                cx.notify();
+            }));
+        let extra: Option<AnyElement> = match kind {
+            // `w` of module 35352 (`getXboxApp_LGWSzq`): the Xbox mark, Get the Xbox App, its text and link, and the
+            // app's QR code (90px, 16 from the text).
+            "xbox" => Some(
+                div()
+                    .mt(px(24.))
+                    .p(px(16.))
+                    .rounded(px(8.))
+                    .bg(color("--background-mod-normal"))
+                    .flex()
+                    .items_center()
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w(px(0.))
+                            .flex()
+                            .flex_col()
+                            .child(
+                                div()
+                                    .flex()
+                                    .items_center()
+                                    .text_size(px(20.))
+                                    .line_height(px(24.))
+                                    .font_weight(FontWeight(600.))
+                                    .text_color(color("--text-strong"))
+                                    .child(
+                                        div()
+                                            .flex_none()
+                                            .size(px(24.))
+                                            .mr(px(10.))
+                                            .rounded(px(4.))
+                                            .bg(color("--platform-xbox"))
+                                            .flex()
+                                            .items_center()
+                                            .justify_center()
+                                            .children(
+                                                self.images
+                                                    .get(&crate::ui::platform_presence::asset_key(
+                                                        XBOX_WHITE,
+                                                    ))
+                                                    .cloned()
+                                                    .map(|picture| {
+                                                        gpui::img(picture).size(px(20.))
+                                                    }),
+                                            ),
+                                    )
+                                    .child(dc_intl::t("12Kx2v")),
+                            )
+                            .child(
+                                div()
+                                    .my(px(8.))
+                                    .text_size(px(16.))
+                                    .line_height(px(20.))
+                                    .text_color(color("--text-default"))
+                                    .child(dc_intl::t("M5yEcb")),
+                            )
+                            .child(learn_more),
+                    )
+                    .children(
+                        crate::ui::login::qr_code_card(XBOX_APP_URL, 90., 8., 4.)
+                            .map(|code| div().ml(px(16.)).child(code)),
+                    )
+                    .into_any_element(),
+            ),
+            "crunchyroll" => Some(
+                div()
+                    .flex()
+                    .justify_center()
+                    .child(learn_more)
+                    .into_any_element(),
+            ),
+            _ => None,
+        };
+        let body = div()
+            .flex()
+            .flex_col()
+            .child(
+                div()
+                    .my(px(8.))
+                    .text_size(px(16.))
+                    .line_height(px(20.))
+                    .text_color(color("--text-default"))
+                    .text_center()
+                    .child(text),
+            )
+            .children(extra)
+            .into_any_element();
+        let footer = Self::slide_button(
+            "settings-connect-done",
+            dc_intl::t("i4jeWR"),
+            modal::Tone::Primary,
+            |this, _| this.close_connection_dialog(),
+            cx,
+        );
+        (header, body, footer)
+    }
+
     /// The landing, pre-connect, waiting and error slides of a platform's info dialog.
     fn info_dialog(&self, info: &Info, cx: &mut Context<Self>) -> AnyElement {
         let kind = info.kind;
         let data = landing(kind);
+        // `headerReconnect` when the account is linked one way (`getAccount(null, type)?.twoWayLink === false`).
+        let one_way = self
+            .settings_extra
+            .connections
+            .iter()
+            .flatten()
+            .any(|item| item["type"] == kind && item["two_way_link"] == Value::Bool(false));
+        let landing_title = match (kind, one_way) {
+            ("xbox", true) => dc_intl::t("z3rAhq"),
+            ("playstation", true) => dc_intl::t("ZJ/vBh"),
+            _ => data.title,
+        };
+        // `stepHeader_N-Y7ZJ` (14px, medium, 16 below) over the Text's `body-xs/semibold`: the dialog's stylesheet is
+        // the later one, and only `line-height: 1.333` of the variant stays.
+        let step = |number: u32| {
+            div()
+                .mb(px(16.))
+                .text_size(px(14.))
+                .line_height(px(14. * 4. / 3.))
+                .font_weight(FontWeight(500.))
+                .text_color(color("--text-default"))
+                .child(dc_intl::format(
+                    "fHz6eR",
+                    &[("number", number.to_string().into()), ("total", "2".into())],
+                ))
+        };
         // Crunchyroll, PlayStation and Xbox are on the legacy modal root (`root__KoJTP` in
         // design/dom/settings/connect-{crunchyroll,playstation,xbox}-dialog, `EO` in module 935462).
         let pose = crate::ui::motion::legacy_modal_pose(
@@ -936,31 +1302,45 @@ impl Root {
             div().into_any_element()
         });
         let mut separate_link = Some(self.connect_learn_more("", data.article, cx));
-        let primary =
-            |id: &'static str, label: &'static str, run: fn(&mut Root, &mut Context<Root>)| {
-                div()
-                    .id(id)
-                    .h(px(40.))
-                    .px(px(17.))
-                    .rounded(px(8.))
-                    .border_1()
-                    .border_color(color("--control-primary-border-default"))
-                    .bg(color("--control-primary-background-default"))
-                    .hover(|style| style.bg(color("--control-primary-background-hover")))
-                    .cursor_pointer()
-                    .flex()
-                    .items_center()
-                    .justify_center()
-                    .text_size(px(16.))
-                    .line_height(px(20.))
-                    .font_weight(FontWeight(500.))
-                    .text_color(color("--white"))
-                    .child(label)
-                    .on_click(cx.listener(move |this, _, _, cx| {
-                        run(this, cx);
-                        cx.notify();
-                    }))
-            };
+        // `variant: n ? "secondary" : "primary"` (module 873885): the waiting slide's Retry is the secondary button
+        // (gpui takes one hover style per element, so the variant is chosen here).
+        let primary = |id: &'static str,
+                       label: &'static str,
+                       secondary: bool,
+                       run: fn(&mut Root, &mut Context<Root>)| {
+            let family = if secondary { "secondary" } else { "primary" };
+            let token = move |part: &str| color(&format!("--control-{family}-{part}"));
+            div()
+                .id(id)
+                .h(px(40.))
+                .px(px(17.))
+                .rounded(px(8.))
+                .border_1()
+                .border_color(if secondary {
+                    color("--border-muted")
+                } else {
+                    token("border-default")
+                })
+                .bg(token("background-default"))
+                .hover(move |style| style.bg(token("background-hover")))
+                .cursor_pointer()
+                .flex()
+                .items_center()
+                .justify_center()
+                .text_size(px(16.))
+                .line_height(px(20.))
+                .font_weight(FontWeight(500.))
+                .text_color(if secondary {
+                    token("text-default")
+                } else {
+                    color("--white")
+                })
+                .child(label)
+                .on_click(cx.listener(move |this, _, _, cx| {
+                    run(this, cx);
+                    cx.notify();
+                }))
+        };
         let art = |spec: (&'static str, &'static str, f32, f32), this: &Root| {
             div()
                 .h(px(spec.3 + 3.))
@@ -1061,7 +1441,7 @@ impl Root {
                 (
                     div()
                         .child(art(data.art, self))
-                        .child(title(data.title))
+                        .child(title(landing_title))
                         .into_any_element(),
                     div()
                         .flex()
@@ -1089,6 +1469,7 @@ impl Root {
                     primary(
                         "settings-connect-continue",
                         dc_intl::tr("Continue"),
+                        false,
                         |this, cx| {
                             if let Some(Dlg::Info(info)) = this.settings_extra.conn.as_mut() {
                                 info.slide = Slide::Connect;
@@ -1100,11 +1481,18 @@ impl Root {
                     .into_any_element(),
                 )
             }
+            Slide::Consent => self.consent_slide(info, step(2).into_any_element(), cx),
+            Slide::Success => self.success_slide(kind, cx),
             slide => {
                 let (spec, heading, text) = match slide {
                     Slide::Connect => data.connect,
                     Slide::Waiting => data.waiting,
-                    _ => (ERROR_ART, data.error.0, data.error.1),
+                    _ => (
+                        ERROR_ART,
+                        data.error.0,
+                        super::connection_link::error_body(kind, info.error_code)
+                            .unwrap_or(data.error.1),
+                    ),
                 };
                 let waiting = slide == Slide::Waiting;
                 // The error slide (module 478474) offers "Try Again" with the window launch icon, back to the
@@ -1126,7 +1514,7 @@ impl Root {
                     let kind = info.kind;
                     this.connection_authorize_route(
                         kind,
-                        format!("/connections/{kind}/authorize"),
+                        super::connection_link::authorize_route(kind),
                         cx,
                     );
                 };
@@ -1135,17 +1523,7 @@ impl Root {
                         .flex()
                         .flex_col()
                         .items_center()
-                        .when(slide != Slide::Error, |this| {
-                            this.child(
-                                div()
-                                    .mb(px(8.))
-                                    .text_size(px(12.))
-                                    .line_height(px(16.))
-                                    .font_weight(FontWeight(600.))
-                                    .text_color(color("--text-default"))
-                                    .child("Step 1 of 2"),
-                            )
-                        })
+                        .when(slide != Slide::Error, |this| this.child(step(1)))
                         .child(art(spec, self))
                         .child(title(heading))
                         .into_any_element(),
@@ -1165,25 +1543,19 @@ impl Root {
                             }))
                         })
                         .into_any_element(),
-                    primary("settings-connect-start", label, start)
+                    primary("settings-connect-start", label, waiting, start)
                         .w_full()
-                        // `launchIcon_N-Y7ZJ`: the 16px WindowLaunchIcon after the text's space, 1px up.
-                        .when(slide == Slide::Error, |this| {
-                            this.child(div().ml(px(4.)).mt(px(-1.)).child(mask_icon(
-                                "access_launch",
-                                16.,
-                                "--white",
-                            )))
-                        })
-                        // `variant: n ? "secondary" : "primary"` (module 873885): Retry is the secondary button.
-                        .when(waiting, |this| {
-                            this.border_color(color("--border-muted"))
-                                .bg(color("--control-secondary-background-default"))
-                                .text_color(color("--control-secondary-text-default"))
-                                .hover(|style| {
-                                    style.bg(color("--control-secondary-background-hover"))
-                                })
-                        })
+                        // `launchIcon_N-Y7ZJ`: the 16px WindowLaunchIcon after the text's space, 1px up; `6623tt`
+                        // (Continue) and `8Laby+` (Retry) carry it too, in the button's text colour.
+                        .child(div().ml(px(4.)).mt(px(-1.)).child(mask_icon(
+                            "access_launch",
+                            16.,
+                            if waiting {
+                                "--control-secondary-text-default"
+                            } else {
+                                "--white"
+                            },
+                        )))
                         .into_any_element(),
                 )
             }
@@ -1202,10 +1574,36 @@ impl Root {
             .overflow_hidden()
             .flex()
             .flex_col()
-            .child(div().pt(px(24.)).px(px(16.)).child(header))
-            .child(div().px(px(24.)).py(px(16.)).child(content))
+            // `slideContainer_N-Y7ZJ`: at most `clamp(200px, 100vh - 80px, 720px)`. The consent's list is longer than
+            // that, so its slide takes the whole height and its content scrolls.
+            .max_h(px(720.))
+            .min_h(px(0.))
+            .when(info.slide == Slide::Consent, |this| {
+                this.h(px((self.viewport.1 - 80.).clamp(200., 720.)))
+            })
+            .child(div().flex_none().pt(px(24.)).px(px(16.)).child(header))
             .child(
                 div()
+                    .relative()
+                    .flex_1()
+                    .min_h(px(0.))
+                    .child(
+                        div()
+                            .id("settings-connect-info-content")
+                            .size_full()
+                            .overflow_y_scroll()
+                            .track_scroll(&info.consent.scroll)
+                            .px(px(24.))
+                            .py(px(16.))
+                            .child(content),
+                    )
+                    .when(info.slide == Slide::Consent, |this| {
+                        this.child(super::auto_scrollbar(info.consent.scroll.clone()))
+                    }),
+            )
+            .child(
+                div()
+                    .flex_none()
                     .h(px(72.))
                     .px(px(24.))
                     .flex()
@@ -1244,6 +1642,7 @@ impl Root {
                     a: f32::from(0xb8u8) / 255. * pose.scrim,
                     ..rgba(0x000000ff)
                 })
+                .py(px(40.))
                 .flex()
                 .items_center()
                 .justify_center()
@@ -1251,7 +1650,15 @@ impl Root {
                     this.close_connection_dialog();
                     cx.notify();
                 }))
-                .child(modal),
+                .child(
+                    div()
+                        .max_h_full()
+                        .min_h(px(0.))
+                        .flex()
+                        .flex_col()
+                        .justify_center()
+                        .child(modal),
+                ),
         )
         .with_priority(1)
         .into_any_element()

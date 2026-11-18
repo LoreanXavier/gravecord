@@ -241,7 +241,7 @@ impl Root {
             .send(Request::Spotify(Command::Perform { request, operation }));
     }
 
-    fn spotify_clicked(
+    pub(super) fn spotify_clicked(
         &mut self,
         user: Id,
         activity: &Value,

@@ -210,6 +210,7 @@ mod nitro_purchase;
 mod notice_bar;
 mod notifications;
 mod notify;
+mod now_playing_menu;
 mod oauth;
 mod oauth_spec;
 mod official_messages;
@@ -2490,11 +2491,13 @@ impl Root {
                     self.persist_wishlist_cache();
                 }
                 if frecency {
-                    let wanted: Vec<&'static str> = self
+                    let mut wanted: Vec<&'static str> = self
                         .quick_reactions()
                         .into_iter()
+                        .chain(self.hover_bar_reactions())
                         .map(|emoji| emoji.surrogates)
                         .collect();
+                    wanted.dedup();
                     for surrogates in wanted {
                         self.request_emoji_image(surrogates);
                     }
@@ -8706,8 +8709,7 @@ impl Root {
         // `isExpanded`: Shift held, not in keyboard mode, and no picker or menu of the bar open.
         caps.expanded =
             hover_bar::shift_held() && !self.keyboard_mode() && !picker_open && !more_open;
-        let quick: Vec<&'static dc_tokens::emoji_data::Emoji> =
-            self.quick_reactions().into_iter().take(3).collect();
+        let quick: Vec<&'static dc_tokens::emoji_data::Emoji> = self.hover_bar_reactions();
         // `.hoverBarButton:hover .icon` is `scale(1.1)` over `.4s` (module 194085, stylesheet 28636); the button's
         // colour is `--interactive-text-default`, `-hover` under the pointer, `-active` when selected (319714).
         let button = |name: &str| {
@@ -10597,6 +10599,7 @@ impl Render for Root {
                 }
                 if keys.key == "escape"
                     && (this.oauth_escape(cx)
+                        || this.now_playing_escape(cx)
                         || this.activity_dialog_escape(cx)
                         || this.activity_shelf_escape(cx))
                 {

@@ -18,6 +18,7 @@ pub(in crate::ui) mod client_theme;
 mod clips;
 mod connection_card;
 mod connection_dialogs;
+mod connection_link;
 mod connections;
 mod content_filters;
 mod controls;

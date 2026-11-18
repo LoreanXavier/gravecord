@@ -24,6 +24,8 @@ pub(super) struct State {
     requested_at: Option<u64>,
     tick_running: bool,
     pub(super) avatars: Vec<Id>,
+    /// The card whose menu is open (`now_playing_menu.rs`), by party id.
+    pub(super) menu: Option<String>,
 }
 
 impl Default for State {
@@ -35,6 +37,7 @@ impl Default for State {
             requested_at: None,
             tick_running: false,
             avatars: Vec::new(),
+            menu: None,
         }
     }
 }
@@ -395,6 +398,19 @@ impl Root {
             .enumerate()
             .map(|(index, party)| self.active_now_party(party, index == 0, cx))
             .collect::<Vec<_>>();
+        if self
+            .active_now
+            .menu
+            .as_ref()
+            .is_some_and(|open| !feed.parties.iter().any(|party| &party.id == open))
+        {
+            // The card went away: so does its popout.
+            self.active_now.menu = None;
+        }
+        let menu = feed
+            .parties
+            .iter()
+            .find_map(|party| self.now_playing_menu(party, cx));
         div()
             .parity_left("active-now", 1.)
             .flex_grow_0()
@@ -436,10 +452,11 @@ impl Root {
                     })
                     .children(cards),
             )
+            .children(menu)
             .into_any_element()
     }
 
-    fn active_now_avatar(
+    pub(super) fn active_now_avatar(
         &self,
         user: Id,
         size: f32,
@@ -637,8 +654,28 @@ impl Root {
         } else {
             dc_intl::t!("grGyaf").into()
         };
+        let priority = party.priority[0];
         let header = div()
+            .id(SharedString::from(format!(
+                "active-now-header-{}",
+                party.id
+            )))
             .when(first, |row| row.parity("active-now-header"))
+            // `onContextMenu: e => i(e, o.user)` of the card header: the priority person's own menu.
+            .on_mouse_up(
+                gpui::MouseButton::Right,
+                cx.listener(move |root, event: &gpui::MouseUpEvent, _, cx| {
+                    cx.stop_propagation();
+                    root.open_context_menu(
+                        super::context_menu::Target::User {
+                            user: priority,
+                            guild: None,
+                        },
+                        event.position,
+                        cx,
+                    );
+                }),
+            )
             .p(px(16.))
             .h(px(68.))
             .rounded_t(px(15.))
@@ -734,7 +771,10 @@ impl Root {
                         .id(SharedString::from(format!("active-now-guild-{channel_id}")))
                         .cursor_pointer()
                         .child(self.active_now_guild_art(guild, cx))
-                        .on_click(cx.listener(move |root, _, _, cx| root.go_guild(guild_id, cx))),
+                        .on_click(cx.listener(move |root, _, _, cx| {
+                            cx.stop_propagation();
+                            root.go_guild(guild_id, cx)
+                        })),
                 )
                 .child(
                     div()
@@ -748,6 +788,7 @@ impl Root {
                         .child(text(guild.name.clone(), 14., 18., 600., "--text-strong"))
                         .child(text(channel.name.clone(), 12., 16., 400., "--text-muted"))
                         .on_click(cx.listener(move |root, _, _, cx| {
+                            cx.stop_propagation();
                             root.open_voice_view(guild_id, channel_id, cx);
                             root.request_join_voice(guild_id, channel_id, cx);
                         })),
@@ -767,9 +808,18 @@ impl Root {
             ));
         }
         let last = sections.len().saturating_sub(1);
+        let party_id = party.id.clone();
         div()
             .id(SharedString::from(format!("active-now-party-{}", party.id)))
             .when(first, |card| card.parity_with_border("active-now-card", 1.))
+            .relative()
+            .child(self.anchor_probe(format!("active-now-party-{}", party.id)))
+            // The card is the popout's button (`aria-haspopup: "menu"`); its links and buttons keep their own clicks
+            // (`E_` of module 596339).
+            .cursor_pointer()
+            .on_click(
+                cx.listener(move |root, _, _, cx| root.now_playing_menu_toggle(&party_id, cx)),
+            )
             .mt(px(12.))
             .w_full()
             .border_1()
@@ -1079,6 +1129,7 @@ impl Root {
                     .when(allowed, |tile| {
                         tile.cursor_pointer()
                             .on_click(cx.listener(move |root, _, _, cx| {
+                                cx.stop_propagation();
                                 if !root.active_now_can_watch(&destination) {
                                     return;
                                 }
@@ -1119,7 +1170,14 @@ impl Root {
         }
         if !matches!(
             variant,
-            "game" | "stream" | "spotify" | "spotify-party" | "voice" | "watch-fixture" | "empty"
+            "game"
+                | "xbox"
+                | "stream"
+                | "spotify"
+                | "spotify-party"
+                | "voice"
+                | "watch-fixture"
+                | "empty"
         ) {
             return "unknown activity fixture".into();
         }
@@ -1146,6 +1204,10 @@ impl Root {
                 "party":{"id":"spotify:reference-session"},"session_id":"spotify:reference-session","sync_id":"reference-track","flags":48,
                 "assets":{"large_image":"mp://discord.com/assets/58188da2d047938e.svg","large_text":"Reference Album"},
                 "timestamps":{"start":now()-60_000,"end":now()+120_000}})
+            } else if variant == "xbox" {
+                // A console game without rich presence: the card's menu offers Connect Xbox.
+                json!({"type":0,"name":"Reference Game","platform":"xbox",
+                    "application_id":"100000000000000002","timestamps":{"start":now()-7_200_000}})
             } else {
                 json!({"type":0,"name":"Reference Game",
                     "application_id":"100000000000000002","timestamps":{"start":now()-7_200_000}})
