@@ -439,6 +439,15 @@ pub(crate) const DEFS: &[Def] = &[
         ],
     },
     Def {
+        id: "CancelFriendRequest",
+        name: "CancelFriendRequest",
+        description: "Adds a way to cancel outgoing friend requests from profiles.",
+        origin: Origin::Equicord,
+        source: "src/equicordplugins/pendingFriendRequest/index.tsx",
+        default_on: false,
+        settings: &[],
+    },
+    Def {
         id: "ClearURLs",
         name: "ClearURLs",
         description: "Removes tracking parameters from links in the messages you send and edit.",

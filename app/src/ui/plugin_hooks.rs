@@ -495,6 +495,34 @@ pub(super) fn fixed_image_url(
     crate::plugins::with(|state| fixed_image_url_in(state, src, size, animated, modal))
 }
 
+/// CancelFriendRequest (Equicord `src/equicordplugins/pendingFriendRequest`): an outgoing friend request can be taken
+/// back from profiles: the friend button turns red and cancels it, the profile's text button says "Cancel Outgoing
+/// Friend Request", and the profile's More menu ends with that row.
+pub(super) fn cancel_friend_request() -> bool {
+    !crate::plugins::bypassed() && crate::plugin_on!("CancelFriendRequest")
+}
+
+/// The label of all three.
+pub(super) const CANCEL_FRIEND_REQUEST: &str = "Cancel Outgoing Friend Request";
+
+/// The friend button while it cancels: the profile's round button with the icon in `--status-danger`.
+pub(super) fn cancel_request_round(glyph: &'static str, themed: bool, light: bool) -> gpui::Div {
+    use gpui::{ParentElement, Styled, prelude::FluentBuilder as _};
+    gpui::div()
+        .size(gpui::px(32.))
+        .rounded_full()
+        .border_1()
+        .border_color(gpui::hsla(0., 0., 1., 0.08))
+        .bg(gpui::hsla(0., 0., 0., 0.56))
+        .when(themed, |this| {
+            this.backdrop_blur(gpui::px(if light { 24. } else { 36. }))
+        })
+        .flex()
+        .items_center()
+        .justify_center()
+        .child(super::icon(glyph, 16., "--status-danger"))
+}
+
 /// AlwaysTrust's `noDeleteSafety` and `confirmModal`: how a server is deleted.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum DeleteSafety {

@@ -723,10 +723,14 @@ impl Root {
             _ => "user_plus",
         };
         // A blocked person has no friend actions either: the button is drawn disabled.
-        let outgoing = matches!(
-            relationship,
-            Some(super::friends::RELATIONSHIP_OUTGOING | super::blocked::RELATIONSHIP_BLOCKED)
-        );
+        // Not in the pinned client: with CancelFriendRequest an outgoing request is cancelled here (`plugin_hooks.rs`).
+        let cancel = relationship == Some(super::friends::RELATIONSHIP_OUTGOING)
+            && super::plugin_hooks::cancel_friend_request();
+        let outgoing = !cancel
+            && matches!(
+                relationship,
+                Some(super::friends::RELATIONSHIP_OUTGOING | super::blocked::RELATIONSHIP_BLOCKED)
+            );
         let sidebar = probe.starts_with("dm-profile");
         let palette = self.profile_palette(user, if sidebar { None } else { self.guild }, sidebar);
         let light = palette
@@ -737,14 +741,17 @@ impl Root {
             .id(probe)
             .relative()
             .child(self.anchor_probe(probe))
-            .child(super::dm_profile::round_button_themed(
-                glyph,
-                palette.themed,
-                light,
-            ))
+            .child(if cancel {
+                super::plugin_hooks::cancel_request_round(glyph, palette.themed, light)
+            } else {
+                super::dm_profile::round_button_themed(glyph, palette.themed, light)
+            })
             .when(outgoing, |this| this.opacity(0.5))
             .when(!outgoing, |this| this.cursor_pointer())
             .on_click(cx.listener(move |this, _, _, cx| match relationship {
+                Some(super::friends::RELATIONSHIP_OUTGOING) if cancel => {
+                    this.set_relationship(user, None, cx)
+                }
                 None | Some(0) => this.set_relationship(user, Some(0), cx),
                 Some(
                     super::friends::RELATIONSHIP_OUTGOING | super::blocked::RELATIONSHIP_BLOCKED,

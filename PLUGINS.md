@@ -12,7 +12,7 @@ every setting changed), and with every plugin off, and fails on one differing pi
 The list is the plugins enabled in the owner's Equicord backup of 2026-09-21 (156). Sources were read in the local
 Equicord checkout of 2026-11-14 (`src/plugins` is Vencord's, `src/equicordplugins` Equicord's).
 
-Totals: 28 ported, 5 native, 78 planned, 45 not applicable.
+Totals: 29 ported, 5 native, 77 planned, 45 not applicable.
 
 Status: **ported** works and has its proof; **native** is what gravecord already does without a plugin;
 **planned** is not built yet (an import keeps its settings for when it is); **not applicable** has nothing to
@@ -44,7 +44,7 @@ port in a native client, or was removed upstream.
 | BiggerStreamPreview | planned | plugins/biggerStreamPreview/index.tsx | This plugin allows you to enlarge stream previews | a larger stream preview popout. |  |
 | BypassStatus | planned | equicordplugins/bypassStatus/index.tsx | Still get notifications from specific sources when in do not disturb mode. Right-click on users/channels/guilds to set them to bypass do not disturb mode. | notification and sound rules that pass Do Not Disturb for chosen users, channels and servers. |  |
 | CallTimer | ported | plugins/callTimer/index.tsx | Add call timers for all users in voice channels and in the connection status. | plugin_hooks/call_timer.rs: your time under the connection panel's channel line (seconds always, code font); with `allCallTimers` everyone's time by their voice row, as the clock icon with a tooltip or, with `showWithoutHover`, as text under the name. Join times start when the app first sees someone in a channel. | `plugin_hooks::call_timer::tests` (3); frames ct-on/ct-all; plugins-off voice-profile |
-| CancelFriendRequest | planned | equicordplugins/pendingFriendRequest/index.tsx | Adds a way to cancel outgoing friend requests from profiles. | a cancel button for outgoing friend requests in profiles. |  |
+| CancelFriendRequest | ported | equicordplugins/pendingFriendRequest/index.tsx | Adds a way to cancel outgoing friend requests from profiles. | profile_menu.rs, profile_other.rs, dm.rs: for an outgoing request the profile's friend button turns red and cancels it, the DM's text button reads 'Cancel Outgoing Friend Request' (critical), and the profile More menu ends with that row; each removes the relationship as the friends list's Cancel does. | frames cfr-on/cfr-off (an outgoing request set locally); plugins-off voice-profile, profile-popout |
 | ChatInputButtonAPI | not applicable | plugins/_api/chatButtons.ts | API to add buttons to the chat input | client-mod plumbing (an API for other plugins), nothing to port. |  |
 | ClearURLs | ported | plugins/clearURLs/index.ts | Automatically removes tracking elements from URLs you send | plugins/clear_urls.rs: the ClearURLs rules, bundled; messages sent and edited. | `plugins::clear_urls::tests` (6); frames clearurls-off/on; plugins-off send-link |
 | ClipsEnhancements | planned | equicordplugins/clipsEnhancements.discordDesktop/index.tsx | Add more Clip FPS and duration options, custom clip length, RPC tagging and more | more clip FPS and duration options in the clips settings. |  |

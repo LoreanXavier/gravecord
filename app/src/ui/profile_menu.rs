@@ -372,6 +372,25 @@ impl Root {
                     );
                     rows.extend(second);
                 }
+                // Not in the pinned client: CancelFriendRequest's row at the end (`plugin_hooks.rs`).
+                if self.stores.relationships.get(&user) == Some(&RELATIONSHIP_OUTGOING)
+                    && super::plugin_hooks::cancel_friend_request()
+                {
+                    rows.push(
+                        self.profile_row(
+                            "cancel-friend-request",
+                            super::plugin_hooks::CANCEL_FRIEND_REQUEST.into(),
+                            false,
+                            false,
+                            cx,
+                        )
+                        .on_click(cx.listener(move |this, _, _, cx| {
+                            this.profile_menu = None;
+                            this.set_relationship(user, None, cx);
+                        }))
+                        .into_any_element(),
+                    );
+                }
                 (menu.anchor, rows)
             }
         };
@@ -512,19 +531,28 @@ impl Root {
             _ => ("user_plus", "Add Friend"),
         };
         // An outgoing request has no actions: the button is disabled.
-        let disabled = matches!(
-            relationship,
-            Some(RELATIONSHIP_OUTGOING | super::blocked::RELATIONSHIP_BLOCKED)
-        );
+        // Not in the pinned client: with CancelFriendRequest it cancels the request (`plugin_hooks.rs`).
+        let cancel = relationship == Some(RELATIONSHIP_OUTGOING) && super::plugin_hooks::cancel_friend_request();
+        let tip = if cancel { super::plugin_hooks::CANCEL_FRIEND_REQUEST } else { tip };
+        let disabled = !cancel
+            && matches!(
+                relationship,
+                Some(RELATIONSHIP_OUTGOING | super::blocked::RELATIONSHIP_BLOCKED)
+            );
         // The probe sits beside the button, not inside its border.
         let button = div()
             .id("dm-profile-friend-button")
             .relative()
             .child(self.anchor_probe("dm-profile-friend"))
-            .child(super::dm_profile::round_button(glyph))
+            .child(if cancel {
+                super::plugin_hooks::cancel_request_round(glyph, false, false)
+            } else {
+                super::dm_profile::round_button(glyph)
+            })
             .when(disabled, |this| this.opacity(0.5))
             .when(!disabled, |this| this.cursor_pointer())
             .on_click(cx.listener(move |this, _, _, cx| match relationship {
+                Some(RELATIONSHIP_OUTGOING) if cancel => this.set_relationship(user, None, cx),
                 None => this.set_relationship(user, Some(0), cx),
                 Some(RELATIONSHIP_OUTGOING | super::blocked::RELATIONSHIP_BLOCKED) => {}
                 Some(_) => this.open_profile_menu(user, Which::Friend, cx),

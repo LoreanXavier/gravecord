@@ -288,6 +288,17 @@ impl Root {
                 .on_click(cx.listener(move |this, _, _, cx| this.set_relationship(id, None, cx)))
                 .into_any_element(),
             ),
+            // Not in the pinned client: CancelFriendRequest's button (`plugin_hooks.rs`).
+            4 if super::plugin_hooks::cancel_friend_request() => list.push(
+                small_button(
+                    "welcome-cancel-request",
+                    super::plugin_hooks::CANCEL_FRIEND_REQUEST,
+                    Tone::CriticalPrimary,
+                    true,
+                )
+                .on_click(cx.listener(move |this, _, _, cx| this.set_relationship(id, None, cx)))
+                .into_any_element(),
+            ),
             4 => list.push(
                 small_button(
                     "welcome-sent",
