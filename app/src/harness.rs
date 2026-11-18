@@ -24,6 +24,7 @@ use std::time::Duration;
 mod crawl;
 mod grab;
 mod hitch;
+mod settle;
 pub(crate) mod native;
 mod ticks;
 
@@ -1589,6 +1590,11 @@ pub async fn run(
             }
             ["hitch", "stop", label @ ..] => {
                 let line = hitch::stop(&label.join(" "));
+                let _ = writeln!(output, "{line}");
+            }
+            // `settle <max ms>`: until the window has stopped changing for a second (see `settle.rs`).
+            ["settle", rest @ ..] => {
+                let line = settle::run(rest, window, cx).await;
                 let _ = writeln!(output, "{line}");
             }
             // `frames grab <ms> <x> <y> <w> <h> <label>`: frames back to back with one box read from each (see `grab.rs`).
