@@ -534,6 +534,8 @@ impl Root {
             .children(self.live_activity_cards(id, super::live_activity::Surface::Popout, strong, subtle, cx))
             .children(self.popout_voice_card(id, cx))
             .children(self.profile_role_chips(id, strong, cx))
+            // Not in the pinned client: ShowConnections (`plugin_hooks/show_connections.rs`).
+            .children(self.connections_row(id, false, cx))
             .into_any_element();
         let message: Option<AnyElement> = popout.message.as_ref().map(|message| {
             div()

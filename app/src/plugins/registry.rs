@@ -251,6 +251,12 @@ pub(crate) const IDLE_SETTINGS: &[(&str, &str, &str)] = &[
          nothing, so times come from the voice states the app already receives",
     ),
     (
+        "ShowConnections",
+        "showGithubOrgs",
+        "the original asks api.github.com for the organisations of a GitHub account; plugin code sends nothing, so \
+         only the accounts Discord lists show",
+    ),
+    (
         "NoPendingCount",
         "hidePremiumOffersCount",
         "the app's Home badge does not count unseen Nitro offers yet (`getUnacknowledgedOffers`), so there is no count to hide",
@@ -877,6 +883,52 @@ pub(crate) const DEFS: &[Def] = &[
         source: "src/plugins/reverseImageSearch/index.tsx",
         default_on: false,
         settings: &[],
+    },
+    Def {
+        id: "ShowConnections",
+        name: "ShowConnections",
+        description: "Show connected accounts in user popouts and the DM sidebar.",
+        origin: Origin::Vencord,
+        source: "src/plugins/showConnections/index.tsx",
+        default_on: false,
+        settings: &[
+            Setting {
+                key: "iconSize",
+                label: "Icon size (px)",
+                description: "Icon size in pixels.",
+                kind: Kind::Number {
+                    default: 32.,
+                    min: 1.,
+                    max: 128.,
+                    step: 1.,
+                },
+            },
+            Setting {
+                key: "iconSpacing",
+                label: "Icon margin",
+                description: "Space between the icons.",
+                kind: Kind::Select {
+                    options: &[
+                        ("Compact", Lit::Int(0)),
+                        ("Cozy", Lit::Int(1)),
+                        ("Roomy", Lit::Int(2)),
+                    ],
+                    default: 1,
+                },
+            },
+            Setting {
+                key: "showGithubOrgs",
+                label: "GitHub organizations",
+                description: "Show GitHub organizations the user is a member of.",
+                kind: Kind::Switch { default: true },
+            },
+            Setting {
+                key: "showOnModal",
+                label: "In the full profile",
+                description: "Show connected accounts in the full-size profile modal.",
+                kind: Kind::Switch { default: true },
+            },
+        ],
     },
     Def {
         id: "TypingIndicator",

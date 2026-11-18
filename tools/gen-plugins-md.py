@@ -127,6 +127,7 @@ idle = {(a, b): why.replace('\\"', '"') for a, b, why in re.findall(
 
 # How each ported plugin is built here, and its proof.
 PORTED = {
+    'ShowConnections': "plugin_hooks/show_connections.rs: the connected accounts as platform icons (size, spacing) with their names as tooltips in the profile popout and the DM sidebar, and with showOnModal in place of the full profile's connection cards; a click opens the page or copies the name.",
     'MessagePeek': "plugin_hooks/message_peek.rs: under each DM and group the last message the app holds (author: first line, GIF, voice message, attachments, sticker), its age at the right (hidden under the pointer); an activity instead when the message is over an hour old; hideMuted. Not ported: the startup fetch of the 25 newest DMs' last message (plugin code sends nothing), the inline markdown of the preview (plain first line) and BetterActivities' icons.",
     'PlatformIndicators': "plugin_hooks/platform_indicators.rs: an icon per client and its status colour (with tooltips) after names in the member list, in message headers, and before the pronouns in the DM sidebar profile; the phone for anyone on mobile with colorMobileIndicator. Your own clients are the presence the server sent, else this desktop (the app keeps no session client list). Not yet in the popout and full profile (only the DM sidebar has the pronoun line the original patches the same way).",
     'TypingIndicator': "plugin_hooks/typing_indicator.rs: by a channel's name, up to three 16px avatars and the dots of who is typing, the chat's typing line as the tooltip. Not ported: thread rows (the original also patches the thread spine), and TypingTweaks' several-users line (TypingTweaks is not built yet).",
@@ -173,6 +174,7 @@ PORTED = {
                      'so the original\'s 200% cap on the sync has nothing to cap.',
 }
 TESTS = {
+    'ShowConnections': '`spacing_and_settings_read_as_the_original`; frame sc-on; plugins-off profile-popout, voice-profile',
     'MessagePeek': '`plugin_hooks::message_peek::tests` (2); frame mp-on; plugins-off dm-list',
     'PlatformIndicators': '`plugin_hooks::platform_indicators::tests` (2); frames pi-on/pi-off; plugins-off member-list, chat, dm-list',
     'TypingIndicator': '`the_indicator_leaves_out_who_its_settings_leave_out`; frames ti-on/ti-off; plugins-off channel-typing',
@@ -291,7 +293,6 @@ PLANNED = {
     'SedEnhanced': '`s/a/b/` editing the last message, in the send path.',
     'ServerInfo': 'a server information dialog.',
     'ServerListIndicators': 'online friend and server counts by the server list.',
-    'ShowConnections': 'connected accounts in user popouts and the DM sidebar.',
     'ShowHiddenThings': 'hidden and moderator-only things shown.',
     'SilentMessageToggle': "the pinned client's `@silent` prefix first: its send path strips it and sets SUPPRESS_NOTIFICATIONS (the `silentPrefix` rule and the sends of modules 857069 and 92961); the app sends the text as typed, so the plugin's prefix would reach people as words.",
     'SpotifyCrack': 'listen along without Premium and no Spotify pause on voice.',

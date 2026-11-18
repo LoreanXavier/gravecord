@@ -836,6 +836,32 @@ impl Root {
         cx.notify();
     }
 
+    /// Not in the pinned client: ShowConnections' compact icons (`plugin_hooks/show_connections.rs`): each connected
+    /// account's name, verified mark, address and platform icon (asked for when missing), from the fetched profile.
+    pub(super) fn connected_account_icons(
+        &self,
+        user: Id,
+        dark: bool,
+        cx: &mut Context<Self>,
+    ) -> Vec<(String, String, bool, Option<String>, Option<std::sync::Arc<gpui::Image>>)> {
+        let Some(body) = self.fetched.get(&format!("profile:{user}")) else {
+            return Vec::new();
+        };
+        parse_connected_accounts(body)
+            .into_iter()
+            .map(|account| {
+                let key = connection_platform_icon_key(&account.kind, dark);
+                let picture = self.images.get(&key).cloned();
+                if picture.is_none()
+                    && let Some(asset) = if dark { account.dark_asset } else { account.light_asset }
+                {
+                    self.want_image(key, format!("https://discord.com/assets/{asset}"), cx);
+                }
+                (account.kind, account.name, account.verified, account.url, picture)
+            })
+            .collect()
+    }
+
     fn request_connected_account_icons(&mut self, body: &Value) {
         for account in parse_connected_accounts(body) {
             if let Some(light) = account.light_asset {
@@ -2529,7 +2555,11 @@ impl Root {
             .flatten();
         let banner_img = self.profile_banner_image_in(id, open_guild);
         let status_bubble = self.full_profile_status_bubble(id, open_guild, me, &palette, cx);
-        let connections = self.full_profile_connections(id, body, &palette, cx);
+        // Not in the pinned client: ShowConnections with `showOnModal` puts its compact icons in place of the
+        // connection cards (`plugin_hooks/show_connections.rs`).
+        let connections = self
+            .connections_row(id, true, cx)
+            .or_else(|| self.full_profile_connections(id, body, &palette, cx));
         let viewport = window.viewport_size();
         let geo =
             full_profile_modal_geometry(f32::from(viewport.width), f32::from(viewport.height));

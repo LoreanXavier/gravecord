@@ -1354,6 +1354,7 @@ impl Root {
                     .child(member_since(user_id)),
             )
             .into_any_element();
+        let connections = self.connections_row(user_id, false, cx);
         // Not in the pinned client: the VoiceStats plugin's "Voice Time" (`plugin_hooks/voice_stats.rs`).
         let voice_time = self.voice_time_section(
             user_id,
@@ -1377,6 +1378,7 @@ impl Root {
             bio,
             member_since,
             voice_time,
+            connections,
             games,
             activity,
             wishlist,
@@ -1467,6 +1469,7 @@ impl Root {
             .children(parts.bio)
             .child(parts.member_since)
             .children(parts.voice_time)
+            .children(parts.connections)
             .when(has_cards, |this| {
                 this.child(
                     div()
@@ -1666,7 +1669,8 @@ impl Root {
                     .child(bio)
             }))
             .child(parts.member_since)
-            .children(parts.voice_time);
+            .children(parts.voice_time)
+            .children(parts.connections);
         let body = div()
             .mx(px(16.))
             .flex()
@@ -1781,6 +1785,8 @@ struct SidebarParts {
     bio: Option<AnyElement>,
     member_since: AnyElement,
     voice_time: Option<AnyElement>,
+    /// Not in the pinned client: ShowConnections' icons (`plugin_hooks/show_connections.rs`).
+    connections: Option<AnyElement>,
     games: Option<AnyElement>,
     activity: Vec<AnyElement>,
     wishlist: Option<AnyElement>,

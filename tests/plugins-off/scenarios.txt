@@ -16,7 +16,7 @@ accounts | wait 4000; accounts fake 11 alpha; accounts fake 12 bravo; accounts f
 user-volume | wait 4000; callsim start guild; wait 1500; callsim join; wait 3000; callsim peer add bob; wait 3000; tilemenu open user other 700 200; wait 800
 gif-picker | wait 5000; click 1122 682; wait 2500; click 1120 337; wait 3500; click 877 337; wait 1500
 settings-voice | window size 1600 1000; wait 4000; settings voice_video; wait 1500
-settings-appearance | window size 1600 1000; wait 4000; settings appearance; wait 1500
+settings-appearance | window size 1600 1000; wait 4000; settings appearance; wait 3500
 server-delete | wait 4000; server-settings profile; wait 1500; scroll 200 500 3000; wait 800; click 177 643; wait 1000
 voice-profile | wait 4000; callsim start guild; wait 1500; callsim join; wait 3000; callsim peer add bob; wait 8000; go dm 0; wait 2000
 backspace-click | wait 5000; key backspace; click 520 368; keyup backspace; wait 1000

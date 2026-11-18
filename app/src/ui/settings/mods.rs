@@ -797,6 +797,27 @@ impl Root {
                 });
                 "scrambled".to_owned()
             }
+            // `demo-connections`: the open DM's fetched profile gets three connected accounts, locally (for the
+            // ShowConnections frames; nothing is sent).
+            ["demo-connections"] => {
+                let Some(user) = self
+                    .current_dm()
+                    .and_then(|dm| self.stores.dm_recipient(dm))
+                    .map(|known| known.id)
+                else {
+                    return "demo-connections: no DM open".to_owned();
+                };
+                let key = format!("profile:{user}");
+                let mut body = self.fetched.get(&key).cloned().unwrap_or_else(|| serde_json::json!({}));
+                body["connected_accounts"] = serde_json::json!([
+                    {"type": "github", "id": "1", "name": "octocat", "verified": true},
+                    {"type": "steam", "id": "76561197960287930", "name": "gabelogannewell", "verified": true},
+                    {"type": "xbox", "id": "x", "name": "Major Nelson", "verified": false}
+                ]);
+                self.fetched.insert(key, body);
+                cx.notify();
+                "demo-connections: 3 accounts".to_owned()
+            }
             // `effects`: what the plugins did since the last `effects` (`plugins::note`), `{}` when nothing.
             ["effects"] => {
                 let mut effects = plugins::effects();

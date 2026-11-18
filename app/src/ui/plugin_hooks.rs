@@ -6,6 +6,7 @@ mod message_clicks;
 mod message_peek;
 mod platform_indicators;
 mod read_all;
+mod show_connections;
 mod typing_indicator;
 mod voice_stats;
 

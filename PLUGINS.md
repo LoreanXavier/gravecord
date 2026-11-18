@@ -12,7 +12,7 @@ every setting changed), and with every plugin off, and fails on one differing pi
 The list is the plugins enabled in the owner's Equicord backup of 2026-09-21 (156). Sources were read in the local
 Equicord checkout of 2026-11-14 (`src/plugins` is Vencord's, `src/equicordplugins` Equicord's).
 
-Totals: 26 ported, 3 native, 82 planned, 45 not applicable.
+Totals: 27 ported, 3 native, 81 planned, 45 not applicable.
 
 Status: **ported** works and has its proof; **native** is what gravecord already does without a plugin;
 **planned** is not built yet (an import keeps its settings for when it is); **not applicable** has nothing to
@@ -135,7 +135,7 @@ port in a native client, or was removed upstream.
 | ServerListAPI | not applicable | plugins/_api/serverList.ts | API required for plugins that modify the server list. | client-mod plumbing (an API for other plugins), nothing to port. |  |
 | ServerListIndicators | planned | plugins/serverListIndicators/index.tsx | Add online friend count or server count in the server list | online friend and server counts by the server list. |  |
 | Settings | not applicable | plugins/_core/settings.tsx | Adds Settings UI and debug info | its settings UI is the Gravecord settings group itself; `settingsLocation` not ported (the group sits before Developer). |  |
-| ShowConnections | planned | plugins/showConnections/index.tsx | Show connected accounts in user popouts and the DM sidebar | connected accounts in user popouts and the DM sidebar. |  |
+| ShowConnections | ported | plugins/showConnections/index.tsx | Show connected accounts in user popouts and the DM sidebar | plugin_hooks/show_connections.rs: the connected accounts as platform icons (size, spacing) with their names as tooltips in the profile popout and the DM sidebar, and with showOnModal in place of the full profile's connection cards; a click opens the page or copies the name. | `spacing_and_settings_read_as_the_original`; frame sc-on; plugins-off profile-popout, voice-profile |
 | ShowHiddenThings | planned | plugins/showHiddenThings/index.ts | Displays various hidden & moderator-only things regardless of permissions. | hidden and moderator-only things shown. |  |
 | SilentMessageToggle | planned | plugins/silentMessageToggle/index.tsx | Adds a button to the chat bar to toggle sending a silent message. | the pinned client's `@silent` prefix first: its send path strips it and sets SUPPRESS_NOTIFICATIONS (the `silentPrefix` rule and the sends of modules 857069 and 92961); the app sends the text as typed, so the plugin's prefix would reach people as words. |  |
 | SpotifyCrack | planned | plugins/spotifyCrack/index.ts | Free listen along, no auto-pausing in voice chat, and allows activity to continue playing when idling | listen along without Premium and no Spotify pause on voice. |  |
@@ -240,6 +240,10 @@ Every setting of each original (`definePluginSettings`), its type and default th
 | PlatformIndicators | `showBots` | BOOLEAN | `false` | ported |
 | PlatformIndicators | `ConsoleIcon` | SELECT | `"equicord"` | ported |
 | ReadAllNotificationsButton | `compact` | BOOLEAN | `false` | ported |
+| ShowConnections | `iconSize` | NUMBER | `32` | ported |
+| ShowConnections | `iconSpacing` | SELECT | `Spacing.COZY` | ported |
+| ShowConnections | `showGithubOrgs` | BOOLEAN | `true` | ported |
+| ShowConnections | `showOnModal` | BOOLEAN | `true` | ported |
 | TypingIndicator | `includeCurrentChannel` | BOOLEAN | `true` | ported |
 | TypingIndicator | `includeMutedChannels` | BOOLEAN | `false` | ported |
 | TypingIndicator | `includeIgnoredUsers` | BOOLEAN | `false` | ported |
