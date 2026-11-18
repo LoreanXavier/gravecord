@@ -5,10 +5,9 @@
 //! channels you picked (`showAllChannels`), and voice channel names hidden (`voiceChannels`). A join is a server whose
 //! `GUILD_CREATE` arrives with your `joined_at` from the last two minutes, however you joined (an invite, Discovery, a
 //! join request approved); a lurked server has no `joined_at`. The server menu's privacy group gets "Apply
-//! NewGuildSettings", and a folder's menu "Apply NewGuildSettings to Folder" (each server 250 ms apart).
-//!
-//! GAP: the CogWheel icon of the row in the server header's dropdown (the app has no such row there). Not part of the
-//! pinned client.
+//! NewGuildSettings", and a folder's menu "Apply NewGuildSettings to Folder" (each server 250 ms apart). The server
+//! header's dropdown ends its privacy group with the row too, the CogWheel before and after the label
+//! (`guild_menu.rs`). Not part of the pinned client.
 
 use super::super::Root;
 use super::super::context_menu::{Act, Entry, Row, Target};

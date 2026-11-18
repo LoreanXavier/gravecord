@@ -6,10 +6,9 @@
 //! (`n (Level t)`), Channels and Roles (without @everyone). Friends, Blocked and Ignored list the people of that kind
 //! who are members (missing ones asked for once with `GUILD_MEMBERS_REQUEST`), sorted by `sorting`; Mutual Users the
 //! members who share more than this server with you, most shared first, with up to three server icons and `+n`. A
-//! row opens the person's profile; the icon and banner open the picture viewer.
-//!
-//! GAP: the "Server Info" row with InfoIcon in the server header's dropdown (`guild-header-popout`). Not part of the
-//! pinned client.
+//! row opens the person's profile; the icon and banner open the picture viewer. The server header's dropdown
+//! (`guild-header-popout`) ends its privacy group with the row too, with the InfoIcon (`guild_menu.rs`). Not part of
+//! the pinned client.
 
 use super::super::Root;
 use super::super::context_menu::{Act, Entry, Row, Target};
@@ -68,6 +67,11 @@ fn current() -> Option<Sorting> {
         return None;
     }
     crate::plugins::with(sorting)
+}
+
+/// Whether the plugin is on (the server header dropdown's row).
+pub(in crate::ui) fn server_info_on() -> bool {
+    current().is_some()
 }
 
 /// The open dialog.

@@ -31,6 +31,13 @@ pub(super) enum Target {
     PinCategory(u16),
     /// Not in the pinned client: a GlobalBadges badge (`plugin_hooks/global_badges.rs` keeps which).
     PluginBadge,
+    /// Not in the pinned client: an entry of PermissionsViewer's dialog, a role or a member
+    /// (`plugin_hooks/permissions_viewer.rs`).
+    PluginPermissionRole {
+        role: Id,
+        guild: Id,
+    },
+    PluginPermissionUser(Id),
     /// Not in the pinned client: the "Wave to say hi!" button of a join message (GreetStickerPicker,
     /// `plugin_hooks/greet_sticker_picker.rs`).
     Greet {
@@ -325,13 +332,15 @@ pub(super) enum Act {
     /// Not in the pinned client: GlobalBadges' badge menu (`plugin_hooks/global_badges.rs`).
     PluginCopyBadgeName,
     PluginCopyBadgeLink,
+    /// Not in the pinned client: PermissionsViewer's View Permissions (`plugin_hooks/permissions_viewer.rs`).
+    PluginViewPermissions,
 }
 
 impl Act {
     /// Every row kind once (`Correction` with its first index). `ordinal` is an exhaustive match, so adding a variant
     /// without listing it here fails the build or the `act_list_is_complete` test.
     #[cfg(test)]
-    pub(super) const ALL: [Act; 142] = [
+    pub(super) const ALL: [Act; 143] = [
         Act::InventoryAbout,
         Act::InventoryHide,
         Act::ReportApp,
@@ -479,6 +488,7 @@ impl Act {
         Act::PluginSetAvatar,
         Act::PluginCopyBadgeName,
         Act::PluginCopyBadgeLink,
+        Act::PluginViewPermissions,
     ];
 
     #[cfg(test)]
@@ -631,6 +641,7 @@ impl Act {
             Act::PluginSetAvatar => 139,
             Act::PluginCopyBadgeName => 140,
             Act::PluginCopyBadgeLink => 141,
+            Act::PluginViewPermissions => 142,
         }
     }
 }
@@ -680,7 +691,8 @@ pub(super) fn status(act: Act) -> Status {
         | Act::PluginStatusBypass
         | Act::PluginSetAvatar
         | Act::PluginCopyBadgeName
-        | Act::PluginCopyBadgeLink => Wired,
+        | Act::PluginCopyBadgeLink
+        | Act::PluginViewPermissions => Wired,
         Act::InventoryAbout
         | Act::InventoryHide
         | Act::ViewAllActivity
@@ -3076,6 +3088,8 @@ impl Root {
             Target::Role { role, guild } => self.better_role_items(role, guild),
             Target::PinCategory(index) => self.pin_category_items(usize::from(index)),
             Target::PluginBadge => self.global_badge_items(),
+            Target::PluginPermissionRole { role, guild } => self.permission_role_items(role, guild),
+            Target::PluginPermissionUser(_) => self.permission_user_items(),
             Target::Greet { .. } => self.greet_picker_items(),
             Target::SpotifyActivity { user, popout } => spotify_activity_items(
                 self.stores
@@ -3522,6 +3536,8 @@ impl Root {
         let items = self.with_bypass_status_row(items, target);
         // Not in the pinned client: UserPFP's Set Avatar, last (`plugin_hooks/userpfp.rs`).
         let items = self.with_userpfp_row(items, target);
+        // Not in the pinned client: PermissionsViewer's View Permissions (`plugin_hooks/permissions_viewer.rs`).
+        let items = self.with_permissions_viewer_row(items, target);
         self.close_all_context_menus();
         self.menu_scroll.set_offset(gpui::point(px(0.), px(0.)));
         let at = flip_above(at, menu_height(&items), self.viewport.1);
@@ -3747,6 +3763,30 @@ impl Root {
             (Act::PluginSetAvatar, Target::User { user, .. }) => self.userpfp_open(user, cx),
             // Not in the pinned client: GlobalBadges (`plugin_hooks/global_badges.rs`).
             (Act::PluginCopyBadgeName, Target::PluginBadge) => self.global_badge_copy(false, cx),
+            // Not in the pinned client: PermissionsViewer (`plugin_hooks/permissions_viewer.rs`).
+            (Act::PluginViewPermissions, target) => self.permissions_viewer_open(target, cx),
+            (Act::PluginEditRole, Target::PluginPermissionRole { role, guild }) => {
+                self.better_role_edit(role, guild, cx);
+            }
+            (Act::PluginCopyRoleColor, Target::PluginPermissionRole { role, guild }) => {
+                self.better_role_copy_color(role, guild, cx);
+            }
+            (Act::PluginViewRoleIcon, Target::PluginPermissionRole { role, guild }) => {
+                let format = super::plugin_hooks::role_icon_format_setting();
+                self.role_icon_view(role, guild, &format, cx);
+            }
+            (Act::PluginViewRoleMembers, Target::PluginPermissionRole { role, .. }) => {
+                let anchor = self
+                    .tip_anchors
+                    .borrow()
+                    .get(&gpui::SharedString::from(format!(
+                        "permissions-viewer-role-{role}"
+                    )))
+                    .copied();
+                if let Some(anchor) = anchor {
+                    self.better_role_members(role, anchor, cx);
+                }
+            }
             (Act::PluginCopyBadgeLink, Target::PluginBadge) => self.global_badge_copy(true, cx),
             // Not in the pinned client: GreetStickerPicker (`plugin_hooks/greet_sticker_picker.rs`).
             (
@@ -4089,7 +4129,8 @@ impl Root {
                     Target::PermissionRow { target, .. } => target,
                     Target::ProgressBar(guild) | Target::RaidAlert(guild) => guild,
                     Target::RtcChannel { channel, .. } => channel,
-                    Target::Role { role, .. } => role,
+                    Target::Role { role, .. } | Target::PluginPermissionRole { role, .. } => role,
+                    Target::PluginPermissionUser(user) => user,
                     Target::PinCategory(_) | Target::Greet { .. } | Target::PluginBadge => return,
                     Target::ProfileWidget { .. }
                     | Target::AttachmentLink

@@ -1775,6 +1775,23 @@ pub(crate) const DEFS: &[Def] = &[
         ],
     },
     Def {
+        id: "PermissionsViewer",
+        name: "PermissionsViewer",
+        description: "View the permissions a user or channel has, and the roles of a server",
+        origin: Origin::Vencord,
+        source: "src/plugins/permissionsViewer/index.tsx",
+        default_on: false,
+        settings: &[Setting {
+            key: "permissionsSortOrder",
+            label: "Permissions Sort Order",
+            description: "The sort method used for defining which role grants an user a certain permission",
+            kind: Kind::Select {
+                options: &[("Highest Role", Lit::Int(0)), ("Lowest Role", Lit::Int(1))],
+                default: 0,
+            },
+        }],
+    },
+    Def {
         id: "PinDMs",
         name: "PinDMs",
         description: "Allows you to pin private channels to the top of your DM list. To pin/unpin or re-order pins, right click DMs",

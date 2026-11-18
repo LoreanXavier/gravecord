@@ -11460,6 +11460,8 @@ impl Render for Root {
             .children(self.header_popout_layer(cx))
             .children(self.profile_layer(window, cx))
             .children(self.role_picker_layer(window, cx))
+            // Not in the pinned client: PermissionsViewer's member popout (`plugin_hooks/permissions_viewer.rs`).
+            .children(self.permissions_viewer_popout(window, cx))
             .children(self.sticker_popout_layer(cx))
             .children(self.emoji_popout_layer(cx))
             .children(self.shop_modal(window, cx))
@@ -11715,6 +11717,8 @@ impl Render for Root {
             .children(self.userpfp_dialog(window, cx))
             // Not in the pinned client: ZipPreview's file dialog (`plugin_hooks/zip_preview.rs`).
             .children(self.zip_preview_dialog(window, cx))
+            // Not in the pinned client: PermissionsViewer's dialog (`plugin_hooks/permissions_viewer.rs`).
+            .children(self.permissions_viewer_dialog(window, cx))
             .children(self.not_friend_modal(cx))
             .children(self.favorites_full_modal(cx))
             .children(self.chat_alert_modal(cx))

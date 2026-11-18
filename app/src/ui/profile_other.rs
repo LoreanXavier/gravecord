@@ -69,6 +69,11 @@ impl Root {
         // 403369 passes allowEditing for the profile popout, including a member with no roles.
         let can_add =
             cx.is_some() && self.my_permission(guild.id, None, dc_state::permissions::MANAGE_ROLES);
+        // Not in the pinned client: PermissionsViewer's button after the list (`plugin_hooks/permissions_viewer.rs`).
+        let viewer = match cx.as_deref_mut() {
+            Some(cx) => self.permissions_viewer_button(guild.id, user, cx),
+            None => None,
+        };
         if none && !can_add {
             return None;
         }
@@ -198,6 +203,7 @@ impl Root {
                 .when_some(cx.filter(|_| can_add), |row, cx| {
                     row.child(self.profile_role_add_button(guild.id, user, none, cx))
                 })
+                .children(viewer)
                 .into_any_element(),
         )
     }
