@@ -55,6 +55,8 @@ impl gpui::Asset for RailIcon {
 
 impl Root {
     pub(super) fn select_home(&mut self, channel: Option<Id>) {
+        // `CHANNEL_SELECT` of module 578818: opening the system DM clears the urgent message flag.
+        self.urgent_message_channel_selected(channel);
         super::last_channel::remember_home();
         let from = self.route();
         self.history.visit(

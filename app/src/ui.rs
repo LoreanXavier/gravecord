@@ -168,6 +168,7 @@ pub(crate) mod frame_clock;
 mod game_genres;
 mod game_profile;
 mod gif_tiles;
+mod graphic_dialogs;
 mod guild_events;
 mod guild_guide;
 mod guild_navigation;
@@ -1398,6 +1399,7 @@ impl Root {
                     self.send_echo(&data);
                 }
                 self.stores.dispatch(&name, &data);
+                self.urgent_message_event(&name);
                 self.spotify_devices_changed(cx);
                 self.spotify_loading_changed();
                 if name == "VOICE_STATE_UPDATE" {
@@ -1699,6 +1701,10 @@ impl Root {
             Update::Fetched { key, body } => {
                 if let Some(rest) = key.strip_prefix(crate::net::EDIT_KEY) {
                     self.edit_answered(rest, &body, cx);
+                    return;
+                }
+                if let Some(rest) = key.strip_prefix(deep_link_route::CHANNEL_CHECK_KEY) {
+                    self.link_channel_checked(rest, &body, cx);
                     return;
                 }
                 if self.spotify_metadata_fetched(&key, &body, cx) {
@@ -4024,6 +4030,12 @@ impl Root {
         list.extend(self.guild_events_editors());
         list.extend(self.schedule_editors());
         list.extend(self.search.as_ref().map(|search| search.field.clone()));
+        list.extend(
+            self.search
+                .as_ref()
+                .and_then(|search| search.jump.as_ref())
+                .map(|jump| jump.field.clone()),
+        );
         list.extend(self.search_editors());
         list.extend(self.shop_search_editors());
         list.push(self.active_editor());
@@ -7883,12 +7895,14 @@ impl Root {
                                 )
                             },
                         )
+                        // Module 469759 draws AutoMod's notice inside the content's own block, before the
+                        // attachments, embeds and reactions.
+                        .children(self.automod_blocked_notice(message, compact, cx))
                         .children(self.command_status(message))
                         .children(self.forwarded_block(message, cx))
                         .children(self.accessories(message, cx))
                         .children((!is_starter).then(|| self.reactions(message, cx)).flatten())
                         .children(self.ephemeral_notice(message, cx))
-                        .children(self.automod_blocked_notice(message, compact, cx))
                         .into_any_element(),
                 };
                 let row = div().pr(px(16.));
@@ -10003,6 +10017,14 @@ impl Render for Root {
                     cx.stop_propagation();
                     return;
                 }
+                // A dialog over the settings page (Failed to upload files) closes before the page does.
+                if keys.key == "escape"
+                    && (this.chat_alert_escape() || this.graphic_dialog_escape())
+                {
+                    cx.notify();
+                    cx.stop_propagation();
+                    return;
+                }
                 if this.server_settings.is_some() && keys.key == "escape" {
                     if this.close_server_settings_layer() {
                     } else if let Some(open) = this.server_settings.as_mut()
@@ -10590,6 +10612,8 @@ impl Render for Root {
                                                 .flex_1()
                                                 .min_w(px(0.))
                                                 .h_full()
+                                                // Module 626977 over the list: a locked thread's bar.
+                                                .children(self.thread_lock_notice(cx))
                                                 .child(self.regions.place(
                                                     regions::Kind::Messages,
                                                     regions::style_of(regions::Kind::Messages),
@@ -10707,6 +10731,7 @@ impl Render for Root {
             .children(self.not_friend_modal(cx))
             .children(self.favorites_full_modal(cx))
             .children(self.chat_alert_modal(cx))
+            .children(self.graphic_dialog(cx))
             .children(self.library_remove_modal(cx))
             .children(self.composer_ai_modal(cx))
             .children(self.friend_nickname_layer(window, cx))

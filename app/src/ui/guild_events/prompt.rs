@@ -8,8 +8,11 @@
 //! `--opacity-black-52`, darker on hover); no capture shows this prompt.
 //!
 //! A Stage channel shows them too: the waiting view (module 895903) lists them first among its cards with
-//! `showDismiss: false` (a chevron in place of the close button, as module 47868 draws a card without `onDismiss`),
-//! and the live Stage (module 717965) holds them in `eventPrompts_Z_HbQM` over its controls.
+//! `showDismiss: false` (a chevron in place of the close button, as module 47868 draws a card without `onDismiss`)
+//! while the Stage is not live.
+//!
+//! GAP: the Stage controls' `eventPrompts_Z_HbQM` holds them for a speaker or a member who can mute while the Stage
+//! is joined but not live and the start screen is left; this client shows the waiting view until the Stage is live.
 
 use super::super::{Root, color, icon};
 use super::list::can_manage;

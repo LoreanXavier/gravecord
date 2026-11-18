@@ -1009,26 +1009,6 @@ impl Root {
                             .h(px(14.)),
                     )
             }))
-            // `eventPrompts_Z_HbQM` of module 717965: the prompts (module 394412, dismissable) in a column whose
-            // bottom is 80px over the page's (`bottom: 40px` plus `margin-bottom: 40px`), centred over the controls
-            // and shown with them.
-            .children({
-                let cards = self.event_prompt_cards(guild, target, true, cx);
-                (!cards.is_empty()).then(|| {
-                    div()
-                        .absolute()
-                        .left_0()
-                        .right_0()
-                        .bottom(px(80.))
-                        .when(!menu_open, |this| this.invisible())
-                        .group_hover("stage-live", |style| style.visible())
-                        .flex()
-                        .flex_col()
-                        .items_center()
-                        .gap(px(8.))
-                        .children(cards)
-                })
-            })
             .child(controls)
             .children(leave_menu)
             .children(self.tile_menu_layer(cx))

@@ -186,6 +186,10 @@ pub(super) struct State {
     pub forward_batch: Option<ForwardBatch>,
     /// A right press on a `#channel` mention: where, and the channel (read by the message menu's opener).
     pub mention_hit: Option<(gpui::Point<gpui::Pixels>, Id)>,
+    /// A dialog on the graphic modal (`ui/graphic_dialogs.rs`).
+    pub graphic: Option<super::graphic_dialogs::GraphicDialog>,
+    /// `_` of module 578818: the Urgent Message dialog was shown and the flag is not cleared yet.
+    pub urgent_shown: bool,
     /// The requests still to go of each chain, by chain number.
     chains: HashMap<u64, VecDeque<(Id, Value)>>,
     next_chain: u64,
@@ -249,6 +253,93 @@ impl Root {
             .iter()
             .find_map(|guild| guild.threads.iter().find(|known| known.id == thread))
             .map(|known| (known.archived, known.flags))
+    }
+
+    /// Module 626977's bars over a thread's chat (`chatHeaderBar_By_-nl`: `--background-mod-normal`, 8px 16px inside,
+    /// the text `body-sm/normal` in `--text-default` 16px from a `sm` secondary button): a closed and locked thread
+    /// (`O`) offers Open to whoever may open it again (`lK` of 406704: Manage Threads for a locked one), a locked one
+    /// (`G`) offers Unlock with Manage Threads (`H_`). A post says "post"; a media post shows nothing.
+    pub(super) fn thread_lock_notice(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
+        let (guild, channel) = (self.guild?, self.channel?);
+        let thread = self
+            .stores
+            .guild(guild)?
+            .threads
+            .iter()
+            .find(|known| known.id == channel)?
+            .clone();
+        if !thread.locked {
+            return None;
+        }
+        let parent = self
+            .stores
+            .guild(guild)?
+            .channels
+            .iter()
+            .find(|known| known.id == thread.parent_id)
+            .cloned();
+        if parent.as_ref().is_some_and(dc_state::Channel::is_media) {
+            return None;
+        }
+        let post = parent.as_ref().is_some_and(dc_state::Channel::is_forum);
+        let manage = parent.as_ref().is_some_and(|parent| {
+            self.my_permission(guild, Some(parent), dc_state::permissions::MANAGE_THREADS)
+        });
+        let (text, label, step) = match (thread.archived, post) {
+            (true, true) => (
+                "This post has been closed and locked. Only moderators can reopen it.",
+                "Open",
+                ThreadStep::Open,
+            ),
+            (true, false) => (
+                "This thread has been closed and locked. Only moderators can reopen it.",
+                "Open",
+                ThreadStep::Open,
+            ),
+            (false, true) => (
+                "This post has been locked. Only moderators can send messages.",
+                "Unlock",
+                ThreadStep::Unlock,
+            ),
+            (false, false) => (
+                "This thread has been locked. Only moderators can send messages.",
+                "Unlock",
+                ThreadStep::Unlock,
+            ),
+        };
+        let id = thread.id;
+        Some(
+            div()
+                .flex_none()
+                .px(px(16.))
+                .py(px(8.))
+                .bg(super::color("--background-mod-normal"))
+                .flex()
+                .items_center()
+                .justify_between()
+                .gap(px(16.))
+                .child(
+                    div()
+                        .flex_1()
+                        .text_size(px(14.))
+                        .line_height(px(18.))
+                        .text_color(super::color("--text-default"))
+                        .child(dc_intl::tr(text).to_owned()),
+                )
+                .children(manage.then(|| {
+                    super::dm::small_button(
+                        "thread-lock-notice-action",
+                        dc_intl::tr(label),
+                        super::dm::Tone::Secondary,
+                        true,
+                    )
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        this.run_thread_step(id, step);
+                        cx.notify();
+                    }))
+                }))
+                .into_any_element(),
+        )
     }
 
     /// Runs a context menu thread action; the bodies go one after the other.

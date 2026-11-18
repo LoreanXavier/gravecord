@@ -1169,6 +1169,11 @@ pub async fn run(
                 let _ = writeln!(output, "clips: {line}");
             }
             // The calls the text-to-speech engine received (a capture build never speaks aloud).
+            // `graphic urgent | download <url>`: the dialogs of `ui/graphic_dialogs.rs`.
+            ["graphic", rest @ ..] => {
+                let line = root.update(cx, |root, cx| root.script_graphic(rest, cx));
+                let _ = writeln!(output, "{line}");
+            }
             // `emoji bulk-errors`: "Failed to upload files" with one row of each kind (`ui/server_emoji.rs`).
             ["emoji", "bulk-errors"] => {
                 let line = root.update(cx, |root, cx| root.script_emoji_bulk_errors(cx));

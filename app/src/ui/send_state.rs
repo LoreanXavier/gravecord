@@ -1016,18 +1016,19 @@ impl Root {
                 };
                 format!("send: failed {nonce} (message {id}){automod}")
             }
-            // `send edit-fail <status> <code>`: the open channel's latest message answers an edit as the server would
-            // (nothing is sent), for the blocked-edit notice of module 469759.
-            ["edit-fail", status, code] => {
+            // `send edit-fail <status> <code> [<message>]`: the open channel's latest message (or the one named) answers
+            // an edit as the server would (nothing is sent), for the blocked-edit notice of module 469759.
+            ["edit-fail", status, code, rest @ ..] => {
                 let Some(channel) = self.channel else {
                     return "send: no channel open".to_owned();
                 };
-                let Some(id) = self
-                    .stores
-                    .messages
-                    .get(&channel)
-                    .and_then(|list| list.iter().map(|message| message.id).max())
-                else {
+                let chosen = rest.first().and_then(|id| id.parse::<Id>().ok());
+                let Some(id) = chosen.or_else(|| {
+                    self.stores
+                        .messages
+                        .get(&channel)
+                        .and_then(|list| list.iter().map(|message| message.id).max())
+                }) else {
                     return "send: no message to edit".to_owned();
                 };
                 let status = status.parse::<u64>().unwrap_or(400);
