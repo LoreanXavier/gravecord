@@ -141,6 +141,7 @@ assert len(idle) == idle_entries, f'IDLE_SETTINGS: read {len(idle)} of {idle_ent
 
 # How each ported plugin is built here, and its proof.
 PORTED = {
+    'NoNitroUpsell': "plugin_hooks.rs premium_type_override, nitro.rs premium_wire: while on, the account's tier reads as Nitro (premiumTypeOverride 2) everywhere the app asks for it, so the upsells that depend on it are left out, as the original tricks the client; the server still applies the real tier.",
     'WhoReacted': "plugin_hooks/who_reacted.rs: after each reaction's count up to five avatars at 90% (four and +N past five), from GET reactions?limit=100&type=0 queued one per 250 ms newest first and merged into the users; nothing on a message with over ten reactions; clickableAvatars opens the profile popout instead of reacting. Super reactions (type 1) are not fetched: the app draws no burst pills.",
     'TypingTweaks': "plugin_hooks/typing_tweaks.rs: in the typing line every bold name is the person, with a 16px avatar (showAvatars), the role colour (showRoleColors) and a click to the full profile; over three people the alternative line (alternativeFormatting, with the original's count); amITyping keeps you in the list; blocked and ignored people are left out as useTypingUsers does.",
     'UserMessagesPronouns': "plugin_hooks/message_pronouns.rs: after a message's time, '• pronouns' in the time's style with a Pronouns tooltip, server profile pronouns first, from profiles already loaded (nothing fetched), lowercased unless Capitalized; not for bots, system or AutoMod messages, nor yourself without showSelf. Not 1:1: its compact-mode place is not drawn, the app has no compact message display.",
@@ -196,6 +197,7 @@ PORTED = {
                      'so the original\'s 200% cap on the sync has nothing to cap.',
 }
 TESTS = {
+    'NoNitroUpsell': '`no_nitro_upsell_reads_as_nitro_only_while_on`; frames nnu-on/nnu-off (Appearance: Color Themes as Nitro); plugins-off gif-picker, settings-appearance',
     'WhoReacted': '`five_at_most_with_the_rest_counted`; frame wr-on (demo-reactors); plugins-off reactions, chat',
     'TypingTweaks': '`bold_runs_become_people_and_many_use_the_alternative_line`; frames tt-on/tt-off; plugins-off typing',
     'UserMessagesPronouns': '`server_pronouns_first_then_the_accounts_formatted`; frame ump-on; plugins-off chat',
@@ -309,7 +311,6 @@ PLANNED = {
     'MoreCommands': 'its slash commands.',
     'MuteChannelMentions': 'mention badges hidden for chosen channels.',
     'NewGuildSettings': 'notification defaults applied when joining a server.',
-    'NoNitroUpsell': 'every Nitro upsell hidden (the app draws them from the pinned client).',
     'OpenInApp': 'Spotify, Steam and other links opened in their apps.',
     'PermissionFreeWill': 'no client-side limits in channel permission editing.',
     'PermissionsViewer': 'a permission breakdown in profiles and menus.',

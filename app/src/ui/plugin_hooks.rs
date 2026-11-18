@@ -309,6 +309,19 @@ pub(super) fn anonymise_default() -> Option<bool> {
     })
 }
 
+/// NoNitroUpsell (Equicord `src/equicordplugins/noNitroUpsell`): `premiumTypeOverride = 2` while it is on, so every
+/// place that reads the account's tier takes it as Nitro and leaves its upsell out, as the original tricks the client.
+pub(super) fn premium_type_override() -> Option<u64> {
+    if crate::plugins::bypassed() {
+        return None;
+    }
+    crate::plugins::with(premium_type_override_in)
+}
+
+fn premium_type_override_in(state: &State) -> Option<u64> {
+    state.is_on("NoNitroUpsell").then_some(2)
+}
+
 /// VoiceDownload (Vencord `src/plugins/voiceDownload`): after a voice message's volume, a 24px download arrow
 /// (`--interactive-icon-default`, `-active` under the pointer) that opens the file in the browser, as the original does
 /// on the desktop app (`target: "_blank"`); the press does not reach the message.
@@ -902,6 +915,14 @@ mod tests {
         assert_eq!(server_delete_safety_in(&state), DeleteSafety::Skip);
         state.set_value("AlwaysTrust", "noDeleteSafety", &json!(false));
         assert_eq!(server_delete_safety_in(&state), DeleteSafety::Official);
+    }
+
+    #[test]
+    fn no_nitro_upsell_reads_as_nitro_only_while_on() {
+        assert_eq!(premium_type_override_in(&State::default()), None);
+        assert_eq!(premium_type_override_in(&with_on("NoNitroUpsell")), Some(2));
+        // Off (the unit tests' state) the account's own tier stands.
+        assert_eq!(premium_type_override(), None);
     }
 
     #[test]

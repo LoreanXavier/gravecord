@@ -24,7 +24,7 @@ impl Root {
 
     /// Whether the account has Nitro (the Nitro price list applies).
     pub(super) fn shop_has_nitro(&self) -> bool {
-        self.stores.account.premium_type == Some(2)
+        self.premium_wire() == Some(2)
     }
 
     /// The card's art by product kind: bundle backdrop and cut-out, avatar with its decoration, the nameplate strip on a

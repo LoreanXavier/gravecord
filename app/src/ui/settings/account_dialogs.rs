@@ -958,7 +958,7 @@ impl Root {
     /// Moves the form to `step`: new fields, the first one focused.
     pub(in crate::ui) fn account_form_step(&mut self, step: Step, cx: &mut Context<Self>) {
         let user = self.stores.current_user.clone().unwrap_or_default();
-        let premium = self.stores.account.premium_type.is_some();
+        let premium = self.premium_wire().is_some();
         let mut fields: Vec<Field> = Vec::new();
         let mut search = None;
         match step {

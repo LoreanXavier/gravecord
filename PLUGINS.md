@@ -12,7 +12,7 @@ every setting changed), and with every plugin off, and fails on one differing pi
 The list is the plugins enabled in the owner's Equicord backup of 2026-09-21 (156). Sources were read in the local
 Equicord checkout of 2026-11-14 (`src/plugins` is Vencord's, `src/equicordplugins` Equicord's).
 
-Totals: 35 ported, 5 native, 71 planned, 45 not applicable.
+Totals: 36 ported, 5 native, 70 planned, 45 not applicable.
 
 Status: **ported** works and has its proof; **native** is what gravecord already does without a plugin;
 **planned** is not built yet (an import keeps its settings for when it is); **not applicable** has nothing to
@@ -104,7 +104,7 @@ port in a native client, or was removed upstream.
 | NewGuildSettings | planned | plugins/newGuildSettings/index.tsx | Automatically mute new servers and change various other settings upon joining | notification defaults applied when joining a server. |  |
 | NicknameIconsAPI | not applicable | plugins/_api/nicknameIcons.ts | API to add icons to the nickname, in profiles | client-mod plumbing (an API for other plugins), nothing to port. |  |
 | NoDevtoolsWarning | not applicable | plugins/noDevtoolsWarning/index.ts | Disables the 'HOLD UP' banner in the console. As a side effect, also prevents Discord from hiding your token, which prevents random logouts. | no web console in a native client. |  |
-| NoNitroUpsell | planned | equicordplugins/noNitroUpsell/index.ts | Removes all of Discord's nitro upsells by tricking the client into thinking you have nitro. | every Nitro upsell hidden (the app draws them from the pinned client). |  |
+| NoNitroUpsell | ported | equicordplugins/noNitroUpsell/index.ts | Removes all of Discord's nitro upsells by tricking the client into thinking you have nitro. | plugin_hooks.rs premium_type_override, nitro.rs premium_wire: while on, the account's tier reads as Nitro (premiumTypeOverride 2) everywhere the app asks for it, so the upsells that depend on it are left out, as the original tricks the client; the server still applies the real tier. | `no_nitro_upsell_reads_as_nitro_only_while_on`; frames nnu-on/nnu-off (Appearance: Color Themes as Nitro); plugins-off gif-picker, settings-appearance |
 | NoPendingCount | ported | plugins/noPendingCount/index.ts | Removes the ping count of incoming friend requests, message requests, and nitro offers. | unread_badges.rs and home.rs: friend request count 0, no Message Requests badge (the row stays). | `no_pending_count_hides_each_badge_by_its_setting`; frames pending-off/on; plugins-off requests |
 | NoPushToTalk | native | equicordplugins/noPushToTalk/index.ts | Bypasses the push-to-talk requirement for voice activity in channels that enforce it. | the app does not enforce Use Voice Activity yet (the pinned client's PermissionVADStore and its warning), so voice activity already works where a server requires push to talk; when the app adds the rule, this plugin needs its hook there. |  |
 | NormalizeMessageLinks | native | equicordplugins/normalizeMessageLinks/index.ts | Strip canary/ptb from message links | Copy Message Link already writes discord.com links. |  |

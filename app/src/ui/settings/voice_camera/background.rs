@@ -750,7 +750,7 @@ impl Root {
 
     /// `canUseCustomBackgrounds`: the `VIDEO_FILTER_ASSETS` perk.
     fn can_use_custom_backgrounds(&self) -> bool {
-        dc_state::premium::PremiumType::from_wire(self.stores.account.premium_type)
+        dc_state::premium::PremiumType::from_wire(self.premium_wire())
             .has(dc_state::premium::Feature::VideoFilterAssets)
     }
 

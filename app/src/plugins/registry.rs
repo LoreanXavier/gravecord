@@ -813,6 +813,15 @@ pub(crate) const DEFS: &[Def] = &[
         }],
     },
     Def {
+        id: "NoNitroUpsell",
+        name: "NoNitroUpsell",
+        description: "Removes all of Discord's nitro upsells by tricking the client into thinking you have nitro.",
+        origin: Origin::Equicord,
+        source: "src/equicordplugins/noNitroUpsell/index.ts",
+        default_on: false,
+        settings: &[],
+    },
+    Def {
         id: "NoPendingCount",
         name: "NoPendingCount",
         description: "Removes the ping count of incoming friend requests, message requests, and Nitro offers.",

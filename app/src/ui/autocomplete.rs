@@ -400,7 +400,7 @@ impl Root {
             ));
         }
         // Custom emoji: this server's, and every other server's with Nitro.
-        let premium = dc_state::premium::PremiumType::from_wire(self.stores.account.premium_type)
+        let premium = dc_state::premium::PremiumType::from_wire(self.premium_wire())
             .has(dc_state::premium::Feature::EmojisEverywhere);
         for guild in &self.stores.guilds {
             if Some(guild.id) != self.guild && !premium {
