@@ -12,7 +12,7 @@ every setting changed), and with every plugin off, and fails on one differing pi
 The list is the plugins enabled in the owner's Equicord backup of 2026-09-21 (156). Sources were read in the local
 Equicord checkout of 2026-11-14 (`src/plugins` is Vencord's, `src/equicordplugins` Equicord's).
 
-Totals: 19 ported, 3 native, 89 planned, 45 not applicable.
+Totals: 20 ported, 3 native, 88 planned, 45 not applicable.
 
 Status: **ported** works and has its proof; **native** is what gravecord already does without a plugin;
 **planned** is not built yet (an import keeps its settings for when it is); **not applicable** has nothing to
@@ -165,7 +165,7 @@ port in a native client, or was removed upstream.
 | ValidUser | planned | plugins/validUser/index.tsx | Fix mentions for unknown users showing up as '@unknown-user' (hover over a mention to fix it) | unknown mentioned users fetched. |  |
 | VCSupport | not applicable | (not in the 2026-11-14 checkout) |  | Equicord support-server helper. |  |
 | ViewIcons | planned | plugins/viewIcons/index.tsx | Makes avatars and banners in user profiles clickable, adds View Icon/Banner/Avatar Decoration entries in the user, server and group channel context menu. | avatars, banners and icons opened full size, with menu rows. |  |
-| VoiceDownload | planned | plugins/voiceDownload/index.tsx | Adds a download to voice messages. (Opens a new browser tab) | a download button on voice messages. |  |
+| VoiceDownload | ported | plugins/voiceDownload/index.tsx | Adds a download to voice messages. (Opens a new browser tab) | voice_message.rs: a download arrow after a voice message's volume that opens the file in the browser (the original's desktop behaviour). | frames vd-on/vd-off/vd-pair; plugins-off chat (the voice message is in view) |
 | VoiceMessages | planned | plugins/voiceMessages/index.tsx | Allows you to send voice messages like on mobile. To do so, right click the upload button and click Send Voice Message | recording voice messages on desktop. |  |
 | VoiceMessageTranscriber | planned | equicordplugins/voiceMessageTranscriber.desktop/index.tsx | On-device transcriptions for voice messages powered by Whisper | an on-device Whisper model runner. |  |
 | VoiceStats | ported | equicordplugins/voiceStats/index.tsx | Shows how long you've spent in voice with each user in their profile | plugin_hooks/voice_stats.rs: seconds with each person in your voice channel, saved every 30 s; "Voice Time" after Member Since in the DM sidebar and the full profile. An Equicord backup brings its totals (`VoiceStats_totals`, the one data store key read). | `plugin_hooks::voice_stats::tests` (5), backup import test; frames vs-dm-on/off, vs-full-on |

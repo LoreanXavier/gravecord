@@ -725,6 +725,8 @@ impl Root {
             .child(duration_text)
             .child(speed_button)
             .child(volume_control)
+            // Not in the pinned client: VoiceDownload's button after the volume (`plugin_hooks.rs`).
+            .children(super::plugin_hooks::voice_download_button(&attachment.url, salt))
             .into_any_element()
     }
 

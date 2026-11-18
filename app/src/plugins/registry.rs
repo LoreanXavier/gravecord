@@ -753,6 +753,15 @@ pub(crate) const DEFS: &[Def] = &[
         }],
     },
     Def {
+        id: "VoiceDownload",
+        name: "VoiceDownload",
+        description: "Adds a download to voice messages. (Opens a new browser tab)",
+        origin: Origin::Vencord,
+        source: "src/plugins/voiceDownload/index.tsx",
+        default_on: false,
+        settings: &[],
+    },
+    Def {
         id: "VoiceStats",
         name: "VoiceStats",
         description: "Shows how long you've spent in voice with each user in their profile.",

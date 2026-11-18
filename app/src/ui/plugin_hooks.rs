@@ -292,6 +292,45 @@ pub(super) fn anonymise_default() -> Option<bool> {
     })
 }
 
+/// VoiceDownload (Vencord `src/plugins/voiceDownload`): after a voice message's volume, a 24px download arrow
+/// (`--interactive-icon-default`, `-active` under the pointer) that opens the file in the browser, as the original does
+/// on the desktop app (`target: "_blank"`); the press does not reach the message.
+pub(super) fn voice_download_button(url: &str, salt: usize) -> Option<gpui::AnyElement> {
+    use gpui::{
+        InteractiveElement, IntoElement, ParentElement, StatefulInteractiveElement, Styled,
+    };
+    if crate::plugins::bypassed() || !crate::plugin_on!("VoiceDownload") {
+        return None;
+    }
+    let url = url.to_owned();
+    let over = super::motion::hovered(super::motion::key(&("voice-download", salt)));
+    Some(
+        gpui::div()
+            .id(("voice-download", salt))
+            .size(gpui::px(24.))
+            .flex_none()
+            .cursor_pointer()
+            .child(super::motion::hover_probe(super::motion::key(&(
+                "voice-download",
+                salt,
+            ))))
+            .child(super::icon(
+                "plugin_download",
+                24.,
+                if over {
+                    "--interactive-icon-active"
+                } else {
+                    "--interactive-icon-default"
+                },
+            ))
+            .on_click(move |_, _, cx| {
+                cx.stop_propagation();
+                cx.open_url(&url);
+            })
+            .into_any_element(),
+    )
+}
+
 /// AlwaysTrust's `noDeleteSafety` and `confirmModal`: how a server is deleted.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum DeleteSafety {
