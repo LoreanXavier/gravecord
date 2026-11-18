@@ -181,8 +181,14 @@ fn u32_at(bytes: &[u8], at: usize) -> Option<usize> {
 /// `fflate`'s message for a malformed archive.
 const INVALID: &str = "invalid zip data";
 
-/// `unzipSync`: every entry by name (a later one of the same name wins), inflated.
-fn unzip(bytes: &[u8]) -> Result<Vec<(String, Vec<u8>)>, String> {
+/// What all the inflated entries of one archive may add up to: a small archive can claim, and inflate to, far more
+/// than the 50 MB it is read at (the original inflates everything in the page's memory).
+const MAX_INFLATED_BYTES: usize = 256 * 1024 * 1024;
+
+/// `unzipSync`: every entry by name (a later one of the same name wins) with its size. Only an entry small enough
+/// to preview is inflated (at most that much is read, whatever its header says); the others keep their header's
+/// size and no data, which only their size is shown of.
+fn unzip(bytes: &[u8]) -> Result<Vec<(String, Vec<u8>, usize)>, String> {
     let invalid = || INVALID.to_owned();
     // The end of central directory record, searched from the end (its comment is at most 65535 bytes).
     let floor = bytes.len().saturating_sub(22 + 65_535);
@@ -192,7 +198,8 @@ fn unzip(bytes: &[u8]) -> Result<Vec<(String, Vec<u8>)>, String> {
         .ok_or_else(invalid)?;
     let count = u16_at(bytes, end + 10).ok_or_else(invalid)?;
     let mut at = u32_at(bytes, end + 16).ok_or_else(invalid)?;
-    let mut files: Vec<(String, Vec<u8>)> = Vec::with_capacity(count);
+    let mut files: Vec<(String, Vec<u8>, usize)> = Vec::with_capacity(count.min(4096));
+    let mut inflated = 0usize;
     for _ in 0..count {
         if !bytes
             .get(at..)
@@ -222,20 +229,31 @@ fn unzip(bytes: &[u8]) -> Result<Vec<(String, Vec<u8>)>, String> {
         let local_extra = u16_at(bytes, local + 28).ok_or_else(invalid)?;
         let start = local + 30 + local_name + local_extra;
         let data = bytes.get(start..start + compressed).ok_or_else(invalid)?;
+        let wanted = size <= MAX_PREVIEW_BYTES;
         let content = match method {
-            0 => data.to_vec(),
+            _ if !wanted => Vec::new(),
+            0 => data[..data.len().min(MAX_PREVIEW_BYTES + 1)].to_vec(),
             8 => {
-                let mut out = Vec::with_capacity(size);
+                let mut out = Vec::new();
                 flate2::read::DeflateDecoder::new(data)
+                    .take(MAX_PREVIEW_BYTES as u64 + 1)
                     .read_to_end(&mut out)
                     .map_err(|_| "invalid block type".to_owned())?;
                 out
             }
             other => return Err(format!("unknown compression type {other}")),
         };
-        match files.iter_mut().find(|(known, _)| *known == name) {
-            Some(slot) => slot.1 = content,
-            None => files.push((name, content)),
+        inflated += content.len();
+        if inflated > MAX_INFLATED_BYTES {
+            return Err(TOO_LARGE.to_owned());
+        }
+        let size = if wanted { content.len() } else { size };
+        match files.iter_mut().find(|(known, _, _)| *known == name) {
+            Some(slot) => {
+                slot.1 = content;
+                slot.2 = size;
+            }
+            None => files.push((name, content, size)),
         }
     }
     Ok(files)
@@ -243,12 +261,12 @@ fn unzip(bytes: &[u8]) -> Result<Vec<(String, Vec<u8>)>, String> {
 
 /// `parseZipBuffer`.
 pub(crate) fn parse(bytes: &[u8]) -> Result<Archive, String> {
-    let mut files: Vec<(String, Vec<u8>)> = unzip(bytes)?
+    let mut files: Vec<(String, Vec<u8>, usize)> = unzip(bytes)?
         .into_iter()
-        .filter(|(path, _)| !path.ends_with('/'))
+        .filter(|(path, _, _)| !path.ends_with('/'))
         .collect();
     // `localeCompare`: letters before case, then the exact text.
-    files.sort_by(|(a, _), (b, _)| {
+    files.sort_by(|(a, _, _), (b, _, _)| {
         a.to_lowercase()
             .cmp(&b.to_lowercase())
             .then_with(|| a.cmp(b))
@@ -257,10 +275,9 @@ pub(crate) fn parse(bytes: &[u8]) -> Result<Archive, String> {
     let entries = files
         .into_iter()
         .take(MAX_ENTRIES)
-        .map(|(path, data)| {
+        .map(|(path, data, size)| {
             let path = path.trim_start_matches('/').replace('\\', "/");
             let extension = extension(&path);
-            let size = data.len();
             Entry {
                 name: file_name(&path),
                 kind: kind(&extension, size),

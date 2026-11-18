@@ -195,10 +195,18 @@ fn capture(
         .with_context(|| format!("{} {}: no frame", scenario.name, mode.name()))?
         .to_rgba8();
     let text = std::fs::read_to_string(&log).unwrap_or_default();
-    // A refused login turns every later run into the login screen: stop rather than sign in again with it.
+    // A refused login turns every later run into the login screen: stop rather than sign in again with it. A run that
+    // never got to say (it did not finish its script) stops the check too, rather than being retried with more logins.
     if text.lines().any(|line| line == "signed-in: no") {
         bail!(
             "{} {}: the stored login was refused (401 or 4004); stopping so the account is not signed in again",
+            scenario.name,
+            mode.name()
+        );
+    }
+    if !text.lines().any(|line| line.starts_with("signed-in: ")) {
+        bail!(
+            "{} {}: the run did not report its sign-in (its script did not finish); stopping rather than signing in              again",
             scenario.name,
             mode.name()
         );

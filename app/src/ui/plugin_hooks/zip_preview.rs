@@ -33,7 +33,7 @@ struct View {
 thread_local! {
     static VIEWS: RefCell<HashMap<(Id, Id), View>> = RefCell::new(HashMap::new());
     /// The entry whose dialog is open.
-    static DIALOG: RefCell<Option<Entry>> = const { RefCell::new(None) };
+    static DIALOG: RefCell<Option<Opened>> = const { RefCell::new(None) };
 }
 
 fn on() -> bool {
@@ -275,7 +275,9 @@ impl Root {
                     .child(size)
                     .on_click(cx.listener(move |_, _, _, cx| {
                         cx.stop_propagation();
-                        DIALOG.with(|dialog| *dialog.borrow_mut() = Some(opened.clone()));
+                        DIALOG.with(|dialog| {
+                            *dialog.borrow_mut() = Some(Opened::new(opened.clone()))
+                        });
                         cx.notify();
                     })),
                 );
@@ -301,7 +303,11 @@ impl Root {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Option<AnyElement> {
-        let entry = DIALOG.with(|dialog| dialog.borrow().clone())?;
+        let Opened {
+            entry,
+            text: opened_text,
+            picture: opened_picture,
+        } = DIALOG.with(|dialog| dialog.borrow().clone())?;
         if !on() {
             DIALOG.with(|dialog| *dialog.borrow_mut() = None);
             return None;
@@ -319,10 +325,12 @@ impl Root {
             }
         };
         let (body, buttons) = if entry.kind == Kind::Image {
-            let picture = Arc::new(gpui::Image::from_bytes(
-                image_format(&entry.extension),
-                entry.data.to_vec(),
-            ));
+            let picture = opened_picture.unwrap_or_else(|| {
+                Arc::new(gpui::Image::from_bytes(
+                    image_format(&entry.extension),
+                    Vec::new(),
+                ))
+            });
             (
                 div()
                     .min_h(px(360.))
@@ -345,8 +353,8 @@ impl Root {
                 )],
             )
         } else {
-            let text = String::from_utf8_lossy(&entry.data).into_owned();
-            let copied = text.clone();
+            let text = opened_text.unwrap_or_default();
+            let copied = text.to_string();
             (
                 div()
                     .id("zip-preview-code")
@@ -432,6 +440,32 @@ fn navigate(
             cx.notify();
         }))
         .into_any_element()
+}
+
+/// The open dialog's entry, with its text or picture made once when it opened (not on every frame).
+#[derive(Clone)]
+struct Opened {
+    entry: Entry,
+    text: Option<SharedString>,
+    picture: Option<Arc<gpui::Image>>,
+}
+
+impl Opened {
+    fn new(entry: Entry) -> Self {
+        let text = (entry.kind == Kind::Text)
+            .then(|| SharedString::from(String::from_utf8_lossy(&entry.data).into_owned()));
+        let picture = (entry.kind == Kind::Image).then(|| {
+            Arc::new(gpui::Image::from_bytes(
+                image_format(&entry.extension),
+                entry.data.to_vec(),
+            ))
+        });
+        Self {
+            entry,
+            text,
+            picture,
+        }
+    }
 }
 
 fn image_format(extension: &str) -> gpui::ImageFormat {

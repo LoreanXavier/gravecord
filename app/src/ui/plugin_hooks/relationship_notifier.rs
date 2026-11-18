@@ -121,6 +121,13 @@ fn ids_from_value(value: &Value) -> Vec<Id> {
         .collect()
 }
 
+/// The kept servers or groups that are not there now (an outage's server is not gone).
+fn gone(old: Vec<Kept>, now: &[Id], unavailable: impl Fn(Id) -> bool) -> Vec<Kept> {
+    old.into_iter()
+        .filter(|kept| !now.contains(&kept.id) && !unavailable(kept.id))
+        .collect()
+}
+
 /// `getUniqueUsername`.
 fn unique_username(username: &str, discriminator: &str) -> String {
     if discriminator == "0" || discriminator.is_empty() {
@@ -199,7 +206,8 @@ impl Root {
         self.stores
             .guilds
             .iter()
-            .filter(|guild| !guild.joined_at.is_empty())
+            // `GuildMemberStore.isMember(id, me)`: every server but those only lurked in.
+            .filter(|guild| !self.stores.lurking_guilds.contains(&guild.id))
             .map(|guild| Kept {
                 id: guild.id,
                 name: guild.name.clone(),
@@ -351,21 +359,18 @@ impl Root {
             )
         });
         if settings.groups {
-            for group in old_groups.unwrap_or_default() {
-                if !groups.contains(&group.id) {
-                    let text = format!("You are no longer in the group {}.", group.name);
-                    self.relationship_notify(settings, text, group.icon, Action::None, cx);
-                }
+            for group in gone(old_groups.unwrap_or_default(), &groups, |_| false) {
+                let text = format!("You are no longer in the group {}.", group.name);
+                self.relationship_notify(settings, text, group.icon, Action::None, cx);
             }
         }
         if settings.servers {
-            for guild in old_guilds.unwrap_or_default() {
-                if !guilds.contains(&guild.id)
-                    && !self.stores.unavailable_guilds.contains(&guild.id)
-                {
-                    let text = format!("You are no longer in the server {}.", guild.name);
-                    self.relationship_notify(settings, text, guild.icon, Action::None, cx);
-                }
+            let unavailable = self.stores.unavailable_guilds.clone();
+            for guild in gone(old_guilds.unwrap_or_default(), &guilds, |id| {
+                unavailable.contains(&id)
+            }) {
+                let text = format!("You are no longer in the server {}.", guild.name);
+                self.relationship_notify(settings, text, guild.icon, Action::None, cx);
             }
         }
         let old_friends = old_friends.unwrap_or(Value::Null);
@@ -596,6 +601,15 @@ mod tests {
             icon: None,
         }];
         assert_eq!(kept_from_value(&kept_to_value(&kept)), kept);
+        // Kept 1, 2, 3; now 1 is there and 3 is in an outage: only 2 is gone.
+        let kept = |id| Kept {
+            id,
+            name: id.to_string(),
+            icon: None,
+        };
+        let left = gone(vec![kept(1), kept(2), kept(3)], &[1], |id| id == 3);
+        assert_eq!(left, vec![kept(2)]);
+        assert!(gone(vec![kept(1)], &[1], |_| false).is_empty());
         let mut state = State::default();
         assert_eq!(settings_of(&state), None);
         state.set_enabled(ID, true);

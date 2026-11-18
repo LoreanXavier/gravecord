@@ -337,11 +337,32 @@ impl Root {
             let Some(path) = paths.into_iter().next() else {
                 return;
             };
-            let Ok(bytes) = std::fs::read(&path) else {
+            let reading = path.clone();
+            let read = cx
+                .background_executor()
+                .spawn(async move { std::fs::read(reading) })
+                .await;
+            let Ok(bytes) = read else {
                 return;
             };
             let mime = mime_of(&path);
             let _ = this.update(cx, |this, cx| this.voice_messages_set_blob(bytes, mime, cx));
+        })
+        .detach();
+    }
+
+    /// A dropped file, read off the UI thread.
+    fn voice_messages_read(&mut self, path: std::path::PathBuf, cx: &mut Context<Self>) {
+        cx.spawn(async move |this, cx| {
+            let reading = path.clone();
+            let read = cx
+                .background_executor()
+                .spawn(async move { std::fs::read(reading) })
+                .await;
+            if let Ok(bytes) = read {
+                let mime = mime_of(&path);
+                let _ = this.update(cx, |this, cx| this.voice_messages_set_blob(bytes, mime, cx));
+            }
         })
         .detach();
     }
@@ -451,11 +472,8 @@ impl Root {
             )))
             .child(div().flex_1())
             .on_drop(cx.listener(|this, paths: &ExternalPaths, _, cx| {
-                if let Some(path) = paths.paths().first()
-                    && let Ok(bytes) = std::fs::read(path)
-                {
-                    let mime = mime_of(path);
-                    this.voice_messages_set_blob(bytes, mime, cx);
+                if let Some(path) = paths.paths().first().cloned() {
+                    this.voice_messages_read(path, cx);
                 }
             }));
         let preview: AnyElement = match (&meta, has_blob && !recording) {

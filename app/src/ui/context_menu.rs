@@ -4720,7 +4720,7 @@ impl Root {
         cx.notify();
     }
 
-    fn dm_user(&self, channel: Id) -> Option<Id> {
+    pub(super) fn dm_user(&self, channel: Id) -> Option<Id> {
         self.stores
             .private_channels
             .iter()

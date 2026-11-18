@@ -880,6 +880,17 @@ impl Root {
         self.send(content);
     }
 
+    /// A fetched answer: sent where the command ran (`ctx.channel`), not into the box open now, with the outgoing
+    /// rewrites of a send but none of the box's files, reply or sticker.
+    fn more_send_to(&mut self, channel: Id, content: String) {
+        let content = crate::plugins::outgoing(&content);
+        if content.is_empty() {
+            return;
+        }
+        let content = self.silent_message_presend(content);
+        self.start_local_send(channel, content, Vec::new(), None, Vec::new());
+    }
+
     /// One of MoreCommands' commands ran (`index` without `MORE_BIT`).
     pub(in crate::ui) fn more_commands_run(
         &mut self,
@@ -1268,11 +1279,13 @@ impl Root {
         };
         match command.does {
             Does::RandomAnimal => match body[0]["url"].as_str() {
-                Some(url) => self.more_send(url.to_owned()),
+                Some(url) => self.more_send_to(channel, url.to_owned()),
                 None => self.clyde_says(channel, "Sorry, couldn't fetch a cat picture right now 😿", "Clyde"),
             },
             Does::Nekos => match body.get("results").and_then(|results| results.get(0)) {
-                Some(result) => self.more_send(result["url"].as_str().unwrap_or_default().to_owned()),
+                Some(result) => {
+                    self.more_send_to(channel, result["url"].as_str().unwrap_or_default().to_owned());
+                }
                 None => self.more_error(
                     channel,
                     command.name,
@@ -1283,7 +1296,7 @@ impl Root {
                 Some(children) if !children.is_empty() => {
                     let index = rand::rng().random_range(0..children.len());
                     let url = children[index]["data"]["url"].as_str().unwrap_or_default();
-                    self.more_send(url.to_owned());
+                    self.more_send_to(channel, url.to_owned());
                 }
                 _ => self.more_error(
                     channel,

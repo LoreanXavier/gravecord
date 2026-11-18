@@ -3,8 +3,9 @@
 //! `notificationSound`, the message sound) when it mentions you in a server or channel on the lists, or when a listed
 //! person writes in your DM with them (anywhere with `allowOutsideOfDms`, when it mentions you). Not for your own
 //! messages, empty ones, the open channel while the window has focus, nor `@silent` ones with `respectSilentPings`.
-//! The title is the author's `globalName` read off the raw message, which has none (`global_name`): it reads
-//! "undefined", then for a server message "(#channel, parent)". In the body a 19-digit channel mention reads
+//! The title is the author's display name, then for a server message "(#channel, parent)" ("undefined" for a channel
+//! without a parent, as the original reads it). The original reads `globalName` off the raw gateway message, whose
+//! field is `global_name`, so its titles start with "undefined"; the name is shown here instead. In the body a 19-digit channel mention reads
 //! "#name" and an 18-digit user mention "@globalName". A click opens the message. The server, channel and user menus
 //! get "Add Status Bypass" / "Remove Status Bypass" (not on yourself) as a group before their last one. Not part of
 //! the pinned client.
@@ -73,16 +74,6 @@ fn current() -> Option<Settings> {
     crate::plugins::with(settings_of)
 }
 
-/// The list setting each menu edits.
-fn list_key(target: Target) -> Option<(&'static str, Id)> {
-    match target {
-        Target::Guild(guild) => Some(("guilds", guild)),
-        Target::Channel(channel) | Target::Thread(channel) => Some(("channels", channel)),
-        Target::User { user, .. } => Some(("users", user)),
-        _ => None,
-    }
-}
-
 /// `<#(\d{19})>` and `<@(\d{18})>` replaced with what `name` finds (`undefined` for a channel it does not).
 fn replace_mentions(
     text: &str,
@@ -127,6 +118,18 @@ fn replace_mentions(
 }
 
 impl Root {
+    /// The list setting each menu edits: `guild-context`, `channel-context` and `user-context` (a 1:1 DM's row opens
+    /// the user menu; a thread has a menu of its own, which the plugin does not patch).
+    fn bypass_list_key(&self, target: Target) -> Option<(&'static str, Id)> {
+        match target {
+            Target::Guild(guild) => Some(("guilds", guild)),
+            Target::Channel(channel) => Some(("channels", channel)),
+            Target::User { user, .. } => Some(("users", user)),
+            Target::Dm(channel) => self.dm_user(channel).map(|user| ("users", user)),
+            _ => None,
+        }
+    }
+
     /// The plugin's `MESSAGE_CREATE`.
     pub(in crate::ui) fn bypass_status_dispatch(
         &mut self,
@@ -187,7 +190,7 @@ impl Root {
             false
         };
         if notify {
-            self.bypass_status_notify(&settings, &message, guild, data, cx);
+            self.bypass_status_notify(&settings, &message, guild, cx);
         }
     }
 
@@ -197,7 +200,6 @@ impl Root {
         settings: &Settings,
         message: &Message,
         guild: Option<Id>,
-        raw: &Value,
         cx: &mut Context<Self>,
     ) {
         let channel_name = |id: Id| {
@@ -217,9 +219,11 @@ impl Root {
         let Some(body) = replace_mentions(&message.content, &channel_name, &user_name) else {
             return;
         };
-        let author_name = raw["author"]["globalName"]
-            .as_str()
-            .map_or_else(|| "undefined".to_owned(), str::to_owned);
+        let author_name = message
+            .author
+            .global_name
+            .clone()
+            .unwrap_or_else(|| message.author.username.clone());
         let place = if guild.is_some() {
             let channel = self
                 .stores
@@ -264,7 +268,7 @@ impl Root {
         mut items: Vec<Entry>,
         target: Target,
     ) -> Vec<Entry> {
-        let (Some(settings), Some((list, id))) = (current(), list_key(target)) else {
+        let (Some(settings), Some((list, id))) = (current(), self.bypass_list_key(target)) else {
             return items;
         };
         if list == "users"
@@ -310,7 +314,7 @@ impl Root {
 
     /// The row was chosen: the id joins or leaves its list.
     pub(in crate::ui) fn bypass_status_toggle(&mut self, target: Target, cx: &mut Context<Self>) {
-        let Some((list, id)) = list_key(target) else {
+        let Some((list, id)) = self.bypass_list_key(target) else {
             return;
         };
         crate::plugins::update(|state| {
