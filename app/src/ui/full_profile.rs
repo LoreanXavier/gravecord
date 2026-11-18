@@ -255,6 +255,15 @@ struct ConnectedAccount {
     url: Option<String>,
 }
 
+/// ShowConnections' view of an account (`connected_account_icons`): platform, name, verified, address, icon.
+pub(super) type ConnectionIcon = (
+    String,
+    String,
+    bool,
+    Option<String>,
+    Option<std::sync::Arc<gpui::Image>>,
+);
+
 type ConnectedPlatformSpec = (
     &'static str,
     &'static str,
@@ -843,7 +852,7 @@ impl Root {
         user: Id,
         dark: bool,
         cx: &mut Context<Self>,
-    ) -> Vec<(String, String, bool, Option<String>, Option<std::sync::Arc<gpui::Image>>)> {
+    ) -> Vec<ConnectionIcon> {
         let Some(body) = self.fetched.get(&format!("profile:{user}")) else {
             return Vec::new();
         };
