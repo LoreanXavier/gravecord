@@ -705,6 +705,8 @@ impl Root {
             .and_then(|section| section.items.first())
             .cloned();
         self.request_picker_images(&sections);
+        // Not in the pinned client: SuperReactionTweaks' `superReactByDefault` (`plugin_hooks/super_reaction_tweaks.rs`).
+        let burst = matches!(target, Target::Reaction { .. }) && self.super_react_by_default();
         self.picker = Some(Picker {
             target,
             tab: Tab::Emoji,
@@ -717,7 +719,7 @@ impl Root {
             list,
             collapsed,
             hovered,
-            burst: false,
+            burst,
             show_emoji_packs: false,
             expanded_pack_ids: HashSet::new(),
         });

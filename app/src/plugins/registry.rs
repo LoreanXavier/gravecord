@@ -240,6 +240,16 @@ const fn millis(default: f64) -> Kind {
 /// by the code (a test checks both ways), so a setting can never sit in the page doing nothing unnoticed.
 pub(crate) const IDLE_SETTINGS: &[(&str, &str, &str)] = &[
     (
+        "SuperReactionTweaks",
+        "unlimitedSuperReactionPlaying",
+        "it lifts the cap on super reaction effects playing at once, and the app plays no super reaction effects yet",
+    ),
+    (
+        "SuperReactionTweaks",
+        "superReactionPlayingLimit",
+        "it caps the super reaction effects playing at once, and the app plays no super reaction effects yet",
+    ),
+    (
         "AlwaysAnimate",
         "statusEmojis",
         "the app draws every custom status emoji as a still picture (the pinned client's member list plays an \
@@ -1311,6 +1321,39 @@ pub(crate) const DEFS: &[Def] = &[
                 label: "In the full profile",
                 description: "Show connected accounts in the full-size profile modal.",
                 kind: Kind::Switch { default: true },
+            },
+        ],
+    },
+    Def {
+        id: "SuperReactionTweaks",
+        name: "SuperReactionTweaks",
+        description: "Customize the limit of Super Reactions playing at once, and super react by default",
+        origin: Origin::Vencord,
+        source: "src/plugins/superReactionTweaks/index.ts",
+        default_on: false,
+        settings: &[
+            Setting {
+                key: "superReactByDefault",
+                label: "Super React By Default",
+                description: "Reaction picker will default to Super Reactions",
+                kind: Kind::Switch { default: true },
+            },
+            Setting {
+                key: "unlimitedSuperReactionPlaying",
+                label: "Unlimited Super Reaction Playing",
+                description: "Remove the limit on Super Reactions playing at once",
+                kind: Kind::Switch { default: false },
+            },
+            Setting {
+                key: "superReactionPlayingLimit",
+                label: "Super Reaction Playing Limit",
+                description: "Max Super Reactions to play at once. 0 to disable playing Super Reactions",
+                kind: Kind::Number {
+                    default: 20.,
+                    min: 0.,
+                    max: 100.,
+                    step: 1.,
+                },
             },
         ],
     },
