@@ -52,10 +52,16 @@ struct NewPost {
 }
 
 fn post_body(name: &str, content: &str, archive: Option<u64>, tags: &BTreeSet<Id>) -> Value {
-    // Module 971389, forum create; 268761 supplies the three-day fallback.
-    json!({"name":name, "auto_archive_duration":archive.unwrap_or(4320),
+    // Module 971389, forum create; 268761 supplies the three-day fallback. A leading `@silent` (677413) leaves the
+    // content and sets `flags` to SUPPRESS_NOTIFICATIONS, which is otherwise left out.
+    let (silent, content) = dc_state::split_silent_prefix(content);
+    let mut body = json!({"name":name, "auto_archive_duration":archive.unwrap_or(4320),
         "applied_tags":tags.iter().map(Id::to_string).collect::<Vec<_>>(),
-        "message":{"content":content,"sticker_ids":[]}})
+        "message":{"content":content,"sticker_ids":[]}});
+    if silent {
+        body["message"]["flags"] = json!(dc_state::SUPPRESS_NOTIFICATIONS_FLAG);
+    }
+    body
 }
 
 /// The chevron of the Sort & View and tags buttons: it points up while their popout is open.
@@ -551,6 +557,12 @@ impl Root {
                                             .text_size(px(14.))
                                             .line_height(px(32.))
                                             .child(tag.name.clone())
+                                            .on_mouse_up(
+                                                gpui::MouseButton::Right,
+                                                cx.listener(move |this, event: &gpui::MouseUpEvent, _, cx| {
+                                                    let _ = this.open_forum_tag_menu(tag_id, event.position, cx);
+                                                }),
+                                            )
                                             .on_click(cx.listener(move |this, _, _, cx| {
                                                 if let Some(form) = this
                                                     .forums
@@ -1172,7 +1184,18 @@ impl Root {
                                 })
                                 // `.pill_snX-u4.small`: 24px, 1px subtle border, 0 8px, `body-xs/semibold`.
                                 .children(tags.iter().map(|tag| {
+                                    let tag_id = tag.id;
                                     div()
+                                        .id(SharedString::from(format!("forum-post-{id}-tag-{tag_id}")))
+                                        // A tag's menu takes the press in developer mode; otherwise the post's does.
+                                        .on_mouse_up(
+                                            gpui::MouseButton::Right,
+                                            cx.listener(move |this, event: &gpui::MouseUpEvent, _, cx| {
+                                                if this.open_forum_tag_menu(tag_id, event.position, cx) {
+                                                    cx.stop_propagation();
+                                                }
+                                            }),
+                                        )
                                         .rounded_full()
                                         .border_1()
                                         .border_color(color("--border-subtle"))
@@ -2427,6 +2450,12 @@ impl Root {
                                             .line_height(px(30.))
                                             .font_weight(FontWeight(600.))
                                             .child(tag.name.clone())
+                                            .on_mouse_up(
+                                                gpui::MouseButton::Right,
+                                                cx.listener(move |this, event: &gpui::MouseUpEvent, _, cx| {
+                                                    let _ = this.open_forum_tag_menu(tag_id, event.position, cx);
+                                                }),
+                                            )
                                             .on_click(cx.listener(move |this, _, _, cx| {
                                                 if let Some(v) = this.forums.get_mut(&id)
                                                     && !v.tags.remove(&tag_id)
@@ -2750,6 +2779,12 @@ impl Root {
                                             .font_weight(FontWeight(600.))
                                             .text_color(color("--text-default"))
                                             .child(tag.name.clone())
+                                            .on_mouse_up(
+                                                gpui::MouseButton::Right,
+                                                cx.listener(move |this, event: &gpui::MouseUpEvent, _, cx| {
+                                                    let _ = this.open_forum_tag_menu(tag_id, event.position, cx);
+                                                }),
+                                            )
                                             .on_click(cx.listener(move |this, _, _, cx| {
                                                 if let Some(v) = this.forums.get_mut(&id)
                                                     && !v.tags.remove(&tag_id)
@@ -2897,6 +2932,11 @@ mod tests {
         assert_eq!(
             body,
             json!({"name":"A title","auto_archive_duration":4320,"applied_tags":["7"],"message":{"content":"A body","sticker_ids":[]}})
+        );
+        let silent = post_body("T", "@silent quiet", None, &BTreeSet::new());
+        assert_eq!(
+            silent["message"],
+            json!({"content":"quiet","sticker_ids":[],"flags":4096})
         );
         assert_eq!(
             post_body("Title", "Body", Some(1440), &BTreeSet::new())["auto_archive_duration"],

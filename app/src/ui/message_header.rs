@@ -281,6 +281,38 @@ impl Root {
         chips
     }
 
+    /// The header's `badges` after the timestamp (`e1` of module 549587, `.badgesContainer` of the cozy header: 4px on
+    /// each side): the bell of an `@silent` message (`eM`: BellZIcon at 1rem in `--interactive-text-default`,
+    /// `.badge_1jaGB6` 3px below the line's top) with "This is a @silent message." in a tooltip.
+    pub(super) fn header_badges(
+        &self,
+        message: &Message,
+        cx: &mut Context<Self>,
+    ) -> Option<AnyElement> {
+        if message.flags & dc_state::SUPPRESS_NOTIFICATIONS_FLAG == 0 {
+            return None;
+        }
+        let key = format!("message-silent-{}", message.id);
+        // `vertical-align: top` plus `top: .1875rem` on the 22px line: 3px above and below, as the row centers it.
+        let bell = div()
+            .size(px(16.))
+            .child(icon("bell_z", 16., "--interactive-text-default"));
+        let tipped = self.with_tip(
+            key,
+            Tip::body(Body::Text(dc_intl::t("RO/KYj").into()), Side::Top),
+            bell,
+            cx,
+        );
+        Some(
+            div()
+                .mx(px(4.))
+                .flex()
+                .items_center()
+                .child(tipped)
+                .into_any_element(),
+        )
+    }
+
     /// `709066 _`: `.botTagCozy` (4px before it), `.rem` sizes (15px tall, 4.4px padding, 12.8px semibold text).
     pub(super) fn app_tag_chip(
         &self,

@@ -61,6 +61,7 @@ pub mod thread_members;
 pub mod thread_messages;
 pub mod thread_previews;
 pub mod unread;
+pub mod unread_notice;
 
 use chrono::{DateTime, Local, Utc};
 use dc_proto::settings;
@@ -1806,6 +1807,22 @@ impl Forwarded {
 
 /// `IS_VOICE_MESSAGE` in the message flags (module 652215, `pr7`).
 pub const VOICE_MESSAGE_FLAG: u64 = 1 << 13;
+
+/// `SUPPRESS_NOTIFICATIONS` in the message flags (module 652215, `pr7`): an `@silent` message.
+pub const SUPPRESS_NOTIFICATIONS_FLAG: u64 = 1 << 12;
+
+/// The `@silent` prefix (module 677413, `Ay`, the send side of the silentPrefix rule of 182490/605275): text that
+/// starts with `@silent` followed by whitespace or the end is sent without it, trimmed, and with
+/// [`SUPPRESS_NOTIFICATIONS_FLAG`] (`_sendMessage` of module 138399). Anything else is returned as it is.
+pub fn split_silent_prefix(content: &str) -> (bool, &str) {
+    const PREFIX: &str = "@silent";
+    match content.strip_prefix(PREFIX) {
+        Some(rest) if rest.is_empty() || rest.starts_with(char::is_whitespace) => {
+            (true, rest.trim())
+        }
+        _ => (false, content),
+    }
+}
 
 impl Message {
     /// A voice message: the message flag is set (`hasFlag(IS_VOICE_MESSAGE)`), the player is drawn for its attachment.
@@ -4319,6 +4336,19 @@ mod tests {
             super::VOICE_MESSAGE_FLAG
         );
         assert_eq!(copy.attachments[0].duration_secs, Some(6.0065));
+    }
+
+    /// Module 677413: `^@silent(\s|$)`, then the rest trimmed.
+    #[test]
+    fn silent_prefix_is_split_only_before_whitespace_or_the_end() {
+        use super::split_silent_prefix as split;
+        assert_eq!(split("@silent hello  "), (true, "hello"));
+        assert_eq!(split("@silent\nline"), (true, "line"));
+        assert_eq!(split("@silent"), (true, ""));
+        assert_eq!(split("@silent @silent x"), (true, "@silent x"));
+        assert_eq!(split("@silently"), (false, "@silently"));
+        assert_eq!(split(" @silent x"), (false, " @silent x"));
+        assert_eq!(split("hi @silent"), (false, "hi @silent"));
     }
 
     /// A voice message as the gateway delivers it: the flag, one `audio/ogg` attachment with its length and waveform.

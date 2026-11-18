@@ -295,6 +295,8 @@ mod tag_badges;
 mod threads;
 mod tooltip;
 mod unread;
+mod unread_notice;
+mod upload_area;
 mod upload_error;
 mod upload_progress;
 mod uploads;
@@ -616,6 +618,8 @@ pub struct Root {
     /// Blocked and ignored people in voice channels, and when warnings about them were dismissed (`voice_blocked`).
     blocked_in_voice: voice_blocked::BlockedInVoice,
     warning_dismissals: voice_blocked::WarningDismissals,
+    /// `UnreadSettingNoticeStore2` and the channel showing its notice (`unread_notice`).
+    unread_notice: unread_notice::State,
     /// The Stage's Requests to Speak sidebar is open, and the Stages whose full video notice was dismissed
     /// (`stage_requests`).
     stage_requests_open: bool,
@@ -1056,6 +1060,7 @@ impl Root {
             stream_full_seen: Default::default(),
             blocked_in_voice: Default::default(),
             warning_dismissals: voice_blocked::WarningDismissals::load(),
+            unread_notice: unread_notice::State::load(),
             stage_requests_open: false,
             stage_video_upsell_dismissed: Default::default(),
             video_ready: Default::default(),
@@ -1434,6 +1439,7 @@ impl Root {
                     self.send_echo(&data);
                 }
                 self.stores.dispatch(&name, &data);
+                self.unread_notice_event(&name, &data);
                 self.urgent_message_event(&name);
                 self.spotify_devices_changed(cx);
                 self.spotify_loading_changed();
@@ -6583,7 +6589,11 @@ impl Root {
                 .map_or_else(|| "unknown".to_owned(), |channel| channel.name.clone()),
             Kind::Emoji { name, .. } => format!(":{name}:"),
             Kind::Timestamp { unix, format } => format_timestamp(*unix, *format),
-            Kind::Text | Kind::Link(_) | Kind::Everyone | Kind::Unicode => span.text.clone(),
+            Kind::Text
+            | Kind::Link(_)
+            | Kind::AttachmentLink(_)
+            | Kind::Everyone
+            | Kind::Unicode => span.text.clone(),
         }
     }
 
@@ -6631,8 +6641,10 @@ impl Root {
             _ => None,
         };
         let tint = match span.kind {
-            Kind::Link(_) if self.failed_tint.get() => hsla("--text-feedback-critical"),
-            Kind::Link(_) => hsla("--text-link"),
+            Kind::Link(_) | Kind::AttachmentLink(_) if self.failed_tint.get() => {
+                hsla("--text-feedback-critical")
+            }
+            Kind::Link(_) | Kind::AttachmentLink(_) => hsla("--text-link"),
             Kind::Role(_) if role_look.is_some() => {
                 Hsla::from(gpui::rgb(role_look.map_or(0, |(color, _)| color)))
             }
@@ -6655,6 +6667,13 @@ impl Root {
                 mention_box.background = role_tint(color, 0.1);
             }
             Some(mention_box)
+        } else if matches!(span.kind, Kind::AttachmentLink(_)) {
+            // Module 862316's attachmentLink: AttachmentIcon at 1em in the link's colour (`.icon__RYHZ5`), then the
+            // file name, with no box of its own.
+            let mut chip = pill(0., 0., "--text-link");
+            chip.background = Hsla::transparent_black();
+            chip.icon = Some(("icons/attachment_link.svg".into(), px(size), px(size + 4.)));
+            Some(chip)
         } else if matches!(span.kind, Kind::Timestamp { .. }) {
             Some(pill(2., 3., "--interactive-background-active"))
         } else {
@@ -6689,7 +6708,8 @@ impl Root {
             color: tint,
             // `underline_links`: links carry their underline at rest.
             underline: style.underline
-                || (matches!(span.kind, Kind::Link(_)) && self.underline_links()),
+                || (matches!(span.kind, Kind::Link(_) | Kind::AttachmentLink(_))
+                    && self.underline_links()),
             strike: style.strike,
             boxed,
             image,
@@ -6701,7 +6721,7 @@ impl Root {
                 None => (hsla("--brand-500"), hsla("--white")),
             }),
             // `.anchor:hover` underlines a link.
-            hover_underline: matches!(span.kind, Kind::Link(_)),
+            hover_underline: matches!(span.kind, Kind::Link(_) | Kind::AttachmentLink(_)),
             gradient: role_look.and_then(|(_, colors)| colors),
         }
     }
@@ -6906,11 +6926,24 @@ impl Root {
             let root = self.weak.clone();
             let runs = links.clone();
             let mentions = channels.clone();
+            let chips: Vec<bool> = spans
+                .iter()
+                .map(|span| matches!(span.kind, Kind::AttachmentLink(_)))
+                .collect();
             element = element.on_piece_context(move |piece, at, _, cx| {
                 // A channel mention opens its own menu (module 223998) instead of the message's.
                 if let Some(Some(channel)) = mentions.get(piece).copied() {
                     let _ = root.update(cx, |this, _| {
                         this.chat_extra.mention_hit = Some((at, channel))
+                    });
+                    return;
+                }
+                // So does an attachment chip: Link Options (module 740024).
+                if chips.get(piece).copied().unwrap_or(false)
+                    && let Some(Some((url, name))) = runs.get(piece).cloned()
+                {
+                    let _ = root.update(cx, |this, _| {
+                        this.chat_extra.attachment_hit = Some((at, url, name))
                     });
                     return;
                 }
@@ -8212,7 +8245,8 @@ impl Root {
                                             cx,
                                         )
                                         .ml(px(8.)),
-                                    ),
+                                    )
+                                    .children(self.header_badges(message, cx)),
                             )
                             .child(content),
                     )
@@ -9116,6 +9150,12 @@ fn link_runs(spans: &[Span]) -> Vec<Option<(String, String)>> {
     let mut out = vec![None; spans.len()];
     let mut index = 0;
     while index < spans.len() {
+        // An attachment chip is a link of its own, named by its file.
+        if let Kind::AttachmentLink(url) = &spans[index].kind {
+            out[index] = Some((url.clone(), spans[index].text.clone()));
+            index += 1;
+            continue;
+        }
         let Kind::Link(url) = &spans[index].kind else {
             index += 1;
             continue;
@@ -9471,6 +9511,8 @@ impl Render for Root {
         crate::perf::RENDERS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         self.interaction_modal_frame(window, cx);
         self.open_pending_overlay_survey(cx);
+        self.unread_notice_frame(cx);
+        self.upload_area_frame(cx);
         #[cfg(feature = "capture")]
         let _build = crate::perf::Timer::build();
         // The motion clock for this frame; reduced motion as module 775602 decides it.
@@ -10356,9 +10398,11 @@ impl Render for Root {
                 MouseButton::Navigate(gpui::NavigationDirection::Forward),
                 cx.listener(|this, _, _, cx| this.go_forward(cx)),
             )
-            .on_drop(cx.listener(|this, paths: &gpui::ExternalPaths, _, cx| {
-                this.on_drop_files(paths, cx);
-            }))
+            .on_drop(
+                cx.listener(|this, paths: &gpui::ExternalPaths, window, cx| {
+                    this.drop_files(paths, window.modifiers().shift, cx);
+                }),
+            )
             // Capture runs before the text under the pointer starts its own selection.
             .capture_any_mouse_down(
                 cx.listener(|this, event: &gpui::MouseDownEvent, window, _| {
@@ -10672,8 +10716,10 @@ impl Render for Root {
                                                 .flex_1()
                                                 .min_w(px(0.))
                                                 .h_full()
-                                                // Module 626977 over the list: a locked thread's bar.
+                                                // Module 626977 over the list: a locked thread's bar, or the
+                                                // notice of a channel just marked unread for every message.
                                                 .children(self.thread_lock_notice(cx))
+                                                .children(self.unread_settings_notice(cx))
                                                 .child(self.regions.place(
                                                     regions::Kind::Messages,
                                                     regions::style_of(regions::Kind::Messages),
@@ -10854,6 +10900,8 @@ impl Render for Root {
             .children(self.app_toast_layer())
             .children(self.picker_layer(window, cx))
             .children(self.soundboard_gift_picker(window, cx))
+            // Module 738876: the drop area over everything (`z-index: 2000`) while files are dragged in.
+            .children(self.file_drop_area(window, cx))
             .children(self.splash_layer(window, cx));
         // Capture only: the display name style comparison sheet (`name-sheet` step).
         #[cfg(feature = "capture")]

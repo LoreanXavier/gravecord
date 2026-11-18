@@ -896,6 +896,37 @@ pub async fn run(
                     });
                 }
             }
+            // Drags a file over the window to a point and holds it there (no drop): the drop area shows.
+            ["dragover", path, x, y] => {
+                if let Some(position) = at(x, y) {
+                    let paths = gpui::ExternalPaths(vec![PathBuf::from(*path)].into());
+                    cx.update(|cx| {
+                        dispatch(
+                            cx,
+                            window,
+                            PlatformInput::FileDrop(gpui::FileDropEvent::Entered {
+                                position,
+                                paths,
+                            }),
+                        );
+                        dispatch(
+                            cx,
+                            window,
+                            PlatformInput::FileDrop(gpui::FileDropEvent::Pending { position }),
+                        );
+                    });
+                }
+            }
+            // The dragged file leaves the window.
+            ["dragexit"] => {
+                cx.update(|cx| {
+                    dispatch(
+                        cx,
+                        window,
+                        PlatformInput::FileDrop(gpui::FileDropEvent::Exited),
+                    );
+                });
+            }
             // Registered Games with a running game, two seen ones and a hand-added one, in memory only.
             // Capture only: the call simulator (`ui/callsim.rs`).
             #[cfg(feature = "capture")]
@@ -1176,6 +1207,15 @@ pub async fn run(
             // `graphic urgent | download <url>`: the dialogs of `ui/graphic_dialogs.rs`.
             ["graphic", rest @ ..] => {
                 let line = root.update(cx, |root, cx| root.script_graphic(rest, cx));
+                let _ = writeln!(output, "{line}");
+            }
+            // `unread-notice young | sent | state`: the store of `ui/unread_notice.rs`, in memory.
+            ["unread-notice", rest @ ..] => {
+                let line = root.update(cx, |root, cx| {
+                    let line = root.script_unread_notice(rest);
+                    cx.notify();
+                    line
+                });
                 let _ = writeln!(output, "{line}");
             }
             // `emoji bulk-errors`: "Failed to upload files" with one row of each kind (`ui/server_emoji.rs`).

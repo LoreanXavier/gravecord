@@ -1054,7 +1054,14 @@ fn styled_runs(
     style: &EditorStyle,
 ) -> Vec<TextRun> {
     use crate::markup_preview as mp;
-    let flags = mp::flags(paragraph);
+    let mut flags = mp::flags(paragraph);
+    // The silentPrefix rule (module 605275: `@silent` before whitespace or the end, only at the start of the text) is
+    // drawn as `.silentPrefix` of CSS 891031, `--text-link`.
+    if start == 0 && dc_state::split_silent_prefix(paragraph).0 {
+        for flag in flags.iter_mut().take("@silent".len()) {
+            *flag = mp::LINK;
+        }
+    }
     let composing = |at: usize| marked.is_some_and(|m| m.contains(&(start + at)));
     // Split where the flags or the composition change.
     let mut parts: Vec<(usize, u16, bool)> = Vec::new();

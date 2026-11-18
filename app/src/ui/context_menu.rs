@@ -42,6 +42,11 @@ pub(super) enum Target {
     Dm(Id),
     /// A `#channel` mention in a message (`channel-mention-context`, module 223998).
     ChannelMention(Id),
+    /// An attachment chip in a message (`attachment-link-context`, module 740024); its address and file name are kept
+    /// in `State::attachment_link`.
+    AttachmentLink,
+    /// A forum tag (`forum-tag`, module 960015): Copy Tag ID in developer mode.
+    ForumTag(Id),
     User {
         user: Id,
         guild: Option<Id>,
@@ -1158,6 +1163,32 @@ pub(super) fn channel_mention_items(developer: bool) -> Vec<Entry> {
     tidy(out)
 }
 
+/// The menu's accessible name (`aria-label` of its `Menu`): "Thread Actions" (module 949488, `thread-context`), "Link
+/// Options" (module 740024) and "Forum Tag Actions" (module 960015).
+pub(super) fn menu_aria_label(target: Target) -> Option<&'static str> {
+    match target {
+        Target::Thread(_) => Some(dc_intl::t("1NBjqb")),
+        Target::AttachmentLink => Some(dc_intl::t("5oIOLX")),
+        Target::ForumTag(_) => Some(dc_intl::t("AzTwiu")),
+        _ => None,
+    }
+}
+
+/// Module 740024 (Link Options): Copy Media Link, Copy Text.
+pub(super) fn attachment_link_items() -> Vec<Entry> {
+    vec![
+        Entry::Row(Row::new(Act::CopyLink, dc_intl::t("92CPQ+"))),
+        Entry::Row(Row::new(Act::Copy, dc_intl::t("JrGD7E"))),
+    ]
+}
+
+/// Module 960015 (Forum Tag Actions): Copy Tag ID, the only row; the menu opens in developer mode only.
+pub(super) fn forum_tag_items() -> Vec<Entry> {
+    vec![Entry::Row(
+        Row::new(Act::CopyId, dc_intl::t("8VG6IY")).icon("menu_id"),
+    )]
+}
+
 pub(super) fn favorites_items() -> Vec<Entry> {
     let mut out = vec![Entry::Row(
         Row::new(Act::FavoritesSettings, dc_intl::tr("Thread Settings")).icon("menu_create_thread"),
@@ -1909,6 +1940,8 @@ pub(super) struct State {
     pub game_activity: Option<super::report_issue::Detected>,
     /// The picker's emoji whose menu is open.
     pub picker_emoji: Option<super::picker::Item>,
+    /// The address and file name of the attachment chip whose menu is open.
+    pub attachment_link: Option<(String, String)>,
 }
 
 const MUTE_FOR: [(i64, &str); 6] = [
@@ -2046,6 +2079,21 @@ fn level_label(level: u64) -> &'static str {
 impl Root {
     pub(super) fn developer_mode(&self) -> bool {
         self.pref_on("developer_mode", false)
+    }
+
+    /// A right press on a forum tag (`onContextMenu` of module 376310): Forum Tag Actions in developer mode only.
+    /// True when the menu opened.
+    pub(super) fn open_forum_tag_menu(
+        &mut self,
+        tag: Id,
+        at: gpui::Point<gpui::Pixels>,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        let developer = self.developer_mode();
+        if developer {
+            self.open_context_menu(Target::ForumTag(tag), at, cx);
+        }
+        developer
     }
 
     /// Module 291247: Verify Member needs a member who joined, a server that ever had onboarding, and the right to
@@ -2617,6 +2665,8 @@ impl Root {
             Target::ProfileWidget { .. } => profile_widget_items(),
             Target::Favorites => favorites_items(),
             Target::ChannelMention(_) => channel_mention_items(developer),
+            Target::AttachmentLink => attachment_link_items(),
+            Target::ForumTag(_) => forum_tag_items(),
             Target::PickerSticker(sticker) => {
                 picker_sticker_items(self.sticker_favorited(sticker), developer)
             }
@@ -3313,6 +3363,17 @@ impl Root {
                     self.open_create_channel(false, window, cx);
                 }
             }
+            // Module 740024. GAP: an expired signed address is not refreshed first (`AN` of module 679164).
+            (Act::CopyLink, Target::AttachmentLink) => {
+                if let Some((url, _)) = self.context.attachment_link.take() {
+                    cx.write_to_clipboard(ClipboardItem::new_string(url));
+                }
+            }
+            (Act::Copy, Target::AttachmentLink) => {
+                if let Some((_, name)) = self.context.attachment_link.take() {
+                    cx.write_to_clipboard(ClipboardItem::new_string(name));
+                }
+            }
             (Act::CopyLink, Target::ChannelMention(channel)) => {
                 let guild = self.guild_of_channel(channel);
                 cx.write_to_clipboard(ClipboardItem::new_string(
@@ -3350,8 +3411,10 @@ impl Root {
                     | Target::LauncherApp(id)
                     | Target::GameProfile(id)
                     | Target::GameAddToProfile(id)
-                    | Target::PickerSticker(id) => id,
+                    | Target::PickerSticker(id)
+                    | Target::ForumTag(id) => id,
                     Target::ProfileWidget { .. }
+                    | Target::AttachmentLink
                     | Target::InventoryFeed
                     | Target::InventoryFeedAtPointer
                     | Target::Composer
@@ -4575,6 +4638,9 @@ impl Root {
                     div()
                         .parity_with_border("context-menu", 1.)
                         .id("context-menu-generic")
+                        .when_some(menu_aria_label(target), |menu, label| {
+                            menu.aria_label(label)
+                        })
                         .relative()
                         .child(self.anchor_probe("context-menu-generic"))
                         .when(
@@ -5239,6 +5305,20 @@ mod tests {
             ]
         );
         assert!(picker_sticker_items(None, false).is_empty());
+    }
+
+    /// Modules 740024 and 960015, and the names of 949488's, 740024's and 960015's menus.
+    #[test]
+    fn link_options_and_forum_tag_menus_and_their_names() {
+        assert_eq!(
+            labels(&attachment_link_items()),
+            ["Copy Media Link", "Copy Text"]
+        );
+        assert_eq!(labels(&forum_tag_items()), ["Copy Tag ID"]);
+        assert_eq!(menu_aria_label(Target::Thread(1)), Some("Thread Actions"));
+        assert_eq!(menu_aria_label(Target::AttachmentLink), Some("Link Options"));
+        assert_eq!(menu_aria_label(Target::ForumTag(1)), Some("Forum Tag Actions"));
+        assert_eq!(menu_aria_label(Target::Channel(1)), None);
     }
 
     #[test]

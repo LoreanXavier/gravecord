@@ -1839,6 +1839,14 @@ impl Root {
             self.open_context_menu(super::context_menu::Target::ChannelMention(channel), at, cx);
             return;
         }
+        if let Some((at, url, name)) = self.chat_extra.attachment_hit.take()
+            && matches!(anchor, Anchor::Pointer(pointer) if pointer == at)
+        {
+            self.menu_hit = None;
+            self.context.attachment_link = Some((url, name));
+            self.open_context_menu(super::context_menu::Target::AttachmentLink, at, cx);
+            return;
+        }
         // The element under a right press recorded what it was before this handler ran; only for the same press.
         let hit = self.menu_hit.take().and_then(|(at, hit)| {
             matches!(anchor, Anchor::Pointer(pointer) if pointer == at).then_some(hit)

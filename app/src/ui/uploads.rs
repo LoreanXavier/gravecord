@@ -193,7 +193,7 @@ impl Pending {
         Some(pending)
     }
 
-    fn new(path: PathBuf) -> Option<Self> {
+    pub(super) fn new(path: PathBuf) -> Option<Self> {
         let name = path.file_name()?.to_string_lossy().into_owned();
         let mime = mime_of(&path);
         let kind = file_kind(&name, mime);
