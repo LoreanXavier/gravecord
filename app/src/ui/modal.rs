@@ -353,6 +353,15 @@ pub(super) fn render_small(spec: Spec, cx: &mut Context<Root>) -> AnyElement {
     render_sized(spec, 400., false, None, None, cx)
 }
 
+/// The small dialog with an input in its action bar (the "Don't ask again" box of module 732159's alert).
+pub(super) fn render_small_with_input(
+    spec: Spec,
+    input: AnyElement,
+    cx: &mut Context<Root>,
+) -> AnyElement {
+    render_sized(spec, 400., false, Some(input), None, cx)
+}
+
 /// The small dialog with its buttons one above the other across the width (Sync permissions?).
 pub(super) fn render_small_stacked(spec: Spec, cx: &mut Context<Root>) -> AnyElement {
     render_sized(spec, 400., true, None, None, cx)

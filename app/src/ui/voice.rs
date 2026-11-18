@@ -184,6 +184,16 @@ impl Root {
             self.open_voice_alert(alert, cx);
             return;
         }
+        // Any other full channel: "Channel is full" (module 361698, from the same select of module 597798).
+        if self
+            .call
+            .as_ref()
+            .is_none_or(|call| call.channel != channel)
+            && self.voice_channel_is_full(guild, channel)
+        {
+            self.open_voice_alert(super::voice_alerts::VoiceAlert::ChannelFull, cx);
+            return;
+        }
         self.join_voice_now(guild, channel, cx);
     }
 

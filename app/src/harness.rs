@@ -1065,6 +1065,10 @@ pub async fn run(
                 let line = root.update(cx, |root, cx| root.script_go_live(rest, cx));
                 let _ = writeln!(output, "golive: {line}");
             }
+            ["connect-error", kind] => {
+                let line = root.update(cx, |root, cx| root.script_connect_error(kind, cx));
+                let _ = writeln!(output, "{line}");
+            }
             ["dmcall", rest @ ..] => {
                 let line = root.update(cx, |root, cx| root.script_dmcall(rest, cx));
                 let _ = writeln!(output, "dmcall: {line}");

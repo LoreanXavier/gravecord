@@ -3488,13 +3488,14 @@ impl Root {
                 }
             }
             // "Start a Call" of the DM row's menu (`dm-row-context.json`): a voice call that rings.
+            // Both ask "Ready to start a call?" first (module 502054, `runVoiceCallAction` of module 949674).
             (Act::Call, Target::Dm(channel)) => {
-                self.select_home(Some(channel));
-                let active = self.stores.calls.is_call_active(channel, None);
-                self.start_call(channel, false, !active, cx);
+                self.start_call_or_ask(super::voice_alerts::CallTarget::Dm(channel), cx)
             }
             // "Start a Call" of a person's menu: their DM opens and the voice call rings there.
-            (Act::Call, Target::User { user, .. }) => self.start_dm_call_with(user, false, cx),
+            (Act::Call, Target::User { user, .. }) => {
+                self.start_call_or_ask(super::voice_alerts::CallTarget::User(user), cx)
+            }
             // 313998: `ring(channel, [user], "user_context_menu")` and `stopRinging(channel, [user])`.
             (Act::RingUser | Act::StopRinging, Target::Dm(channel)) => {
                 self.toggle_ring_channel(channel, cx);

@@ -9008,6 +9008,7 @@ mod tests {
             premium_tier: 0,
             premium_subscription_count: 0,
             max_stage_video_channel_users: 0,
+            max_video_channel_users: 0,
             premium_progress_bar_enabled: false,
             system_channel_flags: 0,
             emojis: Vec::new(),

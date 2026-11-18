@@ -100,6 +100,7 @@ mod gateway_screens;
 mod gifs;
 mod go_live;
 mod go_live_game;
+mod graphic_modal;
 mod group_dm;
 mod group_manage;
 mod guild_menu;
@@ -296,6 +297,7 @@ mod video_stats;
 mod video_tiles;
 mod voice;
 mod voice_alerts;
+mod voice_blocked;
 mod voice_panel;
 mod voice_sounds;
 mod voice_video;
@@ -605,6 +607,9 @@ pub struct Root {
     /// The open voice, Stage or stream alert (`voice_alerts`), and the streams whose "Stream is Full" was shown.
     voice_alert: Option<voice_alerts::VoiceAlert>,
     stream_full_seen: std::collections::HashSet<String>,
+    /// Blocked and ignored people in voice channels, and when warnings about them were dismissed (`voice_blocked`).
+    blocked_in_voice: voice_blocked::BlockedInVoice,
+    warning_dismissals: voice_blocked::WarningDismissals,
     /// The menu over a speaker's or audience member's tile (module 106401 and 237749's rows), where it was opened.
     stage_tile_menu: Option<stage::TileMenu>,
     /// Stage instances whose Live Now card was closed with its X.
@@ -1034,6 +1039,8 @@ impl Root {
             stage_end_confirm: None,
             voice_alert: None,
             stream_full_seen: Default::default(),
+            blocked_in_voice: Default::default(),
+            warning_dismissals: voice_blocked::WarningDismissals::load(),
             stage_tile_menu: None,
             live_now_closed: Vec::new(),
             publish_confirm: None,
@@ -1379,6 +1386,17 @@ impl Root {
                 }
                 let voice_before = (name == "VOICE_STATE_UPDATE")
                     .then(|| (self.others_in_call(), self.streamers_in_call()));
+                // The person's channel before this state (`oldChannelId`), for `voice_blocked`.
+                let voice_mover = (name == "VOICE_STATE_UPDATE")
+                    .then(|| {
+                        let user = data["user_id"].as_str()?.parse::<Id>().ok()?;
+                        let guild = data["guild_id"]
+                            .as_str()
+                            .and_then(|id| id.parse::<Id>().ok())
+                            .unwrap_or(0);
+                        Some((guild, user, self.voice_channel_of(guild, user)))
+                    })
+                    .flatten();
                 let ready_prev_place = (name == "READY"
                     && (self.hydrated_from_cache || self.stores.current_user.is_some()))
                 .then_some((self.guild, self.channel));
@@ -1398,7 +1416,18 @@ impl Root {
                 self.stores.dispatch(&name, &data);
                 self.spotify_devices_changed(cx);
                 self.spotify_loading_changed();
+                if name == "READY" {
+                    self.blocked_in_voice.reset();
+                }
+                if let Some((guild, user, old)) = voice_mover {
+                    let new = self.voice_channel_of(guild, user);
+                    self.blocked_voice_state(user, old, new, cx);
+                }
+                if name.starts_with("RELATIONSHIP_") {
+                    self.blocked_relationship_changed(&data, cx);
+                }
                 if name == "VOICE_STATE_UPDATE" {
+                    self.stage_invite_check(&data, cx);
                     self.voice_state_of_other_session(&data, cx);
                     // Not in the pinned client: the VoiceStats plugin (`plugin_hooks/voice_stats.rs`).
                     self.voice_stats_observe(cx);
@@ -9759,6 +9788,13 @@ impl Render for Root {
                     return;
                 }
                 if keys.key == "escape" && this.close_boost_apply() {
+                    cx.notify();
+                    cx.stop_propagation();
+                    return;
+                }
+                // A voice alert closes as its own close does (the blocked warnings' close joins or stays).
+                if keys.key == "escape" && this.voice_alert.is_some() {
+                    this.dismiss_voice_alert(cx);
                     cx.notify();
                     cx.stop_propagation();
                     return;

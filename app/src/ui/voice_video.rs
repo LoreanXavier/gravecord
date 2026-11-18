@@ -685,14 +685,15 @@ impl Root {
                 self.guild_of_channel(id).map(|guild| (guild, id))
             }) {
                 Some((guild, channel)) => {
-                    self.join_voice(guild, channel, cx);
+                    self.request_join_voice(guild, channel, cx);
                     format!("join {channel}: alert {:?}", self.voice_alert)
                 }
                 None => "no such channel".to_owned(),
             },
             // Our own voice state in a channel, as the gateway would send it after a join (`speaker` or `audience`,
-            // a Stage's `suppress`), fed to the stores only.
-            ["self-in", id, role @ ("speaker" | "audience")] => {
+            // a Stage's `suppress`; `invited`: a moderator's invitation to speak, unsuppressed with the hand still
+            // up), fed to the stores only.
+            ["self-in", id, role @ ("speaker" | "audience" | "invited")] => {
                 let (Some(channel), Some(me)) = (
                     id.parse::<u64>().ok(),
                     self.stores.current_user.as_ref().map(|me| me.id),
@@ -712,6 +713,11 @@ impl Root {
                             "user_id": me.to_string(),
                             "session_id": session,
                             "suppress": *role == "audience",
+                            "request_to_speak_timestamp": if *role == "invited" {
+                                serde_json::json!("2026-11-18T04:00:00.000000+00:00")
+                            } else {
+                                serde_json::Value::Null
+                            },
                         }),
                     },
                     cx,
