@@ -373,7 +373,7 @@ impl Root {
     }
 
     /// The Favorites section: the favourites this account can use, in their order.
-    fn favorite_emoji_items(&self) -> Vec<Item> {
+    pub(super) fn favorite_emoji_items(&self) -> Vec<Item> {
         self.favorite_emoji_keys()
             .iter()
             .filter_map(|key| self.emoji_lookup(key))

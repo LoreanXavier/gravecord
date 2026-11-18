@@ -435,6 +435,16 @@ impl Root {
                 .unwrap_or(std::cmp::Ordering::Equal)
                 .then_with(|| a.1.cmp(&b.1))
         });
+        // Not in the pinned client: FavoriteEmojiFirst sorts every match (`maxCount: Infinity`) with the favourites
+        // first, then the list is cut where it was (`plugin_hooks.rs`).
+        if let Some(favorites) = self.favorite_emoji_first() {
+            let (first, rest): (Vec<_>, Vec<_>) =
+                found.into_iter().partition(|(_, _, entry)| match entry {
+                    Entry::Emoji { item, .. } => favorites.contains(item),
+                    _ => false,
+                });
+            found = first.into_iter().chain(rest).collect();
+        }
         // `queryResults` of module 496533: with stickers on, at most 10 emoji are searched and the list keeps
         // `max(6, 10 - stickers)` of them after `max(4, 8 - emoji)` stickers; off, 50 emoji.
         let stickers_on =

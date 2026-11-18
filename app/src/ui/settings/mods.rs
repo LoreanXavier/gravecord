@@ -837,6 +837,13 @@ impl Root {
                 cx.notify();
                 format!("demo-reactors: {count} on {message} {emoji}")
             }
+            // `demo-favorite <emoji key>`: the emoji is made a favourite as the picker's star does (its settings write is
+            // blocked in captures), for FavoriteEmojiFirst's frames.
+            ["demo-favorite", key] => {
+                self.toggle_favorite_emoji(key);
+                cx.notify();
+                format!("demo-favorite: {:?}", self.favorite_emoji_keys())
+            }
             // `effects`: what the plugins did since the last `effects` (`plugins::note`), `{}` when nothing.
             ["effects"] => {
                 let mut effects = plugins::effects();

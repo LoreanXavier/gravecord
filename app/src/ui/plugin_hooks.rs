@@ -311,6 +311,17 @@ pub(super) fn anonymise_default() -> Option<bool> {
     })
 }
 
+impl super::Root {
+    /// FavoriteEmojiFirst (Vencord `src/plugins/favEmojiFirst`): the favourite emoji
+    /// (`isFavoriteEmojiWithoutFetchingLatest`) the emoji autocomplete puts first, while the plugin is on.
+    pub(super) fn favorite_emoji_first(&self) -> Option<Vec<super::picker::Item>> {
+        if crate::plugins::bypassed() || !crate::plugin_on!("FavoriteEmojiFirst") {
+            return None;
+        }
+        Some(self.favorite_emoji_items())
+    }
+}
+
 /// NoNitroUpsell (Equicord `src/equicordplugins/noNitroUpsell`): `premiumTypeOverride = 2` while it is on, so every
 /// place that reads the account's tier takes it as Nitro and leaves its upsell out, as the original tricks the client.
 pub(super) fn premium_type_override() -> Option<u64> {

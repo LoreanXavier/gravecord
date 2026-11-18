@@ -12,7 +12,7 @@ every setting changed), and with every plugin off, and fails on one differing pi
 The list is the plugins enabled in the owner's Equicord backup of 2026-09-21 (156). Sources were read in the local
 Equicord checkout of 2026-11-14 (`src/plugins` is Vencord's, `src/equicordplugins` Equicord's).
 
-Totals: 38 ported, 6 native, 67 planned, 45 not applicable.
+Totals: 39 ported, 6 native, 66 planned, 45 not applicable.
 
 Status: **ported** works and has its proof; **native** is what gravecord already does without a plugin;
 **planned** is not built yet (an import keeps its settings for when it is); **not applicable** has nothing to
@@ -66,7 +66,7 @@ port in a native client, or was removed upstream.
 | Experiments | planned | plugins/experiments/index.tsx | Enable Access to Experiments & other dev-only features in Discord! | the experiments and developer pages. |  |
 | ExpressionCloner | planned | plugins/expressionManager/index.tsx | Clone Emotes & Stickers. Adds context menu options to quickly clone, edit, or delete them. Also adds Copy & Save options for stickers | now ExpressionManager upstream. menu rows that clone, edit and delete emoji and stickers into your servers. |  |
 | ExtraContextMenusAPI | not applicable | (not in the 2026-11-14 checkout) |  | client-mod plumbing (an API for other plugins), nothing to port. |  |
-| FavoriteEmojiFirst | planned | plugins/favEmojiFirst/index.tsx | Puts your favorite emoji first in the emoji autocomplete and also has emoji alias. | favourite emoji first in the emoji autocomplete. |  |
+| FavoriteEmojiFirst | ported | plugins/favEmojiFirst/index.tsx | Puts your favorite emoji first in the emoji autocomplete and also has emoji alias. | autocomplete.rs + plugin_hooks.rs favorite_emoji_first: the emoji autocomplete sorts every match, puts your favourite emoji (the picker's Favorites) first and cuts the list where it was. Not 1:1 yet: the alias half (see its settings). | frames fef-on/fef-off/fef-top (:smi with smiling_imp a favourite, demo-favorite); plugins-off emoji-autocomplete |
 | FavoriteGifSearch | not applicable | (not in the 2026-11-14 checkout) |  | removed from Equicord in 0001bab8: "now a default Discord feature". |  |
 | FixImagesQuality | ported | plugins/fixImagesQuality/index.tsx | Improves quality of images by loading them at their original resolution | media_image.rs, lightbox.rs: attachment pictures without the proxy's size in chat (scaled only past 2000 x 1200), the original file in the viewer (and in chat with originalImagesInChat). | `fix_images_quality_loads_full_resolution`; plugins-off image-menu (an attachment picture) |
 | FixYoutubeEmbeds | planned | plugins/fixYoutubeEmbeds.desktop/index.tsx | Bypasses youtube videos being blocked from display on Discord (for example by UMG) | the YouTube embed workaround inside the web host. |  |
@@ -208,6 +208,8 @@ Every setting of each original (`definePluginSettings`), its type and default th
 | CallTimer | `showSeconds` | BOOLEAN | `false` | ported |
 | CallTimer | `watchLargeGuilds` | BOOLEAN | `false` | nothing to act on yet: the original subscribes to every server's events for it (`GUILD_SUBSCRIPTIONS_FLUSH`); plugin code sends nothing, so times come from the voice states the app already receives |
 | DownloadAllAttachments | `downloadAllFileTypes` | BOOLEAN | `false` | ported |
+| FavoriteEmojiFirst | `aliases` | COMPONENT | `` | not ported: not ported yet: the emoji alias editor (Set Alias in the emoji menus, this list, `:alias:` written out on send and offered in the autocomplete) is the next step of this port. |
+| FavoriteEmojiFirst | `clearAll` | COMPONENT | `` | not ported: not ported yet: comes with the alias editor (see aliases). |
 | FixImagesQuality | `originalImagesInChat` | BOOLEAN | `false` | ported |
 | GameActivityToggle | `oldIcon` | BOOLEAN | `false` | ported |
 | GameActivityToggle | `location` | SELECT | `"PANEL"` | nothing to act on yet: the original only reads it while EquicordToolbox is on, which is not ported; the button stays next to Mute/Deafen as with the default |

@@ -577,6 +577,15 @@ pub(crate) const DEFS: &[Def] = &[
         }],
     },
     Def {
+        id: "FavoriteEmojiFirst",
+        name: "FavoriteEmojiFirst",
+        description: "Puts your favorite emoji first in the emoji autocomplete and also has emoji alias.",
+        origin: Origin::Vencord,
+        source: "src/plugins/favEmojiFirst/index.tsx",
+        default_on: false,
+        settings: &[],
+    },
+    Def {
         id: "FixImagesQuality",
         name: "FixImagesQuality",
         description: "Improves quality of images by loading them at their original resolution.",

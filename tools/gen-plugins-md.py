@@ -141,6 +141,7 @@ assert len(idle) == idle_entries, f'IDLE_SETTINGS: read {len(idle)} of {idle_ent
 
 # How each ported plugin is built here, and its proof.
 PORTED = {
+    'FavoriteEmojiFirst': "autocomplete.rs + plugin_hooks.rs favorite_emoji_first: the emoji autocomplete sorts every match, puts your favourite emoji (the picker's Favorites) first and cuts the list where it was. Not 1:1 yet: the alias half (see its settings).",
     'FullVCPFP': "plugin_hooks/full_vc_pfp.rs: a call tile without video draws the avatar over the whole tile (contain, unrounded, the 80px circle gone) at 1024px, the server avatar first. Not 1:1: an animated avatar stays still while its owner speaks (the original asks for the animated file then).",
     'BetterRoleDot': "plugin_hooks/better_role_dot.rs: a click on the role dot (chat, member list, and the popout's dots) copies #rrggbb with the success toast; bothStyles makes every In names / Next to names test true (names, role mentions and dots together); copyRoleColorInProfilePopout draws the popout's roles with dots.",
     'NoNitroUpsell': "plugin_hooks.rs premium_type_override, nitro.rs premium_wire: while on, the account's tier reads as Nitro (premiumTypeOverride 2) everywhere the app asks for it, so the upsells that depend on it are left out, as the original tricks the client; the server still applies the real tier.",
@@ -199,6 +200,7 @@ PORTED = {
                      'so the original\'s 200% cap on the sync has nothing to cap.',
 }
 TESTS = {
+    'FavoriteEmojiFirst': 'frames fef-on/fef-off/fef-top (:smi with smiling_imp a favourite, demo-favorite); plugins-off emoji-autocomplete',
     'FullVCPFP': '`the_server_avatar_comes_first_at_1024`; frame fvp-on (callsim); plugins-off voice-profile, user-volume',
     'BetterRoleDot': '`colours_copy_as_color_strings_and_switches_read`; frame brd-both; plugins-off chat, member-list, profile-popout',
     'NoNitroUpsell': '`no_nitro_upsell_reads_as_nitro_only_while_on`; frames nnu-on/nnu-off (Appearance: Color Themes as Nitro); plugins-off gif-picker, settings-appearance',
@@ -242,7 +244,13 @@ TESTS = {
     'VolumeBooster': '`volume_booster_raises_the_slider_top_by_its_multiplier`; frames vb-off/vb-on; plugins-off user-volume',
 }
 # Original settings a port does not have, with why (none today).
-SKIPPED_SETTINGS = {}
+SKIPPED_SETTINGS = {
+    'FavoriteEmojiFirst': {
+        'aliases': 'not ported yet: the emoji alias editor (Set Alias in the emoji menus, this list, `:alias:` written '
+                   'out on send and offered in the autocomplete) is the next step of this port.',
+        'clearAll': 'not ported yet: comes with the alias editor (see aliases).',
+    },
+}
 
 # Already what gravecord does without a plugin.
 NATIVE = {
@@ -302,7 +310,6 @@ PLANNED = {
     'CustomRPC': 'a custom rich presence editor and its activity.',
     'Decor': 'its third-party avatar decorations service (decor-auth in the backup\'s data store is not copied).',
     'Experiments': 'the experiments and developer pages.',
-    'FavoriteEmojiFirst': 'favourite emoji first in the emoji autocomplete.',
     'FixYoutubeEmbeds': 'the YouTube embed workaround inside the web host.',
     'FriendInvites': 'slash commands for friend invite links.',
     'FullSearchContext': 'the full message menu on search results.',
