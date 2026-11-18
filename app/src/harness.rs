@@ -876,6 +876,11 @@ pub async fn run(
                 let line = root.update(cx, |root, _| root.image_crop_state());
                 let _ = writeln!(output, "{line}");
             }
+            // `image-crop recent <n>`: stand-in recent avatars for the select modal.
+            ["image-crop", "recent", count] => {
+                let count = count.parse().unwrap_or(0);
+                root.update(cx, |root, cx| root.harness_recent_avatars(count, cx));
+            }
             // `image-crop open <purpose>`: the select image modal of a site whose button is not on a reachable page.
             ["image-crop", "open", purpose] => {
                 let purpose = purpose.to_string();

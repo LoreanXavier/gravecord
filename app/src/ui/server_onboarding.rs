@@ -20,7 +20,6 @@
 //!   official save first.
 //! - Connections (`gM`, `gq`, `g5`, `gk`, `gD`, module 802941): behind experiment `2025-10_community_account_link_onboarding`,
 //!   off on the fixture and absent from every capture. Saves never send `connections`.
-//! - The Server Guide banner's crop dialog (module 142630): with `BANNER` the picture goes up uncropped.
 //! - The shake and red flash of a blocked Back (`SHAKE_APP`, `EMPHASIZE_NOTICE`); leaving edit mode with unsaved changes
 //!   drops them where the official page refuses to close.
 //! - The testimonial carousel's slide, every drag animation and the drop bars (cards reorder on drop).

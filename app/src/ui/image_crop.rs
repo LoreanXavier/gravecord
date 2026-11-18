@@ -183,6 +183,8 @@ pub(super) struct Crop {
     slider_hovered: bool,
     slider_bounds: Rc<Cell<Option<Bounds<Pixels>>>>,
     preview: Option<Arc<gpui::RenderImage>>,
+    /// The previews made so far, one per quarter turn, so turning again does not upload a new texture.
+    turned: [Option<Arc<gpui::RenderImage>>; 4],
     /// The dim around the crop area for its size and shape.
     mask: RefCell<MaskCache>,
     area: gpui::FocusHandle,
@@ -194,6 +196,19 @@ pub(super) struct Crop {
     pub announced: Option<String>,
     /// The recent avatar this picture came from (`originalAsset`).
     original: Option<RecentAvatar>,
+    /// Which opening this is: a decode or a crop that finishes after Cancel cannot land on a later picture.
+    generation: u64,
+}
+
+impl Crop {
+    /// The preview turned by `degrees`, made once.
+    fn show_turned(&mut self, degrees: u32) {
+        let slot = (degrees / 90) as usize % 4;
+        if self.turned[slot].is_none() {
+            self.turned[slot] = self.source.as_ref().map(|source| source.preview(degrees));
+        }
+        self.preview = self.turned[slot].clone();
+    }
 }
 
 /// The Remove Avatar confirmation (module 555251).
@@ -210,6 +225,8 @@ pub(super) struct State {
     pub recent: Recent,
     /// The site waiting for a picked file (the file input of the Upload Image tile, or a direct site).
     pub awaiting: Option<Purpose>,
+    /// The last cropper's `generation`.
+    generations: u64,
 }
 
 impl State {
@@ -396,7 +413,10 @@ impl Root {
         original: Option<RecentAvatar>,
         cx: &mut Context<Self>,
     ) {
+        self.image_crop.generations += 1;
+        let generation = self.image_crop.generations;
         self.image_crop.crop = Some(Crop {
+            generation,
             purpose,
             file_name,
             source: None,
@@ -408,6 +428,7 @@ impl Root {
             slider_hovered: false,
             slider_bounds: Rc::new(Cell::new(None)),
             preview: None,
+            turned: Default::default(),
             mask: RefCell::new(None),
             area: cx.focus_handle(),
             slider: cx.focus_handle(),
@@ -423,12 +444,19 @@ impl Root {
         cx.spawn(async move |this, cx| {
             let decoded = task.await;
             let _ = this.update(cx, |this, cx| {
-                let Some(crop) = this.image_crop.crop.as_mut() else {
+                let Some(crop) = this
+                    .image_crop
+                    .crop
+                    .as_mut()
+                    .filter(|crop| crop.generation == generation)
+                else {
                     return;
                 };
                 match decoded {
                     Some(source) => {
-                        crop.preview = Some(source.preview(0));
+                        let preview = source.preview(0);
+                        crop.turned[0] = Some(preview.clone());
+                        crop.preview = Some(preview);
                         crop.source = Some(Arc::new(source));
                     }
                     None => {
@@ -461,6 +489,7 @@ impl Root {
             return;
         }
         crop.applying = true;
+        let generation = crop.generation;
         let draw = editor.draw();
         // `assetOrigin` (module 469054): a recent avatar kept as it was is the archived asset, an edited one its
         // edit, any other picture a new asset. GAP: the save sends every origin as a new picture.
@@ -490,6 +519,14 @@ impl Root {
         cx.spawn(async move |this, cx| {
             let result = task.await;
             let _ = this.update(cx, |this, cx| {
+                if this
+                    .image_crop
+                    .crop
+                    .as_ref()
+                    .is_none_or(|crop| crop.generation != generation)
+                {
+                    return;
+                }
                 let Some(crop) = this.image_crop.crop.take() else {
                     return;
                 };
@@ -590,7 +627,7 @@ impl Root {
         };
         let degrees = editor.rotate();
         let crop = self.image_crop.crop.as_mut().expect("the crop is open");
-        crop.preview = crop.source.as_ref().map(|source| source.preview(degrees));
+        crop.show_turned(degrees);
         // GAP: no screen reader announcer exists yet; the text is kept for the harness (module 765178 `announce`).
         crop.announced = Some(dc_intl::t!("uYhsHT", degrees = degrees));
         tracing::info!("image-crop: rotated to {degrees}");
@@ -607,7 +644,7 @@ impl Root {
         }
         editor.reset();
         let crop = self.image_crop.crop.as_mut().expect("the crop is open");
-        crop.preview = crop.source.as_ref().map(|source| source.preview(0));
+        crop.show_turned(0);
         cx.notify();
     }
 
@@ -1819,6 +1856,22 @@ impl Root {
             state.recent.avatars.len(),
             state.awaiting.map(Purpose::key)
         )
+    }
+
+    /// Capture only: `image-crop recent <n>` stands in `n` recent avatars (the test account has none), so the list, its
+    /// hover Remove button and Remove Avatar can be framed. Their pictures do not exist on the CDN.
+    #[cfg(feature = "capture")]
+    pub(crate) fn harness_recent_avatars(&mut self, count: usize, cx: &mut Context<Self>) {
+        self.image_crop.recent.fetching = false;
+        self.image_crop.recent.fetched_at = Some(std::time::Instant::now());
+        self.image_crop.recent.avatars = (0..count)
+            .map(|index| RecentAvatar {
+                id: format!("{}", 1_000 + index),
+                storage_hash: format!("{index:032x}"),
+                description: None,
+            })
+            .collect();
+        cx.notify();
     }
 
     /// Capture only: opens the select image modal of a site by its key (`avatar`, `banner`, `guild-banner`,
