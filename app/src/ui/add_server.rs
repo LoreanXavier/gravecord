@@ -362,18 +362,30 @@ impl Root {
                 "webp" => gpui::ImageFormat::Webp,
                 _ => return None,
             };
+            // `h` of module 946274 loads the picture before `onChange`; one that does not load (an avif here: no
+            // decoder) takes `onerror`, the upload error.
+            image::load_from_memory(&bytes).ok()?;
             let uri = icon_data_url(&extension, &bytes)?;
             Some((uri, Arc::new(gpui::Image::from_bytes(format, bytes))))
         });
         cx.spawn(async move |this, cx| {
-            let Some(picked) = task.await else {
-                return;
-            };
+            let picked = task.await;
             let _ = this.update(cx, |this, cx| {
-                if let Some(add) = this.add_server.as_mut() {
-                    add.icon = Some(picked);
-                    cx.notify();
+                match picked {
+                    Some(picked) => {
+                        if let Some(add) = this.add_server.as_mut() {
+                            add.icon = Some(picked);
+                        }
+                    }
+                    // `handleFileError`: "Oops, something went wrong...", "Unable to process image".
+                    None => {
+                        this.upload_error = Some(super::upload_error::UploadError::Plain {
+                            title: dc_intl::t("0egKg3"),
+                            help: dc_intl::t("7PnXqu").to_owned(),
+                        })
+                    }
                 }
+                cx.notify();
             });
         })
         .detach();

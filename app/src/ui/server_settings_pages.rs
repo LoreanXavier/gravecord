@@ -749,7 +749,12 @@ impl Root {
                         .items_center()
                         .gap(px(2.))
                         .child(
+                            // `text_k0kUi1`: one line, cut with an ellipsis before the icon gives way.
                             div()
+                                .min_w(px(0.))
+                                .overflow_hidden()
+                                .whitespace_nowrap()
+                                .text_ellipsis()
                                 .text_size(px(12.))
                                 .line_height(px(16.))
                                 .text_color(color("--text-muted"))
@@ -772,6 +777,24 @@ impl Root {
             })
             .into_any_element()
     }
+    /// Capture only: `guild-features` lists each server's id, name and features.
+    #[cfg(feature = "capture")]
+    pub(crate) fn script_guild_features(&self) -> String {
+        self.stores
+            .guilds
+            .iter()
+            .map(|guild| {
+                format!(
+                    "guild {} {:?}: {}",
+                    guild.id,
+                    guild.name,
+                    guild.features.join(",")
+                )
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
     /// Capture only: `invites demo` adds a local invite to the open server's fetched list (nothing is sent) that
     /// grants every role of the server and bypasses join applications, so the Roles and Invite Code cells show.
     #[cfg(feature = "capture")]

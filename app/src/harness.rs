@@ -1507,6 +1507,11 @@ pub async fn run(
                 let _ = writeln!(output, "{line}");
             }
             // Capture only: `server-settings <page>` and `channel-settings <section>` open those full-window pages.
+            // The features of every server the account is in, as the stores hold them.
+            ["guild-features"] => {
+                let lines = root.read_with(cx, |root, _| root.script_guild_features());
+                let _ = writeln!(output, "{lines}");
+            }
             ["invites", "demo"] => {
                 let line = root.update(cx, |root, cx| root.script_invites_demo(cx));
                 let _ = writeln!(output, "{line}");
