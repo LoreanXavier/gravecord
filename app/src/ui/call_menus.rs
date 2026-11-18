@@ -121,6 +121,8 @@ pub(super) enum Run {
     DisableVideo(Id),
     VoiceSettings,
     CopyText(String),
+    /// Report Problem of a stream (module 74329): module 956215 for the stream of this owner.
+    ReportStream(Id),
     /// A row whose feature this client does not have: drawn disabled, never live.
     Missing,
 }
@@ -860,12 +862,12 @@ pub(super) fn stream_tile_items(facts: &StreamFacts) -> Vec<Item> {
                 .check(facts.pause_preview),
             ));
         }
-        // 74329: the report form this client has no counterpart for.
+        // 74329: Report Problem opens the stream's report (module 956215).
         more.push(Item::Line(
             Line::new(
                 "report-stream-problem",
                 dc_intl::tr("Report Problem"),
-                Run::Missing,
+                Run::ReportStream(owner),
             )
             .icon("shop_circle_error")
             .danger(),
@@ -1333,6 +1335,7 @@ impl Root {
             Run::DisableVideo(user) => set_video_disabled(user, !video_disabled(user)),
             Run::VoiceSettings => self.open_settings_section("Voice & Video", cx),
             Run::CopyText(text) => cx.write_to_clipboard(gpui::ClipboardItem::new_string(text)),
+            Run::ReportStream(owner) => self.open_stream_report(owner, cx),
             Run::Missing => {}
         }
         cx.notify();
@@ -2311,7 +2314,7 @@ mod tests {
         assert_eq!(
             describe(&stream_tile_items(&facts)),
             "Stop Watching; | Mute [x]; Stream Volume <0.50>; | ~Pop Out Stream; | Stream Attenuation [x]; \
-             Stream Attenuation Strength <0.30>; | More Options > {~Report Problem}"
+             Stream Attenuation Strength <0.30>; | More Options > {Report Problem}"
         );
         let stage = StreamFacts {
             stage: true,
@@ -2339,7 +2342,7 @@ mod tests {
             "Stop Streaming; Change Stream; Stream Quality > {#Frame Rate; 15 FPS ( ); 30 FPS (o); \
              60 FPS ( ); #Resolution; 480p ( ); 720p (o); 1080p ( ); 1440p ( ); Source ( )}; \
              Share Stream Audio [x]; | ~Pop Out Stream; | More Options > {Show My Screen Share [x]; \
-             Pause Preview When Discord Isn\u{2019}t Focused [x]; ~Report Problem}"
+             Pause Preview When Discord Isn\u{2019}t Focused [x]; Report Problem}"
         );
     }
 

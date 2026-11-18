@@ -63,6 +63,9 @@ pub(super) enum Target {
     PickerEmoji,
     /// A sticker of the sticker picker (the same `expression-picker` menu).
     PickerSticker(Id),
+    /// A soundboard sound of the picker or of a server's Soundboard page (`sound-button-context`, module 923819);
+    /// the sound is kept in `State::picker_sound`.
+    PickerSound,
     /// The Widget Actions button of a Board widget on someone else's profile (module 40989 `Y`): Report Widget.
     ProfileWidget {
         user: Id,
@@ -221,13 +224,19 @@ pub(super) enum Act {
     AiFixGrammar,
     AiTranslate,
     AiTransforms,
+    /// A picker sound's menu (`sound-button-context`, module 923819): Edit Sound, Set as Server / Global Entrance
+    /// Sound, Download Sound.
+    EditSound,
+    EntranceServer,
+    EntranceGlobal,
+    DownloadSound,
 }
 
 impl Act {
     /// Every row kind once (`Correction` with its first index). `ordinal` is an exhaustive match, so adding a variant
     /// without listing it here fails the build or the `act_list_is_complete` test.
     #[cfg(test)]
-    pub(super) const ALL: [Act; 111] = [
+    pub(super) const ALL: [Act; 115] = [
         Act::InventoryAbout,
         Act::InventoryHide,
         Act::ReportApp,
@@ -339,6 +348,10 @@ impl Act {
         Act::OutputVolume,
         Act::PopOutCall,
         Act::ShowVoiceUsers,
+        Act::EditSound,
+        Act::EntranceServer,
+        Act::EntranceGlobal,
+        Act::DownloadSound,
     ];
 
     #[cfg(test)]
@@ -455,6 +468,10 @@ impl Act {
             Act::OutputVolume => 108,
             Act::PopOutCall => 109,
             Act::ShowVoiceUsers => 110,
+            Act::EditSound => 111,
+            Act::EntranceServer => 112,
+            Act::EntranceGlobal => 113,
+            Act::DownloadSound => 114,
         }
     }
 }
@@ -575,7 +592,11 @@ pub(super) fn status(act: Act) -> Status {
         | Act::InputVolume
         | Act::OutputVolume
         | Act::PopOutCall
-        | Act::ShowVoiceUsers => Wired,
+        | Act::ShowVoiceUsers
+        | Act::EditSound
+        | Act::EntranceServer
+        | Act::EntranceGlobal
+        | Act::DownloadSound => Wired,
     }
 }
 
@@ -933,6 +954,49 @@ pub(super) fn picker_sticker_items(favorited: Option<bool>, developer: bool) -> 
                 dc_intl::tr("Copy Sticker Image Link"),
             )
             .icon("menu_copy_message_link"),
+        ));
+    }
+    out
+}
+
+/// What decides a sound's `sound-button-context` rows (module 923819).
+#[derive(Clone, Copy, Debug, Default)]
+pub(super) struct SoundFacts {
+    /// `canManageGuildExpressions` of the sound's own server (`null` for the defaults).
+    pub can_manage: bool,
+    /// `canUseCustomCallSounds` (Nitro) and a call's server (`activeCallGuildId`).
+    pub entrance: bool,
+    /// A default sound (guild `0`): no Download Sound.
+    pub default_sound: bool,
+    pub developer: bool,
+}
+
+/// Module 923819 in one group: Edit Sound, the two entrance rows, Download Sound, Copy Sound ID (developer mode,
+/// module 50268). No icons: the rows are plain `MenuItem`s.
+pub(super) fn sound_items(facts: SoundFacts) -> Vec<Entry> {
+    let mut out = Vec::new();
+    if facts.can_manage {
+        out.push(Entry::Row(Row::new(Act::EditSound, dc_intl::t("ponZcG"))));
+    }
+    if facts.entrance {
+        out.push(Entry::Row(Row::new(
+            Act::EntranceServer,
+            dc_intl::t("p2hUt7"),
+        )));
+        out.push(Entry::Row(Row::new(
+            Act::EntranceGlobal,
+            dc_intl::t("/yA6Qd"),
+        )));
+    }
+    if !facts.default_sound {
+        out.push(Entry::Row(Row::new(
+            Act::DownloadSound,
+            dc_intl::t("/fzLLK"),
+        )));
+    }
+    if facts.developer {
+        out.push(Entry::Row(
+            Row::new(Act::CopyId, dc_intl::t("HJikXp")).icon("menu_id"),
         ));
     }
     out
@@ -1945,6 +2009,8 @@ pub(super) struct State {
     pub game_activity: Option<super::report_issue::Detected>,
     /// The picker's emoji whose menu is open.
     pub picker_emoji: Option<super::picker::Item>,
+    /// The sound whose menu is open, and the call's server it was opened for (`activeCallGuildId`).
+    pub picker_sound: Option<(super::soundboard::Sound, Option<Id>)>,
     /// The open menu was opened in the overlay window (its Chat widget's rail): it is drawn there, not in the app.
     pub in_overlay: bool,
 }
@@ -2671,6 +2737,16 @@ impl Root {
                     developer,
                 )
             }
+            Target::PickerSound => {
+                let Some((sound, call_guild)) = self.context.picker_sound.clone() else {
+                    return;
+                };
+                let items = sound_items(self.sound_facts(&sound, call_guild, developer));
+                if items.is_empty() {
+                    return;
+                }
+                items
+            }
             Target::Guild(guild) => {
                 let Some(known) = self.stores.guild(guild) else {
                     return;
@@ -3220,6 +3296,42 @@ impl Root {
                     ));
                 }
             }
+            (
+                Act::EditSound
+                | Act::EntranceServer
+                | Act::EntranceGlobal
+                | Act::DownloadSound
+                | Act::CopyId,
+                Target::PickerSound,
+            ) => {
+                let Some((sound, call_guild)) = self.context.picker_sound.take() else {
+                    return;
+                };
+                match act {
+                    Act::EditSound => {
+                        if let Ok(guild) = sound.guild.parse::<Id>() {
+                            let value = json!({
+                                "sound_id": sound.id,
+                                "name": sound.name,
+                                "volume": sound.volume,
+                                "emoji_id": sound.emoji_id,
+                                "emoji_name": sound.emoji_name,
+                            });
+                            // The dialog comes over the app: the picker it was opened from goes, as Add Sound does.
+                            self.close_panel_popout(cx);
+                            self.edit_sound(guild, &value, window, cx);
+                        }
+                    }
+                    Act::EntranceServer => {
+                        if let Some(guild) = call_guild {
+                            self.set_entrance_sound(guild, &sound);
+                        }
+                    }
+                    Act::EntranceGlobal => self.set_entrance_sound(0, &sound),
+                    Act::DownloadSound => self.download_sound(&sound, cx),
+                    _ => cx.write_to_clipboard(ClipboardItem::new_string(sound.id.clone())),
+                }
+            }
             (Act::CopyId, Target::PickerEmoji) => {
                 if let Some(super::picker::Item::Custom { id, .. }) =
                     self.context.picker_emoji.take()
@@ -3406,7 +3518,8 @@ impl Root {
                     | Target::InventoryFeedAtPointer
                     | Target::Composer
                     | Target::Favorites
-                    | Target::PickerEmoji => {
+                    | Target::PickerEmoji
+                    | Target::PickerSound => {
                         return;
                     }
                 };

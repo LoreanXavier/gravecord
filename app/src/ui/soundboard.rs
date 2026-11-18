@@ -46,6 +46,19 @@ const MORE_SLOTS: usize = 200;
 const PLAY_START: &str = "SOUNDBOARD_PLAY_START";
 const PLAY_END: &str = "SOUNDBOARD_PLAY_END";
 
+/// Download Sound's limit on a fetched file (soundboard uploads are far smaller).
+const DOWNLOAD_MAX_BYTES: usize = 8 << 20;
+
+/// The file type of a downloaded sound (`switch (e.type)` of module 923819): `audio/mpeg` and `audio/mpeg3` are mp3,
+/// `audio/ogg` is ogg; anything else cannot be named and the download fails.
+pub(super) fn sound_extension(content_type: &str) -> Option<&'static str> {
+    match content_type.split(';').next().unwrap_or_default().trim() {
+        "audio/mpeg" | "audio/mpeg3" => Some("mp3"),
+        "audio/ogg" => Some("ogg"),
+        _ => None,
+    }
+}
+
 /// The picker's box: 8px right of the panel, its bottom on the soundboard button's.
 const PICKER_LEFT: f32 = 362.;
 const PICKER_BOTTOM: f32 = 78.;
@@ -1208,7 +1221,7 @@ impl Root {
         }
         self.request_sounds(guild);
         if allowed {
-            self.open_sound_dialog(window, cx);
+            self.open_sound_dialog(guild, window, cx);
         }
         cx.notify();
     }
@@ -2303,6 +2316,146 @@ impl Root {
     }
 
     /// `soundButton`: the emoji and the name; over it the preview speaker, the play mark and the star.
+    /// `canUseCustomCallSounds` (Nitro).
+    fn custom_call_sounds(&self) -> bool {
+        dc_state::premium::PremiumType::from_wire(self.stores.account.premium_type)
+            .has(dc_state::premium::Feature::CustomCallSounds)
+    }
+
+    /// A right press on a sound (`v` of module 496502): `sound-button-context` opens when the sound's server is known
+    /// or the account can use custom call sounds; `call_guild` is the call's server (`activeCallGuildId`).
+    pub(super) fn open_sound_menu(
+        &mut self,
+        sound: &Sound,
+        call_guild: Option<Id>,
+        at: gpui::Point<gpui::Pixels>,
+        cx: &mut Context<Self>,
+    ) {
+        let known = sound
+            .guild
+            .parse::<Id>()
+            .ok()
+            .is_some_and(|guild| self.stores.guild(guild).is_some());
+        if !known && !self.custom_call_sounds() {
+            return;
+        }
+        self.context.picker_sound = Some((sound.clone(), call_guild));
+        self.open_context_menu(super::context_menu::Target::PickerSound, at, cx);
+    }
+
+    /// The facts of module 923819's rows for `sound`.
+    pub(super) fn sound_facts(
+        &self,
+        sound: &Sound,
+        call_guild: Option<Id>,
+        developer: bool,
+    ) -> super::context_menu::SoundFacts {
+        let own = sound
+            .guild
+            .parse::<Id>()
+            .ok()
+            .and_then(|guild| self.stores.guild(guild));
+        super::context_menu::SoundFacts {
+            can_manage: own.zip(self.stores.me()).is_some_and(|(guild, me)| {
+                permissions::can_in_guild(guild, me, permissions::MANAGE_GUILD_EXPRESSIONS)
+            }),
+            entrance: call_guild.is_some() && self.custom_call_sounds(),
+            default_sound: sound.guild == DISCORD,
+            developer,
+        }
+    }
+
+    /// Set as Server / Global Entrance Sound (`un` of module 458976): the guild's `joinSound` in the settings.
+    pub(super) fn set_entrance_sound(&mut self, guild: u64, sound: &Sound) {
+        let (Ok(id), sound_guild) = (
+            sound.id.parse::<u64>(),
+            sound.guild.parse::<u64>().unwrap_or(0),
+        ) else {
+            return;
+        };
+        let patch = self.stores.set_join_sound(guild, id, sound_guild);
+        tracing::info!(guild, "soundboard: entrance sound set");
+        if crate::storage::settings_writes_blocked() {
+            crate::inert::note("held entrance sound settings write");
+            return;
+        }
+        self.send_proto_patch(patch);
+    }
+
+    /// Download Sound (`E` of module 923819): the file is fetched, its type names the extension (`audio/mpeg` mp3,
+    /// `audio/ogg` ogg, anything else fails), and a save dialog takes `{id}.{ext}`; any failure shows Sound Download
+    /// Failed. The fetch and the write run off the UI thread.
+    pub(super) fn download_sound(&mut self, sound: &Sound, cx: &mut Context<Self>) {
+        if sound.id.is_empty() || !sound.id.bytes().all(|byte| byte.is_ascii_digit()) {
+            return;
+        }
+        let url = format!("{CDN}{}", sound.id);
+        let id = sound.id.clone();
+        let (sender, fetched) = tokio::sync::oneshot::channel();
+        let spawned = std::thread::Builder::new()
+            .name("gravecord-sound-download".into())
+            .spawn(move || {
+                let result = crate::sounds::fetch_url_typed(&url, DOWNLOAD_MAX_BYTES)
+                    .ok()
+                    .and_then(|(bytes, kind)| Some((bytes, sound_extension(&kind)?)));
+                let _ = sender.send(result);
+            });
+        if spawned.is_err() {
+            self.sound_download_failed(cx);
+            return;
+        }
+        let inert = crate::inert::on();
+        cx.spawn(async move |this, cx| {
+            let Ok(Some((bytes, extension))) = fetched.await else {
+                let _ = this.update(cx, |this, cx| this.sound_download_failed(cx));
+                return;
+            };
+            if inert {
+                // A harness run opens no save dialog and writes no file.
+                tracing::info!(
+                    extension,
+                    size = bytes.len(),
+                    "soundboard: Download Sound fetched (inert: no save dialog)"
+                );
+                return;
+            }
+            let directory = std::env::var_os("USERPROFILE")
+                .or_else(|| std::env::var_os("HOME"))
+                .map(std::path::PathBuf::from)
+                .unwrap_or_default();
+            let name = format!("{id}.{extension}");
+            let Ok(chosen) =
+                this.update(cx, |_, cx| cx.prompt_for_new_path(&directory, Some(&name)))
+            else {
+                return;
+            };
+            let Ok(Ok(Some(path))) = chosen.await else {
+                return;
+            };
+            let written = cx
+                .background_executor()
+                .spawn(async move { std::fs::write(path, bytes).is_ok() })
+                .await;
+            if !written {
+                let _ = this.update(cx, |this, cx| this.sound_download_failed(cx));
+            }
+        })
+        .detach();
+    }
+
+    /// Sound Download Failed (module 157559 `show`): the title, the apology and Okay.
+    fn sound_download_failed(&mut self, cx: &mut Context<Self>) {
+        self.chat_extra.alert = Some(super::chat_notices::Alert::show(
+            "sound-download-failed",
+            dc_intl::t("mK3tDH"),
+            Some(dc_intl::t("jLlfDN").to_owned()),
+            None,
+            Some(dc_intl::t("BddRzS").to_owned()),
+            super::chat_notices::Then::Close,
+        ));
+        cx.notify();
+    }
+
     fn soundboard_button(
         &self,
         section: &str,
@@ -2330,6 +2483,7 @@ impl Root {
             })
             .cloned();
         let (pressed, previewed, starred) = (sound.clone(), sound.clone(), sound.clone());
+        let menu_sound = sound.clone();
         let labels = sound_labels(sound.emoji_name.as_deref(), &sound.name, favorite);
         let secondary = |id: String| {
             div()
@@ -2436,6 +2590,21 @@ impl Root {
                             this.soundboard_click(&pressed, cx);
                         }
                     }))
+                    // `onContextMenu: T && !eC` (module 533491, `enableSecondaryActions` from 327289): a usable
+                    // sound's `sound-button-context` for the call's server.
+                    .on_mouse_up(
+                        MouseButton::Right,
+                        cx.listener(move |this, event: &gpui::MouseUpEvent, _, cx| {
+                            // A DM call has no server (`h?.guild_id` is null).
+                            let call_guild = this
+                                .call
+                                .as_ref()
+                                .map(|call| call.guild)
+                                .filter(|guild| *guild != 0);
+                            this.open_sound_menu(&menu_sound, call_guild, event.position, cx);
+                            cx.stop_propagation();
+                        }),
+                    )
             })
             .child(
                 div()
@@ -2526,6 +2695,54 @@ fn search_section(ctx: &Ctx, query: &str, guilds: &[(Id, String)], board: &Board
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_downloaded_sound_is_named_by_its_type() {
+        assert_eq!(sound_extension("audio/mpeg"), Some("mp3"));
+        assert_eq!(sound_extension("audio/mpeg3"), Some("mp3"));
+        assert_eq!(sound_extension("audio/ogg"), Some("ogg"));
+        assert_eq!(sound_extension("audio/wav"), None);
+        assert_eq!(sound_extension(""), None);
+    }
+
+    #[test]
+    fn the_sound_menu_rows_follow_module_923819() {
+        use super::super::context_menu::{Act, Entry, SoundFacts, sound_items};
+        let acts = |facts: SoundFacts| -> Vec<Act> {
+            sound_items(facts)
+                .into_iter()
+                .filter_map(|entry| match entry {
+                    Entry::Row(row) => Some(row.act),
+                    _ => None,
+                })
+                .collect()
+        };
+        // Someone else's server sound, no Nitro, no developer mode: Download Sound alone.
+        assert_eq!(acts(SoundFacts::default()), [Act::DownloadSound]);
+        // A default sound has no Download Sound; without anything else the menu is empty.
+        let default_sound = SoundFacts {
+            default_sound: true,
+            ..SoundFacts::default()
+        };
+        assert!(acts(default_sound).is_empty());
+        // Everything, in the bundle's order.
+        let all = SoundFacts {
+            can_manage: true,
+            entrance: true,
+            default_sound: false,
+            developer: true,
+        };
+        assert_eq!(
+            acts(all),
+            [
+                Act::EditSound,
+                Act::EntranceServer,
+                Act::EntranceGlobal,
+                Act::DownloadSound,
+                Act::CopyId
+            ]
+        );
+    }
 
     #[test]
     fn sound_buttons_are_named_with_the_emoji_and_the_sound() {

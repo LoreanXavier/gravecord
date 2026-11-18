@@ -731,6 +731,67 @@ pub fn join_sound_set(current: &[u8], guild: u64) -> bool {
     has_sound(guild) || has_sound(0)
 }
 
+/// Sets the entrance sound of `guild` (`0` for everywhere), as `un` of module 458976 writes it with
+/// `updateGuildSettings`: the guild's `GuildSettings.join_sound` (6) becomes a `CustomCallSound` of `sound_id` (1,
+/// fixed64) and `guild_id` (2, fixed64, left out for the default sounds' `0`). The PATCH carries the whole
+/// `AllGuildSettings` (3).
+pub fn set_join_sound(
+    current: &[u8],
+    guild: u64,
+    sound: u64,
+    sound_guild: u64,
+) -> (String, Vec<u8>) {
+    let all = fields(current)
+        .find(|(number, _)| *number == 3)
+        .map_or(&[][..], |(_, payload)| payload);
+    let mut call_sound = Vec::new();
+    if sound != 0 {
+        push_fixed64_field(&mut call_sound, 1, sound);
+    }
+    if sound_guild != 0 {
+        push_fixed64_field(&mut call_sound, 2, sound_guild);
+    }
+    let entry_for = |settings: &[u8]| {
+        let mut kept: Vec<u8> = raw_fields(settings)
+            .into_iter()
+            .filter(|(number, _)| *number != 6)
+            .flat_map(|(_, raw)| raw.iter().copied())
+            .collect();
+        push_bytes_field(&mut kept, 6, &call_sound);
+        let mut entry = Vec::new();
+        push_fixed64_field(&mut entry, 1, guild);
+        push_bytes_field(&mut entry, 2, &kept);
+        entry
+    };
+    let mut found = false;
+    let mut updated_all = Vec::new();
+    for (number, raw) in raw_fields(all) {
+        if number == 1 {
+            // `raw` is the one map entry, tag and length included: its payload is the entry message.
+            let payload = fields(raw).next().map_or(&[][..], |(_, payload)| payload);
+            if fixed64_of(payload, 1).unwrap_or(0) == guild {
+                let settings = fields(payload)
+                    .find(|(number, _)| *number == 2)
+                    .map_or(&[][..], |(_, settings)| settings);
+                push_bytes_field(&mut updated_all, 1, &entry_for(settings));
+                found = true;
+                continue;
+            }
+        }
+        updated_all.extend_from_slice(raw);
+    }
+    if !found {
+        push_bytes_field(&mut updated_all, 1, &entry_for(&[]));
+    }
+    let mut updated: Vec<u8> = raw_fields(current)
+        .into_iter()
+        .filter(|(number, _)| *number != 3)
+        .flat_map(|(_, raw)| raw.iter().copied())
+        .collect();
+    push_bytes_field(&mut updated, 3, &updated_all);
+    whole_message_patch(updated, 3)
+}
+
 /// Carries the entire user_content message, sharing set_pref's whole-message patch construction.
 pub fn dismiss_content(current: &[u8], content: u16) -> (String, Vec<u8>) {
     let message = fields(current)
@@ -1732,6 +1793,56 @@ mod tests {
         assert!(!super::join_sound_set(&own, 8));
         let everywhere = settings_with(&[entry(0, true), entry(8, false)]);
         assert!(super::join_sound_set(&everywhere, 8));
+
+        // Writing one: the guild's entry keeps its other settings, the rest of the settings stay as they were, and the
+        // PATCH holds only `AllGuildSettings`.
+        let mut current = settings_with(&[entry(8, false), entry(9, false)]);
+        super::push_bytes_field(&mut current, 4, &[8, 1]);
+        let (patch, updated) = super::set_join_sound(&current, 8, 99, 5);
+        assert!(super::join_sound_set(&updated, 8));
+        assert!(!super::join_sound_set(&updated, 9));
+        assert!(super::fields(&updated).any(|(number, payload)| number == 4 && payload == [8, 1]));
+        let all = super::fields(&updated)
+            .find(|(number, _)| *number == 3)
+            .unwrap()
+            .1;
+        let entry_8 = super::fields(all)
+            .map(|(_, entry)| entry)
+            .find(|entry| super::fixed64_of(entry, 1) == Some(8))
+            .unwrap();
+        let settings = super::fields(entry_8)
+            .find(|(number, _)| *number == 2)
+            .unwrap()
+            .1;
+        assert!(super::fields(settings).any(|(number, payload)| number == 5 && payload == [1]));
+        let sound = super::fields(settings)
+            .find(|(number, _)| *number == 6)
+            .unwrap()
+            .1;
+        assert_eq!(super::fixed64_of(sound, 1), Some(99));
+        assert_eq!(super::fixed64_of(sound, 2), Some(5));
+        let sent = STANDARD.decode(patch).unwrap();
+        assert!(
+            super::raw_fields(&sent)
+                .iter()
+                .all(|(number, _)| *number == 3)
+        );
+        // Everywhere (guild 0) with a default sound: no source guild is written.
+        let (_, global) = super::set_join_sound(&[], 0, 3, 0);
+        assert!(super::join_sound_set(&global, 12345));
+        let all = super::fields(&global)
+            .find(|(number, _)| *number == 3)
+            .unwrap()
+            .1;
+        let settings = super::fields(super::fields(all).next().unwrap().1)
+            .find(|(number, _)| *number == 2)
+            .unwrap()
+            .1;
+        let sound = super::fields(settings)
+            .find(|(number, _)| *number == 6)
+            .unwrap()
+            .1;
+        assert_eq!(super::fixed64_of(sound, 2), None);
     }
     use super::*;
 

@@ -323,6 +323,8 @@ pub(super) struct Overlay {
     pub(super) pointer: (f32, f32),
     /// When drawing the overlay panicked (ms on the clock): the crash notice is up for ten seconds.
     pub(super) crashed: Option<f64>,
+    /// The crash notice's end timer is running.
+    pub(super) crash_timer: bool,
     /// The soundboard wheel (`SoundboardOverlayStore`, module 528772).
     pub(super) wheel: Option<super::overlay_wheel::Wheel>,
     /// A harness run: the sound the wheel would have played.
@@ -377,6 +379,7 @@ impl Default for Overlay {
             wheel: None,
             wheel_played: None,
             crashed: None,
+            crash_timer: false,
         }
     }
 }
@@ -635,6 +638,7 @@ impl Root {
     pub(super) fn overlay_failed(&mut self) {
         self.overlay.failed = true;
         self.overlay.crashed = Some(self.overlay_now());
+        self.overlay.crash_timer = false;
         self.overlay.locked = true;
         self.overlay.drag = None;
         self.overlay.menu = None;
@@ -653,14 +657,17 @@ impl Root {
             self.overlay.shown = None;
             return None;
         }
-        let wait = CRASH_NOTICE_MS - since.unwrap_or(0.);
-        cx.spawn(async move |this, cx| {
-            cx.background_executor()
-                .timer(std::time::Duration::from_millis(wait.ceil() as u64))
-                .await;
-            let _ = this.update(cx, |_, cx| cx.notify());
-        })
-        .detach();
+        // One timer for the notice's end, armed on its first draw (not one per redraw).
+        if !std::mem::replace(&mut self.overlay.crash_timer, true) {
+            let wait = CRASH_NOTICE_MS - since.unwrap_or(0.);
+            cx.spawn(async move |this, cx| {
+                cx.background_executor()
+                    .timer(std::time::Duration::from_millis(wait.ceil() as u64))
+                    .await;
+                let _ = this.update(cx, |_, cx| cx.notify());
+            })
+            .detach();
+        }
         let toast = Toast {
             kind: ToastKind::Welcome,
             // `X.A` of module 144400 at 40 by 40.

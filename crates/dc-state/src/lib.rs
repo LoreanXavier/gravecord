@@ -3255,6 +3255,17 @@ impl Stores {
         settings::join_sound_set(&self.settings_raw, guild)
     }
 
+    /// Sets the entrance sound of `guild` (`0` for everywhere); empty until the settings have arrived, as `set_pref`.
+    pub fn set_join_sound(&mut self, guild: u64, sound: u64, sound_guild: u64) -> String {
+        if !self.settings_loaded {
+            return String::new();
+        }
+        let (patch, updated) =
+            settings::set_join_sound(&self.settings_raw, guild, sound, sound_guild);
+        self.settings_raw = updated;
+        patch
+    }
+
     /// Empty until the account's settings have arrived, as `set_pref`.
     pub fn dismiss_content(&mut self, content: u16) -> String {
         if !self.settings_loaded {

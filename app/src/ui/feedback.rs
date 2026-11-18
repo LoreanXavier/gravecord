@@ -52,8 +52,12 @@ const MAX_TEXT: usize = 1024;
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum Kind {
     Voice,
-    Stream { streamer: bool },
+    Stream {
+        streamer: bool,
+    },
     Report,
+    /// The video background survey (module 932140), asked for instead of the call's when a background was used.
+    VideoBackground,
 }
 
 impl Kind {
@@ -62,6 +66,7 @@ impl Kind {
             Kind::Voice => 0,
             Kind::Stream { .. } => 1,
             Kind::Report => 4,
+            Kind::VideoBackground => 2,
         }
     }
 
@@ -69,6 +74,7 @@ impl Kind {
     /// already waiting keeps its place against one later in the list.
     fn rank(self) -> u8 {
         match self {
+            Kind::VideoBackground => 0,
             Kind::Stream { .. } => 1,
             Kind::Voice => 3,
             Kind::Report => 4,
@@ -78,7 +84,7 @@ impl Kind {
     /// Module 409181: `chance` and `cooldown`.
     fn config(self) -> (f64, u64) {
         match self {
-            Kind::Voice | Kind::Stream { .. } => (0.2, DAY_MS),
+            Kind::Voice | Kind::Stream { .. } | Kind::VideoBackground => (0.2, DAY_MS),
             Kind::Report => (0.5, 2 * DAY_MS),
         }
     }
@@ -87,7 +93,7 @@ impl Kind {
     /// a survey waits out its cooldown since the last one of any of them.
     fn group(self) -> &'static [u64] {
         match self {
-            Kind::Voice | Kind::Stream { .. } => &[0, 1, 2, 3],
+            Kind::Voice | Kind::Stream { .. } | Kind::VideoBackground => &[0, 1, 2, 3],
             Kind::Report => &[4],
         }
     }
@@ -161,6 +167,32 @@ fn other() -> Problem {
 /// The option trees of module 930932 (`A_` connection, `Op` audio, `de` camera, `TK` people, `wq` stream), each
 /// shuffled with Other last (`S` of module 382935).
 fn categories(kind: Kind, rng: &mut impl rand::Rng) -> Vec<Category> {
+    if kind == Kind::VideoBackground {
+        // Module 932140 lists its problems in this order, OTHER last and with the text box; nothing shuffles them.
+        return vec![Category {
+            label: "",
+            problems: vec![
+                problem(
+                    "BAD_OUTLINE",
+                    "The outline on my body was fuzzy or had a halo",
+                ),
+                problem(
+                    "BACKGROUND_DETECTION_ACCURACY",
+                    "The background detection was not accurate",
+                ),
+                problem("FLICKERING", "I saw flickering objects on the screen"),
+                problem(
+                    "BACKGROUND_DETECTION_LAG",
+                    "Background detection was laggy when I moved",
+                ),
+                Problem {
+                    value: "OTHER",
+                    label: "Other",
+                    freeform: true,
+                },
+            ],
+        }];
+    }
     let mut tree = match kind {
         Kind::Voice => vec![
             Category {
@@ -291,6 +323,7 @@ fn categories(kind: Kind, rng: &mut impl rand::Rng) -> Vec<Category> {
                 ),
             ],
         }],
+        Kind::VideoBackground => Vec::new(),
     };
     tree.shuffle(rng);
     for category in &mut tree {
@@ -377,7 +410,11 @@ pub(super) fn after_submit(kind: Kind, picks: &Picks, roll: f64) -> After {
         return After::Nothing;
     }
     let bad = matches!(picks.rating, Some(Rating::Bad | Rating::Neutral));
-    if kind != Kind::Report && bad && picks.category.is_some() && roll < 0.01 {
+    if !matches!(kind, Kind::Report | Kind::VideoBackground)
+        && bad
+        && picks.category.is_some()
+        && roll < 0.01
+    {
         return After::UploadLogs;
     }
     After::Thanks
@@ -446,11 +483,15 @@ impl Root {
         let Some(call) = &self.call else {
             return;
         };
-        // GAP: a call that used a video background asks for the video background survey (module 932140) instead,
-        // which is not built.
         let ever_connected = call.connected_at.is_some();
         if !ever_connected || call.ever_multi {
-            self.possibly_show_feedback(Kind::Voice, cx);
+            // `g.A.hasUsedBackgroundInCall`: VIDEO_BACKGROUND_SHOW_FEEDBACK (module 932140) instead of the call's.
+            let kind = if call.used_background {
+                Kind::VideoBackground
+            } else {
+                Kind::Voice
+            };
+            self.possibly_show_feedback(kind, cx);
         }
     }
 
@@ -544,6 +585,7 @@ impl Root {
         // 813923 (the mute tutorial question), which is not built; the analytics events of the surveys are not sent.
         let thanks = match form.kind {
             Kind::Voice | Kind::Report => "d9+vQ8",
+            Kind::VideoBackground => "aHB11f",
             Kind::Stream { .. } => "mMTVnv",
         };
         let roll = self.feedback_roll.take().unwrap_or_else(rand::random);
@@ -599,13 +641,33 @@ impl Root {
             ["stream"] => self.open_feedback(Kind::Stream { streamer: true }, cx),
             ["stream-viewer"] => self.open_feedback(Kind::Stream { streamer: false }, cx),
             ["report"] => self.open_feedback(Kind::Report, cx),
+            ["video"] => self.open_feedback(Kind::VideoBackground, cx),
+            // The call's camera ran with a background (what VideoState does with a background set).
+            ["used-background"] => {
+                if let Some(call) = self.call.as_mut() {
+                    call.used_background = true;
+                }
+                return format!("used background: {}", self.call.is_some());
+            }
+            // What leaving the call asks for: the video background survey when a background was used.
+            ["leave-kind"] => {
+                return format!(
+                    "leave kind: {}",
+                    if self.call.as_ref().is_some_and(|call| call.used_background) {
+                        "video_background"
+                    } else {
+                        "voice"
+                    }
+                );
+            }
             // The gates without the chance: what leaving a call, stopping a stream or closing a report asks.
             ["gate", kind] => {
                 let kind = match *kind {
                     "voice" => Kind::Voice,
                     "stream" => Kind::Stream { streamer: true },
                     "report" => Kind::Report,
-                    _ => return "usage: feedback gate voice|stream|report".to_owned(),
+                    "video" => Kind::VideoBackground,
+                    _ => return "usage: feedback gate voice|stream|report|video".to_owned(),
                 };
                 let allowed = self.feedback_allowed(kind);
                 self.show_feedback_after_debounce(kind, cx);
@@ -886,12 +948,14 @@ impl Root {
     pub(super) fn feedback_modal(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
         let form = self.feedback.form.as_ref()?;
         let step = form.step();
-        let v1 = form.kind == Kind::Report;
+        // 612479 (`FeedbackModal`): the report survey and the video background one.
+        let v1 = matches!(form.kind, Kind::Report | Kind::VideoBackground);
         let (title, body) = match form.kind {
             Kind::Voice => ("Ss6tlb", "tLi4cR"),
             Kind::Stream { streamer: true } => ("5smP3R", "0uxA2V"),
             Kind::Stream { streamer: false } => ("5smP3R", "CqjnLN"),
             Kind::Report => ("MP5lDj", "7Ct0Dj"),
+            Kind::VideoBackground => ("Wl8qXg", "vPw6j0"),
         };
         // `headerContainer`: the 24/32 title and the 16/20 body under it, centred, 16px 24px in and nothing under.
         let header = div()
@@ -962,7 +1026,13 @@ impl Root {
                     .collect();
                 Some(content(
                     Self::feedback_labelled(
-                        dc_intl::t("FJmoxF").to_owned(),
+                        // `problemTitle`: "Had an issue?" for the video background survey.
+                        dc_intl::t(if form.kind == Kind::VideoBackground {
+                            "UNFF85"
+                        } else {
+                            "FJmoxF"
+                        })
+                        .to_owned(),
                         Self::feedback_options(
                             items,
                             move |this, index, cx| {
@@ -1019,7 +1089,7 @@ impl Root {
                     |this, _, cx| {
                         if let Some(form) = this.feedback.form.as_mut() {
                             let single = form.single();
-                            if form.kind == Kind::Report {
+                            if matches!(form.kind, Kind::Report | Kind::VideoBackground) {
                                 // 612479: back from the text box to the problems, the text cleared.
                                 form.picks.problem = None;
                             } else {

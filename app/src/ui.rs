@@ -145,6 +145,7 @@ mod sticker_player;
 mod sticker_popout;
 mod stickers;
 mod stream_previews;
+mod stream_report;
 mod stream_zoom;
 mod timestamps;
 mod top_emoji;
@@ -857,6 +858,10 @@ pub struct Root {
     quests: quests::State,
     /// The Message Requests page (`/message-requests`).
     message_requests: message_requests::State,
+    /// "Upload a Sound" / "Edit Sound" (module 122998) while it is open, from Server Settings or a sound's menu.
+    sound_dialog: Option<server_sounds::SoundDialog>,
+    /// A stream's "Report a problem" (module 956215) while it is open.
+    stream_report: Option<stream_report::Form>,
     tip_anchors: Rc<RefCell<HashMap<SharedString, Bounds<Pixels>>>>,
     user_panel_height: Option<Pixels>,
     inventory: inventory_feed::State,
@@ -1231,6 +1236,8 @@ impl Root {
             shop: shop::State::default(),
             quests: quests::State::default(),
             message_requests: message_requests::State::default(),
+            sound_dialog: None,
+            stream_report: None,
             tip_anchors: Rc::default(),
             user_panel_height: None,
             inventory: inventory_feed::State::restore(),
@@ -3991,6 +3998,7 @@ impl Root {
         list.extend(self.member_action_input());
         list.extend(self.modify_attachment_editors());
         list.extend(self.report_issue_editors());
+        list.extend(self.sound_dialog.as_ref().map(|dialog| dialog.name.clone()));
         if let Some(form) = self.poll.as_ref() {
             list.push(form.question.clone());
             list.extend(form.answers.iter().cloned());
@@ -4010,12 +4018,6 @@ impl Root {
                     .members
                     .as_ref()
                     .map(|members| members.search.clone()),
-            );
-            list.extend(
-                settings
-                    .sound_dialog
-                    .as_ref()
-                    .map(|dialog| dialog.name.clone()),
             );
             if let Some(dialog) = settings.sticker_dialog.as_ref() {
                 list.push(dialog.name.clone());
@@ -10128,16 +10130,20 @@ impl Render for Root {
                     cx.stop_propagation();
                     return;
                 }
+                // "Upload a Sound" / "Edit Sound" and a stream's "Report a problem", over Server Settings or the app.
+                if keys.key == "escape"
+                    && (this.sound_dialog.take().is_some() || this.stream_report.take().is_some())
+                {
+                    cx.notify();
+                    cx.stop_propagation();
+                    return;
+                }
                 if this.server_settings.is_some() && keys.key == "escape" {
                     if this.close_server_settings_layer() {
                     } else if let Some(open) = this.server_settings.as_mut()
                         && open.delete_name.is_some()
                     {
                         open.delete_name = None;
-                    } else if let Some(open) = this.server_settings.as_mut()
-                        && open.sound_dialog.is_some()
-                    {
-                        open.sound_dialog = None;
                     } else if let Some(open) = this.server_settings.as_mut()
                         && open.sticker_dialog.is_some()
                     {
@@ -10552,6 +10558,8 @@ impl Render for Root {
             .children(self.members_prune_modal(cx))
             .children(self.engagement_select_layer(window, cx))
             .children(self.sound_dialog_modal(cx))
+            .children(self.stream_report_modal(cx))
+            .children(self.stream_report_list(cx))
             .children(self.sticker_dialog_modal(cx))
             .children(self.access_dialog_modal(cx))
             .children(self.onboarding_layer(cx))

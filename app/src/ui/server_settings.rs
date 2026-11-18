@@ -278,8 +278,6 @@ pub(crate) struct ServerSettings {
     pub(super) template: Option<super::server_template::TemplateState>,
     /// Integrations' webhook sub-page.
     pub(super) webhooks: super::server_webhooks::WebhooksState,
-    /// "Upload a Sound" while it is open.
-    pub(super) sound_dialog: Option<super::server_sounds::SoundDialog>,
     pub(super) sticker_dialog: Option<super::server_stickers::StickerDialog>,
     pub(super) access: Option<super::server_access::AccessState>,
     pub(super) discovery: super::server_discovery::Discovery,
@@ -456,7 +454,6 @@ impl Root {
             roles: None,
             template: None,
             webhooks: Default::default(),
-            sound_dialog: None,
             sticker_dialog: None,
             access: None,
             discovery: Default::default(),
@@ -1672,7 +1669,8 @@ impl Root {
             .name
             .clone();
         // Not in the pinned client: AlwaysTrust's `noDeleteSafety` asks its own question, with no name to type.
-        if super::plugin_hooks::server_delete_safety() == super::plugin_hooks::DeleteSafety::Confirm {
+        if super::plugin_hooks::server_delete_safety() == super::plugin_hooks::DeleteSafety::Confirm
+        {
             return Some(Self::plugin_delete_server_modal(guild, cx));
         }
         let wrong = open.delete_wrong;
@@ -1783,7 +1781,11 @@ impl Root {
             super::modal::Spec {
                 id: "delete-server-plugin-modal",
                 title: "Delete server?".into(),
-                subtitle: Some(div().child("It's permanent, if that wasn't obvious.").into_any_element()),
+                subtitle: Some(
+                    div()
+                        .child("It's permanent, if that wasn't obvious.")
+                        .into_any_element(),
+                ),
                 body: None,
                 buttons: vec![
                     super::modal::button(

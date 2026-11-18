@@ -201,7 +201,7 @@ pub(super) fn sorted(sort: Sort, guilds: &[(u64, String)], restricted: &[u64]) -
 }
 
 impl Root {
-    fn send_proto_patch(&mut self, patch: String) {
+    pub(in crate::ui) fn send_proto_patch(&mut self, patch: String) {
         if !patch.is_empty() {
             let _ = self.requests.send(Request::Rest {
                 key: None,

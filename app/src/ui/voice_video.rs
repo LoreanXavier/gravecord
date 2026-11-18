@@ -490,9 +490,12 @@ impl Root {
         match event {
             dc_voice::Event::VideoState { camera } => {
                 info!(camera, "camera state");
+                let background = self.stores.video_background().is_some();
                 if let Some(call) = self.call.as_mut() {
                     let was = call.camera;
                     call.camera = *camera;
+                    // `T` of VideoBackgroundStore (module 912630): video on in the channel with a background set.
+                    call.used_background |= *camera && background;
                     if was != *camera {
                         crate::sounds::play_event(if *camera { "camera_on" } else { "camera_off" });
                     }
