@@ -666,6 +666,19 @@ pub(super) struct TileLook {
     pub wanted: bool,
 }
 
+/// Capture only: `gifs still` (the harness) keeps every tile on its first frame, so a capture never depends on how far
+/// an animation got on the real clock.
+static HELD_STILL: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+#[cfg(feature = "capture")]
+pub(crate) fn hold_still(still: bool) {
+    HELD_STILL.store(still, std::sync::atomic::Ordering::Relaxed);
+}
+
+fn held_still() -> bool {
+    HELD_STILL.load(std::sync::atomic::Ordering::Relaxed)
+}
+
 impl super::Root {
     /// Starts the decodes the tiles drawn last frame call for and releases what left the screen. Called once per
     /// render, before the tiles are built.
@@ -673,7 +686,8 @@ impl super::Root {
         let mut jobs = Vec::new();
         // The client's focus, not this window's: a popout of the client that has the focus keeps tiles playing
         // (and the harness's `dmcall fake-unfocused` draws the client as unfocused).
-        let focused = !super::voice_video::client_unfocused(cx);
+        // The harness's `gifs still` holds every tile on its first frame, as an unfocused client does.
+        let focused = !super::voice_video::client_unfocused(cx) && !held_still();
         let work = self
             .gif_tiles
             .borrow_mut()

@@ -2653,6 +2653,12 @@ impl Stores {
                 if let Some(message) = Message::from_value(data) {
                     let me = self.current_user.as_ref().map(|user| user.id);
                     let mention = unread::message_mention(self, data, chrono::Utc::now());
+                    if let Some(me) = me
+                        && message.mention_user_ids.contains(&me)
+                    {
+                        self.read_states
+                            .track_direct_mention(message.channel_id, message.id);
+                    }
                     self.read_states.message_created(
                         message.channel_id,
                         message.id,

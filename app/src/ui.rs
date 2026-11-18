@@ -170,7 +170,7 @@ mod forums;
 pub(crate) mod frame_clock;
 mod game_genres;
 mod game_profile;
-mod gif_tiles;
+pub(crate) mod gif_tiles;
 mod graphic_dialogs;
 mod guild_events;
 mod guild_guide;
@@ -9576,6 +9576,9 @@ impl Render for Root {
         motion::set_window_active(window.is_window_active());
         // Not in the pinned client: VoiceStats follows its own switch (`plugin_hooks/voice_stats.rs`).
         self.voice_stats_observe(cx);
+        // Not in the pinned client: MuteChannelMentions keeps the read states' filter current
+        // (`plugin_hooks/mute_channel_mentions.rs`).
+        self.mute_channel_mentions_sync();
         self.streamer_apply(window);
         motion::begin_view(cx.entity_id());
         self.regions.ensure(&cx.entity(), cx);

@@ -867,6 +867,31 @@ pub(crate) const DEFS: &[Def] = &[
         }],
     },
     Def {
+        id: "MuteChannelMentions",
+        name: "MuteChannelMentions",
+        description: "Hides mention badges from the channels you pick, both on the channel and on the server icon.                       Nothing is sent to Discord.",
+        origin: Origin::Equicord,
+        source: "src/userplugins/muteChannelMentions/index.tsx",
+        default_on: false,
+        settings: &[
+            Setting {
+                key: "channelIds",
+                label: "Channel IDs",
+                description: "Comma separated channel IDs whose mention badges are hidden.",
+                kind: Kind::Text {
+                    default: "",
+                    max_len: 4000,
+                },
+            },
+            Setting {
+                key: "onlyEveryone",
+                label: "Only @everyone",
+                description: "Only hide @everyone, @here and role pings. Direct mentions of you still show.",
+                kind: Kind::Switch { default: true },
+            },
+        ],
+    },
+    Def {
         id: "NoNitroUpsell",
         name: "NoNitroUpsell",
         description: "Removes all of Discord's nitro upsells by tricking the client into thinking you have nitro.",

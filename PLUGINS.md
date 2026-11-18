@@ -12,7 +12,7 @@ every setting changed), and with every plugin off, and fails on one differing pi
 The list is the plugins enabled in the owner's Equicord backup of 2026-09-21 (156). Sources were read in the local
 Equicord checkout of 2026-11-14 (`src/plugins` is Vencord's, `src/equicordplugins` Equicord's).
 
-Totals: 40 ported, 6 native, 65 planned, 45 not applicable.
+Totals: 41 ported, 6 native, 64 planned, 45 not applicable.
 
 Status: **ported** works and has its proof; **native** is what gravecord already does without a plugin;
 **planned** is not built yet (an import keeps its settings for when it is); **not applicable** has nothing to
@@ -100,7 +100,7 @@ port in a native client, or was removed upstream.
 | MessageUpdaterAPI | not applicable | plugins/_api/messageUpdater.ts | API for updating and re-rendering messages. | client-mod plumbing (an API for other plugins), nothing to port. |  |
 | MoreCommands | planned | equicordplugins/moreCommands/index.ts | Adds various fun and useful commands | its slash commands. |  |
 | MoreKaomoji | not applicable | (not in the 2026-11-14 checkout) |  | removed from Equicord in d7e6fcd3. |  |
-| MuteChannelMentions | planned | userplugins/muteChannelMentions/index.tsx | Hides mention badges from the channels you pick, both on the channel and on the server icon. Nothing is sent to Discord. | mention badges hidden for chosen channels. |  |
+| MuteChannelMentions | ported | userplugins/muteChannelMentions/index.tsx | Hides mention badges from the channels you pick, both on the channel and on the server icon. Nothing is sent to Discord. | plugin_hooks/mute_channel_mentions.rs + dc-state ReadStates::hidden: the picked channels' mention badges are filtered wherever the app reads a channel's mentions (channel rows, server icons, overlay, keyboard), none at all or with onlyEveryone only your direct mentions since the last read; channel and thread menus get the Hide mention badge check after Mark As Read. Nothing is sent. | `ids_parse_as_the_original_splits_them`, dc-state `hidden_channels_show_nothing_or_only_direct_mentions_since_the_ack`; frame mcm-menu; plugins-off channel-menu, chat |
 | NewGuildSettings | planned | plugins/newGuildSettings/index.tsx | Automatically mute new servers and change various other settings upon joining | notification defaults applied when joining a server. |  |
 | NicknameIconsAPI | not applicable | plugins/_api/nicknameIcons.ts | API to add icons to the nickname, in profiles | client-mod plumbing (an API for other plugins), nothing to port. |  |
 | NoDevtoolsWarning | not applicable | plugins/noDevtoolsWarning/index.ts | Disables the 'HOLD UP' banner in the console. As a side effect, also prevents Discord from hiding your token, which prevents random logouts. | no web console in a native client. |  |
@@ -238,6 +238,8 @@ Every setting of each original (`definePluginSettings`), its type and default th
 | MessageClickActions | `quoteWithReply` | BOOLEAN | `true` | ported |
 | MessageClickActions | `useSelectionForQuote` | BOOLEAN | `false` | ported |
 | MessagePeek | `hideMuted` | BOOLEAN | `false` | ported |
+| MuteChannelMentions | `channelIds` | STRING | `""` | ported |
+| MuteChannelMentions | `onlyEveryone` | BOOLEAN | `true` | ported |
 | NoPendingCount | `hideFriendRequestsCount` | BOOLEAN | `true` | ported |
 | NoPendingCount | `hideMessageRequestsCount` | BOOLEAN | `true` | ported |
 | NoPendingCount | `hidePremiumOffersCount` | BOOLEAN | `true` | nothing to act on yet: the app's Home badge does not count unseen Nitro offers yet (`getUnacknowledgedOffers`), so there is no count to hide |

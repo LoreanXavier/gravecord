@@ -4,7 +4,7 @@
 
 use crate::Id;
 use serde_json::Value;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 /// Discord's snowflake epoch, in Unix milliseconds.
 const EPOCH_MS: u64 = 1_420_070_400_000;
@@ -33,6 +33,36 @@ pub struct ReadStates {
     /// The read states that are not a channel's (module 218461, `read_state_type` other than 0: guild events,
     /// notification center, guild home, onboarding question, message requests), by (resource id, type).
     pub typed: HashMap<(Id, u64), TypedReadState>,
+    /// Channels whose mention badges are kept out of view (the app's MuteChannelMentions plugin sets it; `None` is
+    /// the pinned client: every count as the server keeps it).
+    pub hidden: Option<HiddenMentions>,
+}
+
+/// Mention badges kept out of view for some channels: none, or with `direct_only` only the mentions of you by name
+/// since the channel was last read (`filterCount` of the plugin).
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct HiddenMentions {
+    pub channels: HashSet<Id>,
+    pub direct_only: bool,
+    /// Messages that named you in a hidden channel, as they arrived (`trackMention`).
+    pub direct: HashMap<Id, Vec<Id>>,
+}
+
+impl HiddenMentions {
+    /// The badge `channel` shows for `count` mentions, `acked` being where it was last read.
+    pub fn shown(&self, channel: Id, count: u64, acked: Id) -> u64 {
+        if count == 0 || !self.channels.contains(&channel) {
+            return count;
+        }
+        if !self.direct_only {
+            return 0;
+        }
+        let direct = self
+            .direct
+            .get(&channel)
+            .map_or(0, |ids| ids.iter().filter(|id| **id > acked).count() as u64);
+        count.min(direct)
+    }
 }
 
 /// One non-channel read state: what was acked, the newest thing there is, and the unread badge.
@@ -107,9 +137,9 @@ impl ReadStates {
             return;
         };
         let prev = self.states.get(&channel).copied();
-        let manual = data["manual"].as_bool().unwrap_or_else(|| {
-            prev.is_some_and(|prev| prev.manual && message <= prev.acked)
-        });
+        let manual = data["manual"]
+            .as_bool()
+            .unwrap_or_else(|| prev.is_some_and(|prev| prev.manual && message <= prev.acked));
         if !manual && prev.is_some_and(|prev| !prev.manual && message < prev.acked) {
             return;
         }
@@ -193,13 +223,60 @@ impl ReadStates {
     pub fn mentions(&self, channel: Id) -> u64 {
         self.states
             .get(&channel)
-            .map_or(0, |state| state.mention_count)
+            .map_or(0, |state| match &self.hidden {
+                Some(hidden) => hidden.shown(channel, state.mention_count, state.acked),
+                None => state.mention_count,
+            })
+    }
+
+    /// A message naming you arrived in `channel`: kept when the channel's badge is hidden (`trackMention`).
+    pub fn track_direct_mention(&mut self, channel: Id, message: Id) {
+        if let Some(hidden) = self.hidden.as_mut()
+            && hidden.channels.contains(&channel)
+        {
+            hidden.direct.entry(channel).or_default().push(message);
+        }
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn hidden_channels_show_nothing_or_only_direct_mentions_since_the_ack() {
+        let mut states = ReadStates::default();
+        states.states.insert(
+            5,
+            ReadState {
+                acked: 100,
+                mention_count: 3,
+                ..ReadState::default()
+            },
+        );
+        assert_eq!(states.mentions(5), 3);
+        states.hidden = Some(HiddenMentions {
+            channels: [5].into(),
+            direct_only: false,
+            direct: HashMap::new(),
+        });
+        assert_eq!(states.mentions(5), 0);
+        states.hidden.as_mut().unwrap().direct_only = true;
+        states.track_direct_mention(5, 90);
+        states.track_direct_mention(5, 120);
+        states.track_direct_mention(6, 130);
+        // One direct mention after the ack; channel 6 is not hidden, nothing is kept for it.
+        assert_eq!(states.mentions(5), 1);
+        assert!(!states.hidden.as_ref().unwrap().direct.contains_key(&6));
+        states.states.insert(
+            6,
+            ReadState {
+                mention_count: 2,
+                ..ReadState::default()
+            },
+        );
+        assert_eq!(states.mentions(6), 2);
+    }
     use serde_json::json;
 
     #[test]

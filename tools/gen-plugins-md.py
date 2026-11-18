@@ -141,6 +141,7 @@ assert len(idle) == idle_entries, f'IDLE_SETTINGS: read {len(idle)} of {idle_ent
 
 # How each ported plugin is built here, and its proof.
 PORTED = {
+    'MuteChannelMentions': "plugin_hooks/mute_channel_mentions.rs + dc-state ReadStates::hidden: the picked channels' mention badges are filtered wherever the app reads a channel's mentions (channel rows, server icons, overlay, keyboard), none at all or with onlyEveryone only your direct mentions since the last read; channel and thread menus get the Hide mention badge check after Mark As Read. Nothing is sent.",
     'AccountPanelServerProfile': "plugin_hooks/account_panel.rs: a right click on the account panel opens View Server Profile (your profile popout in the open server, disabled outside one) and the Prioritize Server Profile check; checked, a left click shows the server profile and the row reads View Account Profile.",
     'FavoriteEmojiFirst': "autocomplete.rs + plugin_hooks.rs favorite_emoji_first: the emoji autocomplete sorts every match, puts your favourite emoji (the picker's Favorites) first and cuts the list where it was. Not 1:1 yet: the alias half (see its settings).",
     'FullVCPFP': "plugin_hooks/full_vc_pfp.rs: a call tile without video draws the avatar over the whole tile (contain, unrounded, the 80px circle gone) at 1024px, the server avatar first. Not 1:1: an animated avatar stays still while its owner speaks (the original asks for the animated file then).",
@@ -201,6 +202,7 @@ PORTED = {
                      'so the original\'s 200% cap on the sync has nothing to cap.',
 }
 TESTS = {
+    'MuteChannelMentions': '`ids_parse_as_the_original_splits_them`, dc-state `hidden_channels_show_nothing_or_only_direct_mentions_since_the_ack`; frame mcm-menu; plugins-off channel-menu, chat',
     'AccountPanelServerProfile': '`the_menu_names_the_other_popout_and_shows_the_check`; frames apsp-menu/apsp-profile; plugins-off account-panel',
     'FavoriteEmojiFirst': 'frames fef-on/fef-off/fef-top (:smi with smiling_imp a favourite, demo-favorite); plugins-off emoji-autocomplete',
     'FullVCPFP': '`the_server_avatar_comes_first_at_1024`; frame fvp-on (callsim); plugins-off voice-profile, user-volume',
@@ -322,7 +324,6 @@ PLANNED = {
     'LimitlessScreenshare': 'resolution and FPS sliders past the tier limits (owner: later, FakeNitro-style).',
     'MessageLogger': 'a store of deleted and edited messages and their red/edited display.',
     'MoreCommands': 'its slash commands.',
-    'MuteChannelMentions': 'mention badges hidden for chosen channels.',
     'NewGuildSettings': 'notification defaults applied when joining a server.',
     'OpenInApp': 'Spotify, Steam and other links opened in their apps.',
     'PermissionFreeWill': 'no client-side limits in channel permission editing.',

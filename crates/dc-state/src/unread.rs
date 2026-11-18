@@ -87,7 +87,7 @@ fn stamp(stores: &Stores, guild: &Guild) -> u64 {
         total = total.wrapping_add(hash(&|h| {
             (
                 id,
-                state.map(|s| (s.acked, s.mention_count, s.low_importance)),
+                state.map(|s| (s.acked, stores.read_states.mentions(id), s.low_importance)),
                 latest,
             )
                 .hash(h);
@@ -317,9 +317,11 @@ pub(crate) fn stored_message_mention(
 
 fn add_mentions(counts: &mut Counts, stores: &Stores, channel: Id) {
     if let Some(state) = stores.read_states.states.get(&channel) {
-        counts.mentions = counts.mentions.saturating_add(state.mention_count);
+        // The badge as shown: a hidden channel's count is filtered (`ReadStates::hidden`).
+        let shown = stores.read_states.mentions(channel);
+        counts.mentions = counts.mentions.saturating_add(shown);
         if !state.low_importance {
-            counts.high_mentions = counts.high_mentions.saturating_add(state.mention_count);
+            counts.high_mentions = counts.high_mentions.saturating_add(shown);
         }
     }
 }

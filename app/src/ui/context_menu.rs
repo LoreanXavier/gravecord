@@ -211,13 +211,15 @@ pub(super) enum Act {
     /// Not in the pinned client: AccountPanelServerProfile's rows (`plugin_hooks/account_panel.rs`).
     PluginAlternateProfile,
     PluginPrioritizeServerProfile,
+    /// Not in the pinned client: MuteChannelMentions' check (`plugin_hooks/mute_channel_mentions.rs`).
+    PluginHideMentionBadge,
 }
 
 impl Act {
     /// Every row kind once (`Correction` with its first index). `ordinal` is an exhaustive match, so adding a variant
     /// without listing it here fails the build or the `act_list_is_complete` test.
     #[cfg(test)]
-    pub(super) const ALL: [Act; 107] = [
+    pub(super) const ALL: [Act; 108] = [
         Act::InventoryAbout,
         Act::InventoryHide,
         Act::ReportApp,
@@ -325,6 +327,7 @@ impl Act {
         Act::ToggleInvitable,
         Act::PluginAlternateProfile,
         Act::PluginPrioritizeServerProfile,
+        Act::PluginHideMentionBadge,
     ];
 
     #[cfg(test)]
@@ -437,6 +440,7 @@ impl Act {
             Act::ToggleInvitable => 104,
             Act::PluginAlternateProfile => 105,
             Act::PluginPrioritizeServerProfile => 106,
+            Act::PluginHideMentionBadge => 107,
         }
     }
 }
@@ -456,7 +460,9 @@ pub(super) fn status(act: Act) -> Status {
         Act::JoinQuiet | Act::ReportStage => Wired,
         Act::Apps => Wired,
         Act::ModView => Wired,
-        Act::PluginAlternateProfile | Act::PluginPrioritizeServerProfile => Wired,
+        Act::PluginAlternateProfile
+        | Act::PluginPrioritizeServerProfile
+        | Act::PluginHideMentionBadge => Wired,
         Act::InventoryAbout
         | Act::InventoryHide
         | Act::ViewAllActivity
@@ -2937,6 +2943,12 @@ impl Root {
             _ => None,
         };
         let items = super::plugin_hooks::with_user_url_row(items, user_url);
+        // Not in the pinned client: MuteChannelMentions' check (`plugin_hooks/mute_channel_mentions.rs`).
+        let hide_channel = match target {
+            Target::Channel(channel) | Target::Thread(channel) => Some(channel),
+            _ => None,
+        };
+        let items = self.with_hide_mention_row(items, hide_channel);
         self.close_all_context_menus();
         self.menu_scroll.set_offset(gpui::point(px(0.), px(0.)));
         let at = flip_above(at, menu_height(&items), self.viewport.1);
@@ -3145,6 +3157,10 @@ impl Root {
             }
             (Act::PluginPrioritizeServerProfile, Target::AccountPanel) => {
                 self.account_panel_toggle_prioritize(cx);
+            }
+            (Act::PluginHideMentionBadge, Target::Channel(channel) | Target::Thread(channel)) => {
+                self.toggle_hidden_mentions(channel);
+                cx.notify();
             }
             (
                 Act::ViewAllActivity,

@@ -11,6 +11,7 @@ mod member_count;
 mod message_clicks;
 mod message_peek;
 mod message_pronouns;
+mod mute_channel_mentions;
 mod platform_indicators;
 mod read_all;
 mod server_list_indicators;
