@@ -2,9 +2,13 @@
 //!
 //! - Crunchyroll, Xbox and PlayStation Network: a 408 wide info dialog (modules 95895, 35352, 158375 over the shared
 //!   landing slide 458172). Continue goes to the pre-connect slide (873885, "Step 1 of 2"), whose button starts
-//!   `GET /connections/{type}/authorize` and opens the address it answers; the waiting slide follows. The callback that
-//!   would finish the link (`USER_CONNECTIONS_LINK_CALLBACK`) is not wired, so the dialog stays on "Waiting for
-//!   connection...".
+//!   `GET /connections/{type}/authorize` and opens the address it answers; the waiting slide follows. The browser's
+//!   sign-in comes back as the gateway's `USER_CONNECTIONS_CALLBACK` (`connection_card.rs` posts it), the account
+//!   appears in the next `GET /users/@me/connections` and the dialog closes.
+//!   GAP: the official dialogs ask for a two-way link (`two_way_link_type=desktop`, module 873885) and finish it with
+//!   `USER_CONNECTIONS_LINK_CALLBACK` and the in-dialog Discord consent slide (module 910316 over the OAuth2 hook
+//!   610056, "Step 2 of 2"), which is not built; the request here is the plain one-way link, so console voice
+//!   features need the official client.
 //! - Bluesky (module 343946): Handle form, Next sends the authorize request with `handle=`.
 //! - Domain (module 683286): Domain form; Next is `POST /users/@me/connections/domain/{domain}`, a `proof` in the
 //!   error answer opens the DNS / HTTPS proof slide whose Verify sends the same request again.
@@ -344,6 +348,17 @@ fn new_editor(
 }
 
 impl Root {
+    /// The connections came back: an info dialog waiting on its platform closes once that account is there.
+    pub(super) fn connection_dialog_linked(&mut self) {
+        let Some(Dlg::Info(info)) = self.settings_extra.conn.as_ref() else {
+            return;
+        };
+        let kind = info.kind;
+        if info.slide == Slide::Waiting && self.linked_platforms().contains(&kind) {
+            self.settings_extra.conn = None;
+        }
+    }
+
     /// Harness only: `connect-error <xbox|playstation|crunchyroll>` opens that dialog with its authorize request
     /// failed, as a refused `GET /connections/<type>/authorize` leaves it (the error slide of module 478474).
     #[cfg(feature = "capture")]

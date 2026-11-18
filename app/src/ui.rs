@@ -132,6 +132,7 @@ mod message_header;
 mod message_kinds;
 mod message_requests;
 mod message_tips;
+mod platform_presence;
 mod presence;
 mod provider_player;
 mod role_dot;
@@ -3655,6 +3656,14 @@ impl Root {
         self.current_dm()
             .map(|channel| self.private_channel_name(channel))
             .unwrap_or_default()
+    }
+
+    /// Harness only: the open DM's recipient, for `gw` fixtures that stand for someone else.
+    #[cfg(feature = "capture")]
+    pub(crate) fn script_dm_user(&self) -> Option<String> {
+        self.current_dm()
+            .and_then(|dm| self.stores.dm_recipient(dm))
+            .map(|user| user.id.to_string())
     }
 
     fn current_dm(&self) -> Option<&dc_state::PrivateChannel> {
@@ -11435,6 +11444,8 @@ fn status_dot_inner(status: &str, ring: &str, dot: f32) -> gpui::Div {
         "dnd" => "--icon-status-dnd",
         "idle" => "--icon-status-idle",
         "invisible" | "offline" => "--icon-status-offline",
+        // `PLATFORM_TWITCH` (module 935154).
+        "streaming" => "--platform-twitch",
         _ => "--icon-status-online",
     };
     // Not in the pinned client: ColorSighted keeps the colour without the shapes cut in it (`plugin_hooks.rs`).
@@ -11459,6 +11470,18 @@ fn status_dot_inner(status: &str, ring: &str, dot: f32) -> gpui::Div {
                     .rounded(px(dot * 0.1))
                     .bg(color(ring))
                     .children(settings::client_theme::token_cover(ring, dot * 0.1)),
+            )
+        })
+        // `svg-mask-status-streaming`: the play triangle cut out of the dot.
+        .when(status == "streaming", |this| {
+            this.child(
+                svg()
+                    .path("icons/status_streaming_play.svg")
+                    .absolute()
+                    .left_0()
+                    .top_0()
+                    .size(px(dot))
+                    .text_color(color(ring)),
             )
         })
         // `svg-mask-status-offline`: a hole of half the dot's size.

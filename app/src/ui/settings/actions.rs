@@ -150,6 +150,13 @@ pub(in crate::ui) struct State {
     pub(in crate::ui) mods: super::mods::State,
     /// The dialog a connection button opens first (`connection_dialogs.rs`).
     pub(in crate::ui) conn: Option<super::connection_dialogs::Dlg>,
+    /// Switches turned on for an unverified account, sent once it is verified again (`inProgressVisibility`).
+    pub(in crate::ui) conn_pending: Vec<(String, super::connection_card::Toggle)>,
+    /// The Refresh buttons pressed (module-level `O` of `TW`): false while the request and its two seconds run,
+    /// true once it reads Done.
+    pub(in crate::ui) conn_refresh: std::collections::HashMap<String, bool>,
+    /// The integrations being joined (`isJoining`), with the error a failed join left.
+    pub(in crate::ui) conn_joining: std::collections::HashMap<String, Option<String>>,
     /// The Gift Inventory code box and its accept dialog (`gift_redeem.rs`).
     pub(in crate::ui) gift: super::gift_redeem::State,
 }
@@ -474,7 +481,12 @@ impl Root {
                         chrono::Utc::now().timestamp_millis(),
                     );
                 }
-                self.settings_extra.connections = body.as_array().cloned();
+                if body.is_array() {
+                    self.settings_extra.connections = body.as_array().cloned();
+                    self.connection_pending_apply();
+                    self.request_connection_card_icons();
+                    self.connection_dialog_linked();
+                }
                 true
             }
             super::connections::TOKENS_KEY => {
@@ -773,26 +785,41 @@ impl Root {
             Dialog::CancelNitroConfirm { busy, failed } => {
                 return Some(self.cancel_confirm_dialog(busy, failed, cx));
             }
+            // `lT.a` of `TW` (module 158935): "Unlink {platform}" (`U5x12f`), `VgqIPj`, Cancel and Unlink (primary), and
+            // for a two-way console link the note that its authorized application goes too (`COW3Xn`).
             Dialog::Disconnect(account) => modal::Spec {
                 id: "settings-disconnect",
-                title: format!("Disconnect {}", account.name).into(),
+                title: dc_intl::format("U5x12f", &[("name", account.platform.clone().into())]).into(),
                 subtitle: Some(
                     div()
-                        .child(dc_intl::tr("Disconnecting your account might remove you from servers you joined via this account."))
+                        .child(dc_intl::format(
+                            "VgqIPj",
+                            &[("provider", account.platform.clone().into())],
+                        ))
                         .into_any_element(),
                 ),
-                body: None,
+                body: account.two_way.then(|| {
+                    div()
+                        .text_size(px(14.))
+                        .line_height(px(18.))
+                        .text_color(color("--text-default"))
+                        .child(dc_intl::format(
+                            "COW3Xn",
+                            &[("platformName", account.platform.clone().into())],
+                        ))
+                        .into_any_element()
+                }),
                 buttons: vec![
                     modal::button(
                         "settings-disconnect-cancel",
-                        dc_intl::tr("Cancel"),
+                        dc_intl::t("ETE/oC"),
                         modal::Tone::Secondary,
                         |this, _, _| this.settings_extra.dialog = None,
                     ),
                     modal::button(
                         "settings-disconnect-ok",
-                        dc_intl::tr("Disconnect"),
-                        modal::Tone::Critical,
+                        dc_intl::t("bsbMVz"),
+                        modal::Tone::Primary,
                         move |this, _, _| {
                             this.settings_extra.dialog = None;
                             this.account_removed(&account);
