@@ -1757,6 +1757,8 @@ impl Root {
                 if self.spotify_metadata_fetched(&key, &body, cx) {
                     return;
                 }
+                // Not in the pinned client: WhoReacted's reactors join the users (`plugin_hooks/who_reacted.rs`).
+                self.who_reacted_fetched(&key, &body);
                 // Not in the pinned client: DownloadAllAttachments' outcome (`plugin_hooks/download_all.rs`).
                 if self.download_all_answered(&key, &body, cx) {
                     return;
@@ -7190,7 +7192,9 @@ impl Root {
                                 })
                             })
                             .child(self.rolling_count(message.id, index, reaction.count)),
-                    );
+                    )
+                    // Not in the pinned client: WhoReacted (`plugin_hooks/who_reacted.rs`).
+                    .children(self.who_reacted(message, &reaction_route_name(reaction), cx));
                 self.with_tip(
                     format!("reaction-tip-{}-{index}", message.id),
                     tip,

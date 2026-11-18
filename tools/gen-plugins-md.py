@@ -141,6 +141,7 @@ assert len(idle) == idle_entries, f'IDLE_SETTINGS: read {len(idle)} of {idle_ent
 
 # How each ported plugin is built here, and its proof.
 PORTED = {
+    'WhoReacted': "plugin_hooks/who_reacted.rs: after each reaction's count up to five avatars at 90% (four and +N past five), from GET reactions?limit=100&type=0 queued one per 250 ms newest first and merged into the users; nothing on a message with over ten reactions; clickableAvatars opens the profile popout instead of reacting. Super reactions (type 1) are not fetched: the app draws no burst pills.",
     'TypingTweaks': "plugin_hooks/typing_tweaks.rs: in the typing line every bold name is the person, with a 16px avatar (showAvatars), the role colour (showRoleColors) and a click to the full profile; over three people the alternative line (alternativeFormatting, with the original's count); amITyping keeps you in the list; blocked and ignored people are left out as useTypingUsers does.",
     'UserMessagesPronouns': "plugin_hooks/message_pronouns.rs: after a message's time, '• pronouns' in the time's style with a Pronouns tooltip, server profile pronouns first, from profiles already loaded (nothing fetched), lowercased unless Capitalized; not for bots, system or AutoMod messages, nor yourself without showSelf. Not 1:1: its compact-mode place is not drawn, the app has no compact message display.",
     'DownloadAllAttachments': "plugin_hooks/download_all.rs: a hover bar button on messages with attachments (before QuickMention's, in plugin order); over 1 GiB a critical toast, else every attachment from its proxy URL (and with downloadAllFileTypes its URL after it), four at a time, saved into Downloads as the one file or a stored ZIP attachments-<id>.zip with unique names, then the original's success or failure toast. The app has no save dialog, so the file goes where its other downloads go.",
@@ -195,6 +196,7 @@ PORTED = {
                      'so the original\'s 200% cap on the sync has nothing to cap.',
 }
 TESTS = {
+    'WhoReacted': '`five_at_most_with_the_rest_counted`; frame wr-on (demo-reactors); plugins-off reactions, chat',
     'TypingTweaks': '`bold_runs_become_people_and_many_use_the_alternative_line`; frames tt-on/tt-off; plugins-off typing',
     'UserMessagesPronouns': '`server_pronouns_first_then_the_accounts_formatted`; frame ump-on; plugins-off chat',
     'DownloadAllAttachments': '`names_are_made_unique_as_the_original_does`, `the_archive_holds_each_file_stored_with_its_crc`, `sources_size_check_and_toasts_follow_the_original`, `download_all_saves_what_answered_as_a_zip_or_one_file` (local server); frame daa-on; plugins-off attachment-hover, hover-bar',
@@ -337,7 +339,6 @@ PLANNED = {
     'ViewIcons': 'avatars, banners and icons opened full size, with menu rows.',
     'VoiceMessages': 'recording voice messages on desktop.',
     'VoiceMessageTranscriber': 'an on-device Whisper model runner.',
-    'WhoReacted': 'reactor avatars on reactions.',
     'ZipPreview': 'a ZIP listing in file attachments.',
     'BetterQuickReact': 'more quick reaction buttons in the message context menu.',
     'ExpressionCloner': 'menu rows that clone, edit and delete emoji and stickers into your servers.',

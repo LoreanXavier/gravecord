@@ -15,6 +15,7 @@ mod show_connections;
 mod typing_indicator;
 mod typing_tweaks;
 mod voice_stats;
+mod who_reacted;
 
 pub(in crate::ui) use always_animate::{Part as AnimatePart, always_animate};
 pub(in crate::ui) use download_all::{DOWNLOAD_ALL, download_all};

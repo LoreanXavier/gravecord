@@ -12,7 +12,7 @@ every setting changed), and with every plugin off, and fails on one differing pi
 The list is the plugins enabled in the owner's Equicord backup of 2026-09-21 (156). Sources were read in the local
 Equicord checkout of 2026-11-14 (`src/plugins` is Vencord's, `src/equicordplugins` Equicord's).
 
-Totals: 34 ported, 5 native, 72 planned, 45 not applicable.
+Totals: 35 ported, 5 native, 71 planned, 45 not applicable.
 
 Status: **ported** works and has its proof; **native** is what gravecord already does without a plugin;
 **planned** is not built yet (an import keeps its settings for when it is); **not applicable** has nothing to
@@ -173,7 +173,7 @@ port in a native client, or was removed upstream.
 | WebContextMenus | not applicable | plugins/webContextMenus.web/index.ts | Re-adds context menus missing in the web version of Discord: Links & Images (Copy/Open Link/Image), Text Area (Copy, Cut, Paste, SpellCheck) | web build only (the desktop app has these menus). |  |
 | WebKeybinds | not applicable | plugins/webKeybinds.web/index.ts | Re-adds keybinds missing in the web version of Discord. Only works fully on Vesktop/Equibop/Legcord, not inside your browser | web build only. |  |
 | WebScreenShareFixes | not applicable | plugins/webScreenShareFixes.web/index.ts | Removes 2500kbps bitrate cap on chromium and vesktop clients and fixes CPU usage growing endlessly while screensharing. | web build only (Chromium bitrate cap). |  |
-| WhoReacted | planned | plugins/whoReacted/index.tsx | Renders the avatars of users who reacted to a message | reactor avatars on reactions. |  |
+| WhoReacted | ported | plugins/whoReacted/index.tsx | Renders the avatars of users who reacted to a message | plugin_hooks/who_reacted.rs: after each reaction's count up to five avatars at 90% (four and +N past five), from GET reactions?limit=100&type=0 queued one per 250 ms newest first and merged into the users; nothing on a message with over ten reactions; clickableAvatars opens the profile popout instead of reacting. Super reactions (type 1) are not fetched: the app draws no burst pills. | `five_at_most_with_the_rest_counted`; frame wr-on (demo-reactors); plugins-off reactions, chat |
 | YoutubeAdblock | not applicable | plugins/youtubeAdblock.desktop/index.ts | Block ads in YouTube embeds and the WatchTogether activity via AdGuard | needs an ad filter inside the YouTube web view of embeds; deferred with the web host. |  |
 | ZipPreview | planned | equicordplugins/zipPreview/index.tsx | Previews ZIP contents inside file attachments. | a ZIP listing in file attachments. |  |
 
@@ -266,3 +266,4 @@ Every setting of each original (`definePluginSettings`), its type and default th
 | UserMessagesPronouns | `pronounsFormat` | SELECT | `PronounsFormat.Lowercase` | ported |
 | UserMessagesPronouns | `showSelf` | BOOLEAN | `true` | ported |
 | VolumeBooster | `multiplier` | SLIDER | `2` | ported |
+| WhoReacted | `clickableAvatars` | BOOLEAN | `true` | ported |

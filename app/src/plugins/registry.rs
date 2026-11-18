@@ -1225,6 +1225,20 @@ pub(crate) const DEFS: &[Def] = &[
             },
         }],
     },
+    Def {
+        id: "WhoReacted",
+        name: "WhoReacted",
+        description: "Renders the avatars of users who reacted to a message",
+        origin: Origin::Vencord,
+        source: "src/plugins/whoReacted/index.tsx",
+        default_on: false,
+        settings: &[Setting {
+            key: "clickableAvatars",
+            label: "Clickable avatars",
+            description: "While this is enabled, clicking a reacting user's avatar will open their profile instead of adding the reaction",
+            kind: Kind::Switch { default: true },
+        }],
+    },
 ];
 
 #[cfg(test)]
