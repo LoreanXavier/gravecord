@@ -45,6 +45,21 @@ const RUN_LIMIT: Duration = Duration::from_secs(240);
 /// The settle step before the capture, and how long it may take.
 const SETTLE: &str = "settle 20000";
 
+/// The least time between two signed-in launches: Discord flags an account that signs in many times in a few
+/// minutes (twice on 2026-11-18). `GRAVECORD_LAUNCH_GAP_S` changes it.
+const LAUNCH_GAP: Duration = Duration::from_secs(60);
+
+fn launch_gap() -> Duration {
+    std::env::var("GRAVECORD_LAUNCH_GAP_S")
+        .ok()
+        .and_then(|seconds| seconds.parse().ok())
+        .map_or(LAUNCH_GAP, Duration::from_secs)
+}
+
+thread_local! {
+    static LAST_LAUNCH: std::cell::Cell<Option<Instant>> = const { std::cell::Cell::new(None) };
+}
+
 /// The settle step's line, for a failure's report.
 fn settled(log: &str) -> &str {
     log.lines()
@@ -100,8 +115,9 @@ impl Mode {
         // GIF tiles hold their first frame (`gifs still`), since they play on the real clock. Then the window must
         // stay the same picture for a second (`settle`): what loads at its own pace (pictures,
         // GIF results, call tiles) has arrived, however loaded the machine is.
-        let scenario =
-            format!("{scenario}; motion clock +2000@2400; gifs still; {SETTLE}; wait 300");
+        let scenario = format!(
+            "{scenario}; motion clock +2000@2400; gifs still; {SETTLE}; wait 300; signed-in"
+        );
         match self {
             Mode::Reference => scenario,
             Mode::MasterOff => format!(
@@ -165,7 +181,14 @@ fn capture(
         "--script".to_owned(),
         mode.script(&scenario.script),
     ];
+    if let Some(last) = LAST_LAUNCH.with(std::cell::Cell::get) {
+        let wait = launch_gap().saturating_sub(last.elapsed());
+        if !wait.is_zero() {
+            std::thread::sleep(wait);
+        }
+    }
     let pid = super::headless::spawn(exe, &args, repo)?;
+    LAST_LAUNCH.with(|cell| cell.set(Some(Instant::now())));
     let started = Instant::now();
     while running(pid) {
         if started.elapsed() > RUN_LIMIT {
@@ -184,6 +207,14 @@ fn capture(
         .with_context(|| format!("{} {}: no frame", scenario.name, mode.name()))?
         .to_rgba8();
     let text = std::fs::read_to_string(&log).unwrap_or_default();
+    // A refused login turns every later run into the login screen: stop rather than sign in again with it.
+    if text.lines().any(|line| line == "signed-in: no") {
+        bail!(
+            "{} {}: the stored login was refused (401 or 4004); stopping so the account is not signed in again",
+            scenario.name,
+            mode.name()
+        );
+    }
     Ok((frame, text))
 }
 
@@ -546,11 +577,11 @@ mod tests {
                 .starts_with("plugin master off; plugin all on; plugin scramble; plugin effects;")
         );
         assert!(script.ends_with(
-            "wait 10; motion clock +2000@2400; gifs still; settle 20000; wait 300; plugin effects"
+            "wait 10; motion clock +2000@2400; gifs still; settle 20000; wait 300; signed-in; plugin effects"
         ));
         assert_eq!(
             Mode::Reference.script("wait 10"),
-            "wait 10; motion clock +2000@2400; gifs still; settle 20000; wait 300"
+            "wait 10; motion clock +2000@2400; gifs still; settle 20000; wait 300; signed-in"
         );
     }
 

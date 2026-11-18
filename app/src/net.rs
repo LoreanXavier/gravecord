@@ -552,6 +552,15 @@ fn is_settings_write(request: &Request) -> bool {
     )
 }
 
+/// Whether the stored login was refused this run (a 401, or the gateway's 4004); the capture harness reports it
+/// (`signed-in`), so a check stops instead of signing in again and again with a dead token.
+static LOGIN_REFUSED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+#[cfg_attr(not(feature = "capture"), allow(dead_code))]
+pub(crate) fn login_refused() -> bool {
+    LOGIN_REFUSED.load(std::sync::atomic::Ordering::Relaxed)
+}
+
 /// The app's end of the request channel. It counts the settings writes on their way to the server: the server answers
 /// every one of them with a `USER_SETTINGS_PROTO_UPDATE`, and writes go one after the other, so the answer to an older
 /// write arrives while a newer choice is already on screen. Applied, it put the older choice back for a moment (a
@@ -1587,6 +1596,7 @@ pub async fn run(token: Token, updates: mpsc::UnboundedSender<Update>, requests:
     let client = match Client::new(token.clone(), identity.clone()).map(|client| {
         client
             .on_unauthorized(move || {
+                LOGIN_REFUSED.store(true, std::sync::atomic::Ordering::Relaxed);
                 let _ = dead.send(Update::AuthFailed);
             })
             .on_limited_access(move || {
@@ -1641,6 +1651,7 @@ pub async fn run(token: Token, updates: mpsc::UnboundedSender<Update>, requests:
                 }
                 Event::AuthenticationFailed => {
                     warn!("gateway rejected the token");
+                    LOGIN_REFUSED.store(true, std::sync::atomic::Ordering::Relaxed);
                     let _ = forward.send(Update::AuthFailed);
                 }
                 Event::Reconnecting { delay } => {
