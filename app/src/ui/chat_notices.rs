@@ -64,6 +64,26 @@ pub(super) enum Content {
     FailedDestinations(Vec<Destination>),
     /// Module 228855: "This change affects" over the server's row.
     AffectedGuild(Id),
+    /// Module 940372: the files of a bulk emoji upload that failed, a row each (`errors_qy2FFG`, 8px apart).
+    EmojiUploadErrors(Vec<(super::server_emoji::UploadError, String)>),
+}
+
+/// "Failed to upload files" (module 940372): the failed files of a bulk emoji upload and Got It.
+pub(super) fn upload_errors_alert(
+    errors: Vec<(super::server_emoji::UploadError, String)>,
+) -> Alert {
+    Alert {
+        id: "emoji-upload-errors",
+        title: dc_intl::t("AUIsQU").to_owned(),
+        subtitle: None,
+        content: Some(Content::EmojiUploadErrors(errors)),
+        buttons: vec![AlertButton {
+            id: "emoji-upload-errors-ok",
+            label: dc_intl::t("NX+WJN").to_owned(),
+            secondary: true,
+            then: Then::Close,
+        }],
+    }
 }
 
 /// One open dialog: the alert of module 579872 `show` (small, the body as its subtitle) or a dialog of module 189213
@@ -448,6 +468,14 @@ impl Root {
                     .into_any_element()
             }
             Content::AffectedGuild(guild) => self.affected_guild(guild),
+            Content::EmojiUploadErrors(errors) => div()
+                .flex()
+                .flex_col()
+                .gap(px(8.))
+                .children(errors.iter().enumerate().map(|(index, (kind, filename))| {
+                    self.emoji_upload_error_row(index, *kind, filename, cx)
+                }))
+                .into_any_element(),
         }
     }
 }

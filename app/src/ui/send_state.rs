@@ -653,7 +653,7 @@ impl Root {
     }
 
     /// What `PD` of module 753738 asks of the channel: a thread first, then a forum or media channel.
-    fn automod_place(&self, channel: Id) -> send_policy::AutomodPlace {
+    pub(super) fn automod_place(&self, channel: Id) -> send_policy::AutomodPlace {
         let guilds = self.stores.guilds.iter();
         let mut place = send_policy::AutomodPlace::Other;
         for guild in guilds {
@@ -900,7 +900,7 @@ impl Root {
             })
     }
 
-    /// Capture only: `send hold|release|ack|order|fail [<status> [<code> [<retry after>]]]|state`.
+    /// Capture only: `send hold|release|ack|order|fail [<status> [<code> [<retry after>]]]|edit-fail <status> <code>|state`.
     #[cfg(feature = "capture")]
     pub(crate) fn script_send(&mut self, words: &[&str], cx: &mut Context<Self>) -> String {
         match words {
@@ -1015,6 +1015,31 @@ impl Root {
                     ""
                 };
                 format!("send: failed {nonce} (message {id}){automod}")
+            }
+            // `send edit-fail <status> <code>`: the open channel's latest message answers an edit as the server would
+            // (nothing is sent), for the blocked-edit notice of module 469759.
+            ["edit-fail", status, code] => {
+                let Some(channel) = self.channel else {
+                    return "send: no channel open".to_owned();
+                };
+                let Some(id) = self
+                    .stores
+                    .messages
+                    .get(&channel)
+                    .and_then(|list| list.iter().map(|message| message.id).max())
+                else {
+                    return "send: no message to edit".to_owned();
+                };
+                let status = status.parse::<u64>().unwrap_or(400);
+                let body = serde_json::json!({"ok": false, "status": status,
+                    "body": {"code": code.parse::<u64>().unwrap_or(0)}});
+                self.edit_answered(&format!("{channel}:{id}"), &body, cx);
+                let note = if self.automod_blocked_edit(id) {
+                    " (blocked edit notice)"
+                } else {
+                    ""
+                };
+                format!("send: edit of {id} refused{note}")
             }
             // The notice of design/golden/windows/failed-message/clyde-notice-darker-cozy@1.png.
             ["clyde"] => {

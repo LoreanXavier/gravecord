@@ -239,6 +239,7 @@ mod saved;
 mod screening;
 mod search;
 mod search_filters;
+mod search_pager;
 mod send_state;
 mod server_access;
 mod server_audit;
@@ -1696,6 +1697,10 @@ impl Root {
                 }
             }
             Update::Fetched { key, body } => {
+                if let Some(rest) = key.strip_prefix(crate::net::EDIT_KEY) {
+                    self.edit_answered(rest, &body, cx);
+                    return;
+                }
                 if self.spotify_metadata_fetched(&key, &body, cx) {
                     return;
                 }
@@ -6643,18 +6648,18 @@ impl Root {
     }
 
     fn spans(&self, spans: &[Span], text_color: Hsla, key: (u64, u32)) -> Inline {
-        self.spans_edited(spans, text_color, key, false, None)
+        self.spans_edited(spans, text_color, key, &[])
     }
 
     /// A message's last paragraph ends in `(edited)` when the message was edited: `edited_2i8Bfm`, 10px in
-    /// `--chat-text-muted`, after a space in the message's own size.
+    /// `--chat-text-muted`, after a space in the message's own size. A blocked edit adds `(reverted)` the same way
+    /// (module 469759: the edited timestamp of the message's own time). Each mark is its text and its tooltip's time.
     fn spans_edited(
         &self,
         spans: &[Span],
         text_color: Hsla,
         key: (u64, u32),
-        edited: bool,
-        edited_at: Option<chrono::DateTime<chrono::Utc>>,
+        marks: &[(String, Option<chrono::DateTime<chrono::Utc>>)],
     ) -> Inline {
         let jumbo = dc_markdown::is_jumbo(spans);
         // `AccessibilityStore.fontSize`: the text, its 1.375 line and the 22px emoji scale with the chat font.
@@ -6678,7 +6683,8 @@ impl Root {
                 )
             })
             .collect();
-        if edited {
+        let mut extra_hovers = Vec::new();
+        for (text, at) in marks {
             let plain = Span {
                 text: " ".to_owned(),
                 style: dc_markdown::Style::default(),
@@ -6686,18 +6692,15 @@ impl Root {
             };
             pieces.push(self.piece(&plain, text_color, font_size, 400., emoji_size));
             let mut label = self.piece(&plain, hsla("--chat-text-muted"), 10., 400., emoji_size);
-            label.text = "(edited)".to_owned();
+            label.text = text.clone();
             pieces.push(label);
+            extra_hovers.push(None);
+            extra_hovers.push(at.and_then(message_tips::edited_tip));
         }
         let line = if jumbo {
             px(48.)
         } else {
             px((font_size * 1.375).round())
-        };
-        let extra_hovers = if edited {
-            vec![None, edited_at.and_then(message_tips::edited_tip)]
-        } else {
-            Vec::new()
         };
         let element =
             inline(pieces, line).selectable(key, self.selection.clone(), hsla_from(SELECTION));
@@ -6883,7 +6886,12 @@ impl Root {
                             .and_then(|channel| this.stores.messages.get(&channel))
                             .map(|messages| messages.iter().map(|known| known.id).collect())
                             .unwrap_or_default();
-                        plugin_hooks::reveal_all_spoilers(&mut this.revealed, key.0, &loaded, modifiers);
+                        plugin_hooks::reveal_all_spoilers(
+                            &mut this.revealed,
+                            key.0,
+                            &loaded,
+                            modifiers,
+                        );
                         cx.notify();
                         return;
                     }
@@ -7475,98 +7483,125 @@ impl Root {
             0.
         };
         let last = blocks.len().saturating_sub(1);
-        div().flex().flex_col().pb(px(trailing)).children(
-            blocks
-                .into_iter()
-                .zip(gaps)
-                .enumerate()
-                .map(|(index, (block, gap))| {
-                    let key = (message.id, index as u32);
-                    match block {
-                        Block::Paragraph(spans) => div()
-                            .min_h(px((self.chat_font_size() * 1.375).round()))
-                            .mt(px(gap))
-                            .child(self.spans_edited(
-                                &spans,
-                                text,
-                                key,
-                                message.edited && index == last,
-                                message.edited_at,
-                            ))
-                            .into_any_element(),
-                        Block::Heading { level, spans } => div()
-                            .mt(px(gap))
-                            .child(self.heading(&spans, level, key))
-                            .into_any_element(),
-                        Block::Subtext(spans) => div()
-                            .mt(px(gap))
-                            .child(self.subtext(&spans, key))
-                            .into_any_element(),
-                        Block::ListItem {
-                            depth,
-                            number,
-                            spans,
-                        } => {
-                            let indent = 16. * (f32::from(depth) + 1.);
-                            let marker = match number {
-                                Some(number) => div()
-                                    .absolute()
-                                    .left(px(-18.))
-                                    .top(px(0.))
-                                    .line_height(px(22.))
-                                    .text_color(marker_color)
-                                    .child(format!("{number}."))
-                                    .into_any_element(),
-                                None => {
-                                    let disc = div()
-                                        .absolute()
-                                        .left(px(-17.))
-                                        .top(px(8.))
-                                        .size(px(5.))
-                                        .rounded_full();
-                                    if depth == 0 {
-                                        disc.bg(marker_color).into_any_element()
-                                    } else {
-                                        disc.border_1()
-                                            .border_color(marker_color)
-                                            .into_any_element()
-                                    }
-                                }
-                            };
-                            div()
-                                .relative()
+        let mut marks = Vec::new();
+        if message.edited {
+            marks.push(("(edited)".to_owned(), message.edited_at));
+        }
+        let reverted = self.automod_blocked_edit(message.id).then(|| {
+            (
+                format!("({})", dc_intl::t("Z7eEx9")),
+                Some(message.timestamp),
+            )
+        });
+        marks.extend(reverted.clone());
+        // Module 469759 puts " (reverted)" after the content: a message whose content does not end in text (only
+        // attachments, a code block) gets it on a line of its own.
+        let reverted_alone = reverted
+            .filter(|_| !matches!(blocks.last(), Some(Block::Paragraph(_))))
+            .map(|mark| {
+                div().child(self.spans_edited(
+                    &[],
+                    text,
+                    (message.id, blocks.len() as u32),
+                    &[mark],
+                ))
+            });
+        div()
+            .flex()
+            .flex_col()
+            .pb(px(trailing))
+            .children(
+                blocks
+                    .into_iter()
+                    .zip(gaps)
+                    .enumerate()
+                    .map(|(index, (block, gap))| {
+                        let key = (message.id, index as u32);
+                        match block {
+                            Block::Paragraph(spans) => div()
+                                .min_h(px((self.chat_font_size() * 1.375).round()))
                                 .mt(px(gap))
-                                .ml(px(indent))
-                                .min_h(px(22.))
-                                .child(marker)
-                                .child(self.spans(&spans, text, key))
-                                .into_any_element()
-                        }
-                        Block::Quote(spans) => div()
-                            .mt(px(gap))
-                            .flex()
-                            .child(
+                                .child(self.spans_edited(
+                                    &spans,
+                                    text,
+                                    key,
+                                    if index == last { &marks } else { &[] },
+                                ))
+                                .into_any_element(),
+                            Block::Heading { level, spans } => div()
+                                .mt(px(gap))
+                                .child(self.heading(&spans, level, key))
+                                .into_any_element(),
+                            Block::Subtext(spans) => div()
+                                .mt(px(gap))
+                                .child(self.subtext(&spans, key))
+                                .into_any_element(),
+                            Block::ListItem {
+                                depth,
+                                number,
+                                spans,
+                            } => {
+                                let indent = 16. * (f32::from(depth) + 1.);
+                                let marker = match number {
+                                    Some(number) => div()
+                                        .absolute()
+                                        .left(px(-18.))
+                                        .top(px(0.))
+                                        .line_height(px(22.))
+                                        .text_color(marker_color)
+                                        .child(format!("{number}."))
+                                        .into_any_element(),
+                                    None => {
+                                        let disc = div()
+                                            .absolute()
+                                            .left(px(-17.))
+                                            .top(px(8.))
+                                            .size(px(5.))
+                                            .rounded_full();
+                                        if depth == 0 {
+                                            disc.bg(marker_color).into_any_element()
+                                        } else {
+                                            disc.border_1()
+                                                .border_color(marker_color)
+                                                .into_any_element()
+                                        }
+                                    }
+                                };
                                 div()
-                                    .flex_none()
-                                    .w(px(4.))
-                                    .rounded(px(4.))
-                                    .bg(color("--spine-default")),
-                            )
-                            .child(
-                                div()
-                                    .flex_1()
-                                    .min_w(px(0.))
-                                    .pl(px(12.))
-                                    .pr(px(8.))
-                                    .child(self.spans(&spans, hsla("--text-subtle"), key)),
-                            )
-                            .into_any_element(),
-                        Block::Code { language, text } => {
-                            self.code_block(key, gap, language.as_deref(), &text)
+                                    .relative()
+                                    .mt(px(gap))
+                                    .ml(px(indent))
+                                    .min_h(px(22.))
+                                    .child(marker)
+                                    .child(self.spans(&spans, text, key))
+                                    .into_any_element()
+                            }
+                            Block::Quote(spans) => div()
+                                .mt(px(gap))
+                                .flex()
+                                .child(
+                                    div()
+                                        .flex_none()
+                                        .w(px(4.))
+                                        .rounded(px(4.))
+                                        .bg(color("--spine-default")),
+                                )
+                                .child(
+                                    div()
+                                        .flex_1()
+                                        .min_w(px(0.))
+                                        .pl(px(12.))
+                                        .pr(px(8.))
+                                        .child(self.spans(&spans, hsla("--text-subtle"), key)),
+                                )
+                                .into_any_element(),
+                            Block::Code { language, text } => {
+                                self.code_block(key, gap, language.as_deref(), &text)
+                            }
                         }
-                    }
-                }),
-        )
+                    }),
+            )
+            .children(reverted_alone)
     }
 
     fn row(&self, index: usize, cx: &mut Context<Self>) -> AnyElement {
@@ -7779,11 +7814,16 @@ impl Root {
                         )
                     })
                     // Not in the pinned client: the MessageClickActions plugin's clicks (`plugin_hooks/message_clicks.rs`).
-                    .when(!is_starter && editing.is_none() && !crate::plugins::bypassed(), |this| {
-                        this.on_click(cx.listener(move |this, event: &gpui::ClickEvent, window, cx| {
-                            this.message_clicked(id, event, window, cx);
-                        }))
-                    })
+                    .when(
+                        !is_starter && editing.is_none() && !crate::plugins::bypassed(),
+                        |this| {
+                            this.on_click(cx.listener(
+                                move |this, event: &gpui::ClickEvent, window, cx| {
+                                    this.message_clicked(id, event, window, cx);
+                                },
+                            ))
+                        },
+                    )
                     .when(hovered, |this| this.child(hover_bar::probe(id, false)))
                     .when(hovered && editing.is_none() && !is_starter, |this| {
                         // No bar while a message is sending, Retry and Delete once it failed, and none on a private
@@ -7816,7 +7856,9 @@ impl Root {
                         .when(
                             !self.hides_inline_media_content(message)
                                 && !self.command_replaces_content(message)
-                                && (!message.content.is_empty() || message.edited),
+                                && (!message.content.is_empty()
+                                    || message.edited
+                                    || self.automod_blocked_edit(id)),
                             |this| {
                                 // `isFailed` colours the text, the links and the inline code; `isSending` fades the
                                 // content (module 74096).
@@ -8461,7 +8503,8 @@ impl Root {
                     bar.child(tipped(cx).on_click(cx.listener(move |this, _, _, cx| {
                         this.tip = None;
                         let text = plugin_hooks::mention_text(author);
-                        this.composer.update(cx, |composer, cx| composer.insert(&text, cx));
+                        this.composer
+                            .update(cx, |composer, cx| composer.insert(&text, cx));
                         cx.notify();
                     })))
                 }

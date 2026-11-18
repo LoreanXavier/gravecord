@@ -143,6 +143,9 @@ pub enum Update {
     TokenRenewed(Token),
 }
 
+/// The key of a message edit's answer: `message-edit:{channel}:{message}`.
+pub const EDIT_KEY: &str = "message-edit:";
+
 pub enum Request {
     Spotify(crate::spotify::Command),
     /// Op 3 `PRESENCE_UPDATE` with the account's status and activities (`presenceUpdate` in module 868). Refused in
@@ -285,6 +288,8 @@ pub enum Request {
         waveform: String,
         reply: Option<(Option<u64>, u64, bool)>,
     },
+    /// `PATCH /channels/{channel}/messages/{message}`; the answer comes back as `Update::Fetched` under
+    /// [`EDIT_KEY`]`{channel}:{message}`.
     Edit {
         channel: u64,
         message: u64,
@@ -1617,15 +1622,29 @@ pub async fn run(token: Token, updates: mpsc::UnboundedSender<Update>, requests:
                 message,
                 content,
             } => {
+                // The answer comes back (`MESSAGE_END_EDIT {response}` and `MESSAGE_EDIT_FAILED_AUTOMOD` of
+                // `editMessage`, module 138399) under `message-edit:{channel}:{message}`, shaped like `Request::Rest`'s.
                 tokio::spawn(async move {
                     let route = format!("/channels/{channel}/messages/{message}");
                     let body = json!({"content": content});
-                    if let Err(error) = client
+                    let report = match client
                         .request(reqwest::Method::PATCH, &route, Some(&body))
                         .await
                     {
-                        warn!("editing failed: {error}");
-                    }
+                        Ok(value) => json!({"ok": true, "status": 200, "body": value}),
+                        Err(dc_http::Error::Status { status, body, .. }) => {
+                            warn!("editing failed: {status}");
+                            json!({"ok": false, "status": status.as_u16(), "body": body})
+                        }
+                        Err(error) => {
+                            warn!("editing failed: {error}");
+                            json!({"ok": false, "status": 0, "body": null})
+                        }
+                    };
+                    let _ = updates.send(Update::Fetched {
+                        key: format!("{EDIT_KEY}{channel}:{message}"),
+                        body: report,
+                    });
                 });
             }
             Request::Delete { channel, message } => {

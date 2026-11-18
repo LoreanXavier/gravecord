@@ -1169,10 +1169,19 @@ pub async fn run(
                 let _ = writeln!(output, "clips: {line}");
             }
             // The calls the text-to-speech engine received (a capture build never speaks aloud).
-            // `search last` / `search answer <total>`: the open search's request, and an answer to it.
+            // `emoji bulk-errors`: "Failed to upload files" with one row of each kind (`ui/server_emoji.rs`).
+            ["emoji", "bulk-errors"] => {
+                let line = root.update(cx, |root, cx| root.script_emoji_bulk_errors(cx));
+                let _ = writeln!(output, "{line}");
+            }
+            // `search last` / `search answer <total>`: the open search's request, and an answer to it;
+            // `search page <n>`: the pager turns to page n.
             ["search", rest @ ..] => {
                 let line = root.update(cx, |root, cx| {
-                    let line = root.script_search(rest);
+                    let line = match rest {
+                        ["page", page] => root.script_search_page(page.parse().unwrap_or(1), cx),
+                        _ => root.script_search(rest),
+                    };
                     cx.notify();
                     line
                 });
@@ -1321,7 +1330,8 @@ pub async fn run(
                 let line = root.update(cx, |root, cx| root.script_interaction(rest, cx));
                 let _ = writeln!(output, "{line}");
             }
-            // Capture only: `send hold|release|fail [<status> [<code> [<retry after>]]]|state` (`ui/send_state.rs`).
+            // Capture only: `send hold|release|fail [<status> [<code> [<retry after>]]]|edit-fail <status> <code>|state`
+            // (`ui/send_state.rs`).
             ["send", rest @ ..] => {
                 let line = root.update(cx, |root, cx| root.script_send(rest, cx));
                 let _ = writeln!(output, "{line}");
