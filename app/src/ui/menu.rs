@@ -100,6 +100,10 @@ pub(super) enum Action {
     SearchImage,
     /// Not in the pinned client: Translate+'s "Translate" (`plugin_hooks/translate_plus.rs`).
     PluginTranslate,
+    /// Not in the pinned client: MessageLogger's rows (`plugin_hooks/message_logger.rs`).
+    PluginToggleDeletedHighlight,
+    PluginToggleDiffView,
+    PluginClearMessageHistory,
     /// "Save File" of a voice message (module 761304 `save-voice-message-audio`): its audio file is downloaded.
     SaveVoiceFile,
     /// "Favorite Emoji" / "Unfavorite Emoji" of the emoji under the pointer (module 253925).
@@ -154,6 +158,9 @@ pub(super) struct SavedState {
     pub search_image: bool,
     /// Not in the pinned client: Translate+ offers "Translate" for a message with text.
     pub translate: bool,
+    /// Not in the pinned client: MessageLogger's state of a message with history: deleted, and the diff toggle
+    /// (whether it is off) while diffs are shown.
+    pub logged: Option<(bool, Option<bool>)>,
     /// A voice message with its audio file: Save File joins the picture rows' group.
     pub voice_file: bool,
     /// The pointer was on a video: "Stats for Nerds" ends the picture rows' group.
@@ -629,6 +636,70 @@ pub(super) fn message_items_saved(own: bool, saved: SavedState) -> Vec<Item> {
             )],
         );
     }
+    // Not in the pinned client: MessageLogger (`plugin_hooks/message_logger.rs`). A deleted message loses the rows it
+    // cannot use (`buttonsToRemove`), and a message with history ends with the plugin's rows.
+    if let Some((deleted, diff_off)) = saved.logged {
+        if deleted {
+            items.retain(|item| {
+                !matches!(
+                    item,
+                    Item::Entry(_, _, action, _) | Item::Danger(_, _, action)
+                        if matches!(
+                            action,
+                            Action::Edit
+                                | Action::Reply
+                                | Action::Forward
+                                | Action::Thread
+                                | Action::Pin
+                                | Action::Delete
+                                | Action::MarkUnread
+                                | Action::Apps
+                                | Action::Bookmark
+                                | Action::Reminder
+                        )
+                )
+            });
+            let mut kept: Vec<Item> = Vec::with_capacity(items.len());
+            for item in items {
+                if matches!(item, Item::Separator)
+                    && (kept.is_empty() || matches!(kept.last(), Some(Item::Separator)))
+                {
+                    continue;
+                }
+                kept.push(item);
+            }
+            while matches!(kept.last(), Some(Item::Separator)) {
+                kept.pop();
+            }
+            items = kept;
+        }
+        let mut logger = Vec::new();
+        if deleted {
+            logger.push(Item::Entry(
+                "Toggle Deleted Highlight",
+                "clips_eye",
+                Action::PluginToggleDeletedHighlight,
+                false,
+            ));
+        }
+        if let Some(off) = diff_off {
+            logger.push(Item::Danger(
+                if off {
+                    "Enable Diff View"
+                } else {
+                    "Disable Diff View"
+                },
+                "",
+                Action::PluginToggleDiffView,
+            ));
+        }
+        logger.push(Item::Danger(
+            "Clear Message History",
+            "plugin_history",
+            Action::PluginClearMessageHistory,
+        ));
+        push_menu_group(&mut items, logger);
+    }
     items
 }
 
@@ -736,6 +807,7 @@ impl Root {
         let empty = found.is_some_and(|known| known.content.is_empty());
         let translate =
             found.is_some_and(|known| super::plugin_hooks::translate_plus(&known.content));
+        let logged = found.and_then(super::plugin_hooks::message_logger_menu);
         let pinned = found.is_some_and(|known| known.pinned);
         let reacted = found.is_some_and(|known| !known.reactions.is_empty());
         let channel = self.current_channel();
@@ -751,6 +823,7 @@ impl Root {
             speaking: self.speaking_message == Some(message),
             empty,
             translate,
+            logged,
             pinned,
             reacted,
             manage_reactions: reacted
@@ -898,6 +971,19 @@ impl Root {
             Action::Reply => self.begin_reply(found, window, cx),
             // Not in the pinned client: Translate+ (`plugin_hooks/translate_plus.rs`).
             Action::PluginTranslate => self.translate_plus_start(message, found.content.clone()),
+            // Not in the pinned client: MessageLogger (`plugin_hooks/message_logger.rs`).
+            Action::PluginToggleDeletedHighlight => {
+                self.message_logger_toggle_highlight(message);
+                cx.notify();
+            }
+            Action::PluginToggleDiffView => {
+                self.message_logger_toggle_diff(message);
+                cx.notify();
+            }
+            Action::PluginClearMessageHistory => {
+                self.message_logger_clear(found.channel_id, message);
+                cx.notify();
+            }
             Action::CopyText => {
                 let text = if found.content.is_empty() {
                     parse_block_text(&found.content)
@@ -1396,15 +1482,18 @@ impl Root {
                 }
             }),
         )
-        .child(
-            svg()
-                .path(format!("icons/{icon_name}.svg"))
-                .size(px(20.))
-                .flex_none()
-                .mr(px(8.))
-                .text_color(icon_tint)
-                .group_hover(group.clone(), move |style| style.text_color(hover_icon)),
-        )
+        // A plugin's row may have no leading icon (MessageLogger's diff toggle).
+        .when(!icon_name.is_empty(), |this| {
+            this.child(
+                svg()
+                    .path(format!("icons/{icon_name}.svg"))
+                    .size(px(20.))
+                    .flex_none()
+                    .mr(px(8.))
+                    .text_color(icon_tint)
+                    .group_hover(group.clone(), move |style| style.text_color(hover_icon)),
+            )
+        })
         .child(
             div()
                 .flex_1()
@@ -1416,11 +1505,19 @@ impl Root {
                 // `label_M3qk4j`: one line, cut with an ellipsis.
                 .truncate()
                 // Not in the pinned client: a plugin's row keeps its English label, as the original does.
-                .child(if run == Action::PluginTranslate {
-                    label
-                } else {
-                    dc_intl::tr(label)
-                }),
+                .child(
+                    if matches!(
+                        run,
+                        Action::PluginTranslate
+                            | Action::PluginToggleDeletedHighlight
+                            | Action::PluginToggleDiffView
+                            | Action::PluginClearMessageHistory
+                    ) {
+                        label
+                    } else {
+                        dc_intl::tr(label)
+                    },
+                ),
         )
         // The keyboard shortcut of Copy (module 373963 `keyCombo`).
         .when(run == Action::CopySelection, |this| {
@@ -1520,7 +1617,11 @@ impl Root {
         let saved = self.saved_flags(open.message);
         let mut rows: Vec<AnyElement> = Vec::new();
         // Text selected: the menu opens with Copy instead of the quick reactions (selection-own-dm).
-        if !saved.no_react && self.menu_extra.selection.is_empty() {
+        // Not in the pinned client: MessageLogger takes the first section off a deleted message's menu.
+        if !saved.no_react
+            && self.menu_extra.selection.is_empty()
+            && !saved.logged.is_some_and(|(deleted, _)| deleted)
+        {
             rows.extend(self.quick_row(open.message, cx));
         }
         for (index, item) in message_items_saved(open.own, saved).into_iter().enumerate() {

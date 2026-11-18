@@ -1166,7 +1166,7 @@ pub struct Attachment {
 }
 
 impl Attachment {
-    fn from_value(value: &Value) -> Option<Self> {
+    pub fn from_value(value: &Value) -> Option<Self> {
         let id = id(&value["id"])?;
         if let Ok(mut map) = attachment_scan_versions().lock() {
             match value.get("content_scan_version").and_then(Value::as_i64) {
@@ -2245,6 +2245,10 @@ impl GeoRestrictedGuild {
 
 #[derive(Default)]
 pub struct Stores {
+    /// Not in the pinned client: MessageLogger's `handleDelete`. While the app's plugin is on, a deleted message this
+    /// answers true for stays in its channel's list and the window's caches; the rest of `MESSAGE_DELETE` (mention
+    /// counts, the latest message) happens as usual.
+    pub keep_deleted: Option<fn(&Message) -> bool>,
     /// This account's experiment assignments from READY (`ApexExperimentStore`).
     pub experiments: experiments::Assignments,
     /// Guild to its AFK voice channel (`afk_channel_id`), which voice join and leave sounds skip.
@@ -4411,6 +4415,17 @@ impl Stores {
         if let Some(list) = self.messages.get_mut(&channel) {
             let window = self.windows.entry(channel).or_default();
             for &message in ids {
+                // Not in the pinned client: MessageLogger keeps it (`keep_deleted`).
+                if let Some(keep) = self.keep_deleted
+                    && list
+                        .iter()
+                        .chain(window.before_cache().messages())
+                        .chain(window.after_cache().messages())
+                        .find(|known| known.id == message)
+                        .is_some_and(keep)
+                {
+                    continue;
+                }
                 window.remove(list, message);
             }
             // ReferencedMessageStore (module 9842) on MESSAGE_DELETE: a reply to a deleted message now reads

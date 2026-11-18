@@ -27,6 +27,11 @@ mod ignore_activities;
 mod image_zoom;
 mod member_count;
 mod message_clicks;
+mod message_logger;
+pub(in crate::ui) use message_logger::{
+    message_logger_attachment_gray, message_logger_deleted, message_logger_highlight, message_logger_history,
+    message_logger_menu, message_logger_on, message_logger_scope, scoped_token,
+};
 mod message_peek;
 mod message_pronouns;
 mod message_tags;

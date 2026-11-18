@@ -825,6 +825,21 @@ impl Inline {
         self
     }
 
+    /// Adds a click handler beside the one already set (a plugin's piece next to the app's own).
+    pub fn also_on_piece_click(
+        mut self,
+        handler: impl Fn(usize, &mut Window, &mut App) + 'static,
+    ) -> Self {
+        let previous = self.on_piece_click.take();
+        self.on_piece_click = Some(Rc::new(move |piece, window, cx| {
+            if let Some(previous) = &previous {
+                previous(piece, window, cx);
+            }
+            handler(piece, window, cx);
+        }));
+        self
+    }
+
     /// As `on_piece_click`, with the bounds of the piece that was clicked (for popouts that open beside it).
     pub fn on_piece_click_at(
         mut self,

@@ -187,7 +187,10 @@ pub(super) fn attachment_url(attachment: &Attachment, width: u32, height: u32) -
     // Not in the pinned client: FixImagesQuality's full-resolution picture (`plugin_hooks.rs`).
     if let Some(url) = super::plugin_hooks::fixed_image_url(
         &attachment.proxy_url,
-        (attachment.width.unwrap_or(0), attachment.height.unwrap_or(0)),
+        (
+            attachment.width.unwrap_or(0),
+            attachment.height.unwrap_or(0),
+        ),
         attachment.is_animated(),
         false,
     ) {
@@ -324,6 +327,15 @@ impl Root {
             );
         }
         let picture = img(image).w(size.0).h(size.1).rounded(px(radius));
+        // Not in the pinned client: MessageLogger greys a deleted picture until it is hovered
+        // (`plugin_hooks/message_logger.rs`).
+        let picture = picture.grayscale(
+            self.hovered_media.as_deref() != Some(key)
+                && key
+                    .strip_prefix("attachment:")
+                    .and_then(|id| id.parse().ok())
+                    .is_some_and(super::plugin_hooks::message_logger_attachment_gray),
+        );
         if cover {
             picture
                 .object_fit(gpui::ObjectFit::Cover)

@@ -142,6 +142,10 @@ pub(super) struct Caps {
     pub download_all: bool,
     /// Not in the pinned client: Translate+'s button (`plugin_hooks/translate_plus.rs`).
     pub translate: bool,
+    /// Not in the pinned client: MessageLogger's Clear history (a message with history), and whether the message is
+    /// a deleted one in its highlight (only that button shows, `plugin_hooks/message_logger.rs`).
+    pub clear_history: bool,
+    pub deleted: bool,
 }
 
 /// One button of the bar, in its order.
@@ -169,12 +173,22 @@ pub(super) enum Button {
     DownloadAll,
     /// Not in the pinned client: Translate+ (`plugin_hooks/translate_plus.rs`).
     Translate,
+    /// Not in the pinned client: MessageLogger's Clear history (`plugin_hooks/message_logger.rs`).
+    ClearHistory,
 }
 
 /// The buttons of `nA`, left to right. The expanded bar (Shift held) leads with the shortcuts and drops the quick
 /// reactions; Delete takes More's place when it is offered.
 pub(super) fn buttons(caps: Caps) -> Vec<Button> {
     let mut out = Vec::new();
+    // Not in the pinned client: a deleted message's bar keeps only MessageLogger's Clear history
+    // (`.messagelogger-deleted [class*="buttonsInner"] [role="button"]:not([aria-label="Clear history"])`).
+    if caps.deleted {
+        if caps.clear_history {
+            out.push(Button::ClearHistory);
+        }
+        return out;
+    }
     let x = caps.expanded;
     if x {
         if caps.developer {
@@ -201,6 +215,9 @@ pub(super) fn buttons(caps: Caps) -> Vec<Button> {
     // Vencord's message popover buttons sit between the quick reactions and Add Reaction, in plugin order.
     if caps.download_all {
         out.push(Button::DownloadAll);
+    }
+    if caps.clear_history {
+        out.push(Button::ClearHistory);
     }
     if caps.quick_mention {
         out.push(Button::QuickMention);
@@ -355,6 +372,8 @@ impl Root {
             quick_mention: super::plugin_hooks::quick_mention(private || can(SEND_MESSAGES)),
             download_all: super::plugin_hooks::download_all(message),
             translate: super::plugin_hooks::translate_plus(&message.content),
+            clear_history: super::plugin_hooks::message_logger_history(message),
+            deleted: super::plugin_hooks::message_logger_highlight(message.id).is_some(),
         }
     }
 }
@@ -395,6 +414,7 @@ pub(super) fn label_icon(button: Button, caps: Caps) -> (&'static str, &'static 
         Button::QuickMention => ("Quick Mention", "plugin_mention"),
         Button::DownloadAll => (super::plugin_hooks::DOWNLOAD_ALL, "plugin_cloud_download"),
         Button::Translate => ("Translate", "plugin_translate"),
+        Button::ClearHistory => ("Clear history", "plugin_history"),
     }
 }
 

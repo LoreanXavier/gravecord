@@ -1479,6 +1479,115 @@ pub(crate) const DEFS: &[Def] = &[
         ],
     },
     Def {
+        id: "MessageLogger",
+        name: "MessageLogger",
+        description: "Temporarily logs deleted and edited messages.",
+        origin: Origin::Vencord,
+        source: "src/plugins/messageLogger/index.tsx",
+        default_on: false,
+        settings: &[
+            Setting {
+                key: "deleteStyle",
+                label: "Delete Style",
+                description: "The style of deleted messages",
+                kind: Kind::Select {
+                    options: &[
+                        ("Red text", Lit::Str("text")),
+                        ("Red overlay", Lit::Str("overlay")),
+                    ],
+                    default: 0,
+                },
+            },
+            Setting {
+                key: "logDeletes",
+                label: "Log Deletes",
+                description: "Whether to log deleted messages",
+                kind: Kind::Switch { default: true },
+            },
+            Setting {
+                key: "collapseDeleted",
+                label: "Collapse Deleted",
+                description: "Whether to collapse deleted messages, similar to blocked messages",
+                kind: Kind::Switch { default: false },
+            },
+            Setting {
+                key: "logEdits",
+                label: "Log Edits",
+                description: "Whether to log edited messages",
+                kind: Kind::Switch { default: true },
+            },
+            Setting {
+                key: "logDeletedAttachments",
+                label: "Log Deleted Attachments",
+                description: "Whether to log deleted attachments",
+                kind: Kind::Switch { default: true },
+            },
+            Setting {
+                key: "inlineEdits",
+                label: "Inline Edits",
+                description: "Whether to display edit history as part of message content",
+                kind: Kind::Switch { default: true },
+            },
+            Setting {
+                key: "ignoreBots",
+                label: "Ignore Bots",
+                description: "Whether to ignore messages by bots",
+                kind: Kind::Switch { default: true },
+            },
+            Setting {
+                key: "ignoreSelf",
+                label: "Ignore Self",
+                description: "Whether to ignore messages by yourself",
+                kind: Kind::Switch { default: false },
+            },
+            Setting {
+                key: "ignoreSelfEdits",
+                label: "Ignore Self Edits",
+                description: "Whether to ignore edits by yourself",
+                kind: Kind::Switch { default: false },
+            },
+            Setting {
+                key: "ignoreUsers",
+                label: "Ignore Users",
+                description: "Comma-separated list of user IDs to ignore",
+                kind: Kind::Text {
+                    default: "",
+                    max_len: 4000,
+                },
+            },
+            Setting {
+                key: "ignoreChannels",
+                label: "Ignore Channels",
+                description: "Comma-separated list of channel IDs to ignore",
+                kind: Kind::Text {
+                    default: "",
+                    max_len: 4000,
+                },
+            },
+            Setting {
+                key: "ignoreGuilds",
+                label: "Ignore Guilds",
+                description: "Comma-separated list of guild IDs to ignore",
+                kind: Kind::Text {
+                    default: "",
+                    max_len: 4000,
+                },
+            },
+            Setting {
+                key: "showEditDiffs",
+                label: "Show Edit Diffs",
+                description: "Show visual differences between edited message versions",
+                kind: Kind::Switch { default: false },
+            },
+            Setting {
+                key: "separatedDiffs",
+                label: "Separated Diffs",
+                description: "Separate addition and removals in diffs for a more readable differential",
+                kind: Kind::Switch { default: false },
+            },
+        ],
+    },
+    Def {
         id: "MessagePeek",
         name: "MessagePeek",
         description: "Shows the last message preview and timestamp in the Direct Messages list.",

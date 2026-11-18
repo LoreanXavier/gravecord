@@ -12,7 +12,7 @@ every setting changed), and with every plugin off, and fails on one differing pi
 The list is the plugins enabled in the owner's Equicord backup of 2026-09-21 (156). Sources were read in the local
 Equicord checkout of 2026-11-14 (`src/plugins` is Vencord's, `src/equicordplugins` Equicord's).
 
-Totals: 81 ported, 9 native, 21 planned, 45 not applicable.
+Totals: 82 ported, 9 native, 20 planned, 45 not applicable.
 
 Status: **ported** works and has its proof; **native** is what gravecord already does without a plugin;
 **planned** is not built yet (an import keeps its settings for when it is); **not applicable** has nothing to
@@ -93,7 +93,7 @@ port in a native client, or was removed upstream.
 | MessageClickActions | ported | plugins/messageClickActions/index.ts | Customize click actions on messages. | plugin_hooks/message_clicks.rs: the original's click state machine (single, double, triple click; keys held incl. Backspace and Delete; the three timeouts) and all 13 actions with the app's own Edit, Reply, Delete and Pin (without their dialogs, as the original), reactions, thread, quote. On by default (the owner's double-click to edit). System DMs are the Discord system account's DM (the app keeps no `system` flag). | `plugin_hooks::message_clicks::tests` (11); frames mca-backspace (Delete sent), mca-plain-click (nothing), mca-on/off, mca-settings; plugins-off double-click and its control |
 | MessageDecorationsAPI | not applicable | plugins/_api/messageDecorations/index.tsx | API to add decorations to messages | client-mod plumbing (an API for other plugins), nothing to port. |  |
 | MessageEventsAPI | not applicable | plugins/_api/messageEvents.ts | Api required by anything using message events. | client-mod plumbing (an API for other plugins), nothing to port. |  |
-| MessageLogger | planned | plugins/messageLogger/index.tsx | Temporarily logs deleted and edited messages. | a store of deleted and edited messages and their red/edited display. |  |
+| MessageLogger | ported | plugins/messageLogger/index.tsx | Temporarily logs deleted and edited messages. | plugin_hooks/message_logger.rs: a deleted message stays (Stores::keep_deleted) in red text or the red overlay (deleteStyle), pictures grey until hovered, its hover bar down to Clear history; edits keep the replaced text with the edit's time (inlineEdits: dimmed earlier versions with their (edited) marks above the content; the message's own (edited) opens Message Edit History with its tabs and Show Diff); logDeletedAttachments keeps dropped attachments grey; showEditDiffs/separatedDiffs colour additions and removals (createWordDiff's LCS); the message menu drops the quick reactions and buttonsToRemove on a deleted message and ends with Toggle Deleted Highlight, Enable/Disable Diff View and Clear Message History; channel, thread, DM and person menus get Clear Message Log; collapseDeleted folds N deleted messages; ignore rules of shouldIgnore (bots, self, self edits, users, channels or their category, servers, the support bots); the up arrow skips deleted messages. | `diffs_follow_create_word_diff`, `ignore_rules_follow_should_ignore`, `dropped_attachments_stay_in_place`; frames pending (live runs held) |
 | MessagePeek | ported | equicordplugins/messagePeek/index.tsx | Shows the last message preview and timestamp in the Direct Messages list. | plugin_hooks/message_peek.rs: under each DM and group the last message the app holds (author: first line, GIF, voice message, attachments, sticker), its age at the right (hidden under the pointer); an activity instead when the message is over an hour old; hideMuted. Not ported: the startup fetch of the 25 newest DMs' last message (plugin code sends nothing), the inline markdown of the preview (plain first line) and BetterActivities' icons. | `plugin_hooks::message_peek::tests` (2); frame mp-on; plugins-off dm-list |
 | MessagePopoverAPI | not applicable | plugins/_api/messagePopover.ts | API to add buttons to message popovers. | client-mod plumbing (an API for other plugins), nothing to port. |  |
 | MessageTags | ported | plugins/customCommands/index.ts | Allows you to create custom slash commands / tags | plugin_hooks/message_tags.rs: each saved tag is a built-in slash command with an option per {{argument}} (required without a default) and ephemeral (Clyde says it to you); /tags create opens the Create New Tag dialog (name, response, detected arguments, the reserved/overwrite notice, the arguments guide), /tags list and /tags delete answer through Clyde; the plugin card shows Registered Tags with Edit, Delete and Create Tag. Tags kept under plugin-message-tags. | `arguments_and_responses_follow_the_original`; frames mt-dialog (/tags create, arguments detected), mt-run (/greet with user:World sends Hello World! I am feeling great.) |
@@ -300,6 +300,20 @@ Every setting of each original (`definePluginSettings`), its type and default th
 | MessageClickActions | `selectionHoldTimeout` | NUMBER | `300` | ported |
 | MessageClickActions | `quoteWithReply` | BOOLEAN | `true` | ported |
 | MessageClickActions | `useSelectionForQuote` | BOOLEAN | `false` | ported |
+| MessageLogger | `deleteStyle` | SELECT | `"text"` | ported |
+| MessageLogger | `logDeletes` | BOOLEAN | `true` | ported |
+| MessageLogger | `collapseDeleted` | BOOLEAN | `false` | ported |
+| MessageLogger | `logEdits` | BOOLEAN | `true` | ported |
+| MessageLogger | `logDeletedAttachments` | BOOLEAN | `true` | ported |
+| MessageLogger | `inlineEdits` | BOOLEAN | `true` | ported |
+| MessageLogger | `ignoreBots` | BOOLEAN | `true` | ported |
+| MessageLogger | `ignoreSelf` | BOOLEAN | `false` | ported |
+| MessageLogger | `ignoreSelfEdits` | BOOLEAN | `false` | ported |
+| MessageLogger | `ignoreUsers` | STRING | `""` | ported |
+| MessageLogger | `ignoreChannels` | STRING | `""` | ported |
+| MessageLogger | `ignoreGuilds` | STRING | `""` | ported |
+| MessageLogger | `showEditDiffs` | BOOLEAN | `false` | ported |
+| MessageLogger | `separatedDiffs` | BOOLEAN | `false` | ported |
 | MessagePeek | `hideMuted` | BOOLEAN | `false` | ported |
 | MessageTags | `tagsList` | CUSTOM | `{} as Record<string` | not ported: kept apart from the settings (storage key plugin-message-tags), written by the tag dialog and /tags delete. |
 | MessageTags | `tagComponent` | COMPONENT | `` | ported as the plugin card's own section (Registered Tags with Edit, Delete, Create Tag), not as a setting. |

@@ -334,13 +334,15 @@ pub(super) enum Act {
     PluginCopyBadgeLink,
     /// Not in the pinned client: PermissionsViewer's View Permissions (`plugin_hooks/permissions_viewer.rs`).
     PluginViewPermissions,
+    /// Not in the pinned client: MessageLogger's Clear Message Log (`plugin_hooks/message_logger.rs`).
+    PluginClearMessageLog,
 }
 
 impl Act {
     /// Every row kind once (`Correction` with its first index). `ordinal` is an exhaustive match, so adding a variant
     /// without listing it here fails the build or the `act_list_is_complete` test.
     #[cfg(test)]
-    pub(super) const ALL: [Act; 143] = [
+    pub(super) const ALL: [Act; 144] = [
         Act::InventoryAbout,
         Act::InventoryHide,
         Act::ReportApp,
@@ -489,6 +491,7 @@ impl Act {
         Act::PluginCopyBadgeName,
         Act::PluginCopyBadgeLink,
         Act::PluginViewPermissions,
+        Act::PluginClearMessageLog,
     ];
 
     #[cfg(test)]
@@ -642,6 +645,7 @@ impl Act {
             Act::PluginCopyBadgeName => 140,
             Act::PluginCopyBadgeLink => 141,
             Act::PluginViewPermissions => 142,
+            Act::PluginClearMessageLog => 143,
         }
     }
 }
@@ -692,7 +696,8 @@ pub(super) fn status(act: Act) -> Status {
         | Act::PluginSetAvatar
         | Act::PluginCopyBadgeName
         | Act::PluginCopyBadgeLink
-        | Act::PluginViewPermissions => Wired,
+        | Act::PluginViewPermissions
+        | Act::PluginClearMessageLog => Wired,
         Act::InventoryAbout
         | Act::InventoryHide
         | Act::ViewAllActivity
@@ -3538,6 +3543,8 @@ impl Root {
         let items = self.with_userpfp_row(items, target);
         // Not in the pinned client: PermissionsViewer's View Permissions (`plugin_hooks/permissions_viewer.rs`).
         let items = self.with_permissions_viewer_row(items, target);
+        // Not in the pinned client: MessageLogger's Clear Message Log (`plugin_hooks/message_logger.rs`).
+        let items = self.with_message_logger_row(items, target);
         self.close_all_context_menus();
         self.menu_scroll.set_offset(gpui::point(px(0.), px(0.)));
         let at = flip_above(at, menu_height(&items), self.viewport.1);
@@ -3765,6 +3772,13 @@ impl Root {
             (Act::PluginCopyBadgeName, Target::PluginBadge) => self.global_badge_copy(false, cx),
             // Not in the pinned client: PermissionsViewer (`plugin_hooks/permissions_viewer.rs`).
             (Act::PluginViewPermissions, target) => self.permissions_viewer_open(target, cx),
+            // Not in the pinned client: MessageLogger (`plugin_hooks/message_logger.rs`).
+            (Act::PluginClearMessageLog, target) => {
+                if let Some(channel) = self.message_logger_menu_channel(target) {
+                    self.message_logger_clear_channel(channel);
+                    cx.notify();
+                }
+            }
             (Act::PluginEditRole, Target::PluginPermissionRole { role, guild }) => {
                 self.better_role_edit(role, guild, cx);
             }

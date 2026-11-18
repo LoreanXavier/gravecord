@@ -430,6 +430,8 @@ fn desaturated(colour: Rgba, factor: f32) -> Rgba {
 }
 
 pub(crate) fn color(name: &str) -> Rgba {
+    // Not in the pinned client: a plugin's colour scope (MessageLogger's deleted text, `plugin_hooks/message_logger.rs`).
+    let name = plugin_hooks::scoped_token(name).unwrap_or(name);
     let colour = settings::client_theme::overlay(name)
         .or_else(|| settings::client_theme::high_contrast(name, theme()))
         .unwrap_or_else(|| rgba(theme().color(name)));
@@ -475,7 +477,8 @@ enum Row {
         index: usize,
         head: bool,
     },
-    /// A run of messages from blocked, ignored or likely spammer people, folded; `first` is the first one's id.
+    /// A run of messages from blocked, ignored or likely spammer people, folded; `first` is the first one's id. Not in
+    /// the pinned client: `Fold::Deleted`, MessageLogger's run of deleted messages (`plugin_hooks/message_logger.rs`).
     Blocked {
         first: Id,
         count: usize,
@@ -1597,7 +1600,10 @@ impl Root {
                     self.member_list_arriving(&data);
                 }
                 let dispatching = std::time::Instant::now();
+                // Not in the pinned client: MessageLogger keeps deletes and edits (`plugin_hooks/message_logger.rs`).
+                self.message_logger_before(&name, &data);
                 self.stores.dispatch(&name, &data);
+                self.message_logger_after(&name, &data);
                 self.unread_notice_event(&name, &data);
                 match name.as_str() {
                     "READY" => crate::start_trace::took("dur_ready_dispatch", dispatching),
@@ -3739,6 +3745,8 @@ impl Root {
         // stretch into one row (`mergeHiddenMessages`, `plugin_hooks.rs`): each kind's first row of the stretch, by
         // `Fold` (the spam fold is never merged).
         let merge = plugin_hooks::merge_hidden_messages();
+        // Not in the pinned client: MessageLogger folds deleted messages (`collapseDeleted`).
+        let collapse_deleted = self.message_logger_collapses();
         let mut stretch: [Option<Id>; blocked::FOLDS] = [None; blocked::FOLDS];
         for (index, message) in messages.iter().enumerate() {
             let local = message.local_time();
@@ -3749,8 +3757,11 @@ impl Root {
                 last_day = Some(day);
                 stretch = [None; blocked::FOLDS];
             }
+            // Not in the pinned client: MessageLogger's `MESSAGE_GROUP_DELETED` comes right after the blocked kind.
             let fold = if blocked.contains(&message.author.id) {
                 Some(blocked::Fold::Blocked)
+            } else if collapse_deleted && plugin_hooks::message_logger_deleted(message.id) {
+                Some(blocked::Fold::Deleted)
             } else if ignored.contains(&message.author.id) {
                 Some(blocked::Fold::Ignored)
             } else if spam && self.likely_spammer_message(message) {
@@ -4032,7 +4043,13 @@ impl Root {
                     messages
                         .iter()
                         .rev()
-                        .find(|message| Some(message.author.id) == me && message.kind == 0)
+                        .find(|message| {
+                            Some(message.author.id) == me
+                                && message.kind == 0
+                                // Not in the pinned client: MessageLogger leaves deleted messages out
+                                // (`getLastEditableMessage`, `plugin_hooks/message_logger.rs`).
+                                && !plugin_hooks::message_logger_deleted(message.id)
+                        })
                 })
                 .map(|message| (message.id, message.content.clone()));
             if let Some((id, content)) = last {
@@ -7395,7 +7412,28 @@ impl Root {
         };
         let element =
             inline(pieces, line).selectable(key, self.selection.clone(), hsla_from(SELECTION));
-        self.wire_inline_spans(element, spans, &spoilers, key, &extra_hovers)
+        let element = self.wire_inline_spans(element, spans, &spoilers, key, &extra_hovers);
+        // Not in the pinned client: MessageLogger's edit marker opens the edit history (`EditMarker`,
+        // `plugin_hooks/message_logger.rs`).
+        let edited_marks: Vec<usize> = marks
+            .iter()
+            .enumerate()
+            .filter(|(_, (text, _))| text == "(edited)")
+            .map(|(index, _)| spans.len() + index * 2 + 1)
+            .collect();
+        if edited_marks.is_empty() || !plugin_hooks::message_logger_on() {
+            return element;
+        }
+        let root = self.weak.clone();
+        let message = key.0;
+        element.also_on_piece_click(move |piece, _, cx| {
+            if edited_marks.contains(&piece) {
+                let _ = root.update(cx, |this, cx| {
+                    this.message_logger_open_history(message);
+                    cx.notify();
+                });
+            }
+        })
     }
 
     fn spoiler_run_starts(spans: &[Span]) -> Vec<Option<usize>> {
@@ -8428,6 +8466,10 @@ impl Root {
                     let line = self.automod_raid_line(message, cx);
                     return self.system_row(message, *head, line, cx);
                 }
+                // Not in the pinned client: MessageLogger draws a deleted message's row in red
+                // (`plugin_hooks/message_logger.rs`).
+                let _deleted_colours = plugin_hooks::message_logger_scope(message.id);
+                let deleted_overlay = plugin_hooks::message_logger_highlight(message.id) == Some(true);
                 match dc_state::message_kinds::presentation(message) {
                     // The official table has no entry for this type, or its handler returns `null`.
                     dc_state::message_kinds::Presentation::Nothing => {
@@ -8561,6 +8603,14 @@ impl Root {
                         this.hover(move |style| style.bg(over))
                             .when(pointer, |this| this.bg(over))
                     })
+                    // Not in the pinned client: MessageLogger's red overlay (`background-color: ... !important`).
+                    .when(deleted_overlay, |this| {
+                        let red = gpui::Rgba {
+                            a: 0.15,
+                            ..color("--red-430")
+                        };
+                        this.bg(red).hover(move |style| style.bg(red))
+                    })
                     .on_hover(cx.listener(move |this, inside: &bool, window, cx| {
                         if this.message_hover_locked() {
                             return;
@@ -8637,10 +8687,17 @@ impl Root {
                                         && !self.automod_blocked(id),
                                 );
                                 self.official_text.set(official.and_then(|look| look.text));
-                                let content = self.content(message);
+                                // Not in the pinned client: MessageLogger's earlier versions above the content, and
+                                // the content with its additions in the separated diff view
+                                // (`plugin_hooks/message_logger.rs`).
+                                let earlier = self.message_logger_edits_above(message, cx);
+                                let content = match self.message_logger_content(message, cx) {
+                                    Some(content) => content,
+                                    None => self.content(message).into_any_element(),
+                                };
                                 self.failed_tint.set(false);
                                 self.official_text.set(None);
-                                this.child(
+                                this.children(earlier).child(
                                     div()
                                         .when(
                                             state == Some(send_state::SendState::Sending)
@@ -9327,6 +9384,15 @@ impl Root {
                     })))
                 }
                 // Not in the pinned client: DownloadAllAttachments (`plugin_hooks/download_all.rs`).
+                // Not in the pinned client: MessageLogger (`plugin_hooks/message_logger.rs`).
+                Button::ClearHistory => {
+                    let channel = message.channel_id;
+                    bar.child(tipped(cx).on_click(cx.listener(move |this, _, _, cx| {
+                        this.tip = None;
+                        this.message_logger_clear(channel, id);
+                        cx.notify();
+                    })))
+                }
                 // Not in the pinned client: Translate+ (`plugin_hooks/translate_plus.rs`).
                 Button::Translate => {
                     let content = message.content.clone();
@@ -11719,6 +11785,8 @@ impl Render for Root {
             .children(self.zip_preview_dialog(window, cx))
             // Not in the pinned client: PermissionsViewer's dialog (`plugin_hooks/permissions_viewer.rs`).
             .children(self.permissions_viewer_dialog(window, cx))
+            // Not in the pinned client: MessageLogger's edit history (`plugin_hooks/message_logger.rs`).
+            .children(self.message_logger_dialog(cx))
             .children(self.not_friend_modal(cx))
             .children(self.favorites_full_modal(cx))
             .children(self.chat_alert_modal(cx))
