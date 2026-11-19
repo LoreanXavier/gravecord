@@ -217,6 +217,15 @@ impl Root {
                     .rounded(px(8.))
                     .flex()
                     .items_center()
+                    // Module 166005 `K`: the chip's `dev-context` menu (Copy Role ID) in developer mode.
+                    .on_mouse_up(
+                        gpui::MouseButton::Right,
+                        cx.listener(move |this, event: &gpui::MouseUpEvent, _, cx| {
+                            if this.open_role_chip_menu(role, event.position, cx) {
+                                cx.stop_propagation();
+                            }
+                        }),
+                    )
                     .child(
                         match self
                             .stores

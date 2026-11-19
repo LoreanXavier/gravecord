@@ -144,6 +144,8 @@ impl Root {
     pub(super) fn set_view_as_roles(&mut self, guild: Id, roles: Vec<Id>) {
         self.stores.impersonate(guild, roles);
         self.data_revision += 1;
+        // `IMPERSONATE_UPDATE` runs PermissionVADStore's check (`vad_permission.rs`).
+        self.sync_vad_permission();
         if self.guild != Some(guild) {
             return;
         }
@@ -178,6 +180,8 @@ impl Root {
         if self.stores.stop_impersonating(guild) {
             self.data_revision += 1;
             self.rebuild_rows();
+            // `IMPERSONATE_STOP`, the same check.
+            self.sync_vad_permission();
         }
         if back_to_settings {
             self.open_server_settings_at(guild, super::server_settings::Page::Roles, cx);

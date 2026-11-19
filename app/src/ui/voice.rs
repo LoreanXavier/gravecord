@@ -172,7 +172,8 @@ impl Root {
         let _ = self.requests.send(Request::VoiceState {
             guild,
             channel,
-            self_mute: self.self_mute,
+            // `isSelfMute()`, which holds while Use Voice Activity is missing (module 754712 `tf`).
+            self_mute: self.self_mute || !self.vad.has_permission,
             self_deaf: self.self_deaf,
             self_video: self.call.as_ref().is_some_and(|call| call.camera),
             flags: self.voice_flags(),
@@ -205,8 +206,20 @@ impl Root {
 
     /// Joins without the Stage questions: what "Got it, thanks" of the blocked warning does.
     pub(super) fn join_voice_now(&mut self, guild: Id, channel: Id, cx: &mut Context<Self>) {
+        self.join_voice_shown(guild, channel, true, cx);
+    }
+
+    /// `selectVoiceChannel` without opening the channel's view: the idle move to the AFK channel (module 596339).
+    pub(super) fn move_voice_quietly(&mut self, guild: Id, channel: Id, cx: &mut Context<Self>) {
+        self.join_voice_shown(guild, channel, false, cx);
+    }
+
+    fn join_voice_shown(&mut self, guild: Id, channel: Id, show: bool, cx: &mut Context<Self>) {
         if let Some(call) = &self.call {
             if call.channel == channel {
+                if !show {
+                    return;
+                }
                 // The row of the call this client is in opens its view.
                 self.show_call_channel(guild, channel, cx);
                 return;
@@ -232,7 +245,9 @@ impl Root {
         self.video_call_started(cx);
         self.sync_ptt_hook();
         self.vv.invite_dismissed = false;
-        self.show_call_channel(guild, channel, cx);
+        if show {
+            self.show_call_channel(guild, channel, cx);
+        }
         self.sync_dm_call_idle_timer(cx);
         cx.notify();
     }
@@ -246,7 +261,7 @@ impl Root {
     /// hub and playout that running Go Live streams were given (a fresh one left their sound on a playout no longer
     /// played).
     fn open_call_with(&mut self, guild: Id, channel: Id, controls: dc_voice::Controls) {
-        controls.set_self_mute(self.self_mute);
+        controls.set_self_mute(self.engine_mute());
         controls.set_self_deaf(self.self_deaf);
         self.call = Some(Call {
             stats: Default::default(),
@@ -489,6 +504,8 @@ impl Root {
         self.soundboard_stop();
         self.streams_stop_all(cx);
         self.leave_activity_on_call_end(cx);
+        // Out of voice, Voice Activity is allowed again (`wA` with no channel).
+        self.vad = super::vad_permission::VadState::default();
         if let Some(call) = self.call.take() {
             if call.connected
                 && let Some(sound) =
@@ -517,6 +534,9 @@ impl Root {
     }
 
     pub(super) fn toggle_self_mute(&mut self, cx: &mut Context<Self>) {
+        if self.vad_blocks_mute_toggle(cx) {
+            return;
+        }
         let before = (self.self_mute || self.self_deaf, self.self_deaf);
         self.self_mute = !self.self_mute;
         // Unmuting while deafened undeafens too, as the official toggle does.
@@ -547,8 +567,7 @@ impl Root {
             crate::sounds::play_event(sound);
         }
         if let Some(call) = &self.call {
-            call.controls
-                .set_self_mute(self.self_mute || self.self_deaf);
+            call.controls.set_self_mute(self.engine_mute());
             call.controls.set_self_deaf(self.self_deaf);
             self.send_voice_state(call.guild, Some(call.channel));
         }
@@ -637,6 +656,8 @@ impl Root {
                     call.dave_version = u16::from(!is_stage);
                     call.failed_reconnects = 0;
                 }
+                // `RTC_CONNECTION_STATE` runs PermissionVADStore's check (`vad_permission.rs`).
+                self.sync_vad_permission();
                 if let Some(call) = &self.call
                     && let Some(sound) = super::voice_sounds::connected_sound(
                         self.rtc_join_sounds(),

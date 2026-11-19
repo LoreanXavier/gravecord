@@ -146,6 +146,7 @@ impl Root {
                                 .into_any_element(),
                         )
                     });
+                    let weak = self.weak.clone();
                     div()
                         .min_h(px(24.))
                         .max_w_full()
@@ -156,6 +157,18 @@ impl Root {
                         .rounded(px(8.))
                         .flex()
                         .items_center()
+                        // Module 166005 `K`: the chip's `dev-context` menu (Copy Role ID) in developer mode, in the
+                        // popout and the full profile alike.
+                        .on_mouse_up(
+                            gpui::MouseButton::Right,
+                            move |event: &gpui::MouseUpEvent, _, app: &mut gpui::App| {
+                                let _ = weak.update(app, |this, cx| {
+                                    if this.open_role_chip_menu(id, event.position, cx) {
+                                        cx.stop_propagation();
+                                    }
+                                });
+                            },
+                        )
                         // Not in the pinned client: BetterRoleDot copies a dot's colour.
                         .child(match cx.as_deref_mut() {
                             Some(cx) if role_dot_style && role.color != 0 => self.role_dot_copy(

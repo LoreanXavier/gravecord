@@ -446,6 +446,27 @@ impl Root {
             }, cx);
             return "messages: history preview updated locally".into();
         }
+        // `messages unload`: the open channel back to its first load (no messages, a window that is not ready), as
+        // it is between READY and the first page, so the loading placeholders show (`chat_skeleton.rs`).
+        if words == ["unload"] {
+            let Some(channel) = self.channel else {
+                return "messages: no channel is open".to_owned();
+            };
+            self.stores.messages.remove(&channel);
+            self.stores.windows.remove(&channel);
+            self.rebuild_rows();
+            cx.notify();
+            return format!("messages: channel unloaded ({} rows)", self.rows.len());
+        }
+        // `messages spam-redaction`: the account in treatment 1 of `2021-12_inferno_spam_redaction`.
+        if words == ["spam-redaction"] {
+            self.stores
+                .experiments
+                .force_legacy(super::blocked::SPAM_REDACTION, 1);
+            self.rebuild_rows();
+            cx.notify();
+            return "messages: spam redaction on".into();
+        }
         let ["demo", set] = words else {
             return "messages: usage `messages demo <system|starter|command|content>`".to_owned();
         };

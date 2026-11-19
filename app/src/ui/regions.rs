@@ -239,7 +239,7 @@ impl Root {
     pub(super) fn render_region(
         &mut self,
         kind: Kind,
-        _window: &mut Window,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
         if enabled(kind) {
@@ -272,6 +272,8 @@ impl Root {
                     }),
                 )
                 .size_full();
+                // Module 891522 `lQ` while the first page loads (`chat_skeleton.rs`).
+                let skeleton = self.chat_skeleton(f32::from(window.viewport_size().height));
                 div()
                     .parity("messages")
                     .relative()
@@ -279,6 +281,7 @@ impl Root {
                     .min_h(px(0.))
                     .child(self.messages_entry(cx))
                     .child(rows)
+                    .children(skeleton)
                     .children(self.new_messages_bar(cx))
                     .children(self.jump_to_present_bar(cx))
                     .into_any_element()

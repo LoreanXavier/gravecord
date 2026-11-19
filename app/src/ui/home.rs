@@ -130,7 +130,7 @@ impl Root {
 
     pub(super) fn home_tile(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let selected = self.guild.is_none() && !self.discover.open && !self.in_favorites();
-        let requests = self.friend_request_count();
+        let requests = self.home_badge_count();
         // Hovered, the tile takes the selected colors and a 20px pill, as the rail's guild tiles do.
         let row_key = "home";
         // `nd` (module 396655): the chosen in-app icon instead of Clyde, once it is not the default one.

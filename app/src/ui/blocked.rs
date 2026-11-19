@@ -3,9 +3,10 @@
 //! `9T6N5/` "You cannot send messages to a user you have blocked." with Unblock, the DM row carries the blocked
 //! icon, and the profile panel asks "Show Profile?" (`b33pLD`, `8F+WNz`, `UJKH/l`) before it shows them.
 
+use super::chat_notices::{Alert, Then};
 use super::{Root, avatar_source, color, icon};
 use crate::parity::Parity;
-use dc_state::Id;
+use dc_state::{Channel, Id, Message, permissions};
 use gpui::{AnyElement, Context, FontWeight, IntoElement, SharedString, div, img, prelude::*, px};
 
 pub(super) const RELATIONSHIP_BLOCKED: u64 = 2;
@@ -26,6 +27,30 @@ pub(super) enum ChatBlocker {
     System { changelog: bool },
     /// The DM's other person is blocked.
     Blocked(Id),
+}
+
+/// Why a run of messages is folded (`MESSAGE_GROUP_BLOCKED`, `_IGNORED`, `_SPAMMER` of module 891522 `eA`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum Fold {
+    Blocked,
+    Ignored,
+    Spammer,
+}
+
+/// `2021-12_inferno_spam_redaction` (module 891522 `en`): treatment 1 collapses guild channel messages from likely
+/// spammers; the default (no assignment) leaves them.
+pub(super) const SPAM_REDACTION: &str = "2021-12_inferno_spam_redaction";
+
+/// `MessageTypes.AUTO_MODERATION_ACTION` (module 233444 `ER`).
+const AUTO_MODERATION_ACTION: u64 = 24;
+
+/// `xfkfTK`: "1 message hidden from likely spammer.", "N messages hidden from likely spammer." (no `=0` case).
+pub(super) fn spammer_count(count: usize) -> String {
+    if count == 1 {
+        "1 message hidden from likely spammer.".to_owned()
+    } else {
+        format!("{count} messages hidden from likely spammer.")
+    }
 }
 
 /// `+FcYM/`: "1 blocked message", "N blocked messages".
@@ -51,13 +76,140 @@ impl Root {
         self.stores.relationships.get(&user) == Some(&RELATIONSHIP_BLOCKED)
     }
 
+    /// Module 694318 `s`: the author carries the SPAMMER flag (`1 << 20`).
+    fn is_likely_spammer(&self, user: &dc_state::User) -> bool {
+        self.stores
+            .users
+            .get(&user.id)
+            .unwrap_or(user)
+            .has_flag(dc_state::USER_FLAG_SPAMMER)
+    }
+
+    /// Module 694318 `kf`: the message is a likely spammer's, and not an AutoMod action.
+    pub(super) fn likely_spammer_message(&self, message: &Message) -> bool {
+        message.kind != AUTO_MODERATION_ACTION && self.is_likely_spammer(&message.author)
+    }
+
+    /// `treatSpam` of module 891522: the experiment's treatment, unless the account is itself flagged.
+    pub(super) fn treat_spam(&self) -> bool {
+        self.stores.experiments.legacy_bucket(SPAM_REDACTION) == Some(1)
+            && !self
+                .stores
+                .current_user
+                .as_ref()
+                .is_some_and(|me| me.has_flag(dc_state::USER_FLAG_SPAMMER))
+    }
+
+    /// `isBlockedForMessage` (module 994500): the author, or the person who ran the command, is blocked.
+    fn blocked_for_message(&self, message: &Message) -> bool {
+        self.is_blocked(message.author.id)
+            || message
+                .extra
+                .interaction
+                .as_ref()
+                .is_some_and(|(_, user)| self.is_blocked(user.id))
+    }
+
+    /// Module 81437 before a jump to `message` (the reply preview, search, the inbox): true when the jump may go
+    /// on. A blocked or ignored author shows its "Okay" alert and stops it; a likely spammer's message asks first
+    /// where the account may see it anyway (a private channel, or Moderate Members there), else it stops with
+    /// "This person is likely a spammer".
+    pub(super) fn jump_allowed(&mut self, message: &Message) -> bool {
+        let name = message.author.username.clone();
+        let okay = || Some(dc_intl::t("BddRzS").to_owned());
+        let alert = if self.blocked_for_message(message) {
+            Alert::show(
+                "jump-blocked",
+                dc_intl::t("j7eA/g"),
+                Some(dc_intl::format("dTNNgr", &[("name", name.as_str().into())])),
+                None,
+                okay(),
+                Then::Close,
+            )
+        } else if self.stores.is_ignored(message.author.id) {
+            Alert::show(
+                "jump-ignored",
+                dc_intl::t("XyWoKV"),
+                Some(dc_intl::format("8t8doK", &[("name", name.as_str().into())])),
+                None,
+                okay(),
+                Then::Close,
+            )
+        } else if self.likely_spammer_message(message) {
+            let channel = message.channel_id;
+            // `isPrivate()`: a DM or a group DM.
+            let private = self
+                .stores
+                .private_channels
+                .iter()
+                .any(|known| known.id == channel);
+            // `can(MODERATE_MEMBERS, channel)`: a thread asks its parent channel.
+            let moderator = self.guild_of_channel(channel).is_some_and(|guild| {
+                let known = self.stores.guild(guild);
+                let parent = known.and_then(|known| {
+                    known
+                        .threads
+                        .iter()
+                        .find(|thread| thread.id == channel)
+                        .map_or(Some(channel), |thread| Some(thread.parent_id))
+                });
+                let channel: Option<Channel> = known.zip(parent).and_then(|(known, parent)| {
+                    known
+                        .channels
+                        .iter()
+                        .find(|item| item.id == parent)
+                        .cloned()
+                });
+                self.my_permission(guild, channel.as_ref(), permissions::MODERATE_MEMBERS)
+            });
+            if private || moderator {
+                Alert::show(
+                    "jump-spammer-confirm",
+                    dc_intl::t("cZcG+P"),
+                    Some(dc_intl::format("1YTWty", &[("name", name.as_str().into())])),
+                    Some(dc_intl::t("ETE/oC").to_owned()),
+                    Some(dc_intl::t("+TSRGD").to_owned()),
+                    Then::JumpToMessage {
+                        channel,
+                        message: message.id,
+                    },
+                )
+            } else {
+                Alert::show(
+                    "jump-spammer",
+                    dc_intl::t("6vJKFk"),
+                    Some(dc_intl::format("zKNgPF", &[("name", name.as_str().into())])),
+                    None,
+                    okay(),
+                    Then::Close,
+                )
+            }
+        } else {
+            return true;
+        };
+        // An alert already open closes as it would (its own close step), and this one takes its place.
+        let open = self.chat_extra.alert.take();
+        self.alert_closed(open);
+        self.chat_extra.alert = Some(alert);
+        false
+    }
+
+    /// A jump from the reply preview, search or the inbox, through module 81437's check.
+    pub(super) fn jump_to_message_checked(&mut self, message: &Message, cx: &mut Context<Self>) {
+        if self.jump_allowed(message) {
+            self.jump_to_message(message, cx);
+        } else {
+            cx.notify();
+        }
+    }
+
     /// `blockedSystemMessage_cKojhe`: the 16px blocked icon in the gutter, the count in `--text-default`, an em dash,
     /// and Show/Hide in `--text-muted`. 26px tall (2px padding around a 22px line).
     pub(super) fn blocked_row(
         &self,
         first: Id,
         count: usize,
-        ignored: bool,
+        kind: Fold,
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let shown = self.shown_blocked.contains(&first);
@@ -74,8 +226,13 @@ impl Root {
                     .items_center()
                     .child(
                         // `blockedIcon_cKojhe`: 28px in, the text at the 72px gutter.
+                        // Module 891522 `n3`: EyeSlash for ignored, Deny for blocked, XSmall otherwise.
                         div().w(px(72.)).pl(px(28.)).child(icon(
-                            if ignored { "eye_slash" } else { "blocked" },
+                            match kind {
+                                Fold::Ignored => "eye_slash",
+                                Fold::Blocked => "blocked",
+                                Fold::Spammer => "x_small",
+                            },
                             16.,
                             "--text-muted",
                         )),
@@ -88,10 +245,10 @@ impl Root {
                             .text_color(color("--text-default"))
                             .child(format!(
                                 "{} \u{2014} ",
-                                if ignored {
-                                    ignored_count(count)
-                                } else {
-                                    blocked_count(count)
+                                match kind {
+                                    Fold::Ignored => ignored_count(count),
+                                    Fold::Blocked => blocked_count(count),
+                                    Fold::Spammer => spammer_count(count),
                                 }
                             )),
                     )

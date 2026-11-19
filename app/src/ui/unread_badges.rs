@@ -63,7 +63,29 @@ pub(super) fn rail_number(count: u64, low_importance: bool, probe: Option<&'stat
         )
 }
 
+/// The Home button's badge (module 396655 `nO`): `E = n + o + u`, the pending friend and game requests (module 912309
+/// `kX`), the unacknowledged Nitro offers and the message requests (module 411976). GAP: no TrialOfferStore here, so
+/// `o` (and the Nitro Home link it brings when it is the whole count) is 0.
+pub(super) fn home_badge(requests: u64, offers: u64, message_requests: u64) -> u64 {
+    requests + offers + message_requests
+}
+
 impl Root {
+    /// What the Home button counts (`home_badge`).
+    pub(super) fn home_badge_count(&self) -> u64 {
+        let message_requests = if super::plugin_hooks::hide_message_request_count() {
+            0
+        } else {
+            self.stores.message_requests_count() as u64
+        };
+        let game = if super::plugin_hooks::hide_friend_request_count() {
+            0
+        } else {
+            self.stores.game_relationships.pending_incoming_count()
+        };
+        home_badge(self.friend_request_count() + game, 0, message_requests)
+    }
+
     pub(super) fn friend_request_count(&self) -> u64 {
         // Not in the pinned client: NoPendingCount (Vencord `src/plugins/noPendingCount`) makes `getPendingCount` 0.
         if super::plugin_hooks::hide_friend_request_count() {
@@ -141,5 +163,17 @@ impl Root {
         self.capture_badge = Some((count, low));
         cx.notify();
         format!("fixture badge preview: count={count} low={low}; view only")
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_home_badge_adds_requests_offers_and_message_requests() {
+        assert_eq!(home_badge(0, 0, 0), 0);
+        assert_eq!(home_badge(2, 0, 3), 5);
+        assert_eq!(home_badge(1, 1, 1), 3);
     }
 }

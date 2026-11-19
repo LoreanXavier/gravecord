@@ -2231,6 +2231,8 @@ pub struct Stores {
     pub experiments: experiments::Assignments,
     /// Guild to its AFK voice channel (`afk_channel_id`), which voice join and leave sounds skip.
     pub afk_channels: HashMap<Id, Id>,
+    /// Guild to its `afk_timeout` in seconds (the idle move of module 596339 `handleIdleUpdate`).
+    pub afk_timeouts: HashMap<Id, u64>,
     /// Guild to its members in voice. A state without a channel removes the member.
     pub voice_states: HashMap<Id, Vec<VoiceState>>,
     /// The last voice server handed to this session.
@@ -2615,6 +2617,7 @@ impl Stores {
                     self.unavailable_guilds.remove(&guild);
                     self.voice_states.remove(&guild);
                     self.afk_channels.remove(&guild);
+                    self.afk_timeouts.remove(&guild);
                     self.lurking_guilds.remove(&guild);
                 }
             }
@@ -3230,6 +3233,10 @@ impl Stores {
                 Some(channel) => self.afk_channels.insert(guild_id, channel),
                 None => self.afk_channels.remove(&guild_id),
             };
+            match properties["afk_timeout"].as_u64() {
+                Some(timeout) => self.afk_timeouts.insert(guild_id, timeout),
+                None => self.afk_timeouts.remove(&guild_id),
+            };
         }
     }
 
@@ -3476,7 +3483,8 @@ impl Stores {
         self.experiments = experiments::Assignments::from_ready(
             &data["apex_experiments"],
             data["user"]["id"].as_str().unwrap_or_default(),
-        );
+        )
+        .with_legacy(&data["experiments"]);
         self.mfa_enabled = data["user"]["mfa_enabled"].as_bool().unwrap_or(false);
         self.account = Account::from_value(&data["user"]);
         self.theme = data["user_settings_proto"]
@@ -3637,6 +3645,7 @@ impl Stores {
             .map(|guild| id(&guild["id"]))
             .collect();
         self.afk_channels.clear();
+        self.afk_timeouts.clear();
         for guild in data["guilds"].as_array().into_iter().flatten() {
             self.note_afk_channel(guild);
         }
@@ -4361,6 +4370,18 @@ impl Stores {
             let window = self.windows.entry(channel).or_default();
             for &message in ids {
                 window.remove(list, message);
+            }
+            // ReferencedMessageStore (module 9842) on MESSAGE_DELETE: a reply to a deleted message now reads
+            // "Original message was deleted".
+            for reply in list.iter_mut() {
+                if matches!(reply.kind, 19 | 21 | 23)
+                    && reply
+                        .reference_id
+                        .is_some_and(|reference| ids.contains(&reference))
+                {
+                    reply.referenced = None;
+                    reply.extra.reference_deleted = true;
+                }
             }
         }
         if self
@@ -5802,6 +5823,24 @@ mod tests {
         );
         stores.dispatch("MESSAGE_CREATE", &message("5", "x"));
         assert!(stores.typing_users(23, Instant::now()).is_empty());
+    }
+
+    #[test]
+    fn a_reply_to_a_deleted_message_reads_deleted() {
+        let mut stores = Stores::default();
+        stores.dispatch("MESSAGE_CREATE", &message("5", "b"));
+        let mut reply = message("6", "re");
+        reply["type"] = json!(19);
+        reply["message_reference"] = json!({"message_id": "5", "channel_id": "23"});
+        reply["referenced_message"] = message("5", "b");
+        stores.dispatch("MESSAGE_CREATE", &reply);
+        assert!(stores.messages[&23][1].referenced.is_some());
+        assert!(!stores.messages[&23][1].extra.reference_deleted);
+        stores.dispatch("MESSAGE_DELETE", &json!({"id": "5", "channel_id": "23"}));
+        let reply = &stores.messages[&23][0];
+        assert_eq!(reply.id, 6);
+        assert!(reply.referenced.is_none());
+        assert!(reply.extra.reference_deleted);
     }
 
     #[test]
