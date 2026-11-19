@@ -190,7 +190,7 @@ impl Root {
 
     fn script_standin_more(&mut self, args: &[&str], cx: &mut Context<Self>) -> String {
         match args {
-            // Module 698405 needs a server the account only lurks: the open one is marked lurked here, locally.
+            // A server the account only lurks (module 30492 `isLurking`): the open one is marked lurked here, locally.
             ["lurk"] => match self.guild {
                 Some(guild) => {
                     self.stores.lurking_guilds.insert(guild);

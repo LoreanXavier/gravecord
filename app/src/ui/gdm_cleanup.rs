@@ -44,6 +44,16 @@ fn snowflake_ms(id: Id) -> i64 {
     ((id >> 22) as i64) + 1_420_070_400_000
 }
 
+/// `lastMessageTimestamp ?? lastMessageId ?? channel.lastMessageId ?? channel.id` of module 877760, in ms: the read
+/// state's newest message (moved by every MESSAGE_CREATE), else the channel's own last message, else its creation.
+pub(super) fn last_activity(latest: Option<Id>, last_message_id: Id, channel: Id) -> i64 {
+    let last = latest
+        .filter(|id| *id > 0)
+        .or((last_message_id > 0).then_some(last_message_id))
+        .unwrap_or(channel);
+    snowflake_ms(last)
+}
+
 /// The candidates of module 877760: `(channel, last activity)` of the quiet group DMs, oldest first.
 pub(super) fn candidates(channels: impl Iterator<Item = (Id, i64)>, now_ms: i64) -> Vec<(Id, i64)> {
     let cutoff = now_ms - INACTIVE_DAYS * 24 * 60 * 60 * 1000;
@@ -94,16 +104,11 @@ impl Root {
                 .iter()
                 .filter(|channel| channel.kind == 3 && !channel.message_request && !channel.spam)
                 .map(|channel| {
-                    let last = self
-                        .stores
-                        .read_states
-                        .latest
-                        .get(&channel.id)
-                        .copied()
-                        .filter(|id| *id > 0)
-                        .or((channel.last_message_id > 0).then_some(channel.last_message_id))
-                        .unwrap_or(channel.id);
-                    (channel.id, snowflake_ms(last))
+                    let latest = self.stores.read_states.latest.get(&channel.id).copied();
+                    (
+                        channel.id,
+                        last_activity(latest, channel.last_message_id, channel.id),
+                    )
                 }),
             now,
         );
@@ -520,6 +525,23 @@ mod tests {
             list.iter().map(|(id, _)| *id).collect::<Vec<_>>(),
             vec![2, 3]
         );
+    }
+
+    #[test]
+    fn a_recent_message_keeps_an_old_group_out() {
+        let snowflake = |ms: i64| ((ms - 1_420_070_400_000) as u64) << 22;
+        let day = 24 * 60 * 60 * 1000;
+        let now = 1_800_000_000_000;
+        let old = snowflake(now - 900 * day);
+        let recent = snowflake(now - 2 * day);
+        // An old group with a recent message (from the read state, or only from the channel) is not listed.
+        let channels = [
+            (1, last_activity(Some(recent), old, old)),
+            (2, last_activity(None, recent, old)),
+            (3, last_activity(Some(0), 0, old)),
+        ];
+        let list = candidates(channels.into_iter(), now);
+        assert_eq!(list.iter().map(|(id, _)| *id).collect::<Vec<_>>(), vec![3]);
     }
 
     #[test]

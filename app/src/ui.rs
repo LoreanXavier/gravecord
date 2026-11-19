@@ -135,7 +135,6 @@ mod live_activity;
 pub mod login;
 mod logout;
 mod lottie_icon;
-mod lurker_reaction;
 mod mark_read;
 mod member_actions;
 mod message_header;
@@ -942,8 +941,6 @@ pub struct Root {
     /// The popout a sticker in a message opens.
     sticker_popout: Option<sticker_popout::StickerPopout>,
     emoji_popout: Option<emoji_popout::EmojiPopout>,
-    /// Module 698405's popout over a reaction a lurker pressed.
-    lurker_reaction: Option<lurker_reaction::LurkerReaction>,
     /// Clean Up Inactive Group DMs (module 877760), while open.
     gdm_cleanup: Option<gdm_cleanup::GdmCleanup>,
     role_popout: Option<role_popout::RolePopout>,
@@ -1353,7 +1350,6 @@ impl Root {
             inventory_popout: inventory_popout::State::default(),
             sticker_popout: None,
             emoji_popout: None,
-            lurker_reaction: None,
             gdm_cleanup: None,
             role_popout: None,
             header_popout: None,
@@ -6351,10 +6347,15 @@ impl Root {
     /// Module 565265 after a server channel's title (`hl` of module 289287 with the `dot` divider): the header's dot
     /// (`dot_ybUK7Z`: 4px, `--background-mod-strong`, 4px each side), then the topic (`topic_pVbL3l`: 8px from it,
     /// 14/18 medium, `--text-muted`, one line cut with an ellipsis). A right press opens module 834881 with Copy Topic.
-    /// GAP: the topic is plain text (module 46054 `parseTruncatedTopic` renders its markdown) and a click does not
-    /// open the channel topic dialog (module 181094, not built); a linked lobby's line is not drawn.
+    /// A topic with markup goes through the markdown text (`parseTruncatedTopic` of module 46054).
+    /// GAP: a click does not open the channel topic dialog (module 181094, not built); a linked lobby's line is not
+    /// drawn.
     fn header_topic(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
         self.guild?;
+        // `showTopic: !h && !u` of module 289287: no topic beside the Favorites breadcrumb.
+        if self.in_favorites() {
+            return None;
+        }
         let channel = self.current_channel()?;
         let topic = channel.topic.as_deref().filter(|topic| !topic.is_empty())?;
         let id = channel.id;
@@ -6396,7 +6397,19 @@ impl Root {
                                 cx.stop_propagation();
                             }),
                         )
-                        .child(topic.replace('\n', " ")),
+                        .map(|this| {
+                            if spoiler_gate::has_markup(topic) {
+                                this.child(self.topic_text(
+                                    topic,
+                                    color("--text-muted").into(),
+                                    (14., 500., 18.),
+                                    1,
+                                    cx,
+                                ))
+                            } else {
+                                this.child(topic.replace(['\n', '\r'], " "))
+                            }
+                        }),
                 )
                 .into_any_element(),
         )
@@ -7646,6 +7659,15 @@ impl Root {
     }
 
     /// `#channel` in a message: the channel opens, in its own server.
+    /// The server of `channel` when the account only lurks there (`isLurking` of module 30492's reaction).
+    fn lurked_guild_of(&self, channel: Id) -> Option<Id> {
+        if self.stores.lurking_guilds.is_empty() {
+            return None;
+        }
+        let guild = self.guild_of_channel(channel)?;
+        self.stores.lurking_guilds.contains(&guild).then_some(guild)
+    }
+
     fn open_channel_mention(&mut self, channel: Id, cx: &mut Context<Self>) {
         let guild = self
             .stores
@@ -7755,12 +7777,10 @@ impl Root {
                 )
                 .after(reaction_tip::DELAY_MS)
                 .spaced(8.);
-                let probe = group.clone();
                 let pill = div()
                     .id(group.clone())
                     .group(group.clone())
                     .relative()
-                    .child(self.anchor_probe(probe.clone()))
                     .h(px(30.))
                     .px(px(6.))
                     .rounded(px(8.))
@@ -7796,12 +7816,10 @@ impl Root {
                         }
                     }))
                     .on_click(cx.listener(move |this, _, _, cx| {
-                        // Module 30492 `eS`: a lurker's press opens module 698405 over the reaction instead.
-                        if let Some(guild) = this.lurked_guild_of(channel) {
-                            let anchor = this.tip_anchors.borrow().get(probe.as_str()).copied();
-                            if let Some(anchor) = anchor {
-                                this.open_lurker_reaction(guild, anchor, cx);
-                            }
+                        // Module 30492 `eS`: a lurker's press reacts with nothing (it only focuses the call to
+                        // action of module 698405's popout, which no click opens: the reaction's `onClick` replaces
+                        // the popout's own).
+                        if this.lurked_guild_of(channel).is_some() {
                             return;
                         }
                         if add {
@@ -11380,7 +11398,6 @@ impl Render for Root {
             .children(self.role_picker_layer(window, cx))
             .children(self.sticker_popout_layer(cx))
             .children(self.emoji_popout_layer(cx))
-            .children(self.lurker_reaction_layer(cx))
             .children(self.shop_modal(window, cx))
             .children(self.discover_layers(window, cx))
             .children(self.purchase_modal(window, cx))
@@ -11455,6 +11472,7 @@ impl Render for Root {
                         self.forum_split_view(window, cx)
                             .unwrap_or_else(|| div().into_any_element())
                     } else {
+                        let gating = self.spoiler_gating_channel();
                         // The New Thread panel sits beside the whole chat column, header included.
                         div()
                             .flex()
@@ -11492,15 +11510,12 @@ impl Render for Root {
                                             .when(self.dm_call_chat_hidden(), |chat| {
                                                 chat.flex_none().h(px(0.)).overflow_hidden()
                                             })
-                                            .when_some(
-                                                self.spoiler_gating_channel(),
-                                                |this, gating| {
-                                                    // Module 289287 `renderChat`: a spoiler channel's gate (873614) in place
-                                                    // of the chat until the account agrees.
-                                                    this.child(self.spoiler_gate(gating, cx))
-                                                },
-                                            )
-                                            .when(self.spoiler_gating_channel().is_none(), |this| {
+                                            .when_some(gating, |this, gating| {
+                                                // Module 289287 `renderChat`: a spoiler channel's gate (873614) in place
+                                                // of the chat until the account agrees.
+                                                this.child(self.spoiler_gate(gating, cx))
+                                            })
+                                            .when(gating.is_none(), |this| {
                                                 this.child(
                                             div()
                                                 .flex()

@@ -88,6 +88,12 @@ fn set_agreed(user: Id, channel: Id, agreed: bool) {
     std::thread::spawn(move || crate::storage::set(STORAGE_KEY, state));
 }
 
+/// Whether a topic has anything markdown would draw differently from its plain text.
+pub(super) fn has_markup(topic: &str) -> bool {
+    topic.contains(['<', '*', '_', '`', '[', '~', '|', ':', '#', '>', '\n'])
+        || topic.contains("://")
+}
+
 /// `isSpoilerChannel` of module 95701.
 pub(super) fn is_spoiler_channel(channel: &Channel) -> bool {
     channel.flags & IS_SPOILER_CHANNEL != 0
@@ -110,6 +116,54 @@ pub(super) fn gating_channel(
 }
 
 impl Root {
+    /// A channel topic as `parseTruncatedTopic` of module 46054 draws it: its markdown (mentions, emoji, links) in one
+    /// text of `(size, weight, line height)`, clamped to `lines` lines with an ellipsis.
+    pub(super) fn topic_text(
+        &self,
+        topic: &str,
+        text: gpui::Hsla,
+        (size, weight, line): (f32, f32, f32),
+        lines: usize,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let blocks = dc_markdown::parse(topic);
+        let mut pieces: Vec<crate::inline::Piece> = Vec::new();
+        let mut links = Vec::new();
+        for block in &blocks {
+            let spans = super::block_spans(block).to_vec();
+            if !pieces.is_empty()
+                && let Some(first) = pieces.iter().find(|piece| piece.image.is_none())
+            {
+                // `parseTruncatedTopic` keeps a topic on its lines; a paragraph break reads as a space.
+                let mut gap = first.clone();
+                gap.text = " ".to_owned();
+                gap.boxed = None;
+                gap.hover = None;
+                gap.hover_underline = false;
+                gap.underline = false;
+                gap.strike = false;
+                gap.gradient = None;
+                pieces.push(gap);
+                links.push(None);
+            }
+            links.extend(super::link_runs(&spans));
+            pieces.extend(
+                spans
+                    .iter()
+                    .map(|span| self.piece(span, text, size, weight, line)),
+            );
+        }
+        let root = cx.weak_entity();
+        crate::inline::inline(pieces, px(line))
+            .line_clamp(lines, std::rc::Rc::new(std::cell::Cell::new(false)))
+            .on_piece_click(move |piece, _, cx| {
+                if let Some(Some((url, label))) = links.get(piece).cloned() {
+                    let _ = root.update(cx, |this, cx| this.follow_link(&url, &label, cx));
+                }
+            })
+            .into_any_element()
+    }
+
     /// The spoiler channel gating the channel or thread in view (`Uf` of module 288254), if any.
     pub(super) fn spoiler_gating_channel(&self) -> Option<Id> {
         let id = self.channel?;
@@ -215,8 +269,7 @@ impl Root {
                 .into_any_element(),
             None => dc_intl::t("q38/ae").into_any_element(),
         };
-        // GAP: the topic is plain text (module 46054 `parseTruncatedTopic` renders its markdown), and "See More"
-        // (the channel topic dialog of module 181094, not built) is not drawn.
+        // GAP: "See More" (the channel topic dialog of module 181094, not built) is not drawn.
         let topic = channel
             .and_then(|channel| channel.topic.as_deref())
             .map(str::trim)
@@ -236,8 +289,21 @@ impl Root {
                             .line_height(px(20.))
                             .font_weight(FontWeight(500.))
                             .text_color(color("--text-muted"))
-                            .line_clamp(3)
-                            .child(topic.to_owned()),
+                            .map(|this| {
+                                // GAP: the inline text that draws markdown cannot centre its lines, so a topic with
+                                // markup is drawn left-aligned and a plain one as centred plain text.
+                                if has_markup(topic) {
+                                    this.child(self.topic_text(
+                                        topic,
+                                        color("--text-muted").into(),
+                                        (16., 500., 20.),
+                                        3,
+                                        cx,
+                                    ))
+                                } else {
+                                    this.line_clamp(3).child(topic.to_owned())
+                                }
+                            }),
                     )
                     .child(
                         div()

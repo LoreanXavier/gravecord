@@ -19,18 +19,45 @@ impl Root {
         let Some(guild) = self.guild_events.as_ref().map(|open| open.guild) else {
             return;
         };
+        let (series, series_more) = self.event_series_page(event, SERIES_PAGE);
         if let Some(open) = self.guild_events.as_mut() {
             open.detail = Some(Detail {
                 event,
                 tab: Tab::Info,
                 recurrence: None,
-                series: SERIES_PAGE,
+                series,
+                series_more,
             });
             open.menu = None;
         }
         self.event_fetch_counts(guild, event);
         self.event_fetch_users(guild, event);
         cx.notify();
+    }
+
+    /// The first `count` occurrences of a recurring event from its start, and whether another follows within four
+    /// years (`er` and `canViewMoreRecurrences` of module 893110).
+    fn event_series_page(
+        &self,
+        event: Id,
+        count: usize,
+    ) -> (Vec<chrono::DateTime<chrono::Utc>>, bool) {
+        let Some(known) = self
+            .stores
+            .scheduled_events
+            .get_guild_scheduled_event(event)
+        else {
+            return (Vec::new(), false);
+        };
+        let Some(first) = known.start().filter(|_| !known.recurrence_rule.is_null()) else {
+            return (Vec::new(), false);
+        };
+        let rule = &known.recurrence_rule;
+        let times = super::recurrence::occurrences(rule, first, false, count);
+        let more = times
+            .last()
+            .is_some_and(|last| super::recurrence::has_more(rule, *last, chrono::Utc::now()));
+        (times, more)
     }
 
     fn set_event_tab(&mut self, tab: Tab, cx: &mut Context<Self>) {
@@ -304,11 +331,8 @@ impl Root {
             return None;
         }
         let first = event.start()?;
-        let rule = &event.recurrence_rule;
-        let times = super::recurrence::occurrences(rule, first, false, detail.series);
-        let more = times
-            .last()
-            .is_some_and(|last| super::recurrence::has_more(rule, *last, chrono::Utc::now()));
+        let times = detail.series.clone();
+        let more = detail.series_more;
         let exceptions = self.stores.scheduled_events.exceptions_of(event.id);
         let rows = times.into_iter().enumerate().map(|(index, at)| {
             let ms = at.timestamp_millis();
@@ -411,12 +435,23 @@ impl Root {
                                         .hover(|style| style.underline())
                                         .child(dc_intl::t("8O7Hpy"))
                                         .on_click(cx.listener(|this, _, _, cx| {
+                                            let Some((event, shown)) = this
+                                                .guild_events
+                                                .as_ref()
+                                                .and_then(|open| open.detail.as_ref())
+                                                .map(|detail| (detail.event, detail.series.len()))
+                                            else {
+                                                return;
+                                            };
+                                            let (series, more) =
+                                                this.event_series_page(event, shown + SERIES_PAGE);
                                             if let Some(detail) = this
                                                 .guild_events
                                                 .as_mut()
                                                 .and_then(|open| open.detail.as_mut())
                                             {
-                                                detail.series += SERIES_PAGE;
+                                                detail.series = series;
+                                                detail.series_more = more;
                                             }
                                             cx.notify();
                                         })),
@@ -614,7 +649,7 @@ impl Root {
                             div()
                                 .parity("event-detail-panel")
                                 .id("event-detail-panel")
-                                .max_h(px((self.viewport.1 - 350.).max(200.)))
+                                .max_h(px((self.viewport.1 - 300.).max(200.)))
                                 .overflow_y_scroll()
                                 .child(panel),
                         ),
