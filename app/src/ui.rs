@@ -101,6 +101,7 @@ mod friend_nickname;
 mod friend_request_notice;
 mod friends;
 mod full_profile;
+mod full_profile_recent;
 mod game_add_to_profile;
 mod game_announcements;
 mod game_communities;

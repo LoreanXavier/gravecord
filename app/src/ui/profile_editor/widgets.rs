@@ -2637,7 +2637,7 @@ impl Root {
             }));
         let content: AnyElement = match tab {
             Tab::Board => self.profile_editor_board(palette, cx).into_any_element(),
-            Tab::Activity => self.profile_editor_activity_tab().into_any_element(),
+            Tab::Activity => self.profile_editor_activity_tab(palette, cx),
             Tab::Wishlist => self
                 .profile_editor_wishlist_tab(window, cx)
                 .into_any_element(),

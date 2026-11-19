@@ -672,7 +672,10 @@ impl Root {
             let mut button =
                 super::keyboard::ring_when_focused(div().id(SharedString::from(key.clone())))
                     .track_focus(&focus)
-                    .size_full()
+                    .h_full()
+                    // In the full profile (`user-profile-modal-v2 .actions`, wrapping) the buttons are as wide as
+                    // their text: Listen Along 99px, Connect Spotify 122px at 1280x720.
+                    .when(!large, |b| b.w_full())
                     .when(!sync || large, |b| b.px(px(11.)))
                     .border_1()
                     .border_color(palette.token("--control-secondary-border-default"))
@@ -759,7 +762,8 @@ impl Root {
                         button,
                         cx,
                     )
-                    .size_full()
+                    .h_full()
+                    .when(!large, |tip| tip.w_full())
                     .into_any_element(),
                 None => button.into_any_element(),
             };
@@ -771,11 +775,12 @@ impl Root {
                 })
                 .h(px(32.))
                 .when(sync && !large, |b| b.w(px(32.)).flex_none())
-                .when(!sync || large, |b| b.flex_1().min_w_0())
+                .when(!sync && !large, |b| b.flex_1().min_w_0())
+                .when(large, |b| b.flex_none())
                 .child(content)
                 .into_any_element()
         };
-        let mut row = div().flex().gap(px(8.));
+        let mut row = div().flex().gap(px(8.)).when(large, |row| row.flex_wrap());
         if large {
             row = row.child(make(true, cx)).child(make(false, cx));
         } else {

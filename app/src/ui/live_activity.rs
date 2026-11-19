@@ -118,7 +118,7 @@ pub(super) fn playback_value_text(elapsed_s: i64, duration_s: i64) -> String {
     )
 }
 
-fn party_text(state: Option<&str>, party: &Value) -> Option<String> {
+pub(super) fn party_text(state: Option<&str>, party: &Value) -> Option<String> {
     let size = &party["size"];
     let (count, max) = (size[0].as_i64(), size[1].as_i64());
     let count_text = match (count, max) {
@@ -248,6 +248,12 @@ impl Root {
         }
         if let Some(profile) = &self.full_profile {
             users.push(profile.user);
+        }
+        // The editor is your own full profile (module 927071 in editing mode): its Activity tab shows your cards.
+        if self.profile_editor.is_some()
+            && let Some(me) = self.stores.current_user.as_ref()
+        {
+            users.push(me.id);
         }
         if self.show_dm_profile
             && let Some(user) = self.current_dm().and_then(|c| self.stores.dm_recipient(c))

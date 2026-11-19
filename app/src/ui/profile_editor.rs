@@ -182,6 +182,24 @@ pub(super) fn profile_field_style(
 }
 
 impl Root {
+    /// The editor on one profile (the main one or a server's) and, when given, one tab: Edit Per-server Profile and
+    /// Edit Main Profile (module 822775), and your own full profile in editing mode (module 927071 `e_ = "edit"`).
+    pub(super) fn open_profile_editor_for(
+        &mut self,
+        guild: Option<Id>,
+        tab: Option<Tab>,
+        cx: &mut Context<Self>,
+    ) {
+        self.open_profile_editor(cx);
+        if guild.is_some() {
+            self.profile_editor_select_guild(guild, cx);
+        }
+        if let (Some(tab), Some(open)) = (tab, self.profile_editor.as_mut()) {
+            open.tab = tab;
+        }
+        cx.notify();
+    }
+
     pub(super) fn open_profile_editor(&mut self, cx: &mut Context<Self>) {
         let Some(me) = self.stores.current_user.clone() else {
             return;

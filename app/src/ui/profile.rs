@@ -482,7 +482,7 @@ impl Root {
             .gap(px(12.))
             .child(names)
             .when(own && self.profile_upsell_shown(), |this| {
-                this.child(upsell(self.premium().is_subscriber(), cx))
+                this.child(upsell(self.premium().is_subscriber(), false, cx))
             })
             // Module 646986: the live activity cards (the Spotify track among them) come before the voice card.
             .children(
@@ -634,7 +634,13 @@ impl Root {
 /// The card for a subscriber differs: module 560296 `$` swaps the Get Nitro button for "View Perks" (string `0Q61kF`,
 /// `NitroWheelIcon`) when `isPremiumUser`.
 pub(super) fn upsell_card_for(premium: bool, cx: &mut Context<Root>) -> impl IntoElement {
-    upsell(premium, cx)
+    upsell(premium, false, cx)
+}
+
+/// The same card in the full profile: `.user-profile-modal-v2 .upsellButtonWrapper_vJa-rc{flex:unset}` keeps each
+/// button as wide as its content.
+pub(super) fn upsell_card_in_modal(premium: bool, cx: &mut Context<Root>) -> impl IntoElement {
+    upsell(premium, true, cx)
 }
 
 /// `newUserCooldownMs` (module 68656 `P3`): a dismissible content counts as dismissed while the account is younger
@@ -696,13 +702,14 @@ fn upsell_action(premium: bool, shop_button: bool) -> UpsellAction {
     }
 }
 
-fn upsell(premium: bool, cx: &mut Context<Root>) -> impl IntoElement {
+fn upsell(premium: bool, modal: bool, cx: &mut Context<Root>) -> impl IntoElement {
     let button =
         |id: &'static str, icon_name: &'static str, label: &'static str, action: UpsellAction| {
             div()
                 .id(id)
                 .cursor_pointer()
-                .flex_1()
+                .when(!modal, |button| button.flex_1())
+                .when(modal, |button| button.flex_none().px(px(11.)))
                 .h(px(32.))
                 .rounded(px(8.))
                 .border_1()

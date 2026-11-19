@@ -22,6 +22,9 @@ use gpui::{
 };
 use serde_json::Value;
 
+/// `UserProfileModalV2`'s editing experiment (module 591179).
+const WYSIWYG_EDITING: &str = "2026-03-wysiwyg-user-profile-editing";
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum Tab {
     /// `WIDGETS` ("Board"): the profile's widgets, first when it has any.
@@ -210,37 +213,6 @@ impl FullProfile {
             self.board_expanded.insert(key.to_owned());
         }
     }
-}
-
-/// `PLAYED_GAME` and `LISTENED_SESSION` in `ContentInventoryEntryType`.
-const PLAYED_GAME: u64 = 1;
-const LISTENED_SESSION: u64 = 5;
-/// `ContentInventoryTraitType.FIRST_TIME`.
-const TRAIT_FIRST_TIME: u64 = 1;
-
-/// `aJ` with the `E` format set: "Ns ago" up to a minute, then minutes, hours under 12, days under 9, weeks under 4,
-/// then months of 30 days, each rounded.
-pub(super) fn time_ago(seconds: i64) -> String {
-    let span = seconds.abs();
-    let round = |unit: f64| (seconds as f64 / unit).round() as i64;
-    if span < 60 {
-        format!("{seconds}s ago")
-    } else if span < 3_600 {
-        format!("{}m ago", round(60.))
-    } else if span < 12 * 3_600 {
-        format!("{}h ago", round(3_600.))
-    } else if span < 9 * 86_400 {
-        format!("{}d ago", round(86_400.))
-    } else if span < 4 * 7 * 86_400 {
-        format!("{}w ago", round(7. * 86_400.))
-    } else {
-        format!("{}mo ago", round(30. * 86_400.))
-    }
-}
-
-/// Milliseconds since the Unix epoch of a snowflake.
-fn snowflake_ms(id: Id) -> i64 {
-    (id >> 22) as i64 + 1_420_070_400_000
 }
 
 fn profile_route(user: Id, guild: Option<Id>) -> String {
@@ -910,6 +882,17 @@ impl Root {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        if self.own_profile_edits_in_place(user) {
+            self.status_popout = None;
+            self.profile = None;
+            let tab = match tab {
+                Tab::Board => super::profile_editor::Tab::Board,
+                Tab::Wishlist => super::profile_editor::Tab::Wishlist,
+                _ => super::profile_editor::Tab::Activity,
+            };
+            self.open_profile_editor_for(self.guild, Some(tab), cx);
+            return;
+        }
         self.open_full_profile(user, window, cx);
         if let Some(open) = self.full_profile.as_mut() {
             open.tab = tab;
@@ -924,6 +907,43 @@ impl Root {
         cx.notify();
     }
 
+    /// Edit Profile on your own read-only full profile (module 822775): the editor, or in a server the menu of the
+    /// per-server and main profiles under the button.
+    pub(super) fn full_profile_edit_clicked(
+        &mut self,
+        guild: Option<Id>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        match guild {
+            None => {
+                self.close_full_profile(cx);
+                self.open_profile_editor_for(None, None, cx);
+            }
+            Some(guild) => {
+                let Some(bounds) = self.tip_anchors.borrow().get("full-profile-edit").copied()
+                else {
+                    return;
+                };
+                // GAP: the popout's offset from the button is not in a capture; it opens 8px under it, start-aligned.
+                let at = gpui::point(bounds.left(), bounds.bottom() + px(8.));
+                let _ = window;
+                self.open_context_menu(super::context_menu::Target::EditProfileMenu(guild), at, cx);
+            }
+        }
+    }
+
+    /// Module 927071 `eL`: your own profile opens in editing mode (the profile editor) under the
+    /// `2026-03-wysiwyg-user-profile-editing` experiment, unless Streamer Mode hides personal information.
+    fn own_profile_edits_in_place(&self, user: Id) -> bool {
+        self.stores
+            .current_user
+            .as_ref()
+            .is_some_and(|me| me.id == user)
+            && self.stores.experiments.variant(WYSIWYG_EDITING) == Some(1)
+            && !self.streamer_hides_personal()
+    }
+
     pub(super) fn open_full_profile(
         &mut self,
         user: Id,
@@ -932,6 +952,10 @@ impl Root {
     ) {
         self.status_popout = None;
         self.profile = None;
+        if self.own_profile_edits_in_place(user) {
+            self.open_profile_editor_for(self.guild, None, cx);
+            return;
+        }
         let note_palette = self.profile_palette(user, self.guild, false);
         let note = cx.new(|cx| {
             // `input_CJLDJI`: body-sm on the profile's text colour, the placeholder in italics.
@@ -1134,6 +1158,10 @@ impl Root {
                 .iter()
                 .filter_map(|entry| entry["extra"]["application_id"].as_str().map(str::to_owned))
                 .collect();
+            // 692969 reads each game's record (`shouldOpenGameProfile`) for the cards' badges and links.
+            for game in &games {
+                self.request_game_record(game);
+            }
             if !games.is_empty() {
                 let query: Vec<String> = games
                     .iter()
@@ -1206,7 +1234,7 @@ impl Root {
         cx.notify();
     }
 
-    fn section_heading(text: impl Into<SharedString>, tint: Hsla) -> gpui::Div {
+    pub(super) fn section_heading(text: impl Into<SharedString>, tint: Hsla) -> gpui::Div {
         div()
             .h(px(16.))
             .text_size(px(12.))
@@ -1773,140 +1801,6 @@ impl Root {
                 .flex_col()
                 .gap(px(16.))
                 .children(rows)
-                .into_any_element(),
-        )
-    }
-
-    /// One `card_Bu4Al8`: art, title, subtitle and the badges row.
-    fn activity_card(
-        &self,
-        entry: &Value,
-        now_ms: i64,
-        palette: &super::dm_profile::Palette,
-        strong: Hsla,
-        subtle: Hsla,
-    ) -> Option<AnyElement> {
-        let kind = entry["content_type"].as_u64()?;
-        let id: Id = entry["id"].as_str()?.parse().ok()?;
-        let ago = time_ago((now_ms - snowflake_ms(id)) / 1_000);
-        let first_time = entry["traits"]
-            .as_array()
-            .into_iter()
-            .flatten()
-            .any(|item| {
-                item["type"].as_u64() == Some(TRAIT_FIRST_TIME) && item["first_time"] == true
-            });
-        let (art, title, subtitle, glyph) = match kind {
-            PLAYED_GAME => {
-                let app = entry["extra"]["application_id"]
-                    .as_str()
-                    .unwrap_or_default();
-                (
-                    self.images.get(&format!("app-icon:{app}")).cloned(),
-                    entry["extra"]["game_name"]
-                        .as_str()
-                        .unwrap_or_default()
-                        .to_owned(),
-                    None,
-                    "activity_game",
-                )
-            }
-            LISTENED_SESSION => {
-                let media = &entry["extra"]["entries"][0]["media"];
-                let url = media["image_url"].as_str().unwrap_or_default();
-                (
-                    self.images.get(url).cloned(),
-                    media["title"].as_str().unwrap_or_default().to_owned(),
-                    media["artists"][0]["name"].as_str().map(str::to_owned),
-                    "activity_music",
-                )
-            }
-            _ => return None,
-        };
-        let badge = |glyph: &'static str, text: String| {
-            div()
-                .flex()
-                .items_center()
-                .gap(px(4.))
-                .child(
-                    svg()
-                        .path(format!("icons/{glyph}.svg"))
-                        .size(px(12.))
-                        .text_color(subtle),
-                )
-                .child(
-                    div()
-                        .text_size(px(12.))
-                        .line_height(px(16.))
-                        .text_color(subtle)
-                        .child(text),
-                )
-        };
-        Some(
-            div()
-                .relative()
-                .p(px(12.))
-                .rounded(px(12.))
-                .border_1()
-                .border_color(palette.token("--border-muted"))
-                .bg(palette.token("--user-profile-overlay-background"))
-                .flex()
-                .gap(px(12.))
-                .child(
-                    div()
-                        .size(px(60.))
-                        .flex_none()
-                        .rounded(px(8.))
-                        .overflow_hidden()
-                        .bg(palette.tile_background(false))
-                        .children(art.map(|picture| img(picture).size(px(60.)).rounded(px(8.)))),
-                )
-                .child(
-                    div()
-                        .flex_1()
-                        .min_w(px(0.))
-                        .flex()
-                        .flex_col()
-                        .justify_center()
-                        .gap(px(4.))
-                        .child(
-                            div()
-                                .flex()
-                                .flex_col()
-                                .child(
-                                    div()
-                                        .text_size(px(14.))
-                                        .line_height(px(18.))
-                                        .font_weight(FontWeight(600.))
-                                        .text_color(strong)
-                                        .child(title),
-                                )
-                                .children(subtitle.map(|subtitle| {
-                                    div()
-                                        .text_size(px(12.))
-                                        .line_height(px(16.))
-                                        .text_color(strong)
-                                        .child(subtitle)
-                                })),
-                        )
-                        .child(div().flex().gap(px(8.)).child(badge(glyph, ago)).when(
-                            kind == PLAYED_GAME && first_time,
-                            |this| {
-                                this.child(badge(
-                                    "activity_new_player",
-                                    dc_intl::t!("keY6mW").to_owned(),
-                                ))
-                            },
-                        )),
-                )
-                .child(
-                    div().absolute().top(px(12.)).right(px(12.)).child(
-                        svg()
-                            .path("icons/more_horizontal.svg")
-                            .size(px(16.))
-                            .text_color(subtle),
-                    ),
-                )
                 .into_any_element(),
         )
     }
@@ -2799,7 +2693,7 @@ impl Root {
             .flatten()
             .filter_map(super::dm_profile::mutual_user)
             .collect();
-        let servers: Vec<(Id, Option<String>)> = body
+        let mut servers: Vec<(Id, Option<String>)> = body
             .and_then(|body| body["mutual_guilds"].as_array())
             .into_iter()
             .flatten()
@@ -2810,6 +2704,14 @@ impl Root {
                 ))
             })
             .collect();
+        // Module 913453: mutual servers in the order of the server list (`getFlattenedGuildIds`), unknown ones last.
+        servers.sort_by_key(|(guild, _)| {
+            self.stores
+                .guilds
+                .iter()
+                .position(|known| known.id == *guild)
+                .unwrap_or(usize::MAX)
+        });
         let (friend_count, server_count) = mutual_counts(body);
         let display_name = open_guild
             .and_then(|guild| self.stores.members.get(guild, id))
@@ -3102,6 +3004,61 @@ impl Root {
                         })),
                 )
             })
+            // `tG` of module 927071 on your own profile (read-only, no `UserProfileModalV2` editing): Edit Profile
+            // (module 822775: primary with the pencil; in a server a menu of the per-server and main profiles), then
+            // `tw`, the Shop icon button with its "Shop" tooltip, then More.
+            .when(me, |this| {
+                let edit_guild = open_guild;
+                this.child(
+                    div()
+                        .relative()
+                        .child(self.anchor_probe("full-profile-edit"))
+                        .child(
+                            div()
+                                .id("full-profile-edit")
+                                .h(px(32.))
+                                .px(px(11.))
+                                .rounded(px(8.))
+                                .border_1()
+                                .border_color(border_muted)
+                                .bg(primary_bg)
+                                .hover(move |style| style.bg(primary_hover))
+                                .active(move |style| style.bg(primary_active))
+                                .cursor_pointer()
+                                .flex()
+                                .items_center()
+                                .gap(px(4.))
+                                .child(
+                                    svg()
+                                        .path("icons/clips_pencil.svg")
+                                        .size(px(16.))
+                                        .text_color(primary_fg),
+                                )
+                                .child(
+                                    div()
+                                        .text_size(px(14.))
+                                        .line_height(px(18.))
+                                        .font_weight(FontWeight(500.))
+                                        .text_color(primary_fg)
+                                        .child(dc_intl::t!("s5vZlQ")),
+                                )
+                                .on_click(cx.listener(move |this, _, window, cx| {
+                                    this.full_profile_edit_clicked(edit_guild, window, cx);
+                                })),
+                        ),
+                )
+                .child(self.with_tip(
+                    "full-profile-shop-tip",
+                    super::tooltip::Tip::text(dc_intl::t!("b2d0N0"), super::tooltip::Side::Top),
+                    secondary_button("full-profile-shop", "shop").on_click(cx.listener(
+                        |this, _, _, cx| {
+                            this.full_profile = None;
+                            this.open_shop(cx);
+                        },
+                    )),
+                    cx,
+                ))
+            })
             .children(primary)
             .when(!me && relationship != Some(RELATIONSHIP_FRIEND), |this| {
                 this.child(
@@ -3131,6 +3088,13 @@ impl Root {
                         ),
                     ),
             );
+        // Module 560296 (`eV.A` after the buttons on your own profile): "Amp up your profile" until dismissed.
+        let upsell = (me && self.profile_upsell_shown()).then(|| {
+            super::profile::upsell_card_in_modal(self.premium().is_subscriber(), cx)
+                .into_any_element()
+        });
+        // `hidePersonalInformation` (Streamer Mode) hides the bio, connections and apps (`!en` in `u9`).
+        let streamer = self.streamer_hides_personal();
         let section = |heading: Option<&'static str>| {
             div()
                 .flex()
@@ -3210,7 +3174,8 @@ impl Root {
                                 ))
                             })
                             .child(buttons)
-                            .when_some(bio, |this, bio| {
+                            .children(upsell)
+                            .when_some(bio.filter(|_| !streamer), |this, bio| {
                                 this.child(section(None).child(self.bio(&bio, default, cx)))
                             })
                             .child(
@@ -3251,12 +3216,11 @@ impl Root {
                                     )
                                 },
                             )
-                            .when_some(connections, |d, conns| {
+                            .when_some(connections.filter(|_| !streamer), |d, conns| {
                                 d.child(section(Some(dc_intl::t!("3fe7U5"))).child(conns))
                             })
-                            .when(!me, |this| {
-                                this.child(section(Some(dc_intl::t!("mQKv+v"))).child(note_field))
-                            }),
+                            // `ry`: the note shows on every profile, your own included.
+                            .child(section(Some(dc_intl::t!("mQKv+v"))).child(note_field)),
                     ),
             )
             .children(effect);
@@ -3351,7 +3315,6 @@ impl Root {
                 )
                 .into_any_element()
         };
-        let now_ms = chrono::Utc::now().timestamp_millis();
         let row_hover = palette.token("--user-profile-background-hover");
         let dot_cutout = palette.theme.map_or("--background-base-lower", |t| {
             if t.light() { "--white" } else { "--black" }
@@ -3361,113 +3324,16 @@ impl Root {
             Tab::Board => self.full_profile_board(id, me, &palette, window, cx),
             Tab::Wishlist => wishlist_panel.unwrap_or_else(|| div().into_any_element()),
             Tab::Activity => {
-                let current = self.live_activity_cards(
+                let outbox = self.fetched.get(&format!("outbox:{id}")).cloned();
+                self.profile_activity_panel(
                     id,
-                    super::live_activity::Surface::Modal,
-                    strong,
-                    subtle,
+                    me,
+                    outbox.as_ref(),
+                    &activity_name,
+                    &palette,
+                    20.,
                     cx,
-                );
-                let cards: Vec<AnyElement> = self
-                    .fetched
-                    .get(&format!("outbox:{id}"))
-                    .and_then(|outbox| outbox["entries"].as_array())
-                    .into_iter()
-                    .flatten()
-                    .filter_map(|entry| self.activity_card(entry, now_ms, &palette, strong, subtle))
-                    .collect();
-                let outbox_read = self.fetched.contains_key(&format!("outbox:{id}"));
-                if !me && outbox_read && current.is_empty() && cards.is_empty() {
-                    // `sr` of module 927071: "<name> doesn't have any activity to share here", one of its sixteen
-                    // lines (sampled once per opening; here by the person's id) and a Message button.
-                    let (heading, line) = activity_empty_text(&activity_name, id);
-                    let message_bg = palette.token("--control-secondary-background-default");
-                    let message_hover = palette.token("--control-secondary-background-hover");
-                    let message_fg = palette.token("--control-secondary-text-default");
-                    div()
-                        // `empty_7q_A1n` sits in the tab panel itself (no scroller), 448px wide from the panel's
-                        // 32px inset: its centre is 8px right of the scroller's.
-                        .size_full()
-                        .pt(px(20.))
-                        .relative()
-                        .left(px(8.))
-                        .flex()
-                        .flex_col()
-                        .items_center()
-                        .justify_center()
-                        .gap(px(24.))
-                        .child(
-                            div()
-                                .max_w(px(320.))
-                                .flex()
-                                .flex_col()
-                                .gap(px(8.))
-                                .text_center()
-                                .child(
-                                    div()
-                                        .text_size(px(16.))
-                                        .line_height(px(20.))
-                                        .font_weight(FontWeight(500.))
-                                        .text_color(strong)
-                                        .child(heading),
-                                )
-                                .child(
-                                    div()
-                                        .text_size(px(14.))
-                                        .line_height(px(18.))
-                                        .text_color(default)
-                                        .child(line),
-                                ),
-                        )
-                        .child(
-                            // `button_F7qvhY` small secondary: 32px, 12px sides, the 16px chat glyph 4px before it.
-                            div()
-                                .id("full-profile-activity-message")
-                                .h(px(32.))
-                                .px(px(12.))
-                                .rounded(px(8.))
-                                .bg(message_bg)
-                                .hover(move |style| style.bg(message_hover))
-                                .cursor_pointer()
-                                .flex()
-                                .items_center()
-                                .gap(px(4.))
-                                .child(
-                                    svg()
-                                        .path("icons/chat_bubble.svg")
-                                        .size(px(16.))
-                                        .text_color(message_fg),
-                                )
-                                .child(
-                                    div()
-                                        .text_size(px(14.))
-                                        .line_height(px(18.))
-                                        .font_weight(FontWeight(500.))
-                                        .text_color(message_fg)
-                                        .child(dc_intl::t!("g33r/P")),
-                                )
-                                .on_click(cx.listener(move |this, _, _, cx| {
-                                    this.full_profile = None;
-                                    this.open_dm_with(id, cx);
-                                })),
-                        )
-                        .into_any_element()
-                } else {
-                    div()
-                        .pt(px(20.))
-                        .flex()
-                        .flex_col()
-                        .gap(px(8.))
-                        .when(!current.is_empty(), |this| {
-                            this.child(Self::section_heading(dc_intl::t!("J6STd9"), subtle))
-                                .child(div().flex().flex_col().gap(px(8.)).children(current))
-                        })
-                        .when(!cards.is_empty(), |this| {
-                            this.child(Self::section_heading(dc_intl::t!("jzgEoL"), subtle))
-                                .child(div().flex().flex_col().gap(px(8.)).children(cards))
-                        })
-                        .into_any_element()
-                }
+                )
             }
             Tab::Friends if friend_count == Some(0) => mutual_empty(false),
             Tab::Servers if server_count == Some(0) => mutual_empty(true),
@@ -3831,7 +3697,7 @@ mod tests {
         connection_metadata, full_profile_modal_geometry, initial_tab, mutual_counts,
         mutual_empty_text, mutual_friend_label, mutual_friends_label, mutual_servers_label,
         parse_connected_accounts, parse_custom_status, profile_date, profile_route, profile_tabs,
-        should_apply_guild_member, status_label, time_ago, wishlist_is_private,
+        should_apply_guild_member, status_label, wishlist_is_private,
     };
 
     /// ShowConnections reads the theme's SVG and `verified` from the same table and parser as the profile.
@@ -4139,16 +4005,6 @@ mod tests {
             profile_date("2013-01-06T10:00:00").as_deref(),
             Some("Jan 6, 2013")
         );
-    }
-
-    #[test]
-    fn time_ago_rounds_into_the_official_bands() {
-        assert_eq!(time_ago(42), "42s ago");
-        assert_eq!(time_ago(90), "2m ago");
-        assert_eq!(time_ago(8 * 3_600 + 1_000), "8h ago");
-        assert_eq!(time_ago(30 * 3_600), "1d ago");
-        assert_eq!(time_ago(10 * 86_400), "1w ago");
-        assert_eq!(time_ago(40 * 86_400), "1mo ago");
     }
 
     #[test]

@@ -203,7 +203,7 @@ async fn run(
 }
 
 #[cfg(windows)]
-fn protocol_registered() -> bool {
+pub(crate) fn protocol_registered() -> bool {
     use windows::{
         Win32::UI::Shell::{
             ASSOCF_IS_PROTOCOL, ASSOCF_NOFIXUPS, ASSOCSTR_EXECUTABLE, AssocQueryStringW,
@@ -238,7 +238,7 @@ fn protocol_registered() -> bool {
 }
 
 #[cfg(not(windows))]
-fn protocol_registered() -> bool {
+pub(crate) fn protocol_registered() -> bool {
     false
 }
 

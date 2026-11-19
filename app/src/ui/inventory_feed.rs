@@ -142,7 +142,7 @@ fn rows_seen(scroll_top: f32, height: f32, shown: usize) -> usize {
 }
 
 /// 583846 `W6`: the elapsed time as `m:ss`, or `h:mm:ss` from an hour.
-fn live_timer(start_ms: i64, now_ms: i64) -> String {
+pub(super) fn live_timer(start_ms: i64, now_ms: i64) -> String {
     let seconds = (now_ms - start_ms).max(0) / 1000;
     let (hours, minutes, seconds) = (seconds / 3600, seconds / 60 % 60, seconds % 60);
     if hours > 0 {

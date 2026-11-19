@@ -232,8 +232,8 @@ impl Retries {
         !self.resting.is_empty() && self.resting.contains(key)
     }
 
-    /// Failures recorded for `key` (0 when unknown), for the harness's state line.
-    #[cfg(any(test, feature = "capture"))]
+    /// Failures recorded for `key` (0 when unknown): the harness's state line, and the full profile's activity cards,
+    /// which draw the UnknownGameIcon for a picture that failed (module 263577).
     pub(super) fn failures(&self, key: &str) -> u32 {
         self.entries.get(key).map_or(0, |entry| entry.failures)
     }

@@ -60,6 +60,11 @@ pub(super) enum Target {
         popout: bool,
         embedded: bool,
     },
+    /// The "..." of a Recent activity card in the full profile (module 285909 with `display: "recent"`); the entry is
+    /// kept in `State::recent_entry`.
+    RecentActivity {
+        user: Id,
+    },
     Guild(Id),
     Channel(Id),
     Category(Id),
@@ -145,6 +150,10 @@ pub(super) enum Act {
     ManageSpotifyPrivacy,
     ReportGameIssue,
     ViewGameProfile,
+    /// `connect-spotify` of module 285909: Connect Spotify, opening Connections.
+    ConnectSpotify,
+    /// `play-on-spotify` of module 285909: the entry's track in Spotify.
+    PlayOnSpotify,
     ReportApp,
     ReportWidget,
     MarkRead,
@@ -376,7 +385,7 @@ impl Act {
     /// Every row kind once (`Correction` with its first index). `ordinal` is an exhaustive match, so adding a variant
     /// without listing it here fails the build or the `act_list_is_complete` test.
     #[cfg(test)]
-    pub(super) const ALL: [Act; 166] = [
+    pub(super) const ALL: [Act; 168] = [
         Act::InventoryAbout,
         Act::InventoryHide,
         Act::ReportApp,
@@ -543,6 +552,8 @@ impl Act {
         Act::PluginCopyStickerLink,
         Act::PluginOpenStickerLink,
         Act::PluginRemoveFromRecents,
+        Act::ConnectSpotify,
+        Act::PlayOnSpotify,
     ];
 
     #[cfg(test)]
@@ -714,6 +725,8 @@ impl Act {
             Act::PluginCopyStickerLink => 163,
             Act::PluginOpenStickerLink => 164,
             Act::PluginRemoveFromRecents => 165,
+            Act::ConnectSpotify => 166,
+            Act::PlayOnSpotify => 167,
         }
     }
 }
@@ -786,6 +799,8 @@ pub(super) fn status(act: Act) -> Status {
         | Act::ManageSpotifyPrivacy
         | Act::ReportGameIssue
         | Act::ViewGameProfile
+        | Act::ConnectSpotify
+        | Act::PlayOnSpotify
         | Act::FavoriteExpression
         | Act::CopyEmoji
         | Act::CopyExpressionLink
@@ -1117,6 +1132,50 @@ pub(super) fn spotify_activity_items(own: bool, popout: bool) -> Vec<Entry> {
         )));
     }
     if own {
+        items.push(Entry::Row(Row::new(
+            Act::ManageSpotifyPrivacy,
+            dc_intl::tr("Manage Privacy"),
+        )));
+    }
+    items
+}
+
+/// Module 285909 for a Recent activity card of the full profile (`display: "recent"`), in its order: for a Spotify
+/// entry Connect Spotify without a linked account, else Play on Spotify on someone else's (285909 `F3`); View Game
+/// Profile (534465 `Ay`) when the game's profile opens; Report Issue for a game (534465 `gA`, `zD`); Manage Privacy on
+/// your own entry (module 939075). GAP: "Remove from activity history" (module 754495, the confirm modal 839785 and its
+/// DELETE) and the Crunchyroll rows are not built.
+pub(super) fn recent_activity_items(
+    own: bool,
+    spotify: Option<bool>,
+    game: bool,
+    profile: bool,
+) -> Vec<Entry> {
+    let mut items = Vec::new();
+    match spotify {
+        Some(false) => items.push(Entry::Row(Row::new(
+            Act::ConnectSpotify,
+            dc_intl::t!("XWSHTb", platform = "Spotify").to_owned(),
+        ))),
+        Some(true) if !own => items.push(Entry::Row(Row::new(
+            Act::PlayOnSpotify,
+            dc_intl::t!("rRffNz").to_owned(),
+        ))),
+        _ => {}
+    }
+    if profile {
+        items.push(Entry::Row(Row::new(
+            Act::ViewGameProfile,
+            dc_intl::tr("View Game Profile"),
+        )));
+    }
+    if game {
+        items.push(Entry::Row(Row::new(
+            Act::ReportGameIssue,
+            dc_intl::tr("Report Issue"),
+        )));
+    }
+    if own && (spotify.is_some() || game) {
         items.push(Entry::Row(Row::new(
             Act::ManageSpotifyPrivacy,
             dc_intl::tr("Manage Privacy"),
@@ -2656,6 +2715,8 @@ pub(super) struct State {
     pub omit_mention: bool,
     /// The game of the card whose "..." is open (`detected` of the Report Issue dialog).
     pub game_activity: Option<super::report_issue::Detected>,
+    /// The outbox entry of the Recent activity card whose "..." is open.
+    pub recent_entry: Option<serde_json::Value>,
     /// The picker's emoji whose menu is open.
     pub picker_emoji: Option<super::picker::Item>,
     /// The sound whose menu is open, and the call's server it was opened for (`activeCallGuildId`).
@@ -3420,6 +3481,7 @@ impl Root {
                     .and_then(|game| game.application_id.as_deref())
                     .is_some_and(|app| self.game_profile_available(app)),
             ),
+            Target::RecentActivity { user } => self.recent_activity_menu_items(user),
             Target::InventoryAuthor { .. } => {
                 let mut items = vec![Entry::Row(Row::new(Act::Profile, dc_intl::tr("Profile")))];
                 if developer {
@@ -4367,6 +4429,75 @@ impl Root {
                     cx,
                 );
             }
+            (Act::ConnectSpotify, Target::RecentActivity { .. }) => {
+                self.context.recent_entry = None;
+                self.close_full_profile(cx);
+                self.open_settings_category(
+                    dc_intl::tr("Connected Apps"),
+                    dc_intl::tr("Connections"),
+                    cx,
+                );
+            }
+            (Act::PlayOnSpotify, Target::RecentActivity { .. }) => {
+                if let Some(track) = self.context.recent_entry.take().and_then(|entry| {
+                    entry["extra"]["entries"][0]["media"]["external_id"]
+                        .as_str()
+                        .or_else(|| entry["extra"]["media"]["external_id"].as_str())
+                        .map(str::to_owned)
+                }) && let Some(url) =
+                    super::full_profile_recent::spotify_open_url("track", &track)
+                {
+                    cx.open_url(&url);
+                }
+            }
+            (Act::ViewGameProfile, Target::RecentActivity { .. }) => {
+                if let Some(app) =
+                    self.context.recent_entry.take().and_then(|entry| {
+                        entry["extra"]["application_id"].as_str().map(str::to_owned)
+                    })
+                {
+                    self.open_game_profile(app, cx);
+                }
+            }
+            (Act::ReportGameIssue, Target::RecentActivity { .. }) => {
+                let detected =
+                    self.context
+                        .recent_entry
+                        .take()
+                        .map(|entry| super::report_issue::Detected {
+                            name: entry["extra"]["game_name"]
+                                .as_str()
+                                .unwrap_or_default()
+                                .to_owned(),
+                            application_id: entry["extra"]["application_id"]
+                                .as_str()
+                                .map(str::to_owned),
+                            art: None,
+                        });
+                self.open_report_issue(detected, window, cx);
+            }
+            (Act::ManageSpotifyPrivacy, Target::RecentActivity { .. }) => {
+                // Module 939075 `y`: a game opens Activity Privacy (`onOpenGameSettings`); a listened, watched or
+                // console entry opens Connections.
+                let game = self.context.recent_entry.take().is_some_and(|entry| {
+                    matches!(entry["content_type"].as_u64(), Some(1 | 3))
+                        && !matches!(
+                            entry["extra"]["platform"].as_str(),
+                            Some("xbox" | "playstation")
+                        )
+                });
+                self.profile = None;
+                self.close_full_profile(cx);
+                if game {
+                    self.open_settings_page("activity_privacy", cx);
+                } else {
+                    self.open_settings_category(
+                        dc_intl::tr("Connected Apps"),
+                        dc_intl::tr("Connections"),
+                        cx,
+                    );
+                }
+            }
             (Act::ReportGameIssue, Target::GameActivity { .. }) => {
                 let detected = self.context.game_activity.take();
                 self.open_report_issue(detected, window, cx);
@@ -4519,7 +4650,8 @@ impl Root {
                     Target::User { user, .. }
                     | Target::InventoryAuthor { user }
                     | Target::SpotifyActivity { user, .. }
-                    | Target::GameActivity { user, .. } => user,
+                    | Target::GameActivity { user, .. }
+                    | Target::RecentActivity { user } => user,
                     Target::AppDirectory(id)
                     | Target::LauncherApp(id)
                     | Target::GameProfile(id)
@@ -4760,15 +4892,17 @@ impl Root {
                     open.newest_first = act == Act::GdmSortNewest;
                 }
             }
+            // Module 822775's rows, from the account's popout or your own full profile: the popout or profile closes
+            // and the profile editor opens on the main profile, or on this server's (module 206835 sets the server).
             (Act::EditMainProfile, Target::EditProfileMenu(_)) => {
                 self.profile = None;
-                self.open_profile_editor(cx);
+                self.close_full_profile(cx);
+                self.open_profile_editor_for(None, None, cx);
             }
-            // GAP: the per-server profile editor (module 474397 with the server set by module 206835) is not built;
-            // like the server menu's Edit Per-server Profile, this opens the account's settings.
-            (Act::EditGuildProfile, Target::EditProfileMenu(_)) => {
+            (Act::EditGuildProfile, Target::EditProfileMenu(guild)) => {
                 self.profile = None;
-                self.open_settings_section(dc_intl::tr("Account"), cx);
+                self.close_full_profile(cx);
+                self.open_profile_editor_for(Some(guild), None, cx);
             }
             (Act::EditOnboarding, Target::BrowseChannels(guild)) => {
                 self.open_server_settings_at(guild, super::server_settings::Page::Onboarding, cx)
