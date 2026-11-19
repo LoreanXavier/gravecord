@@ -568,6 +568,9 @@ impl Root {
         let uri = cropped.data_uri();
         match purpose {
             Purpose::ProfileAvatar | Purpose::ProfileBanner => {
+                if self.animated_upload_gate(purpose == Purpose::ProfileBanner, file_name, cx) {
+                    return;
+                }
                 let stem = std::path::Path::new(file_name)
                     .file_stem()
                     .and_then(|stem| stem.to_str())

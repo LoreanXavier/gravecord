@@ -802,7 +802,8 @@ impl Root {
                     .mt(px(12.))
                     .h(px(24.))
                     .pl(px(17.))
-                    .pr(px(16.))
+                    // The actions end where the capture's do (the plus at x 343..359 of the 375 wide sidebar).
+                    .pr(px(12.))
                     .flex()
                     .items_start()
                     .pt(px(1.))
@@ -814,16 +815,27 @@ impl Root {
                     .hover(|style| style.text_color(color("--interactive-text-hover")))
                     .child(dc_intl::tr("Direct Messages"))
                     .child(div().flex_1())
+                    // `headerActions_Bce46W` (4px apart) in the `enlarge-target-size` capture
+                    // (active-now-watch/switch-fixture): More (module 830507 `j`) and Create DM, each a 24px box with
+                    // its 16px icon 4px in, 2px above the header's own box.
                     .child(
-                        // "Create DM": the same New Message picker as the Friends page's New Group DM.
                         div()
-                            .id("dm-plus")
-                            .mt(px(1.))
-                            .cursor_pointer()
-                            .on_click(cx.listener(|this, _, window, cx| {
-                                this.open_group_dm_picker(window, cx)
-                            }))
-                            .child(icon("dm_plus", 16., "--text-muted")),
+                            .mt(px(-3.))
+                            .flex()
+                            .gap(px(4.))
+                            .child(self.dm_header_more(cx))
+                            .child(
+                                // "Create DM": the same New Message picker as the Friends page's New Group DM.
+                                div()
+                                    .id("dm-plus")
+                                    .size(px(24.))
+                                    .p(px(4.))
+                                    .cursor_pointer()
+                                    .on_click(cx.listener(|this, _, window, cx| {
+                                        this.open_group_dm_picker(window, cx)
+                                    }))
+                                    .child(icon("dm_plus", 16., "--text-muted")),
+                            ),
                     ),
             )
             .children(rows)

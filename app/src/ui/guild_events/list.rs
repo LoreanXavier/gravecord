@@ -41,6 +41,12 @@ pub(in super::super) enum Tab {
 pub(in super::super) struct Detail {
     pub event: Id,
     pub tab: Tab,
+    /// The occurrence of a recurring event picked in "Events in series" (module 893110), by its start in ms.
+    pub recurrence: Option<i64>,
+    /// The occurrences the series list shows (`er(4, ...)`, four more per "View future events"), worked out when the
+    /// view opens and on each View future events, and whether another follows within four years.
+    pub series: Vec<chrono::DateTime<chrono::Utc>>,
+    pub series_more: bool,
 }
 
 /// Which of the two sizes of the design system button.

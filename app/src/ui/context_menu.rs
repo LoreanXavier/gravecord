@@ -110,6 +110,14 @@ pub(super) enum Target {
     ProgressBar(Id),
     /// Actions of AutoMod's raid notification (`moderation-raid-context`, module 495372).
     RaidAlert(Id),
+    /// The channel list's Browse Channels row (`guild-browse-channels-context-menu`, module 807431).
+    BrowseChannels(Id),
+    /// Edit Profile of the account's own popout in a server (`edit-profile-popout`, module 822775).
+    EditProfileMenu(Id),
+    /// The Direct Messages header's More (`clean-up-inactive-gdms`, module 830507).
+    DmListMore,
+    /// The Sort trigger of Clean Up Inactive Group DMs (`clean-up-gdms-sort`, module 877760).
+    GdmCleanupSort,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -296,13 +304,32 @@ pub(super) enum Act {
     PluginServerInfo,
     /// Not in the pinned client: BiggerStreamPreview's row (`plugin_hooks/bigger_stream_preview.rs`).
     PluginViewStreamPreview,
+    /// `clear-spoiler-agree` (module 823255): Re-hide Spoiler Channel.
+    RehideSpoiler,
+    /// `opt-into-channel` / `opt-into-category` (module 969128): Add to / Remove from Channel List.
+    ChannelListOptIn,
+    /// `opt-out-category` (module 969128): Unfollow Channel Category.
+    UnfollowCategory,
+    /// `copy-channel-topic` (module 834881).
+    CopyTopic,
+    /// `go-to-settings` (module 807431): Edit Onboarding.
+    EditOnboarding,
+    /// `opt-in` (module 36942): Show All Channels.
+    ShowAllChannels,
+    EditMainProfile,
+    EditGuildProfile,
+    /// `clean-up-inactive-gdms` (module 830507): Clean up Group DMs...
+    CleanUpGdms,
+    /// `clean-up-gdms-sort-newest` / `-oldest` (module 877760).
+    GdmSortNewest,
+    GdmSortOldest,
 }
 
 impl Act {
     /// Every row kind once (`Correction` with its first index). `ordinal` is an exhaustive match, so adding a variant
     /// without listing it here fails the build or the `act_list_is_complete` test.
     #[cfg(test)]
-    pub(super) const ALL: [Act; 135] = [
+    pub(super) const ALL: [Act; 146] = [
         Act::InventoryAbout,
         Act::InventoryHide,
         Act::ReportApp,
@@ -438,6 +465,17 @@ impl Act {
         Act::ToggleProgressBar,
         Act::ModerationSettings,
         Act::ReportRaid,
+        Act::RehideSpoiler,
+        Act::ChannelListOptIn,
+        Act::UnfollowCategory,
+        Act::CopyTopic,
+        Act::EditOnboarding,
+        Act::ShowAllChannels,
+        Act::EditMainProfile,
+        Act::EditGuildProfile,
+        Act::CleanUpGdms,
+        Act::GdmSortNewest,
+        Act::GdmSortOldest,
     ];
 
     #[cfg(test)]
@@ -578,6 +616,17 @@ impl Act {
             Act::ToggleProgressBar => 132,
             Act::ModerationSettings => 133,
             Act::ReportRaid => 134,
+            Act::RehideSpoiler => 135,
+            Act::ChannelListOptIn => 136,
+            Act::UnfollowCategory => 137,
+            Act::CopyTopic => 138,
+            Act::EditOnboarding => 139,
+            Act::ShowAllChannels => 140,
+            Act::EditMainProfile => 141,
+            Act::EditGuildProfile => 142,
+            Act::CleanUpGdms => 143,
+            Act::GdmSortNewest => 144,
+            Act::GdmSortOldest => 145,
         }
     }
 }
@@ -598,6 +647,14 @@ pub(super) fn status(act: Act) -> Status {
         Act::Apps => Wired,
         Act::ModView => Wired,
         Act::ReportRaid => Wired,
+        Act::RehideSpoiler
+        | Act::ChannelListOptIn
+        | Act::UnfollowCategory
+        | Act::CopyTopic
+        | Act::EditOnboarding
+        | Act::ShowAllChannels => Wired,
+        Act::EditMainProfile | Act::EditGuildProfile => Wired,
+        Act::CleanUpGdms | Act::GdmSortNewest | Act::GdmSortOldest => Wired,
         Act::ModerationSettings => Wired,
         Act::ToggleProgressBar => Wired,
         Act::RemovePermission => Wired,
@@ -807,6 +864,13 @@ impl Row {
 
     pub(super) fn disabled(mut self, disabled: bool) -> Self {
         self.disabled = disabled;
+        self
+    }
+
+    /// A `MenuRadioItem`, chosen or not.
+    pub(super) fn radio(mut self, chosen: bool) -> Self {
+        self.check = Some(chosen);
+        self.radio = true;
         self
     }
 
@@ -1247,6 +1311,49 @@ pub(super) struct ChannelFacts {
     pub join_quiet: bool,
     /// Report Stage (module 304694): a Stage channel whose Stage is live.
     pub report_stage: bool,
+    /// The channel list opt-in row of module 969128, when opt-in is on in a Community server (`jN` of module 395504).
+    pub list_opt_in: Option<ListOptIn>,
+    /// Re-hide Spoiler Channel (module 823255 `v`): a spoiler channel the account agreed to.
+    pub rehide_spoiler: bool,
+}
+
+/// Module 969128's row: Add to / Remove from Channel List by the channel's own opt-in, or Unfollow Channel Category
+/// when its category is opted in.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum ListOptIn {
+    Add,
+    Remove,
+    UnfollowCategory,
+}
+
+fn list_opt_in_row(opt_in: ListOptIn) -> Row {
+    match opt_in {
+        ListOptIn::Add => Row::new(Act::ChannelListOptIn, dc_intl::t("9mysCh")),
+        ListOptIn::Remove => Row::new(Act::ChannelListOptIn, dc_intl::t("3zySTA")),
+        ListOptIn::UnfollowCategory => Row::new(Act::UnfollowCategory, dc_intl::t("jNphKT")),
+    }
+}
+
+/// `A` of module 969128: nothing for a thread or without opt-in; a category's own row; Unfollow Channel Category for a
+/// channel whose category is opted in; else the channel's own row.
+pub(super) fn list_opt_in(
+    enabled: bool,
+    thread: bool,
+    category: bool,
+    opted_in: bool,
+    parent_opted_in: bool,
+) -> Option<ListOptIn> {
+    if !enabled || thread {
+        return None;
+    }
+    if !category && parent_opted_in {
+        return Some(ListOptIn::UnfollowCategory);
+    }
+    Some(if opted_in {
+        ListOptIn::Remove
+    } else {
+        ListOptIn::Add
+    })
 }
 
 pub(super) fn channel_items(facts: ChannelFacts, level: &str) -> Vec<Entry> {
@@ -1269,6 +1376,8 @@ pub(super) fn channel_items(facts: ChannelFacts, level: &str) -> Vec<Entry> {
         ));
     }
     share.push(Row::new(Act::PinChannel, dc_intl::tr("Pin Channel to Top")));
+    // `channel-actions` of module 823255: Invite, Open in New Tab, Pin, the opt-in row (969128), Copy Link.
+    share.extend(facts.list_opt_in.map(list_opt_in_row));
     share.push(Row::new(Act::CopyLink, dc_intl::tr("Copy Link")));
     group(&mut out, share);
     if facts.voice {
@@ -1305,6 +1414,13 @@ pub(super) fn channel_items(facts: ChannelFacts, level: &str) -> Vec<Entry> {
         );
     }
     group(&mut out, alerts);
+    // The `spoiler` group of module 823255, after the notifications.
+    if facts.rehide_spoiler {
+        group(
+            &mut out,
+            vec![Row::new(Act::RehideSpoiler, dc_intl::t("ix2UVZ"))],
+        );
+    }
     if facts.can_manage {
         group(
             &mut out,
@@ -1379,6 +1495,117 @@ pub(super) fn activity_voice_items(
 }
 
 /// The menu of the Favorites star (frame menus2/favorites-rail-menu).
+/// What the channel header's menu (module 834881) depends on.
+#[derive(Clone, Copy, Debug, Default)]
+pub(super) struct TitleFacts {
+    pub voice: bool,
+    pub can_manage: bool,
+    pub can_invite: bool,
+    pub developer: bool,
+    pub pinned: bool,
+    pub favorite: bool,
+    /// Opened on the topic (`includeTopic`): Copy Topic takes Notification Settings' place.
+    pub topic: bool,
+    pub list_opt_in: Option<ListOptIn>,
+}
+
+/// Module 834881 (`channel-context`, "Channel Actions") from the channel header: Pin Channel to Top / Unpin Channel
+/// (704543) and the opt-in row (969128); Mute Channel; Add to Favorites (438653 `z`); Copy Topic (`includeTopic`)
+/// or Notification Settings, and Edit Channel; Invite, Copy Link, Duplicate Channel, Create Text Channel, Create
+/// Voice Channel, Delete Channel; Remove from Favorites (438653 `C`); Copy Channel ID.
+pub(super) fn channel_title_items(facts: TitleFacts, level: &str) -> Vec<Entry> {
+    let mut out = Vec::new();
+    let mut first = vec![Row::new(
+        Act::PinChannel,
+        if facts.pinned {
+            dc_intl::t("M5PWSf")
+        } else {
+            dc_intl::t("RMpwZu")
+        },
+    )];
+    first.extend(facts.list_opt_in.map(list_opt_in_row));
+    group(&mut out, first);
+    group(
+        &mut out,
+        vec![Row::new(Act::Mute, dc_intl::tr("Mute Channel")).caret()],
+    );
+    if !facts.favorite {
+        group(
+            &mut out,
+            vec![Row::new(Act::Favorite, dc_intl::tr("Add to Favorites")).icon("clips_star")],
+        );
+    }
+    let mut middle = vec![if facts.topic {
+        Row::new(Act::CopyTopic, dc_intl::t("Tb3Vst"))
+    } else {
+        Row::new(Act::Notifications, dc_intl::tr("Notification Settings"))
+            .sub(level)
+            .caret()
+    }];
+    if facts.can_manage {
+        middle.push(Row::new(Act::EditChannel, dc_intl::tr("Edit Channel")));
+    }
+    group(&mut out, middle);
+    let mut actions = Vec::new();
+    if facts.can_invite {
+        actions.push(Row::new(
+            Act::Invite,
+            if facts.voice {
+                dc_intl::tr("Invite to Voice")
+            } else {
+                dc_intl::tr("Invite to Channel")
+            },
+        ));
+    }
+    actions.push(Row::new(Act::CopyLink, dc_intl::tr("Copy Link")));
+    if facts.can_manage {
+        actions.push(Row::new(Act::Duplicate, dc_intl::tr("Duplicate Channel")));
+        actions.push(Row::new(
+            Act::CreateChannel,
+            dc_intl::tr("Create Text Channel"),
+        ));
+        actions.push(Row::new(
+            Act::CreateChannel,
+            dc_intl::tr("Create Voice Channel"),
+        ));
+        actions.push(Row::new(Act::DeleteChannel, dc_intl::tr("Delete Channel")).danger());
+    }
+    group(&mut out, actions);
+    if facts.favorite {
+        group(
+            &mut out,
+            vec![Row::new(Act::Favorite, dc_intl::tr("Remove from Favorites")).danger()],
+        );
+    }
+    if facts.developer {
+        group(&mut out, vec![Row::new(Act::CopyId, dc_intl::t("gFHI3k"))]);
+    }
+    tidy(out)
+}
+
+/// Module 822775's popout (`edit-profile-popout`, "Profile Actions"): Edit Per-server Profile ("Visible only to those
+/// in this server") and Edit Main Profile ("Default profile and visible to everyone").
+pub(super) fn edit_profile_items() -> Vec<Entry> {
+    vec![
+        Entry::Row(Row::new(Act::EditGuildProfile, dc_intl::t("PKQB/H")).sub(dc_intl::t("VYHWKJ"))),
+        Entry::Row(Row::new(Act::EditMainProfile, dc_intl::t("HmFaFB")).sub(dc_intl::t("+EERMk"))),
+    ]
+}
+
+/// Module 807431 (`guild-browse-channels-context-menu`, "Actions"): Edit Onboarding for a Community server's managers
+/// (`rs` of module 961973: Manage Server and Manage Roles), then Show All Channels (module 36942, checked while opt-in
+/// is off) in a Community server or for staff.
+pub(super) fn browse_channels_items(edit_onboarding: bool, show_all: Option<bool>) -> Vec<Entry> {
+    let mut rows = Vec::new();
+    if edit_onboarding {
+        rows.push(Row::new(Act::EditOnboarding, dc_intl::t("X70lV6")));
+    }
+    if let Some(checked) = show_all {
+        rows.push(Row::new(Act::ShowAllChannels, dc_intl::t("FB2ZZV")).check(checked));
+    }
+    rows.into_iter().map(Entry::Row).collect()
+}
+
 /// `channel-mention-context` (module 223998): Copy Link with the link icon, then the developer Copy Channel ID.
 pub(super) fn channel_mention_items(developer: bool) -> Vec<Entry> {
     let mut out = vec![Entry::Row(
@@ -1406,6 +1633,10 @@ pub(super) fn menu_aria_label(target: Target) -> Option<&'static str> {
         Target::PermissionRow { role: true, .. } => Some(dc_intl::t("ltedOh")),
         Target::ProgressBar(_) => Some(dc_intl::t("m85s/h")),
         Target::RaidAlert(_) => Some(dc_intl::t("liqwPJ")),
+        Target::BrowseChannels(_) => Some(dc_intl::t("ogxXGq")),
+        Target::EditProfileMenu(_) => Some(dc_intl::t("AXIHpV")),
+        Target::DmListMore => Some(dc_intl::t("/QQnjy")),
+        Target::GdmCleanupSort => Some(dc_intl::t("yySzqH")),
         _ => None,
     }
 }
@@ -1564,16 +1795,22 @@ pub(super) fn category_items(
     can_manage: bool,
     developer: bool,
     level: &str,
+    list_opt_in: Option<ListOptIn>,
 ) -> Vec<Entry> {
     let mut out = vec![Entry::Row(
         Row::new(Act::MarkRead, dc_intl::tr("Mark As Read")).disabled(!unread),
     )];
+    // `channel-actions` of module 914907: the opt-in row (969128), Collapse Category, Collapse All Categories.
     group(
         &mut out,
-        vec![
-            Row::new(Act::CollapseCategory, dc_intl::tr("Collapse Category")).check(collapsed),
-            Row::new(Act::CollapseAll, dc_intl::tr("Collapse All Categories")),
-        ],
+        list_opt_in
+            .map(list_opt_in_row)
+            .into_iter()
+            .chain([
+                Row::new(Act::CollapseCategory, dc_intl::tr("Collapse Category")).check(collapsed),
+                Row::new(Act::CollapseAll, dc_intl::tr("Collapse All Categories")),
+            ])
+            .collect(),
     );
     group(
         &mut out,
@@ -2284,6 +2521,9 @@ pub(super) struct State {
     pub attachment_link: Option<(String, String)>,
     /// The roles (name, colour) of the invite whose "+N" opened `invite-roles-menu`.
     pub invite_roles: Vec<(String, u32)>,
+    /// The next channel menu is the channel header's (module 834881 from module 289287); `true` when it was opened
+    /// on the topic (`includeTopic` of module 565265).
+    pub title_menu: Option<bool>,
 }
 
 const MUTE_FOR: [(i64, &str); 6] = [
@@ -2308,6 +2548,8 @@ const THREAD_LEVELS: [(u64, &str); 3] = [
 const PINNED: u64 = 2048;
 /// `OPT_IN_ENABLED`: set along with a pin.
 const OPT_IN_ENABLED: u64 = 4096;
+/// `OPT_IN_CHANNELS_ON` in the account's settings of a server (module 355097).
+const OPT_IN_CHANNELS_ON: u64 = 16384;
 /// The store the official client keeps Hide Names in (`CollapsedVoiceChannelStore`, persisted as `collapsedChannels`).
 const HIDDEN_NAMES: &str = "collapsedChannels";
 
@@ -2956,6 +3198,38 @@ impl Root {
         self.context.omit_mention = true;
     }
 
+    /// Module 969128's row for `channel` of `guild`: opt-in on (`jN` of module 395504: the server's
+    /// `OPT_IN_CHANNELS_ON` in a Community server, or for staff), the channel's and its category's `OPT_IN_ENABLED`
+    /// (`isChannelOptedIn` of module 543465).
+    pub(super) fn list_opt_in_for(
+        &self,
+        guild: Id,
+        channel: &dc_state::Channel,
+    ) -> Option<ListOptIn> {
+        let known = self.stores.guild(guild)?;
+        let settings = self.stores.guild_settings.guilds.get(&guild);
+        let community = known.features.iter().any(|feature| feature == "COMMUNITY")
+            || self
+                .stores
+                .current_user
+                .as_ref()
+                .is_some_and(|user| user.has_flag(dc_state::USER_FLAG_STAFF));
+        let enabled =
+            community && settings.is_some_and(|settings| settings.flags & OPT_IN_CHANNELS_ON != 0);
+        let opted = |id: Id| {
+            settings
+                .and_then(|settings| settings.channels.get(&id))
+                .is_some_and(|own| own.flags & OPT_IN_ENABLED != 0)
+        };
+        list_opt_in(
+            enabled,
+            false,
+            channel.kind == ChannelKind::Category,
+            opted(channel.id),
+            channel.parent_id.is_some_and(opted),
+        )
+    }
+
     pub(super) fn open_context_menu(
         &mut self,
         target: Target,
@@ -2968,6 +3242,7 @@ impl Root {
         let stage_channel_items = std::mem::take(&mut self.context.stage_channel_items);
         let omit_mention = std::mem::take(&mut self.context.omit_mention);
         let activity_voice = std::mem::take(&mut self.context.activity_voice);
+        let title_menu = self.context.title_menu.take();
         let items = match target {
             Target::AccountPanel => self.account_panel_items(),
             Target::Role { role, guild } => self.better_role_items(role, guild),
@@ -3030,6 +3305,47 @@ impl Root {
             Target::ForumTag(_) => forum_tag_items(),
             Target::RoleChip(_) => role_chip_items(),
             Target::RaidAlert(_) => raid_alert_items(),
+            Target::EditProfileMenu(_) => edit_profile_items(),
+            Target::DmListMore => {
+                vec![Entry::Row(Row::new(Act::CleanUpGdms, dc_intl::t("RQbtb8")))]
+            }
+            Target::GdmCleanupSort => {
+                let newest = self
+                    .gdm_cleanup
+                    .as_ref()
+                    .is_some_and(|open| open.newest_first);
+                vec![
+                    Entry::Row(Row::new(Act::GdmSortNewest, dc_intl::t("VHmOpK")).radio(newest)),
+                    Entry::Row(Row::new(Act::GdmSortOldest, dc_intl::t("NLTGck")).radio(!newest)),
+                ]
+            }
+            Target::BrowseChannels(guild) => {
+                let Some(known) = self.stores.guild(guild) else {
+                    return;
+                };
+                let community = known.features.iter().any(|feature| feature == "COMMUNITY");
+                let staff = self
+                    .stores
+                    .current_user
+                    .as_ref()
+                    .is_some_and(|user| user.has_flag(dc_state::USER_FLAG_STAFF));
+                let opt_in = self
+                    .stores
+                    .guild_settings
+                    .guilds
+                    .get(&guild)
+                    .is_some_and(|settings| settings.flags & OPT_IN_CHANNELS_ON != 0);
+                let items = browse_channels_items(
+                    community
+                        && self.my_permission(guild, None, permissions::MANAGE_GUILD)
+                        && self.my_permission(guild, None, permissions::MANAGE_ROLES),
+                    (community || staff).then_some(!opt_in),
+                );
+                if items.is_empty() {
+                    return;
+                }
+                items
+            }
             Target::ProgressBar(guild) => progress_bar_items(
                 self.stores
                     .guild(guild)
@@ -3150,12 +3466,41 @@ impl Root {
                                     && self.has_unread_or_mentions(thread.id)
                             })
                     });
-                    category_items(unread, collapsed, can_manage, developer, level)
+                    category_items(
+                        unread,
+                        collapsed,
+                        can_manage,
+                        developer,
+                        level,
+                        self.list_opt_in_for(guild, &known),
+                    )
                 } else if activity_voice {
                     activity_voice_items(
                         can_manage,
                         self.my_permission(guild, Some(&known), CREATE_INSTANT_INVITE),
                         developer,
+                    )
+                } else if let Some(topic) = title_menu {
+                    channel_title_items(
+                        TitleFacts {
+                            voice: matches!(
+                                known.kind,
+                                ChannelKind::Voice | ChannelKind::Other(13)
+                            ),
+                            can_manage,
+                            can_invite: self.my_permission(
+                                guild,
+                                Some(&known),
+                                CREATE_INSTANT_INVITE,
+                            ),
+                            developer,
+                            pinned: self.stores.guild_settings.channel(guild, id).flags & PINNED
+                                != 0,
+                            favorite: self.stores.favorites().is_favorite(id),
+                            topic,
+                            list_opt_in: self.list_opt_in_for(guild, &known),
+                        },
+                        level,
                     )
                 } else if self.in_favorites() {
                     favorite_channel_items(self.has_unread_or_mentions(id), level)
@@ -3185,6 +3530,8 @@ impl Root {
                             && self.stores.join_sound_set(guild),
                         report_stage: known.kind == ChannelKind::Other(13)
                             && self.stores.stage_instances.get_by_channel(id).is_some(),
+                        list_opt_in: self.list_opt_in_for(guild, &known),
+                        rehide_spoiler: self.spoiler_rehide_shown(&known),
                     };
                     channel_items(facts, level)
                 }
@@ -3943,7 +4290,10 @@ impl Root {
                     | Target::ForumTag(id)
                     | Target::RoleChip(id) => id,
                     Target::PermissionRow { target, .. } => target,
-                    Target::ProgressBar(guild) | Target::RaidAlert(guild) => guild,
+                    Target::ProgressBar(guild)
+                    | Target::RaidAlert(guild)
+                    | Target::BrowseChannels(guild)
+                    | Target::EditProfileMenu(guild) => guild,
                     Target::RtcChannel { channel, .. } => channel,
                     Target::Role { role, .. } => role,
                     Target::ProfileWidget { .. }
@@ -3955,6 +4305,8 @@ impl Root {
                     | Target::Favorites
                     | Target::PickerEmoji
                     | Target::PickerSound
+                    | Target::DmListMore
+                    | Target::GdmCleanupSort
                     | Target::InviteRoles => {
                         return;
                     }
@@ -4132,6 +4484,58 @@ impl Root {
                 self.open_server_settings_at(guild, super::server_settings::Page::SafetySetup, cx)
             }
             (Act::ReportRaid, Target::RaidAlert(guild)) => self.open_report_raid(guild, cx),
+            (Act::RehideSpoiler, Target::Channel(channel)) => self.clear_spoiler_agree(channel, cx),
+            // `AC` of module 816662 from module 969128: the channel's (or category's) own opt-in turns.
+            (Act::ChannelListOptIn, Target::Channel(channel) | Target::Category(channel)) => {
+                if let Some(guild) = self.guild_of_channel(channel) {
+                    self.browser_follow(guild, channel, cx);
+                }
+            }
+            // Unfollow Channel Category: `AC(guild, parent, false)`.
+            (Act::UnfollowCategory, Target::Channel(channel)) => {
+                if let Some(guild) = self.guild_of_channel(channel)
+                    && let Some(parent) = self
+                        .stores
+                        .guild(guild)
+                        .and_then(|known| known.channels.iter().find(|known| known.id == channel))
+                        .and_then(|known| known.parent_id)
+                {
+                    self.browser_follow(guild, parent, cx);
+                }
+            }
+            // `p5` of module 957565 (a clipboard is there) and `C(topic)`.
+            (Act::CopyTopic, Target::Channel(channel)) => {
+                let topic = self
+                    .guild_of_channel(channel)
+                    .and_then(|guild| self.stores.guild(guild))
+                    .and_then(|known| known.channels.iter().find(|known| known.id == channel))
+                    .and_then(|known| known.topic.clone());
+                if let Some(topic) = topic {
+                    cx.write_to_clipboard(ClipboardItem::new_string(topic));
+                }
+            }
+            (Act::CleanUpGdms, Target::DmListMore) => self.open_gdm_cleanup(cx),
+            (Act::GdmSortNewest | Act::GdmSortOldest, Target::GdmCleanupSort) => {
+                if let Some(open) = self.gdm_cleanup.as_mut() {
+                    open.newest_first = act == Act::GdmSortNewest;
+                }
+            }
+            (Act::EditMainProfile, Target::EditProfileMenu(_)) => {
+                self.profile = None;
+                self.open_profile_editor(cx);
+            }
+            // GAP: the per-server profile editor (module 474397 with the server set by module 206835) is not built;
+            // like the server menu's Edit Per-server Profile, this opens the account's settings.
+            (Act::EditGuildProfile, Target::EditProfileMenu(_)) => {
+                self.profile = None;
+                self.open_settings_section(dc_intl::tr("Account"), cx);
+            }
+            (Act::EditOnboarding, Target::BrowseChannels(guild)) => {
+                self.open_server_settings_at(guild, super::server_settings::Page::Onboarding, cx)
+            }
+            (Act::ShowAllChannels, Target::BrowseChannels(guild)) => {
+                self.toggle_show_all_channels(guild)
+            }
             (Act::ToggleProgressBar, Target::ProgressBar(guild)) => {
                 self.toggle_boost_progress_bar(guild, cx)
             }
@@ -6286,8 +6690,69 @@ mod tests {
     }
 
     #[test]
+    fn the_opt_in_row_follows_module_969128() {
+        assert_eq!(list_opt_in(false, false, false, true, true), None);
+        assert_eq!(list_opt_in(true, true, false, true, true), None);
+        assert_eq!(
+            list_opt_in(true, false, true, true, false),
+            Some(ListOptIn::Remove)
+        );
+        assert_eq!(
+            list_opt_in(true, false, true, false, true),
+            Some(ListOptIn::Add)
+        );
+        assert_eq!(
+            list_opt_in(true, false, false, false, true),
+            Some(ListOptIn::UnfollowCategory)
+        );
+        assert_eq!(
+            list_opt_in(true, false, false, true, false),
+            Some(ListOptIn::Remove)
+        );
+        let items = category_items(
+            false,
+            false,
+            false,
+            false,
+            "All Messages",
+            Some(ListOptIn::Add),
+        );
+        assert_eq!(labels(&items)[2], "Add to Channel List");
+    }
+
+    #[test]
+    fn the_header_menu_swaps_notifications_for_copy_topic_on_the_topic() {
+        let facts = TitleFacts {
+            can_manage: true,
+            can_invite: true,
+            developer: true,
+            ..TitleFacts::default()
+        };
+        let title = labels(&channel_title_items(facts, "All Messages"));
+        assert!(title.contains(&"Notification Settings".to_owned()));
+        assert!(!title.contains(&"Copy Topic".to_owned()));
+        let topic = labels(&channel_title_items(
+            TitleFacts {
+                topic: true,
+                ..facts
+            },
+            "All Messages",
+        ));
+        assert!(topic.contains(&"Copy Topic".to_owned()));
+        assert!(!topic.contains(&"Notification Settings".to_owned()));
+        assert_eq!(
+            topic.first().map(String::as_str),
+            Some("Pin Channel to Top")
+        );
+        assert_eq!(topic.last().map(String::as_str), Some("Copy Channel ID"));
+        let rows = labels(&browse_channels_items(true, Some(false)));
+        assert_eq!(rows, ["Edit Onboarding", "Show All Channels"]);
+        assert!(browse_channels_items(false, None).is_empty());
+    }
+
+    #[test]
     fn the_category_menu_names_the_category() {
-        let items = category_items(false, false, true, false, "All Messages");
+        let items = category_items(false, false, true, false, "All Messages", None);
         let shown = labels(&items);
         assert!(shown.contains(&"Mute Category".to_owned()));
         assert!(shown.contains(&"Edit Category".to_owned()));

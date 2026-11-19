@@ -10,22 +10,54 @@ use chrono::NaiveDateTime;
 use dc_state::{Id, scheduled_events::ScheduledEvent};
 use gpui::{AnyElement, Context, FontWeight, IntoElement, div, prelude::*, px};
 
+/// `er(4, ...)` of module 893110: occurrences come four at a time.
+const SERIES_PAGE: usize = 4;
+
 impl Root {
     /// Opens the detail view of an event on its Event Info tab and asks for its count and who is interested.
     pub(super) fn open_event_detail(&mut self, event: Id, cx: &mut Context<Self>) {
         let Some(guild) = self.guild_events.as_ref().map(|open| open.guild) else {
             return;
         };
+        let (series, series_more) = self.event_series_page(event, SERIES_PAGE);
         if let Some(open) = self.guild_events.as_mut() {
             open.detail = Some(Detail {
                 event,
                 tab: Tab::Info,
+                recurrence: None,
+                series,
+                series_more,
             });
             open.menu = None;
         }
         self.event_fetch_counts(guild, event);
         self.event_fetch_users(guild, event);
         cx.notify();
+    }
+
+    /// The first `count` occurrences of a recurring event from its start, and whether another follows within four
+    /// years (`er` and `canViewMoreRecurrences` of module 893110).
+    fn event_series_page(
+        &self,
+        event: Id,
+        count: usize,
+    ) -> (Vec<chrono::DateTime<chrono::Utc>>, bool) {
+        let Some(known) = self
+            .stores
+            .scheduled_events
+            .get_guild_scheduled_event(event)
+        else {
+            return (Vec::new(), false);
+        };
+        let Some(first) = known.start().filter(|_| !known.recurrence_rule.is_null()) else {
+            return (Vec::new(), false);
+        };
+        let rule = &known.recurrence_rule;
+        let times = super::recurrence::occurrences(rule, first, false, count);
+        let more = times
+            .last()
+            .is_some_and(|last| super::recurrence::has_more(rule, *last, chrono::Utc::now()));
+        (times, more)
     }
 
     fn set_event_tab(&mut self, tab: Tab, cx: &mut Context<Self>) {
@@ -156,9 +188,28 @@ impl Root {
         event: &ScheduledEvent,
         now: NaiveDateTime,
         count: i64,
+        detail: &Detail,
         cx: &mut Context<Self>,
     ) -> AnyElement {
-        let status = event_status(event, now, true);
+        // `J.Ay(event, recurrenceId)`: a picked occurrence shows its own start, the event's length after it.
+        let picked = detail.recurrence.and_then(|ms| {
+            let start = chrono::DateTime::<chrono::Utc>::from_timestamp_millis(ms)?;
+            let mut shown = event.clone();
+            let length = event.start().zip(
+                event
+                    .scheduled_end_time
+                    .as_deref()
+                    .and_then(|end| chrono::DateTime::parse_from_rfc3339(end).ok()),
+            );
+            shown.scheduled_start_time = start.to_rfc3339();
+            shown.scheduled_end_time = length
+                .map(|(from, to)| (start + (to.with_timezone(&chrono::Utc) - from)).to_rfc3339());
+            if event.start() != Some(start) {
+                shown.status = dc_state::scheduled_events::STATUS_SCHEDULED;
+            }
+            Some(shown)
+        });
+        let status = event_status(picked.as_ref().unwrap_or(event), now, true);
         let creator = event
             .creator_id
             .and_then(|creator| self.event_user(creator));
@@ -255,7 +306,161 @@ impl Root {
                             }),
                     ),
             )
+            .children(self.event_series(event, now, detail, cx))
             .into_any_element()
+    }
+
+    /// Module 893110 under a recurring event's info (`eu` of module 237519, `hideScroller`): the 1px `--border-subtle`
+    /// rule (`divider_6_68tM`, 8px up into the body's bottom padding), then `recurrences_CtY5AU` (4px over 12px around)
+    /// with "Events in series" (`heading-xs/medium`, 8px over the rows, 4px in) and a row per occurrence
+    /// (`container_7O1vgc`: 2px by 4px, `--radius-xs`, `--background-mod-subtle` on hover and `--background-mod-normal`
+    /// for the one picked): its status line, and "Canceled" (`body-sm/semibold`, `text-feedback-critical`, 8px before
+    /// the end) for a canceled one, which takes no click. "View future events" (the text button of module 123292: `body-md/medium`, `--text-brand`, underlined on hover;
+    /// 8px above, centred)
+    /// while another occurrence follows within four years.
+    /// GAP: each row's "More options" button (module 924037's recurrence menu) and the per-occurrence interested
+    /// counts (`getGuildEventUserCounts` with recurrence ids) are not built.
+    fn event_series(
+        &self,
+        event: &ScheduledEvent,
+        now: NaiveDateTime,
+        detail: &Detail,
+        cx: &mut Context<Self>,
+    ) -> Option<AnyElement> {
+        if event.recurrence_rule.is_null() {
+            return None;
+        }
+        let first = event.start()?;
+        let times = detail.series.clone();
+        let more = detail.series_more;
+        let exceptions = self.stores.scheduled_events.exceptions_of(event.id);
+        let rows = times.into_iter().enumerate().map(|(index, at)| {
+            let ms = at.timestamp_millis();
+            let recurrence_id = ((ms - 1_420_070_400_000) << 22).to_string();
+            let exception = exceptions
+                .iter()
+                .find(|exception| exception["event_exception_id"].as_str() == Some(&recurrence_id));
+            let canceled = exception.is_some_and(|exception| exception["is_canceled"] == true);
+            let start = exception
+                .and_then(|exception| exception["scheduled_start_time"].as_str())
+                .and_then(|text| chrono::DateTime::parse_from_rfc3339(text).ok())
+                .map_or(at, |time| time.with_timezone(&chrono::Utc));
+            let mut shown = event.clone();
+            shown.scheduled_start_time = start.to_rfc3339();
+            shown.scheduled_end_time = None;
+            shown.status = if canceled {
+                dc_state::scheduled_events::STATUS_CANCELED
+            } else if start == first {
+                event.status
+            } else {
+                dc_state::scheduled_events::STATUS_SCHEDULED
+            };
+            let active =
+                detail.recurrence == Some(ms) || (detail.recurrence.is_none() && index == 0);
+            div()
+                .id(("event-series-row", index))
+                .flex()
+                .items_center()
+                .justify_between()
+                .py(px(2.))
+                .px(px(4.))
+                .rounded(px(4.))
+                .when(active, |row| row.bg(color("--background-mod-normal")))
+                .when(!active && !canceled, |row| {
+                    row.hover(|style| style.bg(color("--background-mod-subtle")))
+                        .cursor_pointer()
+                })
+                .when(!canceled, |row| {
+                    row.on_click(cx.listener(move |this, _, _, cx| {
+                        if let Some(detail) = this
+                            .guild_events
+                            .as_mut()
+                            .and_then(|open| open.detail.as_mut())
+                        {
+                            detail.recurrence = Some(ms);
+                        }
+                        cx.notify();
+                    }))
+                })
+                .child(
+                    div()
+                        .w_full()
+                        .children(event_status(&shown, now, false).as_ref().map(status_row)),
+                )
+                .when(canceled, |row| {
+                    row.child(
+                        div()
+                            .flex_none()
+                            .mr(px(8.))
+                            .text_size(px(14.))
+                            .line_height(px(18.))
+                            .font_weight(FontWeight(600.))
+                            .text_color(color("--text-feedback-critical"))
+                            .child(dc_intl::t("fyBVRm")),
+                    )
+                })
+        });
+        Some(
+            div()
+                .child(div().mt(px(-8.)).h(px(1.)).bg(color("--border-subtle")))
+                .child(
+                    div()
+                        .pt(px(4.))
+                        .px(px(12.))
+                        .pb(px(12.))
+                        .flex()
+                        .flex_col()
+                        .child(
+                            div()
+                                .mb(px(8.))
+                                .ml(px(4.))
+                                .text_size(px(14.))
+                                .line_height(px(18.))
+                                .font_weight(FontWeight(500.))
+                                .text_color(color("--text-strong"))
+                                .child(dc_intl::t("D/jjoa")),
+                        )
+                        .child(div().flex().flex_col().children(rows))
+                        .when(more, |this| {
+                            this.child(
+                                div().pt(px(8.)).flex().justify_center().child(
+                                    div()
+                                        .id("event-series-more")
+                                        .cursor_pointer()
+                                        .whitespace_nowrap()
+                                        .text_size(px(16.))
+                                        .line_height(px(20.))
+                                        .font_weight(FontWeight(500.))
+                                        .text_color(color("--text-brand"))
+                                        .hover(|style| style.underline())
+                                        .child(dc_intl::t("8O7Hpy"))
+                                        .on_click(cx.listener(|this, _, _, cx| {
+                                            let Some((event, shown)) = this
+                                                .guild_events
+                                                .as_ref()
+                                                .and_then(|open| open.detail.as_ref())
+                                                .map(|detail| (detail.event, detail.series.len()))
+                                            else {
+                                                return;
+                                            };
+                                            let (series, more) =
+                                                this.event_series_page(event, shown + SERIES_PAGE);
+                                            if let Some(detail) = this
+                                                .guild_events
+                                                .as_mut()
+                                                .and_then(|open| open.detail.as_mut())
+                                            {
+                                                detail.series = series;
+                                                detail.series_more = more;
+                                            }
+                                            cx.notify();
+                                        })),
+                                ),
+                            )
+                        }),
+                )
+                .into_any_element(),
+        )
     }
 
     fn event_interested_panel(&self, event: Id) -> AnyElement {
@@ -357,7 +562,7 @@ impl Root {
             .clone();
         let count = self.stores.scheduled_events.get_user_count(event.id, None);
         let panel = match detail.tab {
-            Tab::Info => self.event_info_panel(&event, now, count, cx),
+            Tab::Info => self.event_info_panel(&event, now, count, detail, cx),
             Tab::Interested => self.event_interested_panel(event.id),
         };
         let header = div()
@@ -439,7 +644,15 @@ impl Root {
                     div()
                         .parity("event-detail-tabs")
                         .child(self.event_tabs(detail.tab, count, cx))
-                        .child(div().parity("event-detail-panel").child(panel)),
+                        // A long series scrolls inside the dialog rather than pushing it past the window.
+                        .child(
+                            div()
+                                .parity("event-detail-panel")
+                                .id("event-detail-panel")
+                                .max_h(px((self.viewport.1 - 300.).max(200.)))
+                                .overflow_y_scroll()
+                                .child(panel),
+                        ),
                 ),
             )
             .child(footer);

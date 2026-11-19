@@ -150,6 +150,32 @@ pub async fn run(
                     .timer(Duration::from_millis(ms))
                     .await;
             }
+            // `ready [ms]`: waits (at most `ms`, 20 s by default) for the live READY. With `GRAVECORD_CACHE=1` a script
+            // starts on the cached screen, and the live READY that follows replaces what earlier `gw` steps put in
+            // stores READY owns (CONNECTION_OPEN replaces the geo-restricted servers of module 543897, for one).
+            ["ready", rest @ ..] => {
+                let limit: u64 = rest
+                    .first()
+                    .and_then(|ms| ms.parse().ok())
+                    .unwrap_or(20_000);
+                let started = std::time::Instant::now();
+                let mut live = false;
+                while started.elapsed() < Duration::from_millis(limit) {
+                    live = cx.update(|cx| root.read(cx).live_ready());
+                    if live {
+                        break;
+                    }
+                    cx.background_executor()
+                        .timer(Duration::from_millis(50))
+                        .await;
+                }
+                let _ = writeln!(
+                    output,
+                    "ready: {} after {} ms",
+                    if live { "live" } else { "timed out" },
+                    started.elapsed().as_millis()
+                );
+            }
             ["splash", rest @ ..] => {
                 let note = cx.update(|cx| root.update(cx, |root, _| root.script_splash(rest)));
                 let _ = writeln!(output, "{note}");
