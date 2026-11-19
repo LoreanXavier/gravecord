@@ -237,6 +237,16 @@ impl Root {
         shift: bool,
         cx: &mut Context<Self>,
     ) {
+        // `preventUnwantedDrop` of module 65593: a drop holding anything but files (a folder) is refused with
+        // "Invalid file type".
+        if !all_files(paths.paths()) {
+            self.upload_error = Some(super::upload_error::UploadError::Plain {
+                title: dc_intl::t("azO1Pe"),
+                help: dc_intl::t("Koklr/").to_owned(),
+            });
+            cx.notify();
+            return;
+        }
         let instant = shift && self.upload_area_allowed();
         let Some(channel) = self.channel.filter(|_| instant) else {
             self.on_drop_files(paths, cx);
@@ -265,9 +275,27 @@ impl Root {
     }
 }
 
+/// `isAllDropFiles` of module 65593: every dropped entry is a file (a folder, or a path that is gone, is not).
+fn all_files(paths: &[std::path::PathBuf]) -> bool {
+    paths
+        .iter()
+        .all(|path| std::fs::metadata(path).is_ok_and(|meta| meta.is_file()))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_folder_in_the_drop_is_an_invalid_file_type() {
+        let folder = std::env::temp_dir();
+        let file = folder.join("gravecord-upload-area-test.txt");
+        std::fs::write(&file, b"x").unwrap();
+        assert!(all_files(std::slice::from_ref(&file)));
+        assert!(!all_files(&[file.clone(), folder]));
+        let _ = std::fs::remove_file(file);
+        assert_eq!(dc_intl::t("azO1Pe"), "Invalid file type");
+    }
 
     #[test]
     fn shift_turns_the_title_into_insta_upload_mode() {

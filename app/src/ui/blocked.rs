@@ -12,9 +12,9 @@ use gpui::{AnyElement, Context, FontWeight, IntoElement, SharedString, div, img,
 pub(super) const RELATIONSHIP_BLOCKED: u64 = 2;
 
 /// `tL` of module 559868: the account whose DM carries the changelog.
-const CHANGELOG_USER: Id = 1_232_523_165_893_132_288;
+pub(super) const CHANGELOG_USER: Id = 1_232_523_165_893_132_288;
 /// `Do` of module 559868, where Open Blog goes.
-const CHANGELOG_BLOG: &str = "https://discord.com/category/product";
+pub(super) const CHANGELOG_BLOG: &str = "https://discord.com/category/product";
 /// `getArticleURL(SYSTEM_DMS)` (`360036118732`, module 652215).
 const SYSTEM_DMS_ARTICLE: &str = "https://support.discord.com/hc/en-us/articles/360036118732";
 /// Module 388668, the system DM notice's picture.

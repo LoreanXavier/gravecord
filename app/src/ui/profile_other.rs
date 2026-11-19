@@ -327,6 +327,7 @@ impl Root {
             })
             .filter(|bio| !bio.is_empty())
             .map(str::to_owned);
+        let bio = super::dm_profile::shown_bio(id, bio);
         let friends = body
             .and_then(|body| {
                 body["mutual_friends"]

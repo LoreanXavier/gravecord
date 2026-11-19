@@ -916,6 +916,7 @@ impl Root {
                 });
                 let chosen = gif.clone();
                 let starred = gif.clone();
+                let link = gif.url.clone();
                 let query = query.clone();
                 let favorite = favorites.iter().any(|known| known.url == gif.url);
                 let group = SharedString::from(format!("gif-group-{}", gif.id));
@@ -1000,6 +1001,19 @@ impl Root {
                         }),
                     )
                     .on_click(cx.listener(move |this, _, _, cx| this.send_gif(&chosen, &query, cx)))
+                    // `handleContextMenu` of module 884037: the `gif-picker` menu (module 400017) with the GIF's link.
+                    .on_mouse_up(
+                        gpui::MouseButton::Right,
+                        cx.listener(move |this, event: &gpui::MouseUpEvent, _, cx| {
+                            this.context.gif_link = Some(link.clone());
+                            this.open_context_menu(
+                                super::context_menu::Target::PickerGif,
+                                event.position,
+                                cx,
+                            );
+                            cx.stop_propagation();
+                        }),
+                    )
                     .into_any_element()
             })
             .collect();

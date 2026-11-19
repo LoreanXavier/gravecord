@@ -905,7 +905,7 @@ impl Root {
             }
             match event {
                 EditorEvent::Submit(_) => this.save_group_edit(cx),
-                EditorEvent::Cancel => this.group_edit = None,
+                EditorEvent::Cancel => this.close_group_edit(),
                 _ => {}
             }
             cx.notify();
@@ -939,6 +939,20 @@ impl Root {
             open.icon = Some(Some(Picked { uri, image }));
         }
         cx.notify();
+    }
+
+    /// Cancel, the close button, Escape and the backdrop (`closeOrShowDiscardChangesAlert`, module 73028): with a
+    /// changed name or icon, "Discard unsaved changes?" asks first; else the modal closes.
+    pub(super) fn request_close_group_edit(&mut self, cx: &mut Context<Self>) {
+        if self.group_edit_changes(cx).is_some() {
+            self.chat_extra.alert = Some(super::chat_notices::discard_group_edit_alert());
+        } else {
+            self.group_edit = None;
+        }
+    }
+
+    fn close_group_edit(&mut self) {
+        self.group_edit = None;
     }
 
     fn group_edit_changes(&self, cx: &Context<Self>) -> Option<serde_json::Value> {
@@ -1121,11 +1135,11 @@ impl Root {
                         "group-edit-cancel",
                         "Cancel",
                         modal::Tone::Secondary,
-                        |this, _, _| this.group_edit = None,
+                        |this, _, cx| this.request_close_group_edit(cx),
                     ),
                     save,
                 ],
-                close: Box::new(|this, _, _| this.group_edit = None),
+                close: Box::new(|this, _, cx| this.request_close_group_edit(cx)),
             },
             cx,
         ))

@@ -30,6 +30,20 @@ pub struct ContextClick {
     pub selected: String,
 }
 
+thread_local! {
+    /// The field the last right button release landed on, and where: the window's root takes it to open the text area
+    /// menu (module 216603) after the field's own handlers ran.
+    static RIGHT_CLICK: RefCell<Option<(gpui::WeakEntity<Editor>, Point<Pixels>)>> = const { RefCell::new(None) };
+}
+
+/// The field a right button release at `at` landed on, once: the root's handler runs after the field's.
+pub fn take_right_click(at: Point<Pixels>) -> Option<gpui::WeakEntity<Editor>> {
+    RIGHT_CLICK
+        .with(|click| click.borrow_mut().take())
+        .filter(|(_, position)| *position == at)
+        .map(|(editor, _)| editor)
+}
+
 /// The squiggle's red, wavelength and amplitude: Blink's `DocumentMarkerPainter` constants (the bundle has none).
 const SQUIGGLE_RED: u32 = 0xff0000;
 const SQUIGGLE_STEP: f32 = 2.;
@@ -991,6 +1005,13 @@ impl Render for Editor {
             .on_mouse_down(MouseButton::Left, cx.listener(Self::on_mouse_down))
             .on_mouse_move(cx.listener(Self::on_mouse_move))
             .on_mouse_up(MouseButton::Left, cx.listener(Self::on_mouse_up))
+            .on_mouse_up(
+                MouseButton::Right,
+                cx.listener(|_, event: &MouseUpEvent, _, cx| {
+                    let editor = cx.entity().downgrade();
+                    RIGHT_CLICK.with(|click| *click.borrow_mut() = Some((editor, event.position)));
+                }),
+            )
             .child(EditorElement {
                 editor: cx.entity(),
             })

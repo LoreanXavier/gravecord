@@ -27,6 +27,25 @@ thread_local! {
 /// `lineClamp` of module 501925 (6 unless given), as the classic sidebar draws the bio.
 const CLASSIC_BIO_LINES: usize = 6;
 
+/// The bio a profile shows (`R` of module 501925): the changelog account's is the client's own text, "The latest
+/// announcements ..." then "Catch up on past Changelogs here" with "here" linking the product blog, whatever its
+/// profile says; anyone else's is theirs.
+pub(super) fn shown_bio(user: Id, bio: Option<String>) -> Option<String> {
+    if user != super::blocked::CHANGELOG_USER {
+        return bio;
+    }
+    let mut catch_up = String::new();
+    for (text, tag) in dc_intl::format_runs("RCYeBL", &[]) {
+        match tag.as_deref() {
+            Some("blogHook") => {
+                catch_up.push_str(&format!("[{text}]({})", super::blocked::CHANGELOG_BLOG))
+            }
+            _ => catch_up.push_str(&text),
+        }
+    }
+    Some(format!("{}\n\n{catch_up}", dc_intl::t("OJmNR9")))
+}
+
 /// `rP` of module 289287: the redesigned sidebar (variation 1).
 pub(super) const SIDEBAR_REDESIGN: &str = "2026-06-user-profile-sidebar-redesign";
 /// `r2` of module 289287: variation 1 hides "View Full Profile" in the redesigned footer.
@@ -1469,10 +1488,12 @@ impl Root {
     ) -> SidebarParts {
         let user_id = user.id;
         let body = self.fetched.get(&format!("profile:{user_id}"));
-        let bio = body
-            .and_then(|body| body["user_profile"]["bio"].as_str())
-            .filter(|bio| !bio.is_empty())
-            .map(str::to_owned);
+        let bio = shown_bio(
+            user_id,
+            body.and_then(|body| body["user_profile"]["bio"].as_str())
+                .filter(|bio| !bio.is_empty())
+                .map(str::to_owned),
+        );
         let is_private = body.is_some_and(|body| body["private"] == true);
         let hovering = self.profile_effect_hovered("dm-profile");
         let names = self
@@ -2382,6 +2403,22 @@ mod tests {
                 ("3".to_owned(), false)
             ]
         );
+    }
+
+    #[test]
+    fn the_changelog_account_shows_the_client_bio() {
+        assert_eq!(
+            shown_bio(7, Some("mine".to_owned())).as_deref(),
+            Some("mine")
+        );
+        assert_eq!(shown_bio(7, None), None);
+        let bio = shown_bio(super::super::blocked::CHANGELOG_USER, None).unwrap();
+        assert!(
+            bio.starts_with("The latest announcements and updates about what's new at Discord")
+        );
+        assert!(bio.ends_with(
+            "\n\nCatch up on past Changelogs [here](https://discord.com/category/product)"
+        ));
     }
 
     #[test]
