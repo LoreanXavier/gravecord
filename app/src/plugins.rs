@@ -14,11 +14,12 @@
 mod backup;
 pub(crate) mod better_forwards;
 pub(crate) mod clear_urls;
+pub(crate) mod custom_rpc;
 pub(crate) mod gif_provider;
 mod registry;
 mod state;
-pub(crate) mod zip;
 pub(crate) mod translate_plus;
+pub(crate) mod zip;
 pub(crate) mod zip_preview;
 
 pub(crate) use backup::{Report, export, import};
@@ -122,6 +123,15 @@ pub(crate) fn with<R>(read: impl FnOnce(&State) -> R) -> R {
     }
 }
 
+/// Bumped on every [`update`]: a hook that builds something from the settings each frame builds it again only when
+/// this moved.
+static REVISION: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// The settings' revision (see [`REVISION`]).
+pub(crate) fn revision() -> u64 {
+    REVISION.load(std::sync::atomic::Ordering::Relaxed)
+}
+
 /// The plugin is turned on and the master switch is on.
 pub(crate) fn on(id: &str) -> bool {
     !bypassed() && cell().read().is_ok_and(|state| state.is_on(id))
@@ -133,6 +143,7 @@ pub(crate) fn update(change: impl FnOnce(&mut State)) {
         return;
     };
     change(&mut state);
+    REVISION.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     note("storage:plugins");
     if !cfg!(test) {
         crate::storage::set(STORAGE_KEY, state.to_value());

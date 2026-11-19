@@ -379,6 +379,15 @@ impl Root {
         games::custom_status_activity(&custom.text, custom.expires_at_ms, emoji, now_ms())
     }
 
+    /// Not in the pinned client: CustomRPC's `LOCAL_ACTIVITY_UPDATE` with `socketId: "CustomRPC"`, listed after
+    /// every game's socket (a string key after the numeric ones), and the presence follows
+    /// (`plugin_hooks/custom_rpc.rs`).
+    pub(super) fn set_plugin_activity(&mut self, activity: Option<serde_json::Value>) {
+        if self.detect.local.update(u64::MAX, None, activity, None) {
+            self.refresh_own_presence();
+        }
+    }
+
     /// An event of the local RPC server: `LOCAL_ACTIVITY_UPDATE` and `RPC_APP_DISCONNECTED` change
     /// `LocalActivityStore`, and the account's presence follows (module 491009). `RPC_APP_CONNECTED` changes no
     /// activity.

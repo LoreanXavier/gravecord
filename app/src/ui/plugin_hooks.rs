@@ -5,7 +5,8 @@ mod always_animate;
 mod better_activities;
 mod better_forwards;
 pub(in crate::ui) use better_forwards::{
-    better_forwards_follow, better_forwards_on, better_forwards_self_forward, better_forwards_send_pressed,
+    better_forwards_follow, better_forwards_on, better_forwards_self_forward,
+    better_forwards_send_pressed,
 };
 mod better_role_context;
 pub(in crate::ui) use better_role_context::role_icon_format_setting;
@@ -14,6 +15,7 @@ mod bigger_stream_preview;
 mod bypass_status;
 mod call_timer;
 pub(in crate::ui) mod clips_enhancements;
+mod custom_rpc;
 mod download_all;
 mod expression_manager;
 pub(crate) use expression_manager::sticker_url as expression_sticker_url;
@@ -35,8 +37,9 @@ mod member_count;
 mod message_clicks;
 mod message_logger;
 pub(in crate::ui) use message_logger::{
-    message_logger_attachment_gray, message_logger_deleted, message_logger_highlight, message_logger_history,
-    message_logger_menu, message_logger_on, message_logger_scope, scoped_token,
+    message_logger_attachment_gray, message_logger_deleted, message_logger_highlight,
+    message_logger_history, message_logger_menu, message_logger_on, message_logger_scope,
+    scoped_token,
 };
 mod message_peek;
 mod message_pronouns;
@@ -63,8 +66,8 @@ pub(in crate::ui) use relationship_notifier::relationship_removed_by_you;
 mod role_color_everywhere;
 mod search_fix;
 mod server_info;
-pub(in crate::ui) use server_info::server_info_on;
 pub(in crate::ui) use search_fix::search_fix;
+pub(in crate::ui) use server_info::server_info_on;
 mod server_list_indicators;
 mod show_connections;
 mod silent_message_toggle;
@@ -730,7 +733,13 @@ pub(in crate::ui) fn skip_blocked_prompt() -> bool {
 pub(in crate::ui) fn has_own_section(id: &str) -> bool {
     matches!(
         id,
-        "MessageTags" | "ClipsEnhancements" | "USRBG" | "UserPFP" | "GlobalBadges" | "SearchFix"
+        "MessageTags"
+            | "ClipsEnhancements"
+            | "USRBG"
+            | "UserPFP"
+            | "GlobalBadges"
+            | "SearchFix"
+            | "CustomRPC"
     )
 }
 
@@ -750,6 +759,7 @@ impl super::Root {
             "USRBG" => Some(self.usrbg_settings(cx)),
             "UserPFP" => Some(self.userpfp_settings(cx)),
             "GlobalBadges" => Some(self.global_badges_settings(cx)),
+            "CustomRPC" => Some(self.custom_rpc_settings(cx)),
             "SearchFix" => Some(
                 gpui::div()
                     .text_size(gpui::px(14.))
@@ -955,6 +965,8 @@ mod tests {
                     format!("ms(\"{key}\")"),
                     format!("action(\"{key}\")"),
                     format!("hide_count(\"{key}\")"),
+                    // CustomRPC's typed readers of the state (`text_of(state, "key")`, `number_of(...)`).
+                    format!("_of(state, \"{key}\")"),
                 ]
                 .iter()
                 .any(|pattern| hooks.contains(pattern.as_str()))

@@ -256,6 +256,14 @@ pub enum Request {
         tags: String,
         description: String,
     },
+    /// Not in the pinned client: CustomRPC's `fetchAssetIds`: each picture's application asset id (a link becomes an
+    /// external asset, `mp:` and its path; a key the application's asset of that name). The answer comes under `key`
+    /// as `Update::Fetched` with an object of key to id (`null` for none).
+    PluginRpcAssets {
+        key: String,
+        app_id: String,
+        keys: Vec<String>,
+    },
     /// Not in the pinned client: Translate+'s translation of a message's text (`plugins::translate_plus`): Google
     /// Translate, the Toki Pona translator and the two dictionaries, none with authorization. The answer comes under
     /// `key` as `Update::Fetched` (`{src, text}`, or `null` when the Toki Pona call failed, as the original then shows
@@ -870,6 +878,7 @@ impl Request {
             Request::FetchZip { .. } => "FetchZip",
             Request::GifProvider { .. } => "GifProvider",
             Request::PluginTranslate { .. } => "PluginTranslate",
+            Request::PluginRpcAssets { .. } => "PluginRpcAssets",
             Request::PluginCloneSticker { .. } => "PluginCloneSticker",
             Request::ResolveRedirect { .. } => "ResolveRedirect",
             Request::Typing { .. } => "Typing",
@@ -913,7 +922,6 @@ impl Request {
             | Request::FetchZip { .. }
             | Request::GifProvider { .. }
             | Request::PluginTranslate { .. }
-            | Request::PluginCloneSticker { .. }
             | Request::ResolveRedirect { .. }
             | Request::LoadMessages { .. }
             | Request::PrefetchMessages { .. }
@@ -953,6 +961,9 @@ impl Request {
             | Request::Send { .. }
             | Request::SendLocal { .. }
             | Request::SendVoice { .. }
+            // Not in the pinned client: plugin writes (ExpressionManager's new sticker, CustomRPC's external assets).
+            | Request::PluginCloneSticker { .. }
+            | Request::PluginRpcAssets { .. }
             | Request::Edit { .. }
             | Request::Delete { .. }
             | Request::Ack { .. }
@@ -1035,6 +1046,28 @@ pub(crate) fn inert_refuses(request: &Request, updates: &mpsc::UnboundedSender<U
     if let Some(key) = key {
         let body = json!({"ok": false, "status": 0, "body": null, "refused": true});
         let _ = updates.send(Update::Fetched { key, body });
+    }
+    // Not in the pinned client: a refused plugin write answers as its failure, so the plugin does not wait on it.
+    match request {
+        Request::PluginCloneSticker { key, name, .. } => {
+            let body = json!({"ok": false, "name": name, "message": null, "refused": true});
+            let _ = updates.send(Update::Fetched {
+                key: key.clone(),
+                body,
+            });
+        }
+        Request::PluginRpcAssets { key, keys, .. } => {
+            let body = Value::Object(
+                keys.iter()
+                    .map(|asset| (asset.clone(), Value::Null))
+                    .collect(),
+            );
+            let _ = updates.send(Update::Fetched {
+                key: key.clone(),
+                body,
+            });
+        }
+        _ => {}
     }
     if let Request::Spotify(crate::spotify::Command::Perform { request, .. }) = request {
         let _ = updates.send(Update::SpotifyReply {
@@ -1458,7 +1491,8 @@ async fn send_local(
         });
         // Not in the pinned client: BetterForwards' choice of attachments and embeds (`forward_only`, which module
         // 138399 sends for `forwardOptions`; `plugins/better_forwards.rs`).
-        if let Some((attachment_ids, embed_indices)) = crate::plugins::better_forwards::take(nonce) {
+        if let Some((attachment_ids, embed_indices)) = crate::plugins::better_forwards::take(nonce)
+        {
             body["message_reference"]["forward_only"] = json!({
                 "attachment_ids": attachment_ids,
                 "embed_indices": embed_indices,
@@ -2562,8 +2596,53 @@ pub async fn run(token: Token, updates: mpsc::UnboundedSender<Update>, requests:
                 description,
             } => {
                 tokio::spawn(async move {
-                    let body = clone_sticker(&client, guild, sticker, format, &name, &tags, &description).await;
+                    let body =
+                        clone_sticker(&client, guild, sticker, format, &name, &tags, &description)
+                            .await;
                     let _ = updates.send(Update::Fetched { key, body });
+                });
+            }
+            Request::PluginRpcAssets { key, app_id, keys } => {
+                tokio::spawn(async move {
+                    let mut out = serde_json::Map::new();
+                    let (links, names): (Vec<String>, Vec<String>) = keys
+                        .into_iter()
+                        .partition(|key| key.starts_with("http://") || key.starts_with("https://"));
+                    if !names.is_empty() {
+                        let listed = client
+                            .get(&format!("/oauth2/applications/{app_id}/assets"))
+                            .await
+                            .unwrap_or(Value::Null);
+                        for name in names {
+                            let id = listed
+                                .as_array()
+                                .into_iter()
+                                .flatten()
+                                .find(|asset| asset["name"].as_str() == Some(name.as_str()))
+                                .and_then(|asset| asset["id"].as_str().map(str::to_owned));
+                            out.insert(name, id.map_or(Value::Null, Value::from));
+                        }
+                    }
+                    if !links.is_empty() {
+                        let answer = client
+                            .post(
+                                &format!("/applications/{app_id}/external-assets"),
+                                &json!({"urls": links}),
+                            )
+                            .await
+                            .unwrap_or(Value::Null);
+                        for (index, link) in links.into_iter().enumerate() {
+                            let path = answer[index]["external_asset_path"].as_str();
+                            out.insert(
+                                link,
+                                path.map_or(Value::Null, |path| Value::from(format!("mp:{path}"))),
+                            );
+                        }
+                    }
+                    let _ = updates.send(Update::Fetched {
+                        key,
+                        body: Value::Object(out),
+                    });
                 });
             }
             Request::PluginTranslate {
@@ -3441,7 +3520,11 @@ async fn clone_sticker(
             ("name".to_owned(), name.to_owned()),
             (
                 "tags".to_owned(),
-                if tags.is_empty() { "\u{1f47b}".to_owned() } else { tags },
+                if tags.is_empty() {
+                    "\u{1f47b}".to_owned()
+                } else {
+                    tags
+                },
             ),
             ("description".to_owned(), description),
         ],
@@ -3451,11 +3534,17 @@ async fn clone_sticker(
         file,
         headers: Vec::new(),
     };
-    match client.post_form(&format!("/guilds/{guild}/stickers"), &form).await {
+    match client
+        .post_form(&format!("/guilds/{guild}/stickers"), &form)
+        .await
+    {
         Ok(_) => json!({"ok": true, "name": name}),
-        Err(dc_http::Error::Status { body, .. }) => {
-            failed(body["message"].as_str().unwrap_or("Something went wrong (check console!)").to_owned())
-        }
+        Err(dc_http::Error::Status { body, .. }) => failed(
+            body["message"]
+                .as_str()
+                .unwrap_or("Something went wrong (check console!)")
+                .to_owned(),
+        ),
         Err(error) => failed(error.to_string()),
     }
 }

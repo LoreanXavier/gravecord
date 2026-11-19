@@ -287,9 +287,9 @@ pub(crate) mod start_cache;
 mod status_menu;
 mod stream_failed;
 mod video_pip;
+pub(crate) use plugin_hooks::expression_sticker_url;
 pub(crate) use plugin_hooks::more_commands_outgoing;
 pub(crate) use plugin_hooks::spotify_premium_forced;
-pub(crate) use plugin_hooks::expression_sticker_url;
 #[cfg(feature = "capture")]
 pub(crate) use server_discovery::FORCE_ELIGIBLE;
 mod server_discovery_form;
@@ -2021,6 +2021,11 @@ impl Root {
                 // Not in the pinned client: ExpressionManager's clone and delete answers
                 // (`plugin_hooks/expression_manager.rs`).
                 if self.expression_manager_fetched(&key, &body, cx) {
+                    return;
+                }
+                // Not in the pinned client: CustomRPC's asset ids (`plugin_hooks/custom_rpc.rs`).
+                if self.custom_rpc_fetched(&key, &body) {
+                    cx.notify();
                     return;
                 }
                 // Not in the pinned client: UserPFP's list (`plugin_hooks/userpfp.rs`).
@@ -4046,16 +4051,13 @@ impl Root {
                 .channel
                 .and_then(|channel| self.stores.messages.get(&channel))
                 .and_then(|messages| {
-                    messages
-                        .iter()
-                        .rev()
-                        .find(|message| {
-                            Some(message.author.id) == me
+                    messages.iter().rev().find(|message| {
+                        Some(message.author.id) == me
                                 && message.kind == 0
                                 // Not in the pinned client: MessageLogger leaves deleted messages out
                                 // (`getLastEditableMessage`, `plugin_hooks/message_logger.rs`).
                                 && !plugin_hooks::message_logger_deleted(message.id)
-                        })
+                    })
                 })
                 .map(|message| (message.id, message.content.clone()));
             if let Some((id, content)) = last {
@@ -8183,44 +8185,48 @@ impl Root {
                         // Not in the pinned client: BetterForwards' footer in place of the base's
                         // (`plugin_hooks/better_forwards.rs`).
                         .children(self.better_forwards_footer(message, cx))
-                        .children(footer.filter(|_| !plugin_hooks::better_forwards_on()).map(|footer| {
-                            div()
-                                .id(SharedString::from(format!(
-                                    "forwarded-footer-{}",
-                                    message.id
-                                )))
-                                .mt(px(4.))
-                                .py(px(1.))
-                                .rounded(px(4.))
-                                .cursor_pointer()
-                                .flex()
-                                .items_center()
-                                .gap(px(4.))
-                                .text_size(px(14.))
-                                .line_height(px(18.))
-                                .font_weight(FontWeight(500.))
-                                .text_color(color("--text-muted"))
-                                .on_click(cx.listener(move |this, _, _, cx| {
-                                    match (guild, channel) {
-                                        // The footer goes to the original message (`jumpToMessage`).
-                                        (_, Some(channel)) if message_id.is_some() => {
-                                            if let Some(original) = message_id {
-                                                this.jump_to_message_id(
-                                                    channel, original, true, None,
-                                                );
+                        .children(footer.filter(|_| !plugin_hooks::better_forwards_on()).map(
+                            |footer| {
+                                div()
+                                    .id(SharedString::from(format!(
+                                        "forwarded-footer-{}",
+                                        message.id
+                                    )))
+                                    .mt(px(4.))
+                                    .py(px(1.))
+                                    .rounded(px(4.))
+                                    .cursor_pointer()
+                                    .flex()
+                                    .items_center()
+                                    .gap(px(4.))
+                                    .text_size(px(14.))
+                                    .line_height(px(18.))
+                                    .font_weight(FontWeight(500.))
+                                    .text_color(color("--text-muted"))
+                                    .on_click(cx.listener(move |this, _, _, cx| {
+                                        match (guild, channel) {
+                                            // The footer goes to the original message (`jumpToMessage`).
+                                            (_, Some(channel)) if message_id.is_some() => {
+                                                if let Some(original) = message_id {
+                                                    this.jump_to_message_id(
+                                                        channel, original, true, None,
+                                                    );
+                                                }
                                             }
+                                            (Some(guild), Some(channel)) => {
+                                                this.select(guild, Some(channel))
+                                            }
+                                            (None, Some(channel)) => {
+                                                this.select_home(Some(channel))
+                                            }
+                                            _ => {}
                                         }
-                                        (Some(guild), Some(channel)) => {
-                                            this.select(guild, Some(channel))
-                                        }
-                                        (None, Some(channel)) => this.select_home(Some(channel)),
-                                        _ => {}
-                                    }
-                                    cx.notify();
-                                }))
-                                .child(footer)
-                                .child(icon("forwarded_chevron", 12., "--text-muted"))
-                        })),
+                                        cx.notify();
+                                    }))
+                                    .child(footer)
+                                    .child(icon("forwarded_chevron", 12., "--text-muted"))
+                            },
+                        )),
                 )
                 .into_any_element(),
         )
@@ -8478,7 +8484,8 @@ impl Root {
                 // Not in the pinned client: MessageLogger draws a deleted message's row in red
                 // (`plugin_hooks/message_logger.rs`).
                 let _deleted_colours = plugin_hooks::message_logger_scope(message.id);
-                let deleted_overlay = plugin_hooks::message_logger_highlight(message.id) == Some(true);
+                let deleted_overlay =
+                    plugin_hooks::message_logger_highlight(message.id) == Some(true);
                 match dc_state::message_kinds::presentation(message) {
                     // The official table has no entry for this type, or its handler returns `null`.
                     dc_state::message_kinds::Presentation::Nothing => {
@@ -9133,12 +9140,13 @@ impl Root {
         // `isExpanded`: Shift held, not in keyboard mode, and no picker or menu of the bar open.
         caps.expanded =
             hover_bar::shift_held() && !self.keyboard_mode() && !picker_open && !more_open;
-        let quick: Vec<&'static dc_tokens::emoji_data::Emoji> = match plugin_hooks::more_quick_grid() {
-            // Not in the pinned client: MoreQuickReactions shows `reactionCount` of them
-            // (`plugin_hooks/more_quick_reactions.rs`).
-            Some(grid) => self.hover_bar_reactions_up_to(grid.reaction_count),
-            None => self.hover_bar_reactions(),
-        };
+        let quick: Vec<&'static dc_tokens::emoji_data::Emoji> =
+            match plugin_hooks::more_quick_grid() {
+                // Not in the pinned client: MoreQuickReactions shows `reactionCount` of them
+                // (`plugin_hooks/more_quick_reactions.rs`).
+                Some(grid) => self.hover_bar_reactions_up_to(grid.reaction_count),
+                None => self.hover_bar_reactions(),
+            };
         // `.hoverBarButton:hover .icon` is `scale(1.1)` over `.4s` (module 194085, stylesheet 28636); the button's
         // colour is `--interactive-text-default`, `-hover` under the pointer, `-active` when selected (319714).
         let button = |name: &str| {
@@ -10489,6 +10497,8 @@ impl Render for Root {
         // Not in the pinned client: MessageLogger lets go of what it kept once it is off
         // (`plugin_hooks/message_logger.rs`).
         self.message_logger_prepare();
+        // Not in the pinned client: CustomRPC's activity (`plugin_hooks/custom_rpc.rs`).
+        self.custom_rpc_prepare();
         // Not in the pinned client: GlobalBadges' list, at start and every 30 minutes (`plugin_hooks/global_badges.rs`).
         self.global_badges_prepare();
         // Not in the pinned client: SteamStatusSync (`plugin_hooks/steam_status_sync.rs`).

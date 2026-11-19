@@ -129,6 +129,13 @@ for dp, dn, fn in os.walk(ROOT):
                     default = re.search(r'\bdefault:\s*([^,\n]+)', body)
                     default = picked.group(1).strip() if picked else (default.group(1).strip() if default else '')
                     settings.append((key, kind.group(1) if kind else '?', default))
+                # Settings the plugin keeps without a settings row (`.withPrivateSettings<RpcConfig>()`, CustomRPC):
+                # each field of that interface, kind PRIVATE, no default.
+                private = re.search(r'\}\)\.withPrivateSettings<(\w+)>\(\)', holder[s.end():])
+                face = private and re.search(r'interface\s+' + private.group(1) + r'\s*\{', holder)
+                if face:
+                    for key in re.findall(r'^\s*(\w+)\??:', balanced(holder, face.end() - 1), re.M):
+                        settings.append((key, 'PRIVATE', ''))
             sources.setdefault(name.group(1), (rel, desc.group(1) if desc else '', settings))
 
 # The ported plugins and their settings, from the registry.
@@ -147,6 +154,7 @@ assert len(idle) == idle_entries, f'IDLE_SETTINGS: read {len(idle)} of {idle_ent
 
 # How each ported plugin is built here, and its proof.
 PORTED = {
+    'CustomRPC': "plugin_hooks/custom_rpc.rs + plugins/custom_rpc.rs: a local activity of its own (LOCAL_ACTIVITY_UPDATE from the CustomRPC socket, after the games') while enablePresence is on, built as createActivity builds it (type, ids, lines and links, stream link, timestamps None/Since open/Your time/Custom with the repeating span, pictures turned into asset ids by fetchAssetIds, buttons with metadata, party); the card shows the original's notices with their buttons, help lines with links, the activity as the profile draws it, presets (saved, loaded, deleted in the store) and the whole form with each field's check and message. GAP: the toolbox toggle (no toolbox).",
     'ExpressionCloner': "plugin_hooks/expression_manager.rs (now ExpressionManager upstream): sticker menus in the picker and in messages get Clone Sticker (name field with the original's 2..30 check, server tiles with picture or acronym and tooltip, the sticker fetched from the media proxy at the largest size under 512 KiB and posted to the server, success or failure toast), Edit Sticker and Delete Sticker where you manage expressions (editAndDelete; delete after the original's confirmation), Copy/Open Sticker Link in place of Copy Sticker Image Link (stickerCopyAndOpen); custom emoji in the picker get Delete Emoji, a default emoji's Copy Emoji its CopyIcon; recents adds Remove From Recents after the favourite row of a frecent emoji or sticker (the frecency proto sent back without the entry; no confirmation in the reaction picker or with Shift). GAP: Clone Emoji, Edit Emoji and Upload as Emoji need the Emoji Studio the app has not got yet.",
     'BetterForwards': "plugin_hooks/better_forwards.rs + plugins/better_forwards.rs: the forward dialog of a message with attachments or embeds gets Forward everything (InfoIcon tooltip) and, in place of the file line, TagGroup pickers of its attachments (kind icons) and embeds (title over a tag per embed and extra image), sent as message_reference.forward_only (empty choice as attachment 0, embed indices sorted); resendOnFail sends failed forwards again as forwardPreface-quoted text with file links five to a message and the note last instead of Forward Failed; dontFollowForwards stays put unless Shift is held on Send; selfForward lists the current channel; a forward's footer becomes the server (other server: picture or acronym, name, opens the profile card), the channel (picture, name or italic unknown, goes to the message) and the time.",
     'MessageLogger': "plugin_hooks/message_logger.rs: a deleted message stays (Stores::keep_deleted) in red text or the red overlay (deleteStyle), pictures grey until hovered, its hover bar down to Clear history; edits keep the replaced text with the edit's time (inlineEdits: dimmed earlier versions with their (edited) marks above the content; the message's own (edited) opens Message Edit History with its tabs and Show Diff); logDeletedAttachments keeps dropped attachments grey; showEditDiffs/separatedDiffs colour additions and removals (createWordDiff's LCS); the message menu drops the quick reactions and buttonsToRemove on a deleted message and ends with Toggle Deleted Highlight, Enable/Disable Diff View and Clear Message History; channel, thread, DM and person menus get Clear Message Log; collapseDeleted folds N deleted messages; ignore rules of shouldIgnore (bots, self, self edits, users, channels or their category, servers, the support bots); the up arrow skips deleted messages.",
@@ -251,6 +259,7 @@ PORTED = {
                      'so the original\'s 200% cap on the sync has nothing to cap.',
 }
 TESTS = {
+    'CustomRPC': '`activities_read_as_create_activity_builds_them`, `checks_read_as_the_form_writes_them`, `fields_check_as_the_form_checks`; frames pending (live runs held)',
     'ExpressionCloner': '`stickers_follow_the_originals_tables`, dc-proto `an_entry_leaves_its_map_and_the_rest_stays`; frames pending (live runs held)',
     'BetterForwards': '`resends_read_as_the_original_writes_them`, `embeds_split_as_the_original_splits_them`; frames pending (live runs held)',
     'MessageLogger': '`diffs_follow_create_word_diff`, `ignore_rules_follow_should_ignore`, `dropped_attachments_stay_in_place`; frames pending (live runs held)',
@@ -341,6 +350,9 @@ TESTS = {
 }
 # Original settings a port does not have, with why (none today).
 SKIPPED_SETTINGS = {
+    'CustomRPC': {
+        'config': "ported as the plugin card's own section: the RPC form (notices, presets, every field), not a setting.",
+    },
     'GlobalBadges': {
         'apiUrlPermission': "not ported: the desktop client's content security policy notice (Allow Host); this client reaches any host.",
         'showClientMods': 'ported as the sixteen Show switches it edits, listed one by one instead of one multi-select.',
@@ -426,7 +438,6 @@ PLANNED = {
     'BetterGifAltText': "a place where alt text shows: the original changes the `alt` that screen readers read, and the app draws images without an accessibility tree.",
     'BetterPlusReacts': "the pinned client's own `+:emoji:` rule first: a message `+:emoji:` reacts to the last message (the send path's reaction shortcut and its autocomplete), which the port does not have yet (GAP: main app); BetterPlusReacts only lets more pluses pick an older message.",
     'ClipUpload': 'a button to upload a local video as a clip.',
-    'CustomRPC': 'a custom rich presence editor and its activity.',
     'Decor': 'its third-party avatar decorations service (decor-auth in the backup\'s data store is not copied).',
     'Experiments': 'the experiments and developer pages.',
     'FullSearchContext': "the pinned client's own menu of a search result first: a right click on a result opens nothing here yet (the search listbox's short menu, `handleContextMenu`, is not ported: GAP, main app), and the app's message menu reads its message from the open channel's list, so a result from another channel needs that menu to take any message; FullSearchContext then swaps the short menu for the full one and adds Copy Author ID.",
@@ -438,8 +449,6 @@ PLANNED = {
     'Streaks': 'DM streak counts (its service login in the data store is not copied).',
     'ValidReply': "the pinned client's \"Message could not be loaded\" reply bar first: a reply whose message the server did not embed draws no reply line here (GAP in the reply path: intl REPLY_QUOTE_MESSAGE_NOT_LOADED); ValidReply's hover fetch hangs on that bar.",
     'VoiceMessageTranscriber': 'an on-device Whisper model runner.',
-    'IloveSpam': 'messages of users flagged as likely spammers shown as any other.',
-    'LimitMiddleClickPaste': 'middle-click paste only into a focused text box, and middle-click link opening.',
 }
 
 errors = []

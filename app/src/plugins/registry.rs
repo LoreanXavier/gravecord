@@ -343,6 +343,30 @@ pub(crate) const IDLE_SETTINGS: &[(&str, &str, &str)] = &[
 /// Settings shown only while a switch of the same plugin is on (`hidden` in the original); an empty switch is never
 /// on, so its setting is never listed (`hidden: true`).
 pub(crate) const SHOWN_WHEN: &[(&str, &str, &str)] = &[
+    // CustomRPC's private settings (`withPrivateSettings`): its own form edits them.
+    ("CustomRPC", "appID", ""),
+    ("CustomRPC", "appName", ""),
+    ("CustomRPC", "details", ""),
+    ("CustomRPC", "detailsURL", ""),
+    ("CustomRPC", "state", ""),
+    ("CustomRPC", "stateURL", ""),
+    ("CustomRPC", "type", ""),
+    ("CustomRPC", "streamLink", ""),
+    ("CustomRPC", "timestampMode", ""),
+    ("CustomRPC", "startTime", ""),
+    ("CustomRPC", "endTime", ""),
+    ("CustomRPC", "imageBig", ""),
+    ("CustomRPC", "imageBigURL", ""),
+    ("CustomRPC", "imageBigTooltip", ""),
+    ("CustomRPC", "imageSmall", ""),
+    ("CustomRPC", "imageSmallURL", ""),
+    ("CustomRPC", "imageSmallTooltip", ""),
+    ("CustomRPC", "buttonOneText", ""),
+    ("CustomRPC", "buttonOneURL", ""),
+    ("CustomRPC", "buttonTwoText", ""),
+    ("CustomRPC", "buttonTwoURL", ""),
+    ("CustomRPC", "partySize", ""),
+    ("CustomRPC", "partyMaxSize", ""),
     // `hidden: () => !settings.store.resendOnFail`.
     ("BetterForwards", "forwardPreface", "resendOnFail"),
     (
@@ -948,6 +972,241 @@ pub(crate) const DEFS: &[Def] = &[
         source: "src/plugins/copyUserURLs/index.tsx",
         default_on: false,
         settings: &[],
+    },
+    Def {
+        id: "CustomRPC",
+        name: "CustomRPC",
+        description: "Add a fully customisable Rich Presence (Game status) to your Discord profile",
+        origin: Origin::Vencord,
+        source: "src/plugins/customRPC/index.tsx",
+        default_on: false,
+        settings: &[
+            Setting {
+                key: "enablePresence",
+                label: "Enable Presence",
+                description: "Whether to show the presence",
+                kind: Kind::Switch { default: true },
+            },
+            Setting {
+                key: "appID",
+                label: "Application ID",
+                description: "",
+                kind: Kind::Text {
+                    default: "",
+                    max_len: 600,
+                },
+            },
+            Setting {
+                key: "appName",
+                label: "Application Name",
+                description: "",
+                kind: Kind::Text {
+                    default: "",
+                    max_len: 600,
+                },
+            },
+            Setting {
+                key: "details",
+                label: "Detail",
+                description: "",
+                kind: Kind::Text {
+                    default: "",
+                    max_len: 600,
+                },
+            },
+            Setting {
+                key: "detailsURL",
+                label: "Detail URL",
+                description: "",
+                kind: Kind::Text {
+                    default: "",
+                    max_len: 600,
+                },
+            },
+            Setting {
+                key: "state",
+                label: "State",
+                description: "",
+                kind: Kind::Text {
+                    default: "",
+                    max_len: 600,
+                },
+            },
+            Setting {
+                key: "stateURL",
+                label: "State URL",
+                description: "",
+                kind: Kind::Text {
+                    default: "",
+                    max_len: 600,
+                },
+            },
+            Setting {
+                key: "type",
+                label: "Activity Type",
+                description: "",
+                kind: Kind::Number {
+                    default: 0.,
+                    min: 0.,
+                    max: 9_007_199_254_740_991.,
+                    step: 1.,
+                },
+            },
+            Setting {
+                key: "streamLink",
+                label: "Stream Link",
+                description: "",
+                kind: Kind::Text {
+                    default: "",
+                    max_len: 600,
+                },
+            },
+            Setting {
+                key: "timestampMode",
+                label: "Timestamp Mode",
+                description: "",
+                kind: Kind::Number {
+                    default: 0.,
+                    min: 0.,
+                    max: 9_007_199_254_740_991.,
+                    step: 1.,
+                },
+            },
+            Setting {
+                key: "startTime",
+                label: "Start Timestamp",
+                description: "",
+                kind: Kind::Number {
+                    default: 0.,
+                    min: 0.,
+                    max: 9_007_199_254_740_991.,
+                    step: 1.,
+                },
+            },
+            Setting {
+                key: "endTime",
+                label: "End Timestamp",
+                description: "",
+                kind: Kind::Number {
+                    default: 0.,
+                    min: 0.,
+                    max: 9_007_199_254_740_991.,
+                    step: 1.,
+                },
+            },
+            Setting {
+                key: "imageBig",
+                label: "Large Image",
+                description: "",
+                kind: Kind::Text {
+                    default: "",
+                    max_len: 600,
+                },
+            },
+            Setting {
+                key: "imageBigURL",
+                label: "Large Image URL",
+                description: "",
+                kind: Kind::Text {
+                    default: "",
+                    max_len: 600,
+                },
+            },
+            Setting {
+                key: "imageBigTooltip",
+                label: "Large Image Text",
+                description: "",
+                kind: Kind::Text {
+                    default: "",
+                    max_len: 600,
+                },
+            },
+            Setting {
+                key: "imageSmall",
+                label: "Small Image",
+                description: "",
+                kind: Kind::Text {
+                    default: "",
+                    max_len: 600,
+                },
+            },
+            Setting {
+                key: "imageSmallURL",
+                label: "Small Image URL",
+                description: "",
+                kind: Kind::Text {
+                    default: "",
+                    max_len: 600,
+                },
+            },
+            Setting {
+                key: "imageSmallTooltip",
+                label: "Small Image Text",
+                description: "",
+                kind: Kind::Text {
+                    default: "",
+                    max_len: 600,
+                },
+            },
+            Setting {
+                key: "buttonOneText",
+                label: "Button1 Text",
+                description: "",
+                kind: Kind::Text {
+                    default: "",
+                    max_len: 600,
+                },
+            },
+            Setting {
+                key: "buttonOneURL",
+                label: "Button1 URL",
+                description: "",
+                kind: Kind::Text {
+                    default: "",
+                    max_len: 600,
+                },
+            },
+            Setting {
+                key: "buttonTwoText",
+                label: "Button2 Text",
+                description: "",
+                kind: Kind::Text {
+                    default: "",
+                    max_len: 600,
+                },
+            },
+            Setting {
+                key: "buttonTwoURL",
+                label: "Button2 URL",
+                description: "",
+                kind: Kind::Text {
+                    default: "",
+                    max_len: 600,
+                },
+            },
+            Setting {
+                key: "partySize",
+                label: "Party Size",
+                description: "",
+                kind: Kind::Number {
+                    default: 0.,
+                    min: 0.,
+                    max: 9_007_199_254_740_991.,
+                    step: 1.,
+                },
+            },
+            Setting {
+                key: "partyMaxSize",
+                label: "Maximum Party Size",
+                description: "",
+                kind: Kind::Number {
+                    default: 0.,
+                    min: 0.,
+                    max: 9_007_199_254_740_991.,
+                    step: 1.,
+                },
+            },
+        ],
     },
     Def {
         id: "DisableCallIdle",

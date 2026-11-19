@@ -12,7 +12,7 @@ every setting changed), and with every plugin off, and fails on one differing pi
 The list is the plugins enabled in the owner's Equicord backup of 2026-09-21 (156). Sources were read in the local
 Equicord checkout of 2026-11-14 (`src/plugins` is Vencord's, `src/equicordplugins` Equicord's).
 
-Totals: 84 ported, 9 native, 18 planned, 45 not applicable.
+Totals: 85 ported, 9 native, 17 planned, 45 not applicable.
 
 Status: **ported** works and has its proof; **native** is what gravecord already does without a plugin;
 **planned** is not built yet (an import keeps its settings for when it is); **not applicable** has nothing to
@@ -56,7 +56,7 @@ port in a native client, or was removed upstream.
 | ContextMenuAPI | not applicable | plugins/_api/contextMenu.ts | API for adding/removing items to/from context menus. | client-mod plumbing (an API for other plugins), nothing to port. |  |
 | CopyUserURLs | ported | plugins/copyUserURLs/index.tsx | Adds a 'Copy User URL' option to the user context menu. | context_menu.rs: "Copy User URL" at the end of user and DM menus; copies `<https://discord.com/users/ID>` (angle brackets, as the original). | `copy_user_urls_and_quick_mention_write_what_the_originals_write`; frame url-on; plugins-off user-menu |
 | CrashHandler | not applicable | plugins/crashHandler/index.ts | Utility plugin for handling and possibly recovering from crashes without a restart | recovers React render crashes; there is no React here. |  |
-| CustomRPC | planned | plugins/customRPC/index.tsx | Add a fully customisable Rich Presence (Game status) to your Discord profile | a custom rich presence editor and its activity. |  |
+| CustomRPC | ported | plugins/customRPC/index.tsx | Add a fully customisable Rich Presence (Game status) to your Discord profile | plugin_hooks/custom_rpc.rs + plugins/custom_rpc.rs: a local activity of its own (LOCAL_ACTIVITY_UPDATE from the CustomRPC socket, after the games') while enablePresence is on, built as createActivity builds it (type, ids, lines and links, stream link, timestamps None/Since open/Your time/Custom with the repeating span, pictures turned into asset ids by fetchAssetIds, buttons with metadata, party); the card shows the original's notices with their buttons, help lines with links, the activity as the profile draws it, presets (saved, loaded, deleted in the store) and the whole form with each field's check and message. GAP: the toolbox toggle (no toolbox). | `activities_read_as_create_activity_builds_them`, `checks_read_as_the_form_writes_them`, `fields_check_as_the_form_checks`; frames pending (live runs held) |
 | Decor | planned | plugins/decor/index.tsx | Create and use your own custom avatar decorations, or pick your favorite from the presets. | its third-party avatar decorations service (decor-auth in the backup's data store is not copied). |  |
 | DisableCallIdle | ported | plugins/disableCallIdle/index.ts | Disables automatically getting kicked from a DM voice call after 3 minutes and being moved to an AFK voice channel. | dm_call.rs: no leave after 3 minutes alone in a DM call. The pinned client's other idle rule (`handleIdleUpdate`: leave voice after 5 h idle, move to the AFK channel) is not in the app yet, so there is nothing more to disable. | `switch_only_plugins_follow_their_switch_and_the_master`; frames idle-off/on (195 s alone) |
 | DisableDeepLinks | not applicable | plugins/noDeepLinks.web/index.ts | Disables Discord's stupid deep linking feature which tries to force you to use their Desktop App | web build only. |  |
@@ -238,6 +238,31 @@ Every setting of each original (`definePluginSettings`), its type and default th
 | CallTimer | `watchLargeGuilds` | BOOLEAN | `false` | nothing to act on yet: the original subscribes to every server's events for it (`GUILD_SUBSCRIPTIONS_FLUSH`); plugin code sends nothing, so times come from the voice states the app already receives |
 | ClipsEnhancements | `richPresenceTagging` | SELECT | `"whenMatched"` | ported |
 | ClipsEnhancements | `clipsLink` | COMPONENT | `` | ported as the plugin card's own section: the button that opens Clips settings, not a setting. |
+| CustomRPC | `enablePresence` | BOOLEAN | `true` | ported |
+| CustomRPC | `config` | COMPONENT | `` | ported as the plugin card's own section: the RPC form (notices, presets, every field), not a setting. |
+| CustomRPC | `appID` | PRIVATE | `` | ported |
+| CustomRPC | `appName` | PRIVATE | `` | ported |
+| CustomRPC | `details` | PRIVATE | `` | ported |
+| CustomRPC | `detailsURL` | PRIVATE | `` | ported |
+| CustomRPC | `state` | PRIVATE | `` | ported |
+| CustomRPC | `stateURL` | PRIVATE | `` | ported |
+| CustomRPC | `type` | PRIVATE | `` | ported |
+| CustomRPC | `streamLink` | PRIVATE | `` | ported |
+| CustomRPC | `timestampMode` | PRIVATE | `` | ported |
+| CustomRPC | `startTime` | PRIVATE | `` | ported |
+| CustomRPC | `endTime` | PRIVATE | `` | ported |
+| CustomRPC | `imageBig` | PRIVATE | `` | ported |
+| CustomRPC | `imageBigURL` | PRIVATE | `` | ported |
+| CustomRPC | `imageBigTooltip` | PRIVATE | `` | ported |
+| CustomRPC | `imageSmall` | PRIVATE | `` | ported |
+| CustomRPC | `imageSmallURL` | PRIVATE | `` | ported |
+| CustomRPC | `imageSmallTooltip` | PRIVATE | `` | ported |
+| CustomRPC | `buttonOneText` | PRIVATE | `` | ported |
+| CustomRPC | `buttonOneURL` | PRIVATE | `` | ported |
+| CustomRPC | `buttonTwoText` | PRIVATE | `` | ported |
+| CustomRPC | `buttonTwoURL` | PRIVATE | `` | ported |
+| CustomRPC | `partySize` | PRIVATE | `` | ported |
+| CustomRPC | `partyMaxSize` | PRIVATE | `` | ported |
 | DownloadAllAttachments | `downloadAllFileTypes` | BOOLEAN | `false` | ported |
 | ExpressionCloner | `editAndDelete` | BOOLEAN | `true` | ported |
 | ExpressionCloner | `stickerCopyAndOpen` | BOOLEAN | `true` | ported |
