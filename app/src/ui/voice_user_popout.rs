@@ -348,7 +348,13 @@ impl Root {
         game: Option<Value>,
         cx: &mut Context<Self>,
     ) {
-        let session = self.stores.session_id.clone().unwrap_or_default();
+        // `sendMessage`: the request carries the game's own session when it has one, else this client's.
+        let session = game
+            .as_ref()
+            .and_then(|game| game["session_id"].as_str())
+            .map(str::to_owned)
+            .or_else(|| self.stores.session_id.clone())
+            .unwrap_or_default();
         let mut activity = json!({
             "type": STREAM_REQUEST,
             "session_id": session,
@@ -796,8 +802,10 @@ impl Root {
         let button = if disabled {
             button.opacity(0.5).cursor_default()
         } else {
+            // `onAction` (`eI` of module 340851): the popout closes.
             button.on_click(cx.listener(move |this, _, _, cx| {
                 this.send_stream_request(channel_id, user, game.clone(), cx);
+                this.voice_hover_dismiss(cx);
             }))
         };
         if disabled {
