@@ -42,6 +42,10 @@ pub(super) struct ProfileMenu {
 pub(super) enum Which {
     Overflow,
     Friend,
+    /// `user-bot-profile-overflow-menu` of module 630891 (the bot popout and the bot profile modal).
+    Bot,
+    /// `user-bot-profile-add-app` of module 570314 (Add App's right-click menu).
+    AddApp,
 }
 
 impl Root {
@@ -141,6 +145,7 @@ impl Root {
         let anchor = match which {
             Which::Overflow => "dm-profile-more",
             Which::Friend => "dm-profile-friend",
+            Which::Bot | Which::AddApp => "dm-profile-more",
         };
         self.open_profile_menu_at(user, which, anchor, false, cx);
     }
@@ -171,7 +176,7 @@ impl Root {
         cx.notify();
     }
 
-    fn profile_row(
+    pub(super) fn profile_row(
         &self,
         id: &'static str,
         label: SharedString,
@@ -244,6 +249,27 @@ impl Root {
         let bot = self.stores.users.get(&user).is_some_and(|known| known.bot);
         let relationship = self.stores.relationships.get(&user).copied();
         let (probe, rows): (&str, Vec<AnyElement>) = match self.profile_menu_which {
+            Which::Bot => {
+                let from_popout = menu.anchor.starts_with("bot-popout");
+                let mut rows: Vec<AnyElement> = Vec::new();
+                for group in self.bot_menu_groups(user, from_popout, cx) {
+                    if group.is_empty() {
+                        continue;
+                    }
+                    if !rows.is_empty() {
+                        rows.push(
+                            div()
+                                .my(px(8.))
+                                .h(px(1.))
+                                .bg(color("--border-subtle"))
+                                .into_any_element(),
+                        );
+                    }
+                    rows.extend(group);
+                }
+                (menu.anchor, rows)
+            }
+            Which::AddApp => (menu.anchor, self.add_app_menu_rows(user, cx)),
             Which::Friend => {
                 // `x` in module 508882: Remove Friend for a friend, Accept Friend Request for an incoming one.
                 let row = match relationship {

@@ -366,7 +366,7 @@ pub(super) fn index_commands(index: &Value) -> Vec<Cmd> {
 }
 
 /// `USE_APPLICATION_COMMANDS` of module 652215.
-const USE_APPLICATION_COMMANDS: u64 = 1 << 31;
+pub(super) const USE_APPLICATION_COMMANDS: u64 = 1 << 31;
 
 /// Does this index command answer the mention `</name:id>` (module 990474 `E`, `untranslatedName === commandName`)?
 /// Its id and its name are the mention's, and the mention's further words name its sub-command group and sub-command.

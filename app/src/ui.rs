@@ -239,6 +239,7 @@ mod popout_roles;
 mod profile;
 mod profile_art;
 mod profile_board;
+mod profile_bot;
 mod profile_commands;
 mod profile_editor;
 pub(crate) mod profile_effects;

@@ -638,14 +638,18 @@ impl Root {
     }
 
     /// `displayNameRow` and `usernameAndPronounsRow` of module 465829, with the note button (module 243166) after the
-    /// name in the sidebar.
-    fn profile_names(
+    /// name in the sidebar and the bot popout (`note_visible`: shown while hovering; `None`: no note button). `large`
+    /// is `displayNameSize: "lg"` (`heading-xl/semibold`, the bot profile modal of module 148540, whose names open
+    /// nothing). With a guild the name is the member's (`getName(guild, channel, user)`).
+    #[allow(clippy::too_many_arguments)]
+    pub(super) fn profile_names(
         &self,
         place: &'static str,
         user: &User,
         guild: Option<Id>,
         palette: &Palette,
-        note_visible: bool,
+        note_visible: Option<bool>,
+        large: bool,
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
         let user_id = user.id;
@@ -686,7 +690,7 @@ impl Root {
                 .size(px(24.))
                 .p(px(4.))
                 .cursor_pointer()
-                .when(!note_visible, |this| this.opacity(0.))
+                .when(note_visible != Some(true), |this| this.opacity(0.))
                 .child(
                     gpui::svg()
                         .path(format!("icons/{glyph}.svg"))
@@ -702,10 +706,15 @@ impl Root {
         // `an` of module 289287 (a non-user bot: the system account, or a bot tagged `0000`): the names open nothing
         // (`onClickName` is unset) and there is no note button.
         let non_user_bot = user.non_user_bot();
+        let display_name = if guild.is_some() {
+            self.guild_display_name(user)
+        } else {
+            self.dm_display_name(user)
+        };
         let open = move |id: &'static str, cx: &mut Context<Self>| {
             div()
                 .id(SharedString::from(format!("{place}-{id}-{user_id}")))
-                .when(!non_user_bot, |this| {
+                .when(!non_user_bot && !large, |this| {
                     this.cursor_pointer()
                         .on_click(cx.listener(move |this, _, window, cx| {
                             this.open_full_profile(user_id, window, cx);
@@ -731,33 +740,35 @@ impl Root {
             .flex_col()
             .child(
                 div()
-                    .h(px(24.))
+                    .h(px(if large { 32. } else { 24. }))
                     .flex()
                     .items_center()
                     .gap(px(4.))
                     .child(
                         open("name", cx)
                             .min_w(px(0.))
-                            .text_size(px(20.))
-                            .line_height(px(24.))
+                            .text_size(px(if large { 24. } else { 20. }))
+                            .line_height(px(if large { 32. } else { 24. }))
                             .font_weight(FontWeight(600.))
                             .text_color(default)
                             .flex()
                             .items_start()
                             .child(super::name_styles::name(
                                 format!("{place}-name-{user_id}"),
-                                self.dm_display_name(user),
-                                self.name_styles(user, None).as_ref(),
+                                display_name,
+                                self.name_styles(user, guild).as_ref(),
                                 super::name_styles::Display::Animated,
                             ))
                             .when_some(tag_kind, |this, kind| {
+                                // The tag's bottom on the name's baseline: 3px down in the 24px line; the 32px line
+                                // of `heading-xl` puts it 4px lower (GAP: not measured in a capture).
                                 this.child(div().flex_none().child("\u{a0}")).child(
                                     self.app_tag_px(kind, format!("{place}-app-tag-{user_id}"), cx)
-                                        .mt(px(3.)),
+                                        .mt(px(if large { 7. } else { 3. })),
                                 )
                             }),
                     )
-                    .when(!non_user_bot, |this| {
+                    .when(!non_user_bot && note_visible.is_some(), |this| {
                         this.child(div().flex_none().self_start().child(note_button))
                     }),
             )
@@ -822,7 +833,7 @@ impl Root {
 
     /// `mutuals_PXYMZ1` (module 791556): avatars and the friends' count, a dot, the servers' count; `body-xs` when both
     /// show, `body-sm` for one. Each opens the full profile on its tab.
-    fn profile_mutuals(
+    pub(super) fn profile_mutuals(
         &self,
         place: &'static str,
         user: Id,
@@ -1463,7 +1474,7 @@ impl Root {
         let is_private = body.is_some_and(|body| body["private"] == true);
         let hovering = self.profile_effect_hovered("dm-profile");
         let names = self
-            .profile_names("dm-profile", user, None, palette, hovering, cx)
+            .profile_names("dm-profile", user, None, palette, Some(hovering), false, cx)
             .into_any_element();
         // `an` of module 289287: a non-user bot's sidebar is the names, the bio and Created On only.
         let non_user_bot = user.non_user_bot();
@@ -2082,7 +2093,7 @@ impl Root {
                 self.fetched.insert(
                     format!("command-index:channel:{channel}"),
                     serde_json::json!({
-                        "applications": [{"id": user.to_string(), "name": "Fixture App"}],
+                        "applications": [{"id": user.to_string(), "name": "Fixture App", "bot_id": user.to_string()}],
                         "application_commands": [
                             {"id": "1300000000000000101", "application_id": user.to_string(), "name": "play", "description": "Plays a song", "type": 1, "version": "1"},
                             {"id": "1300000000000000102", "application_id": user.to_string(), "name": "settings", "description": "", "type": 1, "version": "1", "options": [{"type": 1, "name": "show", "description": "x"}]},

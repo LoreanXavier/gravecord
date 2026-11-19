@@ -195,6 +195,8 @@ pub(super) struct FullProfile {
     saved_note: String,
     /// Board widgets whose Show more was pressed (`t9`'s `expanded`), by widget key.
     board_expanded: std::collections::HashSet<String>,
+    /// The bot profile modal's tab (`e1` of module 148540, `initialSection ?? BOT_INFO`).
+    pub(super) bot_tab: super::profile_bot::BotTab,
     _events: Subscription,
 }
 
@@ -909,6 +911,12 @@ impl Root {
         if let Some(open) = self.full_profile.as_mut() {
             open.tab = tab;
             open.explicit = true;
+            // The bot modal's Mutual Servers (`MUTUAL_GUILDS`); any other section falls back to its first tab.
+            open.bot_tab = if tab == Tab::Servers {
+                super::profile_bot::BotTab::Servers
+            } else {
+                super::profile_bot::BotTab::Info
+            };
         }
         cx.notify();
     }
@@ -962,8 +970,15 @@ impl Root {
             note,
             saved_note: String::new(),
             board_expanded: std::collections::HashSet::new(),
+            bot_tab: super::profile_bot::BotTab::Info,
             _events: events,
         });
+        // The bot modal (`e8` of module 148540) has no activity tab, so an app's outbox is not read.
+        let app = self
+            .stores
+            .users
+            .get(&user)
+            .is_some_and(super::profile_bot::app_bot);
         for (key, route) in [
             (format!("profile:{user}"), profile_route(user, self.guild)),
             (
@@ -972,6 +987,9 @@ impl Root {
             ),
             (format!("note:{user}"), format!("/users/@me/notes/{user}")),
         ] {
+            if app && key.starts_with("outbox:") {
+                continue;
+            }
             let _ = self.requests.send(Request::Fetch { key, route });
         }
         if let Some(known) = self.stores.users.get(&user).cloned() {
@@ -1196,7 +1214,7 @@ impl Root {
             .child(text.into())
     }
 
-    fn full_profile_member_since(
+    pub(super) fn full_profile_member_since(
         &self,
         user: Id,
         guild: Option<Id>,
@@ -2681,7 +2699,7 @@ impl Root {
             .into_any_element()
     }
 
-    fn mutual_row(
+    pub(super) fn mutual_row(
         &self,
         id: SharedString,
         leading: AnyElement,
@@ -2715,6 +2733,15 @@ impl Root {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Option<AnyElement> {
+        // `iN` of module 148540: an app's profile is the bot modal `e8`.
+        if self
+            .full_profile
+            .as_ref()
+            .and_then(|open| self.stores.users.get(&open.user))
+            .is_some_and(super::profile_bot::app_bot)
+        {
+            return self.bot_profile_modal(window, cx);
+        }
         let (open_user, open_guild, open_tab, explicit, note_entity) = {
             let open = self.full_profile.as_ref()?;
             (
