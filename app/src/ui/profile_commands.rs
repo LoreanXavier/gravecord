@@ -63,8 +63,17 @@ fn id_of(value: &Value) -> Option<Id> {
         .or_else(|| value.as_u64())
 }
 
-/// A permission list's entry for `id` of `kind` (the keyed map of module 200662 `UZ`, read from the raw list).
+/// A permission entry for `id` of `kind` (the keyed map of module 200662 `UZ`). The index sends each permission set
+/// as `{user, channels: {id: bool}, roles: {id: bool}}`, which `ec` of module 264322 turns into a list whose USER
+/// entry is the account's (`user`); a list of `{id, type, permission}` is read as well.
 fn entry(permissions: &Value, id: Id, kind: u64) -> Option<bool> {
+    if permissions.is_object() {
+        return match kind {
+            PERMISSION_USER => permissions["user"].as_bool(),
+            PERMISSION_CHANNEL => permissions["channels"][id.to_string()].as_bool(),
+            _ => permissions["roles"][id.to_string()].as_bool(),
+        };
+    }
     permissions.as_array()?.iter().find_map(|item| {
         (id_of(&item["id"]) == Some(id) && item["type"].as_u64() == Some(kind))
             .then(|| item["permission"].as_bool())
@@ -554,6 +563,26 @@ mod tests {
         let everyone_denied = json!({"contexts": [0], "permissions": [{"id": "100", "type": 1, "permission": false}]});
         assert!(!command_allowed(
             &everyone_denied,
+            &app,
+            &guild_place(0),
+            true,
+            false
+        ));
+        // The index's own shape: `{user, channels, roles}` keyed by id.
+        let keyed = json!({"contexts": [0], "permissions": {"user": null, "channels": {"500": false}, "roles": {}}});
+        assert!(!command_allowed(&keyed, &app, &guild_place(0), true, false));
+        let keyed_role = json!({"contexts": [0], "default_member_permissions": "8", "permissions": {"roles": {"201": true}}});
+        assert!(command_allowed(
+            &keyed_role,
+            &app,
+            &guild_place(0),
+            true,
+            false
+        ));
+        let keyed_user =
+            json!({"contexts": [0], "permissions": {"user": false, "roles": {"201": true}}});
+        assert!(!command_allowed(
+            &keyed_user,
             &app,
             &guild_place(0),
             true,

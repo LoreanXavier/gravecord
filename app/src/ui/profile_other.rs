@@ -589,7 +589,13 @@ impl Root {
             .gap(px(12.))
             .children(self.profile_fetch_warning(id))
             .child(names)
-            .when(friends > 0 || servers > 0, |this| this.child(mutuals))
+            .when(!bot && (friends > 0 || servers > 0), |this| {
+                this.child(mutuals)
+            })
+            .when(bot, |this| {
+                // 791556 as the DM profile draws it (`body-sm` for one count, avatars before the friends).
+                this.children(self.profile_mutuals("bot-popout", id, &palette, cx))
+            })
             .when(bot, |this| {
                 this.children(self.bot_popout_buttons(id, &palette, cx))
             })

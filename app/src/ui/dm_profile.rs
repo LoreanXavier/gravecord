@@ -788,7 +788,8 @@ impl Root {
                     .text_size(px(14.))
                     .line_height(px(18.))
                     .text_color(strong)
-                    .child(open("username", cx).child(user.username.clone()))
+                    // Module 297413 with `forceUsername`: concealed under Streamer Mode's Hide Personal Information.
+                    .child(open("username", cx).child(self.profile_username(user).0))
                     // Not in the pinned client: PlatformIndicators' icons before the pronouns, which then show
                     // even without pronouns (`plugin_hooks/platform_indicators.rs`).
                     .when_some(platform, |this, icons| {

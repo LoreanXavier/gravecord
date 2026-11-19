@@ -146,7 +146,22 @@ pub(super) fn add_app_press(app: &Value, in_bot_dm: bool) -> AddAppPress {
         return AddAppPress::Link(url.to_owned());
     }
     if integration_install(app) {
-        return AddAppPress::Authorize(serde_json::json!({"client_id": id}));
+        // `openOAuth2Modal({clientId})`: the modal reads the install params of the integration type; the guild install
+        // is taken when the application has one, else the user install.
+        let config = &app["integration_types_config"];
+        let (kind, params) = ["0", "1"]
+            .into_iter()
+            .find_map(|kind| {
+                let params = &config[kind]["oauth2_install_params"];
+                params.is_object().then_some((kind, params))
+            })
+            .unwrap_or(("0", &Value::Null));
+        return AddAppPress::Authorize(serde_json::json!({
+            "client_id": id,
+            "scopes": params["scopes"],
+            "permissions": params["permissions"],
+            "integration_type": kind,
+        }));
     }
     let params = &app["install_params"];
     if params.is_object() {
@@ -1313,7 +1328,12 @@ mod tests {
         );
         assert_eq!(
             add_app_press(&types, false),
-            AddAppPress::Authorize(json!({"client_id": "9"}))
+            AddAppPress::Authorize(json!({
+                "client_id": "9",
+                "scopes": ["applications.commands"],
+                "permissions": null,
+                "integration_type": "1",
+            }))
         );
         // In a DM with a bot it is Open App.
         assert_eq!(add_app_press(&params, true), AddAppPress::OpenApp);
