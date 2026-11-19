@@ -614,12 +614,19 @@ fn lay_out_segment(
     false
 }
 
-fn lay_out(pieces: &[Piece], max_width: Option<Pixels>, truncate: bool, window: &Window) -> Laid {
+fn lay_out(
+    pieces: &[Piece],
+    max_width: Option<Pixels>,
+    truncate: bool,
+    indent: Pixels,
+    window: &Window,
+) -> Laid {
     let mut laid = Laid {
         lines: 1,
         ..Laid::default()
     };
-    let mut x = px(0.);
+    // `text-indent`: the first line starts this far in (the header of a compact message sits before it).
+    let mut x = indent;
     let mut offset = 0;
     for (index, piece) in pieces.iter().enumerate() {
         if let Some((_, size)) = &piece.image {
@@ -734,7 +741,12 @@ pub struct Inline {
     on_piece_context: Option<PieceContext>,
     /// The pieces that are links, and what a middle click on one of them does (`onAuxClick` of MaskedLink).
     on_link_aux_click: Option<(Rc<Vec<bool>>, PieceClick)>,
+    /// How far in the first line starts, measured when laid out.
+    first_line_indent: Option<FirstLineIndent>,
 }
+
+/// The first line's indent, measured with the window's text system when the text is laid out.
+pub type FirstLineIndent = Rc<dyn Fn(&Window) -> Pixels>;
 
 #[derive(Clone)]
 struct Selectable {
@@ -812,10 +824,17 @@ pub fn inline(pieces: Vec<Piece>, line_height: Pixels) -> Inline {
         on_piece_hover: None,
         on_piece_context: None,
         on_link_aux_click: None,
+        first_line_indent: None,
     }
 }
 
 impl Inline {
+    /// Starts the first line `indent` in (`text-indent`); the lines after it start at the left edge.
+    pub fn first_line_indent(mut self, indent: FirstLineIndent) -> Self {
+        self.first_line_indent = Some(indent);
+        self
+    }
+
     /// Reports clicks on pieces, for spoilers that open where they are clicked.
     pub fn on_piece_click(
         mut self,
@@ -1281,13 +1300,17 @@ impl Element for Inline {
         let fill_width = self.fill_width;
         let truncate = self.truncate;
         let clamp = self.clamp.clone();
+        let indent = self.first_line_indent.clone();
         let id =
             window.request_measured_layout(Style::default(), move |known, available, window, _| {
                 let limit = known.width.or(match available.width {
                     gpui::AvailableSpace::Definite(width) => Some(width),
                     _ => None,
                 });
-                let mut result = lay_out(&pieces, limit, truncate, window);
+                let indent = indent
+                    .as_ref()
+                    .map_or(px(0.), |indent| indent(window).max(px(0.)));
+                let mut result = lay_out(&pieces, limit, truncate, indent, window);
                 if let Some((lines, cut)) = &clamp {
                     clamp_lines(&mut result, *lines, &pieces, limit, window);
                     cut.set(result.cut);

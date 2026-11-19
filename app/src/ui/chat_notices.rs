@@ -316,6 +316,22 @@ pub(super) enum Content {
     RaidResolve { chosen: Vec<usize> },
     /// Report App of the bot overflow menu (module 630891): the app's profile or its behaviour.
     ReportApp { user: Id, app: Id },
+    /// Module 181094: the whole topic of a channel (`parseTopic`, `body-md/normal`, selectable markup).
+    ChannelTopic(Id),
+}
+
+/// Channel Topic (module 181094 on the dialog of 189213, `md` with its child): the title `X8jMDh`, the channel's
+/// name after its channel list icon as the subtitle (`leadingIcon`, `sm` in `TEXT_SUBTLE`, `--space-4` from the text),
+/// the topic, and no actions. Opened by a click on the header's topic (565265 `handleOpenTopic`, not on a link,
+/// mention or emoji in it) and by See More of the spoiler gate (873614).
+pub(super) fn channel_topic_alert(channel: Id) -> Alert {
+    Alert {
+        id: "channel-topic",
+        title: dc_intl::t("X8jMDh").to_owned(),
+        subtitle: None,
+        content: Some(Content::ChannelTopic(channel)),
+        buttons: Vec::new(),
+    }
 }
 
 impl Content {
@@ -969,6 +985,58 @@ impl Root {
         cx.notify();
     }
 
+    /// Opens Channel Topic (module 181094) for a server channel that has a topic.
+    pub(super) fn open_channel_topic(&mut self, channel: Id, cx: &mut Context<Self>) {
+        self.chat_extra.alert = Some(channel_topic_alert(channel));
+        cx.notify();
+    }
+
+    fn topic_channel(&self, channel: Id) -> Option<(&dc_state::Channel, bool)> {
+        let guild = self
+            .stores
+            .guilds
+            .iter()
+            .find(|guild| guild.channels.iter().any(|known| known.id == channel))?;
+        let known = guild.channels.iter().find(|known| known.id == channel)?;
+        Some((known, guild.rules_channel_id == Some(channel)))
+    }
+
+    /// The subtitle of module 181094: `{text: channel name, leadingIcon: gU(channel, guild)}` (module 20742 `O`).
+    fn channel_topic_subtitle(&self, channel: Id) -> Option<AnyElement> {
+        let (known, rules) = self.topic_channel(channel)?;
+        let name = super::channel_icon::name(&super::channel_icon::Facts {
+            locked: false,
+            ..self.channel_icon_facts(known, rules)
+        });
+        Some(
+            div()
+                .flex()
+                .items_center()
+                .gap(px(4.))
+                .child(
+                    div()
+                        .flex_none()
+                        .child(super::icon(name, 16., "--text-subtle")),
+                )
+                .child(div().min_w(px(0.)).child(known.name.clone()))
+                .into_any_element(),
+        )
+    }
+
+    /// The topic of module 181094: `parseTopic` (lines kept) in `body-md/normal` (16/20) `text-default`.
+    fn channel_topic_body(&self, channel: Id, cx: &mut Context<Self>) -> AnyElement {
+        let topic = self
+            .topic_channel(channel)
+            .and_then(|(known, _)| known.topic.clone())
+            .unwrap_or_default();
+        div()
+            .text_size(px(16.))
+            .line_height(px(20.))
+            .text_color(super::color("--text-default"))
+            .child(self.topic_text_full(&topic, super::color("--text-default").into(), cx))
+            .into_any_element()
+    }
+
     /// Escape closes the open alert; true when there was one.
     pub(super) fn chat_alert_escape(&mut self) -> bool {
         let closed = self.chat_extra.alert.take();
@@ -1001,6 +1069,8 @@ impl Root {
         let alert_id = alert.id;
         let subtitle = if matches!(alert.content, Some(Content::RaidReport { .. })) {
             Some(raid_subtitle(cx))
+        } else if let Some(Content::ChannelTopic(channel)) = alert.content {
+            self.channel_topic_subtitle(channel)
         } else {
             alert.subtitle.map(rich_text)
         };
@@ -1029,6 +1099,7 @@ impl Root {
         let raid_resolve = matches!(content, Content::RaidResolve { .. });
         match content {
             Content::Text(text) => body_text(text),
+            Content::ChannelTopic(channel) => self.channel_topic_body(channel, cx),
             Content::SoundboardKeybind { .. } => self.soundboard_keybind_body(cx),
             Content::FailedDestinations(destinations) => {
                 // `failedDestinations_PiyhYP`: a `--border-subtle` edge, 8px corners, 16px above, 8px 16px inside;

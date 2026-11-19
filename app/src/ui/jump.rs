@@ -630,11 +630,84 @@ impl Root {
             _ => "jump: present | reply | state | <message id>".to_owned(),
         }
     }
+
+    /// The chat's thumb (`scroller_8AE1Qq` with `auto_tqapBM`, stylesheets 524434 and the scroller's): a 16px gutter
+    /// whose thumb keeps 4px clear on every side and is at least 40px tall, on a track that stops 36px above the
+    /// scroller's bottom (`::-webkit-scrollbar-track { margin-bottom: 36px }`), transparent unless the pointer is over
+    /// the scroller (`:not(:hover)::-webkit-scrollbar-thumb { background: transparent }`). The track is not drawn
+    /// (frames channel/hover-message and channel/hoverbar: the thumb alone, `--scrollbar-auto-thumb`).
+    pub(super) fn chat_thumb(&self) -> impl IntoElement {
+        let list = self.list.clone();
+        gpui::canvas(
+            |_, _, _| {},
+            move |bounds, _, window, _| {
+                let inside = bounds.contains(&window.mouse_position());
+                // Enter and leave redraw it, as `:hover` does.
+                window.on_mouse_event(move |_: &gpui::MouseMoveEvent, phase, window, _| {
+                    if phase == gpui::DispatchPhase::Bubble
+                        && bounds.contains(&window.mouse_position()) != inside
+                    {
+                        window.refresh();
+                    }
+                });
+                if !inside {
+                    return;
+                }
+                let max = f32::from(list.max_offset_for_scrollbar().y);
+                let Some((top, height)) = thumb_span(
+                    f32::from(bounds.size.height),
+                    max,
+                    -f32::from(list.scroll_px_offset_for_scrollbar().y),
+                ) else {
+                    return;
+                };
+                let area = gpui::Bounds::new(
+                    gpui::point(bounds.right() - px(12.), bounds.top() + px(top)),
+                    gpui::size(px(8.), px(height)),
+                );
+                window.paint_quad(
+                    gpui::fill(area, color("--scrollbar-auto-thumb")).corner_radii(px(4.)),
+                );
+            },
+        )
+        .absolute()
+        .top_0()
+        .left_0()
+        .size_full()
+    }
+}
+
+/// Where the chat's thumb is painted, from the scroller's top: (top, height), its 4px border left out; `None` when
+/// nothing scrolls. `viewport` is the scroller's height, `max` how far it scrolls, `scrolled` how far it is.
+fn thumb_span(viewport: f32, max: f32, scrolled: f32) -> Option<(f32, f32)> {
+    if max <= 0.5 || viewport <= 0. {
+        return None;
+    }
+    let track = (viewport - 36.).max(0.);
+    let thumb = (track * viewport / (viewport + max)).max(40.).min(track);
+    let top = (track - thumb) * (scrolled / max).clamp(0., 1.);
+    Some((top + 4., (thumb - 8.).max(0.)))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Frame channel/hoverbar: a 588px scroller over 3023.5px of messages, at the bottom, paints the thumb from 532
+    /// to 629 (the scroller starts at 82).
+    #[test]
+    fn the_chat_thumb_sits_on_a_track_36px_short_of_the_bottom() {
+        let (top, height) = thumb_span(588., 3023.5 - 588., 3023.5 - 588.).unwrap();
+        assert!((82. + top - 531.6).abs() < 1.5, "top {top}");
+        assert!(
+            (82. + top + height - 630.).abs() < 1.0,
+            "bottom {}",
+            top + height
+        );
+        assert_eq!(thumb_span(588., 0., 0.), None);
+        // A long history keeps the thumb 40px tall (32 painted).
+        assert_eq!(thumb_span(588., 100_000., 0.).unwrap(), (4., 32.));
+    }
 
     #[test]
     fn the_target_is_centred_with_a_gap_of_16() {
