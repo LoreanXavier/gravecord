@@ -81,7 +81,12 @@ pub fn settings_for(
         .filter(|preset| preset.height() > 0 && preset.height() <= out_height)
         .max_by_key(|preset| preset.height())
         .unwrap_or(Resolution::ALL[0]);
-    let fps = if screen::required_quality(resolution, fps).is_some() {
+    // Not in the pinned client: ClipsEnhancements' extra rates are kept (`ui/plugin_hooks/clips_enhancements.rs`);
+    // the bit rate ladder takes any rate.
+    let extra_rate = !crate::plugins::bypassed()
+        && crate::plugins::on("ClipsEnhancements")
+        && [45, 90, 120, 144, 165, 240].contains(&fps);
+    let fps = if extra_rate || screen::required_quality(resolution, fps).is_some() {
         fps
     } else {
         30

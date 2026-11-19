@@ -35,7 +35,14 @@ pub(super) enum Fold {
     Blocked,
     Ignored,
     Spammer,
+    /// Not in the pinned client: MessageLogger's `MESSAGE_GROUP_DELETED` (`collapseDeleted`,
+    /// `plugin_hooks/message_logger.rs`).
+    Deleted,
 }
+
+/// Not in the pinned client: how many kinds of fold there are, for BetterBlockedUsers' rows by kind
+/// (`plugin_hooks/better_blocked_users.rs`).
+pub(super) const FOLDS: usize = 4;
 
 /// `2021-12_inferno_spam_redaction` (module 891522 `en`): treatment 1 collapses guild channel messages from likely
 /// spammers; the default (no assignment) leaves them.
@@ -68,6 +75,15 @@ pub(super) fn ignored_count(count: usize) -> String {
         0 => "No ignored messages".to_owned(),
         1 => "1 ignored message".to_owned(),
         _ => format!("{count} ignored messages"),
+    }
+}
+
+/// Not in the pinned client: MessageLogger's `DELETED_MESSAGE_COUNT` (`plugin_hooks/message_logger.rs`).
+pub(super) fn deleted_count(count: usize) -> String {
+    match count {
+        0 => "No deleted messages".to_owned(),
+        1 => "1 deleted message".to_owned(),
+        _ => format!("{count} deleted messages"),
     }
 }
 
@@ -231,7 +247,8 @@ impl Root {
                             match kind {
                                 Fold::Ignored => "eye_slash",
                                 Fold::Blocked => "blocked",
-                                Fold::Spammer => "x_small",
+                                // Not in the pinned client: MessageLogger's fold is neither kind, so `n3` gives it XSmall.
+                                Fold::Spammer | Fold::Deleted => "x_small",
                             },
                             16.,
                             "--text-muted",
@@ -249,6 +266,8 @@ impl Root {
                                     Fold::Ignored => ignored_count(count),
                                     Fold::Blocked => blocked_count(count),
                                     Fold::Spammer => spammer_count(count),
+                                    // Not in the pinned client: MessageLogger's `DELETED_MESSAGE_COUNT`.
+                                    Fold::Deleted => deleted_count(count),
                                 }
                             )),
                     )

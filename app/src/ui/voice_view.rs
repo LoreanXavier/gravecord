@@ -669,21 +669,6 @@ impl Root {
             || self.stream_zoom.held()
     }
 
-    /// Where the call started on this client, as `m:ss` (`h:mm:ss` from an hour), for the sidebar row.
-    pub(super) fn call_timer(&self) -> Option<String> {
-        let seconds = self.call.as_ref()?.connected_at?.elapsed().as_secs();
-        Some(if seconds >= 3600 {
-            format!(
-                "{}:{:02}:{:02}",
-                seconds / 3600,
-                seconds / 60 % 60,
-                seconds % 60
-            )
-        } else {
-            format!("{}:{:02}", seconds / 60, seconds % 60)
-        })
-    }
-
     pub(super) fn user_of(&self, id: Id) -> User {
         self.stores
             .users
@@ -1614,6 +1599,23 @@ impl Root {
         } else {
             self.tile_color(&person.user)
         };
+        // Not in the pinned client: USRBG's banner behind a tile without video (`plugin_hooks/usrbg.rs`).
+        let usrbg = (!stream_tile && !video_tiles::shows_video(&person.tile))
+            .then(|| super::plugin_hooks::usrbg_voice_background(user_id))
+            .flatten()
+            .and_then(|url| match self.images.get(&url).cloned() {
+                Some(image) => Some(image),
+                None => {
+                    self.want_image(url.clone(), url, cx);
+                    None
+                }
+            })
+            .map(|image| {
+                gpui::img(image)
+                    .absolute()
+                    .size_full()
+                    .object_fit(gpui::ObjectFit::Cover)
+            });
         // The focused stream's quality and LIVE sit in the header instead.
         let is_focus = self.vv.focus.tile == Some((user_id, kind));
         let zoom_controls = stream_tile && is_focus && video;
@@ -1687,6 +1689,7 @@ impl Root {
             .rounded(px(8.))
             .overflow_hidden()
             .bg(background)
+            .children(usrbg)
             // Module 175203: a right click opens the tile's menu at the pointer, `minimal` on a stream, whether joined
             // or observing (`outside`).
             .on_mouse_up(

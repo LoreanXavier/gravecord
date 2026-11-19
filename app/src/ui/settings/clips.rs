@@ -65,6 +65,8 @@ pub(super) enum ClipLength {
     Seconds30,
     Minutes1,
     Minutes2,
+    /// Not in the pinned client: ClipsEnhancements' longer clips, in minutes (`plugin_hooks/clips_enhancements.rs`).
+    Extra(u64),
 }
 
 impl ClipLength {
@@ -79,11 +81,26 @@ impl ClipLength {
             ClipLength::Seconds30 => 30_000,
             ClipLength::Minutes1 => 60_000,
             ClipLength::Minutes2 => 120_000,
+            ClipLength::Extra(minutes) => minutes * 60_000,
         }
     }
 
+    /// The lengths the page offers: the pinned client's, with ClipsEnhancements' while it is on, by length.
+    pub(super) fn choices() -> Vec<Self> {
+        let mut out = Self::ALL.to_vec();
+        if super::super::plugin_hooks::clips_enhancements::extras() {
+            out.extend(
+                super::super::plugin_hooks::clips_enhancements::EXTRA_MINUTES
+                    .iter()
+                    .map(|minutes| ClipLength::Extra(*minutes)),
+            );
+            out.sort_by_key(|length| length.millis());
+        }
+        out
+    }
+
     fn from_millis(millis: u64) -> Option<Self> {
-        Self::ALL
+        Self::choices()
             .into_iter()
             .find(|length| length.millis() == millis)
     }
@@ -94,6 +111,9 @@ impl ClipLength {
             ClipLength::Seconds30 => "30 Seconds",
             ClipLength::Minutes1 => "1 Minute",
             ClipLength::Minutes2 => "2 Minutes",
+            ClipLength::Extra(minutes) => {
+                super::super::plugin_hooks::clips_enhancements::minutes_label(minutes)
+            }
         }
     }
 }
@@ -106,6 +126,8 @@ pub(super) enum Resolution {
     P1080,
     P1440,
     Source,
+    /// Not in the pinned client: ClipsEnhancements' heights (`plugin_hooks/clips_enhancements.rs`).
+    Extra(u64),
 }
 
 impl Resolution {
@@ -124,11 +146,31 @@ impl Resolution {
             Resolution::P1080 => 1080,
             Resolution::P1440 => 1440,
             Resolution::Source => 0,
+            Resolution::Extra(height) => height,
         }
     }
 
+    /// The resolutions the page offers: with ClipsEnhancements' while it is on, by height, Source last.
+    pub(super) fn choices() -> Vec<Self> {
+        let mut out = Self::ALL.to_vec();
+        if super::super::plugin_hooks::clips_enhancements::extras() {
+            out.extend(
+                super::super::plugin_hooks::clips_enhancements::EXTRA_HEIGHTS
+                    .iter()
+                    .map(|height| Resolution::Extra(*height)),
+            );
+            out.sort_by_key(|value| match value.height() {
+                0 => u64::MAX,
+                height => height,
+            });
+        }
+        out
+    }
+
     fn from_height(height: u64) -> Option<Self> {
-        Self::ALL.into_iter().find(|value| value.height() == height)
+        Self::choices()
+            .into_iter()
+            .find(|value| value.height() == height)
     }
 
     /// `TEOC0I` ("{resolution}p") and `XjXqzh` ("Source").
@@ -139,6 +181,9 @@ impl Resolution {
             Resolution::P1080 => "1080p",
             Resolution::P1440 => "1440p",
             Resolution::Source => dc_intl::tr("Source"),
+            Resolution::Extra(height) => {
+                super::super::plugin_hooks::clips_enhancements::height_label(height)
+            }
         }
     }
 }
@@ -148,6 +193,8 @@ impl Resolution {
 pub(super) enum FrameRate {
     Fps30,
     Fps60,
+    /// Not in the pinned client: ClipsEnhancements' rates (`plugin_hooks/clips_enhancements.rs`).
+    Extra(u64),
 }
 
 impl FrameRate {
@@ -157,7 +204,22 @@ impl FrameRate {
         match self {
             FrameRate::Fps30 => 30,
             FrameRate::Fps60 => 60,
+            FrameRate::Extra(fps) => fps,
         }
+    }
+
+    /// The rates the page offers: with ClipsEnhancements' while it is on, by rate.
+    pub(super) fn choices() -> Vec<Self> {
+        let mut out = Self::ALL.to_vec();
+        if super::super::plugin_hooks::clips_enhancements::extras() {
+            out.extend(
+                super::super::plugin_hooks::clips_enhancements::EXTRA_RATES
+                    .iter()
+                    .map(|fps| FrameRate::Extra(*fps)),
+            );
+            out.sort_by_key(|rate| rate.fps());
+        }
+        out
     }
 
     /// Migration 19 turns the removed 15 into 30; anything else the page does not list is dropped.
@@ -165,7 +227,7 @@ impl FrameRate {
         match fps {
             15 | 30 => Some(FrameRate::Fps30),
             60 => Some(FrameRate::Fps60),
-            _ => None,
+            other => Self::choices().into_iter().find(|rate| rate.fps() == other),
         }
     }
 
@@ -174,6 +236,9 @@ impl FrameRate {
         match self {
             FrameRate::Fps30 => "30FPS",
             FrameRate::Fps60 => "60FPS",
+            FrameRate::Extra(fps) => {
+                super::super::plugin_hooks::clips_enhancements::rate_label(fps)
+            }
         }
     }
 }
@@ -492,9 +557,18 @@ impl ClipSelect {
 
     fn labels(self) -> Vec<&'static str> {
         match self {
-            ClipSelect::Length => ClipLength::ALL.iter().map(|value| value.label()).collect(),
-            ClipSelect::FrameRate => FrameRate::ALL.iter().map(|value| value.label()).collect(),
-            ClipSelect::Resolution => Resolution::ALL.iter().map(|value| value.label()).collect(),
+            ClipSelect::Length => ClipLength::choices()
+                .iter()
+                .map(|value| value.label())
+                .collect(),
+            ClipSelect::FrameRate => FrameRate::choices()
+                .iter()
+                .map(|value| value.label())
+                .collect(),
+            ClipSelect::Resolution => Resolution::choices()
+                .iter()
+                .map(|value| value.label())
+                .collect(),
         }
     }
 }
@@ -987,15 +1061,15 @@ impl Root {
         let marker = self
             .anchor_probe(format!("settings-marker:{CAPTURE_CATEGORY}"))
             .into_any_element();
-        let length = ClipLength::ALL
+        let length = ClipLength::choices()
             .iter()
             .position(|value| *value == settings.clips_length)
             .unwrap_or(0);
-        let frame_rate = FrameRate::ALL
+        let frame_rate = FrameRate::choices()
             .iter()
             .position(|value| *value == settings.clips_quality.frame_rate)
             .unwrap_or(0);
-        let resolution = Resolution::ALL
+        let resolution = Resolution::choices()
             .iter()
             .position(|value| *value == settings.clips_quality.resolution)
             .unwrap_or(0);
@@ -1511,18 +1585,18 @@ impl Root {
         let settings = &mut self.clips.store.settings;
         match select {
             ClipSelect::Length => {
-                if let Some(length) = ClipLength::ALL.get(index) {
-                    settings.clips_length = *length;
+                if let Some(length) = ClipLength::choices().get(index).copied() {
+                    settings.clips_length = length;
                 }
             }
             ClipSelect::FrameRate => {
-                if let Some(rate) = FrameRate::ALL.get(index) {
-                    settings.clips_quality.frame_rate = *rate;
+                if let Some(rate) = FrameRate::choices().get(index).copied() {
+                    settings.clips_quality.frame_rate = rate;
                 }
             }
             ClipSelect::Resolution => {
-                if let Some(resolution) = Resolution::ALL.get(index) {
-                    settings.clips_quality.resolution = *resolution;
+                if let Some(resolution) = Resolution::choices().get(index).copied() {
+                    settings.clips_quality.resolution = resolution;
                 }
             }
         }

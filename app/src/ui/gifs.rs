@@ -171,7 +171,11 @@ impl Root {
         if self.gifs.is_none() {
             let search = cx.new(|cx| {
                 let mut editor = Editor::new(editor_style(), cx);
-                editor.set_placeholder("Search Klipy".to_owned());
+                // Not in the pinned client: GifProviderSwitcher's provider (`plugin_hooks/gif_provider_switcher.rs`).
+                editor.set_placeholder(
+                    super::plugin_hooks::gif_provider_placeholder()
+                        .unwrap_or_else(|| "Search Klipy".to_owned()),
+                );
                 editor
             });
             let events = cx.subscribe(&search, |this, editor, event: &EditorEvent, cx| {
@@ -222,10 +226,11 @@ impl Root {
             });
         }
         if !self.fetched.contains_key(TRENDING_KEY) {
-            let _ = self.requests.send(Request::Fetch {
-                key: TRENDING_KEY.to_owned(),
-                route: "/gifs/trending?locale=en-US&media_format=webm".to_owned(),
-            });
+            self.gif_fetch(
+                TRENDING_KEY.to_owned(),
+                "/gifs/trending?locale=en-US&media_format=webm".to_owned(),
+                crate::plugins::gif_provider::Ask::Categories,
+            );
         }
         self.request_image(
             "gif:favorites".to_owned(),
@@ -424,20 +429,20 @@ impl Root {
         if !self.fetched.contains_key(TRENDING_KEY)
             && self.requested.insert(TRENDING_KEY.to_owned())
         {
-            let _ = self.requests.send(Request::Fetch {
-                key: TRENDING_KEY.to_owned(),
-                route: "/gifs/trending?locale=en-US&media_format=webm".to_owned(),
-            });
+            self.gif_fetch(
+                TRENDING_KEY.to_owned(),
+                "/gifs/trending?locale=en-US&media_format=webm".to_owned(),
+                crate::plugins::gif_provider::Ask::Categories,
+            );
         }
         if !self.fetched.contains_key(TRENDING_GIFS_KEY)
             && self.requested.insert(TRENDING_GIFS_KEY.to_owned())
         {
-            let _ = self.requests.send(Request::Fetch {
-                key: TRENDING_GIFS_KEY.to_owned(),
-                route: format!(
-                    "/gifs/trending-gifs?media_format=webm&locale=en-US&limit={SEARCH_LIMIT}"
-                ),
-            });
+            self.gif_fetch(
+                TRENDING_GIFS_KEY.to_owned(),
+                format!("/gifs/trending-gifs?media_format=webm&locale=en-US&limit={SEARCH_LIMIT}"),
+                crate::plugins::gif_provider::Ask::Trending,
+            );
         }
         self.request_image(
             "gif:favorites".to_owned(),
@@ -565,12 +570,13 @@ impl Root {
                 }
             }
             GifView::Trending if !self.fetched.contains_key(TRENDING_GIFS_KEY) => {
-                let _ = self.requests.send(Request::Fetch {
-                    key: TRENDING_GIFS_KEY.to_owned(),
-                    route: format!(
+                self.gif_fetch(
+                    TRENDING_GIFS_KEY.to_owned(),
+                    format!(
                         "/gifs/trending-gifs?media_format=webm&locale=en-US&limit={SEARCH_LIMIT}"
                     ),
-                });
+                    crate::plugins::gif_provider::Ask::Trending,
+                );
             }
             GifView::Search(query)
                 if !self
@@ -578,12 +584,11 @@ impl Root {
                     .contains_key(&format!("{SEARCH_PREFIX}{query}")) =>
             {
                 let encoded = encode_query(query);
-                let _ = self.requests.send(Request::Fetch {
-                    key: format!("{SEARCH_PREFIX}{query}"),
-                    route: format!(
-                        "/gifs/search?q={encoded}&media_format=webm&locale=en-US&limit={SEARCH_LIMIT}"
-                    ),
-                });
+                self.gif_fetch(
+                    format!("{SEARCH_PREFIX}{query}"),
+                    format!("/gifs/search?q={encoded}&media_format=webm&locale=en-US&limit={SEARCH_LIMIT}"),
+                    crate::plugins::gif_provider::Ask::Search(query.clone()),
+                );
             }
             _ => {}
         }
@@ -615,6 +620,24 @@ impl Root {
         }
     }
 
+    /// A GIF answer asked of Discord, or of GifProviderSwitcher's provider while it is on
+    /// (`plugin_hooks/gif_provider_switcher.rs`).
+    fn gif_fetch(&mut self, key: String, route: String, ask: crate::plugins::gif_provider::Ask) {
+        match super::plugin_hooks::gif_provider() {
+            Some(provider) => {
+                let _ = self.requests.send(Request::GifProvider {
+                    key,
+                    provider,
+                    ask,
+                    limit: SEARCH_LIMIT,
+                });
+            }
+            None => {
+                let _ = self.requests.send(Request::Fetch { key, route });
+            }
+        }
+    }
+
     /// `selectGIF`: analytics-side `POST /gifs/select`, then the GIF's page URL as a message.
     fn send_gif(&mut self, gif: &Gif, query: &str, cx: &mut Context<Self>) {
         let Some(channel) = self.channel else {
@@ -630,12 +653,26 @@ impl Root {
             cx.notify();
             return;
         }
-        let _ = self.requests.send(Request::Rest {
-            key: None,
-            method: reqwest::Method::POST,
-            route: "/gifs/select".to_owned(),
-            body: Some(json!({"id": gif.id, "q": query})),
-        });
+        // Not in the pinned client: GifProviderSwitcher shares with its provider instead
+        // (`plugin_hooks/gif_provider_switcher.rs`).
+        if let Some(provider) = super::plugin_hooks::gif_provider() {
+            let _ = self.requests.send(Request::GifProvider {
+                key: String::new(),
+                provider,
+                ask: crate::plugins::gif_provider::Ask::Share {
+                    id: gif.id.clone(),
+                    query: query.to_owned(),
+                },
+                limit: 0,
+            });
+        } else {
+            let _ = self.requests.send(Request::Rest {
+                key: None,
+                method: reqwest::Method::POST,
+                route: "/gifs/select".to_owned(),
+                body: Some(json!({"id": gif.id, "q": query})),
+            });
+        }
         self.start_local_text(channel, gif.url.clone());
         self.picker = None;
         cx.notify();
@@ -942,6 +979,26 @@ impl Root {
                                 cx.stop_propagation();
                             }))
                     })
+                    // Not in the pinned client: GifProviderSwitcher's source badge
+                    // (`plugin_hooks/gif_provider_switcher.rs`).
+                    .children(
+                        super::plugin_hooks::gif_provider_badge(&gif.id, &gif.url).map(|label| {
+                            div()
+                                .absolute()
+                                .bottom(px(6.))
+                                .left(px(6.))
+                                .px(px(8.))
+                                .rounded_full()
+                                // `--badge-background-brand` / `--badge-text-brand` of the client mod's Badge are not
+                                // tokens of the pinned client (they would draw nothing); its primary badge's are used.
+                                .bg(color("--badge-primary-background"))
+                                .text_color(color("--badge-primary-text"))
+                                .text_size(px(12.))
+                                .line_height(px(16.))
+                                .font_weight(FontWeight(700.))
+                                .child(label.to_uppercase())
+                        }),
+                    )
                     .on_click(cx.listener(move |this, _, _, cx| this.send_gif(&chosen, &query, cx)))
                     .into_any_element()
             })

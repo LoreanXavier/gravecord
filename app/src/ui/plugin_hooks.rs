@@ -2,32 +2,99 @@
 
 mod account_panel;
 mod always_animate;
+mod better_activities;
+mod better_forwards;
+pub(in crate::ui) use better_forwards::{
+    better_forwards_follow, better_forwards_on, better_forwards_self_forward,
+    better_forwards_send_pressed,
+};
 mod better_role_context;
+pub(in crate::ui) use better_role_context::role_icon_format_setting;
 mod better_role_dot;
 mod bigger_stream_preview;
+mod bypass_status;
 mod call_timer;
+mod clip_upload;
+pub(in crate::ui) mod clips_enhancements;
+mod custom_rpc;
 mod download_all;
+mod expression_manager;
+pub(crate) use expression_manager::sticker_url as expression_sticker_url;
+mod fix_youtube_embeds;
+pub(in crate::ui) use fix_youtube_embeds::{
+    VideoDescription, toggle_video_description, video_description,
+};
 mod full_vc_pfp;
 mod game_activity_toggle;
+mod gif_provider_switcher;
+pub(in crate::ui) use gif_provider_switcher::{
+    gif_provider, gif_provider_badge, gif_provider_placeholder,
+};
+mod global_badges;
+mod greet_sticker_picker;
 mod ignore_activities;
+mod image_zoom;
 mod member_count;
 mod message_clicks;
+mod message_logger;
+pub(in crate::ui) use message_logger::{
+    message_logger_attachment_gray, message_logger_deleted, message_logger_highlight,
+    message_logger_history, message_logger_menu, message_logger_on, message_logger_scope,
+    scoped_token,
+};
 mod message_peek;
 mod message_pronouns;
+mod message_tags;
+mod more_quick_reactions;
+pub(in crate::ui) use more_quick_reactions::{
+    grid as more_quick_grid, menu_width as more_quick_menu_width,
+};
+mod more_commands;
+pub(crate) use more_commands::outgoing as more_commands_outgoing;
 mod mute_channel_mentions;
+mod new_guild_settings;
+mod open_in_app;
+mod permissions_viewer;
+pub(in crate::ui) use permissions_viewer::{permissions_viewer, permissions_viewer_popout_open};
+mod pin_dms;
 mod platform_indicators;
+mod plugin_commands;
+mod plugin_notifications;
+mod preview_message;
 mod read_all;
+mod relationship_notifier;
+pub(in crate::ui) use relationship_notifier::relationship_removed_by_you;
 mod role_color_everywhere;
+mod search_fix;
 mod server_info;
+pub(in crate::ui) use search_fix::search_fix;
+pub(in crate::ui) use server_info::server_info_on;
 mod server_list_indicators;
 mod show_connections;
+mod silent_message_toggle;
+mod spotify_crack;
+pub(in crate::ui) use spotify_crack::spotify_no_auto_pause;
+pub(crate) use spotify_crack::spotify_premium_forced;
+mod steam_status_sync;
+mod streaming_codec_disabler;
+pub(in crate::ui) use streaming_codec_disabler::sync_streaming_codecs;
 mod super_reaction_tweaks;
+mod translate_plus;
+pub(in crate::ui) use translate_plus::translate_plus;
 mod typing_indicator;
 mod typing_tweaks;
+mod userpfp;
+pub(in crate::ui) use userpfp::{userpfp_avatar, userpfp_live_avatar, userpfp_server_avatar};
+mod usrbg;
+pub(in crate::ui) use usrbg::{usrbg_banner, usrbg_voice_background};
+mod unlocked_avatar_zoom;
+pub(in crate::ui) use unlocked_avatar_zoom::crop_max_zoom;
 mod valid_user;
 mod view_icons;
+mod voice_messages;
 mod voice_stats;
 mod who_reacted;
+mod zip_preview;
 
 pub(in crate::ui) use account_panel::ANCHOR as ACCOUNT_PANEL_ANCHOR;
 pub(in crate::ui) use always_animate::{Part as AnimatePart, always_animate};
@@ -35,7 +102,11 @@ pub(in crate::ui) use download_all::{DOWNLOAD_ALL, download_all};
 
 pub(super) use message_clicks::follow as follow_message_clicks;
 pub(super) use message_peek::Peek;
+pub(in crate::ui) use pin_dms::{
+    Category as PinCategory, DEFAULT_COLOR as PIN_DEFAULT_COLOR, PinCategoryDraft,
+};
 pub(super) use platform_indicators::{Place as PlatformPlace, mobile_status};
+pub(in crate::ui) use preview_message::File as PreviewFile;
 pub(in crate::ui) use role_color_everywhere::{
     Place as RolePlace, label as role_colored_label, paint as role_colored,
 };
@@ -645,6 +716,81 @@ pub(super) fn all_spoilers_revealed(
     !crate::plugins::bypassed() && revealed.contains(&(message, ALL_OF_MESSAGE.0, ALL_OF_MESSAGE.1))
 }
 
+/// BetterBlockedUsers (Equicord `src/equicordplugins/betterBlockedUsers`): every blocked (and every ignored) message of a
+/// hidden stretch (no message shown between them, the same day) folds into the kind's first row of that stretch
+/// (`mergeHiddenMessages`), so "N blocked messages" is not split by an ignored run; and a blocked person's profile
+/// opens without "Show Profile?" (`isBlocked: false`; an ignored person's question stays). GAP: the search field and
+/// the Show User Profile buttons of the settings' blocked users list, which the app does not have yet.
+pub(in crate::ui) fn merge_hidden_messages() -> bool {
+    !crate::plugins::bypassed() && crate::plugin_on!("BetterBlockedUsers")
+}
+
+/// BetterBlockedUsers: no "Show Profile?" before a blocked person's profile (see `merge_hidden_messages`).
+pub(in crate::ui) fn skip_blocked_prompt() -> bool {
+    !crate::plugins::bypassed() && crate::plugin_on!("BetterBlockedUsers")
+}
+
+/// Plugins whose settings page has a section of their own (the original's `OptionType.COMPONENT`).
+pub(in crate::ui) fn has_own_section(id: &str) -> bool {
+    matches!(
+        id,
+        "MessageTags"
+            | "ClipsEnhancements"
+            | "USRBG"
+            | "UserPFP"
+            | "GlobalBadges"
+            | "SearchFix"
+            | "CustomRPC"
+    )
+}
+
+impl super::Root {
+    /// A plugin's own section on its card: MessageTags' Registered Tags (`SettingsTagList`), ClipsEnhancements'
+    /// `clipsLink` button to Clips settings.
+    pub(in crate::ui) fn plugin_own_section(
+        &self,
+        id: &str,
+        cx: &mut gpui::Context<Self>,
+    ) -> Option<gpui::AnyElement> {
+        use gpui::{
+            InteractiveElement, IntoElement, ParentElement, StatefulInteractiveElement, Styled,
+        };
+        match id {
+            "MessageTags" => Some(self.message_tags_settings(cx)),
+            "USRBG" => Some(self.usrbg_settings(cx)),
+            "UserPFP" => Some(self.userpfp_settings(cx)),
+            "GlobalBadges" => Some(self.global_badges_settings(cx)),
+            "CustomRPC" => Some(self.custom_rpc_settings(cx)),
+            "SearchFix" => Some(
+                gpui::div()
+                    .text_size(gpui::px(14.))
+                    .text_color(gpui::white())
+                    .child(search_fix::NOTE)
+                    .into_any_element(),
+            ),
+            "ClipsEnhancements" => Some(
+                gpui::div()
+                    .id("clips-enhancements-link")
+                    .h(gpui::px(38.))
+                    .px(gpui::px(16.))
+                    .rounded(gpui::px(8.))
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .cursor_pointer()
+                    .bg(super::color("--control-primary-background-default"))
+                    .hover(|style| style.bg(super::color("--control-primary-background-hover")))
+                    .text_size(gpui::px(14.))
+                    .text_color(super::color("--white"))
+                    .child("Change FPS and duration options in Clips settings!")
+                    .on_click(cx.listener(|this, _, _, cx| this.open_settings_section("Clips", cx)))
+                    .into_any_element(),
+            ),
+            _ => None,
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -820,6 +966,8 @@ mod tests {
                     format!("ms(\"{key}\")"),
                     format!("action(\"{key}\")"),
                     format!("hide_count(\"{key}\")"),
+                    // CustomRPC's typed readers of the state (`text_of(state, "key")`, `number_of(...)`).
+                    format!("_of(state, \"{key}\")"),
                 ]
                 .iter()
                 .any(|pattern| hooks.contains(pattern.as_str()))

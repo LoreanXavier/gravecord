@@ -325,6 +325,12 @@ impl Root {
                             .child(super::components::humanize_filesize(attachment.size)),
                     ),
             );
+        // Not in the pinned client: ZipPreview's row under a `.zip` file (`flex-wrap`, a full-width row after the name;
+        // `plugin_hooks/zip_preview.rs`).
+        let card = match self.zip_preview_inline(message.id, attachment, cx) {
+            Some(row) => card.flex_wrap().child(row),
+            None => card,
+        };
         let button = |id: &'static str, glyph: &'static str| {
             div()
                 .id((id, attachment.id))

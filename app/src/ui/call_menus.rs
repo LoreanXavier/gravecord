@@ -1914,7 +1914,7 @@ fn rows_of(items: Option<Vec<Entry>>) -> Vec<Row> {
         .into_iter()
         .filter_map(|entry| match entry {
             Entry::Row(row) => Some(row),
-            Entry::Separator => None,
+            Entry::Separator | Entry::Heading(_) => None,
         })
         .collect()
 }
@@ -2087,6 +2087,7 @@ mod tests {
             shortcut: None,
             radio: false,
             role_dot: None,
+            status_dot: None,
         }
     }
 

@@ -440,6 +440,27 @@ impl Root {
         subtle: Hsla,
         cx: &mut Context<Self>,
     ) -> Vec<AnyElement> {
+        // Not in the pinned client: BetterActivities shows every activity in the popout
+        // (`plugin_hooks/better_activities.rs`).
+        if surface == Surface::Popout
+            && let Some(cards) = self.better_activities_popout(user, strong, subtle, cx)
+        {
+            return cards;
+        }
+        self.live_activity_cards_picked(user, surface, strong, subtle, None, cx)
+    }
+
+    /// The cards of `live_activity_cards`, or with `pick` (BetterActivities) only the visible activities it names,
+    /// each with or without its buttons, and never stacked.
+    pub(in crate::ui) fn live_activity_cards_picked(
+        &self,
+        user: Id,
+        surface: Surface,
+        strong: Hsla,
+        subtle: Hsla,
+        pick: Option<&[(usize, bool)]>,
+        cx: &mut Context<Self>,
+    ) -> Vec<AnyElement> {
         let large = surface == Surface::Modal;
         if self.is_blocked(user) || self.stores.is_ignored(user) {
             return Vec::new();
@@ -460,12 +481,19 @@ impl Root {
         };
         let now = chrono::Utc::now().timestamp_millis();
         let activities = presence.visible_activities();
-        let stacked = !large && activities.len() > 1;
+        let stacked = pick.is_none() && !large && activities.len() > 1;
         activities
             .into_iter()
-            .take(if large { usize::MAX } else { 1 })
             .enumerate()
+            .filter(|(index, _)| {
+                pick.map_or(large || *index == 0, |pick| {
+                    pick.iter().any(|(shown, _)| shown == index)
+                })
+            })
             .map(|(index, activity)| {
+                let bare = pick.is_some_and(|pick| {
+                    pick.iter().any(|(shown, buttons)| *shown == index && !buttons)
+                });
                 let app_id = field(activity, "application_id");
                 let application = app_id
                     .and_then(|id| self.fetched.get(&format!("presence-app:{id}")))
@@ -930,6 +958,9 @@ impl Root {
                 }
                 if spotify && !own && activity["flags"].as_u64().unwrap_or_default() & 48 != 0 {
                     actions = Some(self.spotify_buttons(user, activity, surface, &palette, cx));
+                }
+                if bare {
+                    actions = None;
                 }
                 actions = actions.map(|actions| div().mt(px(4.)).child(actions).into_any_element());
                 if large {

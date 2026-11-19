@@ -301,11 +301,7 @@ impl Root {
         let id = channel.id;
         // 181254 `eY`: `t.isSystemDM()` (the system account's DM).
         let system = self.stores.is_system_dm(channel);
-        let timer = self
-            .call
-            .as_ref()
-            .filter(|call| call.guild == 0 && call.channel == id)
-            .and_then(|_| self.call_timer());
+        let timer = self.private_call_start(id);
         let selected = self.guild.is_none()
             && self.channel == Some(id)
             && !self.nitro_open
@@ -520,8 +516,10 @@ impl Root {
                                 .children(
                                     (!system)
                                         .then(|| {
-                                            let presence = self.presence_line_with(
-                                                &recipient, None, true, 16., look.text,
+                                            // Module 181254 draws module 342312's `ActivityStatus` here
+                                            // (BetterActivities).
+                                            let presence = self.activity_status_line(
+                                                &recipient, None, 16., look.text, "dm", cx,
                                             );
                                             match self.message_peek(channel, presence.is_some()) {
                                                 super::plugin_hooks::Peek::Keep => presence,
@@ -534,16 +532,12 @@ impl Root {
                         )
                         // `callDuration_zln_tS` in `iconsContainer_zln_tS` (4px before, 8px after): the running call's
                         // time, `body-xs/normal` 12px / 16px in the code font, `--text-feedback-positive`.
-                        .children(timer.clone().filter(|_| !hovered).map(|text| {
-                            div().flex_none().pl(px(4.)).pr(px(8.)).child(
-                                div()
-                                    .parity("dm-call-timer")
-                                    .text_size(px(12.))
-                                    .line_height(px(16.))
-                                    .font_family(super::MONO)
-                                    .text_color(color("--text-feedback-positive"))
-                                    .child(text),
-                            )
+                        .children(timer.filter(|_| !hovered).map(|start| {
+                            div()
+                                .flex_none()
+                                .pl(px(4.))
+                                .pr(px(8.))
+                                .child(self.elapsed_timer(start, cx).parity("dm-call-timer"))
                         }))
                         .when(marked && !hovered, |this| {
                             // `favoriteIcon_zln_tS`: the blocked (or ignored) mark, 16px with 8px after it.
@@ -620,6 +614,8 @@ impl Root {
     /// `closePrivateChannel(id, _, silent)`: the channel goes at once, then the service is told (`silent` leaves a group
     /// without a system message).
     pub(super) fn close_dm_with(&mut self, channel: Id, silent: bool, cx: &mut Context<Self>) {
+        // Not in the pinned client: RelationshipNotifier keeps quiet about a group you leave.
+        super::plugin_hooks::relationship_removed_by_you(None, None, Some(channel));
         self.stores
             .private_channels
             .retain(|known| known.id != channel);
@@ -649,10 +645,37 @@ impl Root {
         let nitro_selected = self.guild.is_none() && self.channel.is_none() && self.nitro_open;
         // 645959: a message request or spam channel is in neither sorted list; pinned conversations (`FAVORITE`, the
         // "@me" override flag) come first, each group newest first.
-        let listed = dc_state::private_channels::sorted_channels(&self.stores);
+        #[allow(unused_mut)]
+        let mut listed = dc_state::private_channels::sorted_channels(&self.stores);
         let no_private_channels = listed.is_empty();
+        // Not in the pinned client: PinDMs' categories above the plain list, whose pinned conversations leave it
+        // (`plugin_hooks/pin_dms.rs`). `None` while the plugin is off.
+        let pins = self.pin_dms_layout();
+        let mut pin_sections: Vec<AnyElement> = Vec::new();
+        let mut dm_collapsed = false;
+        let mut dm_foldable = false;
+        if let Some(layout) = &pins {
+            listed.retain(|channel| !layout.pinned.contains(&channel.id));
+            dm_foldable = layout.look.can_collapse;
+            dm_collapsed = layout.look.can_collapse && layout.look.dm_collapsed;
+            for (index, category, channels) in &layout.sections {
+                pin_sections.push(self.pin_dms_header(*index, category, cx));
+                for id in channels {
+                    if category.collapsed && self.channel != Some(*id) {
+                        continue;
+                    }
+                    if let Some(channel) =
+                        self.stores.private_channels.iter().find(|dm| dm.id == *id)
+                        && let Some(row) = self.dm_row(channel, cx)
+                    {
+                        pin_sections.push(row);
+                    }
+                }
+            }
+        }
         let rows: Vec<AnyElement> = listed
             .into_iter()
+            .filter(|_| !dm_collapsed)
             .filter_map(|channel| self.dm_row(channel, cx))
             .collect();
         div()
@@ -796,6 +819,7 @@ impl Root {
                     .h(px(1.))
                     .bg(color("--background-mod-subtle")),
             )
+            .children(pin_sections)
             .child(
                 div()
                     .flex_none()
@@ -813,7 +837,20 @@ impl Root {
                     .text_color(color("--channels-default"))
                     // `.privateChannelsHeaderContainer_Bce46W:hover` (814796).
                     .hover(|style| style.text_color(color("--interactive-text-hover")))
-                    .child(dc_intl::tr("Direct Messages"))
+                    // Not in the pinned client: PinDMs' `canCollapseDmSection` makes the title fold the list
+                    // (`makeSpanProps`, `plugin_hooks/pin_dms.rs`).
+                    .child(if dm_foldable {
+                        div()
+                            .id("dm-header-fold")
+                            .cursor_pointer()
+                            .on_click(
+                                cx.listener(|this, _, _, cx| this.pin_dms_fold_dm_section(cx)),
+                            )
+                            .child(dc_intl::tr("Direct Messages"))
+                            .into_any_element()
+                    } else {
+                        dc_intl::tr("Direct Messages").into_any_element()
+                    })
                     .child(div().flex_1())
                     // `headerActions_Bce46W` (4px apart) in the `enlarge-target-size` capture
                     // (active-now-watch/switch-fixture): More (module 830507 `j`) and Create DM, each a 24px box with

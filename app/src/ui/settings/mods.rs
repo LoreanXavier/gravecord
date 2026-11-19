@@ -349,7 +349,9 @@ impl Root {
             cx,
         )
         .into_any_element();
-        let fold = (!def.settings.is_empty()).then(|| {
+        // Not in the plugins' settings model: a plugin's own section (`COMPONENT` settings, `plugin_hooks.rs`).
+        let own = super::super::plugin_hooks::has_own_section(id);
+        let fold = (!def.settings.is_empty() || own).then(|| {
             div()
                 .id(SharedString::from(format!("plugin-fold-{id}")))
                 .size(px(32.))
@@ -435,6 +437,7 @@ impl Root {
                             .filter(|setting| shown(def, setting, state))
                             .map(|setting| self.plugin_setting(def, setting, state, cx)),
                     )
+                    .children(self.plugin_own_section(id, cx))
             })
             .into_any_element()
     }

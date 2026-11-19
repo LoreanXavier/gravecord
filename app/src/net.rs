@@ -223,11 +223,84 @@ pub enum Request {
         key: String,
         route: String,
     },
+    /// Not in the pinned client: OpenInApp's short link resolved by HEAD requests (no authorization, five redirects at
+    /// most), handed back under `key` as `Update::Fetched` with `{"url": <final address>}`.
+    ResolveRedirect {
+        key: String,
+        url: String,
+    },
     /// GET a public JSON file (no authorization) and hand it back under `key` as `Update::Fetched`; a failure hands back
     /// `null`.
     FetchPublicJson {
         key: String,
         url: String,
+    },
+    /// Not in the pinned client: MoreCommands' `/friendcloud` picture. Each avatar is fetched (no authorization) and
+    /// drawn round at its place with a grey ring on a transparent `width` by `height` canvas, off the UI thread; the
+    /// PNG lands in a temporary `affinities-cloud.png`, handed back under `key` as `{"path": …}` (`null` on failure).
+    FriendCloud {
+        key: String,
+        width: u32,
+        height: u32,
+        avatars: Vec<CloudAvatar>,
+    },
+    /// Not in the pinned client: ExpressionManager's Clone Sticker (`doClone`): the sticker's picture from the media proxy
+    /// at the largest size under 512 KiB (4096 halving to 16), posted to the server as a new sticker. The answer comes
+    /// under `key` as `Update::Fetched` with `{ok, name, message}`.
+    /// Not in the pinned client: ClipUpload's `sendClipUpload`: the stamped file at `path` reserved as a clip
+    /// (`reserveClipUpload`), put, and sent as a message with the clip fields (and the reply's reference). The answer
+    /// comes under `key` as `Update::Fetched` with `{ok, message, path}`.
+    PluginClipUpload {
+        key: String,
+        channel: u64,
+        path: std::path::PathBuf,
+        options: crate::plugins::clip_upload::Options,
+        reply: Option<(Option<u64>, u64)>,
+    },
+    PluginCloneSticker {
+        key: String,
+        guild: u64,
+        sticker: u64,
+        format: u64,
+        name: String,
+        tags: String,
+        description: String,
+    },
+    /// Not in the pinned client: CustomRPC's `fetchAssetIds`: each picture's application asset id (a link becomes an
+    /// external asset, `mp:` and its path; a key the application's asset of that name). The answer comes under `key`
+    /// as `Update::Fetched` with an object of key to id (`null` for none).
+    PluginRpcAssets {
+        key: String,
+        app_id: String,
+        keys: Vec<String>,
+    },
+    /// Not in the pinned client: Translate+'s translation of a message's text (`plugins::translate_plus`): Google
+    /// Translate, the Toki Pona translator and the two dictionaries, none with authorization. The answer comes under
+    /// `key` as `Update::Fetched` (`{src, text}`, or `null` when the Toki Pona call failed, as the original then shows
+    /// nothing).
+    PluginTranslate {
+        key: String,
+        text: String,
+        target: String,
+        toki: bool,
+        sitelen: bool,
+        shavian: bool,
+    },
+    /// Not in the pinned client: GifProviderSwitcher's GIF calls to Tenor or Giphy (no authorization), their answer
+    /// in the shape of Discord's own (`plugins::gif_provider`) under `key` as `Update::Fetched` (`null` on failure).
+    GifProvider {
+        key: String,
+        provider: crate::plugins::gif_provider::Provider,
+        ask: crate::plugins::gif_provider::Ask,
+        limit: u32,
+    },
+    /// Not in the pinned client: ZipPreview's archive. `native` is the Discord attachment path its native helper
+    /// fetches from `cdn.discordapp.com` (after the user agreed); else `url` is fetched as it is. At most 50 MB is read
+    /// and the archive is parsed off the UI thread into `plugins::zip_preview`, then `Update::Fetched` under `key`.
+    FetchZip {
+        key: String,
+        url: String,
+        native: Option<String>,
     },
     /// Conditionally GET a public CDN JSON list and parse it off the UI thread.
     FetchCdn {
@@ -293,6 +366,8 @@ pub enum Request {
         duration_secs: f64,
         waveform: String,
         reply: Option<(Option<u64>, u64, bool)>,
+        /// Flags added to the voice flag: SilentMessageToggle's SUPPRESS_NOTIFICATIONS (a plugin), else 0.
+        extra_flags: u64,
     },
     /// `PATCH /channels/{channel}/messages/{message}`; the answer comes back as `Update::Fetched` under
     /// [`EDIT_KEY`]`{channel}:{message}`.
@@ -546,11 +621,126 @@ fn is_settings_write(request: &Request) -> bool {
     )
 }
 
+/// Whether the stored login was refused this run (a 401, or the gateway's 4004); the capture harness reports it
+/// (`signed-in`), so a check stops instead of signing in again and again with a dead token.
+static LOGIN_REFUSED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+#[cfg_attr(not(feature = "capture"), allow(dead_code))]
+pub(crate) fn login_refused() -> bool {
+    LOGIN_REFUSED.load(std::sync::atomic::Ordering::Relaxed)
+}
+
 /// The app's end of the request channel. It counts the settings writes on their way to the server: the server answers
 /// every one of them with a `USER_SETTINGS_PROTO_UPDATE`, and writes go one after the other, so the answer to an older
 /// write arrives while a newer choice is already on screen. Applied, it put the older choice back for a moment (a
 /// theme picked three times in a row walked through all three again). While the count is above zero those answers are
 /// left out, and the answer of the last write brings the server's settings in (`Update::SettingsWritten`).
+/// The bytes of a base64 `data:` URL, or `None` for anything else.
+fn data_url_bytes(url: &str) -> Option<Vec<u8>> {
+    use base64::Engine as _;
+    let rest = url.strip_prefix("data:")?;
+    let (meta, payload) = rest.split_once(',')?;
+    if !meta.ends_with(";base64") {
+        return None;
+    }
+    base64::engine::general_purpose::STANDARD
+        .decode(payload.trim())
+        .ok()
+}
+
+/// One avatar of MoreCommands' `/friendcloud`: its picture and its square on the canvas.
+#[derive(Clone, Debug, PartialEq)]
+pub struct CloudAvatar {
+    pub url: String,
+    pub x: f64,
+    pub y: f64,
+    pub size: f64,
+}
+
+/// `/friendcloud`'s canvas: each picture clipped to its circle (`arc` + `clip` + `drawImage`), then a 3px `#808080`
+/// ring 1px outside it; saved as a PNG in a temporary folder of its own.
+fn friend_cloud_png(
+    width: u32,
+    height: u32,
+    pictures: &[(CloudAvatar, Vec<u8>)],
+) -> Option<std::path::PathBuf> {
+    let mut canvas = tiny_skia::Pixmap::new(width.max(1), height.max(1))?;
+    for (avatar, bytes) in pictures {
+        let Ok(decoded) = image::load_from_memory(bytes) else {
+            continue;
+        };
+        let side = avatar.size.round().max(1.) as u32;
+        let resized = decoded
+            .resize_exact(side, side, image::imageops::FilterType::Triangle)
+            .to_rgba8();
+        let mut data = resized.into_raw();
+        // tiny-skia keeps premultiplied colour.
+        for pixel in data.as_chunks_mut::<4>().0 {
+            let alpha = u16::from(pixel[3]);
+            for channel in &mut pixel[..3] {
+                *channel = ((u16::from(*channel) * alpha + 127) / 255) as u8;
+            }
+        }
+        let Some(picture) =
+            tiny_skia::Pixmap::from_vec(data, tiny_skia::IntSize::from_wh(side, side)?)
+        else {
+            continue;
+        };
+        let (cx, cy, radius) = (
+            (avatar.x + avatar.size / 2.) as f32,
+            (avatar.y + avatar.size / 2.) as f32,
+            (avatar.size / 2.) as f32,
+        );
+        let Some(circle) = tiny_skia::PathBuilder::from_circle(cx, cy, radius) else {
+            continue;
+        };
+        let mut mask = tiny_skia::Mask::new(width.max(1), height.max(1))?;
+        mask.fill_path(
+            &circle,
+            tiny_skia::FillRule::Winding,
+            true,
+            tiny_skia::Transform::identity(),
+        );
+        let scale = avatar.size as f32 / side as f32;
+        canvas.draw_pixmap(
+            0,
+            0,
+            picture.as_ref(),
+            &tiny_skia::PixmapPaint {
+                quality: tiny_skia::FilterQuality::Bilinear,
+                ..Default::default()
+            },
+            tiny_skia::Transform::from_row(scale, 0., 0., scale, avatar.x as f32, avatar.y as f32),
+            Some(&mask),
+        );
+        if let Some(ring) = tiny_skia::PathBuilder::from_circle(cx, cy, radius + 1.) {
+            let mut paint = tiny_skia::Paint::default();
+            paint.set_color_rgba8(0x80, 0x80, 0x80, 0xff);
+            paint.anti_alias = true;
+            let stroke = tiny_skia::Stroke {
+                width: 3.,
+                ..Default::default()
+            };
+            canvas.stroke_path(
+                &ring,
+                &paint,
+                &stroke,
+                tiny_skia::Transform::identity(),
+                None,
+            );
+        }
+    }
+    let png = canvas.encode_png().ok()?;
+    let stamp = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |time| time.as_millis());
+    let dir = std::env::temp_dir().join(format!("gravecord-friendcloud-{stamp}"));
+    std::fs::create_dir_all(&dir).ok()?;
+    let path = dir.join("affinities-cloud.png");
+    std::fs::write(&path, png).ok()?;
+    Some(path)
+}
+
 #[derive(Clone)]
 pub struct Requests {
     sender: mpsc::UnboundedSender<Request>,
@@ -694,6 +884,14 @@ impl Request {
             Request::Fetch { .. } => "Fetch",
             Request::FetchCdn { .. } => "FetchCdn",
             Request::FetchPublicJson { .. } => "FetchPublicJson",
+            Request::FriendCloud { .. } => "FriendCloud",
+            Request::FetchZip { .. } => "FetchZip",
+            Request::GifProvider { .. } => "GifProvider",
+            Request::PluginTranslate { .. } => "PluginTranslate",
+            Request::PluginRpcAssets { .. } => "PluginRpcAssets",
+            Request::PluginCloneSticker { .. } => "PluginCloneSticker",
+            Request::PluginClipUpload { .. } => "PluginClipUpload",
+            Request::ResolveRedirect { .. } => "ResolveRedirect",
             Request::Typing { .. } => "Typing",
             Request::React { .. } => "React",
             Request::LoadMessages { .. } => "LoadMessages",
@@ -731,6 +929,11 @@ impl Request {
             Request::Fetch { .. }
             | Request::FetchCdn { .. }
             | Request::FetchPublicJson { .. }
+            | Request::FriendCloud { .. }
+            | Request::FetchZip { .. }
+            | Request::GifProvider { .. }
+            | Request::PluginTranslate { .. }
+            | Request::ResolveRedirect { .. }
             | Request::LoadMessages { .. }
             | Request::PrefetchMessages { .. }
             | Request::FetchMessages { .. }
@@ -769,6 +972,10 @@ impl Request {
             | Request::Send { .. }
             | Request::SendLocal { .. }
             | Request::SendVoice { .. }
+            // Not in the pinned client: plugin writes (ExpressionManager's new sticker, CustomRPC's external assets).
+            | Request::PluginCloneSticker { .. }
+            | Request::PluginRpcAssets { .. }
+            | Request::PluginClipUpload { .. }
             | Request::Edit { .. }
             | Request::Delete { .. }
             | Request::Ack { .. }
@@ -851,6 +1058,35 @@ pub(crate) fn inert_refuses(request: &Request, updates: &mpsc::UnboundedSender<U
     if let Some(key) = key {
         let body = json!({"ok": false, "status": 0, "body": null, "refused": true});
         let _ = updates.send(Update::Fetched { key, body });
+    }
+    // Not in the pinned client: a refused plugin write answers as its failure, so the plugin does not wait on it.
+    match request {
+        Request::PluginCloneSticker { key, name, .. } => {
+            let body = json!({"ok": false, "name": name, "message": null, "refused": true});
+            let _ = updates.send(Update::Fetched {
+                key: key.clone(),
+                body,
+            });
+        }
+        Request::PluginClipUpload { key, path, .. } => {
+            let body = json!({"ok": false, "message": null, "path": path, "refused": true});
+            let _ = updates.send(Update::Fetched {
+                key: key.clone(),
+                body,
+            });
+        }
+        Request::PluginRpcAssets { key, keys, .. } => {
+            let body = Value::Object(
+                keys.iter()
+                    .map(|asset| (asset.clone(), Value::Null))
+                    .collect(),
+            );
+            let _ = updates.send(Update::Fetched {
+                key: key.clone(),
+                body,
+            });
+        }
+        _ => {}
     }
     if let Request::Spotify(crate::spotify::Command::Perform { request, .. }) = request {
         let _ = updates.send(Update::SpotifyReply {
@@ -1103,6 +1339,7 @@ async fn send_voice(
     duration_secs: f64,
     waveform: &str,
     reply: Option<(Option<u64>, u64, bool)>,
+    extra_flags: u64,
 ) -> Value {
     let request = json!({"files": [{
         "filename": VOICE_FILENAME,
@@ -1135,7 +1372,7 @@ async fn send_voice(
     entry["duration_secs"] = json!(duration_secs);
     entry["waveform"] = json!(waveform);
     let mut body = send_body(channel, "", reply);
-    body["flags"] = json!(dc_state::VOICE_MESSAGE_FLAG);
+    body["flags"] = json!(dc_state::VOICE_MESSAGE_FLAG | extra_flags);
     body["attachments"] = json!([entry]);
     match client
         .post(&format!("/channels/{channel}/messages"), &body)
@@ -1271,6 +1508,15 @@ async fn send_local(
             "message_id": message.to_string(),
             "type": 1,
         });
+        // Not in the pinned client: BetterForwards' choice of attachments and embeds (`forward_only`, which module
+        // 138399 sends for `forwardOptions`; `plugins/better_forwards.rs`).
+        if let Some((attachment_ids, embed_indices)) = crate::plugins::better_forwards::take(nonce)
+        {
+            body["message_reference"]["forward_only"] = json!({
+                "attachment_ids": attachment_ids,
+                "embed_indices": embed_indices,
+            });
+        }
     }
     if !files.is_empty() {
         let cancel = crate::upload_flow::register(nonce);
@@ -1579,6 +1825,7 @@ pub async fn run(token: Token, updates: mpsc::UnboundedSender<Update>, requests:
     let client = match Client::new(token.clone(), identity.clone()).map(|client| {
         client
             .on_unauthorized(move || {
+                LOGIN_REFUSED.store(true, std::sync::atomic::Ordering::Relaxed);
                 let _ = dead.send(Update::AuthFailed);
             })
             .on_limited_access(move || {
@@ -1633,6 +1880,7 @@ pub async fn run(token: Token, updates: mpsc::UnboundedSender<Update>, requests:
                 }
                 Event::AuthenticationFailed => {
                     warn!("gateway rejected the token");
+                    LOGIN_REFUSED.store(true, std::sync::atomic::Ordering::Relaxed);
                     let _ = forward.send(Update::AuthFailed);
                 }
                 Event::Reconnecting { delay } => {
@@ -1864,10 +2112,19 @@ pub async fn run(token: Token, updates: mpsc::UnboundedSender<Update>, requests:
                 duration_secs,
                 waveform,
                 reply,
+                extra_flags,
             } => {
                 tokio::spawn(async move {
-                    let body =
-                        send_voice(&client, channel, file, duration_secs, &waveform, reply).await;
+                    let body = send_voice(
+                        &client,
+                        channel,
+                        file,
+                        duration_secs,
+                        &waveform,
+                        reply,
+                        extra_flags,
+                    )
+                    .await;
                     let _ = updates.send(Update::Fetched { key, body });
                 });
             }
@@ -2296,6 +2553,15 @@ pub async fn run(token: Token, updates: mpsc::UnboundedSender<Update>, requests:
                     }
                 });
             }
+            Request::ResolveRedirect { key, url } => {
+                tokio::spawn(async move {
+                    let resolved = resolve_redirect(&url).await;
+                    let _ = updates.send(Update::Fetched {
+                        key,
+                        body: json!({"url": resolved}),
+                    });
+                });
+            }
             Request::FetchPublicJson { key, url } => {
                 tokio::spawn(async move {
                     let body = match client.fetch_public(&url).await {
@@ -2311,6 +2577,229 @@ pub async fn run(token: Token, updates: mpsc::UnboundedSender<Update>, requests:
                         }
                     };
                     let _ = updates.send(Update::Fetched { key, body });
+                });
+            }
+            Request::FriendCloud {
+                key,
+                width,
+                height,
+                avatars,
+            } => {
+                tokio::spawn(async move {
+                    let mut pictures = Vec::new();
+                    for avatar in avatars {
+                        // `loadFriendImage`: a picture that fails is left out.
+                        if let Ok(bytes) = client.fetch_public(&avatar.url).await {
+                            pictures.push((avatar, bytes));
+                        }
+                    }
+                    let path = tokio::task::spawn_blocking(move || {
+                        friend_cloud_png(width, height, &pictures)
+                    })
+                    .await
+                    .ok()
+                    .flatten();
+                    let _ = updates.send(Update::Fetched {
+                        key,
+                        body: json!({"path": path.map(|path| path.display().to_string())}),
+                    });
+                });
+            }
+            Request::PluginClipUpload {
+                key,
+                channel,
+                path,
+                options,
+                reply,
+            } => {
+                tokio::spawn(async move {
+                    let mut body = clip_upload(&client, channel, &path, &options, reply).await;
+                    body["path"] = json!(path);
+                    let _ = updates.send(Update::Fetched { key, body });
+                });
+            }
+            Request::PluginCloneSticker {
+                key,
+                guild,
+                sticker,
+                format,
+                name,
+                tags,
+                description,
+            } => {
+                tokio::spawn(async move {
+                    let body =
+                        clone_sticker(&client, guild, sticker, format, &name, &tags, &description)
+                            .await;
+                    let _ = updates.send(Update::Fetched { key, body });
+                });
+            }
+            Request::PluginRpcAssets { key, app_id, keys } => {
+                tokio::spawn(async move {
+                    let mut out = serde_json::Map::new();
+                    let (links, names): (Vec<String>, Vec<String>) = keys
+                        .into_iter()
+                        .partition(|key| key.starts_with("http://") || key.starts_with("https://"));
+                    if !names.is_empty() {
+                        let listed = client
+                            .get(&format!("/oauth2/applications/{app_id}/assets"))
+                            .await
+                            .unwrap_or(Value::Null);
+                        for name in names {
+                            let id = listed
+                                .as_array()
+                                .into_iter()
+                                .flatten()
+                                .find(|asset| asset["name"].as_str() == Some(name.as_str()))
+                                .and_then(|asset| asset["id"].as_str().map(str::to_owned));
+                            out.insert(name, id.map_or(Value::Null, Value::from));
+                        }
+                    }
+                    if !links.is_empty() {
+                        let answer = client
+                            .post(
+                                &format!("/applications/{app_id}/external-assets"),
+                                &json!({"urls": links}),
+                            )
+                            .await
+                            .unwrap_or(Value::Null);
+                        for (index, link) in links.into_iter().enumerate() {
+                            let path = answer[index]["external_asset_path"].as_str();
+                            out.insert(
+                                link,
+                                path.map_or(Value::Null, |path| Value::from(format!("mp:{path}"))),
+                            );
+                        }
+                    }
+                    let _ = updates.send(Update::Fetched {
+                        key,
+                        body: Value::Object(out),
+                    });
+                });
+            }
+            Request::PluginTranslate {
+                key,
+                text,
+                target,
+                toki,
+                sitelen,
+                shavian,
+            } => {
+                tokio::spawn(async move {
+                    let body = translate_plus(&client, text, &target, toki, sitelen, shavian)
+                        .await
+                        .unwrap_or(Value::Null);
+                    let _ = updates.send(Update::Fetched { key, body });
+                });
+            }
+            Request::GifProvider {
+                key,
+                provider,
+                ask,
+                limit,
+            } => {
+                tokio::spawn(async move {
+                    use crate::plugins::gif_provider::{self as gif, Ask, Provider};
+                    let json = |url: String| {
+                        let client = client.clone();
+                        async move {
+                            let bytes = client.fetch_public(&url).await.ok()?;
+                            serde_json::from_slice::<Value>(&bytes).ok()
+                        }
+                    };
+                    let body = match &ask {
+                        Ask::Share { .. } => {
+                            if let Some(url) = gif::address(provider, &ask, 0, "", 0) {
+                                let _ = json(url).await;
+                            }
+                            return;
+                        }
+                        Ask::Categories => match gif::address(provider, &ask, 0, "", 0) {
+                            Some(url) => json(url)
+                                .await
+                                .map_or(Value::Null, |body| gif::categories(provider, &body)),
+                            None => Value::Null,
+                        },
+                        Ask::Trending | Ask::Search(_) => {
+                            // `fetchTenorResults` follows `next` until the limit; Giphy pages by offset.
+                            let mut items: Vec<Value> = Vec::new();
+                            let mut pos = String::new();
+                            let mut offset = 0;
+                            let mut failed = false;
+                            while (items.len() as u32) < limit {
+                                let size = (limit - items.len() as u32).min(gif::PAGE);
+                                let Some(url) = gif::address(provider, &ask, size, &pos, offset)
+                                else {
+                                    break;
+                                };
+                                let Some(body) = json(url).await else {
+                                    failed = items.is_empty();
+                                    break;
+                                };
+                                let (page, next) = gif::page(provider, &body);
+                                if page.is_empty() {
+                                    break;
+                                }
+                                let before = items.len();
+                                items.extend(page);
+                                offset += size;
+                                match (provider, next) {
+                                    (Provider::Tenor, Some(next))
+                                        if next != pos && items.len() > before =>
+                                    {
+                                        pos = next
+                                    }
+                                    (Provider::Giphy, _) if items.len() > before => {}
+                                    _ => break,
+                                }
+                            }
+                            if failed {
+                                Value::Null
+                            } else {
+                                gif::results(provider, &items, limit as usize)
+                            }
+                        }
+                    };
+                    let _ = updates.send(Update::Fetched { key, body });
+                });
+            }
+            Request::FetchZip { key, url, native } => {
+                tokio::spawn(async move {
+                    use crate::plugins::zip_preview as zip;
+                    let fetch_url = native.as_ref().map_or_else(
+                        || url.clone(),
+                        |path| format!("https://cdn.discordapp.com/attachments/{path}"),
+                    );
+                    let fetched = client
+                        .fetch_public_limited(&fetch_url, zip::MAX_ZIP_BYTES)
+                        .await;
+                    let bytes = match (fetched, native.is_some()) {
+                        (Ok(dc_http::LimitedGet::Body(bytes)), _) => Ok(bytes),
+                        (Ok(dc_http::LimitedGet::TooLarge), _) => Err(zip::TOO_LARGE.to_owned()),
+                        (Ok(dc_http::LimitedGet::Status(status, reason)), true) => {
+                            Err(format!("Fetch failed: {status} {reason}"))
+                        }
+                        (Ok(dc_http::LimitedGet::Status(..)), false) => {
+                            Err("Could not fetch ZIP.".to_owned())
+                        }
+                        (Err(error), _) => Err(error.to_string()),
+                    };
+                    let parsed = match bytes {
+                        Ok(bytes) => tokio::task::spawn_blocking(move || zip::parse(&bytes))
+                            .await
+                            .unwrap_or_else(|_| Err("Failed to preview ZIP.".to_owned())),
+                        Err(message) => Err(message),
+                    };
+                    match parsed {
+                        Ok(archive) => {
+                            zip::set_state(&url, zip::State::Resolved(std::sync::Arc::new(archive)))
+                        }
+                        Err(message) => zip::reject(&url, message),
+                    }
+                    let _ = updates.send(Update::Fetched {
+                        key,
+                        body: Value::Null,
+                    });
                 });
             }
             Request::FetchCdn { key, url, etag } => {
@@ -2570,6 +3059,11 @@ pub async fn run(token: Token, updates: mpsc::UnboundedSender<Update>, requests:
                 crate::start_trace::mark("img_first_req");
                 tokio::spawn(async move {
                     let _flight = flight;
+                    // A `data:` picture (UserPFP's uploaded avatars) is decoded here, never fetched.
+                    if let Some(bytes) = data_url_bytes(&url) {
+                        let _ = updates.send(Update::Image { key, bytes });
+                        return;
+                    }
                     // A Shop or CDN picture kept on disk is drawn at once; a stale one is fetched again behind it.
                     let shop_box = shop_art_box(&key);
                     let cache_raw =
@@ -3001,6 +3495,247 @@ fn guild_member_requests(guilds: &[u64], query: &str, limit: u64, user_ids: &[u6
             json!({"guild_id": ids, "user_ids": users, "presences": true})
         })
         .collect()
+}
+
+/// Not in the pinned client: ExpressionManager's `doClone` (`plugin_hooks/expression_manager.rs`).
+/// Not in the pinned client: ClipUpload's `sendClipUpload` (see `Request::PluginClipUpload`). `{ok, message}`; the
+/// message is the one the original's toast shows (`getErrorMessage`), or none for its generic text.
+async fn clip_upload(
+    client: &Client,
+    channel: u64,
+    path: &std::path::Path,
+    options: &crate::plugins::clip_upload::Options,
+    reply: Option<(Option<u64>, u64)>,
+) -> Value {
+    let failed = |message: Option<&str>| json!({"ok": false, "message": message});
+    let reading = path.to_owned();
+    let bytes = match tokio::task::spawn_blocking(move || std::fs::read(reading)).await {
+        Ok(Ok(bytes)) => bytes,
+        _ => return failed(Some("Couldn't read the selected file.")),
+    };
+    let size = bytes.len() as u64;
+    let granted = match client
+        .post(
+            &format!("/channels/{channel}/attachments"),
+            &options.reserve_body(size),
+        )
+        .await
+    {
+        Ok(granted) => granted,
+        Err(error) => {
+            warn!("clip upload slot failed: {error}");
+            return failed(None);
+        }
+    };
+    let slot = &granted["attachments"][0];
+    let (Some(url), Some(uploaded)) = (
+        slot["upload_url"].as_str(),
+        slot["upload_filename"].as_str(),
+    ) else {
+        return failed(Some("Discord did not return an upload slot."));
+    };
+    if let Err(error) = client.put_upload(url, bytes).await {
+        warn!("clip upload failed: {error}");
+        return failed(Some("Upload failed."));
+    }
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |elapsed| elapsed.as_millis() as u64);
+    let reference = reply.map(|(guild, message)| {
+        let mut reference =
+            json!({"message_id": message.to_string(), "channel_id": channel.to_string()});
+        if let Some(guild) = guild {
+            reference["guild_id"] = json!(guild.to_string());
+        }
+        reference
+    });
+    let body = options.message_body(channel, size, uploaded, &pin::nonce_at(now), reference);
+    match client
+        .post(&format!("/channels/{channel}/messages"), &body)
+        .await
+    {
+        Ok(_) => json!({"ok": true, "message": null}),
+        Err(dc_http::Error::Status { status, body, .. }) => {
+            warn!("sending a clip failed: {status}");
+            // GAP: the original converts the file with FFmpeg and tries again on "not a valid clip"; there is no
+            // FFmpeg here, so that answer ends with the original's own word for a file it cannot use.
+            if crate::plugins::clip_upload::not_a_valid_clip(&body) {
+                failed(Some(
+                    "This file is not compatible. Use an MP4 clip with H.264 video and AAC audio.",
+                ))
+            } else {
+                failed(None)
+            }
+        }
+        Err(error) => {
+            warn!("sending a clip failed: {error}");
+            failed(None)
+        }
+    }
+}
+
+async fn clone_sticker(
+    client: &Client,
+    guild: u64,
+    sticker: u64,
+    format: u64,
+    name: &str,
+    tags: &str,
+    description: &str,
+) -> Value {
+    const MAX_BYTES: usize = 512 * 1024;
+    let failed = |message: String| json!({"ok": false, "name": name, "message": message});
+    // `fetchSticker`: what the store did not have.
+    let (mut tags, mut description) = (tags.to_owned(), description.to_owned());
+    if tags.is_empty()
+        && let Ok(known) = client.get(&format!("/stickers/{sticker}")).await
+    {
+        tags = known["tags"].as_str().unwrap_or_default().to_owned();
+        if description.is_empty() {
+            description = known["description"].as_str().unwrap_or_default().to_owned();
+        }
+    }
+    // `fetchBlob`: the largest size within the limit.
+    let mut file = None;
+    let mut size = 4096;
+    while size >= 16 {
+        let url = crate::ui::expression_sticker_url(sticker, format, size);
+        match client.fetch_public_limited(&url, MAX_BYTES).await {
+            Ok(dc_http::LimitedGet::Body(bytes)) => {
+                file = Some(bytes);
+                break;
+            }
+            Ok(dc_http::LimitedGet::TooLarge) => size /= 2,
+            Ok(dc_http::LimitedGet::Status(status, _)) => {
+                return failed(format!("Failed to fetch {url}: {status}"));
+            }
+            Err(error) => return failed(error.to_string()),
+        }
+    }
+    let Some(file) = file else {
+        return failed(format!(
+            "Failed to fetch sticker within size limit of {}KiB",
+            MAX_BYTES / 1024
+        ));
+    };
+    let file_type = match format {
+        4 => "image/gif",
+        3 => "application/json",
+        _ => "image/png",
+    };
+    let form = dc_http::Form {
+        fields: vec![
+            ("name".to_owned(), name.to_owned()),
+            (
+                "tags".to_owned(),
+                if tags.is_empty() {
+                    "\u{1f47b}".to_owned()
+                } else {
+                    tags
+                },
+            ),
+            ("description".to_owned(), description),
+        ],
+        file_field: "file".to_owned(),
+        file_name: "blob".to_owned(),
+        file_type: file_type.to_owned(),
+        file,
+        headers: Vec::new(),
+    };
+    match client
+        .post_form(&format!("/guilds/{guild}/stickers"), &form)
+        .await
+    {
+        Ok(_) => json!({"ok": true, "name": name}),
+        Err(dc_http::Error::Status { body, .. }) => failed(
+            body["message"]
+                .as_str()
+                .unwrap_or("Something went wrong (check console!)")
+                .to_owned(),
+        ),
+        Err(error) => failed(error.to_string()),
+    }
+}
+
+/// Not in the pinned client: Translate+'s `translate` (`plugins::translate_plus`). The dictionaries are kept once
+/// fetched (the original fetches them again each time).
+async fn translate_plus(
+    client: &Client,
+    text: String,
+    target: &str,
+    toki: bool,
+    sitelen: bool,
+    shavian: bool,
+) -> Option<Value> {
+    use crate::plugins::translate_plus::{self as tp, Route};
+    static DICTIONARIES: std::sync::Mutex<Vec<(&'static str, Value)>> =
+        std::sync::Mutex::new(Vec::new());
+    let dictionary = |url: &'static str| async move {
+        let kept = DICTIONARIES
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .iter()
+            .find(|(at, _)| *at == url)
+            .map(|(_, value)| value.clone());
+        if let Some(kept) = kept {
+            return Some(kept);
+        }
+        let bytes = client.fetch_public(url).await.ok()?;
+        let value: Value = serde_json::from_slice(&bytes).ok()?;
+        DICTIONARIES
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .push((url, value.clone()));
+        Some(value)
+    };
+    // `google`: an empty text stays empty, a failure is the original's notice.
+    let google = |text: String| async move {
+        if text.is_empty() {
+            return (String::new(), String::new());
+        }
+        match client.fetch_public(&tp::google_url(target, &text)).await {
+            Ok(bytes) => match serde_json::from_slice::<Value>(&bytes) {
+                Ok(body) => tp::google_answer(&body),
+                Err(_) => ("en".to_owned(), tp::FAILED.to_owned()),
+            },
+            Err(_) => ("en".to_owned(), tp::FAILED.to_owned()),
+        }
+    };
+    let (src, out) = match tp::route(&text, toki, sitelen, shavian) {
+        Route::Toki { sitelen } => {
+            let text = if sitelen {
+                tp::translate_sitelen(&text, &dictionary(tp::SITELEN_URL).await?)
+            } else {
+                text
+            };
+            let bytes = client
+                .post_public_json(
+                    tp::TOKI_URL,
+                    &json!({"text": text, "src": "tl", "target": "en"}),
+                )
+                .await
+                .ok()?;
+            let answer: Value = serde_json::from_slice(&bytes).ok()?;
+            let english = answer["translation"][0].as_str()?.to_owned();
+            let out = if target == "en" {
+                english
+            } else {
+                google(english).await.1
+            };
+            ("tp".to_owned(), out)
+        }
+        Route::Shavian => {
+            let english = tp::translate_shavian(&text, &dictionary(tp::SHAVIAN_URL).await?);
+            let out = if target == "en" {
+                english
+            } else {
+                google(english).await.1
+            };
+            ("sh".to_owned(), out)
+        }
+        Route::Google => google(text).await,
+    };
+    Some(json!({"src": src, "text": out}))
 }
 
 #[cfg(test)]
@@ -3551,4 +4286,33 @@ async fn webhook_demo(client: &dc_http::Client, channel: u64) -> Value {
         .request(reqwest::Method::DELETE, &format!("/webhooks/{id}"), None)
         .await;
     json!({"ok": true, "ids": ids})
+}
+
+/// OpenInApp's `getRedirect`: HEAD requests that follow `Location` five times at most; the last address reached, or
+/// the one given when a request fails.
+async fn resolve_redirect(url: &str) -> String {
+    let Ok(client) = reqwest::Client::builder()
+        .redirect(reqwest::redirect::Policy::none())
+        .build()
+    else {
+        return url.to_owned();
+    };
+    let mut current = url.to_owned();
+    for _ in 0..5 {
+        let Ok(response) = client.head(&current).send().await else {
+            break;
+        };
+        let Some(next) = response
+            .headers()
+            .get(reqwest::header::LOCATION)
+            .and_then(|value| value.to_str().ok())
+        else {
+            break;
+        };
+        current = match reqwest::Url::parse(&current).and_then(|base| base.join(next)) {
+            Ok(joined) => joined.to_string(),
+            Err(_) => break,
+        };
+    }
+    current
 }

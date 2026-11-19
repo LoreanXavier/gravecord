@@ -86,6 +86,11 @@ impl<T: Windowed> Cache<T> {
         self.messages.len()
     }
 
+    /// The messages it holds, oldest first.
+    pub fn messages(&self) -> &[T] {
+        &self.messages
+    }
+
     pub fn is_empty(&self) -> bool {
         self.messages.is_empty()
     }

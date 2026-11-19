@@ -34,6 +34,15 @@ fn icon_format() -> Option<String> {
     crate::plugins::with(format)
 }
 
+/// `settings.store.roleIconFileFormat` whether the plugin is on or not (PermissionsViewer's role menu builds its rows
+/// with `buildExtraRoleContextMenuItems`, which reads it either way).
+pub(in crate::ui) fn role_icon_format_setting() -> String {
+    crate::plugins::with(|state| match state.value(ID, "roleIconFileFormat") {
+        Value::String(format) if ["png", "webp", "jpg"].contains(&format.as_str()) => format,
+        _ => "png".to_owned(),
+    })
+}
+
 /// What a role offers the menu.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(in crate::ui) struct Offers {
@@ -136,6 +145,17 @@ impl Root {
         let Some(format) = icon_format() else {
             return;
         };
+        self.role_icon_view(role, guild, &format, cx);
+    }
+
+    /// The role's uploaded icon in the picture viewer, in `format`.
+    pub(in crate::ui) fn role_icon_view(
+        &mut self,
+        role: Id,
+        guild: Id,
+        format: &str,
+        cx: &mut Context<Self>,
+    ) {
         let Some(hash) = self
             .stores
             .guilds
@@ -172,6 +192,7 @@ mod tests {
             .map(|entry| match entry {
                 Entry::Row(row) => row.label.clone(),
                 Entry::Separator => "-".to_owned(),
+                Entry::Heading(text) => format!("# {text}"),
             })
             .collect()
     }

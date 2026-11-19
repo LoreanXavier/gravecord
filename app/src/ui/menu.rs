@@ -98,6 +98,16 @@ pub(super) enum Action {
     SaveImage,
     /// Not in the pinned client: ReverseImageSearch's "Search Image" submenu (`plugin_hooks.rs`).
     SearchImage,
+    /// Not in the pinned client: Translate+'s "Translate" (`plugin_hooks/translate_plus.rs`).
+    PluginTranslate,
+    /// Not in the pinned client: ExpressionManager's sticker rows (`plugin_hooks/expression_manager.rs`).
+    PluginCloneSticker,
+    PluginCopyStickerLink,
+    PluginOpenStickerLink,
+    /// Not in the pinned client: MessageLogger's rows (`plugin_hooks/message_logger.rs`).
+    PluginToggleDeletedHighlight,
+    PluginToggleDiffView,
+    PluginClearMessageHistory,
     /// "Save File" of a voice message (module 761304 `save-voice-message-audio`): its audio file is downloaded.
     SaveVoiceFile,
     /// "Favorite Emoji" / "Unfavorite Emoji" of the emoji under the pointer (module 253925).
@@ -150,6 +160,14 @@ pub(super) struct SavedState {
     pub image: bool,
     /// Not in the pinned client: ReverseImageSearch offers "Search Image" for the picture under the pointer.
     pub search_image: bool,
+    /// Not in the pinned client: Translate+ offers "Translate" for a message with text.
+    pub translate: bool,
+    /// Not in the pinned client: ExpressionManager's rows for the sticker under the pointer, and whether its links
+    /// come too (`stickerCopyAndOpen`).
+    pub clone_sticker: Option<bool>,
+    /// Not in the pinned client: MessageLogger's state of a message with history: deleted, and the diff toggle
+    /// (whether it is off) while diffs are shown.
+    pub logged: Option<(bool, Option<bool>)>,
     /// A voice message with its audio file: Save File joins the picture rows' group.
     pub voice_file: bool,
     /// The pointer was on a video: "Stats for Nerds" ends the picture rows' group.
@@ -385,6 +403,15 @@ pub(super) fn message_items_saved(own: bool, saved: SavedState) -> Vec<Item> {
             false,
         ));
     }
+    // Not in the pinned client: Translate+, right after Copy Text (`plugin_hooks/translate_plus.rs`).
+    if saved.translate {
+        actions.push(Item::Entry(
+            "Translate",
+            "plugin_translate",
+            Action::PluginTranslate,
+            false,
+        ));
+    }
     if !saved.failed && !saved.no_pin {
         actions.push(if saved.pinned {
             Item::Entry("Unpin Message", "menu_pin_message", Action::Pin, false)
@@ -506,6 +533,15 @@ pub(super) fn message_items_saved(own: bool, saved: SavedState) -> Vec<Item> {
         )),
         None => {}
     }
+    // Not in the pinned client: ExpressionManager puts Clone Sticker first in the favourite group.
+    if saved.clone_sticker.is_some() {
+        pictures.push(Item::Entry(
+            "Clone Sticker",
+            "plugin_plus",
+            Action::PluginCloneSticker,
+            false,
+        ));
+    }
     match saved.favorite_sticker {
         Some(true) => pictures.push(Item::Entry(
             "Unfavorite Sticker",
@@ -520,6 +556,22 @@ pub(super) fn message_items_saved(own: bool, saved: SavedState) -> Vec<Item> {
             false,
         )),
         None => {}
+    }
+    // Not in the pinned client: ExpressionManager's sticker links, after a separator in the same group.
+    if saved.clone_sticker == Some(true) {
+        pictures.push(Item::Separator);
+        pictures.push(Item::Entry(
+            "Copy Sticker Link",
+            "plugin_link",
+            Action::PluginCopyStickerLink,
+            false,
+        ));
+        pictures.push(Item::Entry(
+            "Open Sticker Link",
+            "plugin_link",
+            Action::PluginOpenStickerLink,
+            false,
+        ));
     }
     if saved.image {
         pictures.push(Item::Entry(
@@ -615,6 +667,70 @@ pub(super) fn message_items_saved(own: bool, saved: SavedState) -> Vec<Item> {
                 false,
             )],
         );
+    }
+    // Not in the pinned client: MessageLogger (`plugin_hooks/message_logger.rs`). A deleted message loses the rows it
+    // cannot use (`buttonsToRemove`), and a message with history ends with the plugin's rows.
+    if let Some((deleted, diff_off)) = saved.logged {
+        if deleted {
+            items.retain(|item| {
+                !matches!(
+                    item,
+                    Item::Entry(_, _, action, _) | Item::Danger(_, _, action)
+                        if matches!(
+                            action,
+                            Action::Edit
+                                | Action::Reply
+                                | Action::Forward
+                                | Action::Thread
+                                | Action::Pin
+                                | Action::Delete
+                                | Action::MarkUnread
+                                | Action::Apps
+                                | Action::Bookmark
+                                | Action::Reminder
+                        )
+                )
+            });
+            let mut kept: Vec<Item> = Vec::with_capacity(items.len());
+            for item in items {
+                if matches!(item, Item::Separator)
+                    && (kept.is_empty() || matches!(kept.last(), Some(Item::Separator)))
+                {
+                    continue;
+                }
+                kept.push(item);
+            }
+            while matches!(kept.last(), Some(Item::Separator)) {
+                kept.pop();
+            }
+            items = kept;
+        }
+        let mut logger = Vec::new();
+        if deleted {
+            logger.push(Item::Entry(
+                "Toggle Deleted Highlight",
+                "clips_eye",
+                Action::PluginToggleDeletedHighlight,
+                false,
+            ));
+        }
+        if let Some(off) = diff_off {
+            logger.push(Item::Danger(
+                if off {
+                    "Enable Diff View"
+                } else {
+                    "Disable Diff View"
+                },
+                "",
+                Action::PluginToggleDiffView,
+            ));
+        }
+        logger.push(Item::Danger(
+            "Clear Message History",
+            "plugin_history",
+            Action::PluginClearMessageHistory,
+        ));
+        push_menu_group(&mut items, logger);
     }
     items
 }
@@ -721,6 +837,13 @@ impl Root {
             .and_then(|channel| self.stores.messages.get(&channel))
             .and_then(|list| list.iter().find(|known| known.id == message));
         let empty = found.is_some_and(|known| known.content.is_empty());
+        let translate =
+            found.is_some_and(|known| super::plugin_hooks::translate_plus(&known.content));
+        let logged = found.and_then(super::plugin_hooks::message_logger_menu);
+        let clone_sticker = match &self.menu_extra.hit {
+            Some(Hit::Sticker { id }) => self.expression_manager_message_sticker(*id),
+            _ => None,
+        };
         let pinned = found.is_some_and(|known| known.pinned);
         let reacted = found.is_some_and(|known| !known.reactions.is_empty());
         let channel = self.current_channel();
@@ -735,6 +858,9 @@ impl Root {
             reminder: state.is_some_and(|due| due.is_some()),
             speaking: self.speaking_message == Some(message),
             empty,
+            translate,
+            clone_sticker,
+            logged,
             pinned,
             reacted,
             manage_reactions: reacted
@@ -816,15 +942,42 @@ impl Root {
     /// The quick reaction row of the message menu (module 761304 `tr`): the first four in priority order, less the
     /// sprite-sheet faces of `eP`.
     pub(super) fn quick_reactions(&self) -> Vec<&'static dc_tokens::emoji_data::Emoji> {
-        self.priority_reactions()
+        // Not in the pinned client: MoreQuickReactions lifts the cut at 4, and `frequentEmojis` keeps the favourites
+        // out (`plugin_hooks/more_quick_reactions.rs`).
+        let grid = super::plugin_hooks::more_quick_grid();
+        let more = grid.is_some();
+        let ordered: Vec<&'static dc_tokens::emoji_data::Emoji> = match grid {
+            Some(grid) if grid.frequent_only => self
+                .frequent_reactions()
+                .iter()
+                .filter_map(|name| dc_tokens::emoji_by_name(name))
+                .collect(),
+            _ => self.priority_reactions(),
+        };
+        ordered
             .into_iter()
             .filter(|emoji| !(emoji.sprite.is_some() && NOT_QUICK.contains(&emoji.names[0])))
-            .take(4)
+            .take(if more { usize::MAX } else { 4 })
             .collect()
     }
 
     /// The hover bar's three (module 891522 `np`): the frecent reactions only (`QZ`), topped up with
     /// `100`, `laughing` and `sparkling_heart` when fewer than three.
+    /// Not in the pinned client: the hover bar's row with MoreQuickReactions' `reactionCount`.
+    pub(super) fn hover_bar_reactions_up_to(
+        &self,
+        count: usize,
+    ) -> Vec<&'static dc_tokens::emoji_data::Emoji> {
+        hover_order_up_to(
+            self.frequent_reactions(),
+            |name| dc_tokens::emoji_by_name(name).map(Same),
+            count,
+        )
+        .into_iter()
+        .map(|Same(emoji)| emoji)
+        .collect()
+    }
+
     pub(super) fn hover_bar_reactions(&self) -> Vec<&'static dc_tokens::emoji_data::Emoji> {
         hover_order(self.frequent_reactions(), |name| {
             dc_tokens::emoji_by_name(name).map(Same)
@@ -853,6 +1006,40 @@ impl Root {
         match action {
             Action::Edit => self.begin_edit(message, &found.content, window, cx),
             Action::Reply => self.begin_reply(found, window, cx),
+            // Not in the pinned client: Translate+ (`plugin_hooks/translate_plus.rs`).
+            Action::PluginTranslate => self.translate_plus_start(message, found.content.clone()),
+            // Not in the pinned client: ExpressionManager (`plugin_hooks/expression_manager.rs`).
+            Action::PluginCloneSticker => self.expression_manager_act(
+                super::context_menu::Act::PluginCloneSticker,
+                super::context_menu::Target::Composer,
+                false,
+                cx,
+            ),
+            Action::PluginCopyStickerLink => self.expression_manager_act(
+                super::context_menu::Act::PluginCopyStickerLink,
+                super::context_menu::Target::Composer,
+                false,
+                cx,
+            ),
+            Action::PluginOpenStickerLink => self.expression_manager_act(
+                super::context_menu::Act::PluginOpenStickerLink,
+                super::context_menu::Target::Composer,
+                false,
+                cx,
+            ),
+            // Not in the pinned client: MessageLogger (`plugin_hooks/message_logger.rs`).
+            Action::PluginToggleDeletedHighlight => {
+                self.message_logger_toggle_highlight(message);
+                cx.notify();
+            }
+            Action::PluginToggleDiffView => {
+                self.message_logger_toggle_diff(message);
+                cx.notify();
+            }
+            Action::PluginClearMessageHistory => {
+                self.message_logger_clear(found.channel_id, message);
+                cx.notify();
+            }
             Action::CopyText => {
                 let text = if found.content.is_empty() {
                     parse_block_text(&found.content)
@@ -1163,7 +1350,12 @@ impl Root {
         ))
     }
 
-    fn react_from_menu(&mut self, message: Id, surrogates: &'static str, cx: &mut Context<Self>) {
+    pub(super) fn react_from_menu(
+        &mut self,
+        message: Id,
+        surrogates: &'static str,
+        cx: &mut Context<Self>,
+    ) {
         self.menu = None;
         if let Some(channel) = self.channel {
             let already_me = self
@@ -1346,15 +1538,18 @@ impl Root {
                 }
             }),
         )
-        .child(
-            svg()
-                .path(format!("icons/{icon_name}.svg"))
-                .size(px(20.))
-                .flex_none()
-                .mr(px(8.))
-                .text_color(icon_tint)
-                .group_hover(group.clone(), move |style| style.text_color(hover_icon)),
-        )
+        // A plugin's row may have no leading icon (MessageLogger's diff toggle).
+        .when(!icon_name.is_empty(), |this| {
+            this.child(
+                svg()
+                    .path(format!("icons/{icon_name}.svg"))
+                    .size(px(20.))
+                    .flex_none()
+                    .mr(px(8.))
+                    .text_color(icon_tint)
+                    .group_hover(group.clone(), move |style| style.text_color(hover_icon)),
+            )
+        })
         .child(
             div()
                 .flex_1()
@@ -1365,7 +1560,23 @@ impl Root {
                 .text_color(label_tint)
                 // `label_M3qk4j`: one line, cut with an ellipsis.
                 .truncate()
-                .child(dc_intl::tr(label)),
+                // Not in the pinned client: a plugin's row keeps its English label, as the original does.
+                .child(
+                    if matches!(
+                        run,
+                        Action::PluginCloneSticker
+                            | Action::PluginCopyStickerLink
+                            | Action::PluginOpenStickerLink
+                            | Action::PluginTranslate
+                            | Action::PluginToggleDeletedHighlight
+                            | Action::PluginToggleDiffView
+                            | Action::PluginClearMessageHistory
+                    ) {
+                        label
+                    } else {
+                        dc_intl::tr(label)
+                    },
+                ),
         )
         // The keyboard shortcut of Copy (module 373963 `keyCombo`).
         .when(run == Action::CopySelection, |this| {
@@ -1382,6 +1593,19 @@ impl Root {
                     } else {
                         "Ctrl+C"
                     }),
+            )
+        })
+        // Not in the pinned client: Translate+ gives its row the icon after the label as well (`icon` and
+        // `leadingAccessory`).
+        .when(run == Action::PluginTranslate, |this| {
+            this.child(
+                svg()
+                    .path("icons/plugin_translate.svg")
+                    .size(px(18.))
+                    .flex_none()
+                    .ml(px(8.))
+                    .text_color(icon_tint)
+                    .group_hover(group.clone(), move |style| style.text_color(hover_icon)),
             )
         })
         .when(run == Action::VideoStats, |this| {
@@ -1408,6 +1632,10 @@ impl Root {
         let reactions = self.quick_reactions();
         if reactions.is_empty() {
             return None;
+        }
+        // Not in the pinned client: MoreQuickReactions' grid (`plugin_hooks/more_quick_reactions.rs`).
+        if let Some(grid) = super::plugin_hooks::more_quick_grid() {
+            return Some(self.more_quick_grid_row(message, reactions, grid, cx));
         }
         Some(
             div()
@@ -1448,7 +1676,11 @@ impl Root {
         let saved = self.saved_flags(open.message);
         let mut rows: Vec<AnyElement> = Vec::new();
         // Text selected: the menu opens with Copy instead of the quick reactions (selection-own-dm).
-        if !saved.no_react && self.menu_extra.selection.is_empty() {
+        // Not in the pinned client: MessageLogger takes the first section off a deleted message's menu.
+        if !saved.no_react
+            && self.menu_extra.selection.is_empty()
+            && !saved.logged.is_some_and(|(deleted, _)| deleted)
+        {
             rows.extend(self.quick_row(open.message, cx));
         }
         for (index, item) in message_items_saved(open.own, saved).into_iter().enumerate() {
@@ -1491,7 +1723,9 @@ impl Root {
                         .relative()
                         .child(self.anchor_probe("context-menu"))
                         .occlude()
-                        .w(px(MENU_WIDTH))
+                        // Not in the pinned client: MoreQuickReactions' grid widens the menu (`min-width:
+                        // fit-content`, `plugin_hooks/more_quick_reactions.rs`).
+                        .w(px(super::plugin_hooks::more_quick_menu_width(MENU_WIDTH)))
                         .max_h(px(max_height))
                         .rounded(px(8.))
                         .bg(color("--background-surface-higher"))
@@ -1967,6 +2201,15 @@ fn priority_order<T: PartialEq>(
 
 /// `l.length >= 3 ? l : unique(l.concat(nh))`, then the first three.
 fn hover_order<T: PartialEq>(frecent: Vec<String>, resolve: impl Fn(&str) -> Option<T>) -> Vec<T> {
+    hover_order_up_to(frecent, resolve, 3)
+}
+
+/// `hover_order` cut at `count` (3 in the pinned client; not in it: MoreQuickReactions' `reactionCount`).
+fn hover_order_up_to<T: PartialEq>(
+    frecent: Vec<String>,
+    resolve: impl Fn(&str) -> Option<T>,
+    count: usize,
+) -> Vec<T> {
     let mut out: Vec<T> = frecent.iter().filter_map(|key| resolve(key)).collect();
     if out.len() < 3 {
         for item in ["100", "laughing", "sparkling_heart"]
@@ -1978,7 +2221,7 @@ fn hover_order<T: PartialEq>(frecent: Vec<String>, resolve: impl Fn(&str) -> Opt
             }
         }
     }
-    out.truncate(3);
+    out.truncate(count);
     out
 }
 

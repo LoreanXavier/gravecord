@@ -825,6 +825,21 @@ impl Inline {
         self
     }
 
+    /// Adds a click handler beside the one already set (a plugin's piece next to the app's own).
+    pub fn also_on_piece_click(
+        mut self,
+        handler: impl Fn(usize, &mut Window, &mut App) + 'static,
+    ) -> Self {
+        let previous = self.on_piece_click.take();
+        self.on_piece_click = Some(Rc::new(move |piece, window, cx| {
+            if let Some(previous) = &previous {
+                previous(piece, window, cx);
+            }
+            handler(piece, window, cx);
+        }));
+        self
+    }
+
     /// As `on_piece_click`, with the bounds of the piece that was clicked (for popouts that open beside it).
     pub fn on_piece_click_at(
         mut self,
@@ -1693,6 +1708,32 @@ mod tests {
                 assert_eq!(laid.fragments[1].start, 4);
             }
         }
+    }
+
+    /// A box with an icon and no text (Translate+'s icon before its translation) is placed like any box: the
+    /// segment with no text skips the word split (`seg_text.is_empty()`), and the fragment takes the icon's room.
+    #[test]
+    fn an_empty_boxed_piece_keeps_its_room() {
+        use super::{Laid, place};
+        let mut laid = Laid {
+            lines: 1,
+            ..Default::default()
+        };
+        let mut x = px(0.);
+        place(
+            &mut laid,
+            &mut x,
+            Some(px(200.)),
+            (gpui::ShapedLine::default(), 0, 0),
+            px(0.),
+            px(20.),
+            false,
+        );
+        assert_eq!(laid.fragments.len(), 1);
+        assert_eq!(laid.fragments[0].width, px(20.));
+        assert_eq!(laid.fragments[0].text_offset, px(20.));
+        assert_eq!(x, px(20.));
+        assert!(super::words("").is_empty());
     }
 
     #[test]

@@ -350,6 +350,10 @@ impl Root {
             route: format!("/users/@me/relationships/{user}"),
             body,
         });
+        // Not in the pinned client: RelationshipNotifier keeps quiet about a removal of your own.
+        if kind.is_none() {
+            super::plugin_hooks::relationship_removed_by_you(Some(user), None, None);
+        }
         match kind {
             Some(2) => {
                 self.stores.relationships.insert(user, 2);
@@ -384,6 +388,10 @@ impl Root {
             route: format!("/users/@me/relationships/{user}"),
             body: accept.then(|| json!({})),
         });
+        // Not in the pinned client: RelationshipNotifier keeps quiet about a removal of your own.
+        if !accept {
+            super::plugin_hooks::relationship_removed_by_you(Some(user), None, None);
+        }
         if accept {
             self.stores.relationships.insert(user, RELATIONSHIP_FRIEND);
         } else {

@@ -250,6 +250,21 @@ impl Pending {
         Some((self.preview.clone()?, width * scale, height * scale))
     }
 
+    /// Not in the pinned client: the card as PreviewMessage's preview shows it (`plugin_hooks/preview_message.rs`).
+    pub(in crate::ui) fn preview_file(&self) -> super::plugin_hooks::PreviewFile {
+        super::plugin_hooks::PreviewFile {
+            name: self.name.clone(),
+            size: std::fs::metadata(&self.path).map_or(0, |meta| meta.len()),
+            content_type: mime_of(&self.path),
+            picture: self.picture,
+        }
+    }
+
+    /// Not in the pinned client: the card's picture for PreviewMessage's preview.
+    pub(in crate::ui) fn preview_picture(&self) -> Option<Arc<Image>> {
+        self.preview.clone()
+    }
+
     pub fn is_spoiler(&self) -> bool {
         self.name.starts_with(SPOILER_PREFIX)
     }

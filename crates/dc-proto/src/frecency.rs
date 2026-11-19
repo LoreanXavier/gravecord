@@ -454,9 +454,133 @@ pub fn favorite_emojis_patch(emojis: &[String]) -> String {
     STANDARD.encode(settings)
 }
 
+/// The key of a frecency map entry: an emoji name or custom emoji id (a string), or a sticker id (fixed64 or varint).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum EntryKey<'a> {
+    Text(&'a str),
+    Id(u64),
+}
+
+/// One field as written: its number, what it holds, and every byte it spans (tag included).
+struct RawField<'a> {
+    number: u64,
+    varint: Option<u64>,
+    payload: &'a [u8],
+    raw: &'a [u8],
+}
+
+fn raw_field<'a>(reader: &mut Reader<'a>) -> Option<RawField<'a>> {
+    let start = reader.bytes;
+    let tag = reader.varint()?;
+    let (varint, payload): (Option<u64>, &[u8]) = match tag & 7 {
+        0 => (Some(reader.varint()?), &[]),
+        1 => (None, reader.take(8)?),
+        2 => {
+            let length = usize::try_from(reader.varint()?).ok()?;
+            (None, reader.take(length)?)
+        }
+        5 => (None, reader.take(4)?),
+        _ => return None,
+    };
+    let used = start.len() - reader.bytes.len();
+    Some(RawField {
+        number: tag >> 3,
+        varint,
+        payload,
+        raw: &start[..used],
+    })
+}
+
+fn raw_fields(bytes: &[u8]) -> Option<Vec<RawField<'_>>> {
+    let mut reader = Reader { bytes };
+    let mut out = Vec::new();
+    while !reader.bytes.is_empty() {
+        out.push(raw_field(&mut reader)?);
+    }
+    Some(out)
+}
+
+/// Whether a map entry's key (field 1) is `key`.
+fn entry_has_key(entry: &[u8], key: EntryKey<'_>) -> bool {
+    let Some(parts) = raw_fields(entry) else {
+        return false;
+    };
+    parts.iter().filter(|part| part.number == 1).any(|part| match key {
+        EntryKey::Text(text) => part.varint.is_none() && part.payload == text.as_bytes(),
+        EntryKey::Id(id) => {
+            part.varint == Some(id)
+                || <[u8; 8]>::try_from(part.payload)
+                    .is_ok_and(|bytes| u64::from_le_bytes(bytes) == id)
+        }
+    })
+}
+
+/// `delete e[itemsKey][key]` of `updateAsync`: the whole settings again, with the entry of `key` taken out of the map in
+/// `field` (`emoji_frecency`, `emoji_reaction_frecency` or `sticker_frecency`) and every other byte as it was. `None`
+/// when the settings cannot be read.
+pub fn without_entry(settings_base64: &str, field: u64, key: EntryKey<'_>) -> Option<String> {
+    let settings = STANDARD.decode(settings_base64).ok()?;
+    let mut out = Vec::with_capacity(settings.len());
+    for part in raw_fields(&settings)? {
+        if part.number != field || part.varint.is_some() {
+            out.extend_from_slice(part.raw);
+            continue;
+        }
+        let mut inner = Vec::with_capacity(part.payload.len());
+        for entry in raw_fields(part.payload)? {
+            if entry.number == 1 && entry.varint.is_none() && entry_has_key(entry.payload, key) {
+                continue;
+            }
+            inner.extend_from_slice(entry.raw);
+        }
+        push_field(&mut out, field, &inner);
+    }
+    Some(STANDARD.encode(out))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn an_entry_leaves_its_map_and_the_rest_stays() {
+        // emoji_frecency (6) with "smile" and "wave", favorite_stickers (3) beside it.
+        let entry = |key: &str| {
+            let mut item = Vec::new();
+            push_number(&mut item, 1, 3);
+            let mut entry = Vec::new();
+            push_field(&mut entry, 1, key.as_bytes());
+            push_field(&mut entry, 2, &item);
+            entry
+        };
+        let mut map = Vec::new();
+        push_field(&mut map, 1, &entry("smile"));
+        push_field(&mut map, 1, &entry("wave"));
+        let mut settings = Vec::new();
+        push_field(&mut settings, EMOJI_FRECENCY, &map);
+        let stickers = STANDARD.decode(favorite_stickers_patch(&[7])).unwrap();
+        settings.extend_from_slice(&stickers);
+        let encoded = STANDARD.encode(&settings);
+        let removed = without_entry(&encoded, EMOJI_FRECENCY, EntryKey::Text("smile")).unwrap();
+        let keys: Vec<String> = emoji_map(&removed, EMOJI_FRECENCY)
+            .into_iter()
+            .map(|(key, _)| key)
+            .collect();
+        assert_eq!(keys, ["wave"]);
+        assert_eq!(favorite_stickers(&removed), [7]);
+        // A sticker map keyed by fixed64.
+        let mut sticker_entry = Vec::new();
+        push_varint(&mut sticker_entry, 1 << 3 | 1);
+        sticker_entry.extend_from_slice(&42u64.to_le_bytes());
+        let mut sticker_map = Vec::new();
+        push_field(&mut sticker_map, 1, &sticker_entry);
+        let mut with_sticker = Vec::new();
+        push_field(&mut with_sticker, STICKER_FRECENCY, &sticker_map);
+        let encoded = STANDARD.encode(&with_sticker);
+        let removed = without_entry(&encoded, STICKER_FRECENCY, EntryKey::Id(42)).unwrap();
+        assert!(id_map(&removed, STICKER_FRECENCY).is_empty());
+        assert!(without_entry("not base64!", EMOJI_FRECENCY, EntryKey::Text("x")).is_none());
+    }
 
     #[test]
     fn favorite_emojis_round_trip() {

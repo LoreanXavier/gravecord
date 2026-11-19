@@ -363,12 +363,15 @@ impl Root {
             .search
             .as_ref()
             .is_some_and(|search| search.oldest_first);
+        // Not in the pinned client: SearchFix past offset 5000 (`plugin_hooks/search_fix.rs`).
+        let (sent_oldest_first, sent_offset) =
+            super::plugin_hooks::search_fix(oldest_first, offset);
         params.push("sort_by=timestamp".to_owned());
         params.push(format!(
             "sort_order={}",
-            if oldest_first { "asc" } else { "desc" }
+            if sent_oldest_first { "asc" } else { "desc" }
         ));
-        params.push(format!("offset={offset}"));
+        params.push(format!("offset={sent_offset}"));
         self.fetched.remove(RESULTS_KEY);
         let all_dms = self.search_all_dms();
         if let Some(search) = self.search.as_mut() {

@@ -132,7 +132,9 @@ fn record_extras() -> String {
 fn lap(number: usize) -> String {
     let step = |name: &str| format!("perf sample lap{number}.{name}; ");
     let mut out = String::new();
-    out.push_str("click 36 109; wait 1500; go home; wait 1200; go dm 0; wait 1500; ");
+    out.push_str(
+        "click 36 109; wait 1500; go home; wait 1200; go dm-id 1568693333864480939; wait 1500; ",
+    );
     out.push_str(&step("dm"));
     out.push_str(&format!(
         "click 36 157; wait 1500; channel click {REAL_CHANNEL}; wait 2500;          click 1000 55; wait 1000; scroll 800 400 -400; wait 400; scroll 1150 300 300; wait 600; click 1000 55; wait 400; "
@@ -271,7 +273,8 @@ fn wait_quiet() -> bool {
 }
 
 /// How long to wait before the next signed-in launch: what is left of the gap since the last one.
-fn launch_gap(last: Option<Instant>) -> Option<Duration> {
+/// How long to wait before the next signed-in launch (`GRAVECORD_PERF_GAP_SECS`, default 60); `plugins_off.rs` too.
+pub(crate) fn launch_gap(last: Option<Instant>) -> Option<Duration> {
     let gap = std::env::var("GRAVECORD_PERF_GAP_SECS")
         .ok()
         .and_then(|value| value.parse().ok())

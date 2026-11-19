@@ -273,7 +273,12 @@ impl Root {
                     pid,
                     window: dc_detect::main_window(pid)?,
                     name: game.name.clone().unwrap_or_default(),
-                    application_id: game.id.clone(),
+                    // Not in the pinned client: ClipsEnhancements' Rich Presence tagging
+                    // (`plugin_hooks/clips_enhancements.rs`).
+                    application_id: self.clip_application(
+                        game.name.as_deref().unwrap_or_default(),
+                        game.id.clone(),
+                    ),
                 })
             };
             let visible = self.detect.store.visible_game().cloned();
@@ -372,6 +377,15 @@ impl Root {
             Some(games::StatusEmoji::Unicode(custom.emoji_name.clone()))
         };
         games::custom_status_activity(&custom.text, custom.expires_at_ms, emoji, now_ms())
+    }
+
+    /// Not in the pinned client: CustomRPC's `LOCAL_ACTIVITY_UPDATE` with `socketId: "CustomRPC"`, listed after
+    /// every game's socket (a string key after the numeric ones), and the presence follows
+    /// (`plugin_hooks/custom_rpc.rs`).
+    pub(super) fn set_plugin_activity(&mut self, activity: Option<serde_json::Value>) {
+        if self.detect.local.update(u64::MAX, None, activity, None) {
+            self.refresh_own_presence();
+        }
     }
 
     /// An event of the local RPC server: `LOCAL_ACTIVITY_UPDATE` and `RPC_APP_DISCONNECTED` change

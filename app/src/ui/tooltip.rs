@@ -317,6 +317,21 @@ impl Element for Placed {
     }
 }
 
+/// Not in the pinned client: a tooltip over `anchor` whose content its caller draws (BetterActivities' activity card,
+/// `plugin_hooks/better_activities.rs`), in the tooltip's box and caret, opening at once without the spring.
+pub(super) fn placed_content(anchor: Bounds<Pixels>, content: AnyElement) -> AnyElement {
+    deferred(Placed {
+        anchor,
+        side: Side::Top,
+        spacing: px(SPACING),
+        body: frame().child(content).into_any_element(),
+        caret: caret(Side::Top).into_any_element(),
+        scale: 1.,
+    })
+    .with_priority(10)
+    .into_any_element()
+}
+
 fn caret(side: Side) -> impl IntoElement {
     // The drawing points down; turn it to point at the target.
     let turn = match side {

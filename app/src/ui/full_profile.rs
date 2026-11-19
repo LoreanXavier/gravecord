@@ -334,6 +334,8 @@ struct ConnectedAccount {
     /// The mark in the Twitter colour with "Verified on Twitter" ([`verified_mark`]).
     twitter_verified: bool,
     url: Option<String>,
+    /// The account's `id` on its platform (OpenInApp opens it in the app).
+    id: String,
     metadata: Vec<ConnectionMeta>,
 }
 
@@ -810,6 +812,7 @@ fn parse_connected_accounts(body: &Value) -> Vec<ConnectedAccount> {
                 verified: item["verified"] == true,
                 twitter_verified: twitter_verified(kind, metadata),
                 url: connection_url(kind, id, &name),
+                id: id.to_owned(),
                 metadata: connection_metadata(kind, metadata),
                 name,
             })
@@ -1634,6 +1637,7 @@ impl Root {
                 });
                 // `platformUrlAnchor_O2KI4e` around `accountName_O2KI4e` (2px gap) with the 16px LinkExternalSmall
                 // glyph (module 509434), underlined on hover; a platform without a profile link shows the name alone.
+                let (account_kind, account_id) = (account.kind.clone(), account.id.clone());
                 let name: AnyElement = match account.url.clone() {
                     Some(url) => {
                         let label = format!(
@@ -1663,6 +1667,11 @@ impl Root {
                                     .text_color(default),
                             )
                             .on_click(cx.listener(move |this, _, _, cx| {
+                                // Not in the pinned client: OpenInApp's account view
+                                // (`plugin_hooks/open_in_app.rs`).
+                                if this.open_in_app_account(&account_kind, &account_id, cx) {
+                                    return;
+                                }
                                 this.follow_link(&url, &label, cx);
                             }))
                             .into_any_element()

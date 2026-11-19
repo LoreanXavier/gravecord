@@ -86,6 +86,7 @@ mod deep_link_route;
 mod destructive;
 mod dm;
 mod dm_profile;
+mod elapsed;
 mod embed;
 #[cfg(feature = "capture")]
 mod embed_demo;
@@ -289,6 +290,9 @@ pub(crate) mod start_cache;
 mod status_menu;
 mod stream_failed;
 mod video_pip;
+pub(crate) use plugin_hooks::expression_sticker_url;
+pub(crate) use plugin_hooks::more_commands_outgoing;
+pub(crate) use plugin_hooks::spotify_premium_forced;
 #[cfg(feature = "capture")]
 pub(crate) use server_discovery::FORCE_ELIGIBLE;
 mod server_discovery_form;
@@ -430,6 +434,8 @@ fn desaturated(colour: Rgba, factor: f32) -> Rgba {
 }
 
 pub(crate) fn color(name: &str) -> Rgba {
+    // Not in the pinned client: a plugin's colour scope (MessageLogger's deleted text, `plugin_hooks/message_logger.rs`).
+    let name = plugin_hooks::scoped_token(name).unwrap_or(name);
     let colour = settings::client_theme::overlay(name)
         .or_else(|| settings::client_theme::high_contrast(name, theme()))
         .unwrap_or_else(|| rgba(theme().color(name)));
@@ -475,7 +481,8 @@ enum Row {
         index: usize,
         head: bool,
     },
-    /// A run of messages from blocked, ignored or likely spammer people, folded; `first` is the first one's id.
+    /// A run of messages from blocked, ignored or likely spammer people, folded; `first` is the first one's id. Not in
+    /// the pinned client: `Fold::Deleted`, MessageLogger's run of deleted messages (`plugin_hooks/message_logger.rs`).
     Blocked {
         first: Id,
         count: usize,
@@ -1514,6 +1521,9 @@ impl Root {
             }
             Update::OverlayFocus(foreground) => self.overlay_focus_changed(foreground, cx),
             Update::Rpc(event) => self.rpc_event(event, cx),
+            // Not in the pinned client: a plugin's desktop notification (`plugin_hooks/plugin_notifications.rs`).
+            Update::NotificationClicked(channel)
+                if self.plugin_notification_clicked(channel, cx) => {}
             Update::NotificationClicked(channel) => self.open_notification_channel(channel, cx),
             Update::Tray(action) => self.tray_action(action, cx),
             Update::Updater => cx.notify(),
@@ -1600,7 +1610,10 @@ impl Root {
                     self.member_list_arriving(&data);
                 }
                 let dispatching = std::time::Instant::now();
+                // Not in the pinned client: MessageLogger keeps deletes and edits (`plugin_hooks/message_logger.rs`).
+                self.message_logger_before(&name, &data);
                 self.stores.dispatch(&name, &data);
+                self.message_logger_after(&name, &data);
                 self.unread_notice_event(&name, &data);
                 match name.as_str() {
                     "READY" => crate::start_trace::took("dur_ready_dispatch", dispatching),
@@ -1733,6 +1746,14 @@ impl Root {
                     self.inventory_stale(&data, cx);
                 }
                 self.sidebar_event_update(&name, &data);
+                // Not in the pinned client: NewGuildSettings on a server just joined
+                // (`plugin_hooks/new_guild_settings.rs`).
+                self.new_guild_settings_dispatch(&name, &data);
+                // Not in the pinned client: RelationshipNotifier's flux handlers
+                // (`plugin_hooks/relationship_notifier.rs`).
+                self.relationship_notifier_dispatch(&name, &data, cx);
+                // Not in the pinned client: BypassStatus' MESSAGE_CREATE (`plugin_hooks/bypass_status.rs`).
+                self.bypass_status_dispatch(&name, &data, cx);
                 if name == "CHANNEL_PINS_UPDATE" {
                     self.ack_open_pins();
                 }
@@ -1984,6 +2005,56 @@ impl Root {
                 // Not in the pinned client: WhoReacted's reactors join the users (`plugin_hooks/who_reacted.rs`).
                 self.who_reacted_fetched(&key, &body);
                 if self.image_crop_fetched(&key, &body, cx) {
+                    return;
+                }
+                // Not in the pinned client: OpenInApp's resolved short link (`plugin_hooks/open_in_app.rs`).
+                if self.open_in_app_resolved(&key, &body, cx) {
+                    return;
+                }
+                // Not in the pinned client: FriendInvites' answers (`plugin_hooks/plugin_commands.rs`).
+                if self.friend_invites_answered(&key, &body) {
+                    return;
+                }
+                // Not in the pinned client: RelationshipNotifier's person lookups (`plugin_hooks/relationship_notifier.rs`).
+                if self.relationship_notifier_fetched(&key, &body, cx) {
+                    return;
+                }
+                // Not in the pinned client: GlobalBadges' list (`plugin_hooks/global_badges.rs`).
+                if self.global_badges_fetched(&key, &body, cx) {
+                    return;
+                }
+                // Not in the pinned client: Translate+'s translations (`plugin_hooks/translate_plus.rs`).
+                if self.translate_plus_fetched(&key, &body, cx) {
+                    return;
+                }
+                // Not in the pinned client: ExpressionManager's clone and delete answers
+                // (`plugin_hooks/expression_manager.rs`).
+                if self.expression_manager_fetched(&key, &body, cx) {
+                    return;
+                }
+                // Not in the pinned client: CustomRPC's asset ids (`plugin_hooks/custom_rpc.rs`).
+                // Not in the pinned client: ClipUpload's answer (`plugin_hooks/clip_upload.rs`).
+                if self.clip_upload_answered(&key, &body, cx) {
+                    return;
+                }
+                if self.custom_rpc_fetched(&key, &body) {
+                    cx.notify();
+                    return;
+                }
+                // Not in the pinned client: UserPFP's list (`plugin_hooks/userpfp.rs`).
+                if self.userpfp_fetched(&key, &body, cx) {
+                    return;
+                }
+                // Not in the pinned client: USRBG's list (`plugin_hooks/usrbg.rs`).
+                if self.usrbg_fetched(&key, &body, cx) {
+                    return;
+                }
+                // Not in the pinned client: ZipPreview's archive arrived (`plugin_hooks/zip_preview.rs`).
+                if self.zip_preview_fetched(&key, cx) {
+                    return;
+                }
+                // Not in the pinned client: MoreCommands' fetched answers (`plugin_hooks/more_commands.rs`).
+                if self.more_commands_fetched(&key, &body, cx) {
                     return;
                 }
                 // Not in the pinned client: ValidUser's fetched user (`plugin_hooks/valid_user.rs`).
@@ -3124,6 +3195,14 @@ impl Root {
     }
 
     fn guild_avatar_source(&self, user: &User) -> (String, String) {
+        // Not in the pinned client: UserPFP's `overrideServerAvatars` (`plugin_hooks/userpfp.rs`).
+        let server = self
+            .guild
+            .and_then(|guild| self.stores.members.get(guild, user.id))
+            .is_some_and(|member| member.avatar.is_some());
+        if let Some(source) = plugin_hooks::userpfp_server_avatar(user, server) {
+            return source;
+        }
         self.guild
             .and_then(|guild| self.stores.members.get(guild, user.id)?.avatar_url(guild))
             .map(|url| (url.clone(), url))
@@ -3393,7 +3472,15 @@ impl Root {
                     let name = nick
                         .clone()
                         .unwrap_or_else(|| user.display_name().to_owned());
-                    let activity = self.presence_line(user, self.guild, true);
+                    // Module 110574 draws module 342312's `ActivityStatus` here (BetterActivities patches it).
+                    let activity = self.activity_status_line(
+                        user,
+                        self.guild,
+                        16.,
+                        "--channels-default",
+                        "member",
+                        cx,
+                    );
                     let height = if activity.is_some() { 42. } else { 40. };
                     let has_nameplate = user.nameplate.is_some();
                     let text_width = Rc::new(std::cell::Cell::new(0.));
@@ -3681,6 +3768,13 @@ impl Root {
             && !self.current_dm().is_some_and(|channel| channel.kind == 1);
         // The run being folded: its first id, whether it is open, and its kind.
         let mut run: Option<(Id, bool, blocked::Fold)> = None;
+        // Not in the pinned client: BetterBlockedUsers folds every blocked (and every ignored) message of a hidden
+        // stretch into one row (`mergeHiddenMessages`, `plugin_hooks.rs`): each kind's first row of the stretch, by
+        // `Fold` (the spam fold is never merged).
+        let merge = plugin_hooks::merge_hidden_messages();
+        // Not in the pinned client: MessageLogger folds deleted messages (`collapseDeleted`).
+        let collapse_deleted = self.message_logger_collapses();
+        let mut stretch: [Option<Id>; blocked::FOLDS] = [None; blocked::FOLDS];
         for (index, message) in messages.iter().enumerate() {
             let local = message.local_time();
             let day = (local.year(), local.ordinal());
@@ -3688,9 +3782,13 @@ impl Root {
             if new_day {
                 self.rows.push(Row::Divider(timestamps::long_date(local)));
                 last_day = Some(day);
+                stretch = [None; blocked::FOLDS];
             }
+            // Not in the pinned client: MessageLogger's `MESSAGE_GROUP_DELETED` comes right after the blocked kind.
             let fold = if blocked.contains(&message.author.id) {
                 Some(blocked::Fold::Blocked)
+            } else if collapse_deleted && plugin_hooks::message_logger_deleted(message.id) {
+                Some(blocked::Fold::Deleted)
             } else if ignored.contains(&message.author.id) {
                 Some(blocked::Fold::Ignored)
             } else if spam && self.likely_spammer_message(message) {
@@ -3699,6 +3797,11 @@ impl Root {
                 None
             };
             if let Some(kind) = fold {
+                let merged = stretch[kind as usize].filter(|_| {
+                    merge
+                        && !new_day
+                        && matches!(kind, blocked::Fold::Blocked | blocked::Fold::Ignored)
+                });
                 let open = match run {
                     Some((first, open, run_kind)) if !new_day && run_kind == kind => {
                         if let Some(Row::Blocked { count, .. }) = self
@@ -3711,8 +3814,24 @@ impl Root {
                         }
                         open
                     }
+                    // Not in the pinned client: the kind's row of this stretch takes the message (BetterBlockedUsers).
+                    _ if merged.is_some() => {
+                        let first = merged.unwrap_or(message.id);
+                        if let Some(Row::Blocked { count, .. }) = self
+                            .rows
+                            .iter_mut()
+                            .rev()
+                            .find(|row| matches!(row, Row::Blocked { first: known, .. } if *known == first))
+                        {
+                            *count += 1;
+                        }
+                        let open = self.shown_blocked.contains(&first);
+                        run = Some((first, open, kind));
+                        open
+                    }
                     _ => {
                         let open = self.shown_blocked.contains(&message.id);
+                        stretch[kind as usize] = Some(message.id);
                         self.rows.push(Row::Blocked {
                             first: message.id,
                             count: 1,
@@ -3728,6 +3847,7 @@ impl Root {
                 continue;
             }
             run = None;
+            stretch = [None; blocked::FOLDS];
             let mut head = new_day || index == 0 || starts_group(&messages[index - 1], message);
             if !divided && divider.is_some_and(|acked| message.id > acked) {
                 // The divider starts a new group, as the official list breaks one there.
@@ -3950,10 +4070,13 @@ impl Root {
                 .channel
                 .and_then(|channel| self.stores.messages.get(&channel))
                 .and_then(|messages| {
-                    messages
-                        .iter()
-                        .rev()
-                        .find(|message| Some(message.author.id) == me && message.kind == 0)
+                    messages.iter().rev().find(|message| {
+                        Some(message.author.id) == me
+                                && message.kind == 0
+                                // Not in the pinned client: MessageLogger leaves deleted messages out
+                                // (`getLastEditableMessage`, `plugin_hooks/message_logger.rs`).
+                                && !plugin_hooks::message_logger_deleted(message.id)
+                    })
                 })
                 .map(|message| (message.id, message.content.clone()));
             if let Some((id, content)) = last {
@@ -4121,6 +4244,9 @@ impl Root {
         if content.is_empty() && self.pending_files.is_empty() && staged.is_none() {
             return;
         }
+        // Not in the pinned client: SilentMessageToggle's pre-send listener, for a message that goes out
+        // (`plugin_hooks/silent_message_toggle.rs`).
+        let content = self.silent_message_presend(content);
         let ping = self.reply_ping;
         let reply = self
             .replying
@@ -5162,19 +5288,19 @@ impl Root {
         let action_group = group.clone();
         let name_group = group.clone();
         let pill_group = group.clone();
-        // `channelInfo_Wx6SnQ`: the call's timer takes the action icons' place until the row is hovered.
-        let timer = in_call.then(|| self.call_timer()).flatten().map(|text| {
-            div()
-                .absolute()
-                .right(px(0.))
-                .text_size(px(12.))
-                .line_height(px(16.))
-                .font_family(MONO)
-                .text_color(color("--text-feedback-positive"))
-                .when(self.vv.row_focus, |this| this.opacity(0.))
-                .group_hover(group.clone(), |style| style.opacity(0.))
-                .child(text)
-        });
+        // `channelInfo_Wx6SnQ` (module 616740 `sg`): after the mention and NEW badges, the green timer of the channel's
+        // call (`VoiceChannelStartTimeStore.getStartTime`, module 725613 through hook 475889; module 693879 `z`) for any
+        // voice channel with one, in or out of it. It takes the action icons' place until the row is hovered.
+        let timer = (voice && mentions == 0 && !self.is_new_channel(channel))
+            .then(|| self.voice_call_start(channel))
+            .flatten()
+            .map(|start| {
+                self.elapsed_timer(start, cx)
+                    .absolute()
+                    .right(px(0.))
+                    .when(self.vv.row_focus && in_call, |this| this.opacity(0.))
+                    .group_hover(group.clone(), |style| style.opacity(0.))
+            });
         let target = channel.id;
         let glyph = div().when(dim, |this| this.opacity(0.5)).child(icon(
             name,
@@ -7401,7 +7527,28 @@ impl Root {
         };
         let element =
             inline(pieces, line).selectable(key, self.selection.clone(), hsla_from(SELECTION));
-        self.wire_inline_spans(element, spans, &spoilers, key, &extra_hovers)
+        let element = self.wire_inline_spans(element, spans, &spoilers, key, &extra_hovers);
+        // Not in the pinned client: MessageLogger's edit marker opens the edit history (`EditMarker`,
+        // `plugin_hooks/message_logger.rs`).
+        let edited_marks: Vec<usize> = marks
+            .iter()
+            .enumerate()
+            .filter(|(_, (text, _))| text == "(edited)")
+            .map(|(index, _)| spans.len() + index * 2 + 1)
+            .collect();
+        if edited_marks.is_empty() || !plugin_hooks::message_logger_on() {
+            return element;
+        }
+        let root = self.weak.clone();
+        let message = key.0;
+        element.also_on_piece_click(move |piece, _, cx| {
+            if edited_marks.contains(&piece) {
+                let _ = root.update(cx, |this, cx| {
+                    this.message_logger_open_history(message);
+                    cx.notify();
+                });
+            }
+        })
     }
 
     fn spoiler_run_starts(spans: &[Span]) -> Vec<Option<usize>> {
@@ -8158,44 +8305,51 @@ impl Root {
                             |this| this.child(self.content(&copy)),
                         )
                         .children(self.accessories(&copy, cx))
-                        .children(footer.map(|footer| {
-                            div()
-                                .id(SharedString::from(format!(
-                                    "forwarded-footer-{}",
-                                    message.id
-                                )))
-                                .mt(px(4.))
-                                .py(px(1.))
-                                .rounded(px(4.))
-                                .cursor_pointer()
-                                .flex()
-                                .items_center()
-                                .gap(px(4.))
-                                .text_size(px(14.))
-                                .line_height(px(18.))
-                                .font_weight(FontWeight(500.))
-                                .text_color(color("--text-muted"))
-                                .on_click(cx.listener(move |this, _, _, cx| {
-                                    match (guild, channel) {
-                                        // The footer goes to the original message (`jumpToMessage`).
-                                        (_, Some(channel)) if message_id.is_some() => {
-                                            if let Some(original) = message_id {
-                                                this.jump_to_message_id(
-                                                    channel, original, true, None,
-                                                );
+                        // Not in the pinned client: BetterForwards' footer in place of the base's
+                        // (`plugin_hooks/better_forwards.rs`).
+                        .children(self.better_forwards_footer(message, cx))
+                        .children(footer.filter(|_| !plugin_hooks::better_forwards_on()).map(
+                            |footer| {
+                                div()
+                                    .id(SharedString::from(format!(
+                                        "forwarded-footer-{}",
+                                        message.id
+                                    )))
+                                    .mt(px(4.))
+                                    .py(px(1.))
+                                    .rounded(px(4.))
+                                    .cursor_pointer()
+                                    .flex()
+                                    .items_center()
+                                    .gap(px(4.))
+                                    .text_size(px(14.))
+                                    .line_height(px(18.))
+                                    .font_weight(FontWeight(500.))
+                                    .text_color(color("--text-muted"))
+                                    .on_click(cx.listener(move |this, _, _, cx| {
+                                        match (guild, channel) {
+                                            // The footer goes to the original message (`jumpToMessage`).
+                                            (_, Some(channel)) if message_id.is_some() => {
+                                                if let Some(original) = message_id {
+                                                    this.jump_to_message_id(
+                                                        channel, original, true, None,
+                                                    );
+                                                }
                                             }
+                                            (Some(guild), Some(channel)) => {
+                                                this.select(guild, Some(channel))
+                                            }
+                                            (None, Some(channel)) => {
+                                                this.select_home(Some(channel))
+                                            }
+                                            _ => {}
                                         }
-                                        (Some(guild), Some(channel)) => {
-                                            this.select(guild, Some(channel))
-                                        }
-                                        (None, Some(channel)) => this.select_home(Some(channel)),
-                                        _ => {}
-                                    }
-                                    cx.notify();
-                                }))
-                                .child(footer)
-                                .child(icon("forwarded_chevron", 12., "--text-muted"))
-                        })),
+                                        cx.notify();
+                                    }))
+                                    .child(footer)
+                                    .child(icon("forwarded_chevron", 12., "--text-muted"))
+                            },
+                        )),
                 )
                 .into_any_element(),
         )
@@ -8450,6 +8604,11 @@ impl Root {
                     let line = self.automod_raid_line(message, cx);
                     return self.system_row(message, *head, line, cx);
                 }
+                // Not in the pinned client: MessageLogger draws a deleted message's row in red
+                // (`plugin_hooks/message_logger.rs`).
+                let _deleted_colours = plugin_hooks::message_logger_scope(message.id);
+                let deleted_overlay =
+                    plugin_hooks::message_logger_highlight(message.id) == Some(true);
                 match dc_state::message_kinds::presentation(message) {
                     // The official table has no entry for this type, or its handler returns `null`.
                     dc_state::message_kinds::Presentation::Nothing => {
@@ -8583,6 +8742,14 @@ impl Root {
                         this.hover(move |style| style.bg(over))
                             .when(pointer, |this| this.bg(over))
                     })
+                    // Not in the pinned client: MessageLogger's red overlay (`background-color: ... !important`).
+                    .when(deleted_overlay, |this| {
+                        let red = gpui::Rgba {
+                            a: 0.15,
+                            ..color("--red-430")
+                        };
+                        this.bg(red).hover(move |style| style.bg(red))
+                    })
                     .on_hover(cx.listener(move |this, inside: &bool, window, cx| {
                         if this.message_hover_locked() {
                             return;
@@ -8659,10 +8826,17 @@ impl Root {
                                         && !self.automod_blocked(id),
                                 );
                                 self.official_text.set(official.and_then(|look| look.text));
-                                let content = self.content(message);
+                                // Not in the pinned client: MessageLogger's earlier versions above the content, and
+                                // the content with its additions in the separated diff view
+                                // (`plugin_hooks/message_logger.rs`).
+                                let earlier = self.message_logger_edits_above(message, cx);
+                                let content = match self.message_logger_content(message, cx) {
+                                    Some(content) => content,
+                                    None => self.content(message).into_any_element(),
+                                };
                                 self.failed_tint.set(false);
                                 self.official_text.set(None);
-                                this.child(
+                                this.children(earlier).child(
                                     div()
                                         .when(
                                             state == Some(send_state::SendState::Sending)
@@ -8681,6 +8855,9 @@ impl Root {
                         .children(self.accessories(message, cx))
                         .children((!is_starter).then(|| self.reactions(message, cx)).flatten())
                         .children(self.ephemeral_notice(message, cx))
+                        // Not in the pinned client: Translate+'s translation, the last of the accessories
+                        // (`plugin_hooks/translate_plus.rs`).
+                        .children(self.translate_plus_accessory(message, cx))
                         .into_any_element(),
                 };
                 let row = div().pr(px(16.));
@@ -9086,7 +9263,13 @@ impl Root {
         // `isExpanded`: Shift held, not in keyboard mode, and no picker or menu of the bar open.
         caps.expanded =
             hover_bar::shift_held() && !self.keyboard_mode() && !picker_open && !more_open;
-        let quick: Vec<&'static dc_tokens::emoji_data::Emoji> = self.hover_bar_reactions();
+        let quick: Vec<&'static dc_tokens::emoji_data::Emoji> =
+            match plugin_hooks::more_quick_grid() {
+                // Not in the pinned client: MoreQuickReactions shows `reactionCount` of them
+                // (`plugin_hooks/more_quick_reactions.rs`).
+                Some(grid) => self.hover_bar_reactions_up_to(grid.reaction_count),
+                None => self.hover_bar_reactions(),
+            };
         // `.hoverBarButton:hover .icon` is `scale(1.1)` over `.4s` (module 194085, stylesheet 28636); the button's
         // colour is `--interactive-text-default`, `-hover` under the pointer, `-active` when selected (319714).
         let button = |name: &str| {
@@ -9341,6 +9524,24 @@ impl Root {
                     })))
                 }
                 // Not in the pinned client: DownloadAllAttachments (`plugin_hooks/download_all.rs`).
+                // Not in the pinned client: MessageLogger (`plugin_hooks/message_logger.rs`).
+                Button::ClearHistory => {
+                    let channel = message.channel_id;
+                    bar.child(tipped(cx).on_click(cx.listener(move |this, _, _, cx| {
+                        this.tip = None;
+                        this.message_logger_clear(channel, id);
+                        cx.notify();
+                    })))
+                }
+                // Not in the pinned client: Translate+ (`plugin_hooks/translate_plus.rs`).
+                Button::Translate => {
+                    let content = message.content.clone();
+                    bar.child(tipped(cx).on_click(cx.listener(move |this, _, _, cx| {
+                        this.tip = None;
+                        this.translate_plus_start(id, content.clone());
+                        cx.notify();
+                    })))
+                }
                 Button::DownloadAll => {
                     let attachments = message.attachments.clone();
                     bar.child(tipped(cx).on_click(cx.listener(move |this, _, _, cx| {
@@ -9588,7 +9789,7 @@ impl Root {
                     }),
             )
             .child(motion::hover_probe(motion::composer::hover_key()));
-        let tool = |name: &'static str, cx: &mut Context<Self>| {
+        let tool_sized = |name: &'static str, size: f32, cx: &mut Context<Self>| {
             self.header_stop(div().id(name), name, cx)
                 .size(px(32.))
                 .flex_none()
@@ -9609,10 +9810,11 @@ impl Root {
                 .child(
                     svg()
                         .path(format!("icons/{name}.svg"))
-                        .size(px(20.))
+                        .size(px(size))
                         .flex_none(),
                 )
         };
+        let tool = |name: &'static str, cx: &mut Context<Self>| tool_sized(name, 20., cx);
         // GIF opens the expression picker on its tab, from the same place as the emoji button.
         let gif_button = tool("gif", cx).on_click(cx.listener(move |this, _, window, cx| {
             let composer = this.tip_anchors.borrow().get("composer-box").copied();
@@ -9629,6 +9831,49 @@ impl Root {
         // The gift button opens the gift purchase modal (`openGiftModal`, module 194509, location "gift-button").
         let gift_button = tool("gift", cx)
             .on_click(cx.listener(move |this, _, _, cx| this.open_purchase(true, cx)));
+        // Not in the pinned client: PreviewMessage's eye, first in the bar (`plugin_hooks/preview_message.rs`).
+        let preview_button = self.preview_message_shown(cx).then(|| {
+            tool("clips_eye", cx).on_click(cx.listener(|this, _, _, cx| this.preview_message(cx)))
+        });
+        // Not in the pinned client: SilentMessageToggle's bell after it, drawn 1.2 times larger (`scale: 1.2`), crossed
+        // out in the danger colour while off (`plugin_hooks/silent_message_toggle.rs`).
+        let silent_button = self.silent_message_state().map(|silent| {
+            let button = tool_sized(
+                if silent {
+                    "plugin_silent"
+                } else {
+                    "plugin_silent_off"
+                },
+                24.,
+                cx,
+            )
+            .relative()
+            .when(!silent, |this| {
+                this.child(
+                    svg()
+                        .path("icons/plugin_silent_slash.svg")
+                        .absolute()
+                        .left(px(4.))
+                        .top(px(4.))
+                        .size(px(24.))
+                        .text_color(color("--status-danger")),
+                )
+            })
+            .on_click(cx.listener(|this, _, _, cx| this.silent_message_toggle(cx)));
+            self.with_tip(
+                "silent-message-toggle",
+                tooltip::Tip::text(
+                    if silent {
+                        "Disable Silent Message"
+                    } else {
+                        "Enable Silent Message"
+                    },
+                    tooltip::Side::Top,
+                ),
+                button,
+                cx,
+            )
+        });
         let sticker_button =
             tool("sticker", cx).on_click(cx.listener(move |this, _, window, cx| {
                 let composer = this.tip_anchors.borrow().get("composer-box").copied();
@@ -9843,6 +10088,8 @@ impl Root {
                                     .on_mouse_down(MouseButton::Left, |_, window, _| {
                                         window.prevent_default();
                                     })
+                                    .children(preview_button)
+                                    .children(silent_button)
                                     .when(!docked, |this| {
                                         this.child(gift_button)
                                             .child(gif_button)
@@ -10245,6 +10492,10 @@ fn image_format(key: &str, bytes: &[u8]) -> ImageFormat {
 }
 
 fn avatar_source(user: &User) -> (String, String) {
+    // Not in the pinned client: UserPFP's avatar (`plugin_hooks/userpfp.rs`).
+    if let Some(url) = plugin_hooks::userpfp_avatar(user, false) {
+        return (format!("userpfp:{url}"), url);
+    }
     match &user.avatar {
         // Clyde's local notices: the bot's own image, a client asset (`/assets/9380e4b5bd8d267c.png` in the row of
         // design/dom/failed-message/clyde-notice-darker-cozy.json).
@@ -10360,6 +10611,23 @@ impl Render for Root {
         self.prepare_sidebar_events();
         self.prepare_channel_browser(cx);
         self.prepare_live_activities(cx);
+        // Not in the pinned client: StreamingCodecDisabler's filter (`plugin_hooks/streaming_codec_disabler.rs`).
+        plugin_hooks::sync_streaming_codecs();
+        // Not in the pinned client: USRBG's list, once (`plugin_hooks/usrbg.rs`).
+        self.usrbg_prepare();
+        // Not in the pinned client: UserPFP's list, once (`plugin_hooks/userpfp.rs`).
+        self.userpfp_prepare();
+        // Not in the pinned client: MessageLogger lets go of what it kept once it is off
+        // (`plugin_hooks/message_logger.rs`).
+        self.message_logger_prepare();
+        // Not in the pinned client: CustomRPC's activity (`plugin_hooks/custom_rpc.rs`).
+        self.custom_rpc_prepare();
+        // Not in the pinned client: ClipUpload's participant pictures (`plugin_hooks/clip_upload.rs`).
+        self.clip_upload_prepare();
+        // Not in the pinned client: GlobalBadges' list, at start and every 30 minutes (`plugin_hooks/global_badges.rs`).
+        self.global_badges_prepare();
+        // Not in the pinned client: SteamStatusSync (`plugin_hooks/steam_status_sync.rs`).
+        self.steam_status_sync(cx);
         if changed(&mut self.prepared.badge, self.data_revision) {
             self.refresh_notification_badge_soon(cx);
         }
@@ -11405,6 +11673,8 @@ impl Render for Root {
             .children(self.header_popout_layer(cx))
             .children(self.profile_layer(window, cx))
             .children(self.role_picker_layer(window, cx))
+            // Not in the pinned client: PermissionsViewer's member popout (`plugin_hooks/permissions_viewer.rs`).
+            .children(self.permissions_viewer_popout(window, cx))
             .children(self.sticker_popout_layer(cx))
             .children(self.emoji_popout_layer(cx))
             .children(self.shop_modal(window, cx))
@@ -11660,6 +11930,23 @@ impl Render for Root {
             .children(self.remove_friend_modal(cx))
             // Not in the pinned client: ServerInfo's dialog (`plugin_hooks/server_info.rs`).
             .children(self.server_info_layer(cx))
+            // Not in the pinned client: MessageTags' tag dialog (`plugin_hooks/message_tags.rs`).
+            .children(self.message_tags_dialog(window, cx))
+            // Not in the pinned client: VoiceMessages' dialog (`plugin_hooks/voice_messages.rs`).
+            .children(self.voice_messages_dialog(cx))
+            // Not in the pinned client: ClipUpload's dialog (`plugin_hooks/clip_upload.rs`).
+            .children(self.clip_upload_dialog(cx))
+            // Not in the pinned client: UserPFP's Custom Avatar dialog (`plugin_hooks/userpfp.rs`).
+            .children(self.userpfp_dialog(window, cx))
+            // Not in the pinned client: ZipPreview's file dialog (`plugin_hooks/zip_preview.rs`).
+            .children(self.zip_preview_dialog(window, cx))
+            // Not in the pinned client: PermissionsViewer's dialog (`plugin_hooks/permissions_viewer.rs`).
+            .children(self.permissions_viewer_dialog(window, cx))
+            // Not in the pinned client: MessageLogger's edit history (`plugin_hooks/message_logger.rs`).
+            .children(self.message_logger_dialog(cx))
+            // Not in the pinned client: ExpressionManager's clone dialog and confirmations
+            // (`plugin_hooks/expression_manager.rs`).
+            .children(self.expression_manager_dialogs(cx))
             .children(self.not_friend_modal(cx))
             .children(self.favorites_full_modal(cx))
             .children(self.chat_alert_modal(cx))
@@ -11737,6 +12024,8 @@ impl Render for Root {
             .children(self.clips_card_menu_layer(cx))
             .children(self.toast_layer())
             .children(self.app_toast_layer())
+            // Not in the pinned client: the plugins' notification card (`plugin_hooks/plugin_notifications.rs`).
+            .children(self.plugin_notification_layer(window, cx))
             .children(self.picker_layer(window, cx))
             .children(self.soundboard_gift_picker(window, cx))
             // Module 738876: the drop area over everything (`z-index: 2000`) while files are dragged in.

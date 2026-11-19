@@ -36,6 +36,11 @@ enum Entry {
     /// `report-raid` (module 808144): Report a Raid (module 935074).
     ReportRaid,
     Leave,
+    /// Not in the pinned client: the plugins' rows at the end of the privacy group, in plugin order (NewGuildSettings'
+    /// Apply NewGuildSettings, PermissionsViewer's View Permissions, ServerInfo's Server Info).
+    PluginApplyNewGuildSettings,
+    PluginViewPermissions,
+    PluginServerInfo,
 }
 
 /// `p.yC` of module 488926, behind `canAccessGuildSettings`: holding any one of these opens Server Settings.
@@ -109,6 +114,21 @@ const LAST: &[(Entry, &str, &str)] = &[
     (Entry::SecurityActions, "access_lock", "Security Actions"),
     (Entry::ReportRaid, "guild_menu_privacy", "Report Raid"),
     (Entry::Leave, "guild_menu_leave", "Leave Server"),
+];
+
+/// Not in the pinned client: the plugins' rows of the privacy group, with the icons they pass as `leadingAccessory`.
+const PLUGIN_ROWS: &[(Entry, &str, &str)] = &[
+    (
+        Entry::PluginApplyNewGuildSettings,
+        "plugin_cog",
+        "Apply NewGuildSettings",
+    ),
+    (
+        Entry::PluginViewPermissions,
+        "plugin_safety",
+        "View Permissions",
+    ),
+    (Entry::PluginServerInfo, "circle_info", "Server Info"),
 ];
 
 const ENTRIES: [&[(Entry, &str, &str)]; 4] = [
@@ -309,6 +329,10 @@ impl Root {
             }
             // `application-directory` (module 808144): `transitionToGlobalDiscovery({tab: APPS})`.
             Entry::AppDirectory => self.open_discover(super::discover::Place::Apps, cx),
+            // Not in the pinned client: the plugins' rows.
+            Entry::PluginApplyNewGuildSettings => self.apply_new_guild_settings(guild),
+            Entry::PluginViewPermissions => self.permissions_viewer_open_guild(guild, cx),
+            Entry::PluginServerInfo => self.server_info_open(guild, cx),
         }
         cx.notify();
     }
@@ -323,7 +347,7 @@ impl Root {
         let mut groups: Vec<&[(Entry, &str, &str)]> = ENTRIES.to_vec();
         groups.push(LAST);
         // Entries this person may not use are not listed, and a group left empty takes its rule with it.
-        let shown: Vec<Vec<&(Entry, &str, &str)>> = groups
+        let mut shown: Vec<Vec<&(Entry, &str, &str)>> = groups
             .iter()
             .map(|entries| {
                 entries
@@ -333,6 +357,18 @@ impl Root {
             })
             .filter(|entries: &Vec<&(Entry, &str, &str)>| !entries.is_empty())
             .collect();
+        // Not in the pinned client: the plugins' rows end the privacy group (`findGroupChildrenByChildId("privacy")`).
+        if let Some(group) = shown
+            .iter_mut()
+            .find(|entries| entries.iter().any(|(entry, _, _)| *entry == Entry::Privacy))
+        {
+            group.extend(PLUGIN_ROWS.iter().filter(|(entry, _, _)| match entry {
+                Entry::PluginApplyNewGuildSettings => self.new_guild_settings_on(),
+                Entry::PluginViewPermissions => super::plugin_hooks::permissions_viewer(),
+                Entry::PluginServerInfo => super::plugin_hooks::server_info_on(),
+                _ => false,
+            }));
+        }
         let show_all = self.opt_in_flags(guild) & OPT_IN_ENABLED == 0;
         for (group, entries) in shown.iter().enumerate() {
             if group > 0 {
@@ -399,6 +435,14 @@ impl Root {
                                 })
                                 .child(label),
                         )
+                        // Not in the pinned client: NewGuildSettings gives its row the CogWheel after the label too.
+                        .when(entry == Entry::PluginApplyNewGuildSettings, |this| {
+                            this.child(div().ml(px(8.)).child(icon(
+                                "plugin_cog",
+                                18.,
+                                "--interactive-text-default",
+                            )))
+                        })
                         .when(matches!(entry, Entry::HideMuted | Entry::ShowAll), |this| {
                             let hidden = if entry == Entry::ShowAll {
                                 show_all
@@ -474,6 +518,8 @@ impl Root {
 
 /// The request behind Leave Server (`GUILD_LEAVE`, module 652215; `leaveGuild` sends `lurking`).
 pub(super) fn leave_request(guild: Id) -> Request {
+    // Not in the pinned client: RelationshipNotifier keeps quiet about a server you leave.
+    super::plugin_hooks::relationship_removed_by_you(None, Some(guild), None);
     Request::Rest {
         key: None,
         method: reqwest::Method::DELETE,

@@ -143,6 +143,19 @@ impl Root {
                 cx.notify();
                 "dm opened".to_owned()
             }
+            // `go dm-id <channel>`: a DM by its id, whatever order the account's DMs come in.
+            ["dm-id", id] => {
+                let Some(channel) = id
+                    .parse::<dc_state::Id>()
+                    .ok()
+                    .filter(|id| self.stores.private_channels.iter().any(|dm| dm.id == *id))
+                else {
+                    return "no such dm".to_owned();
+                };
+                self.select_home(Some(channel));
+                cx.notify();
+                "dm opened".to_owned()
+            }
             ["shop"] => {
                 self.open_shop(cx);
                 "shop".to_owned()
@@ -163,7 +176,8 @@ impl Root {
                 self.open_discover(discover::Place::Apps, cx);
                 "discover apps".to_owned()
             }
-            _ => "usage: go home | dm <n> | shop | quests | discover | apps".to_owned(),
+            _ => "usage: go home | dm <n> | dm-id <channel> | shop | quests | discover | apps"
+                .to_owned(),
         }
     }
 }

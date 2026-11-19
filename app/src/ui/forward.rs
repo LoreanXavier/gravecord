@@ -137,6 +137,9 @@ impl Root {
             cx.notify();
         });
         window.focus(&search.read(cx).focus_handle(cx), cx);
+        // Not in the pinned client: BetterForwards starts each dialog forwarding everything
+        // (`plugin_hooks/better_forwards.rs`).
+        self.better_forwards_opened(message.as_ref());
         self.forward = Some(Forward {
             message,
             profile,
@@ -177,10 +180,15 @@ impl Root {
 
     /// The rows: selected first while not searching, then history and frecency; or the search matches.
     fn forward_results(&self, forward: &Forward) -> Vec<Destination> {
-        let origin = forward
-            .message
-            .as_ref()
-            .map_or(0, |message| message.channel_id);
+        // Not in the pinned client: BetterForwards' `selfForward` keeps the current channel in the list.
+        let origin = if super::plugin_hooks::better_forwards_self_forward() {
+            0
+        } else {
+            forward
+                .message
+                .as_ref()
+                .map_or(0, |message| message.channel_id)
+        };
         let query = forward.query.trim().to_lowercase();
         let mut out: Vec<Destination> = Vec::new();
         let push = |destination: Destination, out: &mut Vec<Destination>| {
@@ -330,6 +338,8 @@ impl Root {
                 (guild, source.channel_id, source.id),
                 silent,
             );
+            // Not in the pinned client: BetterForwards' `forward_only` and the note for a resend.
+            self.better_forwards_sending(&nonce, &note);
             pending.insert(nonce, *destination);
             if !note.is_empty() {
                 self.start_local_text(destination.channel(), note.clone());
@@ -369,6 +379,14 @@ impl Root {
         }
         // The rows keep the order the destinations were chosen in.
         let failed: Vec<Destination> = batch.failed;
+        // Not in the pinned client: BetterForwards' `resendOnFail` sends the message again as text instead.
+        let channels: Vec<Id> = failed
+            .iter()
+            .map(|destination| destination.channel())
+            .collect();
+        if self.better_forwards_failed(&batch.message, &channels, cx) {
+            return;
+        }
         self.chat_extra.alert = Some(super::chat_notices::forward_failed_alert(
             batch.message,
             failed,
@@ -393,6 +411,10 @@ impl Root {
 
     /// `transitionToDestination` with a single destination.
     fn go_to_destination(&mut self, selected: &[Destination]) {
+        // Not in the pinned client: BetterForwards' `dontFollowForwards` (`shouldTransition`).
+        if !super::plugin_hooks::better_forwards_follow() {
+            return;
+        }
         if let [only] = selected {
             match only {
                 Destination::Dm(channel) => self.select_home(Some(*channel)),
@@ -856,79 +878,109 @@ impl Root {
                     .border_color(color("--border-subtle")),
             )
             .child(
-                div().pt(px(16.)).px(px(24.)).child(
-                    div()
-                        .relative()
-                        .pl(px(16.))
-                        .when(sharing.is_none() && forward.clip.is_none(), |this| {
-                            this.py(px(4.))
-                        })
-                        .child(
-                            div()
-                                .absolute()
-                                .left(px(0.))
-                                .top(px(0.))
-                                .bottom(px(0.))
-                                .w(px(4.))
-                                .rounded(px(2.))
-                                .bg(color("--border-subtle")),
-                        )
-                        .child(if let Some(files) = attached {
-                            // `forwardPreview_N34jMW` (design/dom/voice-message/forward-modal-darker-cozy.json): 56px
-                            // high, 12px gap; `contentWrapper` (6px gap), `attachmentRow` (20px paperclip in
-                            // `--text-muted`, 500 weight 16/20 label) and a 56px `attachmentPreview` at the right
-                            // (`imageWrapperBackground`: rgba(0,0,0,.04), 8px corners). A file shows no picture.
-                            div()
-                                .h(px(56.))
-                                .flex()
-                                .items_center()
-                                .gap(px(12.))
-                                .child(
+                div()
+                    .pt(px(16.))
+                    .px(px(24.))
+                    .child(
+                        div()
+                            .relative()
+                            .pl(px(16.))
+                            .when(sharing.is_none() && forward.clip.is_none(), |this| {
+                                this.py(px(4.))
+                            })
+                            .child(
+                                div()
+                                    .absolute()
+                                    .left(px(0.))
+                                    .top(px(0.))
+                                    .bottom(px(0.))
+                                    .w(px(4.))
+                                    .rounded(px(2.))
+                                    .bg(color("--border-subtle")),
+                            )
+                            // Not in the pinned client: BetterForwards' pickers in place of the file line (`ForwardPicker`).
+                            .child(
+                                if let Some(picker) = forward
+                                    .message
+                                    .as_ref()
+                                    .and_then(|message| self.better_forwards_picker(message, cx))
+                                {
+                                    // `contentWrapper`: at most 250 tall, scrolling (the plugin's stylesheet).
+                                    div().child(
+                                        div()
+                                            .id("forward-preview-content")
+                                            .max_h(px(250.))
+                                            .overflow_y_scroll()
+                                            .flex()
+                                            .flex_col()
+                                            .gap(px(6.))
+                                            .when(has_text, |this| this.child(preview))
+                                            .child(picker),
+                                    )
+                                } else if let Some(files) = attached {
+                                    // `forwardPreview_N34jMW` (design/dom/voice-message/forward-modal-darker-cozy.json): 56px
+                                    // high, 12px gap; `contentWrapper` (6px gap), `attachmentRow` (20px paperclip in
+                                    // `--text-muted`, 500 weight 16/20 label) and a 56px `attachmentPreview` at the right
+                                    // (`imageWrapperBackground`: rgba(0,0,0,.04), 8px corners). A file shows no picture.
                                     div()
-                                        .flex_1()
-                                        .min_w(px(0.))
+                                        .h(px(56.))
                                         .flex()
-                                        .flex_col()
-                                        .gap(px(6.))
-                                        .when(has_text, |this| this.child(preview))
+                                        .items_center()
+                                        .gap(px(12.))
                                         .child(
                                             div()
-                                                .h(px(20.))
+                                                .flex_1()
+                                                .min_w(px(0.))
                                                 .flex()
-                                                .items_center()
+                                                .flex_col()
                                                 .gap(px(6.))
-                                                .text_color(color("--text-muted"))
-                                                .child(icon(
-                                                    "forward_attachment",
-                                                    20.,
-                                                    "--text-muted",
-                                                ))
+                                                .when(has_text, |this| this.child(preview))
                                                 .child(
                                                     div()
-                                                        .text_size(px(16.))
-                                                        .line_height(px(20.))
-                                                        .font_weight(FontWeight(500.))
-                                                        .child(if files == 1 {
-                                                            "1 file".to_owned()
-                                                        } else {
-                                                            format!("{files} files")
-                                                        }),
+                                                        .h(px(20.))
+                                                        .flex()
+                                                        .items_center()
+                                                        .gap(px(6.))
+                                                        .text_color(color("--text-muted"))
+                                                        .child(icon(
+                                                            "forward_attachment",
+                                                            20.,
+                                                            "--text-muted",
+                                                        ))
+                                                        .child(
+                                                            div()
+                                                                .text_size(px(16.))
+                                                                .line_height(px(20.))
+                                                                .font_weight(FontWeight(500.))
+                                                                .child(if files == 1 {
+                                                                    "1 file".to_owned()
+                                                                } else {
+                                                                    format!("{files} files")
+                                                                }),
+                                                        ),
                                                 ),
-                                        ),
-                                )
-                                .child(
-                                    div()
-                                        .size(px(56.))
-                                        .flex_none()
-                                        .rounded(px(8.))
-                                        .bg(gpui::rgba(0x0000000a)),
-                                )
-                        } else if sharing.is_some() || forward.clip.is_some() {
-                            div().child(preview)
-                        } else {
-                            div().h(px(22.)).pt(px(2.)).child(preview)
-                        }),
-                ),
+                                        )
+                                        .child(
+                                            div()
+                                                .size(px(56.))
+                                                .flex_none()
+                                                .rounded(px(8.))
+                                                .bg(gpui::rgba(0x0000000a)),
+                                        )
+                                } else if sharing.is_some() || forward.clip.is_some() {
+                                    div().child(preview)
+                                } else {
+                                    div().h(px(22.)).pt(px(2.)).child(preview)
+                                },
+                            ),
+                    )
+                    // Not in the pinned client: BetterForwards' "Forward everything" (`renderWrapper`).
+                    .children(
+                        forward
+                            .message
+                            .as_ref()
+                            .and_then(|message| self.better_forwards_everything(message, cx)),
+                    ),
             )
             .child(
                 div()
@@ -1025,7 +1077,11 @@ impl Root {
                             .line_height(px(20.))
                             .font_weight(FontWeight(500.))
                             .text_color(color("--white"))
-                            .on_click(cx.listener(|this, _, _, cx| {
+                            .on_click(cx.listener(|this, event: &gpui::ClickEvent, _, cx| {
+                                // Not in the pinned client: BetterForwards reads Shift on Send (`setShift`).
+                                super::plugin_hooks::better_forwards_send_pressed(
+                                    event.modifiers().shift,
+                                );
                                 this.send_forward(None, cx);
                                 cx.notify();
                             }))

@@ -202,6 +202,8 @@ impl Root {
             && !self.quests_active()
             && !self.message_requests_active();
         let hovered = self.hovered_dm == Some(id);
+        // Module 181254 `eI`: the running call's time, as in a DM's row (`home.rs`).
+        let timer = self.private_call_start(id);
         let context_menu_open = self
             .context
             .open
@@ -332,26 +334,37 @@ impl Root {
                                 }
                             }),
                     )
-                    .child(
+                    .children(timer.filter(|_| !hovered).map(|start| {
                         div()
-                            .id(SharedString::from(format!("dm-close-{id}")))
-                            .mr(px(8.))
-                            .size(px(18.))
                             .flex_none()
-                            .rounded_full()
-                            .flex()
-                            .items_center()
-                            .justify_center()
-                            .opacity(0.)
-                            .group_hover(group, |style| style.opacity(0.7))
-                            .hover(|style| style.opacity(1.))
-                            .on_click(cx.listener(move |this, event: &gpui::ClickEvent, _, cx| {
-                                cx.stop_propagation();
-                                // `closePrivateChannel(id, _, shift)`: holding shift leaves without telling the group.
-                                this.close_dm_with(id, event.modifiers().shift, cx);
-                            }))
-                            .child(icon("friend_ignore", 16., tint)),
-                    ),
+                            .pl(px(4.))
+                            .pr(px(8.))
+                            .child(self.elapsed_timer(start, cx).parity("dm-call-timer"))
+                    }))
+                    .when(hovered || timer.is_none(), |row| {
+                        row.child(
+                            div()
+                                .id(SharedString::from(format!("dm-close-{id}")))
+                                .mr(px(8.))
+                                .size(px(18.))
+                                .flex_none()
+                                .rounded_full()
+                                .flex()
+                                .items_center()
+                                .justify_center()
+                                .opacity(0.)
+                                .group_hover(group, |style| style.opacity(0.7))
+                                .hover(|style| style.opacity(1.))
+                                .on_click(cx.listener(
+                                    move |this, event: &gpui::ClickEvent, _, cx| {
+                                        cx.stop_propagation();
+                                        // `closePrivateChannel(id, _, shift)`: holding shift leaves without telling the group.
+                                        this.close_dm_with(id, event.modifiers().shift, cx);
+                                    },
+                                ))
+                                .child(icon("friend_ignore", 16., tint)),
+                        )
+                    }),
             )
             .into_any_element()
     }

@@ -361,6 +361,16 @@ pub(super) fn render_with_input(
     render_sized(spec, 480., false, Some(input), None, cx)
 }
 
+/// `size-lg_dvN-MP`: the same dialog 680 wide (`max-width: 680px`), for plugins' `size="lg"` modals.
+pub(super) fn render_large(spec: Spec, cx: &mut Context<Root>) -> AnyElement {
+    render_sized(spec, 680., false, None, None, cx)
+}
+
+/// `size-xl_dvN-MP`: the same dialog 960 wide (`max-width: 960px`), for plugins' `size="xl"` modals.
+pub(super) fn render_xl(spec: Spec, cx: &mut Context<Root>) -> AnyElement {
+    render_sized(spec, 960., false, None, None, cx)
+}
+
 /// `size-sm_dvN-MP`: the same dialog 400 wide (Delete Channel).
 pub(super) fn render_small(spec: Spec, cx: &mut Context<Root>) -> AnyElement {
     render_sized(spec, 400., false, None, None, cx)

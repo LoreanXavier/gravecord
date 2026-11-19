@@ -653,7 +653,8 @@ impl Root {
 
     fn set_crop_zoom(&mut self, zoom: f64, cx: &mut Context<Self>) {
         if let Some(editor) = self.crop_editor_mut() {
-            editor.set_zoom(zoom.clamp(1., 2.));
+            // Not in the pinned client: UnlockedAvatarZoom raises the top (`plugin_hooks/unlocked_avatar_zoom.rs`).
+            editor.set_zoom(zoom.clamp(1., super::plugin_hooks::crop_max_zoom()));
             cx.notify();
         }
     }
@@ -669,7 +670,8 @@ impl Root {
         };
         let track = f32::from(bounds.size.width) - 10.;
         let fraction = ((f32::from(x - bounds.left()) - 5.) / track).clamp(0., 1.);
-        self.set_crop_zoom(1. + f64::from(fraction), cx);
+        let top = super::plugin_hooks::crop_max_zoom();
+        self.set_crop_zoom(1. + f64::from(fraction) * (top - 1.), cx);
     }
 
     /// Keys while a dialog of this module is open, before the window's own handlers: Escape closes the top one; the
@@ -1673,7 +1675,8 @@ impl Root {
         disabled: bool,
         cx: &mut Context<Self>,
     ) -> AnyElement {
-        let fraction = (zoom - 1.).clamp(0., 1.) as f32;
+        let top = super::plugin_hooks::crop_max_zoom();
+        let fraction = ((zoom - 1.) / (top - 1.).max(f64::EPSILON)).clamp(0., 1.) as f32;
         let active = !disabled && (crop.slider_drag || crop.slider_hovered);
         let bar_height = if active { 6. } else { 4. };
         let grabber = if active { 20. } else { 16. };

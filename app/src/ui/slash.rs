@@ -16,17 +16,17 @@ use gpui::{
 use serde_json::{Value, json};
 
 /// `ApplicationCommandOptionType`.
-const SUB_COMMAND: u64 = 1;
+pub(in crate::ui) const SUB_COMMAND: u64 = 1;
 const SUB_COMMAND_GROUP: u64 = 2;
-const STRING: u64 = 3;
-const INTEGER: u64 = 4;
-const BOOLEAN: u64 = 5;
-const USER: u64 = 6;
+pub(in crate::ui) const STRING: u64 = 3;
+pub(in crate::ui) const INTEGER: u64 = 4;
+pub(in crate::ui) const BOOLEAN: u64 = 5;
+pub(in crate::ui) const USER: u64 = 6;
 const CHANNEL: u64 = 7;
 const ROLE: u64 = 8;
 const MENTIONABLE: u64 = 9;
-const NUMBER: u64 = 10;
-const ATTACHMENT: u64 = 11;
+pub(in crate::ui) const NUMBER: u64 = 10;
+pub(in crate::ui) const ATTACHMENT: u64 = 11;
 
 /// The id the official gives the built-in "application".
 const BUILT_IN_APP: &str = "-1";
@@ -50,6 +50,9 @@ pub(super) enum Builtin {
     Thread,
     Timeout,
     Unflip,
+    /// Not in the pinned client: a plugin's command, by its place in the plugins' table
+    /// (`plugin_hooks/plugin_commands.rs`).
+    Plugin(u16),
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -64,7 +67,7 @@ pub(super) struct Opt {
 }
 
 impl Opt {
-    fn new(name: &str, kind: u64, description: &str, required: bool) -> Self {
+    pub(in crate::ui) fn new(name: &str, kind: u64, description: &str, required: bool) -> Self {
         Self {
             name: name.to_owned(),
             description: description.to_owned(),
@@ -130,7 +133,13 @@ pub(super) struct CommandScope {
     pub can_thread: bool,
 }
 
-fn built_in(id: i32, name: &str, which: Builtin, description: &str, options: Vec<Opt>) -> Cmd {
+pub(in crate::ui) fn built_in(
+    id: i32,
+    name: &str,
+    which: Builtin,
+    description: &str,
+    options: Vec<Opt>,
+) -> Cmd {
     Cmd {
         id: id.to_string(),
         name: name.to_owned(),
@@ -144,7 +153,7 @@ fn built_in(id: i32, name: &str, which: Builtin, description: &str, options: Vec
     }
 }
 
-fn message_option(description: &str, required: bool) -> Opt {
+pub(in crate::ui) fn message_option(description: &str, required: bool) -> Opt {
     let mut option = Opt::new("message", STRING, description, required);
     option.max_length = Some(MESSAGE_LIMIT);
     option
@@ -549,7 +558,7 @@ pub(super) fn interaction_body(
     })
 }
 
-fn string_value(filled: &[Filled], name: &str) -> String {
+pub(in crate::ui) fn string_value(filled: &[Filled], name: &str) -> String {
     filled
         .iter()
         .find(|step| step.opt.name == name)
@@ -662,6 +671,8 @@ impl Root {
             .map(|index| index_commands(&index))
             .unwrap_or_default();
         commands.extend(built_in_commands(self.slash_context()));
+        // Not in the pinned client: the plugins' commands (`plugin_hooks/plugin_commands.rs`).
+        commands.extend(self.plugin_commands());
         commands
     }
 
@@ -1017,6 +1028,11 @@ impl Root {
         channel: Id,
         cx: &mut Context<Self>,
     ) {
+        // Not in the pinned client: a plugin's command (`plugin_hooks/plugin_commands.rs`).
+        if let Builtin::Plugin(index) = which {
+            self.run_plugin_command(index, filled, channel, cx);
+            return;
+        }
         let message = string_value(filled, "message");
         if let Some(content) = text_content(which, &message) {
             self.last_typing_sent = None;

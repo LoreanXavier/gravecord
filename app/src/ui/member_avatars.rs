@@ -468,6 +468,13 @@ impl Root {
         user: &User,
         guild: Option<Id>,
     ) -> (String, String) {
+        // Not in the pinned client: UserPFP's `overrideServerAvatars` (`plugin_hooks/userpfp.rs`).
+        let server = guild
+            .and_then(|guild| self.stores.members.get(guild, user.id))
+            .is_some_and(|member| member.avatar.is_some());
+        if let Some(source) = super::plugin_hooks::userpfp_server_avatar(user, server) {
+            return source;
+        }
         guild
             .and_then(|guild| self.stores.members.get(guild, user.id)?.avatar_url(guild))
             .map(|url| (url.clone(), url))
@@ -483,35 +490,43 @@ impl Root {
         cx: &mut Context<Self>,
     ) -> Option<(String, Arc<Image>)> {
         let side = super::avatar_play::file_side(drawn, self.ui_scale.get());
-        let guild_hash = guild.and_then(|guild| {
-            self.stores
-                .members
-                .get(guild, user.id)?
-                .avatar
-                .clone()
-                .map(|hash| (guild, hash))
-        });
-        let (base, hash) = match guild_hash {
-            Some((guild, hash)) => (
-                format!(
-                    "https://cdn.discordapp.com/guilds/{guild}/users/{}/avatars/{hash}",
-                    user.id
-                ),
-                hash,
-            ),
+        // Not in the pinned client: UserPFP's moving avatar, or none over a custom one (`plugin_hooks/userpfp.rs`).
+        let (key, url) = match super::plugin_hooks::userpfp_live_avatar(user) {
+            Some(Some(source)) => source,
+            Some(None) => return None,
             None => {
-                let hash = user.avatar.clone()?;
-                (
-                    format!("https://cdn.discordapp.com/avatars/{}/{hash}", user.id),
-                    hash,
-                )
+                let guild_hash = guild.and_then(|guild| {
+                    self.stores
+                        .members
+                        .get(guild, user.id)?
+                        .avatar
+                        .clone()
+                        .map(|hash| (guild, hash))
+                });
+                let (base, hash) = match guild_hash {
+                    Some((guild, hash)) => (
+                        format!(
+                            "https://cdn.discordapp.com/guilds/{guild}/users/{}/avatars/{hash}",
+                            user.id
+                        ),
+                        hash,
+                    ),
+                    None => {
+                        let hash = user.avatar.clone()?;
+                        (
+                            format!("https://cdn.discordapp.com/avatars/{}/{hash}", user.id),
+                            hash,
+                        )
+                    }
+                };
+                if !super::avatar_play::is_animated(&hash) {
+                    return None;
+                }
+                let key = format!("avatar-live:{base}:{side}");
+                let url = super::avatar_play::animated_url(&base, side);
+                (key, url)
             }
         };
-        if !super::avatar_play::is_animated(&hash) {
-            return None;
-        }
-        let key = format!("avatar-live:{base}:{side}");
-        let url = super::avatar_play::animated_url(&base, side);
         if !super::avatar_play::should_animate(
             super::motion::window_active(),
             // Not in the pinned client: AlwaysAnimate's `icons` (`plugin_hooks/always_animate.rs`).

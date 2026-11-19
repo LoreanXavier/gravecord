@@ -45,6 +45,15 @@ const RUN_LIMIT: Duration = Duration::from_secs(240);
 /// The settle step before the capture, and how long it may take.
 const SETTLE: &str = "settle 20000";
 
+thread_local! {
+    /// The last signed-in launch: Discord flagged the fixture account after bursts of logins (twice on 2026-11-18), so
+    /// launches are spaced like perf's (`perf::launch_gap`, `GRAVECORD_PERF_GAP_SECS`).
+    static LAST_LAUNCH: std::cell::Cell<Option<Instant>> = const { std::cell::Cell::new(None) };
+    /// `--replay <folder>`: every launch is answered by a local replay of that recording (`replay.rs`) instead of
+    /// Discord, a server of its own for each launch so each starts from the recording's beginning, as perf's do.
+    static REPLAY: std::cell::RefCell<Option<PathBuf>> = const { std::cell::RefCell::new(None) };
+}
+
 /// The settle step's line, for a failure's report.
 fn settled(log: &str) -> &str {
     log.lines()
@@ -100,8 +109,9 @@ impl Mode {
         // GIF tiles hold their first frame (`gifs still`), since they play on the real clock. Then the window must
         // stay the same picture for a second (`settle`): what loads at its own pace (pictures,
         // GIF results, call tiles) has arrived, however loaded the machine is.
-        let scenario =
-            format!("{scenario}; motion clock +2000@2400; gifs still; {SETTLE}; wait 300");
+        let scenario = format!(
+            "{scenario}; motion clock +2000@2400; gifs still; {SETTLE}; wait 300; signed-in"
+        );
         match self {
             Mode::Reference => scenario,
             Mode::MasterOff => format!(
@@ -165,7 +175,35 @@ fn capture(
         "--script".to_owned(),
         mode.script(&scenario.script),
     ];
+    match REPLAY.with(|replay| replay.borrow().clone()) {
+        Some(folder) => {
+            let server = super::replay::start(
+                &folder,
+                0,
+                super::replay::Options {
+                    ready_delay_ms: None,
+                    no_latency: false,
+                    log: Some(png.with_extension("replay.log")),
+                },
+            )?;
+            // SAFETY: as above; the replay server's threads never read the environment.
+            unsafe {
+                std::env::set_var("GRAVECORD_REPLAY", &server.url);
+                std::env::set_var(
+                    "GRAVECORD_REPLAY_ACCOUNT",
+                    server.account.as_deref().unwrap_or("0"),
+                );
+            }
+        }
+        // Signed in to Discord: launches stay spaced.
+        None => {
+            if let Some(wait) = super::perf::launch_gap(LAST_LAUNCH.with(std::cell::Cell::get)) {
+                std::thread::sleep(wait);
+            }
+        }
+    }
     let pid = super::headless::spawn(exe, &args, repo)?;
+    LAST_LAUNCH.with(|cell| cell.set(Some(Instant::now())));
     let started = Instant::now();
     while running(pid) {
         if started.elapsed() > RUN_LIMIT {
@@ -184,6 +222,22 @@ fn capture(
         .with_context(|| format!("{} {}: no frame", scenario.name, mode.name()))?
         .to_rgba8();
     let text = std::fs::read_to_string(&log).unwrap_or_default();
+    // A refused login turns every later run into the login screen: stop rather than sign in again with it. A run that
+    // never got to say (it did not finish its script) stops the check too, rather than being retried with more logins.
+    if text.lines().any(|line| line == "signed-in: no") {
+        bail!(
+            "{} {}: the stored login was refused (401 or 4004); stopping so the account is not signed in again",
+            scenario.name,
+            mode.name()
+        );
+    }
+    if !text.lines().any(|line| line.starts_with("signed-in: ")) {
+        bail!(
+            "{} {}: the run did not report its sign-in (its script did not finish); stopping rather than signing in              again",
+            scenario.name,
+            mode.name()
+        );
+    }
     Ok((frame, text))
 }
 
@@ -325,6 +379,19 @@ fn quiet(log: &str) -> Option<bool> {
 }
 
 pub fn run(repo: &Path, args: &[&str]) -> Result<()> {
+    let mut names: Vec<&str> = Vec::new();
+    let mut rest = args.iter();
+    while let Some(arg) = rest.next() {
+        if *arg == "--replay" {
+            let Some(folder) = rest.next() else {
+                bail!("--replay takes the recording's folder");
+            };
+            REPLAY.with(|replay| *replay.borrow_mut() = Some(PathBuf::from(folder)));
+        } else {
+            names.push(arg);
+        }
+    }
+    let args = names.as_slice();
     let target = target_dir(repo);
     let exe = target.join("debug").join("gravecord.exe");
     let status = Command::new("cargo")
@@ -546,11 +613,11 @@ mod tests {
                 .starts_with("plugin master off; plugin all on; plugin scramble; plugin effects;")
         );
         assert!(script.ends_with(
-            "wait 10; motion clock +2000@2400; gifs still; settle 20000; wait 300; plugin effects"
+            "wait 10; motion clock +2000@2400; gifs still; settle 20000; wait 300; signed-in; plugin effects"
         ));
         assert_eq!(
             Mode::Reference.script("wait 10"),
-            "wait 10; motion clock +2000@2400; gifs still; settle 20000; wait 300"
+            "wait 10; motion clock +2000@2400; gifs still; settle 20000; wait 300; signed-in"
         );
     }
 

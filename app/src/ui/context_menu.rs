@@ -27,6 +27,23 @@ pub(super) enum Target {
         role: Id,
         guild: Id,
     },
+    /// Not in the pinned client: a PinDMs category header, by its place (`plugin_hooks/pin_dms.rs`).
+    PinCategory(u16),
+    /// Not in the pinned client: a GlobalBadges badge (`plugin_hooks/global_badges.rs` keeps which).
+    PluginBadge,
+    /// Not in the pinned client: an entry of PermissionsViewer's dialog, a role or a member
+    /// (`plugin_hooks/permissions_viewer.rs`).
+    PluginPermissionRole {
+        role: Id,
+        guild: Id,
+    },
+    PluginPermissionUser(Id),
+    /// Not in the pinned client: the "Wave to say hi!" button of a join message (GreetStickerPicker,
+    /// `plugin_hooks/greet_sticker_picker.rs`).
+    Greet {
+        channel: Id,
+        message: Id,
+    },
     InventoryFeed,
     InventoryFeedAtPointer,
     InventoryAuthor {
@@ -323,13 +340,43 @@ pub(super) enum Act {
     /// `clean-up-gdms-sort-newest` / `-oldest` (module 877760).
     GdmSortNewest,
     GdmSortOldest,
+    /// Not in the pinned client: PinDMs' rows (`plugin_hooks/pin_dms.rs`).
+    PluginPinDms,
+    PluginPinEditCategory,
+    PluginPinCategoryUp,
+    PluginPinCategoryDown,
+    PluginPinDeleteCategory,
+    /// Not in the pinned client: NewGuildSettings' row (`plugin_hooks/new_guild_settings.rs`).
+    PluginApplyNewGuildSettings,
+    /// Not in the pinned client: GreetStickerPicker's rows: Message mode (true) or Greet, and a sticker by its place
+    /// (`plugin_hooks/greet_sticker_picker.rs`).
+    PluginGreetMode(bool),
+    PluginGreetSticker(u8),
+    /// Not in the pinned client: BypassStatus' Add / Remove Status Bypass (`plugin_hooks/bypass_status.rs`).
+    PluginStatusBypass,
+    /// Not in the pinned client: UserPFP's Set Avatar (`plugin_hooks/userpfp.rs`).
+    PluginSetAvatar,
+    /// Not in the pinned client: GlobalBadges' badge menu (`plugin_hooks/global_badges.rs`).
+    PluginCopyBadgeName,
+    PluginCopyBadgeLink,
+    /// Not in the pinned client: PermissionsViewer's View Permissions (`plugin_hooks/permissions_viewer.rs`).
+    PluginViewPermissions,
+    /// Not in the pinned client: MessageLogger's Clear Message Log (`plugin_hooks/message_logger.rs`).
+    PluginClearMessageLog,
+    /// Not in the pinned client: ExpressionManager's rows (`plugin_hooks/expression_manager.rs`).
+    PluginCloneSticker,
+    PluginEditExpression,
+    PluginDeleteExpression,
+    PluginCopyStickerLink,
+    PluginOpenStickerLink,
+    PluginRemoveFromRecents,
 }
 
 impl Act {
     /// Every row kind once (`Correction` with its first index). `ordinal` is an exhaustive match, so adding a variant
     /// without listing it here fails the build or the `act_list_is_complete` test.
     #[cfg(test)]
-    pub(super) const ALL: [Act; 146] = [
+    pub(super) const ALL: [Act; 166] = [
         Act::InventoryAbout,
         Act::InventoryHide,
         Act::ReportApp,
@@ -476,6 +523,26 @@ impl Act {
         Act::CleanUpGdms,
         Act::GdmSortNewest,
         Act::GdmSortOldest,
+        Act::PluginPinDms,
+        Act::PluginPinEditCategory,
+        Act::PluginPinCategoryUp,
+        Act::PluginPinCategoryDown,
+        Act::PluginPinDeleteCategory,
+        Act::PluginApplyNewGuildSettings,
+        Act::PluginGreetMode(false),
+        Act::PluginGreetSticker(0),
+        Act::PluginStatusBypass,
+        Act::PluginSetAvatar,
+        Act::PluginCopyBadgeName,
+        Act::PluginCopyBadgeLink,
+        Act::PluginViewPermissions,
+        Act::PluginClearMessageLog,
+        Act::PluginCloneSticker,
+        Act::PluginEditExpression,
+        Act::PluginDeleteExpression,
+        Act::PluginCopyStickerLink,
+        Act::PluginOpenStickerLink,
+        Act::PluginRemoveFromRecents,
     ];
 
     #[cfg(test)]
@@ -627,6 +694,26 @@ impl Act {
             Act::CleanUpGdms => 143,
             Act::GdmSortNewest => 144,
             Act::GdmSortOldest => 145,
+            Act::PluginPinDms => 146,
+            Act::PluginPinEditCategory => 147,
+            Act::PluginPinCategoryUp => 148,
+            Act::PluginPinCategoryDown => 149,
+            Act::PluginPinDeleteCategory => 150,
+            Act::PluginApplyNewGuildSettings => 151,
+            Act::PluginGreetMode(_) => 152,
+            Act::PluginGreetSticker(_) => 153,
+            Act::PluginStatusBypass => 154,
+            Act::PluginSetAvatar => 155,
+            Act::PluginCopyBadgeName => 156,
+            Act::PluginCopyBadgeLink => 157,
+            Act::PluginViewPermissions => 158,
+            Act::PluginClearMessageLog => 159,
+            Act::PluginCloneSticker => 160,
+            Act::PluginEditExpression => 161,
+            Act::PluginDeleteExpression => 162,
+            Act::PluginCopyStickerLink => 163,
+            Act::PluginOpenStickerLink => 164,
+            Act::PluginRemoveFromRecents => 165,
         }
     }
 }
@@ -672,7 +759,27 @@ pub(super) fn status(act: Act) -> Status {
         | Act::PluginViewIcon
         | Act::PluginViewBanner
         | Act::PluginServerInfo
-        | Act::PluginViewStreamPreview => Wired,
+        | Act::PluginViewStreamPreview
+        | Act::PluginPinDms
+        | Act::PluginPinEditCategory
+        | Act::PluginPinCategoryUp
+        | Act::PluginPinCategoryDown
+        | Act::PluginPinDeleteCategory
+        | Act::PluginApplyNewGuildSettings
+        | Act::PluginGreetMode(_)
+        | Act::PluginGreetSticker(_)
+        | Act::PluginStatusBypass
+        | Act::PluginSetAvatar
+        | Act::PluginCopyBadgeName
+        | Act::PluginCopyBadgeLink
+        | Act::PluginViewPermissions
+        | Act::PluginClearMessageLog
+        | Act::PluginCloneSticker
+        | Act::PluginEditExpression
+        | Act::PluginDeleteExpression
+        | Act::PluginCopyStickerLink
+        | Act::PluginOpenStickerLink
+        | Act::PluginRemoveFromRecents => Wired,
         Act::InventoryAbout
         | Act::InventoryHide
         | Act::ViewAllActivity
@@ -821,6 +928,37 @@ pub(super) struct Row {
     pub radio: bool,
     /// The `roleDot` leading accessory (module 165862): the role's 12px circle in a 20px box, 8px before the label.
     pub role_dot: Option<u32>,
+    /// Not in the pinned client: BypassStatus' 18px ring as the leading accessory and the icon (`plugin_hooks/
+    /// bypass_status.rs`): the row's colour round a black centre when on, the danger colour round a white one when off.
+    pub status_dot: Option<bool>,
+}
+
+/// BypassStatus' `EnabledIcon` / `DisabledIcon`: a 16px disc with a 7.5px one in its middle, in an 18px box.
+fn status_dot(on: bool, tint: gpui::Hsla) -> gpui::Div {
+    div()
+        .size(px(18.))
+        .flex_none()
+        .flex()
+        .items_center()
+        .justify_center()
+        .child(
+            div()
+                .size(px(16.))
+                .rounded_full()
+                .flex()
+                .items_center()
+                .justify_center()
+                .bg(if on {
+                    tint
+                } else {
+                    color("--status-danger").into()
+                })
+                .child(div().size(px(7.5)).rounded_full().bg(if on {
+                    gpui::black()
+                } else {
+                    gpui::white()
+                })),
+        )
 }
 
 impl Row {
@@ -838,6 +976,7 @@ impl Row {
             shortcut: None,
             radio: false,
             role_dot: None,
+            status_dot: None,
         }
     }
 
@@ -913,15 +1052,21 @@ impl Row {
 pub(super) enum Entry {
     Row(Row),
     Separator,
+    /// Not in the pinned client's menus here: a group's label (`MenuGroup label`), for plugins' menus.
+    Heading(&'static str),
 }
 
 /// A menu's height: its rows, 17px per separator, and the 8px padding and 1px border at the top and bottom.
+/// A group label: 12/16 semibold muted text with 4px above and below and 8px at the sides.
+const HEADING_HEIGHT: f32 = 24.;
+
 fn menu_height(items: &[Entry]) -> f32 {
     items
         .iter()
         .map(|entry| match entry {
             Entry::Row(row) => row.height(),
             Entry::Separator => 17.,
+            Entry::Heading(_) => HEADING_HEIGHT,
         })
         .sum::<f32>()
         + 18.
@@ -2551,7 +2696,7 @@ const OPT_IN_ENABLED: u64 = 4096;
 /// `OPT_IN_CHANNELS_ON` in the account's settings of a server (module 355097).
 const OPT_IN_CHANNELS_ON: u64 = 16384;
 /// The store the official client keeps Hide Names in (`CollapsedVoiceChannelStore`, persisted as `collapsedChannels`).
-const HIDDEN_NAMES: &str = "collapsedChannels";
+pub(in crate::ui) const HIDDEN_NAMES: &str = "collapsedChannels";
 
 /// The channel type number the API uses (`channel_type` of a favourite).
 pub(super) fn channel_type_number(kind: ChannelKind) -> u64 {
@@ -3246,6 +3391,11 @@ impl Root {
         let items = match target {
             Target::AccountPanel => self.account_panel_items(),
             Target::Role { role, guild } => self.better_role_items(role, guild),
+            Target::PinCategory(index) => self.pin_category_items(usize::from(index)),
+            Target::PluginBadge => self.global_badge_items(),
+            Target::PluginPermissionRole { role, guild } => self.permission_role_items(role, guild),
+            Target::PluginPermissionUser(_) => self.permission_user_items(),
+            Target::Greet { .. } => self.greet_picker_items(),
             Target::SpotifyActivity { user, popout } => spotify_activity_items(
                 self.stores
                     .current_user
@@ -3753,8 +3903,22 @@ impl Root {
         let items = self.with_view_icons_rows(items, target);
         // Not in the pinned client: ServerInfo's row (`plugin_hooks/server_info.rs`).
         let items = self.with_server_info_row(items, target);
+        // Not in the pinned client: NewGuildSettings' row, before ServerInfo's (`plugin_hooks/new_guild_settings.rs`).
+        let items = self.with_new_guild_settings_row(items, target);
         // Not in the pinned client: BiggerStreamPreview's row (`plugin_hooks/bigger_stream_preview.rs`).
         let items = self.with_stream_preview_row(items, target);
+        // Not in the pinned client: PinDMs' "Pin DMs" row (`plugin_hooks/pin_dms.rs`).
+        let items = self.with_pin_dms_row(items, target);
+        // Not in the pinned client: BypassStatus' group before the last one (`plugin_hooks/bypass_status.rs`).
+        let items = self.with_bypass_status_row(items, target);
+        // Not in the pinned client: UserPFP's Set Avatar, last (`plugin_hooks/userpfp.rs`).
+        let items = self.with_userpfp_row(items, target);
+        // Not in the pinned client: PermissionsViewer's View Permissions (`plugin_hooks/permissions_viewer.rs`).
+        let items = self.with_permissions_viewer_row(items, target);
+        // Not in the pinned client: MessageLogger's Clear Message Log (`plugin_hooks/message_logger.rs`).
+        let items = self.with_message_logger_row(items, target);
+        // Not in the pinned client: ExpressionManager's expression rows (`plugin_hooks/expression_manager.rs`).
+        let items = self.with_expression_manager_rows(items, target);
         self.close_all_context_menus();
         self.menu_scroll.set_offset(gpui::point(px(0.), px(0.)));
         let at = flip_above(at, menu_height(&items), self.viewport.1);
@@ -3924,6 +4088,7 @@ impl Root {
             .iter()
             .filter_map(|item| match item {
                 Entry::Row(row) => Some(label_width(window, &row.label) + 34.),
+                Entry::Heading(text) => Some(label_width(window, text) + 16.),
                 Entry::Separator => None,
             })
             .fold(144., f32::max)
@@ -3965,8 +4130,81 @@ impl Root {
                 self.account_panel_toggle_prioritize(cx);
             }
             // Not in the pinned client: ServerInfo (`plugin_hooks/server_info.rs`).
+            // Not in the pinned client: NewGuildSettings (`plugin_hooks/new_guild_settings.rs`).
+            (Act::PluginApplyNewGuildSettings, Target::Guild(guild)) => {
+                self.apply_new_guild_settings(guild);
+                cx.notify();
+            }
             (Act::PluginServerInfo, Target::Guild(guild)) => {
                 self.server_info_open(guild, cx);
+            }
+            // Not in the pinned client: BypassStatus (`plugin_hooks/bypass_status.rs`).
+            (Act::PluginStatusBypass, target) => self.bypass_status_toggle(target, cx),
+            // Not in the pinned client: UserPFP (`plugin_hooks/userpfp.rs`).
+            (Act::PluginSetAvatar, Target::User { user, .. }) => self.userpfp_open(user, cx),
+            // Not in the pinned client: GlobalBadges (`plugin_hooks/global_badges.rs`).
+            (Act::PluginCopyBadgeName, Target::PluginBadge) => self.global_badge_copy(false, cx),
+            // Not in the pinned client: PermissionsViewer (`plugin_hooks/permissions_viewer.rs`).
+            (Act::PluginViewPermissions, target) => self.permissions_viewer_open(target, cx),
+            // Not in the pinned client: ExpressionManager (`plugin_hooks/expression_manager.rs`).
+            (
+                Act::PluginCloneSticker
+                | Act::PluginEditExpression
+                | Act::PluginDeleteExpression
+                | Act::PluginCopyStickerLink
+                | Act::PluginOpenStickerLink
+                | Act::PluginRemoveFromRecents,
+                target,
+            ) => {
+                let shift = window.modifiers().shift;
+                self.expression_manager_act(act, target, shift, cx);
+            }
+            // Not in the pinned client: MessageLogger (`plugin_hooks/message_logger.rs`).
+            (Act::PluginClearMessageLog, target) => {
+                if let Some(channel) = self.message_logger_menu_channel(target) {
+                    self.message_logger_clear_channel(channel);
+                    cx.notify();
+                }
+            }
+            (Act::PluginEditRole, Target::PluginPermissionRole { role, guild }) => {
+                self.better_role_edit(role, guild, cx);
+            }
+            (Act::PluginCopyRoleColor, Target::PluginPermissionRole { role, guild }) => {
+                self.better_role_copy_color(role, guild, cx);
+            }
+            (Act::PluginViewRoleIcon, Target::PluginPermissionRole { role, guild }) => {
+                let format = super::plugin_hooks::role_icon_format_setting();
+                self.role_icon_view(role, guild, &format, cx);
+            }
+            (Act::PluginViewRoleMembers, Target::PluginPermissionRole { role, .. }) => {
+                let anchor = self
+                    .tip_anchors
+                    .borrow()
+                    .get(&gpui::SharedString::from(format!(
+                        "permissions-viewer-role-{role}"
+                    )))
+                    .copied();
+                if let Some(anchor) = anchor {
+                    self.better_role_members(role, anchor, cx);
+                }
+            }
+            (Act::PluginCopyBadgeLink, Target::PluginBadge) => self.global_badge_copy(true, cx),
+            // Not in the pinned client: GreetStickerPicker (`plugin_hooks/greet_sticker_picker.rs`).
+            (
+                Act::PluginGreetMode(_) | Act::PluginGreetSticker(_),
+                Target::Greet { channel, message },
+            ) => {
+                self.greet_picker_run(act, channel, message, cx);
+            }
+            // Not in the pinned client: PinDMs' category menu (`plugin_hooks/pin_dms.rs`).
+            (
+                Act::PluginPinEditCategory
+                | Act::PluginPinCategoryUp
+                | Act::PluginPinCategoryDown
+                | Act::PluginPinDeleteCategory,
+                Target::PinCategory(index),
+            ) => {
+                self.pin_category_run(act, usize::from(index), cx);
             }
             // Not in the pinned client: BiggerStreamPreview (`plugin_hooks/bigger_stream_preview.rs`).
             (Act::PluginViewStreamPreview, Target::User { user, .. }) => {
@@ -4295,7 +4533,9 @@ impl Root {
                     | Target::BrowseChannels(guild)
                     | Target::EditProfileMenu(guild) => guild,
                     Target::RtcChannel { channel, .. } => channel,
-                    Target::Role { role, .. } => role,
+                    Target::Role { role, .. } | Target::PluginPermissionRole { role, .. } => role,
+                    Target::PluginPermissionUser(user) => user,
+                    Target::PinCategory(_) | Target::Greet { .. } | Target::PluginBadge => return,
                     Target::ProfileWidget { .. }
                     | Target::AttachmentLink
                     | Target::AccountPanel
@@ -5003,7 +5243,7 @@ impl Root {
         cx.notify();
     }
 
-    fn dm_user(&self, channel: Id) -> Option<Id> {
+    pub(super) fn dm_user(&self, channel: Id) -> Option<Id> {
         self.stores
             .private_channels
             .iter()
@@ -5200,6 +5440,8 @@ impl Root {
                 rows
             }
             Act::MoveTo => self.move_rows(target),
+            // Not in the pinned client: PinDMs' submenu (`plugin_hooks/pin_dms.rs`).
+            Act::PluginPinDms => self.pin_dms_sub_rows(target),
             _ => Vec::new(),
         }
     }
@@ -5380,6 +5622,10 @@ impl Root {
     ) {
         let row = self.context_sub_rows(act, target).into_iter().nth(index);
         match act {
+            // Not in the pinned client: PinDMs' submenu (`plugin_hooks/pin_dms.rs`).
+            Act::PluginPinDms => {
+                self.pin_dms_run_sub(target, index, cx);
+            }
             Act::AiTranslate => {
                 if let Some((code, name)) = super::composer_ai::languages().into_iter().nth(index) {
                     self.composer_translate(Some((code, name)), cx);
@@ -5587,6 +5833,20 @@ impl Root {
                         .into_any_element(),
                 ),
                 Entry::Row(row) => rows.push(self.context_row(index, row, target, cx)),
+                Entry::Heading(text) => rows.push(
+                    div()
+                        .h(px(HEADING_HEIGHT))
+                        .flex_none()
+                        .px(px(8.))
+                        .flex()
+                        .items_center()
+                        .text_size(px(12.))
+                        .line_height(px(16.))
+                        .font_weight(FontWeight(600.))
+                        .text_color(color("--text-muted"))
+                        .child(*text)
+                        .into_any_element(),
+                ),
             }
         }
         let menu = deferred(
@@ -6150,6 +6410,10 @@ impl Root {
             this.run_context(act, target, window, cx);
             cx.notify();
         }))
+        .children(
+            row.status_dot
+                .map(|on| div().mr(px(8.)).child(status_dot(on, tint.into()))),
+        )
         .children(row.role_dot.map(|color| {
             // `roleDotAccessory_M3qk4j` around `roleCircle_7RsUnm` (12px, `margin: 0 4px`).
             div()
@@ -6225,6 +6489,10 @@ impl Root {
                 .filter(|_| row.radio)
                 .map(|on| div().ml(px(8.)).child(super::create_channel::radio(on))),
         )
+        .children(
+            row.status_dot
+                .map(|on| div().ml(px(8.)).child(status_dot(on, tint.into()))),
+        )
         .children(row.trailing.filter(|_| !row.caret).map(|name| {
             div()
                 .ml(px(8.))
@@ -6294,6 +6562,7 @@ mod tests {
             .map(|entry| match entry {
                 Entry::Row(row) => row.label.clone(),
                 Entry::Separator => "-".to_owned(),
+                Entry::Heading(text) => format!("# {text}"),
             })
             .collect()
     }
@@ -6682,7 +6951,7 @@ mod tests {
             .iter()
             .filter_map(|entry| match entry {
                 Entry::Row(row) => Some(row.height()),
-                Entry::Separator => None,
+                Entry::Separator | Entry::Heading(_) => None,
             })
             .collect();
         // Mark As Read 34, Favorites 36, Pin 34, Copy Link 34, Mute 36, Notifications 52.

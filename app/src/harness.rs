@@ -569,6 +569,11 @@ pub async fn run(
                 });
                 let _ = writeln!(output, "limited-access: reported");
             }
+            // Whether the stored login held for the whole run (`net::login_refused`).
+            ["signed-in"] => {
+                let refused = crate::net::login_refused();
+                let _ = writeln!(output, "signed-in: {}", if refused { "no" } else { "yes" });
+            }
             // Capture only: `fetched <key> <json>` hands the view an answer of one of its reads as if the network had
             // brought it (local fixtures for pages the test account has no data for, such as its connections).
             ["fetched", key, json @ ..] => {
@@ -1604,6 +1609,13 @@ pub async fn run(
                     (_, None) => "popout click: expected <x> <y>".to_owned(),
                 };
                 let _ = writeln!(output, "{line}");
+            }
+            // `shot <png>`: the main window as it is now, so one run can keep several frames (one sign-in for many
+            // checks).
+            ["shot", path] => {
+                let path = PathBuf::from(path);
+                cx.update(|cx| crate::write_capture(cx, window, &path));
+                let _ = writeln!(output, "shot: {}", path.display());
             }
             ["popout", "shot", path] => {
                 let path = PathBuf::from(path);

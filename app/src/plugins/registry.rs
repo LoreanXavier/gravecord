@@ -9,6 +9,8 @@ pub(crate) enum Lit {
     Str(&'static str),
     /// A number option (the original's enum values, as AnonymiseFileNames' `method`).
     Int(i64),
+    /// A true/false option (USRBG's `nitroFirst`).
+    Bool(bool),
 }
 
 impl Lit {
@@ -16,6 +18,7 @@ impl Lit {
         match self {
             Lit::Str(text) => Value::from(text),
             Lit::Int(number) => Value::from(number),
+            Lit::Bool(on) => Value::from(on),
         }
     }
 
@@ -23,6 +26,7 @@ impl Lit {
         match self {
             Lit::Str(text) => value.as_str() == Some(text),
             Lit::Int(number) => value.as_f64() == Some(number as f64),
+            Lit::Bool(on) => value.as_bool() == Some(on),
         }
     }
 }
@@ -240,6 +244,52 @@ const fn millis(default: f64) -> Kind {
 /// by the code (a test checks both ways), so a setting can never sit in the page doing nothing unnoticed.
 pub(crate) const IDLE_SETTINGS: &[(&str, &str, &str)] = &[
     (
+        "SpotifyCrack",
+        "keepSpotifyActivityOnIdle",
+        "this client does not put your Spotify listening activity into your presence yet (shouldShowActivity's          place), so there is no idle check to lift",
+    ),
+    (
+        "StreamingCodecDisabler",
+        "disableAv1Codec",
+        "this client offers H264 only in a voice connection's codec list, so there is no AV1 entry to take out",
+    ),
+    (
+        "StreamingCodecDisabler",
+        "disableH265Codec",
+        "this client offers H264 only in a voice connection's codec list, so there is no H265 entry to take out",
+    ),
+    (
+        "StreamingCodecDisabler",
+        "disableVP8Codec",
+        "this client offers H264 only in a voice connection's codec list, so there is no VP8 entry to take out",
+    ),
+    (
+        "StreamingCodecDisabler",
+        "disableVP9Codec",
+        "this client offers H264 only in a voice connection's codec list, so there is no VP9 entry to take out",
+    ),
+    (
+        "MoreCommands",
+        "uwuEverything",
+        "it uwuifies every text node of the interface (a patch of React's element creation); the app's text is drawn          by each view itself and has no single place to pass it through yet",
+    ),
+    (
+        "ImageZoom",
+        "nearestNeighbour",
+        "the renderer samples pictures smoothly and has no pixelated mode yet, so the lens cannot switch to nearest \
+         neighbour",
+    ),
+    (
+        "BetterCommands",
+        "autoFillArguments",
+        "the app's command flow already asks every option in turn, optional ones too, so there is nothing more to fill",
+    ),
+    (
+        "PinDMs",
+        "friendsSidebarGroupDms",
+        "it lists pinned group DMs in the friends sidebar's pinned sections, and the app has no friends sidebar yet",
+    ),
+    (
         "SuperReactionTweaks",
         "unlimitedSuperReactionPlaying",
         "it lifts the cap on super reaction effects playing at once, and the app plays no super reaction effects yet",
@@ -290,12 +340,45 @@ pub(crate) const IDLE_SETTINGS: &[(&str, &str, &str)] = &[
     ),
 ];
 
-/// Settings shown only while a switch of the same plugin is on (`hidden` in the original).
-pub(crate) const SHOWN_WHEN: &[(&str, &str, &str)] = &[(
-    "MessageClickActions",
-    "additionalReactEmojis",
-    "addAdditionalReacts",
-)];
+/// Settings shown only while a switch of the same plugin is on (`hidden` in the original); an empty switch is never
+/// on, so its setting is never listed (`hidden: true`).
+pub(crate) const SHOWN_WHEN: &[(&str, &str, &str)] = &[
+    // CustomRPC's private settings (`withPrivateSettings`): its own form edits them.
+    ("CustomRPC", "appID", ""),
+    ("CustomRPC", "appName", ""),
+    ("CustomRPC", "details", ""),
+    ("CustomRPC", "detailsURL", ""),
+    ("CustomRPC", "state", ""),
+    ("CustomRPC", "stateURL", ""),
+    ("CustomRPC", "type", ""),
+    ("CustomRPC", "streamLink", ""),
+    ("CustomRPC", "timestampMode", ""),
+    ("CustomRPC", "startTime", ""),
+    ("CustomRPC", "endTime", ""),
+    ("CustomRPC", "imageBig", ""),
+    ("CustomRPC", "imageBigURL", ""),
+    ("CustomRPC", "imageBigTooltip", ""),
+    ("CustomRPC", "imageSmall", ""),
+    ("CustomRPC", "imageSmallURL", ""),
+    ("CustomRPC", "imageSmallTooltip", ""),
+    ("CustomRPC", "buttonOneText", ""),
+    ("CustomRPC", "buttonOneURL", ""),
+    ("CustomRPC", "buttonTwoText", ""),
+    ("CustomRPC", "buttonTwoURL", ""),
+    ("CustomRPC", "partySize", ""),
+    ("CustomRPC", "partyMaxSize", ""),
+    // `hidden: () => !settings.store.resendOnFail`.
+    ("BetterForwards", "forwardPreface", "resendOnFail"),
+    (
+        "MessageClickActions",
+        "additionalReactEmojis",
+        "addAdditionalReacts",
+    ),
+    // Folded by a click on the "Direct Messages" title.
+    ("PinDMs", "dmSectionCollapsed", ""),
+    // `hidden: !IS_DEV`: a development setting.
+    ("UserPFP", "databaseSource", ""),
+];
 
 /// Every plugin, in the order the Plugins page lists them (by name).
 pub(crate) const DEFS: &[Def] = &[
@@ -453,6 +536,196 @@ pub(crate) const DEFS: &[Def] = &[
         ],
     },
     Def {
+        id: "BetterActivities",
+        name: "BetterActivities",
+        description: "Shows activity icons in the member list and allows showing all activities",
+        origin: Origin::Equicord,
+        source: "src/equicordplugins/betterActivities/index.tsx",
+        default_on: false,
+        settings: &[
+            Setting {
+                key: "memberList",
+                label: "Member List",
+                description: "Show activity icons in the member list",
+                kind: Kind::Switch { default: true },
+            },
+            Setting {
+                key: "iconSize",
+                label: "Icon Size",
+                description: "Size of the activity icons",
+                kind: Kind::Number {
+                    default: 15.,
+                    min: 10.,
+                    max: 20.,
+                    step: 1.,
+                },
+            },
+            Setting {
+                key: "specialFirst",
+                label: "Special First",
+                description: "Show special activities first (Currently Spotify and Twitch)",
+                kind: Kind::Switch { default: true },
+            },
+            Setting {
+                key: "renderGifs",
+                label: "Render Gifs",
+                description: "Allow rendering GIFs",
+                kind: Kind::Switch { default: true },
+            },
+            Setting {
+                key: "removeGameActivityStatus",
+                label: "Remove Game Activity Status",
+                description: "Remove game activity icon and status",
+                kind: Kind::Switch { default: false },
+            },
+            Setting {
+                key: "userPopout",
+                label: "User Popout",
+                description: "Show all activities in the profile popout/sidebar",
+                kind: Kind::Switch { default: true },
+            },
+            Setting {
+                key: "hideTooltip",
+                label: "Hide Tooltip",
+                description: "Hides activities in various places",
+                kind: Kind::Switch { default: true },
+            },
+            Setting {
+                key: "allActivitiesStyle",
+                label: "All Activities Style",
+                description: "Style for showing all activities",
+                kind: Kind::Select {
+                    options: &[
+                        ("Carousel", Lit::Str("carousel")),
+                        ("List", Lit::Str("list")),
+                    ],
+                    default: 0,
+                },
+            },
+        ],
+    },
+    Def {
+        id: "BetterBlockedUsers",
+        name: "BetterBlockedUsers",
+        description: "Allows you to search in blocked users list, make names selectable in settings, skips blocked profile prompt, and groups blocked / ignored messages.",
+        origin: Origin::Equicord,
+        source: "src/equicordplugins/betterBlockedUsers/index.tsx",
+        default_on: false,
+        settings: &[],
+    },
+    Def {
+        id: "BetterCommands",
+        name: "BetterCommands",
+        description: "Enhances the command system with miscellaneous improvements.",
+        origin: Origin::Equicord,
+        source: "src/equicordplugins/betterCommands/index.ts",
+        default_on: false,
+        settings: &[Setting {
+            key: "autoFillArguments",
+            label: "Auto Fill Arguments",
+            description: "Automatically fill command with all arguments instead of just required ones.",
+            kind: Kind::Switch { default: true },
+        }],
+    },
+    Def {
+        id: "BetterForwards",
+        name: "BetterForwards",
+        description: "Message forward utilities including NSFW bypass and UI improvements.",
+        origin: Origin::Equicord,
+        source: "src/equicordplugins/betterForwards/index.tsx",
+        default_on: false,
+        settings: &[
+            Setting {
+                key: "resendOnFail",
+                label: "Resend On Fail",
+                description: "This will attempt to resend a forwarded message if the forward fails. Could cause unintentional pings or text spam. Bypasses NSFW restrictions.",
+                kind: Kind::Switch { default: true },
+            },
+            Setting {
+                key: "forwardPreface",
+                label: "Forward Preface",
+                description: "What should the forwarded message be prefaced with",
+                kind: Kind::Select {
+                    options: &[(">", Lit::Str(">")), ("-#", Lit::Str("-#"))],
+                    default: 0,
+                },
+            },
+            Setting {
+                key: "dontFollowForwards",
+                label: "Don't Follow Forwards",
+                description: "After forwarding a single message, don't jump to it. Hold shift to ignore this behavior.",
+                kind: Kind::Switch { default: false },
+            },
+            Setting {
+                key: "selfForward",
+                label: "Self Forward",
+                description: "Show the current channel in the forward list popup.",
+                kind: Kind::Switch { default: false },
+            },
+        ],
+    },
+    Def {
+        id: "BetterQuickReact",
+        name: "MoreQuickReactions",
+        description: "Improves the quick react buttons in the message context menu.",
+        origin: Origin::Vencord,
+        source: "src/plugins/moreQuickReactions/index.ts",
+        default_on: false,
+        settings: &[
+            Setting {
+                key: "reactionCount",
+                label: "Reaction Count",
+                description: "Number of reactions (0-42)",
+                kind: Kind::Number {
+                    default: 5.,
+                    min: 0.,
+                    max: 42.,
+                    step: 1.,
+                },
+            },
+            Setting {
+                key: "frequentEmojis",
+                label: "Frequent Emojis",
+                description: "Use frequently used emojis instead of favorite emojis",
+                kind: Kind::Switch { default: true },
+            },
+            Setting {
+                key: "rows",
+                label: "Rows",
+                description: "Rows of quick reactions to display",
+                kind: Kind::Number {
+                    default: 2.,
+                    min: 1.,
+                    max: 16.,
+                    step: 1.,
+                },
+            },
+            Setting {
+                key: "columns",
+                label: "Columns",
+                description: "Columns of quick reactions to display",
+                kind: Kind::Number {
+                    default: 4.,
+                    min: 1.,
+                    max: 12.,
+                    step: 1.,
+                },
+            },
+            Setting {
+                key: "compactMode",
+                label: "Compact Mode",
+                description: "Scales the buttons to 75% of their original scale, whilst increasing the inner emoji to 125% scale. Emojis will be 93.75% of the original size. Recommended to have a minimum of 5 columns",
+                kind: Kind::Switch { default: false },
+            },
+            Setting {
+                key: "scroll",
+                label: "Scroll",
+                description: "Enable scrolling the list of emojis",
+                kind: Kind::Switch { default: true },
+            },
+        ],
+    },
+    Def {
         id: "BetterRoleContext",
         name: "BetterRoleContext",
         description: "Adds options to copy role color / edit role / view role icon when right clicking roles in the user profile or in the member list",
@@ -512,6 +785,75 @@ pub(crate) const DEFS: &[Def] = &[
         source: "src/plugins/biggerStreamPreview/index.tsx",
         default_on: false,
         settings: &[],
+    },
+    Def {
+        id: "BypassStatus",
+        name: "BypassStatus",
+        description: "Still get notifications from specific sources when in do not disturb mode. Right-click on users/channels/guilds to set them to bypass do not disturb mode.",
+        origin: Origin::Equicord,
+        source: "src/equicordplugins/bypassStatus/index.tsx",
+        default_on: false,
+        settings: &[
+            Setting {
+                key: "guilds",
+                label: "Guilds",
+                description: "Guilds to let bypass (notified when pinged anywhere in guild)",
+                kind: Kind::Text {
+                    default: "",
+                    max_len: 4000,
+                },
+            },
+            Setting {
+                key: "channels",
+                label: "Channels",
+                description: "Channels to let bypass (notified when pinged in that channel)",
+                kind: Kind::Text {
+                    default: "",
+                    max_len: 4000,
+                },
+            },
+            Setting {
+                key: "users",
+                label: "Users",
+                description: "Users to let bypass (notified for all messages sent in DMs)",
+                kind: Kind::Text {
+                    default: "",
+                    max_len: 4000,
+                },
+            },
+            Setting {
+                key: "allowOutsideOfDms",
+                label: "Allow Outside Of Dms",
+                description: "Allow selected users to bypass status outside of DMs too (acts like a channel/guild bypass, but it's for all messages sent by the selected users)",
+                kind: Kind::Switch { default: false },
+            },
+            Setting {
+                key: "notificationSound",
+                label: "Notification Sound",
+                description: "Whether the notification sound should be played",
+                kind: Kind::Switch { default: true },
+            },
+            Setting {
+                key: "respectSilentPings",
+                label: "Respect Silent Pings",
+                description: "Respect silent pings (@silent / suppress notifications)",
+                kind: Kind::Switch { default: true },
+            },
+            Setting {
+                key: "statusToUse",
+                label: "Status To Use",
+                description: "Status to use for whitelist",
+                kind: Kind::Select {
+                    options: &[
+                        ("Online", Lit::Str("online")),
+                        ("Idle", Lit::Str("idle")),
+                        ("Do Not Disturb", Lit::Str("dnd")),
+                        ("Invisible", Lit::Str("invisible")),
+                    ],
+                    default: 2,
+                },
+            },
+        ],
     },
     Def {
         id: "CallTimer",
@@ -590,6 +932,39 @@ pub(crate) const DEFS: &[Def] = &[
         settings: &[],
     },
     Def {
+        id: "ClipsEnhancements",
+        name: "ClipsEnhancements",
+        description: "Add more Clip FPS and duration options, custom clip length, RPC tagging and more",
+        origin: Origin::Equicord,
+        source: "src/equicordplugins/clipsEnhancements.discordDesktop/index.tsx",
+        default_on: false,
+        settings: &[Setting {
+            key: "richPresenceTagging",
+            label: "Rich Presence Tagging",
+            description: "When should clips be tagged with the current Rich Presence?",
+            kind: Kind::Select {
+                options: &[
+                    ("Always", Lit::Str("always")),
+                    (
+                        "Only when beginning or end of activity name matches",
+                        Lit::Str("whenMatched"),
+                    ),
+                    ("Never", Lit::Str("never")),
+                ],
+                default: 1,
+            },
+        }],
+    },
+    Def {
+        id: "ClipUpload",
+        name: "ClipUpload",
+        description: "Adds a button to upload a local video file as a Discord clip.",
+        origin: Origin::Equicord,
+        source: "src/equicordplugins/clipUpload.desktop/index.tsx",
+        default_on: false,
+        settings: &[],
+    },
+    Def {
         id: "ColorSighted",
         name: "ColorSighted",
         description: "Removes the colorblind-friendly icons from statuses, just like 2015-2017 Discord.",
@@ -606,6 +981,241 @@ pub(crate) const DEFS: &[Def] = &[
         source: "src/plugins/copyUserURLs/index.tsx",
         default_on: false,
         settings: &[],
+    },
+    Def {
+        id: "CustomRPC",
+        name: "CustomRPC",
+        description: "Add a fully customisable Rich Presence (Game status) to your Discord profile",
+        origin: Origin::Vencord,
+        source: "src/plugins/customRPC/index.tsx",
+        default_on: false,
+        settings: &[
+            Setting {
+                key: "enablePresence",
+                label: "Enable Presence",
+                description: "Whether to show the presence",
+                kind: Kind::Switch { default: true },
+            },
+            Setting {
+                key: "appID",
+                label: "Application ID",
+                description: "",
+                kind: Kind::Text {
+                    default: "",
+                    max_len: 600,
+                },
+            },
+            Setting {
+                key: "appName",
+                label: "Application Name",
+                description: "",
+                kind: Kind::Text {
+                    default: "",
+                    max_len: 600,
+                },
+            },
+            Setting {
+                key: "details",
+                label: "Detail",
+                description: "",
+                kind: Kind::Text {
+                    default: "",
+                    max_len: 600,
+                },
+            },
+            Setting {
+                key: "detailsURL",
+                label: "Detail URL",
+                description: "",
+                kind: Kind::Text {
+                    default: "",
+                    max_len: 600,
+                },
+            },
+            Setting {
+                key: "state",
+                label: "State",
+                description: "",
+                kind: Kind::Text {
+                    default: "",
+                    max_len: 600,
+                },
+            },
+            Setting {
+                key: "stateURL",
+                label: "State URL",
+                description: "",
+                kind: Kind::Text {
+                    default: "",
+                    max_len: 600,
+                },
+            },
+            Setting {
+                key: "type",
+                label: "Activity Type",
+                description: "",
+                kind: Kind::Number {
+                    default: 0.,
+                    min: 0.,
+                    max: 9_007_199_254_740_991.,
+                    step: 1.,
+                },
+            },
+            Setting {
+                key: "streamLink",
+                label: "Stream Link",
+                description: "",
+                kind: Kind::Text {
+                    default: "",
+                    max_len: 600,
+                },
+            },
+            Setting {
+                key: "timestampMode",
+                label: "Timestamp Mode",
+                description: "",
+                kind: Kind::Number {
+                    default: 0.,
+                    min: 0.,
+                    max: 9_007_199_254_740_991.,
+                    step: 1.,
+                },
+            },
+            Setting {
+                key: "startTime",
+                label: "Start Timestamp",
+                description: "",
+                kind: Kind::Number {
+                    default: 0.,
+                    min: 0.,
+                    max: 9_007_199_254_740_991.,
+                    step: 1.,
+                },
+            },
+            Setting {
+                key: "endTime",
+                label: "End Timestamp",
+                description: "",
+                kind: Kind::Number {
+                    default: 0.,
+                    min: 0.,
+                    max: 9_007_199_254_740_991.,
+                    step: 1.,
+                },
+            },
+            Setting {
+                key: "imageBig",
+                label: "Large Image",
+                description: "",
+                kind: Kind::Text {
+                    default: "",
+                    max_len: 600,
+                },
+            },
+            Setting {
+                key: "imageBigURL",
+                label: "Large Image URL",
+                description: "",
+                kind: Kind::Text {
+                    default: "",
+                    max_len: 600,
+                },
+            },
+            Setting {
+                key: "imageBigTooltip",
+                label: "Large Image Text",
+                description: "",
+                kind: Kind::Text {
+                    default: "",
+                    max_len: 600,
+                },
+            },
+            Setting {
+                key: "imageSmall",
+                label: "Small Image",
+                description: "",
+                kind: Kind::Text {
+                    default: "",
+                    max_len: 600,
+                },
+            },
+            Setting {
+                key: "imageSmallURL",
+                label: "Small Image URL",
+                description: "",
+                kind: Kind::Text {
+                    default: "",
+                    max_len: 600,
+                },
+            },
+            Setting {
+                key: "imageSmallTooltip",
+                label: "Small Image Text",
+                description: "",
+                kind: Kind::Text {
+                    default: "",
+                    max_len: 600,
+                },
+            },
+            Setting {
+                key: "buttonOneText",
+                label: "Button1 Text",
+                description: "",
+                kind: Kind::Text {
+                    default: "",
+                    max_len: 600,
+                },
+            },
+            Setting {
+                key: "buttonOneURL",
+                label: "Button1 URL",
+                description: "",
+                kind: Kind::Text {
+                    default: "",
+                    max_len: 600,
+                },
+            },
+            Setting {
+                key: "buttonTwoText",
+                label: "Button2 Text",
+                description: "",
+                kind: Kind::Text {
+                    default: "",
+                    max_len: 600,
+                },
+            },
+            Setting {
+                key: "buttonTwoURL",
+                label: "Button2 URL",
+                description: "",
+                kind: Kind::Text {
+                    default: "",
+                    max_len: 600,
+                },
+            },
+            Setting {
+                key: "partySize",
+                label: "Party Size",
+                description: "",
+                kind: Kind::Number {
+                    default: 0.,
+                    min: 0.,
+                    max: 9_007_199_254_740_991.,
+                    step: 1.,
+                },
+            },
+            Setting {
+                key: "partyMaxSize",
+                label: "Maximum Party Size",
+                description: "",
+                kind: Kind::Number {
+                    default: 0.,
+                    min: 0.,
+                    max: 9_007_199_254_740_991.,
+                    step: 1.,
+                },
+            },
+        ],
     },
     Def {
         id: "DisableCallIdle",
@@ -631,6 +1241,34 @@ pub(crate) const DEFS: &[Def] = &[
         }],
     },
     Def {
+        id: "ExpressionCloner",
+        name: "ExpressionManager",
+        description: "Clone Emotes & Stickers. Adds context menu options to quickly clone, edit, or delete them. Also adds Copy & Save options for stickers",
+        origin: Origin::Vencord,
+        source: "src/plugins/expressionManager/index.tsx",
+        default_on: false,
+        settings: &[
+            Setting {
+                key: "editAndDelete",
+                label: "Edit And Delete",
+                description: "Add \"Edit\" and \"Delete\" options to the expression picker context menu",
+                kind: Kind::Switch { default: true },
+            },
+            Setting {
+                key: "stickerCopyAndOpen",
+                label: "Sticker Copy And Open",
+                description: "Add \"Copy Sticker Link\" and \"Open Sticker Link\" options to the sticker context menu",
+                kind: Kind::Switch { default: true },
+            },
+            Setting {
+                key: "recents",
+                label: "Recents",
+                description: "Add \"Remove from Recents\" option to the context menu of frequently used expressions",
+                kind: Kind::Switch { default: true },
+            },
+        ],
+    },
+    Def {
         id: "FavoriteEmojiFirst",
         name: "FavoriteEmojiFirst",
         description: "Puts your favorite emoji first in the emoji autocomplete and also has emoji alias.",
@@ -652,6 +1290,29 @@ pub(crate) const DEFS: &[Def] = &[
             description: "Also load the original image in chat. Animated images then always play, and it may be slow.",
             kind: Kind::Switch { default: false },
         }],
+    },
+    Def {
+        id: "FixYoutubeEmbeds",
+        name: "FixYoutubeEmbeds",
+        description: "Bypasses youtube videos being blocked from display on Discord (for example by UMG)",
+        origin: Origin::Vencord,
+        source: "src/plugins/fixYoutubeEmbeds.desktop/index.tsx",
+        default_on: false,
+        settings: &[Setting {
+            key: "youtubeDescription",
+            label: "Youtube Description",
+            description: "Adds descriptions to youtube video embeds",
+            kind: Kind::Switch { default: false },
+        }],
+    },
+    Def {
+        id: "FriendInvites",
+        name: "FriendInvites",
+        description: "Create and manage friend invite links via slash commands (/create friend invite, /view friend invites, /revoke friend invites).",
+        origin: Origin::Vencord,
+        source: "src/plugins/friendInvites/index.ts",
+        default_on: false,
+        settings: &[],
     },
     Def {
         id: "FullVCPFP",
@@ -699,6 +1360,141 @@ pub(crate) const DEFS: &[Def] = &[
         source: "src/plugins/gifPaste/index.ts",
         default_on: false,
         settings: &[],
+    },
+    Def {
+        id: "GlobalBadges",
+        name: "GlobalBadges",
+        description: "Adds global badges from other client mods",
+        origin: Origin::Equicord,
+        source: "src/equicordplugins/globalBadges/index.tsx",
+        default_on: false,
+        settings: &[
+            Setting {
+                key: "apiUrl",
+                label: "Api Url",
+                description: "API to use",
+                kind: Kind::Text {
+                    default: "https://badges.equicord.org/",
+                    max_len: 2000,
+                },
+            },
+            Setting {
+                key: "showCustom",
+                label: "Show Custom",
+                description: "Show Custom Badges",
+                kind: Kind::Switch { default: true },
+            },
+            Setting {
+                key: "showNekocord",
+                label: "Show Nekocord",
+                description: "Show Nekocord Badges",
+                kind: Kind::Switch { default: true },
+            },
+            Setting {
+                key: "showReviewDB",
+                label: "Show Review D B",
+                description: "Show ReviewDB Badges",
+                kind: Kind::Switch { default: true },
+            },
+            Setting {
+                key: "showAero",
+                label: "Show Aero",
+                description: "Show Aero Badges",
+                kind: Kind::Switch { default: true },
+            },
+            Setting {
+                key: "showAliucord",
+                label: "Show Aliucord",
+                description: "Show Aliucord Badges",
+                kind: Kind::Switch { default: true },
+            },
+            Setting {
+                key: "showRaincord",
+                label: "Show Raincord",
+                description: "Show Raincord Badges",
+                kind: Kind::Switch { default: true },
+            },
+            Setting {
+                key: "showVelocity",
+                label: "Show Velocity",
+                description: "Show Velocity Badges",
+                kind: Kind::Switch { default: true },
+            },
+            Setting {
+                key: "showEnmity",
+                label: "Show Enmity",
+                description: "Show Enmity Badges",
+                kind: Kind::Switch { default: true },
+            },
+            Setting {
+                key: "showPaicord",
+                label: "Show Paicord",
+                description: "Show Paicord Badges",
+                kind: Kind::Switch { default: true },
+            },
+            Setting {
+                key: "showBunny",
+                label: "Show Bunny",
+                description: "Show Bunny Badges",
+                kind: Kind::Switch { default: true },
+            },
+            Setting {
+                key: "showGooseMod",
+                label: "Show Goose Mod",
+                description: "Show GooseMod Badges",
+                kind: Kind::Switch { default: true },
+            },
+            Setting {
+                key: "showReplugged",
+                label: "Show Replugged",
+                description: "Show Replugged Badges",
+                kind: Kind::Switch { default: true },
+            },
+            Setting {
+                key: "showBetterDiscord",
+                label: "Show Better Discord",
+                description: "Show BetterDiscord Badges",
+                kind: Kind::Switch { default: true },
+            },
+            Setting {
+                key: "showVendroidEnhanced",
+                label: "Show Vendroid Enhanced",
+                description: "Show Vendroid Enhanced Badges",
+                kind: Kind::Switch { default: true },
+            },
+            Setting {
+                key: "showRevenge",
+                label: "Show Revenge",
+                description: "Show Revenge Badges",
+                kind: Kind::Switch { default: true },
+            },
+            Setting {
+                key: "showReCord",
+                label: "Show Re Cord",
+                description: "Show ReCord Badges",
+                kind: Kind::Switch { default: true },
+            },
+        ],
+    },
+    Def {
+        id: "GreetStickerPicker",
+        name: "GreetStickerPicker",
+        description: "Allows you to use any greet sticker instead of only the random one by right-clicking the 'Wave to say hi!' button",
+        origin: Origin::Vencord,
+        source: "src/plugins/greetStickerPicker/index.tsx",
+        default_on: false,
+        settings: &[Setting {
+            key: "greetMode",
+            label: "Greet Mode",
+            description: "Choose the greet mode",
+            kind: Kind::Select {
+                options: &[
+                    ("Greet (you can only greet 3 times)", Lit::Str("Greet")),
+                    ("Normal Message (you can greet spam)", Lit::Str("Message")),
+                ],
+                default: 0,
+            },
+        }],
     },
     Def {
         id: "IgnoreActivities",
@@ -755,6 +1551,73 @@ pub(crate) const DEFS: &[Def] = &[
                 label: "Ignore Competing",
                 description: "Ignore all competing activities (These are normally special game activities)",
                 kind: Kind::Switch { default: false },
+            },
+        ],
+    },
+    Def {
+        id: "ImageZoom",
+        name: "ImageZoom",
+        description: "Lets you zoom in to images and gifs. Use scroll wheel to zoom in and shift + scroll wheel to increase lens radius / size",
+        origin: Origin::Vencord,
+        source: "src/plugins/imageZoom/index.tsx",
+        default_on: false,
+        settings: &[
+            Setting {
+                key: "saveZoomValues",
+                label: "Save Zoom Values",
+                description: "Whether to save zoom and lens size values",
+                kind: Kind::Switch { default: true },
+            },
+            Setting {
+                key: "invertScroll",
+                label: "Invert Scroll",
+                description: "Invert scroll",
+                kind: Kind::Switch { default: true },
+            },
+            Setting {
+                key: "nearestNeighbour",
+                label: "Nearest Neighbour",
+                description: "Use Nearest Neighbour Interpolation when scaling images",
+                kind: Kind::Switch { default: false },
+            },
+            Setting {
+                key: "square",
+                label: "Square",
+                description: "Make the lens square",
+                kind: Kind::Switch { default: false },
+            },
+            Setting {
+                key: "zoom",
+                label: "Zoom",
+                description: "Zoom of the lens",
+                kind: Kind::Number {
+                    default: 2.,
+                    min: 1.,
+                    max: 50.,
+                    step: 0.1,
+                },
+            },
+            Setting {
+                key: "size",
+                label: "Size",
+                description: "Radius / Size of the lens",
+                kind: Kind::Number {
+                    default: 100.,
+                    min: 50.,
+                    max: 1000.,
+                    step: 1.,
+                },
+            },
+            Setting {
+                key: "zoomSpeed",
+                label: "Zoom Speed",
+                description: "How fast the zoom / lens size changes",
+                kind: Kind::Number {
+                    default: 0.5,
+                    min: 0.1,
+                    max: 5.,
+                    step: 0.1,
+                },
             },
         ],
     },
@@ -951,6 +1814,115 @@ pub(crate) const DEFS: &[Def] = &[
         ],
     },
     Def {
+        id: "MessageLogger",
+        name: "MessageLogger",
+        description: "Temporarily logs deleted and edited messages.",
+        origin: Origin::Vencord,
+        source: "src/plugins/messageLogger/index.tsx",
+        default_on: false,
+        settings: &[
+            Setting {
+                key: "deleteStyle",
+                label: "Delete Style",
+                description: "The style of deleted messages",
+                kind: Kind::Select {
+                    options: &[
+                        ("Red text", Lit::Str("text")),
+                        ("Red overlay", Lit::Str("overlay")),
+                    ],
+                    default: 0,
+                },
+            },
+            Setting {
+                key: "logDeletes",
+                label: "Log Deletes",
+                description: "Whether to log deleted messages",
+                kind: Kind::Switch { default: true },
+            },
+            Setting {
+                key: "collapseDeleted",
+                label: "Collapse Deleted",
+                description: "Whether to collapse deleted messages, similar to blocked messages",
+                kind: Kind::Switch { default: false },
+            },
+            Setting {
+                key: "logEdits",
+                label: "Log Edits",
+                description: "Whether to log edited messages",
+                kind: Kind::Switch { default: true },
+            },
+            Setting {
+                key: "logDeletedAttachments",
+                label: "Log Deleted Attachments",
+                description: "Whether to log deleted attachments",
+                kind: Kind::Switch { default: true },
+            },
+            Setting {
+                key: "inlineEdits",
+                label: "Inline Edits",
+                description: "Whether to display edit history as part of message content",
+                kind: Kind::Switch { default: true },
+            },
+            Setting {
+                key: "ignoreBots",
+                label: "Ignore Bots",
+                description: "Whether to ignore messages by bots",
+                kind: Kind::Switch { default: true },
+            },
+            Setting {
+                key: "ignoreSelf",
+                label: "Ignore Self",
+                description: "Whether to ignore messages by yourself",
+                kind: Kind::Switch { default: false },
+            },
+            Setting {
+                key: "ignoreSelfEdits",
+                label: "Ignore Self Edits",
+                description: "Whether to ignore edits by yourself",
+                kind: Kind::Switch { default: false },
+            },
+            Setting {
+                key: "ignoreUsers",
+                label: "Ignore Users",
+                description: "Comma-separated list of user IDs to ignore",
+                kind: Kind::Text {
+                    default: "",
+                    max_len: 4000,
+                },
+            },
+            Setting {
+                key: "ignoreChannels",
+                label: "Ignore Channels",
+                description: "Comma-separated list of channel IDs to ignore",
+                kind: Kind::Text {
+                    default: "",
+                    max_len: 4000,
+                },
+            },
+            Setting {
+                key: "ignoreGuilds",
+                label: "Ignore Guilds",
+                description: "Comma-separated list of guild IDs to ignore",
+                kind: Kind::Text {
+                    default: "",
+                    max_len: 4000,
+                },
+            },
+            Setting {
+                key: "showEditDiffs",
+                label: "Show Edit Diffs",
+                description: "Show visual differences between edited message versions",
+                kind: Kind::Switch { default: false },
+            },
+            Setting {
+                key: "separatedDiffs",
+                label: "Separated Diffs",
+                description: "Separate addition and removals in diffs for a more readable differential",
+                kind: Kind::Switch { default: false },
+            },
+        ],
+    },
+    Def {
         id: "MessagePeek",
         name: "MessagePeek",
         description: "Shows the last message preview and timestamp in the Direct Messages list.",
@@ -963,6 +1935,43 @@ pub(crate) const DEFS: &[Def] = &[
             description: "Hide message previews and timestamps for muted DMs and group chats.",
             kind: Kind::Switch { default: false },
         }],
+    },
+    Def {
+        id: "MessageTags",
+        name: "MessageTags",
+        description: "Allows you to create custom slash commands / tags",
+        origin: Origin::Vencord,
+        source: "src/plugins/customCommands/index.ts",
+        default_on: false,
+        settings: &[],
+    },
+    Def {
+        id: "MoreCommands",
+        name: "MoreCommands",
+        description: "Adds various fun and useful commands",
+        origin: Origin::Equicord,
+        source: "src/equicordplugins/moreCommands/index.ts",
+        default_on: false,
+        settings: &[
+            Setting {
+                key: "addFreakyEnding",
+                label: "Add Freaky Ending",
+                description: "Add 👅 or ❤️ at the end",
+                kind: Kind::Switch { default: false },
+            },
+            Setting {
+                key: "uwuEveryMessage",
+                label: "Uwu Every Message",
+                description: "Make every single message uwuified",
+                kind: Kind::Switch { default: false },
+            },
+            Setting {
+                key: "uwuEverything",
+                label: "Uwu Everything",
+                description: "Makes *all* text uwuified - really bad idea",
+                kind: Kind::Switch { default: false },
+            },
+        ],
     },
     Def {
         id: "MuteChannelMentions",
@@ -986,6 +1995,78 @@ pub(crate) const DEFS: &[Def] = &[
                 label: "Only @everyone",
                 description: "Only hide @everyone, @here and role pings. Direct mentions of you still show.",
                 kind: Kind::Switch { default: true },
+            },
+        ],
+    },
+    Def {
+        id: "NewGuildSettings",
+        name: "NewGuildSettings",
+        description: "Automatically mute new servers and change various other settings upon joining",
+        origin: Origin::Vencord,
+        source: "src/plugins/newGuildSettings/index.tsx",
+        default_on: false,
+        settings: &[
+            Setting {
+                key: "guild",
+                label: "Guild",
+                description: "Mute Guild automatically",
+                kind: Kind::Switch { default: true },
+            },
+            Setting {
+                key: "messages",
+                label: "Messages",
+                description: "Server Notification Settings",
+                kind: Kind::Select {
+                    options: &[
+                        ("All messages", Lit::Int(0)),
+                        ("Only @mentions", Lit::Int(1)),
+                        ("Nothing", Lit::Int(2)),
+                        ("Server default", Lit::Int(3)),
+                    ],
+                    default: 3,
+                },
+            },
+            Setting {
+                key: "everyone",
+                label: "Everyone",
+                description: "Suppress @everyone and @here",
+                kind: Kind::Switch { default: true },
+            },
+            Setting {
+                key: "role",
+                label: "Role",
+                description: "Suppress All Role @mentions",
+                kind: Kind::Switch { default: true },
+            },
+            Setting {
+                key: "highlights",
+                label: "Highlights",
+                description: "Suppress Highlights automatically",
+                kind: Kind::Switch { default: true },
+            },
+            Setting {
+                key: "events",
+                label: "Events",
+                description: "Mute New Events automatically",
+                kind: Kind::Switch { default: true },
+            },
+            Setting {
+                key: "showAllChannels",
+                label: "Show All Channels",
+                description: "Show all channels automatically",
+                kind: Kind::Switch { default: true },
+            },
+            Setting {
+                key: "mobilePush",
+                label: "Mobile Push",
+                description: "Mute Mobile Push Notifications automatically",
+                kind: Kind::Switch { default: true },
+            },
+            Setting {
+                key: "voiceChannels",
+                label: "Voice Channels",
+                description: "Hide names in Voice channels automatically",
+                kind: Kind::Switch { default: false },
             },
         ],
     },
@@ -1086,6 +2167,115 @@ pub(crate) const DEFS: &[Def] = &[
         ],
     },
     Def {
+        id: "OpenInApp",
+        name: "OpenInApp",
+        description: "Open links in their respective apps instead of your browser",
+        origin: Origin::Vencord,
+        source: "src/plugins/openInApp/index.ts",
+        default_on: false,
+        settings: &[
+            Setting {
+                key: "spotify",
+                label: "Spotify",
+                description: "Open Spotify links in the Spotify app",
+                kind: Kind::Switch { default: true },
+            },
+            Setting {
+                key: "steam",
+                label: "Steam",
+                description: "Open Steam links in the Steam app",
+                kind: Kind::Switch { default: true },
+            },
+            Setting {
+                key: "epic",
+                label: "Epic",
+                description: "Open Epic Games links in the Epic Games Launcher",
+                kind: Kind::Switch { default: true },
+            },
+            Setting {
+                key: "tidal",
+                label: "Tidal",
+                description: "Open Tidal links in the Tidal app",
+                kind: Kind::Switch { default: true },
+            },
+            Setting {
+                key: "itunes",
+                label: "iTunes",
+                description: "Open Apple Music links in the iTunes app",
+                kind: Kind::Switch { default: true },
+            },
+            Setting {
+                key: "vrcx",
+                label: "Vrcx",
+                description: "Open VRChat links in the VRCX app",
+                kind: Kind::Switch { default: true },
+            },
+            Setting {
+                key: "telegram",
+                label: "Telegram",
+                description: "Open Telegram links in the Telegram app",
+                kind: Kind::Switch { default: true },
+            },
+        ],
+    },
+    Def {
+        id: "PermissionsViewer",
+        name: "PermissionsViewer",
+        description: "View the permissions a user or channel has, and the roles of a server",
+        origin: Origin::Vencord,
+        source: "src/plugins/permissionsViewer/index.tsx",
+        default_on: false,
+        settings: &[Setting {
+            key: "permissionsSortOrder",
+            label: "Permissions Sort Order",
+            description: "The sort method used for defining which role grants an user a certain permission",
+            kind: Kind::Select {
+                options: &[("Highest Role", Lit::Int(0)), ("Lowest Role", Lit::Int(1))],
+                default: 0,
+            },
+        }],
+    },
+    Def {
+        id: "PinDMs",
+        name: "PinDMs",
+        description: "Allows you to pin private channels to the top of your DM list. To pin/unpin or re-order pins, right click DMs",
+        origin: Origin::Vencord,
+        source: "src/plugins/pinDms/index.tsx",
+        default_on: false,
+        settings: &[
+            Setting {
+                key: "pinOrder",
+                label: "Pin Order",
+                description: "Which order should pinned DMs be displayed in?",
+                kind: Kind::Select {
+                    options: &[
+                        ("Most recent message", Lit::Int(0)),
+                        ("Custom (right click channels to reorder)", Lit::Int(1)),
+                    ],
+                    default: 0,
+                },
+            },
+            Setting {
+                key: "canCollapseDmSection",
+                label: "Can Collapse DM Section",
+                description: "Allow uncategorised DMs section to be collapsable",
+                kind: Kind::Switch { default: false },
+            },
+            Setting {
+                key: "dmSectionCollapsed",
+                label: "DM Section Collapsed",
+                description: "Collapse DM section",
+                kind: Kind::Switch { default: false },
+            },
+            Setting {
+                key: "friendsSidebarGroupDms",
+                label: "Friends Sidebar Group Dms",
+                description: "Show pinned group DMs in the friends sidebar.",
+                kind: Kind::Switch { default: true },
+            },
+        ],
+    },
+    Def {
         id: "PlatformIndicators",
         name: "PlatformIndicators",
         description: "Adds platform indicators (Desktop, Mobile, Web...) to users.",
@@ -1139,6 +2329,15 @@ pub(crate) const DEFS: &[Def] = &[
         ],
     },
     Def {
+        id: "PreviewMessage",
+        name: "PreviewMessage",
+        description: "Lets you preview your message before sending it.",
+        origin: Origin::Vencord,
+        source: "src/plugins/previewMessage/index.tsx",
+        default_on: false,
+        settings: &[],
+    },
+    Def {
         id: "QuickMention",
         name: "QuickMention",
         description: "Adds a quick mention button to the message actions bar.",
@@ -1160,6 +2359,52 @@ pub(crate) const DEFS: &[Def] = &[
             description: "Show a small text button instead of a server list icon.",
             kind: Kind::Switch { default: false },
         }],
+    },
+    Def {
+        id: "RelationshipNotifier",
+        name: "RelationshipNotifier",
+        description: "Notifies you when a friend, group chat, or server removes you.",
+        origin: Origin::Vencord,
+        source: "src/plugins/relationshipNotifier/index.ts",
+        default_on: false,
+        settings: &[
+            Setting {
+                key: "notices",
+                label: "Notices",
+                description: "Also show a notice at the top of your screen when removed (use this if you don't want to miss any notifications).",
+                kind: Kind::Switch { default: false },
+            },
+            Setting {
+                key: "offlineRemovals",
+                label: "Offline Removals",
+                description: "Notify you when starting discord if you were removed while offline.",
+                kind: Kind::Switch { default: true },
+            },
+            Setting {
+                key: "friends",
+                label: "Friends",
+                description: "Notify when a friend removes you",
+                kind: Kind::Switch { default: true },
+            },
+            Setting {
+                key: "friendRequestCancels",
+                label: "Friend Request Cancels",
+                description: "Notify when a friend request is cancelled",
+                kind: Kind::Switch { default: true },
+            },
+            Setting {
+                key: "servers",
+                label: "Servers",
+                description: "Notify when removed from a server",
+                kind: Kind::Switch { default: true },
+            },
+            Setting {
+                key: "groups",
+                label: "Groups",
+                description: "Notify when removed from a group chat",
+                kind: Kind::Switch { default: true },
+            },
+        ],
     },
     Def {
         id: "RevealAllSpoilers",
@@ -1235,6 +2480,15 @@ pub(crate) const DEFS: &[Def] = &[
                 },
             },
         ],
+    },
+    Def {
+        id: "SearchFix",
+        name: "SearchFix",
+        description: "Fixes the annoying \"We dropped the magnifying glass!\" error.",
+        origin: Origin::Equicord,
+        source: "src/equicordplugins/searchFix/index.tsx",
+        default_on: false,
+        settings: &[],
     },
     Def {
         id: "ServerInfo",
@@ -1325,6 +2579,185 @@ pub(crate) const DEFS: &[Def] = &[
         ],
     },
     Def {
+        id: "SilentMessageToggle",
+        name: "SilentMessageToggle",
+        description: "Adds a button to the chat bar to toggle sending a silent message.",
+        origin: Origin::Vencord,
+        source: "src/plugins/silentMessageToggle/index.tsx",
+        default_on: false,
+        settings: &[
+            Setting {
+                key: "persistState",
+                label: "Persist State",
+                description: "How to persist the silent message toggle state",
+                kind: Kind::Select {
+                    options: &[
+                        ("Don't persist (reset on channel change)", Lit::Str("none")),
+                        ("Persist between channels", Lit::Str("channels")),
+                        (
+                            "Persist between channels and restarts",
+                            Lit::Str("restarts"),
+                        ),
+                    ],
+                    default: 0,
+                },
+            },
+            Setting {
+                key: "autoDisable",
+                label: "Auto Disable",
+                description: "Automatically disable the silent message toggle again after sending one",
+                kind: Kind::Switch { default: true },
+            },
+        ],
+    },
+    Def {
+        id: "SpotifyCrack",
+        name: "SpotifyCrack",
+        description: "Free listen along, no auto-pausing in voice chat, and allows activity to continue playing when idling",
+        origin: Origin::Vencord,
+        source: "src/plugins/spotifyCrack/index.ts",
+        default_on: false,
+        settings: &[
+            Setting {
+                key: "noSpotifyAutoPause",
+                label: "No Spotify Auto Pause",
+                description: "Disable Spotify auto-pause",
+                kind: Kind::Switch { default: true },
+            },
+            Setting {
+                key: "keepSpotifyActivityOnIdle",
+                label: "Keep Spotify Activity On Idle",
+                description: "Keep Spotify activity playing when idling",
+                kind: Kind::Switch { default: false },
+            },
+        ],
+    },
+    Def {
+        id: "SpotifyShareCommands",
+        name: "SpotifyShareCommands",
+        description: "Share your current Spotify track, album or artist via slash command (/track, /album, /artist)",
+        origin: Origin::Vencord,
+        source: "src/plugins/spotifyShareCommands/index.ts",
+        default_on: false,
+        settings: &[],
+    },
+    Def {
+        id: "SteamStatusSync",
+        name: "SteamStatusSync",
+        description: "Sync your status to Steam! (Online, Away, Invisible, or Offline.)",
+        origin: Origin::Equicord,
+        source: "src/equicordplugins/steamStatusSync/index.tsx",
+        default_on: false,
+        settings: &[
+            Setting {
+                key: "onlineStatus",
+                label: "Online Status",
+                description: "Steam status when on Online",
+                kind: Kind::Select {
+                    options: &[
+                        ("Online", Lit::Str("online")),
+                        ("Away", Lit::Str("away")),
+                        ("Invisible", Lit::Str("invisible")),
+                        ("Offline (Disconnect Steam Chat)", Lit::Str("offline")),
+                        ("Disabled", Lit::Str("none")),
+                    ],
+                    default: 0,
+                },
+            },
+            Setting {
+                key: "idleStatus",
+                label: "Idle Status",
+                description: "Steam status when on Idle",
+                kind: Kind::Select {
+                    options: &[
+                        ("Online", Lit::Str("online")),
+                        ("Away", Lit::Str("away")),
+                        ("Invisible", Lit::Str("invisible")),
+                        ("Offline (Disconnect Steam Chat)", Lit::Str("offline")),
+                        ("Disabled", Lit::Str("none")),
+                    ],
+                    default: 1,
+                },
+            },
+            Setting {
+                key: "dndStatus",
+                label: "Dnd Status",
+                description: "Steam status when on Do Not Disturb",
+                kind: Kind::Select {
+                    options: &[
+                        ("Online", Lit::Str("online")),
+                        ("Away", Lit::Str("away")),
+                        ("Invisible", Lit::Str("invisible")),
+                        ("Offline (Disconnect Steam Chat)", Lit::Str("offline")),
+                        ("Disabled", Lit::Str("none")),
+                    ],
+                    default: 4,
+                },
+            },
+            Setting {
+                key: "invisibleStatus",
+                label: "Invisible Status",
+                description: "Steam status when on Invisible",
+                kind: Kind::Select {
+                    options: &[
+                        ("Online", Lit::Str("online")),
+                        ("Away", Lit::Str("away")),
+                        ("Invisible", Lit::Str("invisible")),
+                        ("Offline (Disconnect Steam Chat)", Lit::Str("offline")),
+                        ("Disabled", Lit::Str("none")),
+                    ],
+                    default: 2,
+                },
+            },
+            Setting {
+                key: "goInvisibleIfActivityIsHidden",
+                label: "Go Invisible If Activity Is Hidden",
+                description: "Always go invisible if hiding game activity on Discord",
+                kind: Kind::Switch { default: false },
+            },
+        ],
+    },
+    Def {
+        id: "StreamingCodecDisabler",
+        name: "StreamingCodecDisabler",
+        description: "Disable video codecs of your choice for streaming and cameras.",
+        origin: Origin::Equicord,
+        source: "src/equicordplugins/streamingCodecDisabler/index.ts",
+        default_on: false,
+        settings: &[
+            Setting {
+                key: "disableAv1Codec",
+                label: "Disable Av1 Codec",
+                description: "Make Discord not consider using AV1 for streaming and cameras.",
+                kind: Kind::Switch { default: false },
+            },
+            Setting {
+                key: "disableH265Codec",
+                label: "Disable H265 Codec",
+                description: "Make Discord not consider using H265 for streaming and cameras.",
+                kind: Kind::Switch { default: false },
+            },
+            Setting {
+                key: "disableH264Codec",
+                label: "Disable H264 Codec",
+                description: "Make Discord not consider using H264 for streaming and cameras.",
+                kind: Kind::Switch { default: false },
+            },
+            Setting {
+                key: "disableVP8Codec",
+                label: "Disable VP8 Codec",
+                description: "Make Discord not consider using VP8 for streaming and cameras.",
+                kind: Kind::Switch { default: false },
+            },
+            Setting {
+                key: "disableVP9Codec",
+                label: "Disable VP9 Codec",
+                description: "Make Discord not consider using VP9 for streaming and cameras.",
+                kind: Kind::Switch { default: false },
+            },
+        ],
+    },
+    Def {
         id: "SuperReactionTweaks",
         name: "SuperReactionTweaks",
         description: "Customize the limit of Super Reactions playing at once, and super react by default",
@@ -1354,6 +2787,64 @@ pub(crate) const DEFS: &[Def] = &[
                     max: 100.,
                     step: 1.,
                 },
+            },
+        ],
+    },
+    Def {
+        id: "TenorGifSearch",
+        name: "GifProviderSwitcher",
+        description: "Allows you to use Tenor or Giphy GIF search instead of Klipy",
+        origin: Origin::Vencord,
+        source: "src/plugins/gifProviderSwitcher/index.tsx",
+        default_on: false,
+        settings: &[Setting {
+            key: "provider",
+            label: "Provider",
+            description: "The GIF search the picker uses",
+            kind: Kind::Select {
+                options: &[
+                    ("Tenor", Lit::Str("tenor")),
+                    ("Giphy", Lit::Str("giphy")),
+                    ("Klipy", Lit::Str("klipy")),
+                ],
+                default: 0,
+            },
+        }],
+    },
+    Def {
+        id: "Translate+",
+        name: "Translate+",
+        description: "Vencord's translate plugin but with support for artistic languages!",
+        origin: Origin::Equicord,
+        source: "src/equicordplugins/translatePlus/index.tsx",
+        default_on: false,
+        settings: &[
+            Setting {
+                key: "target",
+                label: "Target",
+                description: "Target language",
+                kind: Kind::Text {
+                    default: "en",
+                    max_len: 200,
+                },
+            },
+            Setting {
+                key: "toki",
+                label: "Toki",
+                description: "Enable Toki Pona",
+                kind: Kind::Switch { default: true },
+            },
+            Setting {
+                key: "sitelen",
+                label: "Sitelen",
+                description: "Enable Sitelen Pona",
+                kind: Kind::Switch { default: true },
+            },
+            Setting {
+                key: "shavian",
+                label: "Shavian",
+                description: "Enable Shavian",
+                kind: Kind::Switch { default: true },
             },
         ],
     },
@@ -1458,6 +2949,25 @@ pub(crate) const DEFS: &[Def] = &[
         }],
     },
     Def {
+        id: "UnlockedAvatarZoom",
+        name: "UnlockedAvatarZoom",
+        description: "Allows you to zoom in further in the image crop tool when changing your avatar",
+        origin: Origin::Vencord,
+        source: "src/plugins/unlockedAvatarZoom/index.ts",
+        default_on: false,
+        settings: &[Setting {
+            key: "zoomMultiplier",
+            label: "Zoom Multiplier",
+            description: "Zoom multiplier",
+            kind: Kind::Number {
+                default: 4.,
+                min: 2.,
+                max: 16.,
+                step: 1.,
+            },
+        }],
+    },
+    Def {
         id: "UserMessagesPronouns",
         name: "UserMessagesPronouns",
         description: "Adds pronouns to chat user messages",
@@ -1481,6 +2991,68 @@ pub(crate) const DEFS: &[Def] = &[
                 key: "showSelf",
                 label: "Show yourself",
                 description: "Enable or disable showing pronouns for yourself",
+                kind: Kind::Switch { default: true },
+            },
+        ],
+    },
+    Def {
+        id: "UserPFP",
+        name: "UserPFP",
+        description: "Allows you to set local static or animated avatars for yourself and other users",
+        origin: Origin::Equicord,
+        source: "src/equicordplugins/userpfp/index.tsx",
+        default_on: false,
+        settings: &[
+            Setting {
+                key: "overrideServerAvatars",
+                label: "Override Server Avatars",
+                description: "Override server avatars with custom avatars or the default user avatar if no custom avatar is set.",
+                kind: Kind::Switch { default: true },
+            },
+            Setting {
+                key: "preferNitro",
+                label: "Prefer Nitro",
+                description: "Which avatar to use if both default animated (Nitro) pfp and UserPFP avatars are present",
+                kind: Kind::Select {
+                    options: &[("UserPFP", Lit::Bool(false)), ("Nitro", Lit::Bool(true))],
+                    default: 1,
+                },
+            },
+            Setting {
+                key: "databaseSource",
+                label: "Database Source",
+                description: "URL to load database from",
+                kind: Kind::Text {
+                    default: "https://userpfp.github.io/UserPFP/source/data.json",
+                    max_len: 2000,
+                },
+            },
+        ],
+    },
+    Def {
+        id: "USRBG",
+        name: "USRBG",
+        description: "Displays user banners from USRBG, allowing anyone to get a banner without Nitro",
+        origin: Origin::Vencord,
+        source: "src/plugins/usrbg/index.tsx",
+        default_on: false,
+        settings: &[
+            Setting {
+                key: "nitroFirst",
+                label: "Nitro First",
+                description: "Banner to use if both Nitro and USRBG banners are present",
+                kind: Kind::Select {
+                    options: &[
+                        ("Nitro banner", Lit::Bool(true)),
+                        ("USRBG banner", Lit::Bool(false)),
+                    ],
+                    default: 0,
+                },
+            },
+            Setting {
+                key: "voiceBackground",
+                label: "Voice Background",
+                description: "Use USRBG banners as voice chat backgrounds",
                 kind: Kind::Switch { default: true },
             },
         ],
@@ -1543,6 +3115,28 @@ pub(crate) const DEFS: &[Def] = &[
         settings: &[],
     },
     Def {
+        id: "VoiceMessages",
+        name: "VoiceMessages",
+        description: "Allows you to send voice messages like on mobile. To do so, right click the upload button and click Send Voice Message",
+        origin: Origin::Vencord,
+        source: "src/plugins/voiceMessages/index.tsx",
+        default_on: false,
+        settings: &[
+            Setting {
+                key: "noiseSuppression",
+                label: "Noise Suppression",
+                description: "Noise Suppression",
+                kind: Kind::Switch { default: true },
+            },
+            Setting {
+                key: "echoCancellation",
+                label: "Echo Cancellation",
+                description: "Echo Cancellation",
+                kind: Kind::Switch { default: true },
+            },
+        ],
+    },
+    Def {
         id: "VoiceStats",
         name: "VoiceStats",
         description: "Shows how long you've spent in voice with each user in their profile.",
@@ -1583,6 +3177,15 @@ pub(crate) const DEFS: &[Def] = &[
             description: "While this is enabled, clicking a reacting user's avatar will open their profile instead of adding the reaction",
             kind: Kind::Switch { default: true },
         }],
+    },
+    Def {
+        id: "ZipPreview",
+        name: "ZipPreview",
+        description: "Previews ZIP contents inside file attachments.",
+        origin: Origin::Equicord,
+        source: "src/equicordplugins/zipPreview/index.tsx",
+        default_on: false,
+        settings: &[],
     },
 ];
 

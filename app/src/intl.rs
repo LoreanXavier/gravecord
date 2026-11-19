@@ -412,6 +412,17 @@ mod guard {
 
     /// Literals that read like a message but are not shown as written, with why: (file, text, reason).
     pub(super) const ALLOWED: &[(&str, &str, &str)] = &[
+        // Not in the pinned client: Translate+'s own labels, English in the original whatever the locale.
+        (
+            "ui/hover_bar.rs",
+            "Translate",
+            "a plugin's own label, not translated by the original",
+        ),
+        (
+            "ui/menu.rs",
+            "Translate",
+            "a plugin's own label, not translated by the original",
+        ),
         // The Mute/Unmute pairs are looked up by their English text and shown through `tr`.
         (
             "ui/context_menu.rs",

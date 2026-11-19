@@ -108,7 +108,7 @@ mod tests {
     fn row(entry: &Entry) -> &Row {
         match entry {
             Entry::Row(row) => row,
-            Entry::Separator => panic!("a separator"),
+            Entry::Separator | Entry::Heading(_) => panic!("not a row"),
         }
     }
 
