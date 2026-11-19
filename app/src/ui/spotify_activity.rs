@@ -731,18 +731,22 @@ impl Root {
                     palette.token("--control-secondary-text-default"),
                 ));
             } else if sync && !large {
-                if let Some(bytes) = self
+                let icon_el = if let Some(bytes) = self
                     .texts
                     .get(ICON_KEY)
                     .and_then(|text| user_play_icon(text))
                 {
-                    button = button.child(
-                        svg()
-                            .data(&bytes)
-                            .size(px(16.))
-                            .text_color(palette.token("--control-secondary-text-default")),
-                    );
-                }
+                    svg().data(&bytes)
+                } else {
+                    // Module 835723 (`UserPlayIcon`) fallback so the button is never blank before
+                    // the chunk fetch completes or when offline.
+                    svg().path("icons/user_play.svg")
+                };
+                button = button.child(
+                    icon_el
+                        .size(px(16.))
+                        .text_color(palette.token("--control-secondary-text-default")),
+                );
             } else {
                 if !large {
                     button = button.child(
@@ -848,6 +852,14 @@ mod tests {
         assert!(svg.contains("fill-rule=\"evenodd\""));
         assert!(user_play_icon(&chunk.replace("M2 2Z", "<script>")).is_none());
         assert!(user_play_icon("835723(t,n,e){d:\"M0 0Z\"},711589(").is_none());
+    }
+
+    #[test]
+    fn bundled_user_play_icon_contains_both_paths() {
+        let icon = include_str!("../../assets/icons/user_play.svg");
+        assert!(icon.contains("viewBox=\"0 0 24 24\""));
+        assert!(icon.contains("fill-rule=\"evenodd\""));
+        assert_eq!(icon.matches("<path ").count(), 2);
     }
 
     #[test]

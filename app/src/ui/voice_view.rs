@@ -136,6 +136,15 @@ pub(super) enum Menu {
     Share,
 }
 
+/// Off-thread avatar dominant-colour cache entry (`useAvatarColor`, module 654107).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum TileColor {
+    /// Background decode & quantisation in flight.
+    Pending,
+    /// Decoded dominant RGB (or `None` if decoding failed).
+    Ready(Option<[u8; 3]>),
+}
+
 pub(super) struct State {
     /// Channels whose chat is docked at the right.
     pub chat_open: HashSet<Id>,
@@ -193,8 +202,8 @@ pub(super) struct State {
     pub tile_menu: Option<super::call_menus::Open>,
     /// The notices of the call (`notice_bar.rs`): "Your voice has been disconnected ...".
     pub notices: super::notice_bar::State,
-    /// Dominant colour of an avatar by its image key, decoded once.
-    colors: RefCell<HashMap<String, Option<[u8; 3]>>>,
+    /// Dominant colour of an avatar by its image key, computed off the UI thread once the image is ready.
+    colors: RefCell<HashMap<String, TileColor>>,
     pub(super) background: super::call_background::State,
 }
 
@@ -683,30 +692,71 @@ impl Root {
             .unwrap_or_default()
     }
 
-    /// `useAvatarColor`: the avatar's dominant colour, `--primary-800` while it is unknown.
-    pub(super) fn tile_color(&self, user: &User) -> Rgba {
-        let (key, _) = super::avatar_source(user);
-        let found = *self
-            .vv
-            .colors
-            .borrow_mut()
-            .entry(key.clone())
-            .or_insert_with(|| {
-                let picture = self.images.get(&key)?;
-                let decoded = image::load_from_memory(picture.bytes()).ok()?;
-                crate::palette::avatar_palette(decoded.to_rgba8().as_raw())
-                    .first()
-                    .copied()
-            });
-        match found {
-            Some(rgb) => rgba(
-                (u32::from(rgb[0]) << 24)
-                    | (u32::from(rgb[1]) << 16)
-                    | (u32::from(rgb[2]) << 8)
-                    | 0xff,
-            ),
+    /// `useAvatarColor` (module 654107): the avatar's dominant colour, computed off the UI thread once the avatar has
+    /// loaded (never caching a miss before the picture arrives), scaled by `desaturateUserColors`, falling back to
+    /// `--primary-800` while pending.
+    pub(super) fn tile_color(&self, user: &User, cx: &mut Context<Self>) -> Rgba {
+        let (key, url) = super::avatar_source(user);
+        let cached = self.vv.colors.borrow().get(&key).copied();
+        let rgb = match cached {
+            Some(TileColor::Ready(rgb)) => rgb,
+            Some(TileColor::Pending) => None,
+            None => {
+                if let Some(picture) = self.images.get(&key) {
+                    let bytes = picture.bytes().to_vec();
+                    let cache_key = key.clone();
+                    self.vv.colors.borrow_mut().insert(key, TileColor::Pending);
+                    cx.spawn(async move |this, cx| {
+                        let rgb = cx
+                            .background_executor()
+                            .spawn(async move {
+                                let decoded = image::load_from_memory(&bytes).ok()?;
+                                crate::palette::avatar_palette(decoded.to_rgba8().as_raw())
+                                    .first()
+                                    .copied()
+                            })
+                            .await;
+                        let _ = this.update(cx, |this, cx| {
+                            this.vv
+                                .colors
+                                .borrow_mut()
+                                .insert(cache_key, TileColor::Ready(rgb));
+                            cx.notify();
+                        });
+                    })
+                    .detach();
+                } else {
+                    self.want_image(key, url, cx);
+                }
+                None
+            }
+        };
+        match rgb {
+            Some(rgb) => {
+                let sat = if self.pref_on("appearance_desaturate_user_colors", false) {
+                    self.saturation_factor()
+                } else {
+                    1.
+                };
+                scale_rgb_saturation(rgb, sat)
+            }
             None => mid("--primary-800"),
         }
+    }
+
+    /// Nitro profile theme gradient for voice/video tiles (modules 697682 and 991988 `VIDEO_TILE_BACKGROUND`):
+    /// `linear-gradient(mix(primary 20%, modal_bg), mix(secondary 60%, modal_bg))`.
+    fn tile_theme_gradient(&self, user: &User) -> Option<gpui::Background> {
+        let body = self.fetched.get(&format!("profile:{}", user.id))?;
+        let colors = body["user_profile"]["theme_colors"].as_array()?;
+        let primary = colors.first()?.as_u64()? as u32;
+        let secondary = colors.get(1)?.as_u64()? as u32;
+        let (top, bottom) = video_tile_theme_stops(primary, secondary, mid("--modal-background"));
+        Some(linear_gradient(
+            180.,
+            linear_color_stop(top, 0.),
+            linear_color_stop(bottom, 1.),
+        ))
     }
 
     /// The candidates of the grid before the filter: a user tile for everyone in the channel, and a stream tile for
@@ -1594,10 +1644,14 @@ impl Root {
             }
             failed
         };
-        let background = if stream_tile || video_tiles::shows_video(&person.tile) {
-            mid("--primary-700")
+        let (background, theme_gradient) = if stream_tile || video_tiles::shows_video(&person.tile)
+        {
+            (mid("--primary-700"), None)
         } else {
-            self.tile_color(&person.user)
+            (
+                self.tile_color(&person.user, cx),
+                self.tile_theme_gradient(&person.user),
+            )
         };
         // Not in the pinned client: USRBG's banner behind a tile without video (`plugin_hooks/usrbg.rs`).
         let usrbg = (!stream_tile && !video_tiles::shows_video(&person.tile))
@@ -1689,6 +1743,7 @@ impl Root {
             .rounded(px(8.))
             .overflow_hidden()
             .bg(background)
+            .when_some(theme_gradient, |this, gradient| this.bg(gradient))
             .children(usrbg)
             // Module 175203: a right click opens the tile's menu at the pointer, `minimal` on a stream, whether joined
             // or observing (`outside`).
@@ -1926,9 +1981,11 @@ impl Root {
                     .as_ref()
                     .map(|call| call.guild)
                     .filter(|guild| *guild != 0);
-                if let Some(full) =
-                    self.full_vc_avatar(&person.user, guild, (layout.tile_width, layout.tile_height))
-                {
+                if let Some(full) = self.full_vc_avatar(
+                    &person.user,
+                    guild,
+                    (layout.tile_width, layout.tile_height),
+                ) {
                     return full;
                 }
                 let picture = self
@@ -2133,8 +2190,8 @@ impl Root {
     /// Module 566331 over the focused stream its owner ended (`container_XFjmsP`, onyx, 4px of padding): the art
     /// (`art_XFjmsP`: none under 550 wide, 134 high under 1000, else 185, 48 under it), "This stream has ended."
     /// (`heading-sm/medium` under 550, else `heading-lg/medium`, `text-strong`, 24 under it) and the secondary Close
-    /// Stream (`sm` under 550, else `md`).
-    /// GAP: the container's radial over linear purple gradient is drawn as `--modal-background` alone.
+    /// Stream (`sm` under 550, else `md`), over the purple gradient (`--expressive-gradient-purple-start` to
+    /// `--expressive-gradient-purple-end`, faded down into `--modal-background`).
     fn ended_stream_content(&self, width: f32, cx: &mut Context<Self>) -> AnyElement {
         use super::overlay::onyx;
         let small = width < 550.;
@@ -2146,11 +2203,25 @@ impl Root {
             Some(185.)
         };
         let art = self.images.get(ENDED_STREAM_ART).cloned();
+        let modal_bg = onyx("--modal-background");
+        let clear = Rgba { a: 0., ..modal_bg };
         div()
             .absolute()
             .inset_0()
             .overflow_hidden()
-            .bg(onyx("--modal-background"))
+            .bg(modal_bg)
+            // `linear-gradient(270deg, --expressive-gradient-purple-start 0, --expressive-gradient-purple-end 100%)`
+            .child(div().absolute().inset_0().bg(linear_gradient(
+                270.,
+                linear_color_stop(rgba(0xa157f273), 0.),
+                linear_color_stop(rgba(0x3d168a73), 1.),
+            )))
+            // Bottom-anchored fade into `--modal-background`, approximating `radial-gradient(100% 100% at 50% 100%, ...)`.
+            .child(div().absolute().inset_0().bg(linear_gradient(
+                180.,
+                linear_color_stop(clear, 0.),
+                linear_color_stop(modal_bg, 0.72),
+            )))
             .p(px(4.))
             .flex()
             .flex_col()
@@ -4346,6 +4417,52 @@ fn paint_invite_ring(bounds: Bounds<Pixels>, progress: f32, window: &mut Window)
     }
 }
 
+/// Scales an RGB colour's HSL saturation by `factor` (module 654107 `A` for `desaturateUserColors`).
+fn scale_rgb_saturation(rgb: [u8; 3], factor: f32) -> Rgba {
+    let f = factor.clamp(0., 1.);
+    if (f - 1.).abs() < 1e-4 {
+        return rgba(
+            (u32::from(rgb[0]) << 24) | (u32::from(rgb[1]) << 16) | (u32::from(rgb[2]) << 8) | 0xff,
+        );
+    }
+    let (r, g, b) = (
+        f32::from(rgb[0]) / 255.,
+        f32::from(rgb[1]) / 255.,
+        f32::from(rgb[2]) / 255.,
+    );
+    let max = r.max(g).max(b);
+    let min = r.min(g).min(b);
+    let l = (max + min) * 0.5;
+    let (r, g, b) = (l + (r - l) * f, l + (g - l) * f, l + (b - l) * f);
+    Rgba {
+        r: r.clamp(0., 1.),
+        g: g.clamp(0., 1.),
+        b: b.clamp(0., 1.),
+        a: 1.,
+    }
+}
+
+/// `.user-profile-video-tile-background.background_SZIJT_` (modules 697682 and 991988):
+/// `linear-gradient(color-mix(primary 20%, modal_bg), color-mix(secondary 60%, modal_bg))`.
+fn video_tile_theme_stops(primary: u32, secondary: u32, modal_bg: Rgba) -> (Rgba, Rgba) {
+    let from_hex = |hex: u32| Rgba {
+        r: ((hex >> 16) & 0xff) as f32 / 255.,
+        g: ((hex >> 8) & 0xff) as f32 / 255.,
+        b: (hex & 0xff) as f32 / 255.,
+        a: 1.,
+    };
+    let mix = |a: Rgba, b: Rgba, weight: f32| Rgba {
+        r: a.r * weight + b.r * (1. - weight),
+        g: a.g * weight + b.g * (1. - weight),
+        b: a.b * weight + b.b * (1. - weight),
+        a: 1.,
+    };
+    (
+        mix(from_hex(primary), modal_bg, 0.20),
+        mix(from_hex(secondary), modal_bg, 0.60),
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -4417,5 +4534,18 @@ mod tests {
         assert!(invite_ring_fraction(0.75) < mid);
         assert_eq!(invite_ring_fraction(1.), 0.);
         assert_eq!(invite_ring_fraction(1.5), 0.);
+    }
+
+    #[test]
+    fn avatar_color_desaturates_toward_lightness_and_theme_stops_mix_into_modal_bg() {
+        let full = scale_rgb_saturation([0x58, 0x65, 0xf2], 1.0);
+        assert!((full.b - 0xf2 as f32 / 255.).abs() < 1e-3);
+        let gray = scale_rgb_saturation([0x58, 0x65, 0xf2], 0.0);
+        assert!((gray.r - gray.g).abs() < 1e-4 && (gray.g - gray.b).abs() < 1e-4);
+
+        let bg = rgba(0x101014ff);
+        let (top, bottom) = video_tile_theme_stops(0xff0000, 0x0000ff, bg);
+        assert!(top.r > bg.r && top.r < 0.3);
+        assert!(bottom.b > 0.55 && bottom.b < 0.7);
     }
 }

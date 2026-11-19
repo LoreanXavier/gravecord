@@ -374,13 +374,34 @@ impl Root {
                         .child(img(image).size(px(side)))
                 })),
         );
-        // `E` of module 641318: on a server profile without Nitro the avatar is a button for `onUpsellClick`, the
-        // per-server profile upsell (module 63473).
-        // GAP: the 20px white NitroWheel over the avatar (`_.QY` of module 531835) is not drawn.
+        // `E` of module 641318 + module 531835 (`overlay_zNeEEq`, `overlayIcon_zNeEEq`): on a server profile without
+        // Nitro the avatar is a button for `onUpsellClick` (module 63473) and reveals a circular `--opacity-black-40`
+        // veil with the 20px white NitroWheel on hover.
         let avatar = if guild_upsell {
             avatar
                 .id("profile-editor-avatar-upsell")
+                .group("profile-editor-avatar-upsell")
                 .cursor_pointer()
+                .child(
+                    div()
+                        .absolute()
+                        .left(px(9.))
+                        .top(px(9.))
+                        .size(px(avatar_size))
+                        .rounded_full()
+                        .bg(color("--opacity-black-40"))
+                        .opacity(0.)
+                        .group_hover("profile-editor-avatar-upsell", |s| s.opacity(1.))
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .child(
+                            gpui::svg()
+                                .path("icons/nitro_wheel.svg")
+                                .size(px(20.))
+                                .text_color(rgba(0xffffffff)),
+                        ),
+                )
                 .on_click(cx.listener(|this, _, _, cx| {
                     this.profile_editor_open_guild_upsell(cx);
                 }))
