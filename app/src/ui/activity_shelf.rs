@@ -380,7 +380,7 @@ impl Root {
                     )
                     .when(card.promoted || card.label != 0, |this| {
                         // `bannerUpperRightContainer`: a row, 4px apart, 8px from the top and the right.
-                        let pill = |text: &'static str, background, border, ink| {
+                        let pill = |text: gpui::SharedString, background, border, ink| {
                             div()
                                 .h(px(16.))
                                 .px(px(8.))
@@ -404,15 +404,21 @@ impl Root {
                                 .gap(px(4.))
                                 .when(card.promoted, |row| {
                                     row.child(pill(
-                                        "PROMOTED",
+                                        "PROMOTED".into(),
                                         "--badge-expressive-background",
                                         "--badge-expressive-border",
                                         "--badge-expressive-text",
                                     ))
                                 })
                                 .when(card.label != 0, |row| {
+                                    // Module 697675: NEW is the badge's own `type: "new"` ("New"), UPDATED the
+                                    // "updated" string (`/qdhkk`); the badge sets them in capitals.
                                     row.child(pill(
-                                        if card.label == 1 { "NEW" } else { "UPDATED" },
+                                        if card.label == 1 {
+                                            "NEW".into()
+                                        } else {
+                                            dc_intl::t("/qdhkk").to_uppercase().into()
+                                        },
                                         "--badge-primary-background",
                                         "--badge-primary-border",
                                         "--badge-primary-text",

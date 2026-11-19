@@ -351,22 +351,58 @@ impl Root {
         cx.notify();
     }
 
-    /// `buttons_0VkShF` of the bot popout: Add App (full width), then the Store. GAP: the Store of module 571077
-    /// (`storefront_available`) opens the application storefront modal 719847, which is not built; it is not drawn.
+    /// Store of module 571077 (`PRESS_APP_STOREFRONT`, the primary button with the shop icon) for an application
+    /// with `storefront_available`: the application storefront modal (module 719847).
+    fn store_button(
+        &self,
+        user: Id,
+        id: &'static str,
+        full_width: bool,
+        palette: &Palette,
+        cx: &mut Context<Self>,
+    ) -> Option<AnyElement> {
+        let app = profile_app(self.fetched.get(&format!("profile:{user}")))?;
+        if !super::app_storefront::storefront_available(app) {
+            return None;
+        }
+        let app_id = app["id"].as_str().unwrap_or_default().to_owned();
+        let guild = self.guild;
+        Some(
+            self.bot_button(
+                id,
+                dc_intl::t("V7j5aZ").into(),
+                Some("home_shop"),
+                true,
+                full_width,
+                palette,
+            )
+            .on_click(cx.listener(move |this, _, _, cx| {
+                this.open_app_storefront(app_id.clone(), guild, cx);
+            }))
+            .into_any_element(),
+        )
+    }
+
+    /// `buttons_0VkShF` of the bot popout: Add App, then the Store (module 571077), both full width.
     pub(super) fn bot_popout_buttons(
         &self,
         user: Id,
         palette: &Palette,
         cx: &mut Context<Self>,
     ) -> Option<AnyElement> {
-        let add = self.add_app_button(user, "bot-popout-add-app", true, palette, cx)?;
+        let add = self.add_app_button(user, "bot-popout-add-app", true, palette, cx);
+        let store = self.store_button(user, "bot-popout-store", true, palette, cx);
+        if add.is_none() && store.is_none() {
+            return None;
+        }
         Some(
             div()
                 .parity("bot-popout-buttons")
                 .flex()
                 .flex_wrap()
                 .gap(px(8.))
-                .child(add)
+                .children(add)
+                .children(store)
                 .into_any_element(),
         )
     }
@@ -642,7 +678,8 @@ impl Root {
             .children(self.live_banner_in(user_id, guild, 600., 210., cx));
         // `headerButtons_NxZlvf`: Message (its text, or its icon once another button follows), Store, Add App.
         let add = self.add_app_button(user_id, "bot-modal-add-app", false, &palette, cx);
-        let message_icon_only = add.is_some();
+        let store = self.store_button(user_id, "bot-modal-store", false, &palette, cx);
+        let message_icon_only = add.is_some() || store.is_some();
         let message_label: SharedString = dc_intl::t("zROXEV").into();
         let message: AnyElement = if message_icon_only {
             let target = self
@@ -721,6 +758,7 @@ impl Root {
                     .justify_end()
                     .gap(px(8.))
                     .child(message)
+                    .children(store)
                     .children(add),
             );
         let overflow = div()

@@ -76,9 +76,21 @@ enum Dialog {
     Failed { text: String },
 }
 
+/// The support article of module 872142's Brazil notice (`getArticleURL("42704051358359")`).
+const BRAZIL_ARTICLE: &str = "https://support.discord.com/hc/en-us/articles/42704051358359";
+
+/// `f` of module 872142 for a failed request, with the Brazil notice: error 20060 for an account located in BR
+/// (`LocationMetadataStore`) reads "Some activities are currently unavailable in Brazil. Read more: {url}".
+/// GAP: the url is plain text (an `Anchor` in the official dialog), and an unknown location is not fetched first.
+pub(super) fn launch_error_text(code: Option<u64>, country: Option<&str>) -> String {
+    if code == Some(20_060) && country == Some("BR") {
+        return dc_intl::format("GJ27pD", &[("supportArticleUrl", BRAZIL_ARTICLE.into())]);
+    }
+    launch_error_message(code).to_owned()
+}
+
 /// `f` of module 872142 for a failed request (its `errorType` 2): the message the "Failed to Launch Activity" dialog
 /// (module 85982) shows for the API error `code`, "Unable to launch activity" for any other.
-/// GAP: the Brazil notice (`GJ27pD`, error 20060 for an account located in BR) needs the location metadata.
 pub(super) fn launch_error_message(code: Option<u64>) -> &'static str {
     dc_intl::t(match code {
         // `INVALID_ACTIVITY_LAUNCH_NO_ACCESS`
@@ -475,8 +487,9 @@ impl Root {
         let failed = move |this: &mut Self, why: &str, cx: &mut Context<Self>| {
             tracing::warn!("activity launch failed: {why}");
             this.activities.launching = None;
+            let country = this.stores.location_metadata.get_country_code();
             this.activities.dialog = Some(Dialog::Failed {
-                text: launch_error_message(code).to_owned(),
+                text: launch_error_text(code, country),
             });
             cx.notify();
         };
@@ -801,7 +814,7 @@ impl Root {
     #[cfg(feature = "capture")]
     pub(crate) fn script_activity_failed(&mut self, code: Option<u64>) -> String {
         self.activities.launching = None;
-        let text = launch_error_message(code).to_owned();
+        let text = launch_error_text(code, self.stores.location_metadata.get_country_code());
         self.activities.dialog = Some(Dialog::Failed { text: text.clone() });
         format!("failed: {text}")
     }
@@ -887,6 +900,14 @@ mod tests {
             "This Activity is age-restricted"
         );
         assert_eq!(launch_error_message(None), "Unable to launch activity");
+        assert_eq!(
+            launch_error_text(Some(20_060), Some("BR")),
+            "Some activities are currently unavailable in Brazil. Read more: https://support.discord.com/hc/en-us/articles/42704051358359"
+        );
+        assert_eq!(
+            launch_error_text(Some(20_060), Some("US")),
+            "Unable to launch activity"
+        );
         assert_eq!(
             launch_error_message(Some(10003)),
             "Unable to launch activity"

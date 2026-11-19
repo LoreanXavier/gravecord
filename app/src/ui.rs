@@ -38,6 +38,7 @@ mod add_server;
 mod alt_text;
 mod announcements;
 mod app_dm;
+mod app_storefront;
 mod apps;
 mod attachment_modal;
 mod audio_attachment;
@@ -98,6 +99,8 @@ mod family_center;
 mod file_actions;
 mod files;
 mod forward;
+mod frames_announcement;
+mod friend_accept;
 mod friend_nickname;
 mod friend_request_notice;
 mod friends;
@@ -135,6 +138,7 @@ mod library;
 mod lightbox;
 mod links;
 mod live_activity;
+mod locale_error;
 pub mod login;
 mod logout;
 mod lottie_icon;
@@ -153,6 +157,7 @@ pub(crate) mod role_gradient;
 mod role_popout;
 mod schedule_message;
 mod sent_attachment;
+mod small_dialogs;
 mod spoiler_gate;
 mod spotify_activity;
 mod stage;
@@ -612,6 +617,11 @@ pub struct Root {
     /// The select image and image crop modals (`image_crop`).
     image_crop: image_crop::State,
     badge_modal: Option<badge_modal::BadgeModal>,
+    /// The application storefront modal (module 719847, `app_storefront`).
+    app_storefront: Option<app_storefront::Open>,
+    /// "New in the Shop: Profile Frames" (module 627781) is open, and whether it was opened this session.
+    frames_announcement: bool,
+    frames_announcement_seen: bool,
     spotify_actions: spotify_activity::Actions,
     /// Animated avatar files a frame found missing, asked for by `prepare_live_avatars`.
     avatar_wants: std::cell::RefCell<Vec<(String, String)>>,
@@ -1136,6 +1146,9 @@ impl Root {
             requested: HashSet::new(),
             image_crop: Default::default(),
             badge_modal: None,
+            app_storefront: None,
+            frames_announcement: false,
+            frames_announcement_seen: false,
             spotify_actions: spotify_activity::Actions::default(),
             avatar_wants: std::cell::RefCell::new(Vec::new()),
             ui_scale: std::cell::Cell::new(1.),
@@ -2091,6 +2104,14 @@ impl Root {
                     self.thread_step_fetched(&key, &body);
                     return;
                 }
+                if key.starts_with(app_storefront::KEY_PREFIX) {
+                    self.app_storefront_fetched(key, body, cx);
+                    return;
+                }
+                if key.starts_with(friend_accept::KEY_PREFIX) {
+                    self.friend_accept_answered(&key, &body, cx);
+                    return;
+                }
                 if key.starts_with(message_requests::KEY_PREFIX) {
                     self.message_requests_fetched(&key, &body, cx);
                     return;
@@ -2793,6 +2814,8 @@ impl Root {
         self.request_emoji_button();
         self.request_frecency();
         self.request_saved();
+        // `POST_CONNECTION_OPEN` of `CollectiblesMarketingManager` (module 596339).
+        self.maybe_open_frames_announcement();
     }
 
     fn reconcile_after_ready(&mut self, prev_guild: Option<Id>, prev_channel: Option<Id>) {
@@ -10881,6 +10904,9 @@ impl Render for Root {
         #[cfg(feature = "capture")]
         crate::perf::RENDERS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         self.interaction_modal_frame(window, cx);
+        if std::mem::take(&mut self.chat_extra.back_to_login) {
+            self.back_to_login(cx);
+        }
         self.open_pending_overlay_survey(cx);
         self.av_errors_frame(cx);
         self.unread_notice_frame(cx);
@@ -11115,6 +11141,8 @@ impl Render for Root {
         )
         .size_full();
         let image_crop_layers = self.image_crop_layers(window, cx);
+        let locale_error = self.locale_error_layer();
+        let app_storefront = self.app_storefront_layer(window, cx);
         let element = div()
             .id("root")
             .track_focus(&self.focus)
@@ -11197,6 +11225,17 @@ impl Render for Root {
                 }
                 // The media viewer is the top layer: Escape and the arrows are its.
                 if this.guild_events_key(&keys.key, cx) {
+                    cx.stop_propagation();
+                    return;
+                }
+                if keys.key == "escape" && this.frames_announcement {
+                    this.close_frames_announcement();
+                    cx.notify();
+                    cx.stop_propagation();
+                    return;
+                }
+                if keys.key == "escape" && this.app_storefront.take().is_some() {
+                    cx.notify();
                     cx.stop_propagation();
                     return;
                 }
@@ -12373,6 +12412,8 @@ impl Render for Root {
             .children(self.poll_modal(cx))
             .children(self.schedule_modal_layer(window, cx))
             .children(self.badge_modal_layer(cx))
+            .children(app_storefront)
+            .children(self.frames_announcement_layer(cx))
             .children(self.spotify_premium_layer(cx))
             .children(self.lightbox_layer(cx))
             .children(self.video_fullscreen_layer(window, cx))
@@ -12388,6 +12429,8 @@ impl Render for Root {
             .children(self.soundboard_gift_picker(window, cx))
             // Module 738876: the drop area over everything (`z-index: 2000`) while files are dragged in.
             .children(self.file_drop_area(window, cx))
+            // Module 638421: the error page in place of the app when the locale's catalog failed to load.
+            .children(locale_error)
             .children(self.splash_layer(window, cx))
             // Last: ends the frame's record of where the web views' boxes were painted (`web_frames.rs`).
             .child(self.web_frames.sweep());

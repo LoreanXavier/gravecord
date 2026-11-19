@@ -241,6 +241,7 @@ impl Root {
             || self.full_profile.is_some()
             || self.server_settings.is_some()
             || self.channel_settings.is_some()
+            || crate::intl::load_error().is_some()
     }
 
     /// Called every frame: opens, shows, hides and closes the views from where their boxes were drawn in the last

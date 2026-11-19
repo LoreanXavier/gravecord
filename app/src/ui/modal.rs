@@ -115,14 +115,14 @@ pub(super) fn footer_button(spec: Button, cx: &mut Context<Root>) -> AnyElement 
     footer_button_sized(spec, true, cx)
 }
 
+/// The design system's `md` button in a dialog's content (as wide as its text, at least 100px).
+pub(super) fn content_button(spec: Button, cx: &mut Context<Root>) -> AnyElement {
+    footer_button_shape(spec, false, false, cx)
+}
+
 /// The design system's `sm` footer action (32px, at least 60px wide).
 pub(super) fn small_footer_button(spec: Button, cx: &mut Context<Root>) -> AnyElement {
     footer_button_shape(spec, false, true, cx)
-}
-
-/// The design system's `md` button as wide as its text (outside a footer: a gate's actions).
-pub(super) fn content_button(spec: Button, cx: &mut Context<Root>) -> AnyElement {
-    footer_button_sized(spec, false, cx)
 }
 
 /// `fill`: the button takes its share of the footer; else it is as wide as its text (beside an action bar input).

@@ -81,13 +81,13 @@ pub(super) fn storefront_key(app: &str) -> String {
 }
 
 /// Module 371794 `YE`: `https://cdn.discordapp.com/app-assets/{app}/store/{asset}.webp?size={n}`.
-pub(super) fn asset_url(app: &str, asset: &str, size: u32) -> String {
+pub(in crate::ui) fn asset_url(app: &str, asset: &str, size: u32) -> String {
     format!("https://cdn.discordapp.com/app-assets/{app}/store/{asset}.webp?size={size}")
 }
 
 /// The price as `Intl.NumberFormat("en-US", {style: "currency"})` shows it: a symbol for the few currencies en-US has
 /// one for, else the code and a no-break space.
-pub(super) fn format_price(amount: i64, currency: &str, exponent: u32) -> String {
+pub(in crate::ui) fn format_price(amount: i64, currency: &str, exponent: u32) -> String {
     let divisor = 10i64.pow(exponent);
     let (whole, fraction) = (amount / divisor, amount % divisor);
     let grouped = group_thousands(whole);

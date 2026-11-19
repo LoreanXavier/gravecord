@@ -529,6 +529,16 @@ impl Root {
                     body: Some(super::activity_launch::ticket_body(channel)),
                 });
             }
+            Ask::EncourageHardwareAcceleration { nonce } => {
+                let answer = self.encourage_hardware_acceleration();
+                cx.notify();
+                if let Some(host) = self.activities.host.as_mut() {
+                    let action =
+                        host.bridge
+                            .answer("ENCOURAGE_HW_ACCELERATION", &nonce, Ok(answer));
+                    self.activity_actions(vec![action], cx);
+                }
+            }
             Ask::OpenExternalLink { nonce, url } => {
                 // The untrusted-link confirmation of the official client is not built: no link opens (BLOCKED.md).
                 tracing::debug!(

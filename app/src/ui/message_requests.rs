@@ -1063,7 +1063,8 @@ impl Root {
                                     !busy,
                                 )
                                 .on_click(cx.listener(move |this, _, _, cx| {
-                                    this.mr_accept(channel, cx)
+                                    // `markAsNotSpam` (module 190857), asking first (693864).
+                                    this.mark_not_spam(channel, cx)
                                 })),
                             ),
                         ),

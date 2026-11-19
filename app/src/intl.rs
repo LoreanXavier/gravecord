@@ -144,6 +144,24 @@ pub fn font_fallbacks() -> gpui::FontFallbacks {
     }
 }
 
+/// The error of the last catalog load that failed (module 449275's `error`), cleared when a load starts or succeeds.
+fn failed() -> &'static Mutex<Option<String>> {
+    static FAILED: OnceLock<Mutex<Option<String>>> = OnceLock::new();
+    FAILED.get_or_init(Mutex::default)
+}
+
+/// Why the interface catalog could not be loaded, while that is so: module 638421 then shows "An error occurred
+/// loading {locale}" with this message in place of the app.
+pub fn load_error() -> Option<String> {
+    failed().lock().ok().and_then(|failed| failed.clone())
+}
+
+fn set_load_error(error: Option<String>) {
+    if let Ok(mut failed) = failed().lock() {
+        *failed = error;
+    }
+}
+
 fn loading() -> &'static Mutex<Vec<&'static str>> {
     static LOADING: OnceLock<Mutex<Vec<&'static str>>> = OnceLock::new();
     LOADING.get_or_init(Mutex::default)
@@ -168,6 +186,7 @@ pub fn apply(code: &'static str, cx: &mut App) {
         }
         loading.push(code);
     }
+    set_load_error(None);
     let slot: Arc<Mutex<Option<Result<(), String>>>> = Arc::default();
     let worker = slot.clone();
     std::thread::spawn(move || {
@@ -187,8 +206,11 @@ pub fn apply(code: &'static str, cx: &mut App) {
         };
         match result {
             Ok(()) => tracing::info!(locale = code, "interface catalog ready"),
-            // The locale keeps showing en-US; the next change of locale tries again.
-            Err(error) => tracing::warn!(locale = code, %error, "interface catalog unavailable"),
+            // Module 638421's error page; the next change of locale tries again.
+            Err(error) => {
+                tracing::warn!(locale = code, %error, "interface catalog unavailable");
+                set_load_error(Some(error));
+            }
         }
         if let Ok(mut loading) = loading().lock() {
             loading.retain(|known| *known != code);

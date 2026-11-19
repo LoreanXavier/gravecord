@@ -10,6 +10,9 @@
 //! - "Join voice?" (module 525828) before joining a voice channel with such people (`handleVoiceConnect` of module
 //!   262763), and "Leave voice?" (module 552258, opened by `k` of module 227724) when one of them joins the channel of
 //!   this client's call. Both are module 212758 on the dialog with a header graphic (module 772707).
+//! - "Leave group?" (module 876717, opened by module 528607 on `CHANNEL_SELECT`) when a group DM is opened with blocked
+//!   or ignored people in it, unless the group's warning was dismissed (`blocked_user_warning_dismissed`, or locally in
+//!   the last three days); either answer acknowledges it (module 105600).
 
 use super::{Root, avatar_source, color, graphic_modal, icon, modal};
 use dc_state::Id;
@@ -24,6 +27,8 @@ const DAY_MS: i64 = 24 * HOUR_MS;
 const USER_WINDOW_MS: i64 = 2 * DAY_MS;
 /// `d`: after any dismissal, nobody is warned about for an hour.
 const GLOBAL_WINDOW_MS: i64 = HOUR_MS;
+/// `l`: a group whose warning was dismissed is not warned about again for three days (`DY`).
+const CHANNEL_WINDOW_MS: i64 = 3 * DAY_MS;
 
 /// The warnings' picture (module 117816), 288 by 162.
 pub(super) const WARNING_ART: graphic_modal::Graphic = graphic_modal::Graphic {
@@ -37,6 +42,7 @@ pub(super) const WARNING_ART: graphic_modal::Graphic = graphic_modal::Graphic {
 pub(super) struct WarningDismissals {
     users: HashMap<Id, i64>,
     global: Option<i64>,
+    channels: HashMap<Id, i64>,
 }
 
 impl WarningDismissals {
@@ -50,9 +56,16 @@ impl WarningDismissals {
             .flatten()
             .filter_map(|(user, at)| Some((user.parse().ok()?, at.as_i64()?)))
             .collect();
+        let channels = state["channelDismissTimestamps"]
+            .as_object()
+            .into_iter()
+            .flatten()
+            .filter_map(|(channel, at)| Some((channel.parse().ok()?, at.as_i64()?)))
+            .collect();
         Self {
             users,
             global: state["globalDismissTimestamp"].as_i64(),
+            channels,
         }
     }
 
@@ -66,10 +79,16 @@ impl WarningDismissals {
         if !stored.is_object() {
             stored = json!({});
         }
+        let channels: serde_json::Map<String, Value> = self
+            .channels
+            .iter()
+            .map(|(channel, at)| (channel.to_string(), json!(at)))
+            .collect();
         let state = &mut stored["state"];
         if !state.is_object() {
-            *state = json!({"channelDismissTimestamps": {}, "queuedWarning": false});
+            *state = json!({"queuedWarning": false});
         }
+        state["channelDismissTimestamps"] = Value::Object(channels);
         state["userDismissTimestamps"] = Value::Object(users);
         state["globalDismissTimestamp"] = json!(self.global);
         stored["version"] = json!(0);
@@ -78,13 +97,16 @@ impl WarningDismissals {
 
     /// `u`: any warning was dismissed in the last hour.
     fn global_recent(&self, now: i64) -> bool {
-        self.global.unwrap_or(0) > now - GLOBAL_WINDOW_MS
+        self.global.is_some_and(|at| at > now - GLOBAL_WINDOW_MS)
     }
 
     /// `a0` (`_`): this person was dismissed in the last two days, or (unless `ignore_global`) anyone in the last hour.
     pub(super) fn user_dismissed(&self, user: Id, ignore_global: bool, now: i64) -> bool {
         (!ignore_global && self.global_recent(now))
-            || self.users.get(&user).copied().unwrap_or(0) > now - USER_WINDOW_MS
+            || self
+                .users
+                .get(&user)
+                .is_some_and(|&at| at > now - USER_WINDOW_MS)
     }
 
     /// `oE`: no warning is due for these people.
@@ -93,6 +115,19 @@ impl WarningDismissals {
             || users
                 .iter()
                 .all(|user| self.user_dismissed(*user, true, now))
+    }
+
+    /// `DY`: this group's warning was dismissed in the last three days.
+    pub(super) fn channel_dismissed(&self, channel: Id, now: i64) -> bool {
+        self.channels
+            .get(&channel)
+            .is_some_and(|&at| at > now - CHANNEL_WINDOW_MS)
+    }
+
+    /// `jG`: this group's warning was dismissed now.
+    pub(super) fn dismiss_channel(&mut self, channel: Id, now: i64) {
+        self.channels.insert(channel, now);
+        self.save();
     }
 
     /// `$Y` and `Cs`: these people were dismissed now.
@@ -185,6 +220,21 @@ pub(super) fn join_description(blocked: usize, ignored: usize) -> String {
         dc_intl::format("WgQ12s", &[("n", (blocked as i64).into())])
     } else {
         dc_intl::format("bwibp1", &[("n", (ignored as i64).into())])
+    }
+}
+
+/// `CHANNEL_BLOCKED_USER_WARNING_ACK` of module 652215.
+pub(super) fn group_warning_ack_route(channel: Id) -> String {
+    format!("/channels/{channel}/blocked-user-warning-dismissal")
+}
+
+/// The subtitle of module 876717: blocked and ignored people, blocked only, or ignored only (by count).
+pub(super) fn group_leave_description(blocked: usize, ignored: usize) -> Option<String> {
+    match (blocked > 0, ignored > 0) {
+        (true, true) => Some(dc_intl::t("0dP7Fk").to_owned()),
+        (true, false) => Some(dc_intl::format("OpIG9d", &[("n", (blocked as i64).into())])),
+        (false, true) => Some(dc_intl::format("D+V4jI", &[("n", (ignored as i64).into())])),
+        (false, false) => None,
     }
 }
 
@@ -442,6 +492,138 @@ impl Root {
         )
     }
 
+    /// `CHANNEL_SELECT` of module 528607: a group DM with blocked or ignored people opens "Leave group?" unless its
+    /// warning was dismissed.
+    pub(super) fn warn_group_blocked(&mut self, channel: Id) {
+        let Some(group) = self
+            .stores
+            .private_channels
+            .iter()
+            .find(|known| known.id == channel && known.kind == 3)
+        else {
+            return;
+        };
+        if group.blocked_user_warning_dismissed
+            || self.warning_dismissals.channel_dismissed(channel, now_ms())
+        {
+            return;
+        }
+        let recipients = group.recipients.clone();
+        let blocked: Vec<Id> = recipients
+            .iter()
+            .copied()
+            .filter(|user| self.is_blocked(*user))
+            .collect();
+        let ignored: Vec<Id> = recipients
+            .iter()
+            .copied()
+            .filter(|user| self.stores.is_ignored(*user))
+            .collect();
+        if blocked.is_empty() && ignored.is_empty() {
+            return;
+        }
+        for user in blocked.iter().chain(&ignored) {
+            if let Some(known) = self.stores.users.get(user).cloned() {
+                let (key, url) = avatar_source(&known);
+                self.request_image(key, url);
+            }
+        }
+        self.request_graphic(WARNING_ART);
+        self.voice_alert = Some(super::voice_alerts::VoiceAlert::LeaveGroupBlocked {
+            channel,
+            blocked,
+            ignored,
+        });
+    }
+
+    /// `U` of module 105600: the group's warning is dismissed here and on the server.
+    pub(super) fn ack_group_blocked(&mut self, channel: Id) {
+        self.voice_alert = None;
+        self.warning_dismissals.dismiss_channel(channel, now_ms());
+        if let Some(group) = self
+            .stores
+            .private_channels
+            .iter_mut()
+            .find(|known| known.id == channel)
+        {
+            group.blocked_user_warning_dismissed = true;
+        }
+        let _ = self.requests.send(crate::net::Request::Rest {
+            key: None,
+            method: reqwest::Method::POST,
+            route: group_warning_ack_route(channel),
+            body: None,
+        });
+    }
+
+    /// Module 876717.
+    pub(super) fn leave_group_blocked_modal(
+        &self,
+        channel: Id,
+        blocked: &[Id],
+        ignored: &[Id],
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let both = !blocked.is_empty() && !ignored.is_empty();
+        let people: Vec<Id> = blocked.iter().chain(ignored).copied().collect();
+        let (shown, count): (Vec<Id>, usize) = if both {
+            (people.iter().take(2).copied().collect(), people.len())
+        } else if !blocked.is_empty() {
+            (blocked.iter().take(2).copied().collect(), blocked.len())
+        } else {
+            (ignored.iter().take(2).copied().collect(), ignored.len())
+        };
+        let body = div()
+            .w_full()
+            .rounded(px(4.))
+            .flex()
+            .flex_col()
+            .child(Self::warning_row(
+                self.warning_faces(&shown),
+                self.warning_here_line(None, &shown, count),
+            ))
+            .child(Self::warning_divider())
+            .child(Self::warning_row(
+                icon("circle_check", 24., "--text-default").into_any_element(),
+                div().child(dc_intl::t("RIMw54")).into_any_element(),
+            ))
+            .child(Self::warning_divider())
+            .child(Self::warning_row(
+                icon("circle_info", 24., "--text-default").into_any_element(),
+                div().child(dc_intl::t("bejNWN")).into_any_element(),
+            ));
+        self.graphic_modal(
+            graphic_modal::Spec {
+                id: "gdm-blocked-leave-modal",
+                graphic: Some(WARNING_ART),
+                title: dc_intl::t("mwJJ+f").into(),
+                subtitle: group_leave_description(blocked.len(), ignored.len())
+                    .map(|text| div().child(text).into_any_element()),
+                body: Some(body.into_any_element()),
+                buttons: vec![
+                    modal::button(
+                        "gdm-blocked-stay",
+                        dc_intl::t("SW3lpH"),
+                        modal::Tone::Secondary,
+                        move |this, _, _| this.ack_group_blocked(channel),
+                    ),
+                    modal::button(
+                        "gdm-blocked-leave",
+                        dc_intl::t("Hi1/aQ"),
+                        modal::Tone::Primary,
+                        move |this, _, cx| {
+                            this.ack_group_blocked(channel);
+                            // `closePrivateChannel(x, true, true)`.
+                            this.close_dm_with(channel, true, cx);
+                        },
+                    ),
+                ],
+                close: Box::new(move |this, _, _| this.ack_group_blocked(channel)),
+            },
+            cx,
+        )
+    }
+
     /// Module 525828.
     pub(super) fn join_blocked_modal(
         &self,
@@ -564,6 +746,28 @@ impl Root {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_group_warning_rests_three_days_and_names_who_is_there() {
+        let mut store = WarningDismissals::default();
+        assert!(!store.channel_dismissed(5, 10));
+        store.channels.insert(5, 1_000);
+        assert!(store.channel_dismissed(5, 1_000 + CHANNEL_WINDOW_MS - 1));
+        assert!(!store.channel_dismissed(5, 1_000 + CHANNEL_WINDOW_MS));
+        assert_eq!(
+            group_leave_description(1, 0).as_deref(),
+            Some("Someone you blocked is here. If you leave, they will still be blocked.")
+        );
+        assert_eq!(
+            group_leave_description(0, 2).as_deref(),
+            Some("People you ignored are here. If you leave, they will still be ignored.")
+        );
+        assert_eq!(group_leave_description(0, 0), None);
+        assert_eq!(
+            group_warning_ack_route(9),
+            "/channels/9/blocked-user-warning-dismissal"
+        );
+    }
 
     #[test]
     fn dismissals_last_two_days_per_person_and_an_hour_for_everyone() {

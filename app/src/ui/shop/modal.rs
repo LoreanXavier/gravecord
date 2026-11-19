@@ -3,7 +3,7 @@
 //! the checkout summary: no purchase request, payment data or Orbs spend is ever sent from here. Official modules
 //! followed: 987421 (the buttons), 44120 (the checkout), 786953 (the modal).
 
-use super::cards::{item_static, orbs_badge};
+use super::cards::{decoration_preview_label, item_static, nameplate_preview_label, orbs_badge};
 use super::data::{self, Product};
 use super::{Root, color, icon, text};
 use crate::parity::Parity;
@@ -620,6 +620,13 @@ impl Root {
                 self.shop_img(&item_static(&id))
             })
             .flatten();
+        let deco_label = (kind == data::KIND_AVATAR_DECORATION)
+            .then(|| {
+                view.items
+                    .first()
+                    .map(|item| decoration_preview_label(&item.label))
+            })
+            .flatten();
         let avatar = |size: f32, art: Option<std::sync::Arc<gpui::Image>>| {
             div()
                 .relative()
@@ -742,7 +749,14 @@ impl Root {
                     .absolute()
                     .left(px(9.))
                     .top(px(54.))
-                    .child(ring(avatar(80., deco_art.clone()).into_any_element()))
+                    .child(ring(
+                        // Module 929283: "Avatar Decoration Preview: {label}".
+                        div()
+                            .id("shop-modal-decoration-preview")
+                            .when_some(deco_label, |preview, label| preview.aria_label(label))
+                            .child(avatar(80., deco_art.clone()))
+                            .into_any_element(),
+                    ))
                     .child(status),
             )
             .child(
@@ -1035,6 +1049,9 @@ impl Root {
             .first()
             .map_or(view.sku_id.clone(), |item| item.sku_id.clone());
         let art = self.shop_img(&item_static(&plate));
+        // Module 872200 on the shopper's row (`role: img`).
+        let plate_label =
+            nameplate_preview_label(view.items.first().map(|item| item.label.as_str()));
         let member = |name: &str, tint: &'static str| {
             div()
                 .h(px(42.))
@@ -1059,6 +1076,8 @@ impl Root {
                 .child(text(12., 16., 500., "--channels-default").child(label.to_owned()))
         };
         let own = div()
+            .id("shop-nameplate-preview")
+            .aria_label(plate_label)
             .relative()
             .h(px(42.))
             .mx(px(8.))

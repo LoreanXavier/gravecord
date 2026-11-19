@@ -1485,6 +1485,7 @@ mod tests {
             message_request: false,
             spam: false,
             request_timestamp: None,
+            blocked_user_warning_dismissed: false,
         };
         assert_eq!(member_count_text(&channel), "3 Members");
         channel.recipients.clear();
