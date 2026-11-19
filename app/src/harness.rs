@@ -1564,6 +1564,11 @@ pub async fn run(
             }
             // Capture only: `window restore` restores the window after `window minimize`; `window move <x> <y>` puts
             // its top-left corner at a screen point, as a drag of the title bar does.
+            ["window", "iconic"] => {
+                let result =
+                    window.update(cx, |_, window, _| native::minimize_or_restore(window, true));
+                let _ = writeln!(output, "window: iconic {result:?}");
+            }
             ["window", "restore"] => {
                 let result = window.update(cx, |_, window, _| {
                     native::minimize_or_restore(window, false)

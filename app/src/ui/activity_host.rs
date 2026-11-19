@@ -10,7 +10,7 @@ use super::{Root, color, icon};
 use crate::net::Request;
 use crate::parity::Parity;
 use dc_webhost::sdk::{self, Action, Ask, Bridge};
-use dc_webhost::{HostEvent, WebHost};
+use dc_webhost::{Area, HostEvent, Placement, WebHost};
 use gpui::{AnyElement, Context, FontWeight, Task, Window, deferred, div, img, prelude::*, px};
 use serde_json::{Value, json};
 use std::collections::HashMap;
@@ -26,7 +26,7 @@ pub(crate) struct ActivityHost {
     launch_id: String,
     ready: bool,
     visible: bool,
-    bounds: (f32, f32, f32, f32),
+    bounds: Placement,
     /// Commands waiting for an answer: nonce to (command, the token the page handed over).
     pending: HashMap<String, (String, Option<String>)>,
     /// The commands the page sent, for the harness.
@@ -300,12 +300,14 @@ impl Root {
         }
         // With the call view's stage out of sight the page is the picture-in-picture window.
         let pip = !stage_seen;
-        let visible = !self.overlay_open(pip);
+        // On the stage it also steps aside for any menu, popout or dialog of the app over it (`web_frames.rs`).
+        let visible = !self.overlay_open(pip) && (pip || !self.web_surfaces_covered());
         let stage = if pip {
             Some(pip_bounds(window))
         } else {
             self.activity_stage()
-        };
+        }
+        .map(|bounds| Placement::whole(Area::logical(bounds, window.scale_factor())));
         if self.activities.host.is_none() {
             let (Some(bounds), Some(ctx)) = (stage, self.activity_context()) else {
                 return;
@@ -365,7 +367,7 @@ impl Root {
             return;
         };
         if let Some(bounds) = stage.filter(|bounds| *bounds != host.bounds) {
-            host.web.set_bounds(bounds);
+            host.web.set_placement(bounds);
             host.bounds = bounds;
         }
         if visible != host.visible {
