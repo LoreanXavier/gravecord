@@ -5,6 +5,7 @@
 use super::lottie_icon::{self, Anim};
 use super::tooltip::{Body, Side, Tip};
 use super::voice_panel::{Popout, Tab};
+use super::voice_user_popout::VoiceUserTarget;
 use super::voice_view::lottie_hover;
 use super::{Root, avatar_source, color};
 use crate::net::Request;
@@ -1668,6 +1669,17 @@ impl Root {
                             this.open_profile(member, anchor, false, cx);
                         }
                     }))
+                    // Module 340851: the row opens the voice user popout (772800) on hover.
+                    .when(!popout, |row| {
+                        row.on_hover(cx.listener(move |this, inside: &bool, _, cx| {
+                            let target = VoiceUserTarget {
+                                guild,
+                                channel,
+                                user: member,
+                            };
+                            this.voice_row_hover(target, *inside, cx);
+                        }))
+                    })
                     .cursor_pointer()
                     .relative()
                     .child({

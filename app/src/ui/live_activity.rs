@@ -274,6 +274,8 @@ impl Root {
         {
             users.push(user.id);
         }
+        // The voice user popout's person (module 772800).
+        users.extend(self.voice_popout_user());
         users.sort_unstable();
         users.dedup();
         users

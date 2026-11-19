@@ -32,6 +32,8 @@ const STAGE: ChannelKind = ChannelKind::Other(13);
 pub(super) enum HoverCard {
     /// `w`: a guild voice channel, beside its badge.
     Channel { guild: Id, channel: Id },
+    /// Module 772800: a person in a voice channel, beside their row in the channel list.
+    User(super::voice_user_popout::VoiceUserTarget),
 }
 
 /// The hover cards' state: what is open and where, and where the pointer is.
@@ -41,8 +43,11 @@ pub(super) struct VoiceHover {
     /// The trigger the pointer is over.
     over_target: Option<SharedString>,
     over_card: bool,
-    /// Bumped by every enter and leave, so only the latest delay acts.
-    generation: u64,
+    /// Bumped by every enter, so only the latest open delay acts.
+    opening: u64,
+    /// Bumped by every enter and leave, so only the latest close delay acts. Kept apart from `opening`: a leave
+    /// reported after the next row's enter must not cancel that row's open.
+    closing: u64,
 }
 
 /// Module 10862: the icon of a guild voice channel: a Stage (locked when the account cannot connect or it is
@@ -150,7 +155,8 @@ impl Root {
     ) {
         let hover = &mut self.voice_hover;
         hover.over_target = Some(target.clone());
-        hover.generation += 1;
+        hover.opening += 1;
+        hover.closing += 1;
         if hover
             .open
             .as_ref()
@@ -158,14 +164,14 @@ impl Root {
         {
             return;
         }
-        let generation = hover.generation;
+        let generation = hover.opening;
         cx.spawn(async move |this, cx| {
             cx.background_executor()
                 .timer(Duration::from_millis(delay))
                 .await;
             let _ = this.update(cx, |this, cx| {
                 let hover = &this.voice_hover;
-                if hover.generation != generation || hover.over_target.as_ref() != Some(&target) {
+                if hover.opening != generation || hover.over_target.as_ref() != Some(&target) {
                     return;
                 }
                 let anchor = this.tip_anchors.borrow().get(&target).copied();
@@ -189,15 +195,15 @@ impl Root {
 
     fn voice_hover_close_later(&mut self, cx: &mut Context<Self>) {
         let hover = &mut self.voice_hover;
-        hover.generation += 1;
-        let generation = hover.generation;
+        hover.closing += 1;
+        let generation = hover.closing;
         cx.spawn(async move |this, cx| {
             cx.background_executor()
                 .timer(Duration::from_millis(CLOSE_AFTER))
                 .await;
             let _ = this.update(cx, |this, cx| {
                 let hover = &mut this.voice_hover;
-                if hover.generation == generation
+                if hover.closing == generation
                     && hover.over_target.is_none()
                     && !hover.over_card
                     && hover.open.take().is_some()
@@ -209,23 +215,47 @@ impl Root {
         .detach();
     }
 
-    /// The open hover card, to the right of its trigger and centred on it (`position: "right"`, `align: "center"`),
-    /// kept inside the window.
+    /// The card a hover opened, if any.
+    pub(super) fn voice_hover_open(&self) -> Option<&HoverCard> {
+        self.voice_hover.open.as_ref().map(|(card, _, _)| card)
+    }
+
+    /// The open hover card, to the right of its trigger and kept inside the window: `w` centred on the badge
+    /// (`align: "center"`, the default 8px away), 772800 level with the row's top (the default `align: "top"`, 17px
+    /// away), and not while the row's profile popout is open (`shouldShow: et && !em`).
     pub(super) fn voice_hover_layer(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
         let (card, _, anchor) = self.voice_hover.open.as_ref()?;
-        let (body, spacing) = match card {
-            HoverCard::Channel { guild, channel } => {
-                (self.voice_channel_card(*guild, *channel, cx)?, 8.)
+        let (body, at, corner) = match card {
+            HoverCard::Channel { guild, channel } => (
+                self.voice_channel_card(*guild, *channel, cx)?,
+                point(
+                    anchor.right() + px(8.),
+                    anchor.top() + anchor.size.height / 2.,
+                ),
+                gpui::Anchor::LeftCenter,
+            ),
+            HoverCard::User(target) => {
+                if self
+                    .profile
+                    .as_ref()
+                    .is_some_and(|open| open.user == target.user)
+                {
+                    return None;
+                }
+                (
+                    self.voice_user_card(*target, cx)?,
+                    point(
+                        anchor.right() + px(super::voice_user_popout::SPACING),
+                        anchor.top(),
+                    ),
+                    gpui::Anchor::TopLeft,
+                )
             }
         };
-        let at = point(
-            anchor.right() + px(spacing),
-            anchor.top() + anchor.size.height / 2.,
-        );
         Some(
             deferred(
                 anchored()
-                    .anchor(gpui::Anchor::LeftCenter)
+                    .anchor(corner)
                     .position(at)
                     .snap_to_window_with_margin(px(8.))
                     .child(
@@ -235,7 +265,7 @@ impl Root {
                             .on_hover(cx.listener(|this, inside: &bool, _, cx| {
                                 this.voice_hover.over_card = *inside;
                                 if *inside {
-                                    this.voice_hover.generation += 1;
+                                    this.voice_hover.closing += 1;
                                 } else {
                                     this.voice_hover_close_later(cx);
                                 }

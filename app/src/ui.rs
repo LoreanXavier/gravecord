@@ -348,6 +348,7 @@ mod voice_blocked;
 mod voice_invite;
 mod voice_panel;
 mod voice_sounds;
+mod voice_user_popout;
 mod voice_video;
 mod voice_view;
 
