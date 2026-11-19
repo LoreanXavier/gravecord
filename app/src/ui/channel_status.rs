@@ -217,6 +217,14 @@ impl Root {
         if !has_voice {
             return;
         }
+        self.request_channel_info(guild);
+    }
+
+    /// Module 52074 for one guild: its statuses and call start times, asked for once per connection.
+    pub(super) fn request_channel_info(&mut self, guild: Id) {
+        if self.stores.channel_status.has_requested(guild) {
+            return;
+        }
         self.stores.dispatch(
             "FETCH_CHANNEL_INFO",
             &json!({"guild_id": guild.to_string()}),

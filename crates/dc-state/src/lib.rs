@@ -2193,6 +2193,9 @@ pub struct VoiceState {
     pub self_stream: bool,
     /// Explicitly false voice states are excluded from fully private Active Now groups.
     pub discoverable: Option<bool>,
+    /// When the member joined the channel (`connected_at`, unix seconds; the record's `connectedAt`, modules 225123
+    /// and 977997), for the voice user popout's timer (module 772800).
+    pub connected_at: Option<u64>,
 }
 
 impl VoiceState {
@@ -2210,6 +2213,7 @@ impl VoiceState {
             self_video: value["self_video"].as_bool().unwrap_or(false),
             self_stream: value["self_stream"].as_bool().unwrap_or(false),
             discoverable: value["discoverable"].as_bool(),
+            connected_at: value["connected_at"].as_u64(),
         })
     }
 }
@@ -2251,6 +2255,8 @@ pub struct Stores {
     pub keep_deleted: Option<fn(&Message) -> bool>,
     /// This account's experiment assignments from READY (`ApexExperimentStore`).
     pub experiments: experiments::Assignments,
+    /// READY's `guild_experiments` (module 343446), evaluated per guild by `guild_experiment_bucket`.
+    pub guild_experiments: experiments::GuildExperiments,
     /// Guild to its AFK voice channel (`afk_channel_id`), which voice join and leave sounds skip.
     pub afk_channels: HashMap<Id, Id>,
     /// Guild to its `afk_timeout` in seconds (the idle move of module 596339 `handleIdleUpdate`).
@@ -3522,6 +3528,7 @@ impl Stores {
             data["user"]["id"].as_str().unwrap_or_default(),
         )
         .with_legacy(&data["experiments"]);
+        self.guild_experiments = experiments::GuildExperiments::from_ready(&data["guild_experiments"]);
         self.mfa_enabled = data["user"]["mfa_enabled"].as_bool().unwrap_or(false);
         self.account = Account::from_value(&data["user"]);
         self.theme = data["user_settings_proto"]
@@ -4383,6 +4390,20 @@ impl Stores {
     pub fn clear_messages(&mut self, channel: Id) {
         self.messages.remove(&channel);
         self.windows.remove(&channel);
+    }
+
+    /// `ExperimentStore.getGuildExperimentBucket(name, guild)`: the guild's bucket, `None` when it is not eligible.
+    pub fn guild_experiment_bucket(&self, name: &str, guild: Id, now_ms: u64) -> Option<i64> {
+        let known = self.guild(guild);
+        let facts = experiments::GuildFacts {
+            id: guild,
+            member_count: self.member_counts.get_member_count(guild),
+            features: known.map_or(&[][..], |known| known.features.as_slice()),
+            hub_type: None,
+            has_vanity_url: known.is_some_and(|known| known.vanity_url_code.is_some()),
+            now_ms,
+        };
+        self.guild_experiments.bucket(name, &facts)
     }
 
     pub fn guild(&self, guild: Id) -> Option<&Guild> {

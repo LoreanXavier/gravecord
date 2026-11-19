@@ -322,6 +322,8 @@ impl Root {
                 }));
             chips.push(tipped.into_any_element());
         }
+        // Module 549587's badges after the role icon: the author's voice channel (module 75604 `G`).
+        chips.extend(self.voice_badge(message, cx));
         // `709066`: `APP` or `OP`.
         let forum_owner = self.current_thread().is_some_and(|thread| {
             thread.owner_id == Some(author.id)

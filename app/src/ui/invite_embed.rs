@@ -403,6 +403,7 @@ impl Root {
                 });
             }
         }
+        self.request_voice_invite_start_times();
     }
 
     /// A resolved invite: the icon for the card and its palette.
@@ -418,6 +419,7 @@ impl Root {
                 format!("https://cdn.discordapp.com/icons/{id}/{icon}.webp?size=96"),
             );
         }
+        self.request_voice_invite_start_times();
     }
 
     /// The banner image for a guild, made once per color.
@@ -588,6 +590,10 @@ impl Root {
             #[cfg(not(feature = "capture"))]
             let probe = false;
             return Some(self.invalid_invite_card(message, body["banned"] == true, probe));
+        }
+        // Module 679636 `cr`: a guild invite to a voice channel the account can see is drawn as the channel (`dX`).
+        if let Some((guild, channel)) = self.voice_invite_channel(body) {
+            return Some(self.voice_channel_invite_card(code, message, guild, &channel, cx));
         }
         let guild = &body["guild"];
         let id: Id = guild["id"].as_str()?.parse().ok()?;
