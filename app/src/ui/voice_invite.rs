@@ -140,30 +140,42 @@ impl Root {
             == Some(1)
     }
 
-    /// The people in a guild voice channel in the store's order (module 607567).
+    /// The people in a guild voice channel in the store's order (module 607567). Someone the user store does not
+    /// know is still there (`L`: a placeholder user named "..."), with the member's user when the voice state brought
+    /// one.
     pub(super) fn voice_people(&self, guild: Id, channel: Id) -> Vec<VoicePerson> {
         let mut people: Vec<VoicePerson> = self
             .stores
             .voice_members(guild, channel)
             .into_iter()
-            .filter_map(|state| {
-                let user = self.stores.users.get(&state.user_id).cloned().or_else(|| {
-                    self.stores
-                        .current_user
-                        .clone()
-                        .filter(|me| me.id == state.user_id)
-                })?;
-                let name = self
+            .map(|state| {
+                let member = self.stores.members.get(guild, state.user_id);
+                let user = self
                     .stores
-                    .members
-                    .get(guild, user.id)
+                    .users
+                    .get(&state.user_id)
+                    .cloned()
+                    .or_else(|| {
+                        self.stores
+                            .current_user
+                            .clone()
+                            .filter(|me| me.id == state.user_id)
+                    })
+                    .or_else(|| member.map(|member| member.user.clone()))
+                    .filter(|user| user.id == state.user_id)
+                    .unwrap_or_else(|| User {
+                        id: state.user_id,
+                        username: "...".to_owned(),
+                        ..User::default()
+                    });
+                let name = member
                     .and_then(|member| member.nick.clone())
                     .unwrap_or_else(|| user.display_name().to_owned());
-                Some(VoicePerson {
+                VoicePerson {
                     user,
                     name,
                     streaming: state.self_stream,
-                })
+                }
             })
             .collect();
         people

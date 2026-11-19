@@ -30,8 +30,8 @@ const STAGE: ChannelKind = ChannelKind::Other(13);
 /// Which card a hover opened.
 #[derive(Clone, PartialEq)]
 pub(super) enum HoverCard {
-    /// `w`: a guild voice channel, beside its badge.
-    Channel { guild: Id, channel: Id },
+    /// `w`: a guild voice channel, beside the badge of a message by `author`.
+    Channel { guild: Id, channel: Id, author: Id },
     /// Module 772800: a person in a voice channel, beside their row in the channel list.
     User(super::voice_user_popout::VoiceUserTarget),
 }
@@ -120,6 +120,7 @@ impl Root {
         let card = HoverCard::Channel {
             guild,
             channel: channel.id,
+            author: message.author.id,
         };
         let target = key.clone();
         Some(
@@ -215,6 +216,14 @@ impl Root {
         .detach();
     }
 
+    /// Whether `user` has a voice state in the guild's `channel`.
+    fn in_voice_with(&self, guild: Id, channel: Id, user: Id) -> bool {
+        self.stores
+            .voice_members(guild, channel)
+            .iter()
+            .any(|state| state.user_id == user)
+    }
+
     /// The card a hover opened, if any.
     pub(super) fn voice_hover_open(&self) -> Option<&HoverCard> {
         self.voice_hover.open.as_ref().map(|(card, _, _)| card)
@@ -226,8 +235,16 @@ impl Root {
     pub(super) fn voice_hover_layer(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
         let (card, _, anchor) = self.voice_hover.open.as_ref()?;
         let (body, at, corner) = match card {
-            HoverCard::Channel { guild, channel } => (
-                self.voice_channel_card(*guild, *channel, cx)?,
+            HoverCard::Channel {
+                guild,
+                channel,
+                author,
+            } => (
+                // The badge goes with its message, the author's voice state and the experiment; its card with it.
+                (self.guild == Some(*guild)
+                    && self.guild_experiment_on(VOICE_BADGE_EXPERIMENT, *guild)
+                    && self.in_voice_with(*guild, *channel, *author))
+                .then(|| self.voice_channel_card(*guild, *channel, cx))??,
                 point(
                     anchor.right() + px(8.),
                     anchor.top() + anchor.size.height / 2.,
@@ -235,10 +252,12 @@ impl Root {
                 gpui::Anchor::LeftCenter,
             ),
             HoverCard::User(target) => {
+                // The row goes when the person leaves the channel; its popout with it.
                 if self
                     .profile
                     .as_ref()
                     .is_some_and(|open| open.user == target.user)
+                    || !self.in_voice_with(target.guild, target.channel, target.user)
                 {
                     return None;
                 }
