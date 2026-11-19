@@ -1238,7 +1238,7 @@ mod tests {
             .into_iter()
             .filter_map(|item| match item {
                 super::super::context_menu::Entry::Row(row) => Some(row.label),
-                super::super::context_menu::Entry::Separator => None,
+                _ => None,
             })
             .collect()
     }
@@ -1277,7 +1277,7 @@ mod tests {
             .into_iter()
             .filter_map(|item| match item {
                 super::super::context_menu::Entry::Row(row) => Some((row.label, row.sub)),
-                super::super::context_menu::Entry::Separator => None,
+                _ => None,
             })
             .collect();
         assert_eq!(
