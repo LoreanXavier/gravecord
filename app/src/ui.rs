@@ -1652,6 +1652,14 @@ impl Root {
                 // Another session changed the status or the custom status: the account's own presence follows.
                 if name == "USER_SETTINGS_PROTO_UPDATE" || name == "SESSIONS_REPLACE" {
                     self.refresh_own_presence();
+                    self.schedule_presence_retry(cx);
+                }
+                // The Spotify activity of the account's own presence (modules 655116, 491009 and 894768).
+                if matches!(
+                    name.as_str(),
+                    "SPOTIFY_PLAYER_STATE" | "SPOTIFY_PLAYER_PLAY" | "USER_CONNECTIONS_UPDATE"
+                ) {
+                    self.spotify_presence_changed(cx);
                 }
                 self.calls_after_dispatch(&name, cx);
                 self.interaction_dispatched(&name, &data, cx);

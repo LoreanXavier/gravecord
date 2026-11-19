@@ -484,6 +484,20 @@ impl Root {
             .when(own && self.profile_upsell_shown(), |this| {
                 this.child(upsell(self.premium().is_subscriber(), cx))
             })
+            // Module 646986: the live activity cards (the Spotify track among them) come before the voice card.
+            .children(
+                own.then(|| {
+                    self.live_activity_cards(
+                        user.id,
+                        super::live_activity::Surface::Popout,
+                        color("--text-strong").into(),
+                        color("--text-subtle").into(),
+                        cx,
+                    )
+                })
+                .into_iter()
+                .flatten(),
+            )
             .children(own.then(|| self.popout_voice_card(user.id, cx)).flatten())
             .children(
                 own.then_some(self.guild)

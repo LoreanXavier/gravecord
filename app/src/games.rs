@@ -651,6 +651,21 @@ pub fn shared_local_activities(
         .collect()
 }
 
+/// The Spotify activity joins last (`LocalActivityStore`, module 491009 `B`: `{type: LISTENING, ...getActivity()}`
+/// after the game). `SelfPresenceStore`'s filter (module 894768 `V`, via 90644) keeps it on `shouldShowActivity`
+/// alone, so "Share my detected activities" does not apply to it; `spotify` is `None` when that is false. Invisible
+/// shares nothing.
+pub fn with_spotify(
+    mut activities: Vec<Value>,
+    spotify: Option<Value>,
+    status: &str,
+) -> Vec<Value> {
+    if status != "invisible" {
+        activities.extend(spotify);
+    }
+    activities
+}
+
 /// What the account's own row and profile show (`SelfPresenceStore` `x`, module 894768): this session's activities,
 /// then another active session's (a game another client reports), without that session's custom status, one of each
 /// `type:application_id:name`. Only this session's go into the presence update.
@@ -760,13 +775,21 @@ pub fn presence_refused(capture: bool) -> bool {
     capture && !live_presence_allowed()
 }
 
-/// Five updates in twenty seconds (module 225123): past that, the update waits for the next scan.
+/// Five updates in twenty seconds (module 225123 `didCommit`): past that, the latest update goes out when the oldest
+/// of the five leaves the window (`setTimeout(…, n[0] - l)`, each newer call replacing the waiting one).
 #[derive(Default)]
 pub struct SendLimiter {
     sent: Vec<u64>,
 }
 
 impl SendLimiter {
+    /// How long a refused update waits for a free slot.
+    pub fn wait_ms(&self, now_ms: u64) -> u64 {
+        self.sent.iter().min().map_or(0, |first| {
+            (first + PRESENCE_WINDOW_MS).saturating_sub(now_ms)
+        })
+    }
+
     pub fn allow(&mut self, now_ms: u64) -> bool {
         self.sent.retain(|at| *at + PRESENCE_WINDOW_MS > now_ms);
         if self.sent.len() >= PRESENCE_BURST {
@@ -919,8 +942,41 @@ mod tests {
             assert!(limiter.allow(step * 1000));
         }
         assert!(!limiter.allow(5_000));
+        // The refused update waits for the oldest slot (`n[0] - l`).
+        assert_eq!(limiter.wait_ms(5_000), 15_000);
         assert!(!limiter.allow(19_999));
         assert!(limiter.allow(20_000));
+        assert_eq!(SendLimiter::default().wait_ms(1), 0);
+    }
+
+    #[test]
+    fn the_spotify_activity_joins_last_whatever_the_share_switch_says() {
+        let custom = json!({"type": 4, "name": "Custom Status"});
+        let listening = json!({"type": 2, "name": "Spotify", "party": {"id": "spotify:1"}});
+        let local = dc_state::local_activity::LocalActivityStore::default();
+        let shared = shared_local_activities(
+            &local,
+            Some(custom.clone()),
+            Some(game_activity()),
+            false,
+            "online",
+        );
+        assert_eq!(
+            with_spotify(shared, Some(listening.clone()), "online"),
+            vec![custom.clone(), listening.clone()]
+        );
+        let shared = shared_local_activities(
+            &local,
+            Some(custom.clone()),
+            Some(game_activity()),
+            true,
+            "online",
+        );
+        assert_eq!(
+            with_spotify(shared, Some(listening.clone()), "online"),
+            vec![custom, game_activity(), listening.clone()]
+        );
+        assert!(with_spotify(Vec::new(), Some(listening), "invisible").is_empty());
     }
 
     #[test]

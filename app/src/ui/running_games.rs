@@ -43,6 +43,12 @@ pub(super) struct Games {
     /// Dropping them stops them.
     voice_idle: Vec<gpui::Task<()>>,
     limiter: SendLimiter,
+    /// When an update the limiter refused is due again, and the due time a (detached) timer is set for.
+    retry_at: Option<u64>,
+    retry_timer: Option<u64>,
+    /// The times the `W` and `Y` timers of module 655116 (the Spotify track's end, a stopped listen-along) are set
+    /// for; a timer whose time is no longer the store's does nothing.
+    pub(super) spotify_timers: [Option<i64>; 2],
     /// `LocalActivityStore`: the activities games set over the local RPC pipe.
     local: dc_state::local_activity::LocalActivityStore,
     connected: bool,
@@ -80,6 +86,9 @@ impl Games {
             app_activity_ms: now_ms(),
             voice_idle: Vec::new(),
             limiter: SendLimiter::default(),
+            retry_at: None,
+            retry_timer: None,
+            spotify_timers: [None, None],
             local: dc_state::local_activity::LocalActivityStore::default(),
             connected: false,
             menu: RefCell::new(None),
@@ -411,6 +420,16 @@ impl Root {
             show,
             &status,
         );
+        let spotify = self
+            .stores
+            .spotify
+            .should_show_activity(self.detect.idle.since_ms.is_some())
+            .then(|| {
+                let me = self.stores.current_user.as_ref()?.id;
+                self.stores.spotify.activity(me)
+            })
+            .flatten();
+        let activities = games::with_spotify(activities, spotify, &status);
         // Not in the pinned client: IgnoreActivities keeps the ignored ones off your status
         // (`plugin_hooks/ignore_activities.rs`).
         let activities = self.ignore_activities_filter(activities);
@@ -440,11 +459,15 @@ impl Root {
             && self.detect.sent_idle == idle
         {
             self.detect.sent.0 = wire;
+            self.detect.retry_at = None;
             return;
         }
         if !self.detect.limiter.allow(now_ms()) {
+            // Module 225123: the refused update goes out once a slot is free (`schedule_presence_retry`).
+            self.detect.retry_at = Some(now_ms() + self.detect.limiter.wait_ms(now_ms()));
             return;
         }
+        self.detect.retry_at = None;
         self.detect.sent = (wire.clone(), activities.clone());
         self.detect.sent_idle = idle;
         let _ = self.requests.send(Request::Presence {
@@ -453,6 +476,34 @@ impl Root {
             since: idle.0,
             afk: idle.1,
         });
+    }
+
+    /// An update the limiter refused goes out when its slot frees (module 225123): one timer, moved when the due time
+    /// moves, and a later update that went out first makes it a no-op.
+    pub(super) fn schedule_presence_retry(&mut self, cx: &mut Context<Self>) {
+        let Some(at) = self.detect.retry_at else {
+            return;
+        };
+        if self.detect.retry_timer == Some(at) {
+            return;
+        }
+        self.detect.retry_timer = Some(at);
+        let wait = at.saturating_sub(now_ms());
+        cx.spawn(async move |this, cx| {
+            cx.background_executor()
+                .timer(std::time::Duration::from_millis(wait))
+                .await;
+            let _ = this.update(cx, |this, cx| {
+                if this.detect.retry_at != Some(at) {
+                    return;
+                }
+                // A timer that woke a hair early is refused again for the same slot: it must be set again.
+                this.detect.retry_timer = None;
+                this.refresh_own_presence();
+                this.schedule_presence_retry(cx);
+            });
+        })
+        .detach();
     }
 
     /// `IdleStore` (module 885576): every ten seconds the system's input age, with what the app saw the account do,
@@ -478,6 +529,7 @@ impl Root {
         if idle != self.detect.idle || lapsed {
             self.detect.idle = idle;
             self.refresh_own_presence();
+            self.schedule_presence_retry(cx);
             cx.notify();
         }
         if flipped {

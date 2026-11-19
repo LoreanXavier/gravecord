@@ -60,6 +60,58 @@ pub fn player_event(account: &str, state: &Value) -> Value {
         "context": null})
 }
 
+/// Where the `context` of a player state comes from (`ec` of module 655116).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ContextSource {
+    /// Not an album or a playlist: no context.
+    None,
+    /// The album itself, or the context the account's player already holds for the same uri.
+    Ready(Value),
+    /// A playlist not seen yet: fetched by its id (`GET` of the context's `href`), then kept only if public.
+    Playlist(String),
+}
+
+/// `ec`: an album or playlist context of a provider player snapshot. `previous` is the context the account's current
+/// player state holds (`getPlayerState(e).context`).
+pub fn context_source(state: &Value, previous: Option<&Value>) -> ContextSource {
+    let context = &state["context"];
+    let kind = context["type"].as_str();
+    if !matches!(kind, Some("playlist" | "album")) {
+        return ContextSource::None;
+    }
+    if let Some(previous) = previous
+        && previous["uri"].is_string()
+        && previous["uri"] == context["uri"]
+    {
+        return ContextSource::Ready(previous.clone());
+    }
+    if kind == Some("album") {
+        return ContextSource::Ready(context.clone());
+    }
+    // The fetch goes to the playback API with the account's credential: only a base-62 playlist id is taken.
+    let id = context["href"]
+        .as_str()
+        .and_then(|href| href.strip_prefix("https://api.spotify.com/v1/playlists/"))
+        .or_else(|| context["uri"].as_str()?.strip_prefix("spotify:playlist:"))
+        .map(|id| id.split(['?', '/']).next().unwrap_or_default())
+        .filter(|id| {
+            !id.is_empty() && id.len() <= 64 && id.bytes().all(|b| b.is_ascii_alphanumeric())
+        });
+    match id {
+        Some(id) => ContextSource::Playlist(id.to_owned()),
+        None => ContextSource::None,
+    }
+}
+
+/// The fetched context as the player state keeps it: a private playlist is none (`t.type === PLAYLIST && !t.public`).
+pub fn public_context(context: Value) -> Value {
+    if context["type"] == "playlist" && context["public"] != true {
+        Value::Null
+    } else {
+        context
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Account {
     pub id: String,
@@ -128,12 +180,93 @@ impl Resource {
     }
 }
 
+/// The track of a `SPOTIFY_PLAYER_STATE` (`ec` of module 655116): a track, or an episode with its show as the album.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Track {
+    pub id: String,
+    pub name: String,
+    pub duration: i64,
+    /// `track` or `episode`.
+    pub kind: String,
+    pub album_id: String,
+    pub album_name: String,
+    pub album_image_url: Option<String>,
+    /// `album`, `single`, `compilation` or `show`.
+    pub album_type: String,
+    /// `(id, name)`, in the provider's order.
+    pub artists: Vec<(String, String)>,
+    pub is_local: bool,
+}
+
+impl Track {
+    fn from_value(value: &Value) -> Option<Self> {
+        let text = |value: &Value| value.as_str().unwrap_or_default().to_owned();
+        let album = &value["album"];
+        Some(Self {
+            id: value["id"].as_str()?.to_owned(),
+            name: text(&value["name"]),
+            duration: value["duration"].as_i64().unwrap_or_default(),
+            kind: value["type"].as_str().unwrap_or("track").to_owned(),
+            album_id: text(&album["id"]),
+            album_name: text(&album["name"]),
+            album_image_url: album["image"]["url"].as_str().map(str::to_owned),
+            album_type: album["type"].as_str().unwrap_or("album").to_owned(),
+            artists: value["artists"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .filter_map(|artist| {
+                    Some((
+                        artist["id"].as_str()?.to_owned(),
+                        artist["name"].as_str()?.to_owned(),
+                    ))
+                })
+                .collect(),
+            is_local: value["isLocal"].as_bool().unwrap_or(false),
+        })
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Player {
     pub account_id: String,
     pub track_id: String,
     pub start_time: i64,
     pub repeat: bool,
+    pub track: Track,
+    /// The uri of the album or public playlist the track plays from (`context` of the player state).
+    pub context_uri: Option<String>,
+}
+
+/// `HS` of module 272984: the party id prefix of a Spotify activity.
+pub const PARTY_PREFIX: &str = "spotify:";
+/// `p` of module 913659: Spotify album art is sent as `spotify:` and the part of its URL after this.
+const IMAGE_PREFIX: &str = "https://i.scdn.co/image/";
+/// `jUm.PLAY | jUm.SYNC` (module 652215): the activity can be played and listened along to.
+pub const ACTIVITY_FLAGS: u64 = 32 | 16;
+/// `G` of module 655116: the player state is cleared this long after the track should have ended.
+pub const TRACK_END_GRACE_MS: i64 = 5_000;
+/// `G` of module 655116: a listen-along whose own playback stopped or moved to another track ends this long after.
+pub const LISTEN_ALONG_STOP_MS: i64 = 5_000;
+/// `x` of module 655116: a new start within this of the last one keeps the last one (player clock jitter).
+const START_JITTER_MS: i64 = 1_500;
+
+/// `I.length > 128 ? I.substring(0, 125) + "..." : I`, counted in UTF-16 units like the JS string.
+fn truncate_details(name: &str) -> String {
+    if name.encode_utf16().count() <= 128 {
+        return name.to_owned();
+    }
+    let mut units = 0;
+    let mut cut = String::new();
+    for c in name.chars() {
+        units += c.len_utf16();
+        if units > 125 {
+            break;
+        }
+        cut.push(c);
+    }
+    cut.push_str("...");
+    cut
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -236,6 +369,10 @@ pub struct SpotifyStore {
     last_played_track: Option<String>,
     syncing: Option<SyncingWith>,
     protocol_registered: bool,
+    /// `W` of module 655116: the account whose player state is cleared at this time (the track's end plus `G`).
+    track_end: Option<(String, i64)>,
+    /// `Y` of module 655116: when a listen-along whose own playback stopped ends, and the account to clear then.
+    listen_along_stop: Option<(String, i64)>,
 }
 
 impl SpotifyStore {
@@ -434,6 +571,119 @@ impl SpotifyStore {
         }
     }
 
+    /// `shouldShowActivity` of module 655116: a track plays, its account has "Display Spotify as your status" on,
+    /// and the account is not idle (`IdleStore.isIdle`, ten minutes without input).
+    pub fn should_show_activity(&self, idle: bool) -> bool {
+        self.player().is_some_and(|player| {
+            self.accounts
+                .iter()
+                .any(|account| account.id == player.account_id && account.show_activity)
+        }) && !idle
+    }
+
+    /// `getActivity` of module 655116 as `LocalActivityStore` lists it (`{type: LISTENING, ...}`, module 491009 `B`):
+    /// the playing track, the first five artists, the album art and name, the track's start and end, the party
+    /// (`spotify:<own id>`, or the host's party while listening along) and, unless the track is a local file, the
+    /// sync id, the play and sync flags and the metadata a listener's client plays it from.
+    ///
+    /// Without a player of its own the official getter returns the listened-to host's activity, but
+    /// `shouldShowActivity` is then false and `SelfPresenceStore` drops it (module 894768 `V`): nothing of it is ever
+    /// sent or shown, so this returns `None` there.
+    pub fn activity(&self, me: Id) -> Option<Value> {
+        let player = self.player()?;
+        let track = &player.track;
+        let artists = &track.artists[..track.artists.len().min(5)];
+        let mut assets = serde_json::Map::new();
+        if let Some(image) = track
+            .album_image_url
+            .as_deref()
+            .and_then(|url| url.split(IMAGE_PREFIX).nth(1))
+            .filter(|key| !key.is_empty())
+        {
+            assets.insert("large_image".into(), json!(format!("spotify:{image}")));
+        }
+        if track.album_type != "single" {
+            assets.insert("large_text".into(), json!(track.album_name));
+        }
+        let party = self
+            .syncing
+            .as_ref()
+            .map(|sync| sync.party_id.clone())
+            .unwrap_or_else(|| format!("{PARTY_PREFIX}{me}"));
+        let mut activity = json!({
+            "type": 2,
+            "name": "Spotify",
+            "assets": assets,
+            "details": truncate_details(&track.name),
+        });
+        if !artists.is_empty() {
+            let state: Vec<String> = artists
+                .iter()
+                .map(|(_, name)| name.replace(';', ""))
+                .collect();
+            activity["state"] = json!(state.join("; "));
+        }
+        activity["timestamps"] = json!({
+            "start": player.start_time,
+            "end": player.start_time + track.duration,
+        });
+        activity["party"] = json!({ "id": party });
+        if !track.is_local {
+            activity["sync_id"] = json!(track.id);
+            activity["flags"] = json!(ACTIVITY_FLAGS);
+            let mut metadata = serde_json::Map::new();
+            if let Some(context) = &player.context_uri {
+                metadata.insert("context_uri".into(), json!(context));
+            }
+            metadata.insert("album_id".into(), json!(track.album_id));
+            metadata.insert(
+                "artist_ids".into(),
+                json!(artists.iter().map(|(id, _)| id).collect::<Vec<_>>()),
+            );
+            metadata.insert("type".into(), json!(track.kind));
+            metadata.insert("button_urls".into(), json!([]));
+            activity["metadata"] = Value::Object(metadata);
+        }
+        Some(activity)
+    }
+
+    /// When the player state is next due to be cleared (`W`, the track's end plus five seconds), if a track plays.
+    pub fn track_end_ms(&self) -> Option<i64> {
+        self.track_end.as_ref().map(|(_, at)| *at)
+    }
+
+    /// When a listen-along whose own playback stopped ends (`Y`), if one is due.
+    pub fn listen_along_stop_ms(&self) -> Option<i64> {
+        self.listen_along_stop.as_ref().map(|(_, at)| *at)
+    }
+
+    /// `W` fired: the track should have ended and no new state came, so the player is cleared (`Z`). True when it
+    /// was due.
+    pub fn expire_track(&mut self, now_ms: i64) -> bool {
+        let Some((account, at)) = self.track_end.clone() else {
+            return false;
+        };
+        if now_ms < at {
+            return false;
+        }
+        self.track_end = None;
+        self.player_state(&player_event(&account, &Value::Null), now_ms);
+        true
+    }
+
+    /// `Y` fired: the listen-along ends (`stopSync`, then `es`) and the account's player is cleared (`Z`). Returns
+    /// whether it was due, and the account to pause when the active player still plays the shared track.
+    pub fn expire_listen_along(&mut self, now_ms: i64) -> Option<Option<String>> {
+        let (account, at) = self.listen_along_stop.clone()?;
+        if now_ms < at {
+            return None;
+        }
+        self.listen_along_stop = None;
+        let pause = self.stop_sync();
+        self.player_state(&player_event(&account, &Value::Null), now_ms);
+        Some(pause)
+    }
+
     fn player_state(&mut self, data: &Value, now_ms: i64) {
         let Some(account) = data["accountId"].as_str() else {
             return;
@@ -460,11 +710,36 @@ impl SpotifyStore {
             .position(|player| player.account_id == account);
         let position = data["position"].as_i64().unwrap_or(0);
         let playing = data["isPlaying"] == true;
-        // A device's zero-position stopped snapshot during handoff does not erase listen-along state.
-        if !data["device"].is_null() && self.syncing.is_some() && position == 0 && !playing {
+        // A paused player has no track (`o ? … : u = null`): the activity goes at once, there is no pause grace.
+        let track = Track::from_value(&data["track"]).filter(|_| playing);
+        // A device's zero-position stopped snapshot during handoff does not erase listen-along state (`N`).
+        let handoff =
+            !data["device"].is_null() && self.syncing.is_some() && position == 0 && !playing;
+        // `W`: restarted for every playing track, stopped otherwise.
+        self.track_end = match &track {
+            Some(track) if !handoff => Some((
+                account.to_owned(),
+                now_ms + track.duration - position + TRACK_END_GRACE_MS,
+            )),
+            _ => None,
+        };
+        // `Y`: a listen-along whose own playback paused, lost its device or moved to another track ends in five
+        // seconds unless the shared track plays again first.
+        let off_track = track
+            .as_ref()
+            .zip(self.syncing.as_ref())
+            .is_some_and(|(track, sync)| track.id != sync.track_id);
+        self.listen_along_stop = if self.syncing.is_some()
+            && ((!playing && position > 0) || data["device"].is_null() || off_track)
+        {
+            Some((account.to_owned(), now_ms + LISTEN_ALONG_STOP_MS))
+        } else {
+            None
+        };
+        if handoff {
             return;
         }
-        let Some(track_id) = data["track"]["id"].as_str().filter(|_| playing) else {
+        let Some(track) = track else {
             if let Some(index) = previous {
                 self.players.remove(index);
             }
@@ -473,13 +748,15 @@ impl SpotifyStore {
         let proposed = now_ms.saturating_sub(position);
         let start_time = previous
             .map(|index| self.players[index].start_time)
-            .filter(|old| proposed.abs_diff(*old) <= 1_500)
+            .filter(|old| proposed.abs_diff(*old) as i64 <= START_JITTER_MS)
             .unwrap_or(proposed);
         let player = Player {
             account_id: account.into(),
-            track_id: track_id.into(),
+            track_id: track.id.clone(),
             start_time,
             repeat: data["repeat"].as_bool().unwrap_or(false),
+            track,
+            context_uri: data["context"]["uri"].as_str().map(str::to_owned),
         };
         if let Some(index) = previous {
             self.players[index] = player;
@@ -898,5 +1175,195 @@ mod tests {
                 .syncing_user_activity(&json!({"user":{"id":"3"},"activities":[activity()]}))
                 .is_none()
         );
+    }
+    /// A `/me/player` (or dealer `PLAYER_STATE_CHANGED` `event.state`) snapshot of a playing track.
+    fn snapshot(name: &str, progress: i64, playing: bool) -> Value {
+        json!({"is_playing": playing, "repeat_state": "off", "progress_ms": progress,
+            "device": {"id": "pc", "name": "PC", "type": "Computer", "is_active": true, "volume_percent": 50},
+            "context": {"type": "album", "uri": "spotify:album:alb", "href": "https://api.spotify.com/v1/albums/alb"},
+            "item": {"type": "track", "id": "trk", "name": name, "duration_ms": 200_000, "is_local": false,
+                "album": {"id": "alb", "name": "The Album", "type": "album",
+                    "images": [{"url": "https://i.scdn.co/image/ab67616d0000b273abc", "width": 640, "height": 640}]},
+                "artists": [{"id": "r1", "name": "One; Two"}, {"id": "r2", "name": "Three"}]}})
+    }
+
+    fn state(store: &mut SpotifyStore, snapshot: &Value, now: i64) {
+        let mut event = player_event("a", snapshot);
+        event["context"] = public_context(match context_source(snapshot, None) {
+            ContextSource::Ready(context) => context,
+            _ => Value::Null,
+        });
+        store.dispatch("SPOTIFY_PLAYER_STATE", &event, now);
+    }
+
+    #[test]
+    fn a_playing_track_is_the_listening_activity_655116_builds() {
+        let mut store = playable();
+        assert_eq!(store.activity(7), None);
+        state(&mut store, &snapshot("Song", 30_000, true), 100_000);
+        assert!(store.should_show_activity(false));
+        assert!(!store.should_show_activity(true));
+        assert_eq!(
+            store.activity(7).unwrap(),
+            json!({"type": 2, "name": "Spotify",
+                "assets": {"large_image": "spotify:ab67616d0000b273abc", "large_text": "The Album"},
+                "details": "Song", "state": "One Two; Three",
+                "timestamps": {"start": 70_000, "end": 270_000},
+                "party": {"id": "spotify:7"}, "sync_id": "trk", "flags": 48,
+                "metadata": {"context_uri": "spotify:album:alb", "album_id": "alb", "artist_ids": ["r1", "r2"],
+                    "type": "track", "button_urls": []}})
+        );
+        // The player clock's jitter keeps the start: the same activity, no new presence update.
+        state(&mut store, &snapshot("Song", 31_400, true), 101_000);
+        assert_eq!(store.activity(7).unwrap()["timestamps"]["start"], 70_000);
+        // A seek moves it.
+        state(&mut store, &snapshot("Song", 90_000, true), 102_000);
+        assert_eq!(store.activity(7).unwrap()["timestamps"]["start"], 12_000);
+        // Pausing clears the activity at once; there is no pause grace.
+        state(&mut store, &snapshot("Song", 90_000, false), 103_000);
+        assert_eq!(store.activity(7), None);
+        assert!(!store.should_show_activity(false));
+        assert_eq!(store.track_end_ms(), None);
+    }
+
+    #[test]
+    fn display_spotify_as_your_status_off_hides_the_activity() {
+        let mut store = playable();
+        state(&mut store, &snapshot("Song", 0, true), 1_000);
+        store.dispatch(
+            "USER_CONNECTION_UPDATE",
+            &json!({"platformType": "spotify", "id": "a", "showActivity": false}),
+            2_000,
+        );
+        assert!(!store.should_show_activity(false));
+        store.dispatch(
+            "USER_CONNECTION_UPDATE",
+            &json!({"platformType": "spotify", "id": "a", "showActivity": true}),
+            3_000,
+        );
+        assert!(store.should_show_activity(false));
+        // Unlinking the account takes the player with it.
+        store.dispatch(
+            "USER_CONNECTIONS_UPDATE",
+            &json!({"local": true, "accounts": []}),
+            4_000,
+        );
+        assert!(!store.should_show_activity(false));
+        assert_eq!(store.activity(7), None);
+    }
+
+    #[test]
+    fn local_files_singles_episodes_and_long_names_follow_get_activity() {
+        let mut store = playable();
+        let mut local = snapshot("Song", 0, true);
+        local["item"]["is_local"] = json!(true);
+        local["item"]["album"]["type"] = json!("single");
+        local["item"]["album"]["images"] = json!([]);
+        local["item"]["artists"] = json!([]);
+        local["context"] = Value::Null;
+        state(&mut store, &local, 1_000);
+        assert_eq!(
+            store.activity(7).unwrap(),
+            json!({"type": 2, "name": "Spotify", "assets": {}, "details": "Song",
+                "timestamps": {"start": 1_000, "end": 201_000}, "party": {"id": "spotify:7"}})
+        );
+        let mut long = snapshot(&"é".repeat(130), 0, true);
+        long["item"]["artists"] = json!(
+            (0..7)
+                .map(|i| json!({"id": format!("r{i}"), "name": format!("A{i}")}))
+                .collect::<Vec<_>>()
+        );
+        long["item"]["album"]["images"] = json!([{"url": "https://example.com/elsewhere.jpg"}]);
+        state(&mut store, &long, 2_000);
+        let activity = store.activity(7).unwrap();
+        assert_eq!(activity["details"], format!("{}...", "é".repeat(125)));
+        assert_eq!(activity["state"], "A0; A1; A2; A3; A4");
+        assert_eq!(
+            activity["metadata"]["artist_ids"],
+            json!(["r0", "r1", "r2", "r3", "r4"])
+        );
+        assert_eq!(activity["assets"], json!({"large_text": "The Album"}));
+        let episode = json!({"is_playing": true, "progress_ms": 0, "device": {"id": "pc"},
+            "item": {"type": "episode", "id": "ep", "name": "Episode", "duration_ms": 1000,
+                "show": {"id": "show", "name": "Series", "images": []}}});
+        state(&mut store, &episode, 3_000);
+        let activity = store.activity(7).unwrap();
+        assert_eq!(activity["metadata"]["type"], "episode");
+        assert_eq!(activity["metadata"]["album_id"], "show");
+        assert_eq!(activity["assets"]["large_text"], "Series");
+        assert!(activity.get("state").is_none());
+    }
+
+    #[test]
+    fn the_track_end_timer_clears_a_player_nobody_updated() {
+        let mut store = playable();
+        state(&mut store, &snapshot("Song", 150_000, true), 1_000_000);
+        // `W`: duration - position + five seconds.
+        assert_eq!(store.track_end_ms(), Some(1_055_000));
+        assert!(!store.expire_track(1_054_999));
+        assert!(store.player().is_some());
+        assert!(store.expire_track(1_055_000));
+        assert_eq!(store.activity(7), None);
+        assert_eq!(store.track_end_ms(), None);
+    }
+
+    #[test]
+    fn listening_along_carries_the_host_party_and_stops_when_own_playback_does() {
+        let mut store = playable();
+        let host = json!({"type": 2, "name": "Spotify", "sync_id": "trk", "party": {"id": "spotify:2"},
+            "timestamps": {"start": 10_000}});
+        store.start_sync(2, &host, 20_000).unwrap();
+        state(&mut store, &snapshot("Song", 10_000, true), 20_000);
+        assert_eq!(store.activity(7).unwrap()["party"]["id"], "spotify:2");
+        assert_eq!(store.listen_along_stop_ms(), None);
+        // A zero-position stopped snapshot of a device handoff changes nothing.
+        state(&mut store, &snapshot("Song", 0, false), 21_000);
+        assert!(store.player().is_some());
+        // Own playback paused mid-track: the listen-along ends in five seconds.
+        state(&mut store, &snapshot("Song", 12_000, false), 22_000);
+        assert_eq!(store.listen_along_stop_ms(), Some(27_000));
+        // Playing the shared track again first cancels it.
+        state(&mut store, &snapshot("Song", 12_000, true), 23_000);
+        assert_eq!(store.listen_along_stop_ms(), None);
+        let mut other = snapshot("Other", 0, true);
+        other["item"]["id"] = json!("other");
+        state(&mut store, &other, 24_000);
+        assert_eq!(store.expire_listen_along(28_999), None);
+        assert_eq!(store.expire_listen_along(29_000), Some(None));
+        assert!(store.syncing_with().is_none());
+        assert_eq!(store.activity(7), None);
+    }
+
+    #[test]
+    fn contexts_are_albums_known_uris_or_fetched_public_playlists() {
+        let album = snapshot("Song", 0, true);
+        assert_eq!(
+            context_source(&album, None),
+            ContextSource::Ready(album["context"].clone())
+        );
+        let mut playlist = album.clone();
+        playlist["context"] = json!({"type": "playlist", "uri": "spotify:playlist:37i9dQ",
+            "href": "https://api.spotify.com/v1/playlists/37i9dQ"});
+        assert_eq!(
+            context_source(&playlist, None),
+            ContextSource::Playlist("37i9dQ".into())
+        );
+        let held = json!({"type": "playlist", "uri": "spotify:playlist:37i9dQ", "public": true});
+        assert_eq!(
+            context_source(&playlist, Some(&held)),
+            ContextSource::Ready(held.clone())
+        );
+        playlist["context"]["href"] = json!("https://evil.example/v1/playlists/x");
+        playlist["context"]["uri"] = json!("spotify:playlist:../../me");
+        assert_eq!(context_source(&playlist, None), ContextSource::None);
+        let mut artist = album.clone();
+        artist["context"] = json!({"type": "artist", "uri": "spotify:artist:r1"});
+        assert_eq!(context_source(&artist, None), ContextSource::None);
+        assert_eq!(public_context(held.clone()), held);
+        assert_eq!(
+            public_context(json!({"type": "playlist", "uri": "u", "public": false})),
+            Value::Null
+        );
+        assert_eq!(public_context(album["context"].clone()), album["context"]);
     }
 }

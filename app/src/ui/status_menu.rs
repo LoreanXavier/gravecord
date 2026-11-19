@@ -379,6 +379,7 @@ impl Root {
 
         let header = div()
             .relative()
+            .flex_none()
             .h(px(140.))
             .child(div().h(px(105.)).rounded_t(px(8.)).bg(banner))
             .child(
@@ -625,9 +626,14 @@ impl Root {
             .flex()
             .flex_col()
             .gap(px(8.))
+            .max_h_full()
             .child(header)
             .child(
+                // The body is a scroller (`Ip` with `rf` in module 993382): a tall popout scrolls under its banner.
                 div()
+                    .id("status-popout-body")
+                    .min_h_0()
+                    .overflow_y_scroll()
                     .px(px(16.))
                     .pt(px(4.))
                     .pb(px(18.))
@@ -645,6 +651,19 @@ impl Root {
                             cx,
                         )))
                     })
+                    // Module 646986 (`ni` in 993382's body, after the bio): the account's own activity cards, the
+                    // Spotify track among them, as the user popout draws them.
+                    .children(
+                        self.live_activity_cards(
+                            user.id,
+                            super::live_activity::Surface::Popout,
+                            color("--text-strong").into(),
+                            color("--text-subtle").into(),
+                            cx,
+                        )
+                        .into_iter()
+                        .map(|card| div().mt(px(12.)).child(card)),
+                    )
                     .child(div().mt(px(12.)).child(first))
                     .child(div().mt(px(12.)).child(second)),
             );
@@ -678,7 +697,17 @@ impl Root {
                     this.press_outside(super::keyboard::Layer::StatusPopout, cx);
                 }),
             )
-            .child(div().absolute().left(px(8.)).bottom(px(72.)).child(card))
+            .child(
+                div()
+                    .absolute()
+                    .left(px(8.))
+                    .top(px(8.))
+                    .bottom(px(72.))
+                    .flex()
+                    .flex_col()
+                    .justify_end()
+                    .child(card),
+            )
             .children(self.status_submenu(popout.submenu, cx));
         Some(deferred(layer).with_priority(1).into_any_element())
     }

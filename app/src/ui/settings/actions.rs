@@ -480,6 +480,8 @@ impl Root {
                         &serde_json::json!({"local": true, "accounts": body}),
                         chrono::Utc::now().timestamp_millis(),
                     );
+                    // `SelfPresenceStore` recomputes on the local `USER_CONNECTIONS_UPDATE` (module 894768).
+                    self.refresh_own_presence();
                 }
                 if body.is_array() {
                     self.settings_extra.connections = body.as_array().cloned();

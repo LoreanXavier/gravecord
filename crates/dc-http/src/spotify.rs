@@ -272,7 +272,7 @@ impl Spotify {
     async fn request(
         &mut self,
         method: Method,
-        path: &'static str,
+        path: &str,
         query: &[(&str, String)],
         body: Option<&Value>,
         only_authorization_retry: bool,
@@ -329,6 +329,23 @@ impl Spotify {
 
     pub async fn profile(&mut self) -> Result<Value, Error> {
         self.request(Method::GET, "/me", &[], None, false).await
+    }
+
+    /// The playlist a player state plays from (`ec` of module 655116 `GET`s the context's `href`). Only the three
+    /// fields the player state keeps are asked for: a whole playlist with its tracks outgrows the body bound.
+    pub async fn playlist(&mut self, id: &str) -> Result<Value, Error> {
+        if id.is_empty() || id.len() > 64 || !id.bytes().all(|b| b.is_ascii_alphanumeric()) {
+            return Err(Error::Protocol);
+        }
+        let path = format!("/playlists/{id}");
+        self.request(
+            Method::GET,
+            &path,
+            &[("fields", "type,uri,public".into())],
+            None,
+            false,
+        )
+        .await
     }
 
     pub async fn devices(&mut self) -> Result<Value, Error> {

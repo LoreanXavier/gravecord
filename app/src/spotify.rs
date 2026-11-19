@@ -430,12 +430,53 @@ async fn session(
 
 type Job = Result<(), Error>;
 
+/// The context the account's current player state holds (`getPlayerState(e).context` of module 655116).
+type LastContext = Arc<std::sync::Mutex<Option<Value>>>;
+
+/// `ec` of module 655116: a provider player snapshot becomes `SPOTIFY_PLAYER_STATE` with its context: an album is
+/// its own context, a playlist is fetched once per uri and kept only while public. A failed playlist fetch other than
+/// a 404 dispatches nothing, as the official promise rejects.
+async fn player_state_event(
+    api: &mut Spotify,
+    account: &str,
+    state: &Value,
+    last: &LastContext,
+) -> Result<Option<Value>, Error> {
+    use dc_state::spotify::{ContextSource, context_source};
+    let previous = last.lock().ok().and_then(|held| held.clone());
+    let context = match context_source(state, previous.as_ref()) {
+        ContextSource::None => Value::Null,
+        ContextSource::Ready(context) => context,
+        ContextSource::Playlist(id) => match api.playlist(&id).await {
+            Ok(body) => body,
+            Err(Error::Status(404)) => Value::Null,
+            Err(error @ (Error::Revoked | Error::RateLimited(_))) => return Err(error),
+            Err(_) => return Ok(None),
+        },
+    };
+    Ok(Some(event_with_context(account, state, context, last)))
+}
+
+/// The event of a snapshot whose context is known; the account's held context follows what the store keeps (a
+/// playing track's context, nothing otherwise).
+fn event_with_context(account: &str, state: &Value, context: Value, last: &LastContext) -> Value {
+    let mut event = dc_state::spotify::player_event(account, state);
+    event["context"] = dc_state::spotify::public_context(context);
+    if let Ok(mut held) = last.lock() {
+        *held = (event["isPlaying"] == true && event["track"].is_object())
+            .then(|| event["context"].clone())
+            .filter(|context| !context.is_null());
+    }
+    event
+}
+
 fn scan(
     jobs: &mut JoinSet<Job>,
     api: Arc<Mutex<Spotify>>,
     updates: mpsc::UnboundedSender<Update>,
     account: String,
     profile: bool,
+    last: LastContext,
 ) {
     jobs.spawn(async move {
         let mut api = api.lock().await;
@@ -465,13 +506,20 @@ fn scan(
             json!({"accountId":account,"devices":devices}),
         );
         let state = api.player().await?;
-        dispatch(
-            &updates,
-            "SPOTIFY_PLAYER_STATE",
-            dc_state::spotify::player_event(&account, &state),
-        );
+        if let Some(event) = player_state_event(&mut api, &account, &state, &last).await? {
+            dispatch(&updates, "SPOTIFY_PLAYER_STATE", event);
+        }
         Ok(())
     });
+}
+
+/// `handleMessage` of module 655116: the events every payload of a dealer `message` carries.
+fn dealer_events(message: &Value) -> impl Iterator<Item = &Value> {
+    message["payloads"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .flat_map(|payload| payload["events"].as_array().into_iter().flatten())
 }
 
 fn connection_id(uri: &str) -> Option<String> {
@@ -488,23 +536,23 @@ async fn connection(
     account: &str,
     delay: &mut Duration,
 ) -> Job {
+    let last: LastContext = Arc::default();
     let (initial, mut dealer): (Option<Value>, Dealer) = {
         let mut api = api.lock().await;
         let initial = match api.player().await {
-            Ok(state) => Some(state),
+            Ok(state) => player_state_event(&mut api, account, &state, &last).await?,
             Err(Error::Revoked) => return Err(Error::Revoked),
             Err(Error::RateLimited(wait)) => return Err(Error::RateLimited(wait)),
-            Err(_) => None,
+            // `eu`: a failed player request is an empty player state (`Z`).
+            Err(_) => Some(dc_state::spotify::player_event(account, &Value::Null)),
         };
         (initial, api.open_dealer().await?)
     };
     *delay = Duration::from_millis(500);
     socket_state(updates, account, true);
-    dispatch(
-        updates,
-        "SPOTIFY_PLAYER_STATE",
-        dc_state::spotify::player_event(account, initial.as_ref().unwrap_or(&Value::Null)),
-    );
+    if let Some(initial) = initial {
+        dispatch(updates, "SPOTIFY_PLAYER_STATE", initial);
+    }
     let mut jobs = JoinSet::new();
     scan(
         &mut jobs,
@@ -512,6 +560,7 @@ async fn connection(
         updates.clone(),
         account.into(),
         true,
+        last.clone(),
     );
     let mut ping = tokio::time::interval_at(
         Instant::now() + Duration::from_secs(30),
@@ -533,7 +582,7 @@ async fn connection(
             _ = tokio::time::sleep_until(refresh_after), if refresh && jobs.is_empty() => {
                 refresh = false;
                 refresh_after = Instant::now() + Duration::from_secs(3);
-                scan(&mut jobs, api.clone(), updates.clone(), account.into(), false);
+                scan(&mut jobs, api.clone(), updates.clone(), account.into(), false, last.clone());
             }
             message = dealer.receive() => {
                 let Some(message) = message? else { return Ok(()) };
@@ -542,11 +591,31 @@ async fn connection(
                     let api = api.clone();
                     jobs.spawn(async move { api.lock().await.register_notifications(&id).await });
                 } else {
-                    for event in message["payloads"].as_array().into_iter().flatten()
-                        .flat_map(|payload| payload["events"].as_array().into_iter().flatten()) {
+                    for event in dealer_events(&message) {
                         match event["type"].as_str() {
                             Some("PLAYER_STATE_CHANGED") if event["event"]["state"].is_object() => {
-                                dispatch(updates, "SPOTIFY_PLAYER_STATE", dc_state::spotify::player_event(account, &event["event"]["state"]));
+                                let state = &event["event"]["state"];
+                                let previous = last.lock().ok().and_then(|held| held.clone());
+                                match dc_state::spotify::context_source(state, previous.as_ref()) {
+                                    // Only a playlist not seen yet waits for the provider; the rest goes at once.
+                                    dc_state::spotify::ContextSource::Playlist(_) => {
+                                        let (api, updates, account, last, state) =
+                                            (api.clone(), updates.clone(), account.to_owned(), last.clone(), state.clone());
+                                        jobs.spawn(async move {
+                                            let mut api = api.lock().await;
+                                            if let Some(event) = player_state_event(&mut api, &account, &state, &last).await? {
+                                                dispatch(&updates, "SPOTIFY_PLAYER_STATE", event);
+                                            }
+                                            Ok(())
+                                        });
+                                    }
+                                    dc_state::spotify::ContextSource::Ready(context) => {
+                                        dispatch(updates, "SPOTIFY_PLAYER_STATE", event_with_context(account, state, context, &last));
+                                    }
+                                    dc_state::spotify::ContextSource::None => {
+                                        dispatch(updates, "SPOTIFY_PLAYER_STATE", event_with_context(account, state, Value::Null, &last));
+                                    }
+                                }
                             }
                             Some("DEVICE_STATE_CHANGED") => refresh = true,
                             _ => {}
@@ -661,5 +730,104 @@ mod tests {
                 .send((1, Operation::Pause("fixture".into())))
                 .is_err()
         );
+    }
+    /// A dealer frame as 655116 `handleMessage` reads it: `type`, `uri` and `payloads[].events[]` with
+    /// `PLAYER_STATE_CHANGED` carrying the Web API player object in `event.state`.
+    fn dealer_frame(playing: bool, progress: i64) -> Value {
+        json!({"type": "message", "uri": "wss://event", "headers": {"Content-Type": "application/json"},
+            "payloads": [{"events": [{"type": "PLAYER_STATE_CHANGED", "uri": "wss://event",
+                "event": {"state": {"is_playing": playing, "repeat_state": "context", "progress_ms": progress,
+                    "shuffle_state": false, "timestamp": 1,
+                    "device": {"id": "dev", "name": "Desk", "type": "Computer", "is_active": true,
+                        "is_restricted": false, "volume_percent": 64},
+                    "context": {"type": "album", "uri": "spotify:album:4aawyAB9vmqN3uQ7FjRGTy",
+                        "href": "https://api.spotify.com/v1/albums/4aawyAB9vmqN3uQ7FjRGTy",
+                        "external_urls": {"spotify": "https://open.spotify.com/album/4aawyAB9vmqN3uQ7FjRGTy"}},
+                    "item": {"type": "track", "id": "11dFghVXANMlKmJXsNCbNl", "name": "Cut To The Feeling",
+                        "duration_ms": 207_959, "is_local": false, "popularity": 1,
+                        "album": {"id": "4aawyAB9vmqN3uQ7FjRGTy", "name": "Cut To The Feeling", "type": "album",
+                            "images": [{"url": "https://i.scdn.co/image/ab67616d0000b273e3c9b5a5c8b8f5a3",
+                                "width": 640, "height": 640}]},
+                        "artists": [{"id": "6sFIWsNpZYqfjUpaCgueju", "name": "Carly Rae Jepsen",
+                            "type": "artist"}]}}}}]}]})
+    }
+
+    /// The dealer frame goes through the worker's context step and the store, and the account's op 3 carries the
+    /// LISTENING activity after its custom status; paused, the op 3 has the custom status alone again.
+    #[test]
+    fn a_dealer_player_state_becomes_the_listening_activity_of_op_3() {
+        let mut store = dc_state::spotify::SpotifyStore::default();
+        store.dispatch(
+            "READY",
+            &json!({"connected_accounts": [{"id": "spot", "type": "spotify", "show_activity": true}]}),
+            0,
+        );
+        store.dispatch(
+            "SPOTIFY_ACCOUNT_ACCESS_TOKEN",
+            &json!({"accountId": "spot"}),
+            0,
+        );
+        let last = LastContext::default();
+        let custom = json!({"name": "Custom Status", "type": 4, "state": "hi", "emoji": null, "metadata": {}});
+        let op3 = |store: &dc_state::spotify::SpotifyStore, idle: bool, status: &str| {
+            let spotify = store
+                .should_show_activity(idle)
+                .then(|| store.activity(42))
+                .flatten();
+            // `shared_local_activities` already shares nothing for an invisible account.
+            let local = if status == "invisible" {
+                Vec::new()
+            } else {
+                vec![custom.clone()]
+            };
+            let activities = crate::games::with_spotify(local, spotify, status);
+            crate::games::presence_body_idle(status, &activities, 0, false)
+        };
+        let before = op3(&store, false, "online");
+        let deliver = |store: &mut dc_state::spotify::SpotifyStore, frame: &Value, now: i64| {
+            for event in dealer_events(frame) {
+                assert_eq!(event["type"], "PLAYER_STATE_CHANGED");
+                let state = &event["event"]["state"];
+                let context =
+                    match dc_state::spotify::context_source(state, last.lock().unwrap().as_ref()) {
+                        dc_state::spotify::ContextSource::Ready(context) => context,
+                        other => panic!("an album context needs no fetch: {other:?}"),
+                    };
+                store.dispatch(
+                    "SPOTIFY_PLAYER_STATE",
+                    &event_with_context("spot", state, context, &last),
+                    now,
+                );
+            }
+        };
+        deliver(&mut store, &dealer_frame(true, 7_959), 1_700_000_010_000);
+        let after = op3(&store, false, "online");
+        eprintln!("op 3 before: {before}\nop 3 after: {after}");
+        assert_eq!(
+            before,
+            json!({"status": "online", "since": 0, "activities": [custom], "afk": false})
+        );
+        assert_eq!(
+            after,
+            json!({"status": "online", "since": 0, "afk": false, "activities": [custom, {
+                "type": 2, "name": "Spotify",
+                "assets": {"large_image": "spotify:ab67616d0000b273e3c9b5a5c8b8f5a3",
+                    "large_text": "Cut To The Feeling"},
+                "details": "Cut To The Feeling", "state": "Carly Rae Jepsen",
+                "timestamps": {"start": 1_700_000_002_041_i64, "end": 1_700_000_210_000_i64},
+                "party": {"id": "spotify:42"}, "sync_id": "11dFghVXANMlKmJXsNCbNl", "flags": 48,
+                "metadata": {"context_uri": "spotify:album:4aawyAB9vmqN3uQ7FjRGTy",
+                    "album_id": "4aawyAB9vmqN3uQ7FjRGTy", "artist_ids": ["6sFIWsNpZYqfjUpaCgueju"],
+                    "type": "track", "button_urls": []}}]})
+        );
+        // The held context is reused for the next frame of the same album.
+        assert!(last.lock().unwrap().is_some());
+        // Idle or invisible: the custom status alone, or nothing.
+        assert_eq!(op3(&store, true, "online"), before);
+        assert_eq!(op3(&store, false, "invisible")["activities"], json!([]));
+        // Paused: the activity goes with the next update.
+        deliver(&mut store, &dealer_frame(false, 9_000), 1_700_000_012_000);
+        assert_eq!(op3(&store, false, "online"), before);
+        assert!(last.lock().unwrap().is_none());
     }
 }
