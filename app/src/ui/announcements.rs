@@ -33,6 +33,31 @@ enum Select {
     Channel,
 }
 
+/// Module 505859's pictures: `u` for the dark themes (`M` of module 462887), `h` for light.
+const FOLLOW_ART_DARK: [&str; 3] = [
+    "https://discord.com/assets/6dadee9234160dc1.svg",
+    "https://discord.com/assets/62d886a31822c89a.svg",
+    "https://discord.com/assets/377cb29b8f197452.svg",
+];
+const FOLLOW_ART_LIGHT: [&str; 3] = [
+    "https://discord.com/assets/36668e0a5832822f.svg",
+    "https://discord.com/assets/3a31d989497ba4f1.svg",
+    "https://discord.com/assets/f959ee6e6a8d2d0b.svg",
+];
+/// Module 505859's lines ("What a nice addition to your server. Lookin' real ... in here.").
+const FOLLOW_LINES: [&str; 10] = [
+    "w2o/60", "FiAvKg", "vKUFek", "veQl5T", "Pxb7BR", "W03w++", "95HTb5", "+XFelz", "hedHel", "jgC65t",
+];
+
+/// The picture for the current theme.
+fn follow_art(index: usize) -> &'static str {
+    if matches!(super::theme(), super::Theme::Light) {
+        FOLLOW_ART_LIGHT[index]
+    } else {
+        FOLLOW_ART_DARK[index]
+    }
+}
+
 /// The Follow modal's state (`B` of module 464035): the announcement channel, the chosen server and channel.
 pub(super) struct FollowModal {
     channel: Id,
@@ -351,6 +376,7 @@ impl Root {
         open.busy = false;
         if body["ok"].as_bool().unwrap_or(false) {
             self.follow = None;
+            self.open_follow_success();
         } else {
             open.error = Some(
                 if body["body"]["code"].as_u64() == Some(TOO_MANY_WEBHOOKS) {
@@ -362,6 +388,108 @@ impl Root {
             );
         }
         cx.notify();
+    }
+
+    /// Module 505859 after a follow: one of its three pictures for the theme and one of its ten lines, each picked at
+    /// random when it opens (`sample`).
+    pub(super) fn open_follow_success(&mut self) {
+        let nanos = chrono::Utc::now().timestamp_subsec_nanos() as usize;
+        let art = nanos % FOLLOW_ART_DARK.len();
+        let line = (nanos / 7) % FOLLOW_LINES.len();
+        let url = follow_art(art);
+        self.request_image(url.to_owned(), url.to_owned());
+        self.follow_success = Some((art, line));
+    }
+
+    /// Module 505859 (`FollowSuccessModal`) on the design system modal (`EO`, `root_wRhEA_`): the picture 280 wide
+    /// lifted 96px over the top (`image_wRhEA_`), then `modal_wRhEA_` (400 wide, 32px padding, centred): the line
+    /// (`heading-xl/semibold` with `followSuccessHeader_wRhEA_`'s bold weight), the body (`body-md/medium`,
+    /// `text-muted`, 16px above and 32px under it) and Got it! (`primary`).
+    pub(super) fn follow_success_modal(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
+        let (art, line) = self.follow_success?;
+        let pose = super::motion::legacy_modal_pose(
+            "follow-success-modal",
+            "follow-success-layer",
+            false,
+        );
+        let close = |this: &mut Self, cx: &mut Context<Self>| {
+            this.follow_success = None;
+            cx.notify();
+        };
+        let picture = self.images.get(follow_art(art)).cloned();
+        let panel = div()
+            .id("follow-success-modal")
+            .opacity(pose.opacity)
+            .paint_scale(pose.scale, gpui::point(0.5, 0.5))
+            .occlude()
+            .w(px(400.))
+            .rounded(px(12.))
+            .border_1()
+            .border_color(color("--border-subtle"))
+            .bg(color("--background-surface-high"))
+            .flex()
+            .flex_col()
+            .items_center()
+            // The picture is lifted only once it has loaded (an `img` without its file has no height).
+            .children(
+                picture.map(|picture| div().w(px(280.)).mt(px(-96.)).child(img(picture).w(px(280.)))),
+            )
+            .child(
+                div()
+                    .w(px(400.))
+                    .p(px(32.))
+                    .flex()
+                    .flex_col()
+                    .items_center()
+                    .text_center()
+                    .child(
+                        div()
+                            .text_size(px(24.))
+                            .line_height(px(30.))
+                            .font_weight(FontWeight(700.))
+                            .text_color(color("--text-strong"))
+                            .child(dc_intl::t(FOLLOW_LINES[line])),
+                    )
+                    .child(
+                        div()
+                            .mt(px(16.))
+                            .mb(px(32.))
+                            .text_size(px(16.))
+                            .line_height(px(20.))
+                            .font_weight(FontWeight(500.))
+                            .text_color(color("--text-muted"))
+                            .child(dc_intl::t("2QbSea")),
+                    )
+                    .child(modal::footer_button(
+                        modal::button(
+                            "follow-success-ok",
+                            dc_intl::t("+IrDzN"),
+                            modal::Tone::Primary,
+                            |this, _, _| this.follow_success = None,
+                        ),
+                        cx,
+                    )),
+            );
+        Some(
+            deferred(
+                div()
+                    .id("follow-success-layer")
+                    .occlude()
+                    .absolute()
+                    .inset_0()
+                    .bg(Rgba {
+                        a: f32::from(0xb8u8) / 255. * pose.scrim,
+                        ..rgba(0x000000ff)
+                    })
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .on_click(cx.listener(move |this, _, _, cx| close(this, cx)))
+                    .child(panel),
+            )
+            .with_priority(1)
+            .into_any_element(),
+        )
     }
 
     /// Module 464035 on the design system modal (`EO`): the header (`header_MXlLC1`) with the server's icon beside
@@ -981,5 +1109,19 @@ impl Root {
             route: format!("/channels/{channel}/messages/{message}/crosspost"),
             body: None,
         });
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_follow_success_lines_are_the_official_ones() {
+        for key in FOLLOW_LINES {
+            assert!(dc_intl::t(key).starts_with("What a nice addition to your server."));
+        }
+        assert!(dc_intl::t("2QbSea").starts_with("The most important updates"));
+        assert_eq!(FOLLOW_ART_DARK.len(), FOLLOW_ART_LIGHT.len());
     }
 }

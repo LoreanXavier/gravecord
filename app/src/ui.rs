@@ -44,6 +44,7 @@ mod audio_attachment;
 mod audio_menu;
 mod audit_spec;
 mod autocomplete;
+mod automod_alert;
 mod autoscroll;
 mod badge_modal;
 mod badge_paths;
@@ -105,12 +106,14 @@ mod game_communities;
 mod game_similar;
 mod games_spec;
 mod gateway_screens;
+mod geo_restricted;
 mod gifs;
 mod go_live;
 mod go_live_game;
 mod graphic_modal;
 mod group_dm;
 mod group_manage;
+mod guild_cap;
 mod guild_menu;
 mod guild_notifications;
 mod history;
@@ -644,6 +647,16 @@ pub struct Root {
     create_channel: Option<create_channel::CreateChannel>,
     channel_status: Option<channel_status::StatusModal>,
     follow: Option<announcements::FollowModal>,
+    /// Module 505859 after a follow: the picture and the line it picked.
+    follow_success: Option<(usize, usize)>,
+    /// "Wanna join more servers?" (module 716480) is open.
+    guild_cap_upsell: bool,
+    /// "Introducing App Directory" (module 633605) is open for this server.
+    app_directory_promo: Option<Id>,
+    /// Module 455796 while it shows, and the servers whose completed guide it has shown for this session
+    /// (`onboardingCompleteGuilds` of module 976639).
+    guide_celebration: Option<guild_guide::GuideCelebration>,
+    guide_complete_guilds: HashSet<Id>,
     start_stage: Option<stage::StartStage>,
     /// The Stage's age coachmark was closed with its X.
     stage_coach_closed: bool,
@@ -1140,6 +1153,11 @@ impl Root {
             create_channel: None,
             channel_status: None,
             follow: None,
+            follow_success: None,
+            guild_cap_upsell: false,
+            app_directory_promo: None,
+            guide_celebration: None,
+            guide_complete_guilds: Default::default(),
             start_stage: None,
             stage_coach_closed: false,
             stage_welcome: None,
@@ -1643,10 +1661,17 @@ impl Root {
                     self.clips_connection_open(cx);
                 }
                 self.sync_dm_call_idle_timer(cx);
+                if matches!(name.as_str(), "READY" | "GUILD_DELETE") {
+                    self.request_geo_restricted_icons();
+                }
+                if name == "GUILD_MEMBER_UPDATE" {
+                    self.guide_member_updated(&data, cx);
+                }
                 // The server in view is gone (left, removed from it, or deleted): back to Home, as the official
                 // client goes. An outage keeps the server and the view.
+                // A geo-restricted server (module 543897) goes from the store too, so the view leaves it.
                 if name == "GUILD_DELETE"
-                    && data["unavailable"] != true
+                    && (data["unavailable"] != true || data["geo_restricted"] == true)
                     && let Some(guild) = data["id"].as_str().and_then(|id| id.parse::<Id>().ok())
                 {
                     if self.guild == Some(guild) {
@@ -4860,6 +4885,8 @@ impl Root {
                     this.rail_dropped(drag, cx)
                 }))
                 .children(self.rail_entries(cx))
+                // Module 396655 `iX`: the geo-restricted servers after the tree (module 543897).
+                .children(self.geo_restricted_tiles(cx))
                 .child(
                     self.with_tip(
                         "add-server",
@@ -4868,7 +4895,14 @@ impl Root {
                         cx,
                     )
                     .cursor_pointer()
-                    .on_click(cx.listener(|this, _, window, cx| this.open_add_server(window, cx)))
+                    // `tX` of module 396655: at the server limit the upsell of module 716480 opens instead.
+                    .on_click(cx.listener(|this, _, window, cx| {
+                        if this.at_guild_cap() {
+                            this.open_guild_cap_upsell(cx);
+                        } else {
+                            this.open_add_server(window, cx);
+                        }
+                    }))
                     // The Create Your Own Server tip (`tutorial_tips`).
                     .children(self.tutorial_rail_tip(cx)),
                 )
@@ -8287,6 +8321,11 @@ impl Root {
                 else {
                     return div().into_any_element();
                 };
+                // AutoMod's raid notification (module 117096 `iC`).
+                if automod_alert::is_raid_card(message) {
+                    let line = self.automod_raid_line(message, cx);
+                    return self.system_row(message, *head, line, cx);
+                }
                 match dc_state::message_kinds::presentation(message) {
                     // The official table has no entry for this type, or its handler returns `null`.
                     dc_state::message_kinds::Presentation::Nothing => {
@@ -11493,6 +11532,10 @@ impl Render for Root {
             .children(self.favorites_full_modal(cx))
             .children(self.chat_alert_modal(cx))
             .children(self.disable_family_center_modal(cx))
+            .children(self.follow_success_modal(cx))
+            .children(self.guild_cap_upsell_layer(cx))
+            .children(self.app_directory_promo_modal(cx))
+            .children(self.guide_celebration_layer(window))
             .children(self.graphic_dialog(cx))
             .children(self.birthday_layers(window, cx))
             .children(self.library_remove_modal(cx))

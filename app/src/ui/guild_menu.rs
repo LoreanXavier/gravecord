@@ -31,6 +31,8 @@ enum Entry {
     Privacy,
     Profile,
     HideMuted,
+    /// `server-lockdown` (module 664967): Security Actions, or Edit Security Actions during a pause (module 671576).
+    SecurityActions,
     /// `report-raid` (module 808144): Report a Raid (module 935074).
     ReportRaid,
     Leave,
@@ -101,9 +103,10 @@ mod opt_in_tests {
     }
 }
 
-/// The last group: Report Raid (the shield, in the danger colour) for a Community server's moderators, then Leave
+/// The last group: Security Actions (module 664967, the lock, in the danger colour), Report Raid (the shield, in the danger colour) for a Community server's moderators, then Leave
 /// Server for members who are not the owner (the owner has to transfer or delete the server instead).
 const LAST: &[(Entry, &str, &str)] = &[
+    (Entry::SecurityActions, "access_lock", "Security Actions"),
     (Entry::ReportRaid, "guild_menu_privacy", "Report Raid"),
     (Entry::Leave, "guild_menu_leave", "Leave Server"),
 ];
@@ -209,6 +212,7 @@ impl Root {
             Entry::CreateEvent => owner || held & (permissions::ADMINISTRATOR | CREATE_EVENTS) != 0,
             Entry::ActiveThreads => can(permissions::MANAGE_THREADS) && !known.threads.is_empty(),
             Entry::Leave => !owner,
+            Entry::SecurityActions => self.security_actions_item(guild).is_some(),
             // `ic` of module 974103: Ban, Kick, Timeout or Manage Server, and no incident in its two hours.
             Entry::ReportRaid => {
                 known.features.iter().any(|feature| feature == "COMMUNITY")
@@ -296,6 +300,7 @@ impl Root {
             Entry::Settings => self.open_server_settings(guild, cx),
             Entry::Leave => self.leave_guild = Some(guild),
             Entry::ReportRaid => self.open_report_raid(guild, cx),
+            Entry::SecurityActions => self.open_security_actions(guild, cx),
             // `create-event` opens the Create Event flow of the current server, as the server context menu's row does.
             Entry::CreateEvent => {
                 self.open_guild_events(cx);
@@ -340,6 +345,20 @@ impl Root {
             }
             for (entry, name, label) in entries.iter() {
                 let entry = *entry;
+                // Module 664967 with its icon: the open lock and Edit Security Actions while a pause runs.
+                let lockdown =
+                    entry == Entry::SecurityActions && self.security_actions_item(guild) == Some(true);
+                let (name, label): (&'static str, &'static str) = if lockdown {
+                    ("overlay_lock_unlocked", dc_intl::t("+tSVi3"))
+                } else if entry == Entry::SecurityActions {
+                    (*name, dc_intl::t("EPlEdu"))
+                } else {
+                    (*name, *label)
+                };
+                let danger = matches!(
+                    entry,
+                    Entry::Leave | Entry::ReportRaid | Entry::SecurityActions
+                );
                 items.push(
                     div()
                         .id(SharedString::from(format!("guild-menu-{entry:?}")))
@@ -360,7 +379,7 @@ impl Root {
                         .child(div().mr(px(8.)).child(icon(
                             name,
                             20.,
-                            if matches!(entry, Entry::Leave | Entry::ReportRaid) {
+                            if danger {
                                 "--text-feedback-critical"
                             } else {
                                 "--interactive-text-default"
@@ -372,12 +391,12 @@ impl Root {
                                 .text_size(px(14.))
                                 .line_height(px(18.))
                                 .font_weight(FontWeight(500.))
-                                .text_color(if matches!(entry, Entry::Leave | Entry::ReportRaid) {
+                                .text_color(if danger {
                                     color("--text-feedback-critical")
                                 } else {
                                     color("--text-strong")
                                 })
-                                .child(*label),
+                                .child(label),
                         )
                         .when(matches!(entry, Entry::HideMuted | Entry::ShowAll), |this| {
                             let hidden = if entry == Entry::ShowAll {

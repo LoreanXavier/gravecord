@@ -6,7 +6,7 @@ use super::{Root, avatar_source, color, icon};
 use crate::net::Request;
 use crate::parity::Parity;
 use crate::ui::motion::Transitions as _;
-use dc_state::permissions::{Overwrite, VIEW_CHANNEL};
+use dc_state::permissions::{self, Overwrite, VIEW_CHANNEL};
 use dc_state::{Channel, Id, User};
 use gpui::{AnyElement, Context, FontWeight, IntoElement, SharedString, div, img, prelude::*, px};
 
@@ -83,7 +83,38 @@ pub(super) fn expires_in(created_ms: i64, max_age_s: i64, now_ms: i64) -> String
     }
 }
 
+/// `Sz` of module 218113: any of Administrator, Manage Server, Ban, Kick and Timeout Members shows the incident items.
+pub(super) const INCIDENT_ACTIONS: u64 = permissions::ADMINISTRATOR
+    | permissions::MANAGE_GUILD
+    | permissions::BAN_MEMBERS
+    | permissions::KICK_MEMBERS
+    | permissions::MODERATE_MEMBERS;
+
+/// `_J` of module 903093: Pause Invites or Pause DMs still runs.
+pub(super) fn under_lockdown(invites_until: Option<&String>, dms_until: Option<&String>) -> bool {
+    active(invites_until) || active(dms_until)
+}
+
 impl Root {
+    /// The `server-lockdown` item of module 664967 (the server header menu and the server context menu): shown in a
+    /// Community server to a member holding any of `Sz` (`shouldShowIncidentActions` of module 585510), labelled Edit
+    /// Security Actions while a pause runs (`isUnderLockdown`) and Security Actions otherwise. `Some(lockdown)` when
+    /// shown.
+    pub(super) fn security_actions_item(&self, guild: Id) -> Option<bool> {
+        let known = self.stores.guild(guild)?;
+        if !known.features.iter().any(|feature| feature == "COMMUNITY") {
+            return None;
+        }
+        let me = self.stores.me()?;
+        if permissions::guild_permissions(known, me) & INCIDENT_ACTIONS == 0 {
+            return None;
+        }
+        Some(under_lockdown(
+            known.invites_disabled_until.as_ref(),
+            known.dms_disabled_until.as_ref(),
+        ))
+    }
+
     pub(super) fn open_security_actions(&mut self, guild: Id, cx: &mut Context<Self>) {
         let Some(known) = self.stores.guilds.iter().find(|known| known.id == guild) else {
             return;
@@ -1060,8 +1091,9 @@ impl Root {
                             })),
                     ),
             )
-            .children(targets.iter().map(|(id, _, name)| {
-                let id = *id;
+            .children(targets.iter().map(|(id, kind, name)| {
+                let (id, kind) = (*id, *kind);
+                let (channel_id, everyone) = (channel.id, guild.id);
                 let chosen = id == selected;
                 div()
                     .id(SharedString::from(format!("permissions-target-{id}")))
@@ -1090,6 +1122,22 @@ impl Root {
                         }
                         cx.notify();
                     }))
+                    // `onContextMenu` of module 336541: the row's menu (module 495603).
+                    .on_mouse_down(
+                        gpui::MouseButton::Right,
+                        cx.listener(move |this, event: &gpui::MouseDownEvent, _, cx| {
+                            this.open_context_menu(
+                                super::context_menu::Target::PermissionRow {
+                                    channel: channel_id,
+                                    target: id,
+                                    role: kind == 0,
+                                    everyone: id == everyone,
+                                },
+                                event.position,
+                                cx,
+                            );
+                        }),
+                    )
             }))
             .child(
                 div()
@@ -1295,7 +1343,57 @@ impl Root {
     }
 }
 
+/// `handleDeletePermission` of module 336541 behind module 495603's Remove: "Delete Permission Settings", the
+/// `xERCnZ` sentence with the bold name, Cancel and Okay (module 579872 `show`).
+pub(super) fn remove_permission_alert(
+    channel: Id,
+    target: Id,
+    name: &str,
+) -> super::chat_notices::Alert {
+    use super::chat_notices::{Alert, Then};
+    let mut alert = Alert::show(
+        "delete-permission-settings",
+        dc_intl::t("GuPYQB"),
+        None,
+        Some(dc_intl::t("ETE/oC").to_owned()),
+        None,
+        Then::ClearOverwrite { channel, target },
+    );
+    alert.subtitle = Some(
+        dc_intl::format_runs("xERCnZ", &[("name", name.into())])
+            .into_iter()
+            .map(|(text, tag)| (text, tag.as_deref() == Some("$b")))
+            .collect(),
+    );
+    alert
+}
+
 impl Root {
+    /// Remove User / Remove Role of module 495603: the confirm named after the row.
+    pub(super) fn confirm_remove_permission(
+        &mut self,
+        channel: Id,
+        target: Id,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(guild) = self.guild_of_channel(channel) else {
+            return;
+        };
+        let name = self
+            .stores
+            .guild(guild)
+            .and_then(|known| known.roles.get(&target).cloned())
+            .or_else(|| {
+                self.stores
+                    .users
+                    .get(&target)
+                    .map(|user| user.display_name().to_owned())
+            })
+            .unwrap_or_default();
+        self.chat_extra.alert = Some(remove_permission_alert(channel, target, &name));
+        cx.notify();
+    }
+
     /// "Sync permissions?" (module 544169): the channel takes its category's overwrites
     /// (`PATCH /channels/{id}` with `permission_overwrites`).
     pub(super) fn sync_permissions_modal(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
@@ -1605,6 +1703,37 @@ mod tests {
     use super::{expires_in, incident_body, lifts_lockdown};
 
     /// Module 671576: the feedback of module 336496 follows only a save that lifts every pause that was on.
+    #[test]
+    fn removing_a_permission_row_asks_with_its_bold_name() {
+        use super::remove_permission_alert;
+        let alert = remove_permission_alert(1, 2, "Mods");
+        assert_eq!(alert.title, "Delete Permission Settings");
+        let subtitle = alert.subtitle.unwrap();
+        assert!(subtitle.iter().any(|(text, bold)| *bold && text == "Mods"));
+        let labels: Vec<&str> = alert
+            .buttons
+            .iter()
+            .map(|button| button.label.as_str())
+            .collect();
+        assert_eq!(labels, ["Cancel", "Okay"]);
+        assert!(
+            !super::super::context_menu::permission_target_items(true, true, false)
+                .iter()
+                .any(|_| true)
+        );
+    }
+
+    #[test]
+    fn under_lockdown_means_a_pause_still_runs() {
+        use super::under_lockdown;
+        let later = (chrono::Utc::now() + chrono::Duration::hours(1)).to_rfc3339();
+        let earlier = (chrono::Utc::now() - chrono::Duration::hours(1)).to_rfc3339();
+        assert!(under_lockdown(Some(&later), None));
+        assert!(under_lockdown(None, Some(&later)));
+        assert!(!under_lockdown(Some(&earlier), None));
+        assert!(!under_lockdown(None, None));
+    }
+
     #[test]
     fn lifting_every_pause_asks_why_the_server_was_locked() {
         assert!(lifts_lockdown((2, true, false), false, false));

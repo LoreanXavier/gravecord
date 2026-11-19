@@ -103,6 +103,21 @@ pub(super) enum Then {
         application: String,
         token: String,
     },
+    /// Okay of "Delete Permission Settings" (module 495603's `handleDeletePermission` in module 336541):
+    /// `clearPermissionOverwrite`, `DELETE /channels/{channel}/permissions/{target}`.
+    ClearOverwrite {
+        channel: Id,
+        target: Id,
+    },
+    /// Mark as resolved of "What happened?" (module 580812): `A` of module 859706 with `W_` of the reasons chosen.
+    ResolveRaid {
+        guild: Id,
+        message: Id,
+    },
+    /// Leave Server of "Server Unavailable" (module 537560): `leaveGuild`.
+    LeaveGuild {
+        guild: Id,
+    },
     /// The confirm of modules 32167 and 413201 (`gF` of module 365258, after 413201 sets the activity default).
     SyncActivity {
         restricting: bool,
@@ -285,6 +300,8 @@ pub(super) enum Content {
     RejectionReason(String),
     /// Module 336496's checkbox group, with the indices of `LOCKDOWN_REASONS` chosen.
     LockdownFeedback { chosen: Vec<usize> },
+    /// Module 580812's checkbox group, with the indices of `automod_alert::RESOLUTIONS` chosen.
+    RaidResolve { chosen: Vec<usize> },
 }
 
 impl Content {
@@ -861,6 +878,34 @@ impl Root {
             Then::WithdrawApplication { guild } => self.remove_join_request(guild),
             Then::Reapply { guild } => self.reapply(guild),
             Then::MuteAppDm { channel, muted } => self.mute_app_dm(channel, muted),
+            Then::ClearOverwrite { channel, target } => {
+                let _ = self.requests.send(Request::Rest {
+                    key: None,
+                    method: reqwest::Method::DELETE,
+                    route: format!("/channels/{channel}/permissions/{target}"),
+                    body: None,
+                });
+                if let Some(settings) = self.channel_settings.as_mut() {
+                    settings.perm_edits.remove(&target);
+                    if settings.perm_target == Some(target) {
+                        settings.perm_target = None;
+                    }
+                }
+            }
+            Then::ResolveRaid { guild, message } => {
+                self.chat_extra.lockdown_other = None;
+                let chosen = match closed.and_then(|alert| alert.content) {
+                    Some(Content::RaidResolve { chosen }) => chosen,
+                    _ => Vec::new(),
+                };
+                let reason = super::automod_alert::resolution_reason(&chosen);
+                let _ = self.requests.send(super::automod_alert::false_alarm_request(
+                    guild, message, reason,
+                ));
+            }
+            Then::LeaveGuild { guild } => {
+                let _ = self.requests.send(super::guild_menu::leave_request(guild));
+            }
             Then::DeauthorizeApp { application, token } => {
                 self.deauthorize_app(&application, &token, cx);
             }
@@ -881,7 +926,9 @@ impl Root {
             Some(Content::SoundboardKeybind { original }) => {
                 self.soundboard_keybind_revert(original);
             }
-            Some(Content::LockdownFeedback { .. }) => self.chat_extra.lockdown_other = None,
+            Some(Content::LockdownFeedback { .. } | Content::RaidResolve { .. }) => {
+                self.chat_extra.lockdown_other = None
+            }
             _ => {}
         }
     }
@@ -959,6 +1006,7 @@ impl Root {
     }
 
     fn alert_content(&self, content: Content, cx: &mut Context<Self>) -> AnyElement {
+        let raid_resolve = matches!(content, Content::RaidResolve { .. });
         match content {
             Content::Text(text) => body_text(text),
             Content::SoundboardKeybind { .. } => self.soundboard_keybind_body(cx),
@@ -1060,8 +1108,19 @@ impl Root {
             // Module 336496: a stack 8px apart (`B` gap 8) of the checkbox group (module 167417, drawn as Report a
             // Raid's) and, while Other is chosen, `textboxContainer_p32tDk` (8px above, 32px in from the start) with
             // the text area of module 103557: three rows (`rows: 3`, 20px lines) inside `padding: 12px 10px`.
-            Content::LockdownFeedback { chosen } => {
-                let other = chosen.contains(&LOCKDOWN_OTHER);
+            Content::LockdownFeedback { chosen } | Content::RaidResolve { chosen } => {
+                // Module 580812 draws the same group (module 167417) and text box (module 103557) as module 336496.
+                let (reasons, other_index, prefix): (&[(&str, &str)], usize, &str) =
+                    if raid_resolve {
+                        (
+                            &super::automod_alert::RESOLUTIONS,
+                            super::automod_alert::RESOLUTION_OTHER,
+                            "raid-resolve",
+                        )
+                    } else {
+                        (&LOCKDOWN_REASONS, LOCKDOWN_OTHER, "lockdown-feedback")
+                    };
+                let other = chosen.contains(&other_index);
                 div()
                     .flex()
                     .flex_col()
@@ -1073,11 +1132,11 @@ impl Root {
                             .flex()
                             .flex_col()
                             .gap(px(16.))
-                            .children(LOCKDOWN_REASONS.iter().enumerate().map(
+                            .children(reasons.iter().enumerate().map(
                                 |(index, (kind, label))| {
                                     let checked = chosen.contains(&index);
                                     div()
-                                        .id(SharedString::from(format!("lockdown-feedback-{kind}")))
+                                        .id(SharedString::from(format!("{prefix}-{kind}")))
                                         .flex()
                                         .items_start()
                                         .gap(px(12.))
@@ -1092,13 +1151,17 @@ impl Root {
                                         )
                                         .on_click(cx.listener(move |this, _, window, cx| {
                                             if let Some(Alert {
-                                                content: Some(Content::LockdownFeedback { chosen }),
+                                                content:
+                                                    Some(
+                                                        Content::LockdownFeedback { chosen }
+                                                        | Content::RaidResolve { chosen },
+                                                    ),
                                                 ..
                                             }) = this.chat_extra.alert.as_mut()
                                             {
                                                 toggle_choice(chosen, index);
-                                                if index == LOCKDOWN_OTHER
-                                                    && chosen.contains(&LOCKDOWN_OTHER)
+                                                if index == other_index
+                                                    && chosen.contains(&other_index)
                                                     && let Some(input) =
                                                         this.chat_extra.lockdown_other.as_ref()
                                                 {
@@ -1115,7 +1178,7 @@ impl Root {
                         stack.children(self.chat_extra.lockdown_other.clone().map(|input| {
                             div().mt(px(8.)).pl(px(32.)).w_full().child(
                                 div()
-                                    .id("lockdown-feedback-other")
+                                    .id(SharedString::from(format!("{prefix}-other")))
                                     .w_full()
                                     .px(px(10.))
                                     .py(px(12.))

@@ -11,6 +11,9 @@
 //!   ignored are (`j6`/`W0` of module 993838, called by `N` of module 129095); "Got it, thanks" joins.
 //! - "Do you want to also end the Stage?" (module 118101), when the last Stage moderator who speaks leaves a live
 //!   Stage (module 106044, `j3` of module 993838 from the voice tray's disconnect).
+//! - "Do you want to also end the event?" (module 521549), when Disconnect leaves a voice channel's running event with
+//!   nobody else who may stay in it (`A` of module 132860, `Py` of module 707592 from the voice panel's and the call
+//!   view's Disconnect, modules 596339 and 984624).
 
 use super::{Root, avatar_source, color, modal};
 use crate::net::Request;
@@ -44,6 +47,11 @@ pub(super) enum VoiceAlert {
     },
     StageEndOnLeave {
         channel: Id,
+    },
+    /// "Do you want to also end the event?" (module 521549) for this running event of the voice channel left.
+    EventEndOnLeave {
+        guild: Id,
+        event: Id,
     },
     /// "Channel is full" (module 361698).
     ChannelFull,
@@ -80,6 +88,13 @@ pub(super) enum VoiceAlert {
 pub(super) enum CallTarget {
     User(Id),
     Dm(Id),
+}
+
+/// `A` of module 132860: leaving asks about the channel's running event when this account may view and connect to the
+/// channel and none of the others in it may (`$3` of module 488926 with View Channel and Connect, `EN` of module
+/// 219935).
+pub(super) fn leaving_leaves_event(i_may_stay: bool, others_may_stay: &[bool]) -> bool {
+    i_may_stay && !others_may_stay.iter().any(|may| *may)
 }
 
 /// The picture of "You have been invited to speak." (module 973324), 288 by 192.
@@ -372,8 +387,55 @@ impl Root {
         });
         match stage {
             Some((guild, channel)) => self.leave_stage_or_ask(guild, channel, cx),
-            None => self.leave_voice(cx),
+            None => match self.event_left_by_leaving() {
+                Some((guild, event)) => {
+                    self.voice_alert = Some(VoiceAlert::EventEndOnLeave { guild, event });
+                    cx.notify();
+                }
+                None => self.leave_voice(cx),
+            },
         }
+    }
+
+    /// `A` of module 132860 for the voice channel of the call: a guild voice channel with a running event
+    /// (`CHANNEL_EVENT_ACTIVE`), which this account may view and connect to while nobody else in it may. The event is
+    /// the first of the channel's running ones (`Qs` of module 508654).
+    pub(super) fn event_left_by_leaving(&self) -> Option<(Id, Id)> {
+        let call = self.call.as_ref()?;
+        let known = self.stores.guild(call.guild)?;
+        let channel = known.channels.iter().find(|known| known.id == call.channel)?;
+        if channel.kind != ChannelKind::Voice {
+            return None;
+        }
+        let event = self
+            .stores
+            .scheduled_events
+            .active(call.guild)
+            .into_iter()
+            .find(|event| event.channel_id == Some(call.channel))?
+            .id;
+        let me = self.stores.me()?;
+        let stay = permissions::VIEW_CHANNEL | permissions::CONNECT;
+        let i_may_stay = permissions::can_in_channel(known, channel, me, stay);
+        let my_id = self.stores.current_user.as_ref()?.id;
+        let others: Vec<bool> = self
+            .stores
+            .voice_members(call.guild, call.channel)
+            .iter()
+            .filter(|state| state.user_id != my_id)
+            .map(|state| {
+                let roles = self
+                    .stores
+                    .members
+                    .get(call.guild, state.user_id)
+                    .map(|member| member.roles.clone())
+                    .unwrap_or_default();
+                permissions::member_channel_permissions(known, channel, state.user_id, &roles)
+                    & stay
+                    == stay
+            })
+            .collect();
+        leaving_leaves_event(i_may_stay, &others).then_some((call.guild, event))
     }
 
     /// `Pd` of module 147036 for a channel that is not a Stage (`voice_channel_full`).
@@ -694,6 +756,38 @@ impl Root {
                     close: close(),
                 }
             }
+            // Module 521549: No, just disconnect (`selectVoiceChannel(null)`) and the critical Yes, end the event
+            // (`endEvent`, then the disconnect).
+            VoiceAlert::EventEndOnLeave { guild, event } => {
+                modal::Spec {
+                    id: "event-end-on-leave-modal",
+                    title: dc_intl::t("4Ao8LC").into(),
+                    subtitle: Some(div().child(dc_intl::t("0I0B8f")).into_any_element()),
+                    body: None,
+                    buttons: vec![
+                        modal::button(
+                            "event-leave-quietly",
+                            dc_intl::t("P60OAX"),
+                            modal::Tone::Secondary,
+                            |this, _, cx| {
+                                this.voice_alert = None;
+                                this.leave_voice(cx);
+                            },
+                        ),
+                        modal::button(
+                            "event-leave-and-end",
+                            dc_intl::t("mjB9pd"),
+                            modal::Tone::Critical,
+                            move |this, _, cx| {
+                                this.voice_alert = None;
+                                this.end_guild_event(guild, event, cx);
+                                this.leave_voice(cx);
+                            },
+                        ),
+                    ],
+                    close: close(),
+                }
+            }
             VoiceAlert::StageEndOnLeave { channel } => modal::Spec {
                 id: "stage-end-on-leave-modal",
                 title: dc_intl::t("pADdJu").into(),
@@ -995,7 +1089,14 @@ impl Root {
                 self.voice_alert = Some(VoiceAlert::ReloadActivity { dont_show: false });
                 "voice alert: reload activity".to_owned()
             }
-            _ => "usage: voice-alert reload-activity".to_owned(),
+            "end-event" => match self.event_left_by_leaving() {
+                Some((guild, event)) => {
+                    self.voice_alert = Some(VoiceAlert::EventEndOnLeave { guild, event });
+                    "voice alert: end event".to_owned()
+                }
+                None => "voice alert: no event to end".to_owned(),
+            },
+            _ => "usage: voice-alert reload-activity|end-event".to_owned(),
         }
     }
 }
@@ -1003,6 +1104,16 @@ impl Root {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn leaving_asks_about_the_event_only_when_nobody_else_may_stay() {
+        assert!(leaving_leaves_event(true, &[]));
+        assert!(leaving_leaves_event(true, &[false, false]));
+        assert!(!leaving_leaves_event(true, &[false, true]));
+        assert!(!leaving_leaves_event(false, &[]));
+        assert_eq!(dc_intl::t("4Ao8LC"), "Do you want to also end the event?");
+        assert_eq!(dc_intl::t("mjB9pd"), "Yes, end the event");
+    }
 
     #[test]
     fn the_here_line_names_two_people_and_counts_the_rest() {
