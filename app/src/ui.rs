@@ -3510,12 +3510,16 @@ impl Root {
         }
         let above: f32 = heights[..built.start].iter().sum();
         let below: f32 = heights[built.end..].iter().sum();
-        let rows: Vec<AnyElement> = all_rows
-            .iter()
-            .enumerate()
-            .skip(built.start)
-            .take(built.len())
-            .map(|(_, row)| match row {
+        let rows: Vec<AnyElement> = if all_rows.is_empty() && self.guild.is_some() {
+            // Module 295160 (`placeholder_ks3kJR`, stylesheet 141504): placeholder rows while the member list loads.
+            (0..12).map(Self::member_placeholder_row).collect()
+        } else {
+            all_rows
+                .iter()
+                .enumerate()
+                .skip(built.start)
+                .take(built.len())
+                .map(|(row_index, row)| match row {
                 MemberRow::Group { id, count } => div()
                     .flex_none()
                     .h(px(42.))
@@ -3780,9 +3784,10 @@ impl Root {
                         ))
                         .into_any_element()
                 }
-                MemberRow::Unknown => div().flex_none().h(px(42.)).into_any_element(),
+                MemberRow::Unknown => Self::member_placeholder_row(row_index),
             })
-            .collect();
+            .collect()
+        };
         div()
             .parity("members")
             .flex_none()
@@ -3814,6 +3819,37 @@ impl Root {
                         this.child(div().flex_none().h(px(below)))
                     }),
             )
+    }
+
+    /// One member-list loading placeholder row (module 295160 `h`, stylesheet 141504 `ks3kJR`): 32px circular
+    /// avatar blob and a 14px rounded username bar (`40%..80%` width, deterministic by row index) in
+    /// `--background-base-low`.
+    fn member_placeholder_row(row_index: usize) -> AnyElement {
+        // Deterministic width in 68..136px (~40%..80% of the ~172px text slot) so rows never jitter across frames.
+        let width = 68. + ((row_index.wrapping_mul(37) + 19) % 69) as f32;
+        div()
+            .flex_none()
+            .h(px(42.))
+            .px(px(16.))
+            .flex()
+            .items_center()
+            .gap(px(12.))
+            .opacity(0.6)
+            .child(
+                div()
+                    .flex_none()
+                    .size(px(32.))
+                    .rounded_full()
+                    .bg(color("--background-base-low")),
+            )
+            .child(
+                div()
+                    .w(px(width))
+                    .h(px(14.))
+                    .rounded(px(8.))
+                    .bg(color("--background-base-low")),
+            )
+            .into_any_element()
     }
 
     fn rebuild_rows(&mut self) {

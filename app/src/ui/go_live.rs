@@ -1643,6 +1643,7 @@ impl Root {
                             .children(thumb.map(|image| {
                                 gpui::img(image)
                                     .size_full()
+                                    .rounded(px(8.))
                                     .object_fit(gpui::ObjectFit::Contain)
                             }))
                             .when(hovered, |this| {
@@ -1650,6 +1651,7 @@ impl Root {
                                     div()
                                         .absolute()
                                         .inset_0()
+                                        .rounded(px(8.))
                                         .bg(color("--opacity-black-40"))
                                         .flex()
                                         .items_center()

@@ -100,7 +100,7 @@ impl Root {
                     .items_center()
                     .justify_center()
                     .rounded(px(TILE_RADIUS))
-                    .bg(self.tile_color(&person))
+                    .bg(self.tile_color(&person, cx))
                     .children(avatar.map(|avatar| img(avatar).size(px(side)).rounded_full()))
                     .into_any_element()
             }

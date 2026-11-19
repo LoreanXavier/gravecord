@@ -447,10 +447,21 @@ impl Root {
                                     .mb(px(24.))
                                     .w(px(225.))
                                     .rounded(px(8.))
-                                    // `--elevation-medium`: 0 4px 4px `--opacity-black-16`.
-                                    // GAP: light themes use `--opacity-black-8`.
+                                    // `--elevation-medium`: 0 4px 4px `--opacity-black-8` on light, `--opacity-black-16` on dark.
                                     .shadow(vec![gpui::BoxShadow {
-                                        color: gpui::hsla(0., 0., 0., 0.16),
+                                        color: gpui::hsla(
+                                            0.,
+                                            0.,
+                                            0.,
+                                            if matches!(
+                                                super::super::theme(),
+                                                super::super::Theme::Light
+                                            ) {
+                                                0.08
+                                            } else {
+                                                0.16
+                                            },
+                                        ),
                                         offset: gpui::point(px(0.), px(4.)),
                                         blur_radius: px(4.),
                                         spread_radius: px(0.),
