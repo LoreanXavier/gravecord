@@ -474,6 +474,28 @@ impl Root {
             .unwrap_or_else(|| super::avatar_source(user))
     }
 
+    /// `guild_avatar_source_in` for a picture whose file side is `side`: the server avatar, else the account's, at
+    /// that side once it is above the rows' file (128 for a server avatar, 80 for an account's).
+    pub(super) fn guild_avatar_source_at(
+        &self,
+        user: &User,
+        guild: Option<Id>,
+        side: u32,
+    ) -> (String, String) {
+        let member_hash = guild.and_then(|guild| {
+            let hash = self.stores.members.get(guild, user.id)?.avatar.clone()?;
+            Some((guild, hash))
+        });
+        match member_hash {
+            Some((guild, hash)) if side > super::MEMBER_ROW_SIDE => {
+                let url = super::cdn::member_avatar(guild, user.id, &hash, side, false);
+                (url.clone(), url)
+            }
+            Some(_) => self.guild_avatar_source_in(user, guild),
+            None => super::avatar_source_at(user, side),
+        }
+    }
+
     fn live_image_in(
         &self,
         user: &User,
@@ -683,11 +705,27 @@ impl Root {
         } else {
             self.live_image_in(user, guild, size.geometry().base, hovered, cx)
         };
-        let (avatar_key, avatar_url) = self.guild_avatar_source_in(user, guild);
-        let avatar = self.images.get(&avatar_key).cloned();
-        if avatar.is_none() {
-            self.want_image(avatar_key, avatar_url, cx);
-        }
+        // The still file at the drawn size times the pixel ratio (486020 `kr(size * devicePixelRatio)`): the rows'
+        // 80px file stretched over the full profile's 120px avatar was blurry. The rows' file stands in until the
+        // sharper one arrives.
+        let side = super::cdn::side_for(size.geometry().base, self.ui_scale.get());
+        let (avatar_key, avatar_url) = self.guild_avatar_source_at(user, guild, side);
+        let avatar = match self.images.get(&avatar_key).cloned() {
+            Some(avatar) => Some(avatar),
+            None => {
+                self.want_image(avatar_key.clone(), avatar_url, cx);
+                let (row_key, row_url) = self.guild_avatar_source_in(user, guild);
+                if row_key == avatar_key {
+                    None
+                } else {
+                    let row = self.images.get(&row_key).cloned();
+                    if row.is_none() {
+                        self.want_image(row_key, row_url, cx);
+                    }
+                    row
+                }
+            }
+        };
         let equipped = self.equipped_decoration_in(user, guild);
         let deco_sku = equipped.as_ref().map_or(0, |d| d.sku_id);
         let decoration = equipped.and_then(|decoration| {

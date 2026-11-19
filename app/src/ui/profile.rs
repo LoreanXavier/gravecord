@@ -275,7 +275,7 @@ impl Root {
             .map(|icon_hash| {
                 (
                     format!("badge:{icon_hash}"),
-                    format!("https://cdn.discordapp.com/badge-icons/{icon_hash}.png"),
+                    super::cdn::badge_icon(icon_hash),
                 )
             })
             .collect();

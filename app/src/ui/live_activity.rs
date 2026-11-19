@@ -135,35 +135,15 @@ fn party_text(state: Option<&str>, party: &Value) -> Option<String> {
     }
 }
 
+/// The picture of an activity's `large_image` or `small_image`: 913659 `uD(application_id, asset, [160, 160])`
+/// (`cdn::activity_asset`), as module 325158 `b` asks for both.
 pub(super) fn asset_url(activity: &Value, key: &str) -> Option<String> {
     let asset = field(&activity["assets"], key)?;
-    if let Some(hash) = asset.strip_prefix("spotify:") {
-        return Some(format!("https://i.scdn.co/image/{}", component(hash)));
-    }
-    if let Some(path) = asset.strip_prefix("mp:") {
-        let mut url = reqwest::Url::parse("https://media.discordapp.net/")
-            .ok()?
-            .join(path)
-            .ok()?;
-        if path.to_ascii_lowercase().ends_with(".gif") {
-            url.query_pairs_mut()
-                .append_pair("format", "webp")
-                .append_pair("animated", "true");
-        } else if path.to_ascii_lowercase().ends_with(".webp")
-            || path.to_ascii_lowercase().ends_with(".avif")
-        {
-            url.query_pairs_mut().append_pair("animated", "true");
-        }
-        return Some(url.into());
-    }
-    if asset.contains(':') {
-        return None;
-    }
-    let app = field(activity, "application_id")?;
-    Some(format!(
-        "https://cdn.discordapp.com/app-assets/{app}/{asset}.png?size=160"
-    ))
+    super::cdn::activity_asset(field(activity, "application_id"), asset, ACTIVITY_ART)
 }
+
+/// 487887 `iu.LARGE`: the side every activity card asks its pictures at.
+pub(super) const ACTIVITY_ART: u32 = 160;
 /// `connectionEntrypointUrl` of the application (module 724302): where linking an account starts.
 fn connection_url(application: &Value) -> Option<String> {
     application["connection_entrypoint_url"]
@@ -424,9 +404,8 @@ impl Root {
     pub(super) fn live_application_fetched(&mut self, body: &Value) {
         for app in body.as_array().into_iter().flatten() {
             if let (Some(id), Some(hash)) = (field(app, "id"), field(app, "icon")) {
-                let url = format!(
-                    "https://cdn.discordapp.com/app-icons/{id}/{hash}.png?size=160&keep_aspect_ratio=false"
-                );
+                // 325158 `O`: the application's `getIconURL(iu.LARGE)`.
+                let url = super::cdn::app_icon(id, hash, ACTIVITY_ART);
                 self.request_image(format!("app-icon:{id}"), url);
             }
         }

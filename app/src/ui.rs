@@ -176,6 +176,7 @@ mod av_errors;
 mod avatar_demo;
 mod avatar_play;
 mod boost_page;
+pub(crate) mod cdn;
 mod channel_browser;
 mod discover;
 mod favorite_nickname;
@@ -196,7 +197,7 @@ mod hover_bar;
 pub(crate) mod image_cache;
 mod image_crop;
 pub(crate) mod image_fit;
-mod image_retry;
+pub(crate) mod image_retry;
 mod inline_video;
 mod jump;
 mod launcher_home;
@@ -583,10 +584,9 @@ pub struct Root {
     focus: FocusHandle,
     /// Focus bookkeeping and keyboard modality (`keyboard`).
     keys: keyboard::State,
-    images: HashMap<String, Arc<Image>>,
+    /// The downloaded pictures, with the retry state of the ones asked for through `request_image`.
+    images: image_retry::Images,
     requested: HashSet<String>,
-    /// Retry state of the pictures asked for through `request_image`.
-    image_retries: image_retry::Retries,
     /// The select image and image crop modals (`image_crop`).
     image_crop: image_crop::State,
     badge_modal: Option<badge_modal::BadgeModal>,
@@ -1102,9 +1102,8 @@ impl Root {
             chat_extra: chat_notices::State::default(),
             focus: cx.focus_handle(),
             keys: Default::default(),
-            images: HashMap::new(),
+            images: image_retry::Images::default(),
             requested: HashSet::new(),
-            image_retries: image_retry::Retries::default(),
             image_crop: Default::default(),
             badge_modal: None,
             spotify_actions: spotify_activity::Actions::default(),
@@ -1486,6 +1485,10 @@ impl Root {
     fn apply_update(&mut self, update: Update, cx: &mut Context<Self>) {
         match update {
             Update::GatewayConnected(connected) => {
+                if connected {
+                    // Pictures that gave up while the connection was down go out again at their next draw.
+                    self.images.retries.online(image_retry::now_ms());
+                }
                 self.tutorial_connection(connected);
                 self.inventory_connection_changed(connected, cx);
                 self.detect_connection_changed(connected, cx);
@@ -2579,7 +2582,7 @@ impl Root {
                 }
                 cx.notify();
             }
-            Update::ImageFailed { key } => {
+            Update::ImageFailed { key, failure } => {
                 if key.starts_with(profile_effects::ART_PREFIX) {
                     self.profile_effect_art_failed(&key, cx);
                 } else if key.starts_with(sticker_player::PREFIX) {
@@ -2590,7 +2593,7 @@ impl Root {
                 } else if self.image_crop_full_failed(&key, cx) {
                 } else {
                     // Every other picture is asked for again.
-                    self.image_retry_after_failure(key, cx);
+                    self.image_retry_after_failure(key, failure, cx);
                 }
             }
             Update::Image { key, bytes } if key.starts_with(image_crop::FULL_PREFIX) => {
@@ -2609,7 +2612,7 @@ impl Root {
                 self.inline_video_fetched(&key, bytes);
             }
             Update::Image { key, bytes } if key == nitro::home::BACKGROUND_KEY => {
-                self.image_retries.arrived(&key);
+                self.image_arrived(&key);
                 self.nitro_background_fetched(bytes, cx);
             }
             Update::Image { key, bytes } if key == quests::HERO_VIDEO_KEY => {
@@ -2622,7 +2625,7 @@ impl Root {
             }
             Update::Image { key, bytes } => {
                 let format = image_format(&key, &bytes);
-                self.image_retries.arrived(&key);
+                self.image_arrived(&key);
                 let image = Arc::new(Image::from_bytes(format, bytes));
                 self.start_picture_arrived(&key, &image);
                 self.images.insert(key, image);
@@ -2941,28 +2944,121 @@ impl Root {
 
     fn request_image(&mut self, key: String, url: String) {
         if self.requested.insert(key.clone()) {
-            self.image_retries.sent(&key, &url);
+            self.images.retries.sent(&key, &url);
             let _ = self.requests.send(Request::Image { key, url });
-        } else if !self.images.contains_key(&key)
-            && self.image_retries.again(&key, &url, image_retry::now_ms())
-        {
-            // It failed every attempt a while ago and is wanted again.
-            let _ = self.requests.send(Request::Image { key, url });
+        } else if !self.images.contains_key(&key) {
+            // It failed and rests: asked for again once the rest is over (`image_retry`).
+            match self
+                .images
+                .retries
+                .demand(&key, Some(&url), image_retry::now_ms())
+            {
+                image_retry::Demand::Send(url) => {
+                    let _ = self.requests.send(Request::Image { key, url });
+                }
+                image_retry::Demand::Later(due) => self.images.wake_at(due),
+                image_retry::Demand::Busy => {}
+            }
         }
     }
 
     /// Failed downloads of `key` since it last arrived, for the harness's state lines.
     #[cfg(feature = "capture")]
     pub(crate) fn image_failures(&self, key: &str) -> u32 {
-        self.image_retries.failures(key)
+        self.images.retries.failures(key)
     }
 
-    /// A picture requested through `request_image` failed to download: ask again after a doubling delay.
-    fn image_retry_after_failure(&mut self, key: String, cx: &mut Context<Self>) {
+    /// Capture only: `image state <prefix>`: each picture whose key starts with `prefix`, arrived (with its encoded
+    /// size and pixel size) or with its retry state and failures.
+    #[cfg(feature = "capture")]
+    pub(crate) fn image_state_line(&self, prefix: &str) -> String {
+        let mut keys: Vec<String> = self
+            .images
+            .keys()
+            .filter(|key| key.starts_with(prefix))
+            .cloned()
+            .collect();
+        keys.extend(self.images.retries.keys_with_prefix(prefix));
+        keys.sort_unstable();
+        keys.dedup();
+        let errors = crate::net::IMAGE_ERRORS.lock().ok();
+        keys.iter()
+            .map(|key| match self.images.get(key) {
+                Some(image) => {
+                    let size = image::ImageReader::new(std::io::Cursor::new(image.bytes()))
+                        .with_guessed_format()
+                        .ok()
+                        .and_then(|reader| reader.into_dimensions().ok())
+                        .map_or("?".to_owned(), |(w, h)| format!("{w}x{h}"));
+                    format!("{key} arrived bytes={} px={size}", image.bytes().len())
+                }
+                None => format!(
+                    "{key} {} failures={} error={:?}",
+                    self.images.retries.state_word(key),
+                    self.images.retries.failures(key),
+                    errors.as_ref().and_then(|errors| errors.get(key)),
+                ),
+            })
+            .collect::<Vec<_>>()
+            .join(" | ")
+    }
+
+    /// A picture arrived. When pictures were failing before it, the network works again: the ones resting after
+    /// transient failures go out at their next draw.
+    fn image_arrived(&mut self, key: &str) {
+        if self.images.retries.arrived(key) {
+            self.images.retries.online(image_retry::now_ms());
+        }
+    }
+
+    /// Once a frame: the resting pictures the last frame drew without having them are asked for again when their rest
+    /// is over, and a wake is set for the earliest one that is not, so a view that stays still still recovers.
+    fn image_demands(&mut self, cx: &mut Context<Self>) {
+        let now = image_retry::now_ms();
+        for key in self.images.take_misses() {
+            if self.images.contains_key(&key) {
+                continue;
+            }
+            match self.images.retries.demand(&key, None, now) {
+                image_retry::Demand::Send(url) => {
+                    let _ = self.requests.send(Request::Image { key, url });
+                }
+                image_retry::Demand::Later(due) => self.images.wake_at(due),
+                image_retry::Demand::Busy => {}
+            }
+        }
+        if let Some(due) = self.images.wake_to_schedule() {
+            cx.spawn(async move |this, cx| {
+                cx.background_executor()
+                    .timer(std::time::Duration::from_millis(
+                        due.saturating_sub(image_retry::now_ms()),
+                    ))
+                    .await;
+                let _ = this.update(cx, |this, cx| {
+                    this.images.woke(due);
+                    cx.notify();
+                });
+            })
+            .detach();
+        }
+    }
+
+    /// A picture requested through `request_image` failed to download: asked again after module 158390's backoff,
+    /// or left to rest (`image_retry`).
+    fn image_retry_after_failure(
+        &mut self,
+        key: String,
+        failure: image_retry::Failure,
+        cx: &mut Context<Self>,
+    ) {
         if self.images.contains_key(&key) {
             return;
         }
-        let Some(retry) = self.image_retries.failed(&key, image_retry::now_ms()) else {
+        let Some(retry) =
+            self.images
+                .retries
+                .failed(&key, failure, image_retry::now_ms(), image_retry::jitter())
+        else {
             return;
         };
         cx.spawn(async move |this, cx| {
@@ -2971,8 +3067,8 @@ impl Root {
                 .await;
             let _ = this.update(cx, |this, _| {
                 if this.images.contains_key(&key) {
-                    this.image_retries.arrived(&key);
-                } else if let Some(url) = this.image_retries.resend(&key) {
+                    this.images.retries.arrived(&key);
+                } else if let Some(url) = this.images.retries.resend(&key) {
                     let _ = this.requests.send(Request::Image { key, url });
                 }
             });
@@ -10154,6 +10250,23 @@ fn avatar_source(user: &User) -> (String, String) {
     }
 }
 
+/// The side of the account avatar file every row asks for (`avatar_source`).
+const AVATAR_ROW_SIDE: u32 = 80;
+/// The side of the server avatar file every row asks for (`Member::avatar_url`).
+const MEMBER_ROW_SIDE: u32 = 128;
+
+/// `avatar_source` for a picture whose file side is `side` (module 486020 `kr(size * devicePixelRatio)`): the rows'
+/// file up to its side, a file of its own above it.
+fn avatar_source_at(user: &User, side: u32) -> (String, String) {
+    match &user.avatar {
+        Some(hash) if side > AVATAR_ROW_SIDE && !(user.bot && user.id == 1 && hash == "clyde") => (
+            format!("avatar:{}:{hash}@{side}", user.id),
+            cdn::user_avatar(user.id, hash, side, false),
+        ),
+        _ => avatar_source(user),
+    }
+}
+
 impl Render for Root {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         #[cfg(feature = "capture")]
@@ -10241,6 +10354,7 @@ impl Render for Root {
         }
         self.prepare_gif_tiles(window, cx);
         self.prepare_live_avatars();
+        self.image_demands(cx);
         self.prepare_guild_guide();
         self.prepare_sidebar_events();
         self.prepare_channel_browser(cx);

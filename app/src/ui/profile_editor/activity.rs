@@ -73,8 +73,10 @@ impl Root {
                     if let (Some(id), Some(icon)) = (app["id"].as_str(), app["icon"].as_str()) {
                         self.profile_editor_image(
                             format!("app-icon:{id}"),
-                            format!(
-                                "https://cdn.discordapp.com/app-icons/{id}/{icon}.png?size=160&keep_aspect_ratio=false"
+                            crate::ui::cdn::app_icon(
+                                id,
+                                icon,
+                                crate::ui::live_activity::ACTIVITY_ART,
                             ),
                         );
                     }
@@ -84,10 +86,9 @@ impl Root {
         }
     }
 
+    /// Asked for through `request_image`, so a failure is retried like every other picture (`image_retry`).
     fn profile_editor_image(&mut self, key: String, url: String) {
-        if self.requested.insert(key.clone()) {
-            let _ = self.requests.send(crate::net::Request::Image { key, url });
-        }
+        self.request_image(key, url);
     }
 
     /// One `card_Bu4Al8` of the tab: the 60px art, the title with the artist line of a listening session, and the
