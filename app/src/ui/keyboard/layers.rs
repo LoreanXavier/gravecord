@@ -179,6 +179,11 @@ impl Root {
             .collect()
     }
 
+    /// Whether any layer is open, without listing them.
+    pub(in crate::ui) fn any_layer_open(&self) -> bool {
+        ALL.iter().any(|layer| self.layer_open(*layer))
+    }
+
     fn layer_open(&self, layer: Layer) -> bool {
         match layer {
             Layer::PlusMenu => self.plus_menu,

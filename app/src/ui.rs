@@ -12145,7 +12145,9 @@ impl Render for Root {
             .children(self.soundboard_gift_picker(window, cx))
             // Module 738876: the drop area over everything (`z-index: 2000`) while files are dragged in.
             .children(self.file_drop_area(window, cx))
-            .children(self.splash_layer(window, cx));
+            .children(self.splash_layer(window, cx))
+            // Last: ends the frame's record of where the web views' boxes were painted (`web_frames.rs`).
+            .child(self.web_frames.sweep());
         // Capture only: the display name style comparison sheet (`name-sheet` step).
         #[cfg(feature = "capture")]
         let element = element

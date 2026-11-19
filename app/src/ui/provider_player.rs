@@ -2,7 +2,8 @@
 //! proxied file (YouTube, TikTok, Twitch) shows its poster with Play and Open in browser; Play puts the provider's own
 //! player in the embed's box (`autoplay=1&auto_play=1&pageType=2` for YouTube, `utm_source=discord.gg` for TikTok,
 //! Twitch's `parent` list and `autoplay=true`). The player is a system web view (`dc_webhost::WebHost::player`) laid
-//! over the box: it follows the box as the chat scrolls, hides while a menu or dialog is over it, and closes when the
+//! over the box as `web_frames.rs` lays the Spotify frames: it follows the box as the chat scrolls, cut to the chat's
+//! visible part, hides while a menu, popout or dialog is over it, and closes when the
 //! box is no longer drawn (the message scrolled out of the list or the channel changed), as the official list unmounts
 //! the frame. One player plays at a time; Play on another embed moves it there.
 use super::Root;
@@ -21,7 +22,6 @@ pub(super) struct ProviderPlayer {
     pub key: String,
     url: String,
     web: Option<WebHost>,
-    bounds: (f32, f32, f32, f32),
     visible: bool,
     unseen: u32,
 }
@@ -87,11 +87,12 @@ impl Root {
         if url.is_empty() {
             return;
         }
+        // Another embed's player closes: its view no longer follows the box.
+        self.web_frames.painted.borrow_mut().unlink(ANCHOR);
         self.provider_player = Some(ProviderPlayer {
             key,
             url,
             web: None,
-            bounds: (0., 0., 0., 0.),
             visible: false,
             unseen: 0,
         });
@@ -104,41 +105,25 @@ impl Root {
             .is_some_and(|player| player.key == key)
     }
 
-    /// Something of the app's own is over the chat: the web view, which paints above the window, steps aside.
-    fn provider_covered(&self) -> bool {
-        self.context.open.is_some()
-            || self.menu.is_some()
-            || self.quick_switcher.is_some()
-            || self.lightbox.is_some()
-            || self.game_profile.is_some()
-            || self.settings.is_some()
-    }
-
-    /// Called every frame: places, hides or closes the player from where its box was drawn last.
+    /// Called every frame: opens, hides or closes the player from where its box was drawn in the last frame. Where
+    /// the view sits is sent by the box's paint (`web_frames::Painted::place`), cut to the chat's visible part.
     pub(super) fn provider_player_frame(&mut self, window: &Window, cx: &mut Context<Self>) {
         if self.provider_player.is_none() {
             return;
         }
-        let seen = self.tip_anchors.borrow_mut().remove(ANCHOR).map(|bounds| {
-            (
-                f32::from(bounds.origin.x),
-                f32::from(bounds.origin.y),
-                f32::from(bounds.size.width),
-                f32::from(bounds.size.height),
-            )
-        });
-        let covered = self.provider_covered();
+        let seen = self.web_frames.painted.borrow().last_place(ANCHOR);
+        let covered = self.web_surfaces_covered();
+        let painted = self.web_frames.painted.clone();
         let Some(player) = self.provider_player.as_mut() else {
             return;
         };
-        let Some(bounds) = seen else {
+        let Some(placement) = seen else {
+            // The box's paint hid the view already; it closes once the box stays gone.
             player.unseen += 1;
             if player.unseen > GRACE_FRAMES {
+                painted.borrow_mut().unlink(ANCHOR);
                 self.provider_player = None;
                 cx.notify();
-            } else if let Some(web) = player.web.as_ref().filter(|_| player.visible) {
-                web.set_visible(false);
-                player.visible = false;
             }
             return;
         };
@@ -148,11 +133,11 @@ impl Root {
             let Some(dir) = crate::storage::data_dir().map(|dir| dir.join("webview")) else {
                 return;
             };
-            match WebHost::player(window, dir, bounds, &player.url, Some(REFERER)) {
+            match WebHost::player(window, dir, placement, &player.url, Some(REFERER)) {
                 Ok(web) => {
                     web.set_visible(visible);
+                    painted.borrow_mut().link(ANCHOR, web.placer(), placement);
                     player.web = Some(web);
-                    player.bounds = bounds;
                     player.visible = visible;
                     tracing::info!("provider player opened");
                 }
@@ -163,14 +148,9 @@ impl Root {
             }
             return;
         }
-        let Some(web) = player.web.as_ref() else {
-            return;
-        };
-        if bounds != player.bounds {
-            web.set_bounds(bounds);
-            player.bounds = bounds;
-        }
-        if visible != player.visible {
+        if let Some(web) = player.web.as_ref()
+            && visible != player.visible
+        {
             web.set_visible(visible);
             player.visible = visible;
         }

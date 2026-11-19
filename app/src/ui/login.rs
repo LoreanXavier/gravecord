@@ -18,7 +18,7 @@ use dc_auth::{
     RemoteEvent,
 };
 use dc_proto::secrets::Token;
-use dc_webhost::{CaptchaEvent, HostEvent, WebHost, captcha_event};
+use dc_webhost::{Area, CaptchaEvent, HostEvent, Placement, WebHost, captcha_event};
 use gpui::{
     Animation, AnimationExt as _, AnyElement, Bounds, Context, Entity, EventEmitter, FocusHandle,
     Focusable as _, FontWeight, HighlightStyle, Image, ImageFormat, IntoElement, KeyDownEvent,
@@ -140,7 +140,7 @@ pub struct LoginView {
     frozen: bool,
     /// The captcha widget's surface, up while the dialog is, and the bounds it was last placed at.
     captcha_host: Option<WebHost>,
-    captcha_bounds: (f32, f32, f32, f32),
+    captcha_bounds: Placement,
     captcha_failed: bool,
     captcha_poll: Option<gpui::Task<()>>,
     /// The Multi-Factor dialog a captcha interrupted, put back when the captcha is done.
@@ -211,7 +211,7 @@ impl LoginView {
             want_focus: Some(Wanted::Email),
             frozen: false,
             captcha_host: None,
-            captcha_bounds: (0., 0., 0., 0.),
+            captcha_bounds: Placement::default(),
             captcha_failed: false,
             captcha_poll: None,
             captcha_behind: None,
@@ -879,9 +879,10 @@ impl LoginView {
             302.,
             78.,
         );
+        let bounds = Placement::whole(Area::logical(bounds, window.scale_factor()));
         if let Some(host) = &self.captcha_host {
             if self.captcha_bounds != bounds {
-                host.set_bounds(bounds);
+                host.set_placement(bounds);
                 self.captcha_bounds = bounds;
             }
             return;

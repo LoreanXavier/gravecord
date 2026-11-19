@@ -885,7 +885,10 @@ impl Root {
                     .rounded(px(4.))
                     .overflow_hidden()
                     .bg(color("--black"))
-                    .child(self.anchor_probe(super::provider_player::ANCHOR))
+                    .child(
+                        self.web_frames
+                            .probe(super::provider_player::ANCHOR.to_owned(), None),
+                    )
                     .into_any_element(),
             );
         }
@@ -1193,8 +1196,11 @@ impl Root {
         idle: &str,
         cx: &mut Context<Self>,
     ) -> AnyElement {
+        // `min-width: 0` (the `embedProvider`/`embedAuthor`/`embedTitle` rule): in the row it sits in, the text wraps
+        // inside its column instead of running on at its one-line width (under the thumbnail, out of the card).
         let base = div()
             .id(SharedString::from(id))
+            .min_w(px(0.))
             .text_color(color(idle))
             .child(text);
         match url {

@@ -129,7 +129,7 @@ fn the_captcha_page_loads_and_the_relay_passes_a_fake_token() {
     let host = WebHost::captcha(
         &owner,
         dir.join("captcha"),
-        (0., 0., 302., 78.),
+        dc_webhost::Placement::whole(dc_webhost::Area::logical((0., 0., 302., 78.), 1.)),
         "10000000-ffff-ffff-ffff-000000000001",
         Some("test-rqdata"),
     )
@@ -159,8 +159,12 @@ fn the_captcha_page_loads_and_the_relay_passes_a_fake_token() {
     drop(host);
 
     // The relay passes what a framed page posts, under that page's own origin, which is never the captcha origin.
-    let relay =
-        WebHost::new(&owner, dir.join("relay"), (0., 0., 300., 200.)).expect("relay surface");
+    let relay = WebHost::new(
+        &owner,
+        dir.join("relay"),
+        dc_webhost::Placement::whole(dc_webhost::Area::logical((0., 0., 300., 200.), 1.)),
+    )
+    .expect("relay surface");
     wait_for(&relay, Duration::from_secs(20), |event| {
         matches!(event, HostEvent::Ready)
     })
