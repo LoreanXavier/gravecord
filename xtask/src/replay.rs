@@ -34,6 +34,7 @@ const ANSWER_WINDOW_MS: u64 = 3000;
 const OP_DISPATCH: u64 = 0;
 const OP_HEARTBEAT: u64 = 1;
 const OP_IDENTIFY: u64 = 2;
+const OP_PRESENCE_UPDATE: u64 = 3;
 const OP_RESUME: u64 = 6;
 const OP_HELLO: u64 = 10;
 const OP_HEARTBEAT_ACK: u64 = 11;
@@ -590,6 +591,12 @@ fn gateway(stream: TcpStream, state: &State) -> Result<()> {
                 }
             }
             _ => {
+                if op == OP_PRESENCE_UPDATE {
+                    // What the client would tell the gateway about the account (a presence check reads the log).
+                    let mut sent = data.clone();
+                    dc_proto::replay::sanitize(&mut sent);
+                    state.note(&format!("PRESENCE_UPDATE received: {}", canonical(&sent)));
+                }
                 let request = canonical(data);
                 let exact = recording
                     .replies

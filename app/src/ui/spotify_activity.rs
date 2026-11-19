@@ -235,6 +235,57 @@ impl Root {
         .detach();
     }
 
+    /// `SPOTIFY_PLAYER_STATE`, `SPOTIFY_PLAYER_PLAY` and `USER_CONNECTIONS_UPDATE`: `SelfPresenceStore` recomputes
+    /// (module 894768 `H`), so the account's presence carries the playing track or loses it, and the `W` and `Y`
+    /// timers of module 655116 follow the store.
+    pub(super) fn spotify_presence_changed(&mut self, cx: &mut Context<Self>) {
+        self.refresh_own_presence();
+        self.schedule_presence_retry(cx);
+        let now = chrono::Utc::now().timestamp_millis();
+        let due = [
+            self.stores.spotify.track_end_ms(),
+            self.stores.spotify.listen_along_stop_ms(),
+        ];
+        for (slot, at) in due.into_iter().enumerate() {
+            if self.detect.spotify_timers[slot] == at {
+                continue;
+            }
+            self.detect.spotify_timers[slot] = at;
+            let Some(at) = at else { continue };
+            let wait = Duration::from_millis(u64::try_from(at - now).unwrap_or(0));
+            cx.spawn(async move |this, cx| {
+                cx.background_executor().timer(wait).await;
+                let _ = this.update(cx, |this, cx| {
+                    if this.detect.spotify_timers[slot] != Some(at) {
+                        return;
+                    }
+                    this.detect.spotify_timers[slot] = None;
+                    let now = chrono::Utc::now().timestamp_millis().max(at);
+                    if slot == 0 {
+                        // `W`: the track should have ended and no state followed (`Z`).
+                        if !this.stores.spotify.expire_track(now) {
+                            return;
+                        }
+                    } else {
+                        // `Y`: "Stopping listening along", then `Z`.
+                        let Some(pause) = this.stores.spotify.expire_listen_along(now) else {
+                            return;
+                        };
+                        tracing::info!(
+                            "Spotify listen along stopped: playback stopped or track changed"
+                        );
+                        if let Some(account) = pause {
+                            this.spotify_perform(0, Operation::Pause(account));
+                        }
+                    }
+                    this.spotify_presence_changed(cx);
+                    cx.notify();
+                });
+            })
+            .detach();
+        }
+    }
+
     fn spotify_perform(&self, request: u64, operation: Operation) {
         let _ = self
             .requests
