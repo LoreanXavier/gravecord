@@ -246,6 +246,18 @@ impl Root {
     /// Called every frame: opens, shows, hides and closes the views from where their boxes were drawn in the last
     /// frame. Where a view sits is not set here: the box's paint sends it ([`Painted::place`]).
     pub(super) fn web_frames_frame(&mut self, window: &Window, _cx: &mut Context<Self>) {
+        // A chat without frames costs a frame nothing here.
+        if self.web_frames.frames.is_empty()
+            && !self
+                .web_frames
+                .painted
+                .borrow()
+                .last_built
+                .values()
+                .any(Option::is_some)
+        {
+            return;
+        }
         let covered = self.web_surfaces_covered();
         let painted = self.web_frames.painted.clone();
         let mut painted = painted.borrow_mut();
