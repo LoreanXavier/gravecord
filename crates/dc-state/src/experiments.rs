@@ -383,6 +383,16 @@ impl GuildExperiments {
         self.descriptor(name, guild, 0)
     }
 
+    /// Puts a guild in a bucket by hand, as the client's guild bucket override does (harness only); an experiment
+    /// READY did not carry is made for it.
+    pub fn force(&mut self, name: &str, guild: u64, bucket: i64) {
+        self.0
+            .entry(hash(name))
+            .or_default()
+            .overrides
+            .insert(guild, bucket);
+    }
+
     fn descriptor(&self, name: &str, guild: &GuildFacts, depth: u8) -> Option<i64> {
         let experiment = self.0.get(&hash(name))?;
         if let Some(bucket) = experiment.overrides.get(&guild.id) {
@@ -450,6 +460,21 @@ mod tests {
             store.bucket("2026-03_voice_badge", &GuildFacts::default()),
             None
         );
+    }
+
+    #[test]
+    fn a_forced_guild_bucket_wins_and_needs_no_ready_entry() {
+        let mut store = GuildExperiments::default();
+        let guild = |id| GuildFacts {
+            id,
+            ..GuildFacts::default()
+        };
+        assert_eq!(store.bucket("2026-03_voice_badge", &guild(7)), None);
+        store.force("2026-03_voice_badge", 7, 1);
+        assert_eq!(store.bucket("2026-03_voice_badge", &guild(7)), Some(1));
+        assert_eq!(store.bucket("2026-03_voice_badge", &guild(8)), None);
+        store.force("2026-03_voice_badge", 7, NOT_ELIGIBLE);
+        assert_eq!(store.bucket("2026-03_voice_badge", &guild(7)), None);
     }
 
     #[test]

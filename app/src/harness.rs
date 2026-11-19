@@ -1476,6 +1476,14 @@ pub async fn run(
                 let name = (*name).to_owned();
                 root.update(cx, |root, cx| root.script_experiment(&name, variant, cx));
             }
+            // Capture only: a guild's bucket of a guild experiment, as the client's guild bucket override
+            // (`guild-experiment <name> <guild> <bucket>`, -1 not eligible).
+            ["guild-experiment", name, guild, bucket] => {
+                let line = root.update(cx, |root, cx| {
+                    root.script_guild_experiment(name, guild, bucket, cx)
+                });
+                let _ = writeln!(output, "guild-experiment: {line}");
+            }
             ["profile", "demo", rest @ ..] => {
                 let line = root.update(cx, |root, cx| root.script_profile_demo(rest, cx));
                 let _ = writeln!(output, "{line}");

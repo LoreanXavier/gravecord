@@ -39,6 +39,12 @@ pub(super) enum Body {
     Guild(Id),
     /// `richTooltipContent`: a medium title over muted text, both `body-sm`.
     Rich(SharedString, SharedString),
+    /// Module 683063 `u` with a server's 24px icon as its asset and no body (`richTooltipContent_xlDuA-`: 8px by
+    /// 12px inside, the icon 8px before a `body-sm/medium` title, up to 272px wide): the voice invite card's channel.
+    GuildTitle {
+        guild: Id,
+        title: SharedString,
+    },
     /// A quick reaction of the message hover bar (`np` in module 891522): `:name:` in `body-sm/medium` `text-strong`
     /// over the hint in `body-xs/normal` `text-default`, both centred (`emojiTooltipText_V_VY9Q`).
     Emoji(SharedString, SharedString),
@@ -589,6 +595,45 @@ impl Root {
                         .child(body.clone()),
                 )
                 .into_any_element(),
+            Body::GuildTitle { guild, title } => {
+                let picture = self.images.get(&format!("guild:{guild}")).cloned();
+                let acronym = self
+                    .stores
+                    .guild(*guild)
+                    .map(|known| Guild::acronym_of(&known.name))
+                    .unwrap_or_default();
+                frame()
+                    .max_w(px(272.))
+                    .gap(px(8.))
+                    .child(
+                        // `guildTooltipIcon_OC_CcB`: the icon with `--radius-sm` corners.
+                        div()
+                            .size(px(24.))
+                            .flex_none()
+                            .rounded(px(8.))
+                            .overflow_hidden()
+                            .bg(color("--background-base-lowest"))
+                            .flex()
+                            .items_center()
+                            .justify_center()
+                            .text_size(px(10.))
+                            .line_height(px(12.))
+                            .font_weight(FontWeight(500.))
+                            .when_some(picture.clone(), |this, picture| {
+                                this.child(img(picture).size(px(24.)))
+                            })
+                            .when(picture.is_none(), |this| this.child(acronym)),
+                    )
+                    .child(
+                        div()
+                            .min_w(px(0.))
+                            .text_size(px(14.))
+                            .line_height(px(18.))
+                            .font_weight(FontWeight(500.))
+                            .child(title.clone()),
+                    )
+                    .into_any_element()
+            }
             Body::Emoji(name, hint) => frame()
                 .flex_col()
                 .text_center()
