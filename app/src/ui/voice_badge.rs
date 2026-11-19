@@ -157,12 +157,25 @@ pub(super) fn stack_counts(people: usize) -> (usize, Option<usize>) {
     }
 }
 
+/// Module 260509 `wh` over a guild record: an explicit or age-restricted server (`nsfwLevel` 1 or 3).
+fn age_restricted(guild: &Guild) -> bool {
+    matches!(guild.nsfw_level, 1 | 3)
+}
+
 /// `isGuildVocal`: a voice or Stage channel.
 fn vocal(channel: &Channel) -> bool {
     channel.kind == ChannelKind::Voice || channel.kind == STAGE
 }
 
 impl Root {
+    /// Module 323073 `UK` behind module 597306 `r` (`(0,d.r)() && (0,c.UK)(channel)`): where age gated spaces apply
+    /// to an account not known to be an adult, a NSFW channel or one in an age-restricted server is gated.
+    pub(super) fn age_gated_channel(&self, guild: Id, channel: &Channel) -> bool {
+        self.stores.current_user.is_some()
+            && self.stores.regional_features.age_gated_spaces()
+            && (channel.nsfw || self.stores.guild(guild).is_some_and(age_restricted))
+    }
+
     /// `G`: the guild voice channel the author is in, when the account may see and connect to it, the message is not
     /// in a voice channel's text chat and the guild has the badge.
     ///
@@ -306,6 +319,13 @@ impl Root {
             .voice_members(guild, channel)
             .iter()
             .any(|state| state.user_id == user)
+    }
+
+    /// A click in a card that goes elsewhere: the card closes at once.
+    pub(super) fn voice_hover_dismiss(&mut self, cx: &mut Context<Self>) {
+        self.voice_hover.open = None;
+        self.voice_hover.over_card = false;
+        cx.notify();
     }
 
     /// The card a hover opened, if any.

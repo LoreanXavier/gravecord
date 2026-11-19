@@ -61,6 +61,8 @@ pub(super) fn order_key(streaming: bool, name: &str, user: Id) -> (bool, String,
 pub(super) enum ButtonLook {
     /// `active`: the green connected control.
     Active,
+    /// `primary`: the brand control.
+    Primary,
     Secondary,
 }
 
@@ -76,6 +78,11 @@ pub(super) fn ds_button(
             "connected",
             "--control-connected-border-default",
             "--control-connected-text-default",
+        ),
+        ButtonLook::Primary => (
+            "primary",
+            "--control-primary-border-default",
+            "--control-primary-text-default",
         ),
         ButtonLook::Secondary => (
             "secondary",
@@ -130,6 +137,24 @@ pub(super) fn ds_button(
                 .text_color(color(text))
         }))
         .child(div().whitespace_nowrap().child(label.into()))
+}
+
+/// Module 402216 `Ay` in its round shape (`liveBadge` over module 805251's `notification` badge), as the channel list
+/// draws it beside a streamer: "LIVE" in 12px semibold white on `--badge-critical-background`, 16px tall and 8px in.
+pub(super) fn live_pill() -> gpui::Div {
+    div()
+        .flex_none()
+        .h(px(16.))
+        .px(px(8.))
+        .rounded_full()
+        .bg(color("--badge-critical-background"))
+        .flex()
+        .items_center()
+        .text_size(px(12.))
+        .line_height(px(16.))
+        .font_weight(FontWeight(600.))
+        .text_color(gpui::rgba(0xffffffff))
+        .child(dc_intl::t("dI3q4h").to_uppercase())
 }
 
 impl Root {
@@ -483,23 +508,7 @@ impl Root {
                     .text_color(color("--channels-default"))
                     .child(SharedString::from(person.name.clone())),
             )
-            .when(person.streaming, |this| {
-                this.child(
-                    div()
-                        .flex_none()
-                        .h(px(16.))
-                        .px(px(8.))
-                        .rounded_full()
-                        .bg(color("--badge-critical-background"))
-                        .flex()
-                        .items_center()
-                        .text_size(px(12.))
-                        .line_height(px(16.))
-                        .font_weight(FontWeight(600.))
-                        .text_color(gpui::rgba(0xffffffff))
-                        .child(dc_intl::t("dI3q4h").to_uppercase()),
-                )
-            })
+            .when(person.streaming, |this| this.child(live_pill()))
             .into_any_element()
     }
 }

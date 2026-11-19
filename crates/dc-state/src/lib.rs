@@ -50,6 +50,7 @@ pub mod private_channels;
 pub mod profile_effects;
 pub mod quests;
 pub mod read_state;
+pub mod regional_features;
 pub mod running_games;
 pub mod scheduled_events;
 pub mod scheduled_message;
@@ -2508,6 +2509,8 @@ pub struct Stores {
     pub member_counts: guild_member_counts::GuildMemberCountStore,
     /// The connection's country (`LocationMetadataStore`).
     pub location_metadata: location_metadata::LocationMetadataStore,
+    /// The features READY says are age gated here, and the account's age verification (`RegionalFeatureConfigStore`).
+    pub regional_features: regional_features::RegionalFeatures,
     pub scheduled_events: scheduled_events::GuildScheduledEventStore,
     /// Voice channel statuses and call start times (`ChannelStatusStore`, `VoiceChannelStartTimeStore`).
     pub channel_status: channel_status::ChannelStatusStore,
@@ -2616,6 +2619,7 @@ impl Stores {
             .dispatch(name, data, chrono::Utc::now().timestamp_millis());
         self.member_counts.dispatch(name, data);
         self.location_metadata.dispatch(name, data);
+        self.regional_features.dispatch(name, data);
         self.scheduled_events.dispatch(name, data);
         self.channel_status.dispatch(name, data);
         self.stage_instances.dispatch(name, data);
