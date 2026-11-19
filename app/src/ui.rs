@@ -72,6 +72,7 @@ mod chat_skeleton;
 mod clips;
 mod code_copy;
 mod command_feedback;
+mod compact_header;
 mod components;
 pub(crate) mod composer_ai;
 mod composer_plus;
@@ -472,6 +473,10 @@ fn icon(name: &str, size: f32, tint: &str) -> gpui::Svg {
 }
 
 enum Row {
+    /// Virtualised placeholder rows above a loaded window while `hasMoreBefore` holds (`chat_skeleton.rs`).
+    SkeletonBefore(usize),
+    /// Virtualised placeholder rows below a loaded window while `hasMoreAfter` holds (`chat_skeleton.rs`).
+    SkeletonAfter(usize),
     /// The start of a DM's history.
     Welcome,
     Divider(String),
@@ -552,6 +557,10 @@ pub struct Root {
     send_ui: send_state::State,
     /// Set while a failed message's content is built: its text, links and inline code take the critical colour.
     failed_tint: std::cell::Cell<bool>,
+    /// Set while a compact message's content is built: the indent of its first line (`compact_header`), taken by
+    /// the first block when it is a paragraph, which sets `compact_lead_used`.
+    compact_lead: std::cell::Cell<Option<crate::inline::FirstLineIndent>>,
+    compact_lead_used: std::cell::Cell<bool>,
     /// Set while an official message's content is built (`official_messages`): its text colour.
     official_text: std::cell::Cell<Option<Rgba>>,
     /// Each server's official message colour and experiment.
@@ -1086,6 +1095,8 @@ impl Root {
             slowmode_rejected: HashMap::new(),
             send_ui: send_state::State::default(),
             failed_tint: std::cell::Cell::new(false),
+            compact_lead: std::cell::Cell::new(None),
+            compact_lead_used: std::cell::Cell::new(false),
             official_text: std::cell::Cell::new(None),
             official_messages: official_messages::OfficialMessages::default(),
             notification_runtime: crate::notifications::Runtime::new(updates.clone()),
@@ -3823,6 +3834,29 @@ impl Root {
         }
         self.refresh_command_mentions();
         self.rows.clear();
+        let has_messages = self
+            .channel
+            .and_then(|channel| self.stores.messages.get(&channel))
+            .is_some_and(|list| !list.is_empty());
+        let (has_more_before, has_more_after) = self
+            .channel
+            .filter(|_| has_messages)
+            .and_then(|channel| self.stores.windows.get(&channel))
+            .filter(|window| window.has_fetched && !window.error)
+            .map_or((false, false), |window| {
+                (window.has_more_before, window.has_more_after)
+            });
+        let skeleton_lines = if (has_more_before || has_more_after)
+            && let Some(channel) = self.channel
+        {
+            self.ensure_chat_skeleton(channel, self.viewport.1.max(400.))
+        } else {
+            0
+        };
+        if has_more_before {
+            self.rows
+                .extend((0..skeleton_lines).map(Row::SkeletonBefore));
+        }
         let empty = Vec::new();
         let messages = self
             .channel
@@ -3963,6 +3997,10 @@ impl Root {
             if in_post && Some(message.id) == self.channel {
                 self.rows.push(Row::PostActions);
             }
+        }
+        if has_more_after {
+            self.rows
+                .extend((0..skeleton_lines).map(Row::SkeletonAfter));
         }
         self.rows.push(Row::Spacer);
         self.list.reset(self.rows.len());
@@ -4424,12 +4462,33 @@ impl Root {
         )
     }
 
+    /// Left margin and spine geometry for reply previews and slash-command interaction bars (stylesheet 738015):
+    /// cozy sits at the 72px content start with the spine reaching back 37px to the 40px avatar's centre; compact
+    /// indents the preview past the timestamp box + 4px meta space + 10px `--custom-message-reply-indent`, with the
+    /// spine starting at the centre of the timestamp box (`--chat-avatar-size: var(--timestamp-width)`).
+    pub(super) fn reply_spine_geometry(&self, compact: bool) -> (f32, f32, f32) {
+        if !compact {
+            return (0., -37., 33.);
+        }
+        let time_width = if settings::prefs::clock_24() {
+            49.6
+        } else {
+            36.
+        };
+        (
+            time_width + 14.,
+            -(time_width / 2. + 15.),
+            time_width / 2. + 11.,
+        )
+    }
+
     /// Module 448368 for NOT_LOADED and DELETED: the spine, the arrow badge in place of the avatar
     /// (`replyBadge_2i8Bfm`: 16px, `--background-base-lowest`, the 10.8 x 7.2 arrow `replyIcon` in `--text-default`),
     /// no author, and `repliedTextPlaceholder_2i8Bfm` (italic, 2px at the end): "Message could not be loaded"
     /// (`1i+hMi`, clickable: it turns `--text-strong` under the pointer) or "Original message was deleted"
     /// (`mE3KJN`, not clickable).
-    fn reply_missing(&self, reply: Id, deleted: bool) -> AnyElement {
+    fn reply_missing(&self, reply: Id, deleted: bool, compact: bool) -> AnyElement {
+        let (margin_left, spine_left, spine_width) = self.reply_spine_geometry(compact);
         let spine_key = motion::key(&("reply-spine", reply, "missing"));
         let text_key = motion::key(&("reply-text", reply, "missing"));
         let over = !deleted && (motion::hovered(spine_key) || motion::hovered(text_key));
@@ -4444,6 +4503,7 @@ impl Root {
         );
         div()
             .relative()
+            .ml(px(margin_left))
             .h(px(18.))
             .flex()
             .items_center()
@@ -4452,9 +4512,9 @@ impl Root {
             .child(
                 div()
                     .absolute()
-                    .left(px(-37.))
+                    .left(px(spine_left))
                     .top(px(8.))
-                    .w(px(33.))
+                    .w(px(spine_width))
                     .h(px(12.))
                     .border_l_2()
                     .border_t_2()
@@ -4504,7 +4564,15 @@ impl Root {
     }
 
     /// The official preview: a spine into the avatar, 16px avatar, name, and one line of the text.
-    fn reply_preview(&self, referenced: &Message) -> impl IntoElement {
+    /// `mention`: the reply pings the author it answers (module 697474: the reply's `mentions` hold that author), so
+    /// the name reads `@name` (module 315934 `withMentionPrefix`: `"@" + nick` in the same span).
+    fn reply_preview(
+        &self,
+        referenced: &Message,
+        mention: bool,
+        compact: bool,
+    ) -> impl IntoElement {
+        let (margin_left, spine_left, spine_width) = self.reply_spine_geometry(compact);
         let avatar = self
             .images
             .get(&self.guild_avatar_source(&referenced.author).0)
@@ -4526,6 +4594,7 @@ impl Root {
         );
         div()
             .relative()
+            .ml(px(margin_left))
             .h(px(18.))
             .flex()
             .items_center()
@@ -4534,9 +4603,9 @@ impl Root {
             .child(
                 div()
                     .absolute()
-                    .left(px(-37.))
+                    .left(px(spine_left))
                     .top(px(8.))
-                    .w(px(33.))
+                    .w(px(spine_width))
                     .h(px(12.))
                     .border_l_2()
                     .border_t_2()
@@ -4557,6 +4626,8 @@ impl Root {
                     .opacity(0.64)
                     .font_weight(FontWeight(500.))
                     .text_color(self.guild_author_color(referenced.author.id, "--text-strong"))
+                    .flex()
+                    .when(mention, |name| name.child("@"))
                     .child(
                         self.author_name(format!("reply-{}", referenced.id), &referenced.author),
                     ),
@@ -6587,8 +6658,8 @@ impl Root {
     /// (`dot_ybUK7Z`: 4px, `--background-mod-strong`, 4px each side), then the topic (`topic_pVbL3l`: 8px from it,
     /// 14/18 medium, `--text-muted`, one line cut with an ellipsis). A right press opens module 834881 with Copy Topic.
     /// A topic with markup goes through the markdown text (`parseTruncatedTopic` of module 46054).
-    /// GAP: a click does not open the channel topic dialog (module 181094, not built); a linked lobby's line is not
-    /// drawn.
+    /// A click opens Channel Topic (module 181094, `handleOpenTopic`), unless it was on a link, a mention or an emoji
+    /// of the topic. GAP: a linked lobby's line is not drawn.
     fn header_topic(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
         self.guild?;
         // `showTopic: !h && !u` of module 289287: no topic beside the Favorites breadcrumb.
@@ -6624,6 +6695,17 @@ impl Root {
                         .line_height(px(18.))
                         .font_weight(FontWeight(500.))
                         .text_color(color("--text-muted"))
+                        // After the press has reached the topic's own text (its link handler marks the press).
+                        .on_mouse_down(MouseButton::Left, |_, _, _| {
+                            spoiler_gate::take_topic_piece_press();
+                        })
+                        .on_click(cx.listener(move |_, _, window, cx| {
+                            cx.defer_in(window, move |this, _, cx| {
+                                if !spoiler_gate::take_topic_piece_press() {
+                                    this.open_channel_topic(id, cx);
+                                }
+                            });
+                        }))
                         .on_mouse_up(
                             MouseButton::Right,
                             cx.listener(move |this, event: &gpui::MouseUpEvent, _, cx| {
@@ -7588,7 +7670,8 @@ impl Root {
         key: (u64, u32),
         marks: &[(String, Option<chrono::DateTime<chrono::Utc>>)],
     ) -> Inline {
-        let jumbo = dc_markdown::is_jumbo(spans);
+        // Stylesheet 738015 `.compact_2i8Bfm .messageContent_2i8Bfm .jumboable`: compact mode keeps emojis inline.
+        let jumbo = !self.compact_messages() && dc_markdown::is_jumbo(spans);
         // `AccessibilityStore.fontSize`: the text, its 1.375 line and the 22px emoji scale with the chat font.
         let font_size = self.chat_font_size();
         let emoji_size = if jumbo {
@@ -8387,8 +8470,10 @@ impl Root {
                         .flex()
                         .flex_col()
                         .child(
+                            // `headerContainer_4dy_KE` (module 679636 `ib`): 2px above, 4px below.
                             div()
                                 .mt(px(2.))
+                                .mb(px(4.))
                                 .h(px(18.))
                                 .flex()
                                 .items_center()
@@ -8419,10 +8504,17 @@ impl Root {
                                         "forwarded-footer-{}",
                                         message.id
                                     )))
+                                    // `footerContainer_4dy_KE`: `--interactive-background-hover` and its text
+                                    // `--interactive-text-hover` under the pointer.
                                     .mt(px(4.))
                                     .py(px(1.))
                                     .rounded(px(4.))
                                     .cursor_pointer()
+                                    .hover(|style| {
+                                        style
+                                            .bg(color("--interactive-background-hover"))
+                                            .text_color(color("--interactive-text-hover"))
+                                    })
                                     .flex()
                                     .items_center()
                                     .gap(px(4.))
@@ -8564,16 +8656,26 @@ impl Root {
                     .map(|(index, (block, gap))| {
                         let key = (message.id, index as u32);
                         match block {
-                            Block::Paragraph(spans) => div()
-                                .min_h(px((self.chat_font_size() * 1.375).round()))
-                                .mt(px(gap))
-                                .child(self.spans_edited(
+                            Block::Paragraph(spans) => {
+                                let mut line = self.spans_edited(
                                     &spans,
                                     text,
                                     key,
                                     if index == last { &marks } else { &[] },
-                                ))
-                                .into_any_element(),
+                                );
+                                // A compact message's header ends its first line (`compact_header`).
+                                if index == 0
+                                    && let Some(indent) = self.compact_lead.take()
+                                {
+                                    self.compact_lead_used.set(true);
+                                    line = line.first_line_indent(indent);
+                                }
+                                div()
+                                    .min_h(px((self.chat_font_size() * 1.375).round()))
+                                    .mt(px(gap))
+                                    .child(line)
+                                    .into_any_element()
+                            }
                             Block::Heading { level, spans } => div()
                                 .mt(px(gap))
                                 .child(self.heading(&spans, level, key))
@@ -8656,6 +8758,7 @@ impl Root {
             return div().into_any_element();
         };
         match row {
+            Row::SkeletonBefore(flat) | Row::SkeletonAfter(flat) => self.skeleton_row(*flat),
             Row::Spacer => div().h(px(40.)).into_any_element(),
             Row::NewDivider => self.new_divider(),
             Row::PostIntro => self.forum_post_intro(),
@@ -8909,6 +9012,9 @@ impl Root {
                         }
                     });
                 let upload = self.upload_message_content(message, cx);
+                // A compact header ends the first line of the text (`compact_header`).
+                let lead = compact.then(|| self.compact_lead_of(message));
+                self.compact_lead_used.set(false);
                 let content = match (editing, upload) {
                     (Some(editor), _) => self.edit_box(editor).into_any_element(),
                     (None, _) if missing_starter => self.starter_missing_line(message),
@@ -8934,10 +9040,13 @@ impl Root {
                                 // the content with its additions in the separated diff view
                                 // (`plugin_hooks/message_logger.rs`).
                                 let earlier = self.message_logger_edits_above(message, cx);
+                                self.compact_lead
+                                    .set(lead.clone().map(compact_header::indent));
                                 let content = match self.message_logger_content(message, cx) {
                                     Some(content) => content,
                                     None => self.content(message).into_any_element(),
                                 };
+                                self.compact_lead.set(None);
                                 self.failed_tint.set(false);
                                 self.official_text.set(None);
                                 this.children(earlier).child(
@@ -9008,7 +9117,7 @@ impl Root {
                 let reference = self.reply_reference(message);
                 // A command's reply has the "used /command" bar where a reply has its preview.
                 let command_bar = if reference.is_none() {
-                    self.interaction_bar(message)
+                    self.interaction_bar(message, compact)
                 } else {
                     None
                 };
@@ -9019,7 +9128,10 @@ impl Root {
                 };
                 let preview = reference.map(|reference| match reference {
                     Reference::Loaded(target) => {
-                        let preview = self.reply_preview(&target).into_any_element();
+                        let mention = message.mention_user_ids.contains(&target.author.id);
+                        let preview = self
+                            .reply_preview(&target, mention, compact)
+                            .into_any_element();
                         div()
                             .id(SharedString::from(format!("reply-jump-{}", message.id)))
                             .mb(px(4.))
@@ -9041,19 +9153,21 @@ impl Root {
                             this.jump_to_message_id(channel, id, true, None);
                             cx.notify();
                         }))
-                        .child(self.reply_missing(message.id, false))
+                        .child(self.reply_missing(message.id, false, compact))
                         .into_any_element(),
                     Reference::Deleted => div()
                         .mb(px(4.))
-                        .child(self.reply_missing(message.id, true))
+                        .child(self.reply_missing(message.id, true, compact))
                         .into_any_element(),
                 });
                 if compact {
                     // `.compact` (stylesheet 738015): every message carries its own header line, the time in an
                     // `2.25rem` (`3.1rem` at 24 hours) box ending `0.25rem` before the name, 11px muted; the avatar,
-                    // when "Show user avatars" is on, is `1em` wide with `.1em .25em` margins; the name is followed by
-                    // `0.25rem`. The text starts after the name; wrapped lines here stay in that column, where the
-                    // official wraps them back to the 5rem indent.
+                    // when "Show user avatars" is on, is `1em` wide with `.1em .25em` margins; the name, server tag,
+                    // role icon, app tag and `@silent` bell are followed by `0.25rem`. The header is inline: the
+                    // text's first line goes on after the header and the lines after it start 5rem in
+                    // (`compact_header`); text that does not start with a paragraph, and the accessories, start on the
+                    // line under the header.
                     let size = self.chat_font_size();
                     let time_width = if settings::prefs::clock_24() {
                         49.6
@@ -9061,6 +9175,8 @@ impl Root {
                         36.
                     };
                     let show_avatar = self.pref_on("appearance_display_compact_avatars", true);
+                    let decorations = self.header_decorations(message, cx);
+                    let badges = self.header_badges(message, cx);
                     return row
                         .pt(px(self.message_group_spacing()))
                         .child(
@@ -9069,83 +9185,124 @@ impl Root {
                                 .children(command_bar)
                                 .child(
                                     div()
-                                        .flex()
-                                        .items_start()
+                                        .relative()
                                         .child(
                                             div()
-                                                .flex_none()
-                                                .min_w(px(time_width))
-                                                .mr(px(4.))
-                                                .flex()
-                                                .justify_end()
-                                                .text_size(px(11.))
-                                                .line_height(px(22.))
-                                                .text_color(color("--text-muted"))
-                                                .child(settings::prefs::clock(
-                                                    &message.local_time(),
-                                                )),
+                                                .pl(px(compact_header::TEXT_START))
+                                                .when(!self.compact_lead_used.get(), |this| {
+                                                    this.pt(px((size * 1.375).round()))
+                                                })
+                                                .child(content),
                                         )
-                                        .when(show_avatar, |this| {
-                                            this.child(
-                                                div()
-                                                    .flex_none()
-                                                    .when(timed_out, |avatar| avatar.opacity(0.5))
-                                                    .size(px(size))
-                                                    .mt(px(size * 0.18 + 3.))
-                                                    .mx(px(size * 0.1))
-                                                    .mr(px(size * 0.25))
-                                                    .children(
-                                                        self.live_avatar(
-                                                            &message.author,
-                                                            size,
-                                                            playing,
-                                                            cx,
-                                                        )
-                                                        .or_else(|| {
-                                                            avatar.map(|image| {
-                                                                img(image)
-                                                                    .size(px(size))
-                                                                    .rounded_full()
-                                                                    .into_any_element()
-                                                            })
-                                                        }),
-                                                    ),
-                                            )
-                                        })
-                                        .when(timed_out, |this| {
-                                            this.child(self.timeout_mark(message, true, cx))
-                                        })
                                         .child(
                                             div()
-                                                .flex_none()
-                                                .h(px(22.))
-                                                .mr(px(4.))
+                                                .absolute()
+                                                .top_0()
+                                                .left_0()
+                                                .pr(px(4.))
                                                 .flex()
                                                 .items_center()
+                                                // The header's painted width, for the text's first line.
                                                 .child(
-                                                    self.profile_trigger(
-                                                        format!("name-{id}"),
-                                                        message.author.id,
+                                                    gpui::canvas(
+                                                        move |bounds, window, _| {
+                                                            if compact_header::record(
+                                                                id,
+                                                                f32::from(bounds.size.width),
+                                                            ) {
+                                                                window.refresh();
+                                                            }
+                                                        },
+                                                        |_, _, _, _| {},
+                                                    )
+                                                    .absolute()
+                                                    .top_0()
+                                                    .left_0()
+                                                    .size_full(),
+                                                )
+                                                .child(
+                                                    div()
+                                                        .flex_none()
+                                                        .min_w(px(time_width))
+                                                        .mr(px(4.))
+                                                        .flex()
+                                                        .justify_end()
+                                                        .text_size(px(11.))
+                                                        .line_height(px(22.))
+                                                        // `.timestamp_2i8Bfm`: `--font-weight-medium`.
+                                                        .font_weight(FontWeight(500.))
+                                                        .text_color(color("--text-muted"))
+                                                        .child(settings::prefs::clock(
+                                                            &message.local_time(),
+                                                        )),
+                                                )
+                                                .when(show_avatar, |this| {
+                                                    this.child(
                                                         div()
-                                                            .id(SharedString::from(format!(
-                                                                "name-link-{id}"
-                                                            )))
-                                                            .hover(|style| style.underline())
-                                                            .font_weight(FontWeight(500.))
-                                                            .text_color(self.guild_author_color(
+                                                            .flex_none()
+                                                            .when(timed_out, |avatar| {
+                                                                avatar.opacity(0.5)
+                                                            })
+                                                            .size(px(size))
+                                                            .mx(px(size * 0.1))
+                                                            .mr(px(size * 0.25))
+                                                            .children(
+                                                                self.live_avatar(
+                                                                    &message.author,
+                                                                    size,
+                                                                    playing,
+                                                                    cx,
+                                                                )
+                                                                .or_else(|| {
+                                                                    avatar.map(|image| {
+                                                                        img(image)
+                                                                            .size(px(size))
+                                                                            .rounded_full()
+                                                                            .into_any_element()
+                                                                    })
+                                                                }),
+                                                            ),
+                                                    )
+                                                })
+                                                .when(timed_out, |this| {
+                                                    this.child(self.timeout_mark(message, true, cx))
+                                                })
+                                                .child(
+                                                    div()
+                                                        .flex_none()
+                                                        .h(px(22.))
+                                                        .flex()
+                                                        .items_center()
+                                                        .child(
+                                                            self.profile_trigger(
+                                                                format!("name-{id}"),
                                                                 message.author.id,
-                                                                "--text-strong",
-                                                            ))
-                                                            .line_height(px(22.))
-                                                            .child(self.author_name(
-                                                                format!("author-{id}"),
-                                                                &message.author,
-                                                            )),
-                                                        cx,
-                                                    ),
-                                                ),
-                                        )
-                                        .child(div().flex_1().min_w(px(0.)).child(content)),
+                                                                div()
+                                                                    .id(SharedString::from(
+                                                                        format!("name-link-{id}"),
+                                                                    ))
+                                                                    .hover(|style| {
+                                                                        style.underline()
+                                                                    })
+                                                                    .font_weight(FontWeight(500.))
+                                                                    .text_color(
+                                                                        self.guild_author_color(
+                                                                            message.author.id,
+                                                                            "--text-strong",
+                                                                        ),
+                                                                    )
+                                                                    .line_height(px(22.))
+                                                                    .child(self.author_name(
+                                                                        format!("author-{id}"),
+                                                                        &message.author,
+                                                                    )),
+                                                                cx,
+                                                            ),
+                                                        ),
+                                                )
+                                                .children(decorations)
+                                                .children(badges),
+                                        ),
                                 ),
                         )
                         .into_any_element();
@@ -9677,17 +9834,59 @@ impl Root {
             .flex()
             .flex_col()
             .child(
+                // `channelTextArea_SY_P2T`: the content column plus its own 1px borders (frame channel/editing: 795
+                // wide in a 793 column).
                 div()
                     .mt(px(8.))
-                    .w_full()
+                    .mr(px(-2.))
                     .min_h(px(58.))
                     .rounded(px(8.))
                     .bg(color("--chat-background-default"))
                     .border_1()
                     .border_color(color("--background-mod-subtle"))
-                    .px(px(15.))
+                    .relative()
+                    .pl(px(15.))
+                    // `buttons_2x8-Qn` of the edit box (frame channel/editing): the 32px Add Emoji button 12px from
+                    // the right edge and the top; the text stops at it.
+                    .pr(px(56.))
                     .py(px(17.))
-                    .child(editor.clone()),
+                    .child(editor.clone())
+                    .child({
+                        let root = self.weak.clone();
+                        let field = editor.clone();
+                        div()
+                            .id("edit-emoji")
+                            .absolute()
+                            .top(px(12.))
+                            .right(px(12.))
+                            .size(px(32.))
+                            .flex()
+                            .items_center()
+                            .justify_center()
+                            .cursor_pointer()
+                            .rounded(px(8.))
+                            .hover(|style| style.bg(color("--interactive-background-selected")))
+                            .children(
+                                self.images
+                                    .get("emoji_button")
+                                    .cloned()
+                                    .map(|image| img(image).size(px(18.))),
+                            )
+                            // GAP: the picker opens at the pointer; where the official places it for the edit box is
+                            // not in a capture.
+                            .on_click(move |event: &gpui::ClickEvent, window, cx| {
+                                let at = event.position();
+                                let _ = root.update(cx, |this, cx| {
+                                    this.picker_field = Some(field.clone());
+                                    this.open_picker(
+                                        picker::Target::Field,
+                                        gpui::point(at.x, at.y - px(24.)),
+                                        window,
+                                        cx,
+                                    );
+                                });
+                            })
+                    }),
             )
             .child(
                 div()

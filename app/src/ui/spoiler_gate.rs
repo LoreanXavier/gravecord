@@ -139,6 +139,16 @@ pub(super) fn gating_channel(
         .map(|parent| parent.id)
 }
 
+thread_local! {
+    /// The last press on a topic's text was on a link, a mention or an emoji (read once by the header's click).
+    static TOPIC_PIECE_PRESSED: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// Whether the press that ends now was on a link, a mention or an emoji of a topic; clears it.
+pub(super) fn take_topic_piece_press() -> bool {
+    TOPIC_PIECE_PRESSED.replace(false)
+}
+
 impl Root {
     /// A channel topic as `parseTruncatedTopic` of module 46054 draws it: its markdown (mentions, emoji, links) in one
     /// text of `(size, weight, line height)`, clamped to `lines` lines with an ellipsis.
@@ -150,6 +160,31 @@ impl Root {
         lines: usize,
         cx: &mut Context<Self>,
     ) -> AnyElement {
+        self.topic_inline(topic, text, (size, weight, line), false, cx)
+            .line_clamp(lines, std::rc::Rc::new(std::cell::Cell::new(false)))
+            .into_any_element()
+    }
+
+    /// A channel topic as `parseTopic` of module 46054 draws it (Channel Topic, module 181094): every line kept,
+    /// 16/20 `body-md/normal`. GAP: the dialog's text is `selectable` there; it is not here.
+    pub(super) fn topic_text_full(
+        &self,
+        topic: &str,
+        text: gpui::Hsla,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        self.topic_inline(topic, text, (16., 400., 20.), true, cx)
+            .into_any_element()
+    }
+
+    fn topic_inline(
+        &self,
+        topic: &str,
+        text: gpui::Hsla,
+        (size, weight, line): (f32, f32, f32),
+        full: bool,
+        cx: &mut Context<Self>,
+    ) -> crate::inline::Inline {
         let blocks = parsed_topic(topic);
         let mut pieces: Vec<crate::inline::Piece> = Vec::new();
         let mut links = Vec::new();
@@ -158,9 +193,16 @@ impl Root {
             if !pieces.is_empty()
                 && let Some(first) = pieces.iter().find(|piece| piece.image.is_none())
             {
-                // `parseTruncatedTopic` keeps a topic on its lines; a paragraph break reads as a space.
+                // `parseTruncatedTopic` keeps a topic on its lines; a paragraph break reads as a space. `parseTopic`
+                // keeps the break.
                 let mut gap = first.clone();
-                gap.text = " ".to_owned();
+                gap.text = if full {
+                    "
+"
+                } else {
+                    " "
+                }
+                .to_owned();
                 gap.boxed = None;
                 gap.hover = None;
                 gap.hover_underline = false;
@@ -178,14 +220,24 @@ impl Root {
             );
         }
         let root = cx.weak_entity();
-        crate::inline::inline(pieces, px(line))
-            .line_clamp(lines, std::rc::Rc::new(std::cell::Cell::new(false)))
-            .on_piece_click(move |piece, _, cx| {
-                if let Some(Some((url, label))) = links.get(piece).cloned() {
-                    let _ = root.update(cx, |this, cx| this.follow_link(&url, &label, cx));
-                }
+        // 565265 `g`: a press on a link, a mention or an emoji does not open the topic dialog.
+        let own_press: Vec<bool> = pieces
+            .iter()
+            .enumerate()
+            .map(|(index, piece)| {
+                matches!(links.get(index), Some(Some(_)))
+                    || piece.hover.is_some()
+                    || piece.image.is_some()
             })
-            .into_any_element()
+            .collect();
+        crate::inline::inline(pieces, px(line)).on_piece_click(move |piece, _, cx| {
+            if own_press.get(piece).copied().unwrap_or(false) {
+                TOPIC_PIECE_PRESSED.set(true);
+            }
+            if let Some(Some((url, label))) = links.get(piece).cloned() {
+                let _ = root.update(cx, |this, cx| this.follow_link(&url, &label, cx));
+            }
+        })
     }
 
     /// The spoiler channel gating the channel or thread in view (`Uf` of module 288254), if any.
@@ -293,7 +345,8 @@ impl Root {
                 .into_any_element(),
             None => dc_intl::t("q38/ae").into_any_element(),
         };
-        // GAP: "See More" (the channel topic dialog of module 181094, not built) is not drawn.
+        // GAP: "See More" (shown when the three lines cut the topic; it opens Channel Topic, `open_channel_topic`) is
+        // not drawn: the cut is only known when the text is painted.
         let topic = channel
             .and_then(|channel| channel.topic.as_deref())
             .map(str::trim)

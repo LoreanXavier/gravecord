@@ -1129,7 +1129,8 @@ impl Root {
         }
     }
 
-    /// `inlineMediaEmbed_XyW1ZT`: the media alone, at most 520 wide, 2px under the line above.
+    /// `inlineMediaEmbed_XyW1ZT`: the media alone, at most 520 wide, with no margin of its own: the 2px above it are
+    /// the accessories' padding (`container_YUQhib`; frame channel/pt-gifv: the embed 2px under the container top).
     fn inline_media(
         &self,
         message: &Message,
@@ -1146,7 +1147,7 @@ impl Root {
         let visible = reason.is_none_or(|_| is_embed_revealed(message.id, index));
         let media = self.embed_media(message, index, embed, (slot, limit, visible), cx)?;
         let Some(reason) = reason else {
-            return Some(div().pt(px(2.)).flex().child(media).into_any_element());
+            return Some(div().flex().child(media).into_any_element());
         };
         let group = SharedString::from(format!("embed-inline-{}-{index}", message.id));
         let hidden_spoiler = reason == ObscureReason::Spoiler && !visible;

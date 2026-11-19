@@ -281,6 +281,7 @@ impl Root {
                     .min_h(px(0.))
                     .child(self.messages_entry(cx))
                     .child(rows)
+                    .child(self.chat_thumb())
                     .children(skeleton)
                     .children(self.new_messages_bar(cx))
                     .children(self.jump_to_present_bar(cx))

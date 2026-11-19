@@ -40,7 +40,8 @@ pub(super) fn wanted(messages: &[Message]) -> Vec<(String, String)> {
     for message in messages {
         // AutoMod's raid card (module 117096 `iC`): its avatar and the one it plays while hovered.
         if super::automod_alert::is_raid_card(message) {
-            images.extend(super::automod_alert::AVATARS.map(|url| (url.to_owned(), url.to_owned())));
+            images
+                .extend(super::automod_alert::AVATARS.map(|url| (url.to_owned(), url.to_owned())));
             continue;
         }
         if message_kinds::presentation(message) != message_kinds::Presentation::System {
@@ -327,12 +328,14 @@ impl Root {
     }
 
     /// `nV`: the bar above a command's reply, the avatar and "{user} used /{command}" (`rg7U+C` of module 267508).
-    pub(super) fn interaction_bar(&self, message: &Message) -> Option<AnyElement> {
+    pub(super) fn interaction_bar(&self, message: &Message, compact: bool) -> Option<AnyElement> {
         let (name, user) = message.extra.interaction.as_ref()?;
         let avatar = self.images.get(&self.guild_avatar_source(user).0).cloned();
+        let (margin_left, spine_left, spine_width) = self.reply_spine_geometry(compact);
         Some(
             div()
                 .relative()
+                .ml(px(margin_left))
                 .mb(px(4.))
                 .h(px(18.))
                 .flex()
@@ -342,9 +345,9 @@ impl Root {
                 .child(
                     div()
                         .absolute()
-                        .left(px(-37.))
+                        .left(px(spine_left))
                         .top(px(8.))
-                        .w(px(33.))
+                        .w(px(spine_width))
                         .h(px(12.))
                         .border_l_2()
                         .border_t_2()

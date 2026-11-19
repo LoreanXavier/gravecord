@@ -4103,6 +4103,13 @@ impl Stores {
         if data["embeds"].is_array() {
             known.embeds = Embed::list(&data["embeds"], Some(message));
         }
+        // Removing or replacing attachments arrives on MESSAGE_UPDATE with the new list.
+        if let Some(attachments) = data["attachments"].as_array() {
+            known.attachments = attachments
+                .iter()
+                .filter_map(Attachment::from_value)
+                .collect();
+        }
     }
 
     /// Members in a voice channel, in the order they joined.
@@ -5830,6 +5837,42 @@ mod tests {
             &json!({"id": "5", "channel_id": "23", "embeds": []}),
         );
         assert_eq!(stores.messages[&23][0].content, "before");
+    }
+
+    #[test]
+    fn message_update_replaces_or_clears_attachments() {
+        let mut stores = Stores::default();
+        let mut created = message("5", "with file");
+        created["attachments"] = json!([
+            {"id": "1", "filename": "a.png", "proxy_url": "p", "content_type": "image/png", "width": 4, "height": 3, "size": 9},
+            {"id": "2", "filename": "b.txt", "url": "u", "size": 5},
+        ]);
+        stores.dispatch("MESSAGE_CREATE", &created);
+        assert_eq!(stores.messages[&23][0].attachments.len(), 2);
+
+        // Partial update without attachments keeps the existing ones.
+        stores.dispatch(
+            "MESSAGE_UPDATE",
+            &json!({"id": "5", "channel_id": "23", "content": "edited"}),
+        );
+        assert_eq!(stores.messages[&23][0].attachments.len(), 2);
+
+        // Update with a trimmed attachments array removes the dropped attachment.
+        stores.dispatch(
+            "MESSAGE_UPDATE",
+            &json!({"id": "5", "channel_id": "23", "attachments": [
+                {"id": "2", "filename": "b.txt", "url": "u", "size": 5}
+            ]}),
+        );
+        assert_eq!(stores.messages[&23][0].attachments.len(), 1);
+        assert_eq!(stores.messages[&23][0].attachments[0].id, 2);
+
+        // Empty attachments array clears them.
+        stores.dispatch(
+            "MESSAGE_UPDATE",
+            &json!({"id": "5", "channel_id": "23", "attachments": []}),
+        );
+        assert!(stores.messages[&23][0].attachments.is_empty());
     }
 
     #[test]

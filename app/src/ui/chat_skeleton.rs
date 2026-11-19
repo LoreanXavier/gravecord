@@ -1,9 +1,6 @@
-//! The placeholder messages a channel shows while its first page loads (module 891522 `lQ` around module 114212,
-//! classes of module 960036, stylesheet 123141): grey blobs at low opacity in the shape of message groups, drawn
-//! where the messages will be. The official list puts them above the messages while `hasMoreBefore` holds (and
-//! below them while `hasMoreAfter` does); here they are drawn only for the first load, while the channel has no
-//! messages at all: the blocks above and below a loaded window would change the list's heights and its load trigger.
-//! GAP: the `hasMoreBefore` block above a loaded window and the `hasMoreAfter` block below it are not drawn.
+//! The placeholder messages a channel shows while its first page loads or while older/newer pages can still be
+//! fetched (`hasMoreBefore` / `hasMoreAfter`, module 891522 `lQ` around module 114212, classes of module 960036,
+//! stylesheet 123141): grey blobs at low opacity in the shape of message groups, drawn where the messages will be.
 //!
 //! The specs (`generateMessageSpecs` of 891522 with the group count of module 326337 `I`) are drawn once per load,
 //! never per frame: the official widths and opacities are lodash `random` at mount, so they are random here too.
@@ -41,6 +38,22 @@ pub(super) struct Held {
     font: f32,
     height: f32,
     groups: Vec<Group>,
+}
+
+impl Held {
+    fn total_lines(&self) -> usize {
+        self.groups.iter().map(|group| group.lines.len()).sum()
+    }
+
+    fn line_at(&self, mut flat: usize) -> Option<(&Group, usize)> {
+        for group in &self.groups {
+            if flat < group.lines.len() {
+                return Some((group, flat));
+            }
+            flat -= group.lines.len();
+        }
+        None
+    }
 }
 
 /// Module 326337 `o`: `clamp(10, 30, ceil(1.05 * ceil(height / ((compact ? 65 : 91) * fontSize / 16))))`, where the
@@ -205,20 +218,17 @@ impl Root {
         (empty && loading).then_some(channel)
     }
 
-    /// The placeholder block over the empty chat while the channel's first page loads, its bottom where the list's
-    /// last row would end (above the 40px spacer).
-    pub(super) fn chat_skeleton(&mut self, window_height: f32) -> Option<AnyElement> {
-        let Some(channel) = self.chat_loading() else {
-            self.chat_extra.skeleton = None;
-            return None;
-        };
+    /// Ensures the cached skeleton spec matches `channel` and current display settings, returning its line count.
+    /// Used for virtualised `Row::SkeletonBefore` / `Row::SkeletonAfter` rows above/below a loaded window so no
+    /// skeleton rows are built while scrolled away from the edge.
+    pub(super) fn ensure_chat_skeleton(&mut self, channel: Id, window_height: f32) -> usize {
         let compact = self.compact_messages();
         let font = self.chat_font_size();
         let fresh = self.chat_extra.skeleton.as_ref().is_none_or(|held| {
             held.channel != channel
                 || held.compact != compact
                 || held.font != font
-                || held.height != window_height
+                || (held.height - window_height).abs() > 1.
         });
         if fresh {
             self.chat_extra.skeleton = Some(Held {
@@ -229,7 +239,37 @@ impl Root {
                 groups: specs(window_height, compact, font, &mut rand::rng()),
             });
         }
+        self.chat_extra
+            .skeleton
+            .as_ref()
+            .map_or(0, Held::total_lines)
+    }
+
+    /// One virtualised skeleton row (`flat_index` across the cached `Held` groups).
+    pub(super) fn skeleton_row(&self, flat_index: usize) -> AnyElement {
+        let Some(held) = self.chat_extra.skeleton.as_ref() else {
+            return div().into_any_element();
+        };
+        let Some((group, index)) = held.line_at(flat_index) else {
+            return div().into_any_element();
+        };
+        line(
+            group,
+            index,
+            held.compact,
+            self.message_group_spacing(),
+            held.font,
+        )
+    }
+
+    /// The placeholder block over the empty chat while the channel's first page loads, its bottom where the list's
+    /// last row would end (above the 40px spacer).
+    pub(super) fn chat_skeleton(&mut self, window_height: f32) -> Option<AnyElement> {
+        let channel = self.chat_loading()?;
+        let _ = self.ensure_chat_skeleton(channel, window_height);
         let held = self.chat_extra.skeleton.as_ref()?;
+        let compact = held.compact;
+        let font = held.font;
         let spacing = self.message_group_spacing();
         Some(
             div()
