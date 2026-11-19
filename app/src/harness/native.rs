@@ -378,3 +378,134 @@ mod tests {
         assert!(packed_point(0, -32769).is_none());
     }
 }
+
+/// `window move <x> <y>`: puts the window's top-left corner at a screen point, as a drag of its title bar does.
+pub(crate) fn move_window(window: &gpui::Window, x: i32, y: i32) -> Result<(), String> {
+    #[cfg(windows)]
+    {
+        use windows::Win32::UI::WindowsAndMessaging::{
+            SWP_NOACTIVATE, SWP_NOSIZE, SWP_NOZORDER, SetWindowPos,
+        };
+        let hwnd = owned_hidden_window(window)?;
+        unsafe {
+            SetWindowPos(
+                hwnd,
+                None,
+                x,
+                y,
+                0,
+                0,
+                SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE,
+            )
+        }
+        .map_err(|error| error.to_string())
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = (window, x, y);
+        Err("native window test requires Windows".into())
+    }
+}
+
+/// `webframes`: the windows the app's window owns that web views live in (the surfaces of `dc-webhost`), read back
+/// from Win32, against the chat list's viewport on the screen. A surface that shows outside the chat (over the header,
+/// the composer, or past the window) is `OUTSIDE`; the last line counts them. `chat` is the list's viewport in the
+/// window's logical pixels.
+pub(crate) fn web_surfaces(window: &gpui::Window, chat: gpui::Bounds<gpui::Pixels>) -> String {
+    #[cfg(windows)]
+    {
+        use std::fmt::Write as _;
+        use windows::Win32::{
+            Foundation::{HWND, LPARAM, POINT, RECT},
+            Graphics::Gdi::ClientToScreen,
+            UI::WindowsAndMessaging::{
+                EnumWindows, GW_OWNER, GetClassNameW, GetClientRect, GetWindow, GetWindowRect,
+                IsIconic, IsWindowVisible,
+            },
+        };
+        let main = match owned_hidden_window(window) {
+            Ok(hwnd) => hwnd,
+            Err(error) => return format!("webframes: {error}"),
+        };
+        unsafe extern "system" fn collect(hwnd: HWND, list: LPARAM) -> windows::core::BOOL {
+            let list = unsafe { &mut *(list.0 as *mut (HWND, Vec<HWND>)) };
+            if unsafe { GetWindow(hwnd, GW_OWNER) }.ok() == Some(list.0) {
+                let mut class = [0u16; 32];
+                let len = unsafe { GetClassNameW(hwnd, &mut class) } as usize;
+                if String::from_utf16_lossy(&class[..len]).eq_ignore_ascii_case("static") {
+                    list.1.push(hwnd);
+                }
+            }
+            true.into()
+        }
+        let mut list = (main, Vec::new());
+        unsafe {
+            let _ = EnumWindows(Some(collect), LPARAM(&mut list as *mut _ as isize));
+        }
+        let scale = window.scale_factor();
+        let mut origin = POINT::default();
+        let mut client = RECT::default();
+        unsafe {
+            let _ = ClientToScreen(main, &mut origin);
+            let _ = GetClientRect(main, &mut client);
+        }
+        let edge = |value: gpui::Pixels| (f32::from(value) * scale).round() as i32;
+        // The chat's viewport on the screen, cut to the window's client area.
+        let chat = RECT {
+            left: origin.x + edge(chat.origin.x).max(0),
+            top: origin.y + edge(chat.origin.y).max(0),
+            right: origin.x + edge(chat.origin.x + chat.size.width).min(client.right),
+            bottom: origin.y + edge(chat.origin.y + chat.size.height).min(client.bottom),
+        };
+        let mut out = String::new();
+        let minimized = unsafe { IsIconic(main) }.as_bool();
+        let _ = writeln!(
+            out,
+            "webframes: window origin=({},{}) client={}x{} minimized={minimized} chat=[{},{},{},{}]",
+            origin.x,
+            origin.y,
+            client.right,
+            client.bottom,
+            chat.left,
+            chat.top,
+            chat.right,
+            chat.bottom
+        );
+        let mut outside = 0;
+        let mut shown = 0;
+        for hwnd in &list.1 {
+            let mut rect = RECT::default();
+            let visible = unsafe { IsWindowVisible(*hwnd) }.as_bool();
+            unsafe {
+                let _ = GetWindowRect(*hwnd, &mut rect);
+            }
+            let inside = rect.left >= chat.left
+                && rect.top >= chat.top
+                && rect.right <= chat.right
+                && rect.bottom <= chat.bottom;
+            let verdict = match (visible, inside) {
+                (false, _) => "hidden",
+                (true, true) => "inside",
+                (true, false) => "OUTSIDE",
+            };
+            shown += usize::from(visible);
+            outside += usize::from(visible && !inside);
+            let _ = writeln!(
+                out,
+                "webframes: surface visible={visible} rect=[{},{},{},{}] {verdict}",
+                rect.left, rect.top, rect.right, rect.bottom
+            );
+        }
+        let _ = writeln!(
+            out,
+            "webframes: {} surfaces, {shown} shown, {outside} outside",
+            list.1.len()
+        );
+        out
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = (window, chat);
+        "webframes requires Windows\n".into()
+    }
+}

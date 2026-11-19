@@ -1562,6 +1562,32 @@ pub async fn run(
                 let active = window.update(cx, |_, window, _| window.is_window_active());
                 let _ = writeln!(output, "window: {state}, active={active:?}");
             }
+            // Capture only: `window restore` restores the window after `window minimize`; `window move <x> <y>` puts
+            // its top-left corner at a screen point, as a drag of the title bar does.
+            ["window", "restore"] => {
+                let result = window.update(cx, |_, window, _| {
+                    native::minimize_or_restore(window, false)
+                });
+                let _ = writeln!(output, "window: restore {result:?}");
+            }
+            ["window", "move", x, y] => {
+                let result = match (x.parse::<i32>(), y.parse::<i32>()) {
+                    (Ok(x), Ok(y)) => window
+                        .update(cx, |_, window, _| native::move_window(window, x, y))
+                        .map_err(|error| error.to_string())
+                        .and_then(|result| result),
+                    _ => Err("expected <x> <y>".to_owned()),
+                };
+                let _ = writeln!(output, "window: move {result:?}");
+            }
+            // Capture only: `webframes` reads the web views' windows back from Win32 against the chat's viewport.
+            ["webframes"] => {
+                let chat = root.read_with(cx, |root, _| root.script_chat_viewport());
+                let report = window
+                    .update(cx, |_, window, _| native::web_surfaces(window, chat))
+                    .unwrap_or_else(|error| format!("webframes: {error}\n"));
+                output.push_str(&report);
+            }
             // Capture only: `popout click <x> <y>` clicks in the popped-out call window, `popout shot <png>` saves it.
             ["popout", "click", x, y] => {
                 let handle = root.read_with(cx, |root, _| root.call_popout_window());

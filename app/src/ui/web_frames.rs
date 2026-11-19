@@ -83,6 +83,11 @@ pub(super) fn spotify_frame(embed: &dc_state::Embed) -> Option<(String, f32)> {
 }
 
 impl Root {
+    /// The chat list's viewport, in the window's logical pixels (the `webframes` harness step).
+    pub(crate) fn script_chat_viewport(&self) -> gpui::Bounds<gpui::Pixels> {
+        self.list.viewport_bounds()
+    }
+
     /// The box a frame is drawn over: `maxWidth 400, minWidth 300, width 100%` and the frame's height.
     pub(super) fn web_frame_box(&self, key: String, url: String, height: f32) -> AnyElement {
         let anchor = format!("webframe:{key}");
