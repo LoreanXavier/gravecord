@@ -88,6 +88,30 @@ fn set_agreed(user: Id, channel: Id, agreed: bool) {
     std::thread::spawn(move || crate::storage::set(STORAGE_KEY, state));
 }
 
+/// A topic's markdown, parsed once per topic text (as a message's content is parsed once on arrival) rather than on
+/// every frame that draws the header: the few topics in view are kept.
+fn parsed_topic(topic: &str) -> std::rc::Rc<Vec<dc_markdown::Block>> {
+    thread_local! {
+        static PARSED: std::cell::RefCell<Vec<(String, std::rc::Rc<Vec<dc_markdown::Block>>)>> =
+            const { std::cell::RefCell::new(Vec::new()) };
+    }
+    PARSED.with(|cache| {
+        let mut cache = cache.borrow_mut();
+        if let Some(at) = cache.iter().position(|(text, _)| text == topic) {
+            let entry = cache.remove(at);
+            let blocks = entry.1.clone();
+            cache.push(entry);
+            return blocks;
+        }
+        let blocks = std::rc::Rc::new(dc_markdown::parse(topic));
+        if cache.len() >= 8 {
+            cache.remove(0);
+        }
+        cache.push((topic.to_owned(), blocks.clone()));
+        blocks
+    })
+}
+
 /// Whether a topic has anything markdown would draw differently from its plain text.
 pub(super) fn has_markup(topic: &str) -> bool {
     topic.contains(['<', '*', '_', '`', '[', '~', '|', ':', '#', '>', '\n'])
@@ -126,10 +150,10 @@ impl Root {
         lines: usize,
         cx: &mut Context<Self>,
     ) -> AnyElement {
-        let blocks = dc_markdown::parse(topic);
+        let blocks = parsed_topic(topic);
         let mut pieces: Vec<crate::inline::Piece> = Vec::new();
         let mut links = Vec::new();
-        for block in &blocks {
+        for block in blocks.iter() {
             let spans = super::block_spans(block).to_vec();
             if !pieces.is_empty()
                 && let Some(first) = pieces.iter().find(|piece| piece.image.is_none())
