@@ -176,7 +176,7 @@ pub(super) fn shows_for(channel: Id, default: Option<Id>) -> bool {
     default == Some(channel)
 }
 
-fn default_channel(guild: &Guild, me: permissions::Me) -> Option<Id> {
+pub(super) fn default_channel(guild: &Guild, me: permissions::Me) -> Option<Id> {
     first_channel(guild.channels.iter().map(|channel| {
         (
             channel.id,
@@ -550,10 +550,12 @@ impl Root {
                     .items_center()
                     .gap(px(8.))
                     .child(
-                        div()
-                            .size(px(24.))
-                            .flex_none()
-                            .children(self.images.get(*url).cloned().map(|art| img(art).size(px(24.)))),
+                        div().size(px(24.)).flex_none().children(
+                            self.images
+                                .get(*url)
+                                .cloned()
+                                .map(|art| img(art).size(px(24.))),
+                        ),
                     )
                     .child(
                         div()
@@ -565,9 +567,8 @@ impl Root {
                     ),
             );
         }
-        let close = || -> super::modal::Handler {
-            Box::new(|this, _, _| this.app_directory_promo = None)
-        };
+        let close =
+            || -> super::modal::Handler { Box::new(|this, _, _| this.app_directory_promo = None) };
         Some(self.graphic_modal_with(
             super::graphic_modal::Spec {
                 id: "app-directory-promo",
@@ -607,7 +608,10 @@ mod tests {
     fn the_app_directory_promo_strings_are_the_official_ones() {
         assert_eq!(dc_intl::t("2tv5YG"), "Introducing App Directory");
         assert_eq!(dc_intl::t("5e8Mrp"), "Check it out");
-        assert_eq!(dc_intl::t(PROMO_LINES[1].1), "Automate useful tasks and free up time");
+        assert_eq!(
+            dc_intl::t(PROMO_LINES[1].1),
+            "Automate useful tasks and free up time"
+        );
     }
 
     fn snowflake_at(ms: i64) -> Id {

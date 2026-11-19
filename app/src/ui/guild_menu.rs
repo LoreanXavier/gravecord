@@ -238,6 +238,29 @@ impl Root {
         }
     }
 
+    /// `Lu` of module 234053: Show All Channels turns the opt-in flag of the server's notification settings.
+    pub(super) fn toggle_show_all_channels(&mut self, guild: Id) {
+        let known = self
+            .stores
+            .guild_settings
+            .guilds
+            .get(&guild)
+            .map(|s| s.flags);
+        let loaded = !self.stores.guild_settings.guilds.is_empty();
+        let Some(flags) = toggled_opt_in(known, loaded) else {
+            return;
+        };
+        self.stores
+            .guild_settings
+            .guilds
+            .entry(guild)
+            .or_insert_with(|| dc_state::guild_settings::GuildSettings::from_value(&json!({})))
+            .flags = flags;
+        let _ = self.requests.send(Request::GuildSettings {
+            body: json!({"guilds": {guild.to_string(): {"flags": flags}}}),
+        });
+    }
+
     fn run_guild_entry(&mut self, entry: Entry, window: &mut Window, cx: &mut Context<Self>) {
         let Some(guild) = self.guild else {
             return;
@@ -248,29 +271,7 @@ impl Root {
         match entry {
             // `Lu` of module 234053 turns the opt-in flag of the server's notification settings (`d.e4`). Its other
             // branch, a member who never finished onboarding, onboards them instead and is not built.
-            Entry::ShowAll => {
-                let known = self
-                    .stores
-                    .guild_settings
-                    .guilds
-                    .get(&guild)
-                    .map(|s| s.flags);
-                let loaded = !self.stores.guild_settings.guilds.is_empty();
-                let Some(flags) = toggled_opt_in(known, loaded) else {
-                    return;
-                };
-                self.stores
-                    .guild_settings
-                    .guilds
-                    .entry(guild)
-                    .or_insert_with(|| {
-                        dc_state::guild_settings::GuildSettings::from_value(&json!({}))
-                    })
-                    .flags = flags;
-                let _ = self.requests.send(Request::GuildSettings {
-                    body: json!({"guilds": {guild.to_string(): {"flags": flags}}}),
-                });
-            }
+            Entry::ShowAll => self.toggle_show_all_channels(guild),
             Entry::HideMuted => {
                 let hide = !self.hide_muted(guild);
                 if let Some(settings) = self.stores.guild_settings.guilds.get_mut(&guild) {
@@ -346,8 +347,8 @@ impl Root {
             for (entry, name, label) in entries.iter() {
                 let entry = *entry;
                 // Module 664967 with its icon: the open lock and Edit Security Actions while a pause runs.
-                let lockdown =
-                    entry == Entry::SecurityActions && self.security_actions_item(guild) == Some(true);
+                let lockdown = entry == Entry::SecurityActions
+                    && self.security_actions_item(guild) == Some(true);
                 let (name, label): (&'static str, &'static str) = if lockdown {
                     ("overlay_lock_unlocked", dc_intl::t("+tSVi3"))
                 } else if entry == Entry::SecurityActions {

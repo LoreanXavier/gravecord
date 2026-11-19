@@ -495,7 +495,16 @@ impl Root {
                 div()
                     .id("profile-edit-profile")
                     .cursor_pointer()
-                    .on_click(cx.listener(|this, _, _, cx| {
+                    // Module 822775: in a server the button opens the Profile Actions popout instead.
+                    .on_click(cx.listener(|this, event: &gpui::ClickEvent, _, cx| {
+                        if let Some(guild) = this.guild {
+                            this.open_context_menu(
+                                super::context_menu::Target::EditProfileMenu(guild),
+                                event.position(),
+                                cx,
+                            );
+                            return;
+                        }
                         this.profile = None;
                         this.open_profile_editor(cx);
                     }))

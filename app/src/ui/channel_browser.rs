@@ -402,6 +402,7 @@ impl Root {
             return None;
         }
         let guild = self.current_guild()?;
+        let guild_id = guild.id;
         let selected = self.channel_browser_open;
         Some(
             div()
@@ -429,6 +430,18 @@ impl Root {
                         })
                         .active(|style| style.bg(color("--interactive-background-active")))
                         .on_click(cx.listener(|this, _, _, cx| this.open_channel_browser(cx)))
+                        // Module 807431 on a right press.
+                        .on_mouse_up(
+                            gpui::MouseButton::Right,
+                            cx.listener(move |this, event: &gpui::MouseUpEvent, _, cx| {
+                                this.open_context_menu(
+                                    super::context_menu::Target::BrowseChannels(guild_id),
+                                    event.position,
+                                    cx,
+                                );
+                                cx.stop_propagation();
+                            }),
+                        )
                         .child(icon(
                             "channel_browse",
                             20.,
@@ -478,7 +491,7 @@ impl Root {
         )
     }
 
-    fn browser_follow(&mut self, guild: Id, channel: Id, cx: &mut Context<Self>) {
+    pub(super) fn browser_follow(&mut self, guild: Id, channel: Id, cx: &mut Context<Self>) {
         let Some(known) = self.stores.guild(guild) else {
             return;
         };

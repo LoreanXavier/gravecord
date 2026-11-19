@@ -190,6 +190,19 @@ impl Root {
 
     fn script_standin_more(&mut self, args: &[&str], cx: &mut Context<Self>) -> String {
         match args {
+            // Module 698405 needs a server the account only lurks: the open one is marked lurked here, locally.
+            ["lurk"] => match self.guild {
+                Some(guild) => {
+                    self.stores.lurking_guilds.insert(guild);
+                    "standin: lurking the open server".to_owned()
+                }
+                None => "standin: no server open".to_owned(),
+            },
+            // Module 688796 as the cropper's GIF avatar without Nitro opens it (`avatar` or `banner`).
+            ["animated-upsell", which] => {
+                self.animated_upload_upsell = Some(*which == "banner");
+                "standin: animated upload upsell".to_owned()
+            }
             // Module 716480 as Add a Server opens it at the limit (the fixture account is far from 100 servers).
             ["guild-cap"] => {
                 self.open_guild_cap_upsell(cx);

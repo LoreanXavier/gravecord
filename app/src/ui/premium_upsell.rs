@@ -50,6 +50,21 @@ pub(super) struct Spec {
     pub priority: usize,
 }
 
+/// `maybeOpenProfilePreviewModal` of module 596339: a GIF avatar needs `ANIMATED_AVATAR` (the official reads the
+/// file's `image/gif` type; the picked file's extension stands in), a banner `PROFILE_PREMIUM_FEATURES`.
+pub(super) fn animated_upload_blocked(
+    banner: bool,
+    file_name: &str,
+    premium: dc_state::premium::PremiumType,
+) -> bool {
+    use dc_state::premium::Feature;
+    if banner {
+        !premium.has(Feature::ProfilePremiumFeatures)
+    } else {
+        file_name.to_ascii_lowercase().ends_with(".gif") && !premium.has(Feature::AnimatedAvatar)
+    }
+}
+
 /// "Reimagine your profile with Nitro" (module 536015): its picture.
 pub(super) const TRY_IT_OUT_GRAPHIC: Graphic = Graphic {
     url: "https://cdn.discordapp.com/assets/content/47cc9b4a38d020f9f0bf747920f0a9b0d02109a9eb9a15510e7a08b7fb106350.svg",
@@ -283,5 +298,92 @@ impl Root {
             },
             cx,
         ))
+    }
+
+    /// `G` of module 688796, from `maybeOpenProfilePreviewModal` of module 596339 after the cropper: a GIF avatar
+    /// without `ANIMATED_AVATAR`, or a banner without `PROFILE_PREMIUM_FEATURES`, opens the animated upsell instead of
+    /// becoming the pending picture. Returns whether it opened.
+    pub(super) fn animated_upload_gate(
+        &mut self,
+        banner: bool,
+        file_name: &str,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        let blocked = animated_upload_blocked(banner, file_name, self.premium());
+        if blocked {
+            self.animated_upload_upsell = Some(banner);
+            cx.notify();
+        }
+        blocked
+    }
+
+    /// Module 688796 on the premium upsell dialog: "Bring your profile to life with animated avatars" / "...with an
+    /// animated banner", "Access custom profiles, emoji upgrades, and more with Nitro.", View all Nitro perks. Its
+    /// graphic (`ANIMATED_AVATAR_MODAL_UPSELL` / `ANIMATED_BANNER_MODAL_UPSELL` of module 49792) is a looping video:
+    /// its space is kept and the video is not drawn.
+    pub(super) fn animated_upload_upsell(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
+        let banner = self.animated_upload_upsell?;
+        Some(self.premium_upsell(
+            Spec {
+                id: "animated-upload-upsell",
+                ids: [
+                    "animated-upload-upsell-close",
+                    "animated-upload-upsell-perks",
+                    "animated-upload-upsell-get",
+                ],
+                header: Header::Video,
+                title: dc_intl::t(if banner { "zXPa2C" } else { "X7tO60" }).into(),
+                subtitle: dc_intl::t(if banner { "yQAnf4" } else { "ifCRdB" }).into(),
+                secondary: dc_intl::t("PcTCB7").into(),
+                // `onSecondaryClick` (`s7` of module 192308 closes every modal), then 87719 `x`: the Nitro page.
+                on_secondary: Box::new(|this, _, cx| {
+                    this.animated_upload_upsell = None;
+                    this.open_nitro(cx);
+                }),
+                on_primary: Box::new(|this, _, cx| {
+                    this.animated_upload_upsell = None;
+                    this.open_purchase(false, cx);
+                }),
+                close: Box::new(|this, _, _| this.animated_upload_upsell = None),
+                priority: 3,
+            },
+            cx,
+        ))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use dc_state::premium::PremiumType;
+
+    #[test]
+    fn a_gif_avatar_needs_animated_avatars_and_a_banner_needs_nitro() {
+        assert!(animated_upload_blocked(false, "cat.GIF", PremiumType::None));
+        assert!(animated_upload_blocked(
+            false,
+            "cat.gif",
+            PremiumType::Basic
+        ));
+        assert!(!animated_upload_blocked(
+            false,
+            "cat.gif",
+            PremiumType::Classic
+        ));
+        assert!(!animated_upload_blocked(
+            false,
+            "cat.png",
+            PremiumType::None
+        ));
+        assert!(animated_upload_blocked(
+            true,
+            "wide.png",
+            PremiumType::Classic
+        ));
+        assert!(!animated_upload_blocked(
+            true,
+            "wide.gif",
+            PremiumType::Nitro
+        ));
     }
 }

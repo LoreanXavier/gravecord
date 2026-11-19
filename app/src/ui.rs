@@ -106,6 +106,7 @@ mod game_communities;
 mod game_similar;
 mod games_spec;
 mod gateway_screens;
+mod gdm_cleanup;
 mod geo_restricted;
 mod gifs;
 mod go_live;
@@ -134,6 +135,7 @@ mod live_activity;
 pub mod login;
 mod logout;
 mod lottie_icon;
+mod lurker_reaction;
 mod mark_read;
 mod member_actions;
 mod message_header;
@@ -149,6 +151,7 @@ pub(crate) mod role_gradient;
 mod role_popout;
 mod schedule_message;
 mod sent_attachment;
+mod spoiler_gate;
 mod spotify_activity;
 mod stage;
 mod stage_requests;
@@ -822,6 +825,8 @@ pub struct Root {
     upload_error: Option<upload_error::UploadError>,
     /// "Reimagine your profile with Nitro" (module 536015) is open.
     try_it_out_upsell: bool,
+    /// Module 688796 after an animated upload without Nitro: `true` for the banner.
+    animated_upload_upsell: Option<bool>,
     /// The pencil or trash of a sent attachment's hover group (`sent_attachment.rs`).
     sent_edit: Option<sent_attachment::SentEdit>,
     snooze_menu: Option<(Id, Id, bool, gpui::Point<gpui::Pixels>)>,
@@ -937,6 +942,10 @@ pub struct Root {
     /// The popout a sticker in a message opens.
     sticker_popout: Option<sticker_popout::StickerPopout>,
     emoji_popout: Option<emoji_popout::EmojiPopout>,
+    /// Module 698405's popout over a reaction a lurker pressed.
+    lurker_reaction: Option<lurker_reaction::LurkerReaction>,
+    /// Clean Up Inactive Group DMs (module 877760), while open.
+    gdm_cleanup: Option<gdm_cleanup::GdmCleanup>,
     role_popout: Option<role_popout::RolePopout>,
     /// The popout of a header chip: the role icon's card or a server tag's profile (`message_header`).
     header_popout: Option<message_header::HeaderPopout>,
@@ -1273,6 +1282,7 @@ impl Root {
             launcher_collections_at: None,
             upload_error: None,
             try_it_out_upsell: false,
+            animated_upload_upsell: None,
             sent_edit: None,
             snooze_menu: None,
             click_at: gpui::Point::default(),
@@ -1343,6 +1353,8 @@ impl Root {
             inventory_popout: inventory_popout::State::default(),
             sticker_popout: None,
             emoji_popout: None,
+            lurker_reaction: None,
+            gdm_cleanup: None,
             role_popout: None,
             header_popout: None,
             copied_code: HashSet::new(),
@@ -2154,6 +2166,9 @@ impl Root {
                     return;
                 }
                 if self.join_request_answered(&key, &body, cx) {
+                    return;
+                }
+                if self.gdm_cleanup_answered(&key, &body, cx) {
                     return;
                 }
                 if self.invite_accept_answered(&key, &body, cx) {
@@ -6333,6 +6348,60 @@ impl Root {
             .child(row)
     }
 
+    /// Module 565265 after a server channel's title (`hl` of module 289287 with the `dot` divider): the header's dot
+    /// (`dot_ybUK7Z`: 4px, `--background-mod-strong`, 4px each side), then the topic (`topic_pVbL3l`: 8px from it,
+    /// 14/18 medium, `--text-muted`, one line cut with an ellipsis). A right press opens module 834881 with Copy Topic.
+    /// GAP: the topic is plain text (module 46054 `parseTruncatedTopic` renders its markdown) and a click does not
+    /// open the channel topic dialog (module 181094, not built); a linked lobby's line is not drawn.
+    fn header_topic(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
+        self.guild?;
+        let channel = self.current_channel()?;
+        let topic = channel.topic.as_deref().filter(|topic| !topic.is_empty())?;
+        let id = channel.id;
+        Some(
+            div()
+                .flex()
+                .items_center()
+                .min_w(px(0.))
+                .flex_shrink(1.)
+                .child(
+                    div()
+                        .flex_none()
+                        .size(px(4.))
+                        .mx(px(4.))
+                        .rounded_full()
+                        .bg(color("--background-mod-strong")),
+                )
+                .child(
+                    div()
+                        .id("header-topic")
+                        .ml(px(8.))
+                        .min_w(px(0.))
+                        .overflow_hidden()
+                        .whitespace_nowrap()
+                        .text_ellipsis()
+                        .text_size(px(14.))
+                        .line_height(px(18.))
+                        .font_weight(FontWeight(500.))
+                        .text_color(color("--text-muted"))
+                        .on_mouse_up(
+                            MouseButton::Right,
+                            cx.listener(move |this, event: &gpui::MouseUpEvent, _, cx| {
+                                this.context.title_menu = Some(true);
+                                this.open_context_menu(
+                                    context_menu::Target::Channel(id),
+                                    event.position,
+                                    cx,
+                                );
+                                cx.stop_propagation();
+                            }),
+                        )
+                        .child(topic.replace('\n', " ")),
+                )
+                .into_any_element(),
+        )
+    }
+
     fn header(&self, cx: &mut Context<Self>) -> impl IntoElement {
         self.header_with(cx, false)
     }
@@ -6501,8 +6570,24 @@ impl Root {
                     // Icon, 9px, then the nowrap title, all inside the box that clips (`children_ybUK7Z`).
                     let mut boxed = div();
                     boxed.style().flex_shrink = Some(0.001);
+                    let title_channel = self.current_channel().map(|channel| channel.id);
                     return this.child(
                         boxed
+                            // Module 289287's title: a right press opens module 834881.
+                            .when_some(title_channel, |boxed, channel| {
+                                boxed.on_mouse_up(
+                                    MouseButton::Right,
+                                    cx.listener(move |this, event: &gpui::MouseUpEvent, _, cx| {
+                                        this.context.title_menu = Some(false);
+                                        this.open_context_menu(
+                                            context_menu::Target::Channel(channel),
+                                            event.position,
+                                            cx,
+                                        );
+                                        cx.stop_propagation();
+                                    }),
+                                )
+                            })
                             // The toolbar's own 8px of padding stays when this box has shrunk (chat-200 dump).
                             .mr(px(8.))
                             .min_w(px(0.))
@@ -6671,6 +6756,7 @@ impl Root {
                         )
                     }),
             )
+            .children(self.header_topic(cx))
             .child(div().flex_1().h_full().when_some(dm_channel, |d, channel| {
                 d.on_mouse_up(
                     MouseButton::Right,
@@ -7669,9 +7755,12 @@ impl Root {
                 )
                 .after(reaction_tip::DELAY_MS)
                 .spaced(8.);
+                let probe = group.clone();
                 let pill = div()
                     .id(group.clone())
                     .group(group.clone())
+                    .relative()
+                    .child(self.anchor_probe(probe.clone()))
                     .h(px(30.))
                     .px(px(6.))
                     .rounded(px(8.))
@@ -7707,6 +7796,14 @@ impl Root {
                         }
                     }))
                     .on_click(cx.listener(move |this, _, _, cx| {
+                        // Module 30492 `eS`: a lurker's press opens module 698405 over the reaction instead.
+                        if let Some(guild) = this.lurked_guild_of(channel) {
+                            let anchor = this.tip_anchors.borrow().get(probe.as_str()).copied();
+                            if let Some(anchor) = anchor {
+                                this.open_lurker_reaction(guild, anchor, cx);
+                            }
+                            return;
+                        }
                         if add {
                             this.track_reaction(&emoji);
                         }
@@ -11283,6 +11380,7 @@ impl Render for Root {
             .children(self.role_picker_layer(window, cx))
             .children(self.sticker_popout_layer(cx))
             .children(self.emoji_popout_layer(cx))
+            .children(self.lurker_reaction_layer(cx))
             .children(self.shop_modal(window, cx))
             .children(self.discover_layers(window, cx))
             .children(self.purchase_modal(window, cx))
@@ -11316,84 +11414,94 @@ impl Render for Root {
                         regions::style_of_sidebar(sidebar_width),
                     )
                 };
-                let content = if self.discover_active() {
-                    self.discover_page(window, cx)
-                } else if self.guild.is_none() && self.channel.is_none() && self.nitro_open {
-                    self.nitro_page(window, cx)
-                } else if self.quests_active() {
-                    self.quests_page(window, cx)
-                } else if self.shop_active() {
-                    self.shop_page(window, cx)
-                } else if self.message_requests_active() {
-                    self.message_requests_page(window, cx)
-                } else if self.library_active() {
-                    self.library_view(window, cx)
-                } else if self.guild.is_none() && self.channel.is_none() {
-                    self.friends_panel(window, cx).into_any_element()
-                } else if self
-                    .member_view
-                    .as_ref()
-                    .is_some_and(|view| Some(view.guild) == self.guild)
-                {
-                    self.member_safety_view(cx)
-                } else if !self.guild_guide_open
-                    && !self.channel_browser_open
-                    && self.onboarding_blocked()
-                {
-                    // Module 140354 in place of the channel, header included (`gk` of 596339).
-                    self.onboarding_blocked_page(cx)
-                } else if self.voice_view_open() {
-                    self.voice_view(window, cx)
-                } else if self.stage_view_open() {
-                    self.stage_view(cx)
-                } else if self.guild_guide_open && self.guild.is_some() {
-                    self.guild_guide_view(cx)
-                } else if self.channel_browser_open && self.guild.is_some() {
-                    self.channel_browser_view(window, cx, rows.into_any_element())
-                } else if self.current_channel().is_some_and(Channel::is_forum) {
-                    self.forum_view_in(window, cx)
-                } else if self.open_post_forum().is_some() && self.forum_split_fits(window) {
-                    self.forum_split_view(window, cx)
-                        .unwrap_or_else(|| div().into_any_element())
-                } else {
-                    // The New Thread panel sits beside the whole chat column, header included.
-                    div()
-                        .flex()
-                        .flex_1()
-                        .min_w(px(0.))
-                        .h_full()
-                        .child(
-                            div()
-                                .parity("chat")
-                                .flex()
-                                .flex_col()
-                                .flex_1()
-                                .min_w(px(0.))
-                                .h_full()
-                                .pt(px(1.))
-                                .overflow_hidden()
-                                .child(match self.dm_call_area(window, cx) {
-                                    // The header moves into the call area while a call shows (module 540462
-                                    // `useExternalHeader`).
-                                    Some(area) => area,
-                                    None => self.regions.place(
-                                        regions::Kind::Header,
-                                        regions::style_of(regions::Kind::Header),
-                                    ),
-                                })
-                                .child(
-                                    div()
-                                        .flex()
-                                        .flex_col()
-                                        .flex_1()
-                                        .min_h(px(0.))
-                                        .bg(color("--background-base-lower"))
-                                        .flex_row()
-                                        // "Hide chat": the call has the whole column (`.wrapper.noChat`).
-                                        .when(self.dm_call_chat_hidden(), |chat| {
-                                            chat.flex_none().h(px(0.)).overflow_hidden()
-                                        })
-                                        .child(
+                let content =
+                    if self.discover_active() {
+                        self.discover_page(window, cx)
+                    } else if self.guild.is_none() && self.channel.is_none() && self.nitro_open {
+                        self.nitro_page(window, cx)
+                    } else if self.quests_active() {
+                        self.quests_page(window, cx)
+                    } else if self.shop_active() {
+                        self.shop_page(window, cx)
+                    } else if self.message_requests_active() {
+                        self.message_requests_page(window, cx)
+                    } else if self.library_active() {
+                        self.library_view(window, cx)
+                    } else if self.guild.is_none() && self.channel.is_none() {
+                        self.friends_panel(window, cx).into_any_element()
+                    } else if self
+                        .member_view
+                        .as_ref()
+                        .is_some_and(|view| Some(view.guild) == self.guild)
+                    {
+                        self.member_safety_view(cx)
+                    } else if !self.guild_guide_open
+                        && !self.channel_browser_open
+                        && self.onboarding_blocked()
+                    {
+                        // Module 140354 in place of the channel, header included (`gk` of 596339).
+                        self.onboarding_blocked_page(cx)
+                    } else if self.voice_view_open() {
+                        self.voice_view(window, cx)
+                    } else if self.stage_view_open() {
+                        self.stage_view(cx)
+                    } else if self.guild_guide_open && self.guild.is_some() {
+                        self.guild_guide_view(cx)
+                    } else if self.channel_browser_open && self.guild.is_some() {
+                        self.channel_browser_view(window, cx, rows.into_any_element())
+                    } else if self.current_channel().is_some_and(Channel::is_forum) {
+                        self.forum_view_in(window, cx)
+                    } else if self.open_post_forum().is_some() && self.forum_split_fits(window) {
+                        self.forum_split_view(window, cx)
+                            .unwrap_or_else(|| div().into_any_element())
+                    } else {
+                        // The New Thread panel sits beside the whole chat column, header included.
+                        div()
+                            .flex()
+                            .flex_1()
+                            .min_w(px(0.))
+                            .h_full()
+                            .child(
+                                div()
+                                    .parity("chat")
+                                    .flex()
+                                    .flex_col()
+                                    .flex_1()
+                                    .min_w(px(0.))
+                                    .h_full()
+                                    .pt(px(1.))
+                                    .overflow_hidden()
+                                    .child(match self.dm_call_area(window, cx) {
+                                        // The header moves into the call area while a call shows (module 540462
+                                        // `useExternalHeader`).
+                                        Some(area) => area,
+                                        None => self.regions.place(
+                                            regions::Kind::Header,
+                                            regions::style_of(regions::Kind::Header),
+                                        ),
+                                    })
+                                    .child(
+                                        div()
+                                            .flex()
+                                            .flex_col()
+                                            .flex_1()
+                                            .min_h(px(0.))
+                                            .bg(color("--background-base-lower"))
+                                            .flex_row()
+                                            // "Hide chat": the call has the whole column (`.wrapper.noChat`).
+                                            .when(self.dm_call_chat_hidden(), |chat| {
+                                                chat.flex_none().h(px(0.)).overflow_hidden()
+                                            })
+                                            .when_some(
+                                                self.spoiler_gating_channel(),
+                                                |this, gating| {
+                                                    // Module 289287 `renderChat`: a spoiler channel's gate (873614) in place
+                                                    // of the chat until the account agrees.
+                                                    this.child(self.spoiler_gate(gating, cx))
+                                                },
+                                            )
+                                            .when(self.spoiler_gating_channel().is_none(), |this| {
+                                                this.child(
                                             div()
                                                 .flex()
                                                 .flex_col()
@@ -11441,37 +11549,37 @@ impl Render for Root {
                                                         }),
                                                 }),
                                         )
-                                        .children(self.search_panel(cx))
-                                        .when(
-                                            self.show_members
-                                                && self.guild.is_some()
-                                                && self.new_thread.is_none()
-                                                && self
-                                                    .search
-                                                    .as_ref()
-                                                    .is_none_or(|search| search.shown.is_none()),
-                                            |this| {
-                                                this.child(
-                                                    div()
-                                                        .flex_none()
-                                                        .w(px(1.))
-                                                        .h_full()
-                                                        .bg(color("--background-mod-subtle")),
-                                                )
-                                                .child(self.regions.place(
-                                                    regions::Kind::Members,
-                                                    regions::style_of(regions::Kind::Members),
-                                                ))
-                                            },
-                                        )
-                                        .children(self.dm_profile(window, cx))
-                                        .children(self.group_members_panel(cx)),
-                                ),
-                        )
-                        .children(self.new_thread_panel(cx))
-                        .children(self.mod_view_panel(cx))
-                        .into_any_element()
-                };
+                                            })
+                                            .children(self.search_panel(cx))
+                                            .when(
+                                                self.show_members
+                                                    && self.guild.is_some()
+                                                    && self.new_thread.is_none()
+                                                    && self.search.as_ref().is_none_or(|search| {
+                                                        search.shown.is_none()
+                                                    }),
+                                                |this| {
+                                                    this.child(
+                                                        div()
+                                                            .flex_none()
+                                                            .w(px(1.))
+                                                            .h_full()
+                                                            .bg(color("--background-mod-subtle")),
+                                                    )
+                                                    .child(self.regions.place(
+                                                        regions::Kind::Members,
+                                                        regions::style_of(regions::Kind::Members),
+                                                    ))
+                                                },
+                                            )
+                                            .children(self.dm_profile(window, cx))
+                                            .children(self.group_members_panel(cx)),
+                                    ),
+                            )
+                            .children(self.new_thread_panel(cx))
+                            .children(self.mod_view_panel(cx))
+                            .into_any_element()
+                    };
                 motion::layers::faded(self.main_row(rail, sidebar, content, cx), base_opacity)
             })
             .child(self.sidebar_resize_handle(cx))
@@ -11589,6 +11697,8 @@ impl Render for Root {
             .children(self.game_profile_layer(cx))
             .children(self.upload_error_modal(cx))
             .children(self.try_it_out_upsell(cx))
+            .children(self.animated_upload_upsell(cx))
+            .children(self.gdm_cleanup_modal(cx))
             .children(self.sent_edit_modal(cx))
             .children(self.snooze_layer(cx))
             .children(self.poll_modal(cx))

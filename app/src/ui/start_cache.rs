@@ -713,6 +713,12 @@ pub(crate) fn forget() {
 type KeptList = (u64, Value, Vec<(String, String)>);
 
 impl Root {
+    /// The live READY has been applied (not only the cached one).
+    #[cfg(feature = "capture")]
+    pub(crate) fn live_ready(&self) -> bool {
+        self.stores.current_user.is_some() && !self.hydrated_from_cache
+    }
+
     /// Applies the cache before the gateway answers: the same stores, filled the way READY fills them, and the
     /// server and channel the app opens on. The real READY that follows replaces them as a reconnect's does.
     pub(crate) fn apply_cache(&mut self, cached: Cached, cx: &mut Context<Self>) {
@@ -726,6 +732,8 @@ impl Root {
         let dispatching = std::time::Instant::now();
         self.stores.dispatch("READY", &cached.ready);
         crate::start_trace::took("dur_cache_dispatch", dispatching);
+        // The geo-restricted tiles' icons (module 543897), asked for as a live READY asks for them.
+        self.request_geo_restricted_icons();
         for member in &cached.members {
             let Some(guild) = member["guild_id"].as_str().and_then(|id| id.parse().ok()) else {
                 continue;
@@ -1230,6 +1238,19 @@ mod tests {
                  "emojis": [{"id": "6"}], "voice_states": [{}]}
             ]
         })
+    }
+
+    #[test]
+    fn a_geo_restricted_server_survives_the_cache() {
+        let mut ready = ready();
+        ready["guilds"].as_array_mut().unwrap().push(
+            json!({"id": "12", "unavailable": true, "geo_restricted": true, "name": "Far", "icon": "abc"}),
+        );
+        let trimmed = trim_ready(&ready, Some("10")).unwrap();
+        let mut stores = dc_state::Stores::default();
+        stores.dispatch("READY", &trimmed);
+        assert_eq!(stores.geo_restricted_guilds.len(), 1);
+        assert_eq!(stores.geo_restricted_guilds[0].id, 12);
     }
 
     #[test]
