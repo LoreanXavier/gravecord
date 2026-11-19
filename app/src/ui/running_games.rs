@@ -497,6 +497,8 @@ impl Root {
                 if this.detect.retry_at != Some(at) {
                     return;
                 }
+                // A timer that woke a hair early is refused again for the same slot: it must be set again.
+                this.detect.retry_timer = None;
                 this.refresh_own_presence();
                 this.schedule_presence_retry(cx);
             });
