@@ -1625,6 +1625,7 @@ impl Root {
             .child(
                 div()
                     .h(px(105.))
+                    .rounded_t(px(6.))
                     .overflow_hidden()
                     .relative()
                     .bg(banner)

@@ -433,36 +433,74 @@ impl Root {
         }
     }
 
-    /// Why the forwarded message cannot go to `destination`: `P7yvbm` for files without Attach Files, `quj4DY` for a
-    /// voice message without Send Voice Messages (module 969223, in that order).
+    /// Whether a guild channel or thread is age-restricted (`isNSFW` of module 323073 `Gc`: the channel's own `nsfw`
+    /// flag, or its parent's for a thread).
+    fn channel_is_nsfw(&self, channel_id: Id) -> bool {
+        for guild in &self.stores.guilds {
+            if let Some(ch) = guild.channels.iter().find(|known| known.id == channel_id) {
+                return ch.nsfw;
+            }
+            if let Some(thread) = guild.threads.iter().find(|known| known.id == channel_id) {
+                return guild
+                    .channels
+                    .iter()
+                    .find(|known| known.id == thread.parent_id)
+                    .is_some_and(|parent| parent.nsfw);
+            }
+        }
+        false
+    }
+
+    /// Why the forwarded message cannot go to `destination` (`getDestinationIsUnavailable`, module 969223):
+    /// `KgPx1D` when forwarding from an age-restricted channel to an unrestricted one (including DMs), `P7yvbm` for
+    /// files without Attach Files, `Wr4RIX` for embeds without Embed Links, `quj4DY` for voice messages without Send
+    /// Voice Messages, in that order.
     fn forward_blocked(&self, destination: Destination) -> Option<&'static str> {
-        let Destination::Channel(channel) = destination else {
-            return None;
-        };
         let message = self.forward.as_ref()?.message.as_ref()?;
-        let known = self
-            .stores
-            .guilds
-            .iter()
-            .flat_map(|guild| &guild.channels)
-            .find(|known| known.id == channel)?;
-        let files = !message.attachments.is_empty()
+        let origin_nsfw = self.channel_is_nsfw(message.channel_id);
+        let dest_channel = match destination {
+            Destination::Channel(channel) => self
+                .stores
+                .guilds
+                .iter()
+                .flat_map(|guild| &guild.channels)
+                .find(|known| known.id == channel),
+            Destination::Dm(_) => None,
+        };
+        let dest_nsfw = dest_channel.is_some_and(|known| known.nsfw);
+        let has_files = !message.attachments.is_empty()
             || message
                 .forwarded
                 .as_ref()
                 .is_some_and(|copy| !copy.attachments.is_empty());
-        if files && !self.can_in_channel(known, dc_state::permissions::ATTACH_FILES) {
-            return Some("Attachments are disabled in this channel.");
-        }
-        let voice = message.is_voice_message()
+        let has_embeds = !message.embeds.is_empty()
+            || message
+                .forwarded
+                .as_ref()
+                .is_some_and(|copy| !copy.embeds.is_empty());
+        let has_voice = message.is_voice_message()
             || message
                 .forwarded
                 .as_ref()
                 .is_some_and(|copy| copy.flags & dc_state::VOICE_MESSAGE_FLAG != 0);
-        if voice && !self.can_in_channel(known, dc_state::permissions::SEND_VOICE_MESSAGES) {
-            return Some("Voice messages are disabled in this channel.");
-        }
-        None
+        let can_attach = dest_channel
+            .is_none_or(|known| self.can_in_channel(known, dc_state::permissions::ATTACH_FILES));
+        let can_embed = dest_channel
+            .is_none_or(|known| self.can_in_channel(known, dc_state::permissions::EMBED_LINKS));
+        let can_voice = dest_channel.is_none_or(|known| {
+            self.can_in_channel(known, dc_state::permissions::SEND_VOICE_MESSAGES)
+        });
+        forward_unavailable_reason(
+            origin_nsfw,
+            dest_nsfw,
+            dest_channel.is_some(),
+            has_files,
+            has_embeds,
+            has_voice,
+            can_attach,
+            can_embed,
+            can_voice,
+        )
     }
 
     /// A destination's picture (32px), name and second line, as its row in the modal draws them.
@@ -1176,4 +1214,63 @@ impl Root {
 /// Module 640794: `${location.protocol}//${location.host}/users/{id}` on the desktop client's host.
 pub(super) fn profile_link(user: Id) -> String {
     format!("https://discord.com/users/{user}")
+}
+
+/// Pure destination check of `getDestinationIsUnavailable` (module 969223 `P`).
+#[allow(clippy::too_many_arguments)]
+fn forward_unavailable_reason(
+    origin_nsfw: bool,
+    dest_nsfw: bool,
+    dest_is_guild_channel: bool,
+    has_files: bool,
+    has_embeds: bool,
+    has_voice: bool,
+    can_attach: bool,
+    can_embed: bool,
+    can_voice: bool,
+) -> Option<&'static str> {
+    if origin_nsfw && !(dest_is_guild_channel && dest_nsfw) {
+        return Some(dc_intl::t("KgPx1D"));
+    }
+    if dest_is_guild_channel {
+        if has_files && !can_attach {
+            return Some(dc_intl::t("P7yvbm"));
+        }
+        if has_embeds && !can_embed {
+            return Some(dc_intl::t("Wr4RIX"));
+        }
+        if has_voice && !can_voice {
+            return Some(dc_intl::t("quj4DY"));
+        }
+    }
+    None
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn nsfw_forward_refuses_unrestricted_channels_and_dms_only() {
+        // NSFW origin -> non-NSFW guild channel: refused.
+        assert_eq!(
+            forward_unavailable_reason(true, false, true, false, false, false, true, true, true),
+            Some(dc_intl::t("KgPx1D")),
+        );
+        // NSFW origin -> DM: refused.
+        assert_eq!(
+            forward_unavailable_reason(true, false, false, false, false, false, true, true, true),
+            Some(dc_intl::t("KgPx1D")),
+        );
+        // NSFW origin -> NSFW guild channel: allowed.
+        assert_eq!(
+            forward_unavailable_reason(true, true, true, false, false, false, true, true, true),
+            None,
+        );
+        // Non-NSFW origin -> embed without permission: refused with Wr4RIX.
+        assert_eq!(
+            forward_unavailable_reason(false, false, true, false, true, false, true, false, true),
+            Some(dc_intl::t("Wr4RIX")),
+        );
+    }
 }

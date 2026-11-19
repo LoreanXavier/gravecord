@@ -400,7 +400,7 @@ impl Root {
     /// window that stops short of the newest message `after` loads (limit `min(30, 2 * page)`).
     fn load_when_near_the_edge(&mut self, channel: Id) {
         let state = self.stores.window(channel);
-        if !state.ready || state.loading_more || state.error {
+        if !state.ready || state.loading_more || state.error || self.list.is_scrollbar_dragging() {
             return;
         }
         let Some(messages) = self.stores.messages.get(&channel) else {
@@ -418,10 +418,34 @@ impl Root {
             return;
         }
         let to_end = max - into;
+        // Module 891522 `getOffsetToTriggerLoading`: account for the `hasMoreBefore` / `hasMoreAfter` skeleton rows
+        // placed above/below a loaded window so the next page starts 500px before reaching the skeleton.
+        let before_rows = self
+            .rows
+            .iter()
+            .take_while(|row| matches!(row, Row::SkeletonBefore(_)))
+            .count();
+        let after_rows = self
+            .rows
+            .iter()
+            .filter(|row| matches!(row, Row::SkeletonAfter(_)))
+            .count();
+        let top_ix = self.list.logical_scroll_top().item_ix;
+        let near_before = if before_rows > 0 {
+            top_ix <= before_rows + 5
+        } else {
+            into <= TRIGGER
+        };
+        let after_start = self.rows.len().saturating_sub(after_rows + 1);
+        let near_after = if after_rows > 0 {
+            to_end <= TRIGGER + after_rows as f32 * 48. || top_ix + 12 >= after_start
+        } else {
+            to_end <= TRIGGER
+        };
         let limit = message_window::load_more_limit(self.page());
         let (before, after) = (
-            (state.has_more_before && into <= TRIGGER).then_some(first.id),
-            (state.has_more_after && to_end <= TRIGGER).then_some(last.id),
+            (state.has_more_before && near_before).then_some(first.id),
+            (state.has_more_after && near_after).then_some(last.id),
         );
         let (before, after) = match (before, after) {
             (Some(before), _) => (Some(before), None),
@@ -634,31 +658,134 @@ impl Root {
     /// The chat's thumb (`scroller_8AE1Qq` with `auto_tqapBM`, stylesheets 524434 and the scroller's): a 16px gutter
     /// whose thumb keeps 4px clear on every side and is at least 40px tall, on a track that stops 36px above the
     /// scroller's bottom (`::-webkit-scrollbar-track { margin-bottom: 36px }`), transparent unless the pointer is over
-    /// the scroller (`:not(:hover)::-webkit-scrollbar-thumb { background: transparent }`). The track is not drawn
-    /// (frames channel/hover-message and channel/hoverbar: the thumb alone, `--scrollbar-auto-thumb`).
+    /// the scroller (`:not(:hover)::-webkit-scrollbar-thumb { background: transparent }`) or dragging. The track is
+    /// not drawn (frames channel/hover-message and channel/hoverbar: the thumb alone, `--scrollbar-auto-thumb`).
+    /// Dragging the thumb or clicking the 16px gutter scrolls the list through `ListState::set_offset_from_scrollbar`.
     pub(super) fn chat_thumb(&self) -> impl IntoElement {
+        thread_local! {
+            /// Pointer offset inside the thumb box while dragging (`None` when idle).
+            static DRAG_GRAB_Y: std::cell::Cell<Option<f32>> = const { std::cell::Cell::new(None) };
+        }
         let list = self.list.clone();
         gpui::canvas(
-            |_, _, _| {},
-            move |bounds, _, window, _| {
-                let inside = bounds.contains(&window.mouse_position());
-                // Enter and leave redraw it, as `:hover` does.
-                window.on_mouse_event(move |_: &gpui::MouseMoveEvent, phase, window, _| {
-                    if phase == gpui::DispatchPhase::Bubble
-                        && bounds.contains(&window.mouse_position()) != inside
-                    {
-                        window.refresh();
-                    }
-                });
-                if !inside {
+            // A hitbox over the list, laid after its rows: the hover bar (which blocks the rows under it) is under
+            // it, and a menu, popout or dialog laid over the chat covers it, as they end the scroller's `:hover`.
+            |bounds, window, _| window.insert_hitbox(bounds, gpui::HitboxBehavior::Normal),
+            move |bounds, hitbox, window, _| {
+                // `is_hovered` reads no pointer after a key press; typing keeps `:hover` where the pointer rests.
+                let over = |hitbox: &gpui::Hitbox, window: &gpui::Window| {
+                    hitbox.is_hovered(window)
+                        || (window.last_input_was_keyboard()
+                            && hitbox.bounds.contains(&window.mouse_position()))
+                };
+                let inside = over(&hitbox, window);
+                let dragging = DRAG_GRAB_Y.with(std::cell::Cell::get).is_some();
+                let viewport = f32::from(bounds.size.height);
+                let max = f32::from(list.max_offset_for_scrollbar().y);
+                let scrolled = -f32::from(list.scroll_px_offset_for_scrollbar().y);
+                let span = thumb_span(viewport, max, scrolled);
+
+                // Left-press in the 16px right gutter: grab the thumb or jump the track and drag.
+                {
+                    let list = list.clone();
+                    let hitbox = hitbox.clone();
+                    window.on_mouse_event(
+                        move |event: &gpui::MouseDownEvent, phase, window, cx| {
+                            if phase != gpui::DispatchPhase::Bubble
+                                || event.button != gpui::MouseButton::Left
+                                || !over(&hitbox, window)
+                            {
+                                return;
+                            }
+                            let track = (viewport - 36.).max(0.);
+                            let local_x = f32::from(event.position.x - bounds.left());
+                            let local_y = f32::from(event.position.y - bounds.top());
+                            let gutter_left = f32::from(bounds.size.width) - 16.;
+                            if local_x < gutter_left || local_y < 0. || local_y > track {
+                                return;
+                            }
+                            let Some((top, height)) = span else {
+                                return;
+                            };
+                            let thumb_top = top - 4.;
+                            let thumb_box = height + 8.;
+                            if local_y >= thumb_top && local_y <= thumb_top + thumb_box {
+                                DRAG_GRAB_Y.with(|cell| cell.set(Some(local_y - thumb_top)));
+                                list.scrollbar_drag_started();
+                            } else {
+                                let target = track_click_scroll(viewport, max, local_y);
+                                list.scrollbar_drag_started();
+                                if target <= 0.5 {
+                                    list.scroll_to(ListOffset {
+                                        item_ix: 0,
+                                        offset_in_item: px(0.),
+                                    });
+                                } else {
+                                    list.set_offset_from_scrollbar(gpui::point(
+                                        px(0.),
+                                        px(-target),
+                                    ));
+                                }
+                                DRAG_GRAB_Y.with(|cell| cell.set(Some(thumb_box / 2.)));
+                            }
+                            cx.stop_propagation();
+                            window.refresh();
+                        },
+                    );
+                }
+
+                // Move: update scroll while dragging; otherwise redraw on hover enter/leave.
+                {
+                    let list = list.clone();
+                    let hitbox = hitbox.clone();
+                    window.on_mouse_event(move |event: &gpui::MouseMoveEvent, phase, window, _| {
+                        if phase != gpui::DispatchPhase::Bubble {
+                            return;
+                        }
+                        if let Some(grab_y) = DRAG_GRAB_Y.with(std::cell::Cell::get) {
+                            if event.pressed_button == Some(gpui::MouseButton::Left) {
+                                let local_y = f32::from(event.position.y - bounds.top());
+                                let target = thumb_drag_scroll(viewport, max, local_y - grab_y);
+                                if target <= 0.5 {
+                                    list.scroll_to(ListOffset {
+                                        item_ix: 0,
+                                        offset_in_item: px(0.),
+                                    });
+                                } else {
+                                    list.set_offset_from_scrollbar(gpui::point(
+                                        px(0.),
+                                        px(-target),
+                                    ));
+                                }
+                            } else {
+                                DRAG_GRAB_Y.with(|cell| cell.set(None));
+                                list.scrollbar_drag_ended();
+                            }
+                            window.refresh();
+                        } else if over(&hitbox, window) != inside {
+                            window.refresh();
+                        }
+                    });
+                }
+
+                // Release: end drag cleanly.
+                {
+                    let list = list.clone();
+                    window.on_mouse_event(move |event: &gpui::MouseUpEvent, phase, window, _| {
+                        if phase == gpui::DispatchPhase::Bubble
+                            && event.button == gpui::MouseButton::Left
+                            && DRAG_GRAB_Y.with(|cell| cell.take().is_some())
+                        {
+                            list.scrollbar_drag_ended();
+                            window.refresh();
+                        }
+                    });
+                }
+
+                if !inside && !dragging {
                     return;
                 }
-                let max = f32::from(list.max_offset_for_scrollbar().y);
-                let Some((top, height)) = thumb_span(
-                    f32::from(bounds.size.height),
-                    max,
-                    -f32::from(list.scroll_px_offset_for_scrollbar().y),
-                ) else {
+                let Some((top, height)) = span else {
                     return;
                 };
                 let area = gpui::Bounds::new(
@@ -677,16 +804,41 @@ impl Root {
     }
 }
 
-/// Where the chat's thumb is painted, from the scroller's top: (top, height), its 4px border left out; `None` when
-/// nothing scrolls. `viewport` is the scroller's height, `max` how far it scrolls, `scrolled` how far it is.
-fn thumb_span(viewport: f32, max: f32, scrolled: f32) -> Option<(f32, f32)> {
+fn thumb_metrics(viewport: f32, max: f32) -> Option<(f32, f32)> {
     if max <= 0.5 || viewport <= 0. {
         return None;
     }
     let track = (viewport - 36.).max(0.);
     let thumb = (track * viewport / (viewport + max)).max(40.).min(track);
+    Some((track, thumb))
+}
+
+/// Where the chat's thumb is painted, from the scroller's top: (top, height), its 4px border left out; `None` when
+/// nothing scrolls. `viewport` is the scroller's height, `max` how far it scrolls, `scrolled` how far it is.
+fn thumb_span(viewport: f32, max: f32, scrolled: f32) -> Option<(f32, f32)> {
+    let (track, thumb) = thumb_metrics(viewport, max)?;
     let top = (track - thumb) * (scrolled / max).clamp(0., 1.);
     Some((top + 4., (thumb - 8.).max(0.)))
+}
+
+/// Scroll offset for a thumb dragged so its outer top sits at `desired_top` along the track.
+fn thumb_drag_scroll(viewport: f32, max: f32, desired_top: f32) -> f32 {
+    let Some((track, thumb)) = thumb_metrics(viewport, max) else {
+        return 0.;
+    };
+    let travel = track - thumb;
+    if travel <= 0.5 {
+        return 0.;
+    }
+    (desired_top / travel).clamp(0., 1.) * max
+}
+
+/// Scroll offset for a click at `local_y` on the scrollbar track, centring the thumb on the pointer.
+fn track_click_scroll(viewport: f32, max: f32, local_y: f32) -> f32 {
+    let Some((_, thumb)) = thumb_metrics(viewport, max) else {
+        return 0.;
+    };
+    thumb_drag_scroll(viewport, max, local_y - thumb / 2.)
 }
 
 #[cfg(test)]
@@ -707,6 +859,21 @@ mod tests {
         assert_eq!(thumb_span(588., 0., 0.), None);
         // A long history keeps the thumb 40px tall (32 painted).
         assert_eq!(thumb_span(588., 100_000., 0.).unwrap(), (4., 32.));
+    }
+
+    #[test]
+    fn dragging_or_clicking_the_chat_scrollbar_maps_back_to_the_scroll_offset() {
+        let (viewport, max) = (588., 2435.5);
+        // Round-trip top, middle, bottom.
+        for fraction in [0., 0.25, 0.5, 0.75, 1.] {
+            let scrolled = max * fraction;
+            let (top, _) = thumb_span(viewport, max, scrolled).unwrap();
+            let got = thumb_drag_scroll(viewport, max, top - 4.);
+            assert!((got - scrolled).abs() < 0.5, "fraction {fraction}: {got}");
+        }
+        // Clicking the very top / very bottom of the track clamps cleanly to 0 / max.
+        assert_eq!(track_click_scroll(viewport, max, 0.), 0.);
+        assert!((track_click_scroll(viewport, max, viewport - 36.) - max).abs() < 0.5);
     }
 
     #[test]

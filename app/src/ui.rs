@@ -470,6 +470,10 @@ fn icon(name: &str, size: f32, tint: &str) -> gpui::Svg {
 }
 
 enum Row {
+    /// Virtualised placeholder rows above a loaded window while `hasMoreBefore` holds (`chat_skeleton.rs`).
+    SkeletonBefore(usize),
+    /// Virtualised placeholder rows below a loaded window while `hasMoreAfter` holds (`chat_skeleton.rs`).
+    SkeletonAfter(usize),
     /// The start of a DM's history.
     Welcome,
     Divider(String),
@@ -3824,6 +3828,29 @@ impl Root {
         }
         self.refresh_command_mentions();
         self.rows.clear();
+        let has_messages = self
+            .channel
+            .and_then(|channel| self.stores.messages.get(&channel))
+            .is_some_and(|list| !list.is_empty());
+        let (has_more_before, has_more_after) = self
+            .channel
+            .filter(|_| has_messages)
+            .and_then(|channel| self.stores.windows.get(&channel))
+            .filter(|window| window.has_fetched && !window.error)
+            .map_or((false, false), |window| {
+                (window.has_more_before, window.has_more_after)
+            });
+        let skeleton_lines = if (has_more_before || has_more_after)
+            && let Some(channel) = self.channel
+        {
+            self.ensure_chat_skeleton(channel, self.viewport.1.max(400.))
+        } else {
+            0
+        };
+        if has_more_before {
+            self.rows
+                .extend((0..skeleton_lines).map(Row::SkeletonBefore));
+        }
         let empty = Vec::new();
         let messages = self
             .channel
@@ -3964,6 +3991,10 @@ impl Root {
             if in_post && Some(message.id) == self.channel {
                 self.rows.push(Row::PostActions);
             }
+        }
+        if has_more_after {
+            self.rows
+                .extend((0..skeleton_lines).map(Row::SkeletonAfter));
         }
         self.rows.push(Row::Spacer);
         self.list.reset(self.rows.len());
@@ -4425,12 +4456,33 @@ impl Root {
         )
     }
 
+    /// Left margin and spine geometry for reply previews and slash-command interaction bars (stylesheet 738015):
+    /// cozy sits at the 72px content start with the spine reaching back 37px to the 40px avatar's centre; compact
+    /// indents the preview past the timestamp box + 4px meta space + 10px `--custom-message-reply-indent`, with the
+    /// spine starting at the centre of the timestamp box (`--chat-avatar-size: var(--timestamp-width)`).
+    pub(super) fn reply_spine_geometry(&self, compact: bool) -> (f32, f32, f32) {
+        if !compact {
+            return (0., -37., 33.);
+        }
+        let time_width = if settings::prefs::clock_24() {
+            49.6
+        } else {
+            36.
+        };
+        (
+            time_width + 14.,
+            -(time_width / 2. + 15.),
+            time_width / 2. + 11.,
+        )
+    }
+
     /// Module 448368 for NOT_LOADED and DELETED: the spine, the arrow badge in place of the avatar
     /// (`replyBadge_2i8Bfm`: 16px, `--background-base-lowest`, the 10.8 x 7.2 arrow `replyIcon` in `--text-default`),
     /// no author, and `repliedTextPlaceholder_2i8Bfm` (italic, 2px at the end): "Message could not be loaded"
     /// (`1i+hMi`, clickable: it turns `--text-strong` under the pointer) or "Original message was deleted"
     /// (`mE3KJN`, not clickable).
-    fn reply_missing(&self, reply: Id, deleted: bool) -> AnyElement {
+    fn reply_missing(&self, reply: Id, deleted: bool, compact: bool) -> AnyElement {
+        let (margin_left, spine_left, spine_width) = self.reply_spine_geometry(compact);
         let spine_key = motion::key(&("reply-spine", reply, "missing"));
         let text_key = motion::key(&("reply-text", reply, "missing"));
         let over = !deleted && (motion::hovered(spine_key) || motion::hovered(text_key));
@@ -4445,6 +4497,7 @@ impl Root {
         );
         div()
             .relative()
+            .ml(px(margin_left))
             .h(px(18.))
             .flex()
             .items_center()
@@ -4453,9 +4506,9 @@ impl Root {
             .child(
                 div()
                     .absolute()
-                    .left(px(-37.))
+                    .left(px(spine_left))
                     .top(px(8.))
-                    .w(px(33.))
+                    .w(px(spine_width))
                     .h(px(12.))
                     .border_l_2()
                     .border_t_2()
@@ -4507,7 +4560,13 @@ impl Root {
     /// The official preview: a spine into the avatar, 16px avatar, name, and one line of the text.
     /// `mention`: the reply pings the author it answers (module 697474: the reply's `mentions` hold that author), so
     /// the name reads `@name` (module 315934 `withMentionPrefix`: `"@" + nick` in the same span).
-    fn reply_preview(&self, referenced: &Message, mention: bool) -> impl IntoElement {
+    fn reply_preview(
+        &self,
+        referenced: &Message,
+        mention: bool,
+        compact: bool,
+    ) -> impl IntoElement {
+        let (margin_left, spine_left, spine_width) = self.reply_spine_geometry(compact);
         let avatar = self
             .images
             .get(&self.guild_avatar_source(&referenced.author).0)
@@ -4529,6 +4588,7 @@ impl Root {
         );
         div()
             .relative()
+            .ml(px(margin_left))
             .h(px(18.))
             .flex()
             .items_center()
@@ -4537,9 +4597,9 @@ impl Root {
             .child(
                 div()
                     .absolute()
-                    .left(px(-37.))
+                    .left(px(spine_left))
                     .top(px(8.))
-                    .w(px(33.))
+                    .w(px(spine_width))
                     .h(px(12.))
                     .border_l_2()
                     .border_t_2()
@@ -7604,7 +7664,8 @@ impl Root {
         key: (u64, u32),
         marks: &[(String, Option<chrono::DateTime<chrono::Utc>>)],
     ) -> Inline {
-        let jumbo = dc_markdown::is_jumbo(spans);
+        // Stylesheet 738015 `.compact_2i8Bfm .messageContent_2i8Bfm .jumboable`: compact mode keeps emojis inline.
+        let jumbo = !self.compact_messages() && dc_markdown::is_jumbo(spans);
         // `AccessibilityStore.fontSize`: the text, its 1.375 line and the 22px emoji scale with the chat font.
         let font_size = self.chat_font_size();
         let emoji_size = if jumbo {
@@ -8691,6 +8752,7 @@ impl Root {
             return div().into_any_element();
         };
         match row {
+            Row::SkeletonBefore(flat) | Row::SkeletonAfter(flat) => self.skeleton_row(*flat),
             Row::Spacer => div().h(px(40.)).into_any_element(),
             Row::NewDivider => self.new_divider(),
             Row::PostIntro => self.forum_post_intro(),
@@ -9049,7 +9111,7 @@ impl Root {
                 let reference = self.reply_reference(message);
                 // A command's reply has the "used /command" bar where a reply has its preview.
                 let command_bar = if reference.is_none() {
-                    self.interaction_bar(message)
+                    self.interaction_bar(message, compact)
                 } else {
                     None
                 };
@@ -9061,7 +9123,9 @@ impl Root {
                 let preview = reference.map(|reference| match reference {
                     Reference::Loaded(target) => {
                         let mention = message.mention_user_ids.contains(&target.author.id);
-                        let preview = self.reply_preview(&target, mention).into_any_element();
+                        let preview = self
+                            .reply_preview(&target, mention, compact)
+                            .into_any_element();
                         div()
                             .id(SharedString::from(format!("reply-jump-{}", message.id)))
                             .mb(px(4.))
@@ -9083,21 +9147,21 @@ impl Root {
                             this.jump_to_message_id(channel, id, true, None);
                             cx.notify();
                         }))
-                        .child(self.reply_missing(message.id, false))
+                        .child(self.reply_missing(message.id, false, compact))
                         .into_any_element(),
                     Reference::Deleted => div()
                         .mb(px(4.))
-                        .child(self.reply_missing(message.id, true))
+                        .child(self.reply_missing(message.id, true, compact))
                         .into_any_element(),
                 });
                 if compact {
                     // `.compact` (stylesheet 738015): every message carries its own header line, the time in an
                     // `2.25rem` (`3.1rem` at 24 hours) box ending `0.25rem` before the name, 11px muted; the avatar,
-                    // when "Show user avatars" is on, is `1em` wide with `.1em .25em` margins; the name is followed by
-                    // `0.25rem`. The header is inline: the text's first line goes on after the name and the lines
-                    // after it start 5rem in (`compact_header`); text that does not start with a paragraph, and the
-                    // accessories, start on the line under the header. GAP: the tag, role icon and app chips of
-                    // `header_decorations` are not drawn in compact.
+                    // when "Show user avatars" is on, is `1em` wide with `.1em .25em` margins; the name, server tag,
+                    // role icon, app tag and `@silent` bell are followed by `0.25rem`. The header is inline: the
+                    // text's first line goes on after the header and the lines after it start 5rem in
+                    // (`compact_header`); text that does not start with a paragraph, and the accessories, start on the
+                    // line under the header.
                     let size = self.chat_font_size();
                     let time_width = if settings::prefs::clock_24() {
                         49.6
@@ -9105,6 +9169,8 @@ impl Root {
                         36.
                     };
                     let show_avatar = self.pref_on("appearance_display_compact_avatars", true);
+                    let decorations = self.header_decorations(message, cx);
+                    let badges = self.header_badges(message, cx);
                     return row
                         .pt(px(self.message_group_spacing()))
                         .child(
@@ -9127,8 +9193,9 @@ impl Root {
                                                 .absolute()
                                                 .top_0()
                                                 .left_0()
+                                                .pr(px(4.))
                                                 .flex()
-                                                .items_start()
+                                                .items_center()
                                                 // The header's painted width, for the text's first line.
                                                 .child(
                                                     gpui::canvas(
@@ -9171,7 +9238,6 @@ impl Root {
                                                                 avatar.opacity(0.5)
                                                             })
                                                             .size(px(size))
-                                                            .mt(px(size * 0.18 + 3.))
                                                             .mx(px(size * 0.1))
                                                             .mr(px(size * 0.25))
                                                             .children(
@@ -9199,7 +9265,6 @@ impl Root {
                                                     div()
                                                         .flex_none()
                                                         .h(px(22.))
-                                                        .mr(px(4.))
                                                         .flex()
                                                         .items_center()
                                                         .child(
@@ -9228,7 +9293,9 @@ impl Root {
                                                                 cx,
                                                             ),
                                                         ),
-                                                ),
+                                                )
+                                                .children(decorations)
+                                                .children(badges),
                                         ),
                                 ),
                         )
@@ -9761,9 +9828,11 @@ impl Root {
             .flex()
             .flex_col()
             .child(
+                // `channelTextArea_SY_P2T`: the content column plus its own 1px borders (frame channel/editing: 795
+                // wide in a 793 column).
                 div()
                     .mt(px(8.))
-                    .w_full()
+                    .mr(px(-2.))
                     .min_h(px(58.))
                     .rounded(px(8.))
                     .bg(color("--chat-background-default"))

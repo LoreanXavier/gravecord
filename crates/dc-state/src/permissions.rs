@@ -17,9 +17,13 @@ pub const VIEW_CHANNEL: u64 = 1 << 10;
 pub const SEND_MESSAGES: u64 = 1 << 11;
 /// `SEND_MESSAGES_IN_THREADS` (module 818348).
 pub const SEND_MESSAGES_IN_THREADS: u64 = 1 << 38;
+/// `EMBED_LINKS` (module 818348, bit 14).
+pub const EMBED_LINKS: u64 = 1 << 14;
 /// `ATTACH_FILES` (module constants `xBc`, 32768).
 pub const ATTACH_FILES: u64 = 1 << 15;
 pub const MANAGE_MESSAGES: u64 = 1 << 13;
+/// `USE_EXTERNAL_STICKERS` (module 818348, bit 37).
+pub const USE_EXTERNAL_STICKERS: u64 = 1 << 37;
 /// `ADD_REACTIONS` (module constants `xBc`, 64).
 pub const ADD_REACTIONS: u64 = 1 << 6;
 pub const READ_MESSAGE_HISTORY: u64 = 1 << 16;
