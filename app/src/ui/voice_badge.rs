@@ -12,8 +12,8 @@ use super::{Root, color, icon};
 use crate::parity::Parity;
 use dc_state::{Channel, ChannelKind, Guild, Id, Message, permissions};
 use gpui::{
-    AnyElement, Bounds, BoxShadow, Context, FontWeight, IntoElement, Pixels, SharedString,
-    anchored, deferred, div, hsla, img, point, prelude::*, px,
+    AnyElement, Bounds, BoxShadow, Context, FontWeight, IntoElement, ObjectFit, Pixels,
+    SharedString, anchored, deferred, div, hsla, img, point, prelude::*, px, relative,
 };
 use std::time::Duration;
 
@@ -56,6 +56,8 @@ pub(super) struct VoiceHover {
     closing: u64,
     /// Module 342952: open 200px user-list popout triggered from `+N` overflow pill.
     pub(super) avatar_list_popout: Option<AvatarListPopout>,
+    /// The channel whose full list of people the card's "+N" opened (module 342952's user list popout).
+    list: Option<Id>,
 }
 
 /// Module 342952 (`661248` `*_NbMTpy`): official avatar stack sizes (`16/20/24/32px`).
@@ -176,11 +178,8 @@ impl Root {
             && (channel.nsfw || self.stores.guild(guild).is_some_and(age_restricted))
     }
 
-    /// `G`: the guild voice channel the author is in, when the account may see and connect to it, the message is not
-    /// in a voice channel's text chat and the guild has the badge.
-    ///
-    /// GAP: `(0,d.r)() && UK(channel)` (modules 597306 and 323073) also hide it for an age-gated channel under
-    /// `AGE_GATED_SPACES`; this client does not model that gate.
+    /// `G`: the guild voice channel the author is in, when the account may see and connect to it, the channel is not
+    /// age gated, the message is not in a voice channel's text chat and the guild has the badge.
     fn author_voice_channel(&self, message: &Message) -> Option<(Id, Channel)> {
         let guild = self.current_guild()?;
         if !self.guild_experiment_on(VOICE_BADGE_EXPERIMENT, guild.id)
@@ -199,7 +198,8 @@ impl Root {
             .iter()
             .find(|channel| channel.id == state.channel_id && vocal(channel))?;
         (self.my_permission(guild.id, Some(channel), permissions::VIEW_CHANNEL)
-            && self.my_permission(guild.id, Some(channel), permissions::CONNECT))
+            && self.my_permission(guild.id, Some(channel), permissions::CONNECT)
+            && !self.age_gated_channel(guild.id, channel))
         .then(|| (guild.id, channel.clone()))
     }
 
@@ -306,6 +306,7 @@ impl Root {
                     && !hover.over_card
                     && hover.open.take().is_some()
                 {
+                    hover.list = None;
                     cx.notify();
                 }
             });
@@ -321,9 +322,10 @@ impl Root {
             .any(|state| state.user_id == user)
     }
 
-    /// A click in a card that goes elsewhere: the card closes at once.
+    /// A click in a card that goes elsewhere: the card (and the list it opened) closes at once.
     pub(super) fn voice_hover_dismiss(&mut self, cx: &mut Context<Self>) {
         self.voice_hover.open = None;
+        self.voice_hover.list = None;
         self.voice_hover.over_card = false;
         cx.notify();
     }
@@ -375,37 +377,65 @@ impl Root {
                 )
             }
         };
+        let list = match card {
+            HoverCard::Channel { guild, channel, .. } => self
+                .voice_hover
+                .list
+                .filter(|open| open == channel)
+                .and_then(|channel| self.voice_people_list(*guild, channel, cx)),
+            HoverCard::User(_) => None,
+        };
+        let hover = |id: &'static str, body: AnyElement, cx: &mut Context<Self>| {
+            div()
+                .id(id)
+                .occlude()
+                .on_hover(cx.listener(|this, inside: &bool, _, cx| {
+                    this.voice_hover.over_card = *inside;
+                    if *inside {
+                        this.voice_hover.closing += 1;
+                    } else {
+                        this.voice_hover_close_later(cx);
+                    }
+                }))
+                .child(body)
+        };
+        let card = hover("voice-hover-card", body, cx);
         Some(
-            deferred(
-                anchored()
-                    .anchor(corner)
-                    .position(at)
-                    .snap_to_window_with_margin(px(8.))
-                    .child(
-                        div()
-                            .id("voice-hover-card")
-                            .occlude()
-                            .on_hover(cx.listener(|this, inside: &bool, _, cx| {
-                                this.voice_hover.over_card = *inside;
-                                if *inside {
-                                    this.voice_hover.closing += 1;
-                                } else {
-                                    this.voice_hover_close_later(cx);
-                                }
-                            }))
-                            .child(body),
-                    ),
-            )
-            .with_priority(1)
-            .into_any_element(),
+            div()
+                .child(
+                    deferred(
+                        anchored()
+                            .anchor(corner)
+                            .position(at)
+                            .snap_to_window_with_margin(px(8.))
+                            .child(card),
+                    )
+                    .with_priority(1),
+                )
+                .children(list.map(|(list, at)| {
+                    // The list opens under the "+N" (`position: "bottom"`) and goes with a click outside it
+                    // (`onRequestClose`).
+                    let list = hover("voice-hover-list", list, cx).on_mouse_down_out(cx.listener(
+                        |this, _, _, cx| {
+                            this.voice_hover.list = None;
+                            cx.notify();
+                        },
+                    ));
+                    deferred(
+                        anchored()
+                            .anchor(gpui::Anchor::TopLeft)
+                            .position(at)
+                            .snap_to_window_with_margin(px(8.))
+                            .child(list),
+                    )
+                    .with_priority(2)
+                }))
+                .into_any_element(),
         )
     }
 
-    /// `w`: the channel and its call time over the people (up to 8 avatars) and Join or Open, 180px wide.
-    ///
-    /// GAP: the preview of the channel's first application stream (module 607407 with the LIVE mark of 402216) is
-    /// not drawn; this client has no application stream previews. The avatars keep the store's order: the official
-    /// sorts them by voice affinity (`vcProbability`, module 575731) when personalization is allowed.
+    /// `w`: the channel and its call time over the first stream's preview, the people (up to 8 avatars) and Join or
+    /// Open, 180px wide.
     fn voice_channel_card(
         &self,
         guild: Id,
@@ -421,7 +451,7 @@ impl Root {
         );
         let inside = self.in_voice_channel(channel.id);
         let start = self.voice_call_start(&channel);
-        let people = self.voice_people(guild, channel.id);
+        let people = self.voice_card_people(guild, channel.id);
         let channel_id = channel.id;
         // `popoutHeader_f4FLXc` on `--background-mod-muted`, 8px by 12px inside: `channelName_f4FLXc` (the icon in
         // `--text-feedback-positive`, 4px before `body-sm/medium` text that is cut at the edge) and the time.
@@ -474,7 +504,7 @@ impl Root {
             None,
         )
         .on_click(cx.listener(move |this, _, _, cx| {
-            this.voice_hover.open = None;
+            this.voice_hover_dismiss(cx);
             if !this.in_voice_channel(channel_id) {
                 this.request_join_voice(guild, channel_id, cx);
             }
@@ -487,6 +517,7 @@ impl Root {
             .flex_col()
             .gap(px(12.))
             .p(px(12.))
+            .children(self.voice_card_stream(guild, &channel, cx))
             .children(self.voice_avatar_stack(guild, channel_id, &people, cx))
             .child(button);
         // `popoutContainer_f4FLXc` over `popoutContainer_j9Vvzj`: 180px on `--background-surface-high`, a 1px
@@ -525,9 +556,117 @@ impl Root {
         )
     }
 
-    /// Module 342952 `A` at 24px (`avatars_NbMTpy`): overlapping avatars with ring cutout,
-    /// per-avatar username tooltips, interactive "+N" / ">99" pill (`RGr9tj`/`R8Z8Qr`), and
-    /// clickable 200px bottom user-list popout (`.popoutWrapper_NbMTpy` / `.scroller_NbMTpy`).
+    /// Voice affinity (`getUserAffinity(id).vcProbability`), 0 when unknown.
+    pub(super) fn vc_probability(&self, user: Id) -> f64 {
+        let text = user.to_string();
+        self.active_now
+            .affinity_rows()
+            .into_iter()
+            .flatten()
+            .find(|row| row["other_user_id"].as_str() == Some(text.as_str()))
+            .and_then(|row| row["vc_probability"].as_f64())
+            .unwrap_or(0.)
+    }
+
+    /// Module 575731 `A`: the people of the channel in the store's order, by voice affinity (`vcProbability`, highest
+    /// first) when personalization is allowed; someone the user store does not know is left out (`getUser` is null).
+    fn voice_card_people(&self, guild: Id, channel: Id) -> Vec<VoicePerson> {
+        let me = self.stores.current_user.as_ref().map(|me| me.id);
+        let mut people: Vec<VoicePerson> = self
+            .voice_people(guild, channel)
+            .into_iter()
+            .filter(|person| {
+                Some(person.user.id) == me || self.stores.users.contains_key(&person.user.id)
+            })
+            .collect();
+        if self.stores.consents.get("personalization") == Some(&true) {
+            people.sort_by(|a, b| {
+                self.vc_probability(b.user.id)
+                    .partial_cmp(&self.vc_probability(a.user.id))
+                    .unwrap_or(std::cmp::Ordering::Equal)
+            });
+        }
+        people
+    }
+
+    /// The first application stream of the channel (`getAllApplicationStreamsForChannel(id)[0]`) as `w` draws it:
+    /// `streamPreviewWrapper_f4FLXc` (16:9 on `--background-mod-normal`, `--radius-sm`) holding module 607407 with
+    /// `noText` (the picture, or the empty stream art at 80% by 60%), and the small LIVE mark 4px from the top right.
+    fn voice_card_stream(
+        &self,
+        guild: Id,
+        channel: &Channel,
+        cx: &mut Context<Self>,
+    ) -> Option<AnyElement> {
+        let owner = self
+            .stores
+            .voice_members(guild, channel.id)
+            .into_iter()
+            .find(|state| state.self_stream)?
+            .user_id;
+        let key = super::stream_previews::key_of(guild, channel.id, owner);
+        let preview = self
+            .stream_previews
+            .url(&key.to_string())
+            .and_then(|url| self.images.get(url))
+            .cloned();
+        let root = cx.weak_entity();
+        cx.defer(move |cx| {
+            let _ = root.update(cx, |root, _| root.stream_preview_want(key));
+        });
+        let picture: AnyElement = match preview {
+            Some(picture) => img(picture)
+                .size_full()
+                .object_fit(ObjectFit::Contain)
+                .into_any_element(),
+            None => div()
+                .absolute()
+                .inset_0()
+                .flex()
+                .flex_col()
+                .items_center()
+                .justify_center()
+                .child(
+                    div().w(relative(0.8)).h(relative(0.6)).child(
+                        img(super::active_now::preview_art())
+                            .size_full()
+                            .object_fit(ObjectFit::Contain),
+                    ),
+                )
+                .into_any_element(),
+        };
+        Some(
+            div()
+                .parity("voice-badge-stream")
+                .relative()
+                .w_full()
+                .aspect_ratio(16. / 9.)
+                .rounded(px(8.))
+                .overflow_hidden()
+                .bg(color("--background-mod-normal"))
+                .flex()
+                .items_center()
+                .justify_center()
+                .child(picture)
+                .child(
+                    div()
+                        .absolute()
+                        .top(px(4.))
+                        .right(px(4.))
+                        .child(super::voice_invite::live_pill()),
+                )
+                .into_any_element(),
+        )
+    }
+
+    /// Module 342952 `A` at 24px (`avatars_NbMTpy`): each avatar 6px under the next with the name in a tooltip; past
+    /// `maxUsers` the last place is a "+N" button (`overflow_NbMTpy size24_NbMTpy` in `button_NbMTpy`: 24px tall, 8px
+    /// in, 16px round, on `--background-base-lowest`, `body-xs/medium` in `--interactive-text-default`, hover
+    /// `--interactive-text-hover`; over 99 it reads ">99") that opens the list of everyone.
+    ///
+    /// Each avatar but the last wears the mask of `avatar_NbMTpy` (`38fe464a6fea7d0e.svg`: the square less a circle of
+    /// 13/24 around (29/24, 1/2)), so a 1px ring of the card shows round the next one; the cut is drawn as that circle
+    /// in the card's surface (`--background-surface-high`) over the avatar and under the next.
     fn voice_avatar_stack(
         &self,
         guild: Id,
@@ -538,9 +677,9 @@ impl Root {
         if people.is_empty() {
             return None;
         }
-        let sz = AvatarStackSize::Size24;
-        let (shown, overflow) = stack_counts_for(people.len(), MAX_USERS);
-        let last = shown.saturating_sub(1);
+        let (shown, overflow) = stack_counts(people.len());
+        let last = shown - 1;
+        let surface = color("--background-surface-high");
         let mut items: Vec<AnyElement> = people
             .iter()
             .take(shown)
@@ -552,62 +691,70 @@ impl Root {
                 if picture.is_none() {
                     self.want_image(avatar_key, avatar_url, cx);
                 }
-                let is_last = index == last && overflow.is_none();
+                let masked = index != last || overflow.is_some();
                 let avatar = div()
-                    .size(px(sz.px_size()))
+                    .size(px(24.))
                     .rounded_full()
                     .overflow_hidden()
-                    .when(!is_last, |d| {
-                        d.border_2().border_color(color("--background-base-lower"))
-                    })
-                    .children(
-                        picture.map(|picture| img(picture).size(px(sz.px_size())).rounded_full()),
-                    );
-                self.with_tip(
+                    .children(picture.map(|picture| img(picture).size(px(24.)).rounded_full()));
+                let face = self.with_tip(
                     format!("voice-card-avatar-{channel}-{}", person.user.id),
                     Tip::body(Body::Text(person.name.clone().into()), Side::Top),
                     avatar,
                     cx,
-                )
-                .when(!is_last, |this| this.mr(px(sz.overlap_px())))
-                .into_any_element()
+                );
+                div()
+                    .relative()
+                    .flex_none()
+                    .size(px(24.))
+                    .child(face)
+                    .when(masked, |this| {
+                        this.mr(px(-6.)).child(
+                            div()
+                                .absolute()
+                                .left(px(16.))
+                                .top(px(-1.))
+                                .size(px(26.))
+                                .rounded_full()
+                                .bg(surface),
+                        )
+                    })
+                    .into_any_element()
             })
             .collect();
         if let Some(count) = overflow {
-            let popout_users: Vec<(Id, String, String)> = people
-                .iter()
-                .map(|p| (p.user.id, p.name.clone(), p.user.username.clone()))
-                .collect();
-            let aria = avatar_stack_button_aria(count);
-            let sr = avatar_stack_sr_label(count);
-            let pill = div()
-                .id(SharedString::from(format!(
-                    "voice-avatar-overflow-{channel}"
-                )))
-                .aria_label(SharedString::from(aria))
-                .h(px(sz.px_size()))
-                .min_w(px(sz.px_size()))
-                .px(px(sz.pill_px()))
-                .rounded(px(16.))
-                .bg(color("--background-base-lowest"))
-                .cursor_pointer()
-                .flex()
-                .items_center()
-                .justify_center()
-                .text_size(px(sz.font_px()))
-                .line_height(px(16.))
-                .font_weight(FontWeight(500.))
-                .text_color(color("--interactive-text-default"))
-                .hover(|s| s.text_color(color("--interactive-text-hover")))
-                .child(avatar_stack_overflow_text(count))
-                .on_click(cx.listener(move |this, _, _, cx| {
-                    this.voice_hover.avatar_list_popout = Some(AvatarListPopout {
-                        title: sr.clone(),
-                        users: popout_users.clone(),
-                    });
-                    cx.notify();
-                }));
-            items.push(pill.into_any_element());
+            let probe = SharedString::from(format!("voice-card-overflow-{channel}"));
+            items.push(
+                div()
+                    .id(probe.clone())
+                    .parity("voice-badge-overflow")
+                    .relative()
+                    .h(px(24.))
+                    .min_w(px(24.))
+                    .px(px(8.))
+                    .rounded(px(16.))
+                    .bg(color("--background-base-lowest"))
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .cursor_pointer()
+                    .text_size(px(12.))
+                    .line_height(px(16.))
+                    .font_weight(FontWeight(500.))
+                    .text_color(color("--interactive-text-default"))
+                    .hover(|style| style.text_color(color("--interactive-text-hover")))
+                    .child(self.anchor_probe(probe))
+                    .child(if count > 99 {
+                        ">99".to_owned()
+                    } else {
+                        format!("+{count}")
+                    })
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        this.voice_hover.list = Some(channel);
+                        cx.notify();
+                    }))
+                    .into_any_element(),
+            );
         }
         Some(
             div()
@@ -807,6 +954,113 @@ impl Root {
         });
         cx.notify();
         "avatar-stack: opened".to_owned()
+    }
+
+    /// Module 342952's user list popout, under the "+N" (`position: "bottom"`, the default 8px away, moved 30px to the
+    /// start by `popoutWrapper_NbMTpy`): 200px wide, `scroller_NbMTpy` (8px by 16px
+    /// in, `--radius-xs`, a 1px `--border-subtle` ring inside and `--shadow-high`) with a row for everyone (module
+    /// 538451: the 24px avatar 8px before the name, 4px by 8px in, `--background-mod-subtle` on hover), each opening the
+    /// person's profile to the left.
+    ///
+    /// GAP: a row's right click menu (module 668569) is not drawn, and the list is not held to 40% of the window
+    /// (`max-height: 40vh`).
+    fn voice_people_list(
+        &self,
+        guild: Id,
+        channel: Id,
+        cx: &mut Context<Self>,
+    ) -> Option<(AnyElement, gpui::Point<Pixels>)> {
+        let anchor = self
+            .tip_anchors
+            .borrow()
+            .get(&SharedString::from(format!(
+                "voice-card-overflow-{channel}"
+            )))
+            .copied()?;
+        let people = self.voice_card_people(guild, channel);
+        let rows: Vec<AnyElement> = people
+            .iter()
+            .map(|person| {
+                let (avatar_key, avatar_url) =
+                    self.guild_avatar_source_in(&person.user, Some(guild));
+                let picture = self.images.get(&avatar_key).cloned();
+                if picture.is_none() {
+                    self.want_image(avatar_key, avatar_url, cx);
+                }
+                let user = person.user.id;
+                let probe = SharedString::from(format!("voice-card-list-{channel}-{user}"));
+                div()
+                    .id(probe.clone())
+                    .relative()
+                    .flex()
+                    .items_center()
+                    .py(px(4.))
+                    .px(px(8.))
+                    .rounded(px(4.))
+                    .cursor_pointer()
+                    .hover(|style| style.bg(color("--background-mod-subtle")))
+                    .child(self.anchor_probe(probe.clone()))
+                    .child(
+                        div()
+                            .flex_none()
+                            .size(px(24.))
+                            .rounded_full()
+                            .overflow_hidden()
+                            .children(
+                                picture.map(|picture| img(picture).size(px(24.)).rounded_full()),
+                            ),
+                    )
+                    .child(
+                        div()
+                            .ml(px(8.))
+                            .min_w(px(0.))
+                            .overflow_hidden()
+                            .whitespace_nowrap()
+                            .text_ellipsis()
+                            .text_size(px(14.))
+                            .line_height(px(18.))
+                            .font_weight(FontWeight(600.))
+                            .text_color(color("--text-default"))
+                            .child(SharedString::from(person.name.clone())),
+                    )
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        let bounds = this.tip_anchors.borrow().get(&probe).copied();
+                        if let Some(bounds) = bounds {
+                            this.open_profile(user, bounds, true, cx);
+                        }
+                    }))
+                    .into_any_element()
+            })
+            .collect();
+        let list = div()
+            .id(SharedString::from(format!("voice-card-list-{channel}")))
+            .parity("voice-badge-list")
+            .w(px(200.))
+            .overflow_y_scroll()
+            .pt(px(16.))
+            .pb(px(12.))
+            .px(px(8.))
+            .rounded(px(4.))
+            .border_1()
+            .border_color(color("--border-subtle"))
+            .bg(color("--background-surface-high"))
+            .shadow(vec![BoxShadow {
+                color: hsla(0., 0., 0., 0.24),
+                offset: point(px(0.), px(12.)),
+                blur_radius: px(24.),
+                spread_radius: px(0.),
+                inset: false,
+            }])
+            .flex()
+            .flex_col()
+            .gap(px(8.))
+            .children(rows)
+            .into_any_element();
+        let at = point(
+            anchor.left() + anchor.size.width / 2. - px(100.) - px(30.),
+            anchor.bottom() + px(8.),
+        );
+        Some((list, at))
     }
 }
 
