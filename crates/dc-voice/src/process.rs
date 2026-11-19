@@ -683,6 +683,9 @@ mod tests {
             }
             let before = frame;
             processor.capture(&mut frame, &prefs);
+            // Frames arrive every 20 ms in a call; fed faster, a loaded machine's model thread falls behind and
+            // frames pass through unfiltered, which made this test fail only under load.
+            std::thread::sleep(Duration::from_millis(20));
             if index >= 50 {
                 input.push(before);
                 output.push(frame);
