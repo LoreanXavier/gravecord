@@ -491,7 +491,7 @@ impl Root {
             // The message itself jumps to it, like the Jump button.
             .on_click(cx.listener(move |this, _, _, cx| {
                 this.inbox = None;
-                this.jump_to_message(&jump, cx);
+                this.jump_to_message_checked(&jump, cx);
             }))
             .child(
                 div()
@@ -596,7 +596,7 @@ impl Root {
             ),
             self.inbox_button(format!("jump-{id}"), "inbox_jump", cx, move |this, cx| {
                 this.inbox = None;
-                this.jump_to_message(&jump, cx);
+                this.jump_to_message_checked(&jump, cx);
             }),
             self.inbox_button(
                 format!("remove-{id}"),
@@ -648,7 +648,7 @@ impl Root {
         let buttons = vec![
             self.inbox_button(format!("jump-{id}"), "inbox_jump", cx, move |this, cx| {
                 this.inbox = None;
-                this.jump_to_message(&jump, cx);
+                this.jump_to_message_checked(&jump, cx);
             }),
             self.inbox_button(
                 format!("unsave-{id}"),
@@ -1366,7 +1366,7 @@ impl Root {
                             cx,
                             move |this, cx| {
                                 this.inbox = None;
-                                this.jump_to_message(&jump, cx);
+                                this.jump_to_message_checked(&jump, cx);
                             },
                         )];
                         div()

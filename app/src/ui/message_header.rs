@@ -168,6 +168,55 @@ pub(super) fn profile_key(guild: Id) -> String {
 }
 
 impl Root {
+    /// `showCommunicationDisabledStyles` of module 549587 `e6`: the author's timeout is running (module 870136, the
+    /// end still to come, module 316031) and the account may moderate them (`canManageUser(MODERATE_MEMBERS)`).
+    pub(super) fn shows_timeout(&self, message: &Message) -> bool {
+        let Some(guild) = self.guild else {
+            return false;
+        };
+        let author = message.author.id;
+        // The cheap test first: almost no member has a timeout to parse.
+        self.stores
+            .members
+            .get(guild, author)
+            .is_some_and(|member| member.timeout_until.is_some())
+            && self.is_in_timeout(guild, author)
+            && self.my_permission(guild, None, dc_state::permissions::MODERATE_MEMBERS)
+            && self.outranks(guild, author)
+    }
+
+    /// Module 549587 `e6` before the author: `ClockWarningIcon` (`xxs`, 12px) in `--icon-feedback-critical`
+    /// (`communicationDisabled_2i8Bfm`, 8px after it; `compactCommunicationDisabled_2i8Bfm` 4px each side) with the
+    /// tooltip `AeYyL+` "This is only visible to moderators and indicates this user is timed out." and the hidden
+    /// label `AmHag5` "Timed Out".
+    pub(super) fn timeout_mark(
+        &self,
+        message: &Message,
+        compact: bool,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let mark = div()
+            .flex_none()
+            .flex()
+            .items_center()
+            // `vertical-align: -1px` on the inline icon.
+            .mt(px(2.))
+            .when(compact, |mark| mark.mx(px(4.)))
+            .when(!compact, |mark| mark.mr(px(8.)))
+            .child(icon(
+                "mod_info_clock_warning",
+                12.,
+                "--icon-feedback-critical",
+            ));
+        self.with_tip(
+            format!("message-timeout-{}", message.id),
+            Tip::body(Body::Text(dc_intl::t("AeYyL+").into()), Side::Top),
+            mark,
+            cx,
+        )
+        .into_any_element()
+    }
+
     /// The chips after the name, in the official order: tag, role icon, app tag.
     pub(super) fn header_decorations(
         &self,

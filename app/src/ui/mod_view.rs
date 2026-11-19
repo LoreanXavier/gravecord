@@ -226,7 +226,29 @@ fn card_status_dot(status: &str) -> impl IntoElement {
         )
 }
 
+/// The permissions that give access to Mod View (module 402655 `M`): any one of them is enough.
+pub(super) const ACCESS: u64 = permissions::ADMINISTRATOR
+    | permissions::MANAGE_GUILD
+    | permissions::BAN_MEMBERS
+    | permissions::KICK_MEMBERS
+    | permissions::MODERATE_MEMBERS
+    | permissions::MANAGE_ROLES
+    | permissions::MANAGE_NICKNAMES;
+
+/// Module 985925 `q`: `hasAny(computePermissions(me, guild), M)`.
+pub(super) fn has_access(guild_permissions: u64) -> bool {
+    guild_permissions & ACCESS != 0
+}
+
 impl Root {
+    /// Whether the account may open Mod View in the server: the gate of "Open in Mod View" (module 121127 `P`).
+    pub(super) fn can_open_mod_view(&self, guild: Id) -> bool {
+        let (Some(me), Some(guild)) = (self.stores.me(), self.stores.guild(guild)) else {
+            return false;
+        };
+        has_access(permissions::guild_permissions(guild, me))
+    }
+
     /// `Open in Mod View`: the panel replaces the member list and starts its fetches.
     pub(super) fn open_mod_view(&mut self, guild: Id, user: Id, cx: &mut Context<Self>) {
         self.mod_view = Some(ModView {
@@ -975,6 +997,25 @@ impl Root {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn mod_view_needs_one_moderation_permission() {
+        assert!(!has_access(0));
+        assert!(!has_access(
+            permissions::SEND_MESSAGES | permissions::VIEW_CHANNEL | permissions::MANAGE_CHANNELS
+        ));
+        for bit in [
+            permissions::ADMINISTRATOR,
+            permissions::MANAGE_GUILD,
+            permissions::BAN_MEMBERS,
+            permissions::KICK_MEMBERS,
+            permissions::MODERATE_MEMBERS,
+            permissions::MANAGE_ROLES,
+            permissions::MANAGE_NICKNAMES,
+        ] {
+            assert!(has_access(bit | permissions::SEND_MESSAGES));
+        }
+    }
 
     #[test]
     fn signals_read_as_the_official_relative_time_and_countdown() {

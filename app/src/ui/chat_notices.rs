@@ -42,6 +42,13 @@ pub(super) const PINNED: u64 = 1 << 1;
 #[derive(Clone, Debug)]
 pub(super) enum Then {
     Close,
+    /// Switch to Push to Talk of "Push to Talk Required" (module 596339 `wI`): `setMode(PUSH_TO_TALK)`.
+    SwitchToPushToTalk,
+    /// "Jump to Message" of module 81437's likely-spammer confirm: the jump goes on.
+    JumpToMessage {
+        channel: Id,
+        message: Id,
+    },
     /// Module 41402's `onConfirm`: `await unpin(old)`, then `pin(post)`.
     ReplacePin {
         post: Id,
@@ -378,7 +385,8 @@ impl Alert {
 
     /// Module 189213 picks `md` when the dialog has children, else `sm`.
     pub(super) fn medium(&self) -> bool {
-        self.content.is_some()
+        // "Push to Talk Required" names its size (`size: "md"`, module 596339 `wI`).
+        self.content.is_some() || self.id == super::vad_permission::WARNING_ID
     }
 }
 
@@ -426,6 +434,8 @@ pub(super) fn forward_failed_alert(
 #[derive(Default)]
 pub(super) struct State {
     pub alert: Option<Alert>,
+    /// The chat's loading placeholders for the channel being loaded (`chat_skeleton.rs`).
+    pub skeleton: Option<super::chat_skeleton::Held>,
     /// The "Other" text box of "Why was this server locked?" while that dialog is open.
     pub lockdown_other: Option<gpui::Entity<crate::editor::Editor>>,
     pub forward_batch: Option<ForwardBatch>,
@@ -792,6 +802,15 @@ impl Root {
         let closed = self.chat_extra.alert.take();
         match then {
             Then::Close => self.alert_closed(closed),
+            Then::SwitchToPushToTalk => {
+                self.set_push_to_talk(true);
+                self.clear_vad_warning();
+                cx.notify();
+            }
+            Then::JumpToMessage { channel, message } => {
+                self.jump_to_message_id(channel, message, true, None);
+                cx.notify();
+            }
             Then::ReplacePin { post, old } => {
                 let (old_archived, old_flags) = self.thread_state(old).unwrap_or_default();
                 let (archived, flags) = self.thread_state(post).unwrap_or_default();
@@ -851,6 +870,13 @@ impl Root {
     /// A dialog closed without its confirming button: the Soundboard Keybind modal puts the keybind back (its
     /// `useState` copy is simply dropped in the official client).
     fn alert_closed(&mut self, closed: Option<Alert>) {
+        // Don't switch of "Push to Talk Required" (and Escape): `clearVADWarning`.
+        if closed
+            .as_ref()
+            .is_some_and(|alert| alert.id == super::vad_permission::WARNING_ID)
+        {
+            self.clear_vad_warning();
+        }
         match closed.and_then(|alert| alert.content) {
             Some(Content::SoundboardKeybind { original }) => {
                 self.soundboard_keybind_revert(original);

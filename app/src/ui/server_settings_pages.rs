@@ -785,10 +785,11 @@ impl Root {
             .iter()
             .map(|guild| {
                 format!(
-                    "guild {} {:?}: {}",
+                    "guild {} {:?}: {} (invites paused, may manage: {:?})",
                     guild.id,
                     guild.name,
-                    guild.features.join(",")
+                    guild.features.join(","),
+                    self.invites_pause_state(guild.id)
                 )
             })
             .collect::<Vec<_>>()

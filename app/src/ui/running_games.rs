@@ -39,6 +39,9 @@ pub(super) struct Games {
     /// `IdleStore` now (module 885576), sampled every ten seconds, and the last moment the app saw the account act.
     idle: crate::idle::Idle,
     app_activity_ms: u64,
+    /// The timers of `handleIdleUpdate` (module 596339 `Pf` and `PA`): leave the call, move to the AFK channel.
+    /// Dropping them stops them.
+    voice_idle: Vec<gpui::Task<()>>,
     limiter: SendLimiter,
     /// `LocalActivityStore`: the activities games set over the local RPC pipe.
     local: dc_state::local_activity::LocalActivityStore,
@@ -75,6 +78,7 @@ impl Games {
             sent_idle: (0, false),
             idle: crate::idle::Idle::default(),
             app_activity_ms: now_ms(),
+            voice_idle: Vec::new(),
             limiter: SendLimiter::default(),
             local: dc_state::local_activity::LocalActivityStore::default(),
             connected: false,
@@ -469,10 +473,83 @@ impl Root {
             afk_seconds,
         );
         let lapsed = self.stores.status_at(now) != self.stores.status;
+        // `IDLE` is dispatched when the idle state flips (module 885576 `N`), and `handleIdleUpdate` runs on it.
+        let flipped = idle.since_ms.is_some() != self.detect.idle.since_ms.is_some();
         if idle != self.detect.idle || lapsed {
             self.detect.idle = idle;
             self.refresh_own_presence();
             cx.notify();
+        }
+        if flipped {
+            self.handle_idle_update(cx);
+        }
+    }
+
+    /// `handleIdleUpdate` (module 596339 `PI`): both timers stop; then, idle in a call with no stream live, the call
+    /// is left after five hours, and in a server with an AFK channel the account moves there `afkTimeout` seconds
+    /// after its last activity, a move that does not count as activity (`bypassIdleUpdate`).
+    pub(super) fn handle_idle_update(&mut self, cx: &mut Context<Self>) {
+        self.detect.voice_idle.clear();
+        // Not in the pinned client: DisableCallIdle (Vencord `src/plugins/disableCallIdle`) removes this handler.
+        if crate::plugin_on!("DisableCallIdle") {
+            return;
+        }
+        let spot = self.call.as_ref().map(|call| crate::idle::VoiceSpot {
+            guild: (call.guild != 0).then_some(call.guild),
+            channel: call.channel,
+            stage: self
+                .stores
+                .guild(call.guild)
+                .and_then(|guild| guild.channels.iter().find(|known| known.id == call.channel))
+                .is_some_and(|channel| channel.kind == dc_state::ChannelKind::Other(13)),
+        });
+        let afk = spot.and_then(|spot| {
+            let guild = spot.guild?;
+            Some((
+                *self.stores.afk_channels.get(&guild)?,
+                *self.stores.afk_timeouts.get(&guild)?,
+            ))
+        });
+        let Some(plan) = crate::idle::voice_plan(
+            now_ms(),
+            self.detect.idle.since_ms,
+            self.own_stream().is_some(),
+            spot,
+            afk,
+        ) else {
+            return;
+        };
+        self.detect.voice_idle.push(cx.spawn(async move |this, cx| {
+            cx.background_executor()
+                .timer(std::time::Duration::from_millis(plan.leave_in_ms))
+                .await;
+            let _ = this.update(cx, |this, cx| {
+                // `selectVoiceChannel(null)`.
+                if this.call.is_some() {
+                    this.leave_voice(cx);
+                    cx.notify();
+                }
+            });
+        }));
+        if let (Some((_, delay)), Some(guild)) = (plan.afk, spot.and_then(|spot| spot.guild)) {
+            self.detect.voice_idle.push(cx.spawn(async move |this, cx| {
+                cx.background_executor()
+                    .timer(std::time::Duration::from_millis(delay.max(0) as u64))
+                    .await;
+                let _ = this.update(cx, |this, cx| {
+                    // The server's AFK channel as it is now; the move keeps the idle clock where it was.
+                    let Some(afk) = this.stores.afk_channels.get(&guild).copied() else {
+                        return;
+                    };
+                    if this.call.as_ref().is_none_or(|call| call.guild != guild) {
+                        return;
+                    }
+                    let activity = this.detect.app_activity_ms;
+                    this.join_voice_now(guild, afk, cx);
+                    this.detect.app_activity_ms = activity;
+                    cx.notify();
+                });
+            }));
         }
     }
 

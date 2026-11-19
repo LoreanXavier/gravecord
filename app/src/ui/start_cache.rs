@@ -43,7 +43,7 @@ pub(crate) const MAX_WISHLIST_USERS: usize = 64;
 
 /// The keys of READY the stores read to draw the first screen. Everything else is left out, which keeps the session
 /// (`session_id`, `sessions`, `analytics_token`, `auth_session_id_hash`) and the geo list out of the file.
-const READY_KEYS: [&str; 13] = [
+const READY_KEYS: [&str; 14] = [
     "user",
     "users",
     "relationships",
@@ -56,6 +56,8 @@ const READY_KEYS: [&str; 13] = [
     "read_state",
     "consents",
     "apex_experiments",
+    // The legacy user experiments (`[hash, revision, bucket, ...]`), such as the spam redaction of module 891522.
+    "experiments",
     "guild_folders",
 ];
 

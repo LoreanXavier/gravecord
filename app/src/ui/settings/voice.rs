@@ -1009,12 +1009,20 @@ impl Root {
             _ => return,
         }
         self.voice_commit();
+        self.sync_vad_permission();
     }
 
     /// The input mode radios of a menu (module 1611 `setMode`): Voice Activity or Push to Talk.
     pub(in crate::ui) fn set_push_to_talk(&mut self, on: bool) {
         self.voice.stored.set_mode(on, |_| {});
         self.voice_commit();
+        // `AUDIO_SET_MODE` runs PermissionVADStore's check.
+        self.sync_vad_permission();
+    }
+
+    /// `getMode() === VOICE_ACTIVITY`.
+    pub(in crate::ui) fn voice_activity_mode(&self) -> bool {
+        !self.voice.stored.push_to_talk
     }
 
     /// The user panel's Input Profile submenu (`setActiveInputProfile`).

@@ -771,9 +771,23 @@ impl Root {
                 let guild = self.stores.guild(*id)?;
                 // Not in the pinned client: MemberCount's counts under the name (`plugin_hooks/member_count.rs`).
                 let counts = self.member_count_tooltip(*id);
-                let framed = || match &counts {
-                    Some(_) => frame().flex_col().items_start(),
-                    None => frame(),
+                // Module 396655 `ih`: "Invites paused for this server" under the name (`u = nq.Ig(guild)`, module
+                // 347951: paused, and the account may manage the server).
+                let paused = match self.invites_pause_state(*id) {
+                    (true, true) => Some(
+                        div()
+                            .mt(px(2.))
+                            .text_size(px(14.))
+                            .line_height(px(18.))
+                            .font_weight(FontWeight(500.))
+                            .text_color(color("--text-default"))
+                            .child(dc_intl::t("2n0/Fk")),
+                    ),
+                    _ => None,
+                };
+                let framed = || match (&counts, &paused) {
+                    (None, None) => frame(),
+                    _ => frame().flex_col().items_start(),
                 };
                 framed()
                     .child(
@@ -789,6 +803,7 @@ impl Root {
                             }))
                             .child(div().min_w(px(0.)).line_clamp(2).child(guild.name.clone())),
                     )
+                    .children(paused)
                     .children(counts)
                     .into_any_element()
             }

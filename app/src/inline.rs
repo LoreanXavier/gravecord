@@ -5,8 +5,8 @@ use gpui::{
     App, Background, BorderStyle, Bounds, Corners, CursorStyle, DispatchPhase, Edges, Element,
     ElementId, Font, GlobalElementId, Hitbox, HitboxBehavior, Hsla, Image, InspectorElementId,
     IntoElement, LayoutId, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, Pixels,
-    Point, ShapedLine, SharedString, Size, Style, TextAlign, TextRun, TransformationMatrix,
-    Window, fill, point, px, quad, size,
+    Point, ShapedLine, SharedString, Size, Style, TextAlign, TextRun, TransformationMatrix, Window,
+    fill, point, px, quad, size,
 };
 use std::cell::{Cell, RefCell};
 use std::cmp::{max, min};
@@ -263,10 +263,7 @@ impl Selection {
         }
         let mut cursor = floor_char_boundary(text, offset);
         if cursor == text.len() {
-            cursor = text
-                .char_indices()
-                .last()
-                .map_or(0, |(idx, _)| idx);
+            cursor = text.char_indices().last().map_or(0, |(idx, _)| idx);
         }
         let Some(pivot) = text[cursor..].chars().next() else {
             return (0, 0);
@@ -684,6 +681,8 @@ pub struct Inline {
     on_piece_click_at: Option<PieceClickAt>,
     on_piece_hover: Option<PieceHover>,
     on_piece_context: Option<PieceContext>,
+    /// The pieces that are links, and what a middle click on one of them does (`onAuxClick` of MaskedLink).
+    on_link_aux_click: Option<(Rc<Vec<bool>>, PieceClick)>,
 }
 
 #[derive(Clone)]
@@ -707,6 +706,18 @@ struct PressState {
 
 thread_local! {
     static ACTIVE_PRESS: std::cell::Cell<Option<PressState>> = const { std::cell::Cell::new(None) };
+    /// The link a middle press went down on: the element's press target and the piece.
+    static AUX_PRESS: std::cell::Cell<Option<PressState>> = const { std::cell::Cell::new(None) };
+    /// Where the link under the pointer is drawn, in window coordinates, as the last pointer move found it.
+    static LINK_UNDER_POINTER: std::cell::Cell<Option<Bounds<Pixels>>> = const { std::cell::Cell::new(None) };
+}
+
+/// Whether a middle press at `position` lands on a link. Blink starts no middle-click autoscroll on a live link
+/// (`MouseEventManager`: `!hit.IsLiveLink()`): the press is the link's, whose `auxclick` opens it.
+pub fn middle_press_on_link(position: Point<Pixels>) -> bool {
+    LINK_UNDER_POINTER
+        .get()
+        .is_some_and(|bounds| bounds.contains(&position))
 }
 
 fn press_target(selectable: Option<&Selectable>, bounds: Bounds<Pixels>) -> PressTarget {
@@ -726,7 +737,8 @@ fn press_matches_release(
     has_selection: bool,
 ) -> bool {
     !has_selection
-        && pressed.is_some_and(|press| press.target == current_target && press.piece == release_piece)
+        && pressed
+            .is_some_and(|press| press.target == current_target && press.piece == release_piece)
 }
 
 pub fn inline(pieces: Vec<Piece>, line_height: Pixels) -> Inline {
@@ -741,6 +753,7 @@ pub fn inline(pieces: Vec<Piece>, line_height: Pixels) -> Inline {
         on_piece_click_at: None,
         on_piece_hover: None,
         on_piece_context: None,
+        on_link_aux_click: None,
     }
 }
 
@@ -779,6 +792,17 @@ impl Inline {
         handler: impl Fn(usize, Point<Pixels>, &mut Window, &mut App) + 'static,
     ) -> Self {
         self.on_piece_context = Some(Rc::new(handler));
+        self
+    }
+
+    /// Reports a middle click (press and release on the same piece) on one of the pieces `links` marks: MaskedLink's
+    /// `onAuxClick: e => { 1 === e.button && x(e) }` (module 9578), the same handler as a left click.
+    pub fn on_link_aux_click(
+        mut self,
+        links: Vec<bool>,
+        handler: impl Fn(usize, &mut Window, &mut App) + 'static,
+    ) -> Self {
+        self.on_link_aux_click = Some((Rc::new(links), Rc::new(handler)));
         self
     }
 
@@ -926,6 +950,80 @@ impl Inline {
                 }
             });
         }
+        if let Some((links, handler)) = self.on_link_aux_click.clone() {
+            let laid = self.laid.clone();
+            let line_height = self.line_height;
+            let target = press_target(self.selectable.as_ref(), bounds);
+            let is_link = move |piece: usize| links.get(piece).copied().unwrap_or(false);
+            let moved_laid = laid.clone();
+            let moved_hitbox = hitbox.clone();
+            let moved_link = is_link.clone();
+            window.on_mouse_event(move |event: &MouseMoveEvent, phase, window, _| {
+                if phase != DispatchPhase::Bubble {
+                    return;
+                }
+                let over = moved_hitbox
+                    .is_hovered(window)
+                    .then(|| {
+                        moved_laid
+                            .borrow()
+                            .fragment_at(event.position - bounds.origin, line_height)
+                    })
+                    .flatten()
+                    .filter(|(piece, _, _)| moved_link(*piece))
+                    .map(|(_, _, rect)| Bounds::new(bounds.origin + rect.origin, rect.size));
+                match over {
+                    Some(rect) => LINK_UNDER_POINTER.set(Some(rect)),
+                    None => {
+                        if LINK_UNDER_POINTER
+                            .get()
+                            .is_some_and(|rect| !rect.contains(&event.position))
+                        {
+                            LINK_UNDER_POINTER.set(None);
+                        }
+                    }
+                }
+            });
+            let down_laid = laid.clone();
+            let down_hitbox = hitbox.clone();
+            let down_link = is_link.clone();
+            window.on_mouse_event(move |event: &MouseDownEvent, phase, window, _| {
+                if phase == DispatchPhase::Bubble
+                    && event.button == MouseButton::Middle
+                    && down_hitbox.is_hovered(window)
+                {
+                    let press = down_laid
+                        .borrow()
+                        .piece_at(event.position - bounds.origin, line_height)
+                        .filter(|piece| down_link(*piece))
+                        .map(|piece| PressState { target, piece });
+                    if press.is_some() {
+                        AUX_PRESS.set(press);
+                    }
+                }
+            });
+            let hitbox = hitbox.clone();
+            window.on_mouse_event(move |event: &MouseUpEvent, phase, window, cx| {
+                if phase != DispatchPhase::Bubble || event.button != MouseButton::Middle {
+                    return;
+                }
+                let Some(pressed) = AUX_PRESS.get().filter(|press| press.target == target) else {
+                    return;
+                };
+                AUX_PRESS.set(None);
+                if !hitbox.is_hovered(window) {
+                    return;
+                }
+                if let Some((piece, _, _)) = laid
+                    .borrow()
+                    .fragment_at(event.position - bounds.origin, line_height)
+                    && piece == pressed.piece
+                    && is_link(piece)
+                {
+                    handler(piece, window, cx);
+                }
+            });
+        }
         if self.on_piece_click_at.is_some() || self.on_piece_click.is_some() {
             let click_at = self.on_piece_click_at.clone();
             let click = self.on_piece_click.clone();
@@ -953,7 +1051,10 @@ impl Inline {
                     return;
                 }
                 if !hitbox.is_hovered(window) {
-                    if ACTIVE_PRESS.get().is_some_and(|press| press.target == target) {
+                    if ACTIVE_PRESS
+                        .get()
+                        .is_some_and(|press| press.target == target)
+                    {
                         ACTIVE_PRESS.set(None);
                     }
                     return;
@@ -1700,18 +1801,13 @@ mod tests {
         let slices = super::split_long_word_slices(ascii, 50., |s| s.chars().count() as f32 * 10.);
         assert!(slices.len() > 1);
         assert!(slices.iter().all(|(_, s)| s.chars().count() <= 5));
-        assert_eq!(
-            slices.iter().map(|(_, s)| *s).collect::<String>(),
-            ascii
-        );
+        assert_eq!(slices.iter().map(|(_, s)| *s).collect::<String>(), ascii);
 
         let turkish = "ğüşiöçĞÜŞİÖÇğüşiöç";
-        let slices = super::split_long_word_slices(turkish, 25., |s| s.chars().count() as f32 * 10.);
+        let slices =
+            super::split_long_word_slices(turkish, 25., |s| s.chars().count() as f32 * 10.);
         assert!(slices.iter().all(|(_, s)| s.chars().count() <= 2));
-        assert_eq!(
-            slices.iter().map(|(_, s)| *s).collect::<String>(),
-            turkish
-        );
+        assert_eq!(slices.iter().map(|(_, s)| *s).collect::<String>(), turkish);
     }
 
     #[test]

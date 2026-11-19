@@ -67,6 +67,7 @@ mod channel_settings;
 mod channel_settings_pages;
 mod channel_status;
 mod chat_notices;
+mod chat_skeleton;
 mod clips;
 mod code_copy;
 mod command_feedback;
@@ -159,6 +160,7 @@ mod typing_avatar;
 mod unread_badges;
 mod unread_dms;
 mod update_button;
+mod vad_permission;
 mod voice_message;
 mod web_frames;
 pub use logout::RootEvent;
@@ -464,12 +466,19 @@ enum Row {
         index: usize,
         head: bool,
     },
-    /// A run of messages from blocked (or ignored) people, folded; `first` is the first one's id.
+    /// A run of messages from blocked, ignored or likely spammer people, folded; `first` is the first one's id.
     Blocked {
         first: Id,
         count: usize,
-        ignored: bool,
+        kind: blocked::Fold,
     },
+}
+
+/// What the bar over a reply shows (module 448368 by the state of ReferencedMessageStore, module 9842).
+enum Reference {
+    Loaded(Box<Message>),
+    NotLoaded { channel: Id, id: Id },
+    Deleted,
 }
 
 pub struct Root {
@@ -859,6 +868,8 @@ pub struct Root {
     soundboard: soundboard::Board,
     self_mute: bool,
     self_deaf: bool,
+    /// PermissionVADStore (`vad_permission.rs`).
+    vad: vad_permission::VadState,
     /// Lets the system-wide push to talk hook (another thread) reach the window.
     updates: UnboundedSender<Update>,
     /// The system-wide push to talk hook, while connected to voice in push to talk mode.
@@ -1280,6 +1291,7 @@ impl Root {
             ptt_down: false,
             self_mute: false,
             self_deaf: false,
+            vad: vad_permission::VadState::default(),
             speaking: HashSet::new(),
             texts: HashMap::new(),
             pending_files: Vec::new(),
@@ -1565,6 +1577,20 @@ impl Root {
                     _ => {}
                 }
                 self.urgent_message_event(&name);
+                // PermissionVADStore's events (module 596339 `wf`): the check runs again while in a call.
+                if self.call.is_some()
+                    && matches!(
+                        name.as_str(),
+                        "CHANNEL_UPDATE"
+                            | "THREAD_UPDATE"
+                            | "GUILD_ROLE_UPDATE"
+                            | "GUILD_MEMBER_UPDATE"
+                            | "VOICE_STATE_UPDATE"
+                    )
+                    && self.sync_vad_permission()
+                {
+                    cx.notify();
+                }
                 self.spotify_devices_changed(cx);
                 self.spotify_loading_changed();
                 if name == "READY" {
@@ -3589,8 +3615,14 @@ impl Root {
             .filter(|user| !blocked.contains(user))
             .copied()
             .collect();
-        // The run being folded: its first id, whether it is open, and whether it is the ignored kind.
-        let mut run: Option<(Id, bool, bool)> = None;
+        // Module 891522 `eA` with `treatSpam`: a likely spammer's messages fold too, outside one-to-one DMs, for an
+        // account in the spam redaction treatment.
+        // `iJ` of module 694318: any channel but a one-to-one DM (servers, threads, group DMs).
+        let spam = self.treat_spam()
+            && self.channel.is_some()
+            && !self.current_dm().is_some_and(|channel| channel.kind == 1);
+        // The run being folded: its first id, whether it is open, and its kind.
+        let mut run: Option<(Id, bool, blocked::Fold)> = None;
         for (index, message) in messages.iter().enumerate() {
             let local = message.local_time();
             let day = (local.year(), local.ordinal());
@@ -3599,8 +3631,16 @@ impl Root {
                 self.rows.push(Row::Divider(timestamps::long_date(local)));
                 last_day = Some(day);
             }
-            if blocked.contains(&message.author.id) || ignored.contains(&message.author.id) {
-                let kind = ignored.contains(&message.author.id);
+            let fold = if blocked.contains(&message.author.id) {
+                Some(blocked::Fold::Blocked)
+            } else if ignored.contains(&message.author.id) {
+                Some(blocked::Fold::Ignored)
+            } else if spam && self.likely_spammer_message(message) {
+                Some(blocked::Fold::Spammer)
+            } else {
+                None
+            };
+            if let Some(kind) = fold {
                 let open = match run {
                     Some((first, open, run_kind)) if !new_day && run_kind == kind => {
                         if let Some(Row::Blocked { count, .. }) = self
@@ -3618,7 +3658,7 @@ impl Root {
                         self.rows.push(Row::Blocked {
                             first: message.id,
                             count: 1,
-                            ignored: kind,
+                            kind,
                         });
                         run = Some((message.id, open, kind));
                         open
@@ -4065,6 +4105,114 @@ impl Root {
         self.reply_ping = true;
         window.focus(&self.composer.read(cx).focus_handle(cx), cx);
         cx.notify();
+    }
+
+    /// What a reply's bar shows (ReferencedMessageStore, module 9842, read by module 448368): the message, or
+    /// NOT_LOADED / DELETED. `referenced_message` null in the payload is DELETED; absent, the loaded messages are
+    /// looked up by the reference, else NOT_LOADED. Only replies (type 19) take the bar here: a thread starter has
+    /// its own line (`starter_missing_line`), and a context menu command keeps its command bar.
+    fn reply_reference(&self, message: &Message) -> Option<Reference> {
+        if let Some(referenced) = &message.referenced {
+            return Some(Reference::Loaded(referenced.clone()));
+        }
+        if message.kind != 19 {
+            return None;
+        }
+        let id = message.reference_id?;
+        if message.extra.reference_deleted {
+            return Some(Reference::Deleted);
+        }
+        let channel = message.reference_channel_id.unwrap_or(message.channel_id);
+        Some(
+            match self
+                .stores
+                .messages
+                .get(&channel)
+                .and_then(|list| list.iter().rev().find(|known| known.id == id))
+            {
+                Some(found) => Reference::Loaded(Box::new(found.clone())),
+                None => Reference::NotLoaded { channel, id },
+            },
+        )
+    }
+
+    /// Module 448368 for NOT_LOADED and DELETED: the spine, the arrow badge in place of the avatar
+    /// (`replyBadge_2i8Bfm`: 16px, `--background-base-lowest`, the 10.8 x 7.2 arrow `replyIcon` in `--text-default`),
+    /// no author, and `repliedTextPlaceholder_2i8Bfm` (italic, 2px at the end): "Message could not be loaded"
+    /// (`1i+hMi`, clickable: it turns `--text-strong` under the pointer) or "Original message was deleted"
+    /// (`mE3KJN`, not clickable).
+    fn reply_missing(&self, reply: Id, deleted: bool) -> AnyElement {
+        let spine_key = motion::key(&("reply-spine", reply, "missing"));
+        let text_key = motion::key(&("reply-text", reply, "missing"));
+        let over = !deleted && (motion::hovered(spine_key) || motion::hovered(text_key));
+        let spine = motion::color(
+            motion::key(&("reply-spine-color", reply, "missing")),
+            color(if over {
+                "--interactive-text-default"
+            } else {
+                "--spine-default"
+            }),
+            motion::css(50., motion::Ease::Ease),
+        );
+        div()
+            .relative()
+            .h(px(18.))
+            .flex()
+            .items_center()
+            .text_size(px(14.))
+            .line_height(px(18.))
+            .child(
+                div()
+                    .absolute()
+                    .left(px(-37.))
+                    .top(px(8.))
+                    .w(px(33.))
+                    .h(px(12.))
+                    .border_l_2()
+                    .border_t_2()
+                    .rounded_tl(px(6.))
+                    .border_color(spine)
+                    .when(!deleted, |spine| {
+                        spine.child(motion::hover_probe(spine_key))
+                    }),
+            )
+            .child(
+                div()
+                    .size(px(16.))
+                    .flex_none()
+                    .mr(px(4.))
+                    .rounded_full()
+                    .bg(color("--background-base-lowest"))
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .child(
+                        icon("reply_badge", 10.8, "--text-default")
+                            .w(px(10.8))
+                            .h(px(7.2)),
+                    ),
+            )
+            .child(
+                div()
+                    .min_w(px(0.))
+                    .h(px(18.))
+                    .pr(px(2.))
+                    .italic()
+                    .whitespace_nowrap()
+                    .overflow_hidden()
+                    .text_color(color(if over {
+                        "--text-strong"
+                    } else {
+                        "--text-default"
+                    }))
+                    .child(if deleted {
+                        dc_intl::t!("mE3KJN")
+                    } else {
+                        dc_intl::t!("1i+hMi")
+                    })
+                    .when(!deleted, |text| text.child(motion::hover_probe(text_key))),
+            )
+            .into_any_element()
     }
 
     /// The official preview: a spine into the avatar, 16px avatar, name, and one line of the text.
@@ -7296,6 +7444,30 @@ impl Root {
                 _ => None,
             })
             .collect();
+        // A middle click on a link follows it as a left click does (module 9578 `onAuxClick`); a hidden spoiler
+        // still takes the first (left) click.
+        if links.iter().any(Option::is_some) {
+            let links = links.clone();
+            let spoilers = spoilers.to_vec();
+            let root = self.weak.clone();
+            let marks = links
+                .iter()
+                .zip(spoilers.iter().chain(std::iter::repeat(&None)))
+                .map(|(link, spoiler)| {
+                    link.is_some()
+                        && spoiler.is_none_or(|start| {
+                            self.spoilers_shown()
+                                || self.revealed.contains(&(key.0, key.1, start))
+                                || plugin_hooks::all_spoilers_revealed(&self.revealed, key.0)
+                        })
+                })
+                .collect();
+            element = element.on_link_aux_click(marks, move |piece, _, cx| {
+                if let Some(Some((url, label))) = links.get(piece).cloned() {
+                    let _ = root.update(cx, |this, cx| this.follow_link(&url, &label, cx));
+                }
+            });
+        }
         if spoilers.iter().any(Option::is_some)
             || links.iter().any(Option::is_some)
             || channels.iter().any(Option::is_some)
@@ -8059,11 +8231,7 @@ impl Root {
             Row::NewDivider => self.new_divider(),
             Row::PostIntro => self.forum_post_intro(),
             Row::PostActions => self.forum_post_actions(cx),
-            Row::Blocked {
-                first,
-                count,
-                ignored,
-            } => self.blocked_row(*first, *count, *ignored, cx),
+            Row::Blocked { first, count, kind } => self.blocked_row(*first, *count, *kind, cx),
             Row::Welcome => if self.voice_view_open() {
                 self.voice_welcome()
             } else if self.current_dm().is_none() {
@@ -8377,29 +8545,51 @@ impl Root {
                     .cloned();
                 // The group's avatar plays while any of its messages is hovered (module 21299 `F`).
                 let playing = hovered || self.group_hovered(row_ix);
+                // Module 549587: a timed-out author, for a moderator, has the clock mark and a half-faded avatar
+                // (`communicationDisabledOpacity_2i8Bfm`).
+                let timed_out = self.shows_timeout(message);
+                let reference = self.reply_reference(message);
                 // A command's reply has the "used /command" bar where a reply has its preview.
-                let command_bar = if message.referenced.is_none() {
+                let command_bar = if reference.is_none() {
                     self.interaction_bar(message)
                 } else {
                     None
                 };
-                let reply_offset = if message.referenced.is_some() || command_bar.is_some() {
+                let reply_offset = if reference.is_some() || command_bar.is_some() {
                     22.
                 } else {
                     0.
                 };
-                let preview = message.referenced.as_ref().map(|referenced| {
-                    let target = (**referenced).clone();
-                    div()
+                let preview = reference.map(|reference| match reference {
+                    Reference::Loaded(target) => {
+                        let preview = self.reply_preview(&target).into_any_element();
+                        div()
+                            .id(SharedString::from(format!("reply-jump-{}", message.id)))
+                            .mb(px(4.))
+                            .cursor_pointer()
+                            // The preview jumps to the message replied to, through the check of module 81437
+                            // (module 21299 `z`).
+                            .on_click(cx.listener(move |this, _, _, cx| {
+                                this.jump_to_message_checked(&target, cx);
+                            }))
+                            .child(preview)
+                            .into_any_element()
+                    }
+                    Reference::NotLoaded { channel, id } => div()
                         .id(SharedString::from(format!("reply-jump-{}", message.id)))
                         .mb(px(4.))
                         .cursor_pointer()
-                        // The preview jumps to the message replied to.
+                        // `onClickReply` without a loaded message: `jumpToMessage` with no check.
                         .on_click(cx.listener(move |this, _, _, cx| {
-                            this.jump_to_message(&target, cx);
+                            this.jump_to_message_id(channel, id, true, None);
+                            cx.notify();
                         }))
-                        .child(self.reply_preview(referenced))
-                        .into_any_element()
+                        .child(self.reply_missing(message.id, false))
+                        .into_any_element(),
+                    Reference::Deleted => div()
+                        .mb(px(4.))
+                        .child(self.reply_missing(message.id, true))
+                        .into_any_element(),
                 });
                 if compact {
                     // `.compact` (stylesheet 738015): every message carries its own header line, the time in an
@@ -8442,6 +8632,7 @@ impl Root {
                                             this.child(
                                                 div()
                                                     .flex_none()
+                                                    .when(timed_out, |avatar| avatar.opacity(0.5))
                                                     .size(px(size))
                                                     .mt(px(size * 0.18 + 3.))
                                                     .mx(px(size * 0.1))
@@ -8463,6 +8654,9 @@ impl Root {
                                                         }),
                                                     ),
                                             )
+                                        })
+                                        .when(timed_out, |this| {
+                                            this.child(self.timeout_mark(message, true, cx))
                                         })
                                         .child(
                                             div()
@@ -8511,6 +8705,7 @@ impl Root {
                                     .left(px(16.))
                                     .top(px(4. + reply_offset))
                                     .size(px(40.))
+                                    .when(timed_out, |avatar| avatar.opacity(0.5))
                                     .child(
                                         self.profile_trigger(
                                             format!("avatar-{id}"),
@@ -8535,6 +8730,9 @@ impl Root {
                                     .h(px(22.))
                                     .flex()
                                     .items_center()
+                                    .when(timed_out, |header| {
+                                        header.child(self.timeout_mark(message, false, cx))
+                                    })
                                     // "Next to names": a dot in the role's colour before the name (`roleStyle`).
                                     .children(
                                         self.role_dots_shown()

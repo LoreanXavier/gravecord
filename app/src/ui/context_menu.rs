@@ -55,6 +55,9 @@ pub(super) enum Target {
     AttachmentLink,
     /// A forum tag (`forum-tag`, module 960015): Copy Tag ID in developer mode.
     ForumTag(Id),
+    /// A role chip of a profile (`dev-context`, module 646938, opened by module 166005 `K`): Copy Role ID in
+    /// developer mode.
+    RoleChip(Id),
     /// The "+N" of an invite's roles in Server Settings > Invites (`invite-roles-menu`, module 551309): every role of
     /// the invite, kept in `State::invite_roles`.
     InviteRoles,
@@ -1360,6 +1363,8 @@ pub(super) fn menu_aria_label(target: Target) -> Option<&'static str> {
         Target::Thread(_) => Some(dc_intl::t("1NBjqb")),
         Target::AttachmentLink => Some(dc_intl::t("5oIOLX")),
         Target::ForumTag(_) => Some(dc_intl::t("AzTwiu")),
+        // Module 646938: `aria-label` "Actions".
+        Target::RoleChip(_) => Some(dc_intl::t("ogxXGq")),
         _ => None,
     }
 }
@@ -1376,6 +1381,13 @@ pub(super) fn attachment_link_items() -> Vec<Entry> {
 pub(super) fn forum_tag_items() -> Vec<Entry> {
     vec![Entry::Row(
         Row::new(Act::CopyId, dc_intl::t("8VG6IY")).icon("menu_id"),
+    )]
+}
+
+/// Module 50268 for a role (`devmode-copy-id-{id}`, "Copy Role ID" with the id icon), the only item of module 646938.
+pub(super) fn role_chip_items() -> Vec<Entry> {
+    vec![Entry::Row(
+        Row::new(Act::CopyId, dc_intl::t("sMsaLg")).icon("menu_id"),
     )]
 }
 
@@ -1770,6 +1782,8 @@ pub(super) struct UserFacts {
     pub can_moderate: bool,
     pub can_kick: bool,
     pub can_ban: bool,
+    /// "Open in Mod View" is offered (module 121127 `P`, module 985925 `q`): any moderation permission in the server.
+    pub mod_view: bool,
     pub developer: bool,
     /// `Some(unread)` in a DM row, which adds the channel entries.
     pub dm: Option<bool>,
@@ -2038,7 +2052,10 @@ pub(super) fn user_items(facts: &UserFacts) -> Vec<Entry> {
         group(&mut out, place);
     }
     if facts.dm.is_none() && facts.in_guild {
-        let mut moderation = vec![Row::new(Act::ModView, dc_intl::tr("Open in Mod View"))];
+        let mut moderation = Vec::new();
+        if facts.mod_view {
+            moderation.push(Row::new(Act::ModView, dc_intl::tr("Open in Mod View")));
+        }
         if !facts.me
             && let Some(verified) = facts.verify
         {
@@ -2319,6 +2336,21 @@ impl Root {
         developer
     }
 
+    /// A right press on a role chip of a profile (module 166005 `onContextMenu`): `hasDeveloperContextMenu` is
+    /// `!readOnly && developerMode`, so outside developer mode the press does nothing. True when the menu opened.
+    pub(super) fn open_role_chip_menu(
+        &mut self,
+        role: Id,
+        at: gpui::Point<gpui::Pixels>,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        let developer = self.developer_mode();
+        if developer {
+            self.open_context_menu(Target::RoleChip(role), at, cx);
+        }
+        developer
+    }
+
     /// Module 291247: Verify Member needs a member who joined, a server that ever had onboarding, and the right to
     /// manage them (moderate, kick and ban, or manage the server or roles). `Some(true)` when already verified.
     fn verify_state(&self, guild: Id, user: Id, me: bool) -> Option<bool> {
@@ -2344,7 +2376,7 @@ impl Root {
     }
 
     /// The member is in timeout now (`communication_disabled_until` in the future).
-    fn is_in_timeout(&self, guild: Id, user: Id) -> bool {
+    pub(super) fn is_in_timeout(&self, guild: Id, user: Id) -> bool {
         self.stores
             .members
             .get(guild, user)
@@ -2355,7 +2387,7 @@ impl Root {
 
     /// Whether our roles outrank everything the person holds, and they do not own the server: what
     /// `canManageUser` asks (module 576705).
-    fn outranks(&self, guild: Id, user: Id) -> bool {
+    pub(super) fn outranks(&self, guild: Id, user: Id) -> bool {
         let Some(me) = self.stores.current_user.as_ref().map(|me| me.id) else {
             return false;
         };
@@ -2894,6 +2926,7 @@ impl Root {
             Target::ChannelMention(_) => channel_mention_items(developer),
             Target::AttachmentLink => attachment_link_items(),
             Target::ForumTag(_) => forum_tag_items(),
+            Target::RoleChip(_) => role_chip_items(),
             Target::AuditChannel(channel) => {
                 let Some(guild) = self.guild_of_channel(channel) else {
                     return;
@@ -3185,6 +3218,7 @@ impl Root {
                     can_ban: guild.is_some_and(|guild| {
                         self.my_permission(guild, None, permissions::BAN_MEMBERS)
                     }),
+                    mod_view: guild.is_some_and(|guild| self.can_open_mod_view(guild)),
                     developer,
                     dm: None,
                     invite_servers: !me && !self.invite_servers(Some(user)).is_empty(),
@@ -3790,7 +3824,8 @@ impl Root {
                     | Target::GameProfile(id)
                     | Target::GameAddToProfile(id)
                     | Target::PickerSticker(id)
-                    | Target::ForumTag(id) => id,
+                    | Target::ForumTag(id)
+                    | Target::RoleChip(id) => id,
                     Target::RtcChannel { channel, .. } => channel,
                     Target::Role { role, .. } => role,
                     Target::ProfileWidget { .. }
@@ -5766,6 +5801,9 @@ mod tests {
             ["Copy Media Link", "Copy Text"]
         );
         assert_eq!(labels(&forum_tag_items()), ["Copy Tag ID"]);
+        // Modules 646938 and 50268: a profile role chip's developer menu.
+        assert_eq!(labels(&role_chip_items()), ["Copy Role ID"]);
+        assert_eq!(menu_aria_label(Target::RoleChip(1)), Some("Actions"));
         assert_eq!(menu_aria_label(Target::Thread(1)), Some("Thread Actions"));
         assert_eq!(
             menu_aria_label(Target::AttachmentLink),
@@ -6390,12 +6428,21 @@ mod tests {
             name: "ann".to_owned(),
             in_guild: true,
             server_voice: Some(voice),
+            mod_view: true,
             ..UserFacts::default()
         };
         let items = user_items(&other);
         let shown = labels(&items);
         let at = |label: &str| shown.iter().position(|shown| shown == label).unwrap();
         assert!(at("Open in Mod View") < at("Server Mute"));
+        // Without a moderation permission there is no Mod View row (module 121127 `P`).
+        assert!(
+            !labels(&user_items(&UserFacts {
+                mod_view: false,
+                ..other.clone()
+            }))
+            .contains(&"Open in Mod View".to_owned())
+        );
         assert!(at("Server Mute") < at("Server Deafen"));
         assert!(at("Server Deafen") < at("Disconnect"));
         assert!(items.iter().any(|entry| matches!(entry, Entry::Row(row) if row.act == Act::ServerMute && row.check == Some(true))));

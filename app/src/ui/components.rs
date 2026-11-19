@@ -434,10 +434,17 @@ impl Root {
             }
             Component::Thumbnail {
                 id,
-                media: _,
+                media,
                 description: _,
                 spoiler: _,
-            } => self.picture(message, id, 0, THUMBNAIL as f32, THUMBNAIL as f32, [8.; 4]),
+            } => self.picture(
+                message,
+                id,
+                (0, &media.url),
+                THUMBNAIL as f32,
+                THUMBNAIL as f32,
+                [8.; 4],
+            ),
             Component::MediaGallery { id, items } => {
                 self.gallery(message, id, items, inside_container)
             }
@@ -573,14 +580,33 @@ impl Root {
         &self,
         message: &Message,
         id: &str,
-        index: usize,
+        (index, url): (usize, &str),
         width: f32,
         height: f32,
         corners: [f32; 4],
     ) -> AnyElement {
-        let shown = self.images.get(&media_key(message.id, id, index)).cloned();
+        let key = media_key(message.id, id, index);
+        let shown = self.images.get(&key).cloned();
         let [tl, tr, br, bl] = corners.map(px);
+        // A right press on a tile opens the message's menu with this media item (module 232430 `nP` calls
+        // `getOnMediaItemContextMenu`, built by `VL` of module 21299 for any message but an ephemeral one); module
+        // 761304 then adds the image and link groups for `mediaItem.url`.
+        let ephemeral = message.flags & (1 << 6) != 0;
+        let weak = self.weak.clone();
+        let url = url.to_owned();
         div()
+            .when(!ephemeral, |this| {
+                this.on_mouse_up(
+                    gpui::MouseButton::Right,
+                    move |event: &gpui::MouseUpEvent, _, app: &mut gpui::App| {
+                        let (url, key) = (url.clone(), key.clone());
+                        let _ = weak.update(app, |this, _| {
+                            this.menu_hit =
+                                Some((event.position, super::menu::Hit::Media { url, key }));
+                        });
+                    },
+                )
+            })
             .flex_none()
             .w(px(width))
             .h(px(height))
@@ -674,7 +700,7 @@ impl Root {
             let large = 2. * (width - 4.) / 3.;
             let small = (large - 4.) / 2.;
             let tile = |index: usize, w: f32, h: f32, corners: [f32; 4]| {
-                self.picture(message, id, index, w, h, corners)
+                self.picture(message, id, (index, &items[index].media.url), w, h, corners)
             };
             div()
                 .flex()
@@ -704,7 +730,14 @@ impl Root {
                             } else {
                                 corner(row, col, cells.len(), total)
                             };
-                            self.picture(message, id, index, w, h, corners)
+                            self.picture(
+                                message,
+                                id,
+                                (index, &items[index].media.url),
+                                w,
+                                h,
+                                corners,
+                            )
                         }))
                 }))
         };

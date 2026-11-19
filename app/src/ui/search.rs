@@ -624,6 +624,11 @@ impl Root {
             .cursor_pointer()
             .hover(|style| style.bg(color("--background-surface-higher")))
             .on_click(cx.listener(move |this, _, _, cx| {
+                // Module 36544: `k.A(e, n) && n()`, the check of module 81437 before the route changes.
+                if !this.jump_allowed(&target) {
+                    cx.notify();
+                    return;
+                }
                 if let Some(guild) = this.guild {
                     this.select(guild, Some(target.channel_id));
                 }

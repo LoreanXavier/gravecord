@@ -42,9 +42,11 @@ pub fn hash(name: &str) -> u32 {
 /// `ExperimentFlags.UseAsEligibility`: the assignment only gates a dependent experiment.
 const USE_AS_ELIGIBILITY: u64 = 8;
 
-/// One account's user-kind assignments: hashed name to `(variantId, flags)`.
+/// One account's user-kind assignments: hashed name to `(variantId, flags)`; and the legacy user experiments of
+/// READY's `experiments` (`ExperimentStore`, `[hash, revision, bucket, override, population, ...]`): hashed name to
+/// bucket.
 #[derive(Clone, Debug, Default, PartialEq)]
-pub struct Assignments(HashMap<u32, (i64, u64)>);
+pub struct Assignments(HashMap<u32, (i64, u64)>, HashMap<u32, i64>);
 
 impl Assignments {
     /// From READY's `apex_experiments` for this user. Anything else in it is ignored.
@@ -61,7 +63,31 @@ impl Assignments {
                     ))
                 })
                 .collect(),
+            HashMap::new(),
         )
+    }
+
+    /// Adds READY's legacy user experiments (`experiments`): each `[hash, revision, bucket, ...]`.
+    pub fn with_legacy(mut self, experiments: &Value) -> Self {
+        self.1 = experiments
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(|entry| {
+                let entry = entry.as_array()?;
+                Some((
+                    u32::try_from(entry.first()?.as_u64()?).ok()?,
+                    entry.get(2)?.as_i64()?,
+                ))
+            })
+            .collect();
+        self
+    }
+
+    /// The bucket of a legacy user experiment (`getUserExperimentBucket`), `None` without an assignment (the
+    /// experiment's `defaultConfig`).
+    pub fn legacy_bucket(&self, name: &str) -> Option<i64> {
+        self.1.get(&hash(name)).copied()
     }
 
     /// The variation the account is in, or `None` when `getConfig` would return the experiment's default.
@@ -75,6 +101,11 @@ impl Assignments {
     /// Puts the account in a variation by hand, as the client's bucket override does (harness only).
     pub fn force(&mut self, name: &str, variant: i64) {
         self.0.insert(hash(name), (variant, 0));
+    }
+
+    /// Puts the account in a legacy experiment's bucket by hand (harness only).
+    pub fn force_legacy(&mut self, name: &str, bucket: i64) {
+        self.1.insert(hash(name), bucket);
     }
 }
 
@@ -92,6 +123,34 @@ mod tests {
         assert_eq!(hash("a"), 0x3c25_69b2);
         assert_eq!(hash("abcd"), 0x43ed_676a);
         assert_eq!(hash("Hello, world!"), 0xc036_3e43);
+    }
+
+    #[test]
+    fn legacy_user_experiments_are_read_by_bucket() {
+        // The recorded READY's `experiments` rows: `[hash, revision, bucket, override, population, ...]`.
+        let legacy = json!([
+            [3_013_881_204u32, 5, 11, -1, 1, 3421, 0, 0, null, null, null],
+            [
+                hash("2021-12_inferno_spam_redaction"),
+                0,
+                1,
+                -1,
+                2,
+                9531,
+                0,
+                0,
+                null,
+                null,
+                null
+            ]
+        ]);
+        let assignments = Assignments::default().with_legacy(&legacy);
+        assert_eq!(hash("2021-12_inferno_spam_redaction"), 4_179_344_527);
+        assert_eq!(
+            assignments.legacy_bucket("2021-12_inferno_spam_redaction"),
+            Some(1)
+        );
+        assert_eq!(assignments.legacy_bucket("never-assigned"), None);
     }
 
     #[test]
