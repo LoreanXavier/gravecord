@@ -1341,7 +1341,7 @@ index 3741851..b68f3d9 100644
                      element
                  });
 diff --git a/crates/gpui/src/window.rs b/crates/gpui/src/window.rs
-index 4e2e1a7..df38ee8 100644
+index 4e2e1a7..f832f76 100644
 --- a/crates/gpui/src/window.rs
 +++ b/crates/gpui/src/window.rs
 @@ -8,8 +8,8 @@ use crate::subscription::SingleSubscriberSet;
@@ -2527,16 +2527,15 @@ index 4e2e1a7..df38ee8 100644
          let content_mask = self.snapped_content_mask();
          self.next_frame.scene.insert_primitive(PaintSurface {
              order: 0,
-@@ -5421,15 +6191,62 @@ impl Window {
+@@ -5421,15 +6191,61 @@ impl Window {
          });
      }
  
 +    /// The size of the scaled-down copy `paint_image` draws for a picture shown in `shown` (already in device
 +    /// pixels), or `None` when the picture is drawn as it is: an animation, a picture shown at three quarters of its
-+    /// size or more, one that already has four copies (a picture whose size is being animated), or one inside a scale
-+    /// transition (a modal opening): those sizes last a frame each, and how many of them a picture passes through
-+    /// depends on how many frames were drawn, so letting them take the four places made the size the picture settles
-+    /// at filtered in one run and sampled from the full picture in the next.
++    /// size or more, or one that already has four copies (a picture whose size is being animated). Inside a scale
++    /// transition (a modal opening) a picture passes through as many sizes as frames were drawn; letting them take all
++    /// four places made the size it settles at filtered in one run and sampled from the full picture in the next.
 +    fn image_fit(
 +        &mut self,
 +        data: &RenderImage,
@@ -2554,13 +2553,13 @@ index 4e2e1a7..df38ee8 100644
 +        {
 +            return None;
 +        }
-+        if self.paint_scale_factor() != 1. {
-+            return None;
-+        }
++        // Sizes inside a scale transition may take three of the four places; the fourth is kept for a size drawn
++        // unscaled, so the size a picture rests at after the transition always gets its copy.
++        let room = if self.paint_scale_factor() != 1. { 3 } else { 4 };
 +        let fit = (width as u32, height as u32);
 +        let known = self.image_fits.entry(data.id).or_default();
 +        if !known.contains(&fit) {
-+            if known.len() >= 4 {
++            if known.len() >= room {
 +                return None;
 +            }
 +            known.push(fit);
@@ -2590,7 +2589,7 @@ index 4e2e1a7..df38ee8 100644
          }
  
          Ok(())
-@@ -5444,6 +6261,7 @@ impl Window {
+@@ -5444,6 +6260,7 @@ impl Window {
                      &RenderImageParams {
                          image_id: data.id,
                          frame_index,
@@ -2598,7 +2597,7 @@ index 4e2e1a7..df38ee8 100644
                      }
                      .into(),
                  )
-@@ -5525,6 +6343,7 @@ impl Window {
+@@ -5525,6 +6342,7 @@ impl Window {
      pub fn layout_bounds(&mut self, layout_id: LayoutId) -> Bounds<Pixels> {
          self.invalidator.debug_assert_prepaint();
  
@@ -2606,7 +2605,7 @@ index 4e2e1a7..df38ee8 100644
          let scale_factor = self.scale_factor();
          let mut bounds = self
              .layout_engine
-@@ -5864,6 +6683,7 @@ impl Window {
+@@ -5864,6 +6682,7 @@ impl Window {
      /// Dispatch a mouse, keyboard, or touch event on the window.
      #[profiling::function]
      pub fn dispatch_event(&mut self, event: PlatformInput, cx: &mut App) -> DispatchEventResult {
@@ -2614,7 +2613,7 @@ index 4e2e1a7..df38ee8 100644
          #[cfg(feature = "profiler")]
          self.window_profiler.begin_input(event.kind_name());
          let update_count_before = self.invalidator.update_count();
-@@ -6925,14 +7745,31 @@ impl Window {
+@@ -6925,14 +7744,31 @@ impl Window {
  
      /// Minimize the current window at the platform level.
      pub fn minimize_window(&self) {
@@ -2646,7 +2645,7 @@ index 4e2e1a7..df38ee8 100644
      /// Toggle simple (borderless) fullscreen, where the window covers the entire
      /// screen including the menu bar and, on notched displays, the area around the
      /// notch. Unlike [`Window::toggle_fullscreen`], this does not move the window
-@@ -10677,4 +11514,121 @@ mod inspector_tests {
+@@ -10677,4 +11513,121 @@ mod inspector_tests {
          })
          .expect("closed inspector has no bookkeeping and no style overrides");
      }
