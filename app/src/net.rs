@@ -455,6 +455,24 @@ fn injected_image_failure(key: &str) -> bool {
     *tries += 1;
     *tries <= count
 }
+/// A body that failed the end-marker check (`image_retry::complete`) and came back the same length on the next try
+/// is the whole file after all (a valid picture with an unusual trailer): it is accepted, so a check that is wrong
+/// about one file can only cost one download, never a picture that is fetched for ever and never drawn.
+fn same_length_again(url: &str, length: usize) -> bool {
+    static SEEN: std::sync::Mutex<Option<std::collections::HashMap<String, usize>>> =
+        std::sync::Mutex::new(None);
+    let Ok(mut seen) = SEEN.lock() else {
+        return true;
+    };
+    let seen = seen.get_or_insert_with(Default::default);
+    if seen.get(url) == Some(&length) {
+        seen.remove(url);
+        return true;
+    }
+    seen.insert(url.to_owned(), length);
+    false
+}
+
 /// The HTTP status of a failed download, 0 when there was no answer.
 fn http_status(error: &dc_http::Error) -> u16 {
     match error {
@@ -2672,7 +2690,9 @@ pub async fn run(token: Token, updates: mpsc::UnboundedSender<Update>, requests:
                     // A body cut short (a connection dropped mid-transfer) would be stored and fail to decode for
                     // good, on disk too: it is a failure to retry instead.
                     let fetched = fetched.and_then(|bytes| {
-                        if crate::ui::image_retry::complete(&bytes) {
+                        if crate::ui::image_retry::complete(&bytes)
+                            || same_length_again(&url, bytes.len())
+                        {
                             Ok(bytes)
                         } else {
                             Err((format!("body cut short at {} bytes", bytes.len()), 0))
@@ -3160,6 +3180,17 @@ Connection: close
         ));
         assert_eq!(none, 0);
         let _ = std::fs::remove_dir_all(&folder);
+    }
+
+    #[test]
+    fn a_body_failing_the_end_check_twice_at_the_same_length_is_accepted() {
+        let url = "https://cdn.example/odd-trailer.jpg";
+        assert!(!super::same_length_again(url, 100));
+        // Cut short at another length: still a failure.
+        assert!(!super::same_length_again(url, 90));
+        assert!(super::same_length_again(url, 90));
+        // Accepted once; a later cut body is checked afresh.
+        assert!(!super::same_length_again(url, 90));
     }
 
     #[test]

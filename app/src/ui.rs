@@ -2983,7 +2983,8 @@ impl Root {
         keys.dedup();
         let errors = crate::net::IMAGE_ERRORS.lock().ok();
         keys.iter()
-            .map(|key| match self.images.get(key) {
+            // The map itself: asking the state is not a draw, so it must not count as a demand.
+            .map(|key| match std::ops::Deref::deref(&self.images).get(key) {
                 Some(image) => {
                     let size = image::ImageReader::new(std::io::Cursor::new(image.bytes()))
                         .with_guessed_format()
