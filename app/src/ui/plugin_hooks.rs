@@ -14,6 +14,7 @@ mod better_role_dot;
 mod bigger_stream_preview;
 mod bypass_status;
 mod call_timer;
+mod clip_upload;
 pub(in crate::ui) mod clips_enhancements;
 mod custom_rpc;
 mod download_all;

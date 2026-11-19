@@ -956,6 +956,15 @@ pub(crate) const DEFS: &[Def] = &[
         }],
     },
     Def {
+        id: "ClipUpload",
+        name: "ClipUpload",
+        description: "Adds a button to upload a local video file as a Discord clip.",
+        origin: Origin::Equicord,
+        source: "src/equicordplugins/clipUpload.desktop/index.tsx",
+        default_on: false,
+        settings: &[],
+    },
+    Def {
         id: "ColorSighted",
         name: "ColorSighted",
         description: "Removes the colorblind-friendly icons from statuses, just like 2015-2017 Discord.",

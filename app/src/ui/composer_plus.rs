@@ -44,6 +44,8 @@ pub(super) enum Plus {
     ShareClip,
     /// Not in the pinned client: VoiceMessages' "Send Voice Message" (`plugin_hooks/voice_messages.rs`).
     PluginVoiceMessage,
+    /// Not in the pinned client: ClipUpload's "Upload Clip File" (`plugin_hooks/clip_upload.rs`).
+    PluginClipUpload,
 }
 
 pub(super) struct PollForm {
@@ -127,6 +129,7 @@ impl Root {
             }
             Plus::ShareClip => self.clips_open_gallery(super::clips::Facet::All, cx),
             Plus::PluginVoiceMessage => self.voice_messages_open(cx),
+            Plus::PluginClipUpload => self.clip_upload_open(cx),
             Plus::Schedule => {}
         }
         cx.notify();
@@ -419,6 +422,18 @@ impl Root {
                     "cp_mic",
                     label,
                     Some(Plus::PluginVoiceMessage),
+                    false,
+                    false,
+                    cx,
+                )
+            }))
+            // Not in the pinned client: ClipUpload's row (`plugin_hooks/clip_upload.rs`).
+            .children(self.clip_upload_plus_label().map(|label| {
+                row(
+                    "plus-plugin-clip-upload",
+                    "plugin_cloud_upload",
+                    label,
+                    Some(Plus::PluginClipUpload),
                     false,
                     false,
                     cx,

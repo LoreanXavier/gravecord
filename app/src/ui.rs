@@ -2024,6 +2024,10 @@ impl Root {
                     return;
                 }
                 // Not in the pinned client: CustomRPC's asset ids (`plugin_hooks/custom_rpc.rs`).
+                // Not in the pinned client: ClipUpload's answer (`plugin_hooks/clip_upload.rs`).
+                if self.clip_upload_answered(&key, &body, cx) {
+                    return;
+                }
                 if self.custom_rpc_fetched(&key, &body) {
                     cx.notify();
                     return;
@@ -3781,8 +3785,11 @@ impl Root {
                 None
             };
             if let Some(kind) = fold {
-                let merged = stretch[kind as usize]
-                    .filter(|_| merge && !new_day && matches!(kind, blocked::Fold::Blocked | blocked::Fold::Ignored));
+                let merged = stretch[kind as usize].filter(|_| {
+                    merge
+                        && !new_day
+                        && matches!(kind, blocked::Fold::Blocked | blocked::Fold::Ignored)
+                });
                 let open = match run {
                     Some((first, open, run_kind)) if !new_day && run_kind == kind => {
                         if let Some(Row::Blocked { count, .. }) = self
@@ -10499,6 +10506,8 @@ impl Render for Root {
         self.message_logger_prepare();
         // Not in the pinned client: CustomRPC's activity (`plugin_hooks/custom_rpc.rs`).
         self.custom_rpc_prepare();
+        // Not in the pinned client: ClipUpload's participant pictures (`plugin_hooks/clip_upload.rs`).
+        self.clip_upload_prepare();
         // Not in the pinned client: GlobalBadges' list, at start and every 30 minutes (`plugin_hooks/global_badges.rs`).
         self.global_badges_prepare();
         // Not in the pinned client: SteamStatusSync (`plugin_hooks/steam_status_sync.rs`).
@@ -11801,6 +11810,8 @@ impl Render for Root {
             .children(self.message_tags_dialog(window, cx))
             // Not in the pinned client: VoiceMessages' dialog (`plugin_hooks/voice_messages.rs`).
             .children(self.voice_messages_dialog(cx))
+            // Not in the pinned client: ClipUpload's dialog (`plugin_hooks/clip_upload.rs`).
+            .children(self.clip_upload_dialog(cx))
             // Not in the pinned client: UserPFP's Custom Avatar dialog (`plugin_hooks/userpfp.rs`).
             .children(self.userpfp_dialog(window, cx))
             // Not in the pinned client: ZipPreview's file dialog (`plugin_hooks/zip_preview.rs`).

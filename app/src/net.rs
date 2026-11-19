@@ -247,6 +247,16 @@ pub enum Request {
     /// Not in the pinned client: ExpressionManager's Clone Sticker (`doClone`): the sticker's picture from the media proxy
     /// at the largest size under 512 KiB (4096 halving to 16), posted to the server as a new sticker. The answer comes
     /// under `key` as `Update::Fetched` with `{ok, name, message}`.
+    /// Not in the pinned client: ClipUpload's `sendClipUpload`: the stamped file at `path` reserved as a clip
+    /// (`reserveClipUpload`), put, and sent as a message with the clip fields (and the reply's reference). The answer
+    /// comes under `key` as `Update::Fetched` with `{ok, message, path}`.
+    PluginClipUpload {
+        key: String,
+        channel: u64,
+        path: std::path::PathBuf,
+        options: crate::plugins::clip_upload::Options,
+        reply: Option<(Option<u64>, u64)>,
+    },
     PluginCloneSticker {
         key: String,
         guild: u64,
@@ -880,6 +890,7 @@ impl Request {
             Request::PluginTranslate { .. } => "PluginTranslate",
             Request::PluginRpcAssets { .. } => "PluginRpcAssets",
             Request::PluginCloneSticker { .. } => "PluginCloneSticker",
+            Request::PluginClipUpload { .. } => "PluginClipUpload",
             Request::ResolveRedirect { .. } => "ResolveRedirect",
             Request::Typing { .. } => "Typing",
             Request::React { .. } => "React",
@@ -964,6 +975,7 @@ impl Request {
             // Not in the pinned client: plugin writes (ExpressionManager's new sticker, CustomRPC's external assets).
             | Request::PluginCloneSticker { .. }
             | Request::PluginRpcAssets { .. }
+            | Request::PluginClipUpload { .. }
             | Request::Edit { .. }
             | Request::Delete { .. }
             | Request::Ack { .. }
@@ -1051,6 +1063,13 @@ pub(crate) fn inert_refuses(request: &Request, updates: &mpsc::UnboundedSender<U
     match request {
         Request::PluginCloneSticker { key, name, .. } => {
             let body = json!({"ok": false, "name": name, "message": null, "refused": true});
+            let _ = updates.send(Update::Fetched {
+                key: key.clone(),
+                body,
+            });
+        }
+        Request::PluginClipUpload { key, path, .. } => {
+            let body = json!({"ok": false, "message": null, "path": path, "refused": true});
             let _ = updates.send(Update::Fetched {
                 key: key.clone(),
                 body,
@@ -2586,6 +2605,19 @@ pub async fn run(token: Token, updates: mpsc::UnboundedSender<Update>, requests:
                     });
                 });
             }
+            Request::PluginClipUpload {
+                key,
+                channel,
+                path,
+                options,
+                reply,
+            } => {
+                tokio::spawn(async move {
+                    let mut body = clip_upload(&client, channel, &path, &options, reply).await;
+                    body["path"] = json!(path);
+                    let _ = updates.send(Update::Fetched { key, body });
+                });
+            }
             Request::PluginCloneSticker {
                 key,
                 guild,
@@ -3466,6 +3498,82 @@ fn guild_member_requests(guilds: &[u64], query: &str, limit: u64, user_ids: &[u6
 }
 
 /// Not in the pinned client: ExpressionManager's `doClone` (`plugin_hooks/expression_manager.rs`).
+/// Not in the pinned client: ClipUpload's `sendClipUpload` (see `Request::PluginClipUpload`). `{ok, message}`; the
+/// message is the one the original's toast shows (`getErrorMessage`), or none for its generic text.
+async fn clip_upload(
+    client: &Client,
+    channel: u64,
+    path: &std::path::Path,
+    options: &crate::plugins::clip_upload::Options,
+    reply: Option<(Option<u64>, u64)>,
+) -> Value {
+    let failed = |message: Option<&str>| json!({"ok": false, "message": message});
+    let reading = path.to_owned();
+    let bytes = match tokio::task::spawn_blocking(move || std::fs::read(reading)).await {
+        Ok(Ok(bytes)) => bytes,
+        _ => return failed(Some("Couldn't read the selected file.")),
+    };
+    let size = bytes.len() as u64;
+    let granted = match client
+        .post(
+            &format!("/channels/{channel}/attachments"),
+            &options.reserve_body(size),
+        )
+        .await
+    {
+        Ok(granted) => granted,
+        Err(error) => {
+            warn!("clip upload slot failed: {error}");
+            return failed(None);
+        }
+    };
+    let slot = &granted["attachments"][0];
+    let (Some(url), Some(uploaded)) = (
+        slot["upload_url"].as_str(),
+        slot["upload_filename"].as_str(),
+    ) else {
+        return failed(Some("Discord did not return an upload slot."));
+    };
+    if let Err(error) = client.put_upload(url, bytes).await {
+        warn!("clip upload failed: {error}");
+        return failed(Some("Upload failed."));
+    }
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |elapsed| elapsed.as_millis() as u64);
+    let reference = reply.map(|(guild, message)| {
+        let mut reference =
+            json!({"message_id": message.to_string(), "channel_id": channel.to_string()});
+        if let Some(guild) = guild {
+            reference["guild_id"] = json!(guild.to_string());
+        }
+        reference
+    });
+    let body = options.message_body(channel, size, uploaded, &pin::nonce_at(now), reference);
+    match client
+        .post(&format!("/channels/{channel}/messages"), &body)
+        .await
+    {
+        Ok(_) => json!({"ok": true, "message": null}),
+        Err(dc_http::Error::Status { status, body, .. }) => {
+            warn!("sending a clip failed: {status}");
+            // GAP: the original converts the file with FFmpeg and tries again on "not a valid clip"; there is no
+            // FFmpeg here, so that answer ends with the original's own word for a file it cannot use.
+            if crate::plugins::clip_upload::not_a_valid_clip(&body) {
+                failed(Some(
+                    "This file is not compatible. Use an MP4 clip with H.264 video and AAC audio.",
+                ))
+            } else {
+                failed(None)
+            }
+        }
+        Err(error) => {
+            warn!("sending a clip failed: {error}");
+            failed(None)
+        }
+    }
+}
+
 async fn clone_sticker(
     client: &Client,
     guild: u64,
