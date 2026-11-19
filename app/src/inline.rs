@@ -712,6 +712,12 @@ thread_local! {
     static LINK_UNDER_POINTER: std::cell::Cell<Option<Bounds<Pixels>>> = const { std::cell::Cell::new(None) };
 }
 
+/// The content moved under the pointer (a wheel scroll, other rows): the link found by the last move is no longer
+/// known to be there.
+pub fn forget_link_under_pointer() {
+    LINK_UNDER_POINTER.set(None);
+}
+
 /// Whether a middle press at `position` lands on a link. Blink starts no middle-click autoscroll on a live link
 /// (`MouseEventManager`: `!hit.IsLiveLink()`): the press is the link's, whose `auxclick` opens it.
 pub fn middle_press_on_link(position: Point<Pixels>) -> bool {

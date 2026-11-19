@@ -206,8 +206,20 @@ impl Root {
 
     /// Joins without the Stage questions: what "Got it, thanks" of the blocked warning does.
     pub(super) fn join_voice_now(&mut self, guild: Id, channel: Id, cx: &mut Context<Self>) {
+        self.join_voice_shown(guild, channel, true, cx);
+    }
+
+    /// `selectVoiceChannel` without opening the channel's view: the idle move to the AFK channel (module 596339).
+    pub(super) fn move_voice_quietly(&mut self, guild: Id, channel: Id, cx: &mut Context<Self>) {
+        self.join_voice_shown(guild, channel, false, cx);
+    }
+
+    fn join_voice_shown(&mut self, guild: Id, channel: Id, show: bool, cx: &mut Context<Self>) {
         if let Some(call) = &self.call {
             if call.channel == channel {
+                if !show {
+                    return;
+                }
                 // The row of the call this client is in opens its view.
                 self.show_call_channel(guild, channel, cx);
                 return;
@@ -233,7 +245,9 @@ impl Root {
         self.video_call_started(cx);
         self.sync_ptt_hook();
         self.vv.invite_dismissed = false;
-        self.show_call_channel(guild, channel, cx);
+        if show {
+            self.show_call_channel(guild, channel, cx);
+        }
         self.sync_dm_call_idle_timer(cx);
         cx.notify();
     }

@@ -434,13 +434,13 @@ impl Root {
             }
             Component::Thumbnail {
                 id,
-                media,
+                media: _,
                 description: _,
                 spoiler: _,
             } => self.picture(
                 message,
                 id,
-                (0, &media.url),
+                (0, None),
                 THUMBNAIL as f32,
                 THUMBNAIL as f32,
                 [8.; 4],
@@ -580,7 +580,7 @@ impl Root {
         &self,
         message: &Message,
         id: &str,
-        (index, url): (usize, &str),
+        (index, url): (usize, Option<&str>),
         width: f32,
         height: f32,
         corners: [f32; 4],
@@ -591,11 +591,13 @@ impl Root {
         // A right press on a tile opens the message's menu with this media item (module 232430 `nP` calls
         // `getOnMediaItemContextMenu`, built by `VL` of module 21299 for any message but an ephemeral one); module
         // 761304 then adds the image and link groups for `mediaItem.url`.
-        let ephemeral = message.flags & (1 << 6) != 0;
+        // A Thumbnail (module 232430 `nZ`) has no menu of its own.
+        let menu = url
+            .filter(|_| message.flags & (1 << 6) == 0)
+            .map(str::to_owned);
         let weak = self.weak.clone();
-        let url = url.to_owned();
         div()
-            .when(!ephemeral, |this| {
+            .when_some(menu, |this, url| {
                 this.on_mouse_up(
                     gpui::MouseButton::Right,
                     move |event: &gpui::MouseUpEvent, _, app: &mut gpui::App| {
@@ -700,7 +702,14 @@ impl Root {
             let large = 2. * (width - 4.) / 3.;
             let small = (large - 4.) / 2.;
             let tile = |index: usize, w: f32, h: f32, corners: [f32; 4]| {
-                self.picture(message, id, (index, &items[index].media.url), w, h, corners)
+                self.picture(
+                    message,
+                    id,
+                    (index, Some(&items[index].media.url)),
+                    w,
+                    h,
+                    corners,
+                )
             };
             div()
                 .flex()
@@ -733,7 +742,7 @@ impl Root {
                             self.picture(
                                 message,
                                 id,
-                                (index, &items[index].media.url),
+                                (index, Some(&items[index].media.url)),
                                 w,
                                 h,
                                 corners,

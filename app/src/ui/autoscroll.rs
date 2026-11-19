@@ -253,6 +253,7 @@ pub(super) fn layer(state: Shared) -> impl IntoElement {
                 if phase != DispatchPhase::Capture {
                     return;
                 }
+                crate::inline::forget_link_under_pointer();
                 let mut state = wheel.borrow_mut();
                 if state.as_ref().is_some_and(|auto| !auto.sending) {
                     *state = None;

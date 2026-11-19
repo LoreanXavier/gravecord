@@ -128,6 +128,13 @@ impl Root {
     /// `wI`: "Push to Talk Required", its subtitle, Don't switch (secondary, `clearVADWarning`) and Switch to Push to
     /// Talk (primary: `setMode(PUSH_TO_TALK)`, then `clearVADWarning`).
     fn show_vad_warning(&mut self) {
+        let open = self.chat_extra.alert.take();
+        if open.as_ref().is_some_and(|alert| alert.id == WARNING_ID) {
+            // Already showing: it stays as it is.
+            self.chat_extra.alert = open;
+            return;
+        }
+        self.alert_closed(open);
         self.chat_extra.alert = Some(Alert::show(
             WARNING_ID,
             dc_intl::t("NYklhr"),

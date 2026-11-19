@@ -545,7 +545,7 @@ impl Root {
                         return;
                     }
                     let activity = this.detect.app_activity_ms;
-                    this.join_voice_now(guild, afk, cx);
+                    this.move_voice_quietly(guild, afk, cx);
                     this.detect.app_activity_ms = activity;
                     cx.notify();
                 });

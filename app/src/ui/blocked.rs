@@ -187,6 +187,9 @@ impl Root {
         } else {
             return true;
         };
+        // An alert already open closes as it would (its own close step), and this one takes its place.
+        let open = self.chat_extra.alert.take();
+        self.alert_closed(open);
         self.chat_extra.alert = Some(alert);
         false
     }

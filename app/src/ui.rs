@@ -3559,6 +3559,8 @@ impl Root {
     }
 
     fn rebuild_rows(&mut self) {
+        // Other rows: a link the pointer was last found over may be gone (`inline::middle_press_on_link`).
+        crate::inline::forget_link_under_pointer();
         self.request_invites();
         // A command mention needs the channel's command index to know whether it is a link (module 990474).
         if self

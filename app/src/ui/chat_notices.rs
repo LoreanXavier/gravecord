@@ -869,7 +869,7 @@ impl Root {
 
     /// A dialog closed without its confirming button: the Soundboard Keybind modal puts the keybind back (its
     /// `useState` copy is simply dropped in the official client).
-    fn alert_closed(&mut self, closed: Option<Alert>) {
+    pub(super) fn alert_closed(&mut self, closed: Option<Alert>) {
         // Don't switch of "Push to Talk Required" (and Escape): `clearVADWarning`.
         if closed
             .as_ref()
