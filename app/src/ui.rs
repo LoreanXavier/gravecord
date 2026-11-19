@@ -86,6 +86,7 @@ mod deep_link_route;
 mod destructive;
 mod dm;
 mod dm_profile;
+mod elapsed;
 mod embed;
 #[cfg(feature = "capture")]
 mod embed_demo;
@@ -5276,19 +5277,19 @@ impl Root {
         let action_group = group.clone();
         let name_group = group.clone();
         let pill_group = group.clone();
-        // `channelInfo_Wx6SnQ`: the call's timer takes the action icons' place until the row is hovered.
-        let timer = in_call.then(|| self.call_timer()).flatten().map(|text| {
-            div()
-                .absolute()
-                .right(px(0.))
-                .text_size(px(12.))
-                .line_height(px(16.))
-                .font_family(MONO)
-                .text_color(color("--text-feedback-positive"))
-                .when(self.vv.row_focus, |this| this.opacity(0.))
-                .group_hover(group.clone(), |style| style.opacity(0.))
-                .child(text)
-        });
+        // `channelInfo_Wx6SnQ` (module 616740 `sg`): after the mention and NEW badges, the green timer of the channel's
+        // call (`VoiceChannelStartTimeStore.getStartTime`, module 725613 through hook 475889; module 693879 `z`) for any
+        // voice channel with one, in or out of it. It takes the action icons' place until the row is hovered.
+        let timer = (voice && mentions == 0 && !self.is_new_channel(channel))
+            .then(|| self.voice_call_start(channel))
+            .flatten()
+            .map(|start| {
+                self.elapsed_timer(start, cx)
+                    .absolute()
+                    .right(px(0.))
+                    .when(self.vv.row_focus && in_call, |this| this.opacity(0.))
+                    .group_hover(group.clone(), |style| style.opacity(0.))
+            });
         let target = channel.id;
         let glyph = div().when(dim, |this| this.opacity(0.5)).child(icon(
             name,

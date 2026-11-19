@@ -669,21 +669,6 @@ impl Root {
             || self.stream_zoom.held()
     }
 
-    /// Where the call started on this client, as `m:ss` (`h:mm:ss` from an hour), for the sidebar row.
-    pub(super) fn call_timer(&self) -> Option<String> {
-        let seconds = self.call.as_ref()?.connected_at?.elapsed().as_secs();
-        Some(if seconds >= 3600 {
-            format!(
-                "{}:{:02}:{:02}",
-                seconds / 3600,
-                seconds / 60 % 60,
-                seconds % 60
-            )
-        } else {
-            format!("{}:{:02}", seconds / 60, seconds % 60)
-        })
-    }
-
     pub(super) fn user_of(&self, id: Id) -> User {
         self.stores
             .users

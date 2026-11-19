@@ -301,11 +301,7 @@ impl Root {
         let id = channel.id;
         // 181254 `eY`: `t.isSystemDM()` (the system account's DM).
         let system = self.stores.is_system_dm(channel);
-        let timer = self
-            .call
-            .as_ref()
-            .filter(|call| call.guild == 0 && call.channel == id)
-            .and_then(|_| self.call_timer());
+        let timer = self.private_call_start(id);
         let selected = self.guild.is_none()
             && self.channel == Some(id)
             && !self.nitro_open
@@ -536,16 +532,12 @@ impl Root {
                         )
                         // `callDuration_zln_tS` in `iconsContainer_zln_tS` (4px before, 8px after): the running call's
                         // time, `body-xs/normal` 12px / 16px in the code font, `--text-feedback-positive`.
-                        .children(timer.clone().filter(|_| !hovered).map(|text| {
-                            div().flex_none().pl(px(4.)).pr(px(8.)).child(
-                                div()
-                                    .parity("dm-call-timer")
-                                    .text_size(px(12.))
-                                    .line_height(px(16.))
-                                    .font_family(super::MONO)
-                                    .text_color(color("--text-feedback-positive"))
-                                    .child(text),
-                            )
+                        .children(timer.filter(|_| !hovered).map(|start| {
+                            div()
+                                .flex_none()
+                                .pl(px(4.))
+                                .pr(px(8.))
+                                .child(self.elapsed_timer(start, cx).parity("dm-call-timer"))
                         }))
                         .when(marked && !hovered, |this| {
                             // `favoriteIcon_zln_tS`: the blocked (or ignored) mark, 16px with 8px after it.
