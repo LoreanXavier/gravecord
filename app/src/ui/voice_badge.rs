@@ -455,7 +455,7 @@ impl Root {
         let channel_id = channel.id;
         // `popoutHeader_f4FLXc` on `--background-mod-muted`, 8px by 12px inside: `channelName_f4FLXc` (the icon in
         // `--text-feedback-positive`, 4px before `body-sm/medium` text that is cut at the edge) and the time.
-        // The official fades the name's last 16px (`channelNameTextFade_f4FLXc`, a mask); it is cut here.
+        // GAP: the official fades the name's last 16px (`channelNameTextFade_f4FLXc`, a mask); it is cut here.
         let header = div()
             .flex()
             .items_center()
