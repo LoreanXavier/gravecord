@@ -74,7 +74,11 @@ impl Root {
             .collect()
     }
 
-    fn geo_restricted_tile(&self, guild: &GeoRestrictedGuild, cx: &mut Context<Self>) -> AnyElement {
+    fn geo_restricted_tile(
+        &self,
+        guild: &GeoRestrictedGuild,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
         let id = guild.id;
         let name = guild.name.clone();
         let row_key = format!("geo-guild-{id}");
@@ -189,7 +193,10 @@ impl Root {
             // Module 716480 as Add a Server opens it at the limit (the fixture account is far from 100 servers).
             ["guild-cap"] => {
                 self.open_guild_cap_upsell(cx);
-                format!("standin: guild cap upsell, {} servers", self.stores.guilds.len())
+                format!(
+                    "standin: guild cap upsell, {} servers",
+                    self.stores.guilds.len()
+                )
             }
             // Module 633605 as the new server welcome's Add your first app opens it (the fixture server is older
             // than 30 days, so its welcome has no cards).
@@ -213,7 +220,12 @@ impl Root {
                     return "standin: no server in view".to_owned();
                 };
                 let lockdown = rest.first() == Some(&"lockdown");
-                if let Some(known) = self.stores.guilds.iter_mut().find(|known| known.id == guild) {
+                if let Some(known) = self
+                    .stores
+                    .guilds
+                    .iter_mut()
+                    .find(|known| known.id == guild)
+                {
                     if !known.features.iter().any(|feature| feature == "COMMUNITY") {
                         known.features.push("COMMUNITY".to_owned());
                     }
@@ -246,7 +258,12 @@ impl Root {
                 let Some(guild) = self.guild else {
                     return "standin: no server in view".to_owned();
                 };
-                if let Some(known) = self.stores.guilds.iter_mut().find(|known| known.id == guild) {
+                if let Some(known) = self
+                    .stores
+                    .guilds
+                    .iter_mut()
+                    .find(|known| known.id == guild)
+                {
                     known.premium_progress_bar_enabled = true;
                 }
                 "standin: progress bar on".to_owned()
@@ -259,7 +276,6 @@ impl Root {
                 });
                 "standin: end event".to_owned()
             }
-            ["renders"] => format!("standin: region renders {:?}", super::regions::counters()),
             _ => format!("standin: unknown {args:?}"),
         }
     }
@@ -274,10 +290,21 @@ mod tests {
         let alert = unavailable_alert(9, "Far Away");
         assert_eq!(alert.title, "Server Unavailable");
         let subtitle = alert.subtitle.unwrap();
-        assert!(subtitle.iter().any(|(text, bold)| *bold && text == "Far Away"));
-        assert!(subtitle.iter().any(|(text, _)| text.contains("not available in your region")));
+        assert!(
+            subtitle
+                .iter()
+                .any(|(text, bold)| *bold && text == "Far Away")
+        );
+        assert!(
+            subtitle
+                .iter()
+                .any(|(text, _)| text.contains("not available in your region"))
+        );
         let labels: Vec<&str> = alert.buttons.iter().map(|b| b.label.as_str()).collect();
         assert_eq!(labels, ["Leave Server", "OK"]);
-        assert!(matches!(alert.buttons[0].then, Then::LeaveGuild { guild: 9 }));
+        assert!(matches!(
+            alert.buttons[0].then,
+            Then::LeaveGuild { guild: 9 }
+        ));
     }
 }

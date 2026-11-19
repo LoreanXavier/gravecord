@@ -120,9 +120,7 @@ pub(super) fn resolve_alert(guild: Id, message: Id) -> Alert {
         id: "raid-resolve",
         title: dc_intl::t("1zmw/H").to_owned(),
         subtitle: Some(vec![(dc_intl::t("nF79oO").to_owned(), false)]),
-        content: Some(Content::RaidResolve {
-            chosen: Vec::new(),
-        }),
+        content: Some(Content::RaidResolve { chosen: Vec::new() }),
         buttons: vec![
             AlertButton {
                 id: "raid-resolve-cancel",
@@ -153,7 +151,7 @@ pub(super) fn false_alarm_request(guild: Id, message: Id, reason: &str) -> crate
     }
 }
 
-/// `fromNow` of moment: how long ago, in its words.
+/// `fromNow` of moment (its `en` relative time words and default thresholds: 45 s, 45 min, 22 h, 26 d, 11 months).
 fn from_now(at: chrono::DateTime<chrono::Utc>, now: chrono::DateTime<chrono::Utc>) -> String {
     let seconds = (now - at).num_seconds().max(0);
     let minutes = (seconds as f64 / 60.).round() as i64;
@@ -196,7 +194,11 @@ impl Root {
     }
 
     /// The line of `iC` for a raid card, for the system row.
-    pub(super) fn automod_raid_line(&self, message: &Message, cx: &mut Context<Self>) -> AnyElement {
+    pub(super) fn automod_raid_line(
+        &self,
+        message: &Message,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
         let fields = raid_fields(message);
         let guild = self.guild_of_channel(message.channel_id);
         let id = message.id;
@@ -225,12 +227,16 @@ impl Root {
                 .child(text)
         };
         if let Some(count) = fields.join_attempts {
-            subheader =
-                subheader.child(small(dc_intl::format("4ylIiu", &[("joinCount", count.into())])));
+            subheader = subheader.child(small(dc_intl::format(
+                "4ylIiu",
+                &[("joinCount", count.into())],
+            )));
         }
         if let Some(count) = fields.dms_sent {
-            subheader =
-                subheader.child(small(dc_intl::format("5C8Mh3", &[("dmsSent", count.into())])));
+            subheader = subheader.child(small(dc_intl::format(
+                "5C8Mh3",
+                &[("dmsSent", count.into())],
+            )));
         }
         if let Some(at) = fields.raid_datetime {
             subheader = subheader
@@ -238,15 +244,18 @@ impl Root {
                 .child(small(from_now(at, chrono::Utc::now())));
         }
         let content = fields.raid_datetime.map(|at| {
-            // `toLocaleString(currentLocale, yc)`; GAP: the options of `yc` are not read, so the local date and time
-            // are written as the message header writes a full date.
+            // `toLocaleString(currentLocale, yc)` with `yc` of module 903093: `{month: "numeric", day: "numeric",
+            // hour: "numeric", minute: "2-digit"}`, in en-US "11/19, 2:51 AM".
             let local = at.with_timezone(&chrono::Local);
-            let date_time = local.format("%-m/%-d/%Y, %-I:%M:%S %p").to_string();
+            let date_time = local.format("%-m/%-d, %-I:%M %p").to_string();
             div()
                 .text_size(px(16.))
                 .line_height(px(20.))
                 .text_color(color("--text-muted"))
-                .child(dc_intl::format("4QIIZl", &[("dateTime", date_time.as_str().into())]))
+                .child(dc_intl::format(
+                    "4QIIZl",
+                    &[("dateTime", date_time.as_str().into())],
+                ))
         });
         let text_button = |key: &'static str, label: &'static str| {
             div()
@@ -297,9 +306,11 @@ impl Root {
                                 "automod-raid-resolve",
                                 resolved_label(fields.resolved_reason.as_deref()),
                             )
-                            .on_click(cx.listener(move |this, _, window, cx| {
-                                this.open_raid_resolve(guild, id, window, cx);
-                            })),
+                            .on_click(cx.listener(
+                                move |this, _, window, cx| {
+                                    this.open_raid_resolve(guild, id, window, cx);
+                                },
+                            )),
                         ),
                     )
             });
@@ -388,13 +399,11 @@ impl Root {
                                     .text_color(color("--text-brand"))
                                     .child(dc_intl::t("hG1StD")),
                             )
-                            .child(
-                                div().mr(px(2.)).mt(px(2.)).child(self.app_tag_px(
-                                    super::message_header::AppTag::Official,
-                                    format!("automod-tag-{id}"),
-                                    cx,
-                                )),
-                            )
+                            .child(div().mr(px(2.)).mt(px(2.)).child(self.app_tag_px(
+                                super::message_header::AppTag::Official,
+                                format!("automod-tag-{id}"),
+                                cx,
+                            )))
                             .child(
                                 div()
                                     .ml(px(2.))
@@ -452,8 +461,14 @@ mod tests {
     fn from_now_reads_like_moment() {
         let now = chrono::Utc::now();
         assert_eq!(from_now(now, now), "a few seconds ago");
-        assert_eq!(from_now(now - chrono::Duration::minutes(10), now), "10 minutes ago");
-        assert_eq!(from_now(now - chrono::Duration::hours(3), now), "3 hours ago");
+        assert_eq!(
+            from_now(now - chrono::Duration::minutes(10), now),
+            "10 minutes ago"
+        );
+        assert_eq!(
+            from_now(now - chrono::Duration::hours(3), now),
+            "3 hours ago"
+        );
     }
 
     #[test]
@@ -462,6 +477,9 @@ mod tests {
         assert_eq!(alert.title, "What happened?");
         let labels: Vec<&str> = alert.buttons.iter().map(|b| b.label.as_str()).collect();
         assert_eq!(labels, ["Cancel", "Mark as resolved"]);
-        assert_eq!(dc_intl::t(RESOLUTIONS[0].1), "Increased activity from normal members. No action needed.");
+        assert_eq!(
+            dc_intl::t(RESOLUTIONS[0].1),
+            "Increased activity from normal members. No action needed."
+        );
     }
 }

@@ -44,6 +44,7 @@ mod audio_attachment;
 mod audio_menu;
 mod audit_spec;
 mod autocomplete;
+mod automod_alert;
 mod autoscroll;
 mod badge_modal;
 mod badge_paths;
@@ -91,9 +92,6 @@ mod embed_layout;
 mod emoji_popout;
 mod emoticons;
 mod family_center;
-mod automod_alert;
-mod geo_restricted;
-mod guild_cap;
 mod file_actions;
 mod files;
 mod forward;
@@ -106,12 +104,14 @@ mod game_communities;
 mod game_similar;
 mod games_spec;
 mod gateway_screens;
+mod geo_restricted;
 mod gifs;
 mod go_live;
 mod go_live_game;
 mod graphic_modal;
 mod group_dm;
 mod group_manage;
+mod guild_cap;
 mod guild_menu;
 mod guild_notifications;
 mod history;
@@ -1636,8 +1636,9 @@ impl Root {
                 }
                 // The server in view is gone (left, removed from it, or deleted): back to Home, as the official
                 // client goes. An outage keeps the server and the view.
+                // A geo-restricted server (module 543897) goes from the store too, so the view leaves it.
                 if name == "GUILD_DELETE"
-                    && data["unavailable"] != true
+                    && (data["unavailable"] != true || data["geo_restricted"] == true)
                     && let Some(guild) = data["id"].as_str().and_then(|id| id.parse::<Id>().ok())
                 {
                     if self.guild == Some(guild) {
