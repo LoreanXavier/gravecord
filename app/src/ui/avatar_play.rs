@@ -2,8 +2,8 @@
 //!
 //! Module 45837 (`useAnimatedAvatar`): `shouldAnimate = focused && (hovered || (!reducedMotion && !animateOnHover &&
 //! gifAutoPlay))`, `gifAutoPlay` being the setting `animate_gifs`. Module 486020 (`getUserAvatarURL`) adds
-//! `animated=true` only to a hash starting with `a_`, and asks for the drawn size times the pixel ratio rounded up to a
-//! power of two between 16 and 4096. The message author's `animateOnHover` is on, and its hover is the message row's
+//! `animated=true` only to a hash starting with `a_`, and asks for the drawn size times the pixel ratio rounded up to the
+//! next step of module 776231's size ladder (`cdn::side_for`). The message author's `animateOnHover` is on, and its hover is the message row's
 //! (module 549587); the profile popout and full profile are drawn as hovered.
 use dc_state::User;
 use gpui::{AnyElement, Context, IntoElement, div, prelude::*, px};
@@ -23,11 +23,9 @@ pub(super) fn is_animated(hash: &str) -> bool {
     hash.starts_with("a_")
 }
 
-/// The file side module 486020 asks for: drawn size times pixel ratio, up to a power of two in 16..=4096.
+/// The file side module 486020 asks for: `kr(drawn * devicePixelRatio)`, the next step of module 776231's ladder.
 pub(super) fn file_side(drawn: f32, scale: f32) -> u32 {
-    ((drawn * scale.max(1.)).ceil() as u32)
-        .next_power_of_two()
-        .clamp(16, 4096)
+    super::cdn::side_for(drawn, scale)
 }
 
 pub(super) fn animated_url(base: &str, side: u32) -> String {
@@ -384,10 +382,11 @@ mod tests {
     fn only_a_hashes_get_the_animated_file_and_sizes_are_powers_of_two() {
         assert!(is_animated("a_1f"));
         assert!(!is_animated("1f"));
-        assert_eq!(file_side(40., 1.), 64);
-        assert_eq!(file_side(40., 1.5), 64);
+        assert_eq!(file_side(40., 1.), 40);
+        assert_eq!(file_side(40., 1.5), 60);
         assert_eq!(file_side(32., 1.), 32);
         assert_eq!(file_side(8., 1.), 16);
+        assert_eq!(file_side(120., 1.25), 160);
         assert_eq!(file_side(5000., 2.), 4096);
         assert_eq!(
             animated_url("https://cdn.discordapp.com/avatars/1/a_f", 64),

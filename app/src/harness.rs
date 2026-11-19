@@ -1342,6 +1342,21 @@ pub async fn run(
                 let line = root.read_with(cx, |root, _| root.script_badge_shape());
                 let _ = writeln!(output, "badge shape: {line}");
             }
+            // Capture only: `image state <prefix>`: the pictures whose key starts with the prefix and how they stand.
+            ["image", "state", prefix @ ..] => {
+                let prefix = prefix.join(" ");
+                let state = root.read_with(cx, |root, _| root.image_state_line(&prefix));
+                let _ = writeln!(output, "image: {state}");
+            }
+            // Capture only: `image online`: the gateway connected again, as after a network drop.
+            ["image", "online"] => {
+                cx.update(|cx| {
+                    root.update(cx, |root, cx| {
+                        root.update(crate::net::Update::GatewayConnected(true), cx)
+                    })
+                });
+                let _ = writeln!(output, "image: online");
+            }
             ["badge", "state"] => {
                 let state = root.read_with(cx, |root, _| root.badge_state_line());
                 let _ = writeln!(output, "badge: {state}");

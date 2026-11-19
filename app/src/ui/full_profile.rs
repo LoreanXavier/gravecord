@@ -1153,9 +1153,8 @@ impl Root {
             let apps: Vec<Value> = self.fetched[key].as_array().cloned().unwrap_or_default();
             for app in apps {
                 if let (Some(id), Some(icon)) = (app["id"].as_str(), app["icon"].as_str()) {
-                    let url = format!(
-                        "https://cdn.discordapp.com/app-icons/{id}/{icon}.png?size=160&keep_aspect_ratio=false"
-                    );
+                    // 325158 `O`: the application's `getIconURL(iu.LARGE)`.
+                    let url = super::cdn::app_icon(id, icon, super::live_activity::ACTIVITY_ART);
                     self.request_image(format!("app-icon:{id}"), url);
                 }
             }

@@ -101,9 +101,10 @@ pub enum Update {
         key: dc_voice::streams::StreamKey,
         event: dc_voice::StreamEvent,
     },
-    /// A `Request::Image` that could not be downloaded.
+    /// A `Request::Image` that could not be downloaded, and whether asking again may help.
     ImageFailed {
         key: String,
+        failure: crate::ui::image_retry::Failure,
     },
     /// A settings write ended (`PATCH /users/@me/settings-proto/1`), with the whole settings message the server
     /// answered (base64) when it did.
@@ -529,6 +530,49 @@ fn injected_image_failure(key: &str) -> bool {
     *tries += 1;
     *tries <= count
 }
+/// A body that failed the end-marker check (`image_retry::complete`) and came back the same length on the next try
+/// is the whole file after all (a valid picture with an unusual trailer): it is accepted, so a check that is wrong
+/// about one file can only cost one download, never a picture that is fetched for ever and never drawn.
+fn same_length_again(url: &str, length: usize) -> bool {
+    static SEEN: std::sync::Mutex<Option<std::collections::HashMap<String, usize>>> =
+        std::sync::Mutex::new(None);
+    let Ok(mut seen) = SEEN.lock() else {
+        return true;
+    };
+    let seen = seen.get_or_insert_with(Default::default);
+    if seen.get(url) == Some(&length) {
+        seen.remove(url);
+        return true;
+    }
+    seen.insert(url.to_owned(), length);
+    false
+}
+
+/// The HTTP status of a failed download, 0 when there was no answer.
+fn http_status(error: &dc_http::Error) -> u16 {
+    match error {
+        dc_http::Error::Transport(error) => error.status().map_or(0, |status| status.as_u16()),
+        dc_http::Error::Status { status, .. } => status.as_u16(),
+        dc_http::Error::RateLimited { .. } => 429,
+        dc_http::Error::Header => 0,
+    }
+}
+
+/// Capture runs only: `GRAVECORD_IMAGE_FAIL_STATUS=<status>` gives the injected failures that HTTP status (0, a
+/// transport error, when unset).
+#[cfg(feature = "capture")]
+fn injected_image_status() -> u16 {
+    std::env::var("GRAVECORD_IMAGE_FAIL_STATUS")
+        .ok()
+        .and_then(|status| status.parse().ok())
+        .unwrap_or(0)
+}
+
+#[cfg(not(feature = "capture"))]
+fn injected_image_status() -> u16 {
+    0
+}
+
 /// Pictures drawn from vector files (Lottie, Rive) at once, each on a blocking thread. Without a limit a picker of
 /// forty stickers starts forty threads that each render a frame.
 static IMAGE_DRAWS: tokio::sync::Semaphore = tokio::sync::Semaphore::const_new(6);
@@ -3123,18 +3167,31 @@ pub async fn run(token: Token, updates: mpsc::UnboundedSender<Update>, requests:
                         #[cfg(not(feature = "capture"))]
                         let injected = false;
                         if injected {
-                            Err("injected failure".to_owned())
+                            Err(("injected failure".to_owned(), injected_image_status()))
                         } else {
                             match tokio::time::timeout(IMAGE_TIMEOUT, client.fetch_public(&url))
                                 .await
                             {
-                                Ok(result) => result.map_err(|error| error.to_string()),
+                                Ok(result) => {
+                                    result.map_err(|error| (error.to_string(), http_status(&error)))
+                                }
                                 Err(_) => {
-                                    Err(format!("no answer in {} s", IMAGE_TIMEOUT.as_secs()))
+                                    Err((format!("no answer in {} s", IMAGE_TIMEOUT.as_secs()), 0))
                                 }
                             }
                         }
                     };
+                    // A body cut short (a connection dropped mid-transfer) would be stored and fail to decode for
+                    // good, on disk too: it is a failure to retry instead.
+                    let fetched = fetched.and_then(|bytes| {
+                        if crate::ui::image_retry::complete(&bytes)
+                            || same_length_again(&url, bytes.len())
+                        {
+                            Ok(bytes)
+                        } else {
+                            Err((format!("body cut short at {} bytes", bytes.len()), 0))
+                        }
+                    });
                     match fetched {
                         // (`nitro-art:gift-box` is the Gift Inventory's PNG, a different picture.)
                         Ok(bytes) if key == "nitro-art:gift-box-lottie" => {
@@ -3150,7 +3207,10 @@ pub async fn run(token: Token, updates: mpsc::UnboundedSender<Update>, requests:
                                 }
                                 _ => {
                                     warn!("lottie failed");
-                                    let _ = updates.send(Update::ImageFailed { key });
+                                    let _ = updates.send(Update::ImageFailed {
+                                        key,
+                                        failure: crate::ui::image_retry::Failure::Transient,
+                                    });
                                 }
                             }
                         }
@@ -3176,7 +3236,10 @@ pub async fn run(token: Token, updates: mpsc::UnboundedSender<Update>, requests:
                                 }
                                 _ => {
                                     warn!("rive failed");
-                                    let _ = updates.send(Update::ImageFailed { key });
+                                    let _ = updates.send(Update::ImageFailed {
+                                        key,
+                                        failure: crate::ui::image_retry::Failure::Transient,
+                                    });
                                 }
                             }
                         }
@@ -3200,7 +3263,10 @@ pub async fn run(token: Token, updates: mpsc::UnboundedSender<Update>, requests:
                                 }
                                 _ => {
                                     warn!("lottie failed");
-                                    let _ = updates.send(Update::ImageFailed { key });
+                                    let _ = updates.send(Update::ImageFailed {
+                                        key,
+                                        failure: crate::ui::image_retry::Failure::Transient,
+                                    });
                                 }
                             }
                         }
@@ -3238,7 +3304,10 @@ pub async fn run(token: Token, updates: mpsc::UnboundedSender<Update>, requests:
                                     let _ = updates.send(Update::Image { key, bytes });
                                 }
                                 Err(_) => {
-                                    let _ = updates.send(Update::ImageFailed { key });
+                                    let _ = updates.send(Update::ImageFailed {
+                                        key,
+                                        failure: crate::ui::image_retry::Failure::Transient,
+                                    });
                                 }
                             }
                         }
@@ -3265,7 +3334,36 @@ pub async fn run(token: Token, updates: mpsc::UnboundedSender<Update>, requests:
                                     let _ = updates.send(Update::Image { key, bytes: png });
                                 }
                                 None => {
-                                    let _ = updates.send(Update::ImageFailed { key });
+                                    let _ = updates.send(Update::ImageFailed {
+                                        key,
+                                        failure: crate::ui::image_retry::Failure::Transient,
+                                    });
+                                }
+                            }
+                        }
+                        Ok(bytes) if url.starts_with(crate::ui::cdn::SPOTIFY_IMAGES) => {
+                            // Spotify's album art is 640px; a card draws it at 100px at most. Drawn from the whole
+                            // file the GPU would sample it down five times and more, which aliases (the official
+                            // client's Chromium filters it), and the decoded copy would hold 1.6 MB. It is cut to the
+                            // card's size times the window scale here, off the UI thread, with a proper filter.
+                            let scale =
+                                SHOP_SCALE.load(std::sync::atomic::Ordering::Relaxed) as f32 / 100.;
+                            let side =
+                                crate::ui::cdn::side_for(crate::ui::cdn::ACTIVITY_ART_DRAWN, scale);
+                            let _slot = IMAGE_DRAWS.acquire().await;
+                            let fitted = tokio::task::spawn_blocking(move || {
+                                crate::ui::image_fit::fit(&bytes, side).unwrap_or(bytes)
+                            })
+                            .await;
+                            match fitted {
+                                Ok(bytes) => {
+                                    let _ = updates.send(Update::Image { key, bytes });
+                                }
+                                Err(_) => {
+                                    let _ = updates.send(Update::ImageFailed {
+                                        key,
+                                        failure: crate::ui::image_retry::Failure::Transient,
+                                    });
                                 }
                             }
                         }
@@ -3278,13 +3376,16 @@ pub async fn run(token: Token, updates: mpsc::UnboundedSender<Update>, requests:
                             }
                             let _ = updates.send(Update::Image { key, bytes });
                         }
-                        Err(error) => {
+                        Err((error, status)) => {
                             warn!("image failed: {error}");
                             #[cfg(feature = "capture")]
                             if let Ok(mut errors) = IMAGE_ERRORS.lock() {
-                                errors.insert(key.clone(), error.to_string());
+                                errors.insert(key.clone(), error.clone());
                             }
-                            let _ = updates.send(Update::ImageFailed { key });
+                            let _ = updates.send(Update::ImageFailed {
+                                key,
+                                failure: crate::ui::image_retry::Failure::of_status(status),
+                            });
                         }
                     }
                 });
@@ -3451,6 +3552,10 @@ pub(crate) fn in_flight() -> usize {
 }
 
 fn cached_image_bytes(key: &str, bytes: Vec<u8>) -> Option<Vec<u8>> {
+    // A file cut short on disk (written by a build before the completeness check) is fetched again.
+    if !crate::ui::image_retry::complete(&bytes) {
+        return None;
+    }
     if (key.starts_with("gif:") || key.starts_with("gif-category:"))
         && bytes.get(4..8) == Some(b"ftyp")
     {
@@ -3813,6 +3918,17 @@ Connection: close
     }
 
     #[test]
+    fn a_body_failing_the_end_check_twice_at_the_same_length_is_accepted() {
+        let url = "https://cdn.example/odd-trailer.jpg";
+        assert!(!super::same_length_again(url, 100));
+        // Cut short at another length: still a failure.
+        assert!(!super::same_length_again(url, 90));
+        assert!(super::same_length_again(url, 90));
+        // Accepted once; a later cut body is checked afresh.
+        assert!(!super::same_length_again(url, 90));
+    }
+
+    #[test]
     fn cached_gif_video_is_decoded_before_it_becomes_an_image() {
         let video = crate::video_vod::synthetic_mp4(32, 32, 30, &[[220, 40, 20]], 1).unwrap();
         let poster = super::cached_image_bytes("gif:favorite", video).unwrap();
@@ -3821,9 +3937,11 @@ Connection: close
         assert_eq!((image.width(), image.height()), (32, 32));
         assert!(super::cached_image_bytes("gif:broken", b"0000ftypbroken".to_vec()).is_none());
         assert_eq!(
-            super::cached_image_bytes("gif:still", b"GIF89a".to_vec()).unwrap(),
-            b"GIF89a"
+            super::cached_image_bytes("gif:still", b"GIF89a;".to_vec()).unwrap(),
+            b"GIF89a;"
         );
+        // A picture cut short on disk is fetched again instead of drawn.
+        assert!(super::cached_image_bytes("gif:cut", b"GIF89a".to_vec()).is_none());
     }
     #[test]
     fn a_password_change_answer_gives_up_its_token() {
