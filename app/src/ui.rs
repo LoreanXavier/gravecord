@@ -343,6 +343,7 @@ mod video_tiles;
 mod view_as_role;
 mod voice;
 mod voice_alerts;
+mod voice_badge;
 mod voice_blocked;
 mod voice_invite;
 mod voice_panel;
@@ -955,6 +956,8 @@ pub struct Root {
     role_popout: Option<role_popout::RolePopout>,
     /// The popout of a header chip: the role icon's card or a server tag's profile (`message_header`).
     header_popout: Option<message_header::HeaderPopout>,
+    /// The voice hover cards (modules 75604 and 772800).
+    voice_hover: voice_badge::VoiceHover,
     /// Code blocks whose copy button was pressed (`code_copy`).
     copied_code: HashSet<(u64, u32)>,
     pub ready: bool,
@@ -1362,6 +1365,7 @@ impl Root {
             gdm_cleanup: None,
             role_popout: None,
             header_popout: None,
+            voice_hover: Default::default(),
             copied_code: HashSet::new(),
             ready: false,
             hydrated_from_cache: false,
@@ -11672,6 +11676,7 @@ impl Render for Root {
             .children(self.inventory_popout_layer(window, cx))
             .children(self.role_popout_layer(cx))
             .children(self.header_popout_layer(cx))
+            .children(self.voice_hover_layer(cx))
             .children(self.profile_layer(window, cx))
             .children(self.role_picker_layer(window, cx))
             // Not in the pinned client: PermissionsViewer's member popout (`plugin_hooks/permissions_viewer.rs`).

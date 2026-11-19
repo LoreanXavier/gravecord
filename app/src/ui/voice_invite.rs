@@ -61,6 +61,7 @@ pub(super) fn order_key(streaming: bool, name: &str, user: Id) -> (bool, String,
 pub(super) enum ButtonLook {
     /// `active`: the green connected control.
     Active,
+    Secondary,
 }
 
 pub(super) fn ds_button(
@@ -75,6 +76,11 @@ pub(super) fn ds_button(
             "connected",
             "--control-connected-border-default",
             "--control-connected-text-default",
+        ),
+        ButtonLook::Secondary => (
+            "secondary",
+            "--border-muted",
+            "--control-secondary-text-default",
         ),
     };
     let state = move |part: &str, state: &str| color(&format!("--control-{family}-{part}-{state}"));
