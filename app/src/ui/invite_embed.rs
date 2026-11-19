@@ -725,6 +725,9 @@ impl Root {
                     // `N` of module 963055: an age-restricted server asks an account without a date of birth for one
                     // (module 189282, `NSFW_SERVER_INVITE_EMBED`); nothing is joined.
                     this.open_birthday_modal(super::birthday::Source::NsfwServerInviteEmbed, cx);
+                } else if this.at_guild_cap() {
+                    // `GUILD_CAP_SHOWN` of module 963055: the upsell of module 716480 instead of the join.
+                    this.open_guild_cap_upsell(cx);
                 } else {
                     // `acceptInvite`: POST /invites/{code}, then the server opens when it arrives.
                     let _ = this.requests.send(Request::Rest {

@@ -95,6 +95,18 @@ pub(super) enum Target {
     /// A channel of an Audit Log entry (`channel-context` of module 194195, from module 989433's
     /// `onChannelContextMenu` and `onTargetContextMenu`).
     AuditChannel(Id),
+    /// A role or member of a channel's advanced permissions (`member-permissions-menu` / `role-permissions-menu`,
+    /// module 495603).
+    PermissionRow {
+        channel: Id,
+        target: Id,
+        role: bool,
+        everyone: bool,
+    },
+    /// The channel list's boost progress bar (`progress-bar-context`, module 709843).
+    ProgressBar(Id),
+    /// Actions of AutoMod's raid notification (`moderation-raid-context`, module 495372).
+    RaidAlert(Id),
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -201,6 +213,16 @@ pub(super) enum Act {
     /// "Remove Timeout" of a member who is in timeout.
     RemoveTimeout,
     LeaveGuild,
+    /// `report-raid` (module 495372): Report a Raid (module 935074).
+    ReportRaid,
+    /// `nav-server-settings` (module 495372): Server Settings on its Safety Setup page.
+    ModerationSettings,
+    /// `progress-bar-enabled` (module 709843): the boost progress bar's Enable Progress Bar checkbox.
+    ToggleProgressBar,
+    /// `remove-permission` (module 495603): Remove User / Remove Role of a channel permission row, after its confirm.
+    RemovePermission,
+    /// `server-lockdown` (module 664967): Security Actions, Edit Security Actions during a pause.
+    SecurityActions,
     /// Voice: how loud a person is to us, and muting them (or their soundboard) here.
     Volume,
     VoiceMute,
@@ -277,7 +299,7 @@ impl Act {
     /// Every row kind once (`Correction` with its first index). `ordinal` is an exhaustive match, so adding a variant
     /// without listing it here fails the build or the `act_list_is_complete` test.
     #[cfg(test)]
-    pub(super) const ALL: [Act; 130] = [
+    pub(super) const ALL: [Act; 135] = [
         Act::InventoryAbout,
         Act::InventoryHide,
         Act::ReportApp,
@@ -408,6 +430,11 @@ impl Act {
         Act::PluginViewBanner,
         Act::PluginServerInfo,
         Act::PluginViewStreamPreview,
+        Act::SecurityActions,
+        Act::RemovePermission,
+        Act::ToggleProgressBar,
+        Act::ModerationSettings,
+        Act::ReportRaid,
     ];
 
     #[cfg(test)]
@@ -543,6 +570,11 @@ impl Act {
             Act::PluginViewBanner => 127,
             Act::PluginServerInfo => 128,
             Act::PluginViewStreamPreview => 129,
+            Act::SecurityActions => 130,
+            Act::RemovePermission => 131,
+            Act::ToggleProgressBar => 132,
+            Act::ModerationSettings => 133,
+            Act::ReportRaid => 134,
         }
     }
 }
@@ -562,6 +594,11 @@ pub(super) fn status(act: Act) -> Status {
         Act::JoinQuiet | Act::ReportStage => Wired,
         Act::Apps => Wired,
         Act::ModView => Wired,
+        Act::ReportRaid => Wired,
+        Act::ModerationSettings => Wired,
+        Act::ToggleProgressBar => Wired,
+        Act::RemovePermission => Wired,
+        Act::SecurityActions => Wired,
         Act::PluginAlternateProfile
         | Act::PluginPrioritizeServerProfile
         | Act::PluginHideMentionBadge
@@ -1360,6 +1397,10 @@ pub(super) fn menu_aria_label(target: Target) -> Option<&'static str> {
         Target::Thread(_) => Some(dc_intl::t("1NBjqb")),
         Target::AttachmentLink => Some(dc_intl::t("5oIOLX")),
         Target::ForumTag(_) => Some(dc_intl::t("AzTwiu")),
+        Target::PermissionRow { role: false, .. } => Some(dc_intl::t("pJMipx")),
+        Target::PermissionRow { role: true, .. } => Some(dc_intl::t("ltedOh")),
+        Target::ProgressBar(_) => Some(dc_intl::t("m85s/h")),
+        Target::RaidAlert(_) => Some(dc_intl::t("liqwPJ")),
         _ => None,
     }
 }
@@ -1370,6 +1411,57 @@ pub(super) fn attachment_link_items() -> Vec<Entry> {
         Entry::Row(Row::new(Act::CopyLink, dc_intl::t("92CPQ+"))),
         Entry::Row(Row::new(Act::Copy, dc_intl::t("JrGD7E"))),
     ]
+}
+
+/// Module 495603 ("Channel Permissions Member Actions" / "Channel Permissions Role Actions"): Remove User or Remove
+/// Role (danger, the trash can) unless it is @everyone, then Copy User ID or Copy Role ID in developer mode.
+pub(super) fn permission_target_items(role: bool, everyone: bool, developer: bool) -> Vec<Entry> {
+    let mut out = Vec::new();
+    if !everyone {
+        let label = if role {
+            dc_intl::t("T+3Adg")
+        } else {
+            dc_intl::t("hXfRwD")
+        };
+        out.push(Entry::Row(
+            Row::new(Act::RemovePermission, label)
+                .icon("channel_settings_trash")
+                .danger(),
+        ));
+    }
+    if developer {
+        let label = if role {
+            dc_intl::t("sMsaLg")
+        } else {
+            dc_intl::t("/AXYnE")
+        };
+        group(&mut out, vec![Row::new(Act::CopyId, label).icon("menu_id")]);
+    }
+    tidy(out)
+}
+
+/// Module 495372 ("User Settings Actions", `moderation-raid-context`): Security Actions, then Server Settings and
+/// Report Raid.
+pub(super) fn raid_alert_items() -> Vec<Entry> {
+    let mut out = vec![Entry::Row(Row::new(
+        Act::SecurityActions,
+        dc_intl::t("UgXhdn"),
+    ))];
+    group(
+        &mut out,
+        vec![
+            Row::new(Act::ModerationSettings, dc_intl::t("154/bL")),
+            Row::new(Act::ReportRaid, dc_intl::t("cswId3")),
+        ],
+    );
+    tidy(out)
+}
+
+/// Module 709843 ("Progress Bar Actions"): the one checkbox, Enable Progress Bar.
+pub(super) fn progress_bar_items(enabled: bool) -> Vec<Entry> {
+    vec![Entry::Row(
+        Row::new(Act::ToggleProgressBar, dc_intl::t("0CJWP2")).check(enabled),
+    )]
 }
 
 /// Module 960015 (Forum Tag Actions): Copy Tag ID, the only row; the menu opens in developer mode only.
@@ -1691,6 +1783,8 @@ pub(super) struct GuildFacts {
     pub hide_muted: bool,
     pub owner: bool,
     pub developer: bool,
+    /// The `server-lockdown` item of module 664967: `Some(lockdown)` when shown.
+    pub security_actions: Option<bool>,
 }
 
 pub(super) fn guild_items(facts: GuildFacts, level: &str) -> Vec<Entry> {
@@ -1740,12 +1834,20 @@ pub(super) fn guild_items(facts: GuildFacts, level: &str) -> Vec<Entry> {
         &mut out,
         vec![Row::new(Act::MoveTo, dc_intl::tr("Move to...")).caret()],
     );
-    if !facts.owner {
-        group(
-            &mut out,
-            vec![Row::new(Act::LeaveGuild, dc_intl::tr("Leave Server")).danger()],
-        );
+    // Module 871638's last group: `server-lockdown` (module 664967, no icon here) and Leave Server.
+    let mut last = Vec::new();
+    if let Some(lockdown) = facts.security_actions {
+        let label = if lockdown {
+            dc_intl::t("+tSVi3")
+        } else {
+            dc_intl::t("EPlEdu")
+        };
+        last.push(Row::new(Act::SecurityActions, label).danger());
     }
+    if !facts.owner {
+        last.push(Row::new(Act::LeaveGuild, dc_intl::tr("Leave Server")).danger());
+    }
+    group(&mut out, last);
     if facts.developer {
         group(
             &mut out,
@@ -2894,6 +2996,19 @@ impl Root {
             Target::ChannelMention(_) => channel_mention_items(developer),
             Target::AttachmentLink => attachment_link_items(),
             Target::ForumTag(_) => forum_tag_items(),
+            Target::RaidAlert(_) => raid_alert_items(),
+            Target::ProgressBar(guild) => progress_bar_items(
+                self.stores
+                    .guild(guild)
+                    .is_some_and(|known| known.premium_progress_bar_enabled),
+            ),
+            Target::PermissionRow { role, everyone, .. } => {
+                let items = permission_target_items(role, everyone, developer);
+                if items.is_empty() {
+                    return;
+                }
+                items
+            }
             Target::AuditChannel(channel) => {
                 let Some(guild) = self.guild_of_channel(channel) else {
                     return;
@@ -2965,6 +3080,7 @@ impl Root {
                     hide_muted: self.hide_muted(guild),
                     owner: known.owner_id == self.stores.current_user.as_ref().map(|me| me.id),
                     developer,
+                    security_actions: self.security_actions_item(guild),
                 };
                 guild_items(facts, self.guild_level_label(guild))
             }
@@ -3791,6 +3907,8 @@ impl Root {
                     | Target::GameAddToProfile(id)
                     | Target::PickerSticker(id)
                     | Target::ForumTag(id) => id,
+                    Target::PermissionRow { target, .. } => target,
+                    Target::ProgressBar(guild) | Target::RaidAlert(guild) => guild,
                     Target::RtcChannel { channel, .. } => channel,
                     Target::Role { role, .. } => role,
                     Target::ProfileWidget { .. }
@@ -3972,6 +4090,22 @@ impl Root {
                 });
             }
             (Act::LeaveGuild, Target::Guild(guild)) => self.leave_guild = Some(guild),
+            (Act::SecurityActions, Target::Guild(guild) | Target::RaidAlert(guild)) => {
+                self.open_security_actions(guild, cx)
+            }
+            (Act::ModerationSettings, Target::RaidAlert(guild)) => {
+                self.open_server_settings_at(guild, super::server_settings::Page::SafetySetup, cx)
+            }
+            (Act::ReportRaid, Target::RaidAlert(guild)) => self.open_report_raid(guild, cx),
+            (Act::ToggleProgressBar, Target::ProgressBar(guild)) => {
+                self.toggle_boost_progress_bar(guild, cx)
+            }
+            (
+                Act::RemovePermission,
+                Target::PermissionRow {
+                    channel, target, ..
+                },
+            ) => self.confirm_remove_permission(channel, target, cx),
             (Act::Profile, Target::User { user, .. } | Target::InventoryAuthor { user }) => {
                 self.close_inventory_popout();
                 self.open_full_profile(user, window, cx)
@@ -6336,6 +6470,20 @@ mod tests {
         let shown = labels(&admin);
         assert!(shown.contains(&"Create Event".to_owned()));
         assert!(shown.contains(&"Leave Server".to_owned()));
+        assert!(!shown.contains(&"Security Actions".to_owned()));
+        // Module 664967: Edit Security Actions while a pause runs, before Leave Server.
+        let lockdown = labels(&guild_items(
+            GuildFacts {
+                security_actions: Some(true),
+                ..GuildFacts::default()
+            },
+            "x",
+        ));
+        let at = lockdown
+            .iter()
+            .position(|label| label == "Edit Security Actions");
+        let leave = lockdown.iter().position(|label| label == "Leave Server");
+        assert!(at.is_some() && at < leave);
     }
 
     #[test]

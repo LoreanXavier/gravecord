@@ -2225,6 +2225,24 @@ pub struct VoiceServer {
     pub token: String,
 }
 
+/// A server this account belongs to that is not available in its region (`{id, name, icon}` of module 543897).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct GeoRestrictedGuild {
+    pub id: Id,
+    pub name: String,
+    pub icon: Option<String>,
+}
+
+impl GeoRestrictedGuild {
+    fn from_value(value: &Value) -> Option<Self> {
+        Some(Self {
+            id: id(&value["id"])?,
+            name: text(&value["name"]).unwrap_or_default(),
+            icon: text(&value["icon"]),
+        })
+    }
+}
+
 #[derive(Default)]
 pub struct Stores {
     /// This account's experiment assignments from READY (`ApexExperimentStore`).
@@ -2357,6 +2375,9 @@ pub struct Stores {
     /// their place in the folders: `SortedGuildStore` (711014 `N`) drops a guild only when it is neither known nor
     /// unavailable, so a reorder during an outage must not write them out of the account's settings.
     pub unavailable_guilds: HashSet<Id>,
+    /// GeoRestrictedGuildStore (module 543897): the servers READY lists with `geo_restricted` (`CONNECTION_OPEN`'s
+    /// `geoRestrictedGuilds`) and those a `GUILD_DELETE` takes away with `geo_restricted` (`GUILD_GEO_RESTRICTED`).
+    pub geo_restricted_guilds: Vec<GeoRestrictedGuild>,
     /// Current user's `merged_members` entry per guild (including unavailable stubs), so delayed
     /// `GUILD_CREATE` or partial updates preserve roles and join date.
     pub my_members_by_guild: HashMap<Id, Value>,
@@ -2603,6 +2624,18 @@ impl Stores {
                 }
             }
             "GUILD_DELETE" => {
+                // Module 543897: `GUILD_DELETE` drops a server, then `GUILD_GEO_RESTRICTED` adds it (replacing an
+                // earlier entry) when it went away for its region; `GUILD_DELETE` alone removes the entry.
+                if let Some(guild) = id(&data["id"]) {
+                    self.geo_restricted_guilds.retain(|known| known.id != guild);
+                }
+                if data["geo_restricted"] == true
+                    && let Some(geo) = GeoRestrictedGuild::from_value(data)
+                {
+                    self.guilds.retain(|known| known.id != geo.id);
+                    self.unavailable_guilds.remove(&geo.id);
+                    self.geo_restricted_guilds.push(geo);
+                }
                 // An outage (`unavailable`) keeps the guild; a removal drops it.
                 if data["unavailable"] != true
                     && let Some(guild) = id(&data["id"])
@@ -3667,11 +3700,20 @@ impl Stores {
             .filter_map(|guild| id(&guild["id"]))
             .collect();
         // A stub has no channels, so `Guild::from_value` skipped it; GUILD_CREATE fills it in later.
+        // `CONNECTION_OPEN` of module 225123: the unavailable servers leave out the geo-restricted ones, which go to
+        // GeoRestrictedGuildStore.
+        self.geo_restricted_guilds = data["guilds"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter(|guild| guild["geo_restricted"] == true)
+            .filter_map(GeoRestrictedGuild::from_value)
+            .collect();
         self.unavailable_guilds = data["guilds"]
             .as_array()
             .into_iter()
             .flatten()
-            .filter(|guild| guild["unavailable"] == true)
+            .filter(|guild| guild["unavailable"] == true && guild["geo_restricted"] != true)
             .filter_map(|guild| id(&guild["id"]))
             .filter(|guild| self.guilds.iter().all(|known| known.id != *guild))
             .collect();
@@ -5149,6 +5191,35 @@ mod tests {
             (kept.name.as_str(), kept.member_flags, kept.muted),
             ("renamed", Some(4), true)
         );
+    }
+
+    #[test]
+    fn geo_restricted_servers_are_kept_apart_from_unavailable_ones() {
+        let mut stores = Stores::default();
+        stores.dispatch(
+            "READY",
+            &json!({"user": {"id": "5", "username": "me"}, "guilds": [
+                {"id": "1", "unavailable": true},
+                {"id": "2", "unavailable": true, "geo_restricted": true, "name": "Far", "icon": "abc"}]}),
+        );
+        assert!(stores.unavailable_guilds.contains(&1));
+        assert!(!stores.unavailable_guilds.contains(&2));
+        assert_eq!(
+            stores.geo_restricted_guilds,
+            vec![GeoRestrictedGuild {
+                id: 2,
+                name: "Far".to_owned(),
+                icon: Some("abc".to_owned()),
+            }]
+        );
+        stores.dispatch(
+            "GUILD_DELETE",
+            &json!({"id": "3", "unavailable": true, "geo_restricted": true, "name": "New"}),
+        );
+        assert_eq!(stores.geo_restricted_guilds.len(), 2);
+        stores.dispatch("GUILD_DELETE", &json!({"id": "2"}));
+        assert_eq!(stores.geo_restricted_guilds.len(), 1);
+        assert_eq!(stores.geo_restricted_guilds[0].id, 3);
     }
 
     #[test]

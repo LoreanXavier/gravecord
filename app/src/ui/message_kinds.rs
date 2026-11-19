@@ -38,6 +38,11 @@ fn icon_image(icon: LineIcon) -> Option<(&'static str, &'static str)> {
 pub(super) fn wanted(messages: &[Message]) -> Vec<(String, String)> {
     let mut images = Vec::new();
     for message in messages {
+        // AutoMod's raid card (module 117096 `iC`): its avatar and the one it plays while hovered.
+        if super::automod_alert::is_raid_card(message) {
+            images.extend(super::automod_alert::AVATARS.map(|url| (url.to_owned(), url.to_owned())));
+            continue;
+        }
         if message_kinds::presentation(message) != message_kinds::Presentation::System {
             continue;
         }

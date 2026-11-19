@@ -854,3 +854,152 @@ mod tests {
         assert!(!enabled(&guild));
     }
 }
+
+/// `COMPLETED_HOME_ACTIONS` of the member flags (module 340837).
+const COMPLETED_HOME_ACTIONS: u64 = 64;
+
+/// The celebration of module 455796 while it shows: how many actions the server's guide has, and when it opened.
+pub(crate) struct GuideCelebration {
+    actions: usize,
+    opened: std::time::Instant,
+}
+
+/// The share of the bar module 455796 fills: `(n - 1) / n` at first, all of it from 200ms (`setTimeout(() => h(1),
+/// 200)`), moved over `.2s ease-out` (`animating_GQQbyK`).
+pub(super) fn celebration_percent(actions: usize, elapsed_ms: u128) -> f32 {
+    let start = if actions == 0 {
+        0.
+    } else {
+        (actions as f32 - 1.) / actions as f32
+    };
+    let t = (elapsed_ms.saturating_sub(200) as f32 / 200.).clamp(0., 1.);
+    // `ease-out` approximated by its quadratic.
+    let eased = 1. - (1. - t) * (1. - t);
+    start + (1. - start) * eased
+}
+
+impl Root {
+    /// `handleGuildMemberUpdate` of module 976639: the first update this session that shows this account's
+    /// `COMPLETED_HOME_ACTIONS` in a server opens module 455796, when the server's guide has new member actions.
+    pub(super) fn guide_member_updated(&mut self, data: &serde_json::Value, cx: &mut Context<Self>) {
+        let me = self.stores.current_user.as_ref().map(|me| me.id);
+        let (Some(guild), Some(user)) = (
+            data["guild_id"].as_str().and_then(|id| id.parse::<Id>().ok()),
+            data["user"]["id"].as_str().and_then(|id| id.parse::<Id>().ok()),
+        ) else {
+            return;
+        };
+        let flags = data["flags"].as_u64().unwrap_or(0);
+        if Some(user) != me
+            || flags & COMPLETED_HOME_ACTIONS == 0
+            || !self.guide_complete_guilds.insert(guild)
+        {
+            return;
+        }
+        let actions = self
+            .fetched
+            .get(&format!("{HOME}{guild}"))
+            .and_then(|home| home["new_member_actions"].as_array().map(Vec::len))
+            .unwrap_or(0);
+        if actions == 0 {
+            return;
+        }
+        self.open_guide_celebration(actions, cx);
+    }
+
+    pub(super) fn open_guide_celebration(&mut self, actions: usize, cx: &mut Context<Self>) {
+        self.guide_celebration = Some(GuideCelebration {
+            actions,
+            opened: std::time::Instant::now(),
+        });
+        // `setTimeout(t, 2e3)`: it closes itself after two seconds.
+        cx.spawn(async move |this, cx| {
+            cx.background_executor()
+                .timer(std::time::Duration::from_millis(2000))
+                .await;
+            let _ = this.update(cx, |this, cx| {
+                this.guide_celebration = None;
+                cx.notify();
+            });
+        })
+        .detach();
+        cx.notify();
+    }
+
+    /// Module 455796 in the modal layer (no dialog of its own): the `pGj5u2` line (`heading-xl/semibold`,
+    /// `text-strong`, `heading_00TCS5`: 16px under it) over the progress bar of module 5373 (`small`: 6px, 3px
+    /// corners, `--progressbar-track-background`) filled with the `GREEN_300` to `GREEN_230` gradient.
+    /// GAP: the confetti burst at 700ms (`createMultipleConfetti`) is not drawn.
+    pub(super) fn guide_celebration_layer(&self, window: &mut gpui::Window) -> Option<AnyElement> {
+        let open = self.guide_celebration.as_ref()?;
+        let elapsed = open.opened.elapsed().as_millis();
+        let percent = celebration_percent(open.actions, elapsed);
+        if elapsed < 500 {
+            window.request_animation_frame();
+        }
+        Some(
+            gpui::deferred(
+                div()
+                    .id("guide-celebration-layer")
+                    .occlude()
+                    .absolute()
+                    .inset_0()
+                    .bg(gpui::rgba(0x000000b8))
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .child(
+                        div()
+                            .flex()
+                            .flex_col()
+                            .child(
+                                div()
+                                    .mb(px(16.))
+                                    .text_size(px(24.))
+                                    .line_height(px(30.))
+                                    .font_weight(FontWeight(600.))
+                                    .text_color(color("--text-strong"))
+                                    .child(dc_intl::format(
+                                        "pGj5u2",
+                                        &[("count", (open.actions as i64).into())],
+                                    )),
+                            )
+                            .child(
+                                div()
+                                    .w_full()
+                                    .h(px(6.))
+                                    .rounded(px(3.))
+                                    .overflow_hidden()
+                                    .bg(color("--progressbar-track-background"))
+                                    .child(div().h_full().w(gpui::relative(percent)).bg(
+                                        gpui::linear_gradient(
+                                            90.,
+                                            gpui::linear_color_stop(color("--green-300"), 0.),
+                                            gpui::linear_color_stop(color("--green-230"), 1.),
+                                        ),
+                                    )),
+                            ),
+                    ),
+            )
+            .with_priority(4)
+            .into_any_element(),
+        )
+    }
+}
+
+#[cfg(test)]
+mod celebration_tests {
+    use super::*;
+
+    #[test]
+    fn the_bar_starts_one_action_short_and_fills_after_200ms() {
+        assert!((celebration_percent(4, 0) - 0.75).abs() < 1e-6);
+        assert!((celebration_percent(4, 150) - 0.75).abs() < 1e-6);
+        assert!((celebration_percent(4, 400) - 1.).abs() < 1e-6);
+        assert!(celebration_percent(4, 300) > 0.75);
+        assert_eq!(
+            dc_intl::format("pGj5u2", &[("count", 3i64.into())]),
+            "You've explored 3 starter channels, great job!"
+        );
+    }
+}

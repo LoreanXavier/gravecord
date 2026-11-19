@@ -11,7 +11,7 @@ use crate::editor::{Editor, EditorEvent};
 use crate::net::Request;
 use crate::parity::Parity;
 use crate::ui::motion::Posed as _;
-use dc_state::Id;
+use dc_state::{Id, permissions};
 use gpui::{
     AnyElement, ClickEvent, Context, Entity, FontWeight, IntoElement, PathPromptOptions,
     Subscription, deferred, div, img, linear_color_stop, linear_gradient, prelude::*, px,
@@ -1187,6 +1187,23 @@ pub(super) fn boost_fraction(applied: u64, goal: u64) -> f32 {
 }
 
 impl Root {
+    /// Enable Progress Bar of module 709843: `saveGuild(id, {premiumProgressBarEnabled: !enabled})`, which the
+    /// `GUILD_UPDATE` that follows confirms; the bar goes at once.
+    pub(super) fn toggle_boost_progress_bar(&mut self, guild: Id, cx: &mut Context<Self>) {
+        let Some(known) = self.stores.guilds.iter_mut().find(|known| known.id == guild) else {
+            return;
+        };
+        let enabled = !known.premium_progress_bar_enabled;
+        known.premium_progress_bar_enabled = enabled;
+        let _ = self.requests.send(Request::Rest {
+            key: None,
+            method: reqwest::Method::PATCH,
+            route: format!("/guilds/{guild}"),
+            body: Some(json!({"premium_progress_bar_enabled": enabled})),
+        });
+        cx.notify();
+    }
+
     /// The boost progress bar of the channel list (`tp`/`tf` of module 616740, styles `.container_BFMMcK` and
     /// friends of `ed1ab6525c3040dd.css`): drawn when the server has the bar switched on and the New Member
     /// "Get Started" bar is not in its slot. No official frame shows it (the captured servers show Get Started), so
@@ -1202,10 +1219,28 @@ impl Root {
         let pink = super::hsla("--guild-boosting-pink-refresh");
         // `.progress` is `inset: 2px` of the 26px bar; its width is `calc(d% - 4px)` of the bar.
         let fill = gpui::relative(fraction);
+        let id = guild.id;
+        // `onContextMenu` of `tp`: Progress Bar Actions (module 709843) for an Administrator (module 363487).
+        let admin = self
+            .stores
+            .me()
+            .is_some_and(|me| permissions::can_in_guild(guild, me, permissions::ADMINISTRATOR));
         Some(
             div()
                 .id("boost-progress")
                 .parity("boost-progress")
+                .when(admin, |this| {
+                    this.on_mouse_down(
+                        gpui::MouseButton::Right,
+                        cx.listener(move |this, event: &gpui::MouseDownEvent, _, cx| {
+                            this.open_context_menu(
+                                super::context_menu::Target::ProgressBar(id),
+                                event.position,
+                                cx,
+                            );
+                        }),
+                    )
+                })
                 .flex_none()
                 .flex()
                 .flex_col()

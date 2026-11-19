@@ -31,12 +31,41 @@ pub(super) struct Spec {
     pub close: modal::Handler,
 }
 
+/// The dialog's `size`, its header's `gradientColor` and the graphic's `aspectRatio` (module 772707 `k`, header of
+/// module 20742).
+#[derive(Clone, Copy)]
+pub(super) struct Look {
+    /// `md` (480) or `sm` (400).
+    pub width: f32,
+    pub gradient: (&'static str, &'static str),
+    /// The graphic box's width over its height (`aspect-ratio-16/9`, `aspect-ratio-6/4`, ...).
+    pub aspect: f32,
+}
+
+impl Look {
+    /// The defaults of module 772707: `md`, `purple`, 16/9.
+    pub(super) const DEFAULT: Look = Look {
+        width: channel_status::MODAL_WIDTH,
+        gradient: (
+            "--expressive-gradient-purple-start",
+            "--expressive-gradient-purple-end",
+        ),
+        aspect: 16. / 9.,
+    };
+}
+
 /// The graphic box's height in a window this high, or `None` when it is hidden (`max-height:430px`).
+#[cfg(test)]
 pub(super) fn graphic_box_height(window_height: f32) -> Option<f32> {
+    graphic_box_height_at(window_height, 16. / 9.)
+}
+
+/// As `graphic_box_height`, for a graphic box of this aspect ratio.
+pub(super) fn graphic_box_height_at(window_height: f32, aspect: f32) -> Option<f32> {
     if window_height <= 430. {
         return None;
     }
-    let full: f32 = 288. * 9. / 16.;
+    let full: f32 = 288. / aspect;
     Some(if window_height <= 720. {
         full.min(window_height * 0.15)
     } else {
@@ -59,17 +88,24 @@ impl Root {
     }
 
     pub(super) fn graphic_modal(&self, spec: Spec, cx: &mut Context<Self>) -> AnyElement {
+        self.graphic_modal_with(spec, Look::DEFAULT, cx)
+    }
+
+    /// The dialog in another size, gradient or graphic shape.
+    pub(super) fn graphic_modal_with(
+        &self,
+        spec: Spec,
+        look: Look,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
         let pose = super::motion::modal_pose(spec.id);
         let close = std::rc::Rc::new(spec.close);
         let close_button = close.clone();
         let close_scrim = close.clone();
-        let gradient = channel_status::header_gradient(
-            color("--expressive-gradient-purple-start"),
-            color("--expressive-gradient-purple-end"),
-        );
+        let gradient = channel_status::header_gradient(color(look.gradient.0), color(look.gradient.1));
         let box_height = spec
             .graphic
-            .and_then(|_| graphic_box_height(self.viewport.1));
+            .and_then(|_| graphic_box_height_at(self.viewport.1, look.aspect));
         let picture = spec.graphic.zip(box_height).map(|(graphic, box_height)| {
             let (width, height) = fitted(graphic, box_height);
             div()
@@ -88,7 +124,7 @@ impl Root {
         let header = div()
             .relative()
             .flex_none()
-            .w(px(channel_status::HEADER_WIDTH as f32))
+            .w(px(look.width - 2.))
             .child(
                 img(gradient)
                     .absolute()
@@ -145,7 +181,7 @@ impl Root {
             .paint_scale(pose.scale, gpui::point(0.5, 0.5))
             .occlude()
             .relative()
-            .w(px(channel_status::MODAL_WIDTH))
+            .w(px(look.width))
             .pt(px(8.))
             .pb(px(16.))
             .rounded(px(12.))

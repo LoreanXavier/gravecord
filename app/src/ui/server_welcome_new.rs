@@ -472,8 +472,8 @@ impl Root {
             Step::Message => self.focus_composer(window, cx),
             // GAP: module 987482 (the download modal); the card never shows outside the web client.
             Step::Download => {}
-            // GAP: the App Directory upsell modal (module 633605) is not built; the App Directory opens instead.
-            Step::AddApp => self.open_discover(super::discover::Place::Apps, cx),
+            // `handleAddApplication`: "Introducing App Directory" (module 633605).
+            Step::AddApp => self.open_app_directory_promo(guild, cx),
             // `CHANNEL(guild, GUILD_BOOSTS)`: the server's boost page.
             Step::Boost => self.open_boost_page(cx),
         }
@@ -481,9 +481,134 @@ impl Root {
     }
 }
 
+/// Module 633605's header picture (`aspectRatio: "6/4"`) and the 24px icons of its three lines.
+const PROMO_ART: super::graphic_modal::Graphic = super::graphic_modal::Graphic {
+    url: "https://cdn.discordapp.com/assets/content/2c7d0b82f2c7be0c182a49fcfab5e6a0b4931dccef76e6a851e54260aebca02a.svg",
+    width: 288.,
+    height: 192.,
+};
+const PROMO_LINES: [(&str, &str); 3] = [
+    (
+        "https://cdn.discordapp.com/assets/content/6f2327d812c75a6d27a59dd476f7e35db632b0e8ca8d3ced52d6ff0c867f6e5f.svg",
+        "0vKo5F",
+    ),
+    (
+        "https://cdn.discordapp.com/assets/content/96552954edc2aaf6953969b70c978f2601341c8c90edbc90e605e0392cada677.svg",
+        "CprEDO",
+    ),
+    (
+        "https://cdn.discordapp.com/assets/content/3b8d3a95cbf44767e9a35569bdbebbb5515039e038bfb53924f500e33dc225c4.svg",
+        "wQJMPC",
+    ),
+];
+
+impl Root {
+    /// Opens module 633605 for this server and asks for its pictures.
+    pub(super) fn open_app_directory_promo(&mut self, guild: Id, cx: &mut Context<Self>) {
+        self.request_graphic(PROMO_ART);
+        for (url, _) in PROMO_LINES {
+            self.request_image(url.to_owned(), url.to_owned());
+        }
+        self.app_directory_promo = Some(guild);
+        cx.notify();
+    }
+
+    /// "Introducing App Directory" (module 633605) on the dialog with a header graphic (module 772707 `k`: `size:
+    /// "sm"`, `gradientColor: "blue"`, the 6/4 picture), "Search, browse, and explore thousands of apps", the list of
+    /// three lines (`listContainer_pzCk_B`: `--background-surface-higher`, a `--border-subtle` border, 8px corners,
+    /// 8px 16px of padding, 16px above; each `listItem_pzCk_B` a 24px icon 8px before its `body-sm/medium` text, 8px
+    /// above and below; the thin `--border-subtle` divider at half opacity between them) and Check it out (`primary`),
+    /// which closes it and opens the App Directory (`transitionToGlobalDiscovery({tab: APPS})`).
+    pub(super) fn app_directory_promo_modal(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
+        self.app_directory_promo?;
+        let mut list = div()
+            .mt(px(16.))
+            .w_full()
+            .py(px(8.))
+            .px(px(16.))
+            .rounded(px(8.))
+            .border_1()
+            .border_color(color("--border-subtle"))
+            .bg(color("--background-surface-higher"))
+            .flex()
+            .flex_col()
+            .gap(px(8.));
+        for (index, (url, key)) in PROMO_LINES.iter().enumerate() {
+            if index > 0 {
+                list = list.child(
+                    div()
+                        .h(px(1.))
+                        .w_full()
+                        .bg(color("--border-subtle"))
+                        .opacity(0.5),
+                );
+            }
+            list = list.child(
+                div()
+                    .my(px(8.))
+                    .flex()
+                    .items_center()
+                    .gap(px(8.))
+                    .child(
+                        div()
+                            .size(px(24.))
+                            .flex_none()
+                            .children(self.images.get(*url).cloned().map(|art| img(art).size(px(24.)))),
+                    )
+                    .child(
+                        div()
+                            .text_size(px(14.))
+                            .line_height(px(18.))
+                            .font_weight(FontWeight(500.))
+                            .text_color(color("--text-default"))
+                            .child(dc_intl::t(key)),
+                    ),
+            );
+        }
+        let close = || -> super::modal::Handler {
+            Box::new(|this, _, _| this.app_directory_promo = None)
+        };
+        Some(self.graphic_modal_with(
+            super::graphic_modal::Spec {
+                id: "app-directory-promo",
+                graphic: Some(PROMO_ART),
+                title: dc_intl::t("2tv5YG").into(),
+                subtitle: Some(div().child(dc_intl::t("pgwlD7")).into_any_element()),
+                body: Some(list.into_any_element()),
+                buttons: vec![super::modal::button(
+                    "app-directory-promo-check",
+                    dc_intl::t("5e8Mrp"),
+                    super::modal::Tone::Primary,
+                    |this, _, cx| {
+                        this.app_directory_promo = None;
+                        this.open_discover(super::discover::Place::Apps, cx);
+                    },
+                )],
+                close: close(),
+            },
+            super::graphic_modal::Look {
+                width: 400.,
+                gradient: (
+                    "--expressive-gradient-blue-start",
+                    "--expressive-gradient-blue-end",
+                ),
+                aspect: 6. / 4.,
+            },
+            cx,
+        ))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_app_directory_promo_strings_are_the_official_ones() {
+        assert_eq!(dc_intl::t("2tv5YG"), "Introducing App Directory");
+        assert_eq!(dc_intl::t("5e8Mrp"), "Check it out");
+        assert_eq!(dc_intl::t(PROMO_LINES[1].1), "Automate useful tasks and free up time");
+    }
 
     fn snowflake_at(ms: i64) -> Id {
         ((ms - EPOCH_MS) as u64) << 22
