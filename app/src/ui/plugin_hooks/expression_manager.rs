@@ -16,8 +16,8 @@
 use super::super::Root;
 use super::super::context_menu::{Act, Entry, Row, Target};
 use dc_state::Id;
-use gpui::prelude::FluentBuilder as _;
 use gpui::AppContext as _;
+use gpui::prelude::FluentBuilder as _;
 use gpui::{
     AnyElement, Context, Entity, FontWeight, InteractiveElement, IntoElement, ParentElement,
     SharedString, StatefulInteractiveElement, Styled, Subscription, div, img, px,
