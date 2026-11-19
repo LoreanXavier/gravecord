@@ -270,6 +270,8 @@ impl Root {
     ) -> Option<AnyElement> {
         let user = self.stores.users.get(&popout.user)?.clone();
         let id = user.id;
+        // Module 589022: an app (a bot that is a user) gets the bot popout of module 476897.
+        let bot = super::profile_bot::app_bot(&user);
         let palette = self.profile_palette(id, self.guild, false);
         let light = palette
             .theme
@@ -277,7 +279,7 @@ impl Root {
             .is_some_and(super::profile_theme::ProfileTheme::light);
         let strong: Hsla = palette.text;
         let body = self.fetched.get(&format!("profile:{id}"));
-        let private = body.is_some_and(|body| body["private"] == true);
+        let private = !bot && body.is_some_and(|body| body["private"] == true);
         let display_name = self.guild_display_name(&user);
         let presence = self.stores.status(id).to_owned();
         let banner = if palette.themed {
@@ -403,98 +405,129 @@ impl Root {
             .into_any_element();
         // The buttons on the banner sit on the top layer, above the profile effect (z-index 3 against its 2), so they
         // are drawn after it as children of the card body: 32px down when the private heading precedes the header.
-        let actions: AnyElement = div()
-            .parity("profile-actions")
-            .absolute()
-            .top(px(if private { 46. } else { 14. }))
-            .right(px(10.))
-            .flex()
-            .gap(px(8.))
-            .child(self.profile_friend_button_at(id, "popout-friend", cx))
-            .child(self.profile_more_button_at(id, "popout-more", cx))
-            .into_any_element();
-        let effect = self.profile_effect_sku(id).and_then(|sku| {
+        let actions: AnyElement = if bot {
+            // 476897's banner holds only the bot overflow menu (module 630891).
+            div()
+                .parity("profile-actions")
+                .absolute()
+                .top(px(14.))
+                .right(px(10.))
+                .flex()
+                .child(self.bot_more_button(id, "bot-popout-more", cx))
+                .into_any_element()
+        } else {
+            div()
+                .parity("profile-actions")
+                .absolute()
+                .top(px(if private { 46. } else { 14. }))
+                .right(px(10.))
+                .flex()
+                .gap(px(8.))
+                .child(self.profile_friend_button_at(id, "popout-friend", cx))
+                .child(self.profile_more_button_at(id, "popout-more", cx))
+                .into_any_element()
+        };
+        // The bot popout draws no profile effect.
+        let effect = self
+            .profile_effect_sku(id)
+            .filter(|_| !bot)
+            .and_then(|sku| {
+                let hovering = self.profile_effect_hovered("popout");
+                self.profile_effect_layer(
+                    "popout",
+                    sku,
+                    super::profile_effects::Surface::profile(300., hovering),
+                    window,
+                    cx,
+                )
+            });
+        let names: AnyElement = if bot {
+            // Module 465829 with the app tag, the note button (243166) shown while the card is hovered.
             let hovering = self.profile_effect_hovered("popout");
-            self.profile_effect_layer(
-                "popout",
-                sku,
-                super::profile_effects::Surface::profile(300., hovering),
-                window,
+            self.profile_names(
+                "bot-popout",
+                &user,
+                self.guild,
+                &palette,
+                Some(hovering),
+                false,
                 cx,
             )
-        });
-        let names: AnyElement = div()
-            .flex()
-            .flex_col()
-            .child(
-                div()
-                    .id("popout-display-name")
-                    .cursor_pointer()
-                    .hover(|style| style.underline())
-                    .on_click(cx.listener(move |this, _, window, cx| {
-                        this.profile = None;
-                        this.open_full_profile(id, window, cx);
-                    }))
-                    .h(px(24.))
-                    .text_size(px(20.))
-                    .line_height(px(24.))
-                    .font_weight(FontWeight(600.))
-                    .text_color(strong)
-                    .child(super::name_styles::probed(
-                        super::name_styles::name(
-                            format!("popout-name-{id}"),
-                            display_name.clone(),
-                            self.name_styles(&user, self.guild).as_ref(),
-                            super::name_styles::Display::Animated,
-                        ),
-                        "profile-name-styled",
-                    )),
-            )
-            .child(
-                div()
-                    .min_h(px(24.))
-                    .flex()
-                    .flex_wrap()
-                    .items_center()
-                    .gap_x(px(6.))
-                    .gap_y(px(2.))
-                    .text_size(px(14.))
-                    .line_height(px(18.))
-                    .text_color(strong)
-                    .child({
-                        let (shown, concealed) = self.profile_username(&user);
-                        let line = div()
-                            .id("popout-username")
-                            .cursor_pointer()
-                            .hover(|style| style.underline())
-                            .on_click(cx.listener(move |this, _, window, cx| {
-                                this.profile = None;
-                                this.open_full_profile(id, window, cx);
-                            }))
-                            .child(shown);
-                        // Module 297413: a concealed name carries "Streamer Mode Enabled".
-                        if concealed {
-                            self.with_tip(
-                                "popout-username-streamer",
-                                super::tooltip::Tip::text(
-                                    dc_intl::t("Br1ls3"),
-                                    super::tooltip::Side::Top,
-                                ),
-                                line,
-                                cx,
-                            )
-                            .into_any_element()
-                        } else {
-                            line.into_any_element()
-                        }
-                    })
-                    .when_some(pronouns, |this, pronouns| {
-                        this.child(div().size(px(4.)).rounded_full().bg(strong))
-                            .child(pronouns)
-                    })
-                    .children(self.badge_pill("popout", id, &palette, cx)),
-            )
-            .into_any_element();
+            .into_any_element()
+        } else {
+            div()
+                .flex()
+                .flex_col()
+                .child(
+                    div()
+                        .id("popout-display-name")
+                        .cursor_pointer()
+                        .hover(|style| style.underline())
+                        .on_click(cx.listener(move |this, _, window, cx| {
+                            this.profile = None;
+                            this.open_full_profile(id, window, cx);
+                        }))
+                        .h(px(24.))
+                        .text_size(px(20.))
+                        .line_height(px(24.))
+                        .font_weight(FontWeight(600.))
+                        .text_color(strong)
+                        .child(super::name_styles::probed(
+                            super::name_styles::name(
+                                format!("popout-name-{id}"),
+                                display_name.clone(),
+                                self.name_styles(&user, self.guild).as_ref(),
+                                super::name_styles::Display::Animated,
+                            ),
+                            "profile-name-styled",
+                        )),
+                )
+                .child(
+                    div()
+                        .min_h(px(24.))
+                        .flex()
+                        .flex_wrap()
+                        .items_center()
+                        .gap_x(px(6.))
+                        .gap_y(px(2.))
+                        .text_size(px(14.))
+                        .line_height(px(18.))
+                        .text_color(strong)
+                        .child({
+                            let (shown, concealed) = self.profile_username(&user);
+                            let line = div()
+                                .id("popout-username")
+                                .cursor_pointer()
+                                .hover(|style| style.underline())
+                                .on_click(cx.listener(move |this, _, window, cx| {
+                                    this.profile = None;
+                                    this.open_full_profile(id, window, cx);
+                                }))
+                                .child(shown);
+                            // Module 297413: a concealed name carries "Streamer Mode Enabled".
+                            if concealed {
+                                self.with_tip(
+                                    "popout-username-streamer",
+                                    super::tooltip::Tip::text(
+                                        dc_intl::t("Br1ls3"),
+                                        super::tooltip::Side::Top,
+                                    ),
+                                    line,
+                                    cx,
+                                )
+                                .into_any_element()
+                            } else {
+                                line.into_any_element()
+                            }
+                        })
+                        .when_some(pronouns, |this, pronouns| {
+                            this.child(div().size(px(4.)).rounded_full().bg(strong))
+                                .child(pronouns)
+                        })
+                        .children(self.badge_pill("popout", id, &palette, cx)),
+                )
+                .into_any_element()
+        };
         let mutuals: AnyElement = div()
             .h(px(24.))
             .flex()
@@ -556,7 +589,16 @@ impl Root {
             .gap(px(12.))
             .children(self.profile_fetch_warning(id))
             .child(names)
-            .when(friends > 0 || servers > 0, |this| this.child(mutuals))
+            .when(!bot && (friends > 0 || servers > 0), |this| {
+                this.child(mutuals)
+            })
+            .when(bot, |this| {
+                // 791556 as the DM profile draws it (`body-sm` for one count, avatars before the friends).
+                this.children(self.profile_mutuals("bot-popout", id, &palette, cx))
+            })
+            .when(bot, |this| {
+                this.children(self.bot_popout_buttons(id, &palette, cx))
+            })
             // Module 348434: the private notice (501193 in the profile's `Overlay`) sits after the mutuals and
             // before the bio.
             .when(private, |this| {
@@ -575,63 +617,77 @@ impl Root {
                 cx,
             ))
             .children(self.popout_voice_card(id, cx))
-            .children(self.profile_role_chips(id, strong, cx))
+            .when(bot, |this| {
+                this.children(self.profile_commands_section(id, &palette, cx))
+                    .children(self.bot_roles_section(id, &palette, cx))
+            })
+            .when(!bot, |this| {
+                this.children(self.profile_role_chips(id, strong, cx))
+            })
             // Not in the pinned client: ShowConnections (`plugin_hooks/show_connections.rs`).
             .children(self.connections_row(id, false, cx))
             .into_any_element();
-        let message: Option<AnyElement> = popout.message.as_ref().map(|message| {
-            div()
-                .px(px(16.))
-                .pb(px(12.))
-                .child(
+        // 848674: a bot's popout has the field only when the account may write to it (module 570287).
+        let message_shown = !bot || self.bot_can_message(id);
+        let message: Option<AnyElement> =
+            popout
+                .message
+                .as_ref()
+                .filter(|_| message_shown)
+                .map(|message| {
                     div()
-                        .h(px(44.))
-                        .rounded(px(8.))
-                        .bg(palette.token("--background-mod-subtle"))
-                        .pl(px(15.))
-                        .flex()
-                        .items_center()
-                        .child(div().flex_1().min_w(px(0.)).child(message.editor.clone()))
-                        .child({
-                            let field = message.editor.clone();
+                        .px(px(16.))
+                        .pb(px(12.))
+                        .child(
                             div()
-                                .id("popout-emoji")
-                                .size(px(32.))
-                                .mr(px(4.))
+                                .h(px(44.))
+                                .rounded(px(8.))
+                                .bg(palette.token("--background-mod-subtle"))
+                                .pl(px(15.))
                                 .flex()
                                 .items_center()
-                                .justify_center()
-                                .cursor_pointer()
-                                .on_click(cx.listener(
-                                    move |this, event: &gpui::ClickEvent, window, cx| {
-                                        let at = event.position();
-                                        this.picker_field = Some(field.clone());
-                                        this.open_picker(
-                                            super::picker::Target::Field,
-                                            gpui::point(at.x, at.y - px(24.)),
-                                            window,
-                                            cx,
-                                        );
-                                    },
-                                ))
-                                .children(
-                                    self.images
-                                        .get("emoji_button")
-                                        .cloned()
-                                        .map(|picture| img(picture).size(px(18.)).grayscale(true)),
-                                )
-                        }),
-                )
-                .into_any_element()
-        });
+                                .child(div().flex_1().min_w(px(0.)).child(message.editor.clone()))
+                                .child({
+                                    let field = message.editor.clone();
+                                    div()
+                                        .id("popout-emoji")
+                                        .size(px(32.))
+                                        .mr(px(4.))
+                                        .flex()
+                                        .items_center()
+                                        .justify_center()
+                                        .cursor_pointer()
+                                        .on_click(cx.listener(
+                                            move |this, event: &gpui::ClickEvent, window, cx| {
+                                                let at = event.position();
+                                                this.picker_field = Some(field.clone());
+                                                this.open_picker(
+                                                    super::picker::Target::Field,
+                                                    gpui::point(at.x, at.y - px(24.)),
+                                                    window,
+                                                    cx,
+                                                );
+                                            },
+                                        ))
+                                        .children(self.images.get("emoji_button").cloned().map(
+                                            |picture| img(picture).size(px(18.)).grayscale(true),
+                                        ))
+                                }),
+                        )
+                        .into_any_element()
+                });
         // The frame of module 744808 over the popout (`user-profile-popout`), when the window is taller than 480px.
-        let (frame_back, frame_front) = self.profile_frame_layers(
-            id,
-            304.,
-            None,
-            super::profile_frames::FrameSurface::Popout,
-            f32::from(window.viewport_size().height),
-        );
+        let (frame_back, frame_front) = if bot {
+            (Vec::new(), Vec::new())
+        } else {
+            self.profile_frame_layers(
+                id,
+                304.,
+                None,
+                super::profile_frames::FrameSurface::Popout,
+                f32::from(window.viewport_size().height),
+            )
+        };
         let card = div()
             .parity("user-popout")
             .id("profile-popout")

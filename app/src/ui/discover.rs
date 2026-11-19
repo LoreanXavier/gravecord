@@ -4,7 +4,7 @@
 //!
 //! Official modules followed: 300290 (Servers page), 586193 (Apps pages), 521974 and 770472 (the collapsing search bar),
 //! 965660, 808097, 449054 and 324580 (directory requests).
-mod app_data;
+pub(super) mod app_data;
 mod apps;
 mod data;
 mod hubs;
@@ -498,7 +498,8 @@ impl Root {
             self.select(id, None);
         }
         let place = self.discover.place;
-        let width = (f32::from(window.viewport_size().width) - self.combined_sidebar_width()).max(0.);
+        let width =
+            (f32::from(window.viewport_size().width) - self.combined_sidebar_width()).max(0.);
         let scroll = self.discover.scroll.clone();
         let offset = (-f32::from(scroll.offset().y)).max(0.);
         let results = match place {

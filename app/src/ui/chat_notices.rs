@@ -249,6 +249,18 @@ pub(super) fn raid_report_request(guild: Id, alerts_channel: Option<Id>) -> Opti
     })
 }
 
+/// Report App of module 630891 (`useReportAppItemModal`, on the dialog of 189213 with no actions): "What do you
+/// want to report?" over two clickable rows of module 632738.
+pub(super) fn report_app_alert(user: Id, app: Id) -> Alert {
+    Alert {
+        id: "report-app",
+        title: dc_intl::t("Bd10bR").to_owned(),
+        subtitle: None,
+        content: Some(Content::ReportApp { user, app }),
+        buttons: Vec::new(),
+    }
+}
+
 /// "Invite permission required" (module 132610): the title, its subtitle and Got It.
 pub(super) fn invite_permission_alert() -> Alert {
     Alert {
@@ -302,6 +314,8 @@ pub(super) enum Content {
     LockdownFeedback { chosen: Vec<usize> },
     /// Module 580812's checkbox group, with the indices of `automod_alert::RESOLUTIONS` chosen.
     RaidResolve { chosen: Vec<usize> },
+    /// Report App of the bot overflow menu (module 630891): the app's profile or its behaviour.
+    ReportApp { user: Id, app: Id },
 }
 
 impl Content {
@@ -899,9 +913,11 @@ impl Root {
                     _ => Vec::new(),
                 };
                 let reason = super::automod_alert::resolution_reason(&chosen);
-                let _ = self.requests.send(super::automod_alert::false_alarm_request(
-                    guild, message, reason,
-                ));
+                let _ = self
+                    .requests
+                    .send(super::automod_alert::false_alarm_request(
+                        guild, message, reason,
+                    ));
             }
             Then::LeaveGuild { guild } => {
                 let _ = self.requests.send(super::guild_menu::leave_request(guild));
@@ -982,6 +998,7 @@ impl Root {
             })
             .collect();
         let medium = alert.medium();
+        let alert_id = alert.id;
         let subtitle = if matches!(alert.content, Some(Content::RaidReport { .. })) {
             Some(raid_subtitle(cx))
         } else {
@@ -998,7 +1015,10 @@ impl Root {
                 this.alert_closed(closed);
             }),
         };
-        Some(if medium {
+        Some(if alert_id == "report-app" {
+            // Opened from the bot profile modal's menu: above the modal that stays open under it.
+            modal::render_over_layers(spec, cx)
+        } else if medium {
             modal::render(spec, cx)
         } else {
             modal::render_small(spec, cx)
@@ -1108,18 +1128,85 @@ impl Root {
             // Module 336496: a stack 8px apart (`B` gap 8) of the checkbox group (module 167417, drawn as Report a
             // Raid's) and, while Other is chosen, `textboxContainer_p32tDk` (8px above, 32px in from the start) with
             // the text area of module 103557: three rows (`rows: 3`, 20px lines) inside `padding: 12px 10px`.
+            // `B` (8px apart) of two `clickable_zgsiD2` rows: `--background-mod-subtle` (`--background-mod-strong`
+            // hovered), 16px inside, `--radius-sm` corners, the title (`body-md/semibold`, `text-strong`) over the
+            // description (`body-md/medium`, `text-subtle`) 4px apart, the small chevron at the end. The first reports
+            // the app's profile (928658 `NW`), the second the app (928658 `r3`, entrypoint `user_profile`).
+            Content::ReportApp { user, app } => div()
+                .flex()
+                .flex_col()
+                .gap(px(8.))
+                .children(
+                    [("eyEkG1", "ptItsj", false), ("atP0yX", "UGg603", true)]
+                        .into_iter()
+                        .map(|(title, description, behaviour)| {
+                            div()
+                                .id(SharedString::from(format!("report-app-{title}")))
+                                .p(px(16.))
+                                .rounded(px(8.))
+                                .bg(super::color("--background-mod-subtle"))
+                                .hover(|style| style.bg(super::color("--background-mod-strong")))
+                                .cursor_pointer()
+                                .flex()
+                                .items_center()
+                                .justify_between()
+                                .gap(px(16.))
+                                .child(
+                                    div()
+                                        .flex_1()
+                                        .min_w(px(0.))
+                                        .flex()
+                                        .flex_col()
+                                        .gap(px(4.))
+                                        .child(
+                                            div()
+                                                .text_size(px(16.))
+                                                .line_height(px(20.))
+                                                .font_weight(FontWeight(600.))
+                                                .text_color(super::color("--text-strong"))
+                                                .child(dc_intl::t(title)),
+                                        )
+                                        .child(
+                                            div()
+                                                .text_size(px(16.))
+                                                .line_height(px(20.))
+                                                .font_weight(FontWeight(500.))
+                                                .text_color(super::color("--text-subtle"))
+                                                .child(dc_intl::t(description)),
+                                        ),
+                                )
+                                .child(
+                                    gpui::svg()
+                                        .path("icons/bot_chevron_small_right.svg")
+                                        .size(px(24.))
+                                        .flex_none()
+                                        .text_color(super::color("--icon-default")),
+                                )
+                                .on_click(cx.listener(move |this, _, window, cx| {
+                                    // GAP: the official keeps the chooser under the report until it is sent.
+                                    this.chat_extra.alert = None;
+                                    if behaviour {
+                                        this.open_report_app(app, "user_profile", cx);
+                                    } else {
+                                        this.open_report_user(user, window, cx);
+                                    }
+                                    cx.notify();
+                                }))
+                        }),
+                )
+                .into_any_element(),
             Content::LockdownFeedback { chosen } | Content::RaidResolve { chosen } => {
                 // Module 580812 draws the same group (module 167417) and text box (module 103557) as module 336496.
-                let (reasons, other_index, prefix): (&[(&str, &str)], usize, &str) =
-                    if raid_resolve {
-                        (
-                            &super::automod_alert::RESOLUTIONS,
-                            super::automod_alert::RESOLUTION_OTHER,
-                            "raid-resolve",
-                        )
-                    } else {
-                        (&LOCKDOWN_REASONS, LOCKDOWN_OTHER, "lockdown-feedback")
-                    };
+                let (reasons, other_index, prefix): (&[(&str, &str)], usize, &str) = if raid_resolve
+                {
+                    (
+                        &super::automod_alert::RESOLUTIONS,
+                        super::automod_alert::RESOLUTION_OTHER,
+                        "raid-resolve",
+                    )
+                } else {
+                    (&LOCKDOWN_REASONS, LOCKDOWN_OTHER, "lockdown-feedback")
+                };
                 let other = chosen.contains(&other_index);
                 div()
                     .flex()
@@ -1132,47 +1219,45 @@ impl Root {
                             .flex()
                             .flex_col()
                             .gap(px(16.))
-                            .children(reasons.iter().enumerate().map(
-                                |(index, (kind, label))| {
-                                    let checked = chosen.contains(&index);
-                                    div()
-                                        .id(SharedString::from(format!("{prefix}-{kind}")))
-                                        .flex()
-                                        .items_start()
-                                        .gap(px(12.))
-                                        .cursor_pointer()
-                                        .child(super::server_onboarding::checkbox(checked, false))
-                                        .child(
-                                            div()
-                                                .text_size(px(16.))
-                                                .line_height(px(20.))
-                                                .text_color(super::color("--text-strong"))
-                                                .child(dc_intl::t(label)),
-                                        )
-                                        .on_click(cx.listener(move |this, _, window, cx| {
-                                            if let Some(Alert {
-                                                content:
-                                                    Some(
-                                                        Content::LockdownFeedback { chosen }
-                                                        | Content::RaidResolve { chosen },
-                                                    ),
-                                                ..
-                                            }) = this.chat_extra.alert.as_mut()
+                            .children(reasons.iter().enumerate().map(|(index, (kind, label))| {
+                                let checked = chosen.contains(&index);
+                                div()
+                                    .id(SharedString::from(format!("{prefix}-{kind}")))
+                                    .flex()
+                                    .items_start()
+                                    .gap(px(12.))
+                                    .cursor_pointer()
+                                    .child(super::server_onboarding::checkbox(checked, false))
+                                    .child(
+                                        div()
+                                            .text_size(px(16.))
+                                            .line_height(px(20.))
+                                            .text_color(super::color("--text-strong"))
+                                            .child(dc_intl::t(label)),
+                                    )
+                                    .on_click(cx.listener(move |this, _, window, cx| {
+                                        if let Some(Alert {
+                                            content:
+                                                Some(
+                                                    Content::LockdownFeedback { chosen }
+                                                    | Content::RaidResolve { chosen },
+                                                ),
+                                            ..
+                                        }) = this.chat_extra.alert.as_mut()
+                                        {
+                                            toggle_choice(chosen, index);
+                                            if index == other_index
+                                                && chosen.contains(&other_index)
+                                                && let Some(input) =
+                                                    this.chat_extra.lockdown_other.as_ref()
                                             {
-                                                toggle_choice(chosen, index);
-                                                if index == other_index
-                                                    && chosen.contains(&other_index)
-                                                    && let Some(input) =
-                                                        this.chat_extra.lockdown_other.as_ref()
-                                                {
-                                                    let focus = input.read(cx).focus_handle(cx);
-                                                    window.focus(&focus, cx);
-                                                }
+                                                let focus = input.read(cx).focus_handle(cx);
+                                                window.focus(&focus, cx);
                                             }
-                                            cx.notify();
-                                        }))
-                                },
-                            )),
+                                        }
+                                        cx.notify();
+                                    }))
+                            })),
                     )
                     .when(other, |stack| {
                         stack.children(self.chat_extra.lockdown_other.clone().map(|input| {
