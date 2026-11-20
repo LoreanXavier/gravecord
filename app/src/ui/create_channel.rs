@@ -452,12 +452,35 @@ impl Root {
                                     "Voice",
                                     "Hang out together with voice, video, and screen share",
                                 ))
-                                .child(option(
-                                    Kind::Forum,
-                                    "channel_type_forum",
-                                    "Forum",
-                                    "Create a space for organized discussions",
-                                ))
+                                .child(
+                                    div()
+                                        .flex()
+                                        .flex_col()
+                                        .child(option(
+                                            Kind::Forum,
+                                            "channel_type_forum",
+                                            "Forum",
+                                            "Create a space for organized discussions",
+                                        ))
+                                        .child(
+                                            div()
+                                                .id("create-channel-forum-examples")
+                                                .ml(px(48.))
+                                                .mt(px(-4.))
+                                                .mb(px(4.))
+                                                .cursor_pointer()
+                                                .text_size(px(12.))
+                                                .line_height(px(16.))
+                                                .font_weight(FontWeight(500.))
+                                                .text_color(color("--text-link"))
+                                                .hover(|s| s.underline())
+                                                .child("See examples")
+                                                .on_click(cx.listener(|this, _, _, cx| {
+                                                    let guild = this.guild;
+                                                    this.open_forum_demo(guild, false, cx);
+                                                })),
+                                        ),
+                                )
                                 .children(news.then(|| {
                                     option(
                                         Kind::Announcement,
