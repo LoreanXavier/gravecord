@@ -2030,8 +2030,18 @@ impl Root {
                 &token,
             ));
             if let Some(purchase) = self.nitro.purchase.as_mut() {
-                purchase.step = Step::Confirm;
-                purchase.confirm.pending_payment = true;
+                if purchase.gift {
+                    let yearly = purchase.yearly;
+                    self.nitro.purchase = None;
+                    let mut modal = super::gift_ready::GiftReadyModal::demo("ready");
+                    if yearly {
+                        modal.interval = super::gift_ready::GiftInterval::Year;
+                    }
+                    self.gift_ready_modal = Some(modal);
+                } else {
+                    purchase.step = Step::Confirm;
+                    purchase.confirm.pending_payment = true;
+                }
             }
             cx.notify();
         }

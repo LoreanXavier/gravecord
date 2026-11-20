@@ -164,6 +164,10 @@ impl Root {
                 self.open_quests(cx);
                 "quests".to_owned()
             }
+            ["library"] => {
+                self.open_library(super::library::Tab::Games, cx);
+                "library".to_owned()
+            }
             ["nitro"] => {
                 self.open_nitro(cx);
                 "nitro".to_owned()

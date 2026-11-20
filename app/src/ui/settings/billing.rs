@@ -870,13 +870,24 @@ impl Root {
                                 .items_center()
                                 .justify_between()
                                 .child(self.payment_source_view(&source, for_subscription))
-                                // GAP: Edit opens the source's edit form (module 158935 `o3`), which is not built.
-                                .child(crate::ui::dm::small_button(
-                                    "billing-source-edit",
-                                    dc_intl::t("bt75uw"),
-                                    crate::ui::dm::Tone::Secondary,
-                                    true,
-                                )),
+                                .child(
+                                    crate::ui::dm::small_button(
+                                        "billing-source-edit",
+                                        dc_intl::t("bt75uw"),
+                                        crate::ui::dm::Tone::Secondary,
+                                        true,
+                                    )
+                                    .on_click(cx.listener(
+                                        |this, _, _, cx| {
+                                            this.billing_address_modal = Some(
+                                            crate::ui::billing_address::BillingAddressModal::demo(
+                                                "US", false,
+                                            ),
+                                        );
+                                            cx.notify();
+                                        },
+                                    )),
+                                ),
                         )
                 })
                 .collect::<Vec<_>>();
