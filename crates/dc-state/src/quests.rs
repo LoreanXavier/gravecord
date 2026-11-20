@@ -40,6 +40,75 @@ pub mod task {
     pub const ACHIEVEMENT_IN_ACTIVITY: &str = "ACHIEVEMENT_IN_ACTIVITY";
 }
 
+/// `QuestFeature` (module 902173, `Li` of module 221596).
+pub mod feature {
+    pub const CLOUD_GAMING_ACTIVITY: u64 = 25;
+    pub const NON_GAMING_PLAY_QUEST: u64 = 26;
+    pub const PACKAGE_ACTION_ADVENTURE: u64 = 28;
+    pub const PACKAGE_RPG_MMO: u64 = 29;
+    pub const PACKAGE_RACING_SPORTS: u64 = 30;
+    pub const PACKAGE_SANDBOX_CREATIVE: u64 = 31;
+    pub const PACKAGE_FAMILY_FRIENDLY: u64 = 32;
+    pub const PACKAGE_HOLIDAY_SEASON: u64 = 33;
+    pub const PACKAGE_NEW_YEARS: u64 = 34;
+    pub const CLOUD_GAMING_PROVIDER_NVIDIA: u64 = 43;
+}
+
+/// `QuestRewardAssignmentMethod` & collectible `expirationMode` (module 417404).
+pub mod reward_mode {
+    pub const ASSIGNMENT_TIERED: u64 = 2;
+    pub const EXPIRATION_PREMIUM_EXTENSION: u64 = 2;
+    pub const EXPIRATION_PREMIUM_PERMANENT: u64 = 3;
+}
+
+/// The special "any Activity" application id (`ej` of module 221596) and badge-intro video quest (`Fw`).
+pub const ANY_ACTIVITY_APP_ID: &str = "545364944258990091";
+pub const ORBS_INTRO_QUEST_ID: &str = "1333839522189938740";
+
+/// `QuestCtaState` (`UA` of module 79545).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum QuestCtaState {
+    Unenrolled,
+    Enrolled,
+    Incomplete,
+    Completed,
+    Claimed,
+    Expired,
+    ExpiredClaimable,
+    ExpiredClaimed,
+}
+
+/// `QuestTaskPlatform` (`fO` of module 221596).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum QuestPlatform {
+    Desktop,
+    Console,
+}
+
+/// `ActiveQuestBarScreen` (`X0` of module 506988, `Qo` of module 61387).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ActivePlatformScreen {
+    Select,
+    Desktop,
+    Console,
+}
+
+/// Console platforms a quest can target (`bg` of module 574112).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ConsolePlatform {
+    Xbox,
+    PlayStation,
+}
+
+impl ConsolePlatform {
+    pub fn connection_type(self) -> &'static str {
+        match self {
+            ConsolePlatform::Xbox => "xbox",
+            ConsolePlatform::PlayStation => "playstation",
+        }
+    }
+}
+
 /// A quest that sorts first while it is unfinished (`er.aJ` of module 221596).
 const PINNED_QUEST: &str = "1410358070831480904";
 
@@ -159,6 +228,29 @@ impl Filter {
     }
 }
 
+/// Per-task progress inside `user_status.progress[task_type]` (module 792620).
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct TaskProgress {
+    pub event_name: String,
+    pub value: f64,
+    pub updated_at: Option<String>,
+    pub heartbeat_expires_at: Option<String>,
+    pub heartbeat_last_beat_at: Option<String>,
+}
+
+impl TaskProgress {
+    fn from_value(key: &str, value: &Value) -> Self {
+        let text = |v: &Value| v.as_str().map(str::to_owned);
+        Self {
+            event_name: value["event_name"].as_str().unwrap_or(key).to_owned(),
+            value: value["value"].as_f64().unwrap_or(0.),
+            updated_at: text(&value["updated_at"]),
+            heartbeat_expires_at: text(&value["heartbeat"]["expires_at"]),
+            heartbeat_last_beat_at: text(&value["heartbeat"]["last_beat_at"]),
+        }
+    }
+}
+
 /// The user's status for one quest (`A` of module 247512).
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct UserStatus {
@@ -168,11 +260,21 @@ pub struct UserStatus {
     pub claimed_at: Option<String>,
     pub claimed_tier: Option<u64>,
     pub orb_quantity_claimed: Option<u64>,
+    pub stream_progress_seconds: f64,
+    pub progress: BTreeMap<String, TaskProgress>,
 }
 
 impl UserStatus {
     pub fn from_value(value: &Value) -> Self {
         let text = |key: &str| value[key].as_str().map(str::to_owned);
+        let progress = value["progress"]
+            .as_object()
+            .map(|map| {
+                map.iter()
+                    .map(|(k, v)| (k.clone(), TaskProgress::from_value(k, v)))
+                    .collect()
+            })
+            .unwrap_or_default();
         Self {
             quest_id: text("quest_id").unwrap_or_default(),
             enrolled_at: text("enrolled_at"),
@@ -180,8 +282,116 @@ impl UserStatus {
             claimed_at: text("claimed_at"),
             claimed_tier: value["claimed_tier"].as_u64(),
             orb_quantity_claimed: value["orb_quantity_claimed"].as_u64(),
+            stream_progress_seconds: value["stream_progress_seconds"].as_f64().unwrap_or(0.),
+            progress,
         }
     }
+}
+
+/// One task entry from `config.task_config_v2.tasks[type]` (module 792620).
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct QuestTask {
+    pub kind: String,
+    pub target: f64,
+    pub applications: Vec<String>,
+    pub task_title: Option<String>,
+    pub task_description: Option<String>,
+    pub video_title: Option<String>,
+}
+
+impl QuestTask {
+    fn from_value(key: &str, value: &Value) -> Self {
+        let applications = value["applications"]
+            .as_array()
+            .map(|apps| {
+                apps.iter()
+                    .filter_map(|app| app["id"].as_str().map(str::to_owned))
+                    .collect()
+            })
+            .unwrap_or_default();
+        Self {
+            kind: value["type"].as_str().unwrap_or(key).to_owned(),
+            target: value["target"].as_f64().unwrap_or(0.),
+            applications,
+            task_title: value["messages"]["task_title"].as_str().map(str::to_owned),
+            task_description: value["messages"]["task_description"]
+                .as_str()
+                .map(str::to_owned),
+            video_title: value["messages"]["video_title"].as_str().map(str::to_owned),
+        }
+    }
+}
+
+/// One reward entry from `config.rewards_config.rewards[]` (module 417404).
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct QuestReward {
+    pub kind: u64,
+    pub name: String,
+    pub name_with_article: String,
+    pub orb_quantity: Option<u64>,
+    pub premium_orb_quantity: Option<u64>,
+    pub expires_at: Option<String>,
+    pub expiration_mode: Option<u64>,
+    pub quantity: u64,
+    pub sku_id: Option<String>,
+    pub redemption_instructions_by_platform: BTreeMap<u64, String>,
+}
+
+impl QuestReward {
+    fn from_value(value: &Value) -> Self {
+        let name = value["messages"]["name"]
+            .as_str()
+            .or_else(|| value["name"].as_str())
+            .unwrap_or_default()
+            .to_owned();
+        let name_with_article = value["messages"]["name_with_article"]
+            .as_str()
+            .filter(|s| !s.is_empty())
+            .map(str::to_owned)
+            .unwrap_or_else(|| name.clone());
+        let redemption_instructions_by_platform =
+            value["messages"]["redemption_instructions_by_platform"]
+                .as_object()
+                .map(|map| {
+                    map.iter()
+                        .filter_map(|(k, v)| Some((k.parse::<u64>().ok()?, v.as_str()?.to_owned())))
+                        .collect()
+                })
+                .unwrap_or_default();
+        Self {
+            kind: value["type"].as_u64().unwrap_or_default(),
+            name,
+            name_with_article,
+            orb_quantity: value["orb_quantity"].as_u64(),
+            premium_orb_quantity: value["premium_orb_quantity"].as_u64(),
+            expires_at: value["expires_at"].as_str().map(str::to_owned),
+            expiration_mode: value["expiration_mode"].as_u64(),
+            quantity: value["quantity"].as_u64().unwrap_or(1),
+            sku_id: value["sku_id"].as_str().map(str::to_owned),
+            redemption_instructions_by_platform,
+        }
+    }
+}
+
+/// Decoded progress snapshot for a quest's primary task (`Yh` / `R` of module 792620).
+#[derive(Clone, Debug, PartialEq)]
+pub struct TaskDetails {
+    pub progress_seconds: f64,
+    pub target_seconds: f64,
+    pub target_minutes: u64,
+    pub percent_complete: f64,
+    pub task_type: String,
+    pub applications: Vec<String>,
+}
+
+/// Decoded third-party / achievement task (`JC` of module 792620).
+#[derive(Clone, Debug, PartialEq)]
+pub struct ThirdPartyTaskDetails {
+    pub title: String,
+    pub description: String,
+    pub target: f64,
+    pub progress: f64,
+    pub percent_complete: f64,
 }
 
 /// What the page reads of a quest's `config` (`E` of module 247512, config version 2).
@@ -194,44 +404,169 @@ pub struct QuestConfig {
     pub game_publisher: String,
     /// The keys of `task_config_v2.tasks`.
     pub tasks: BTreeSet<String>,
+    /// Decoded tasks keyed by task type (`task_config_v2.tasks`).
+    pub task_details: BTreeMap<String, QuestTask>,
     /// `rewards_config.rewards[].type`, in order.
     pub reward_types: Vec<u64>,
+    /// Decoded rewards (`rewards_config.rewards[]`).
+    pub rewards: Vec<QuestReward>,
+    pub rewards_assignment_method: u64,
     pub rewards_expire_at: Option<String>,
     pub platforms: usize,
+    pub features: Vec<u64>,
+    pub cta_link: String,
+    pub cta_button_label: String,
+    pub cta_subtitle: Option<String>,
+    pub cosponsor_name: Option<String>,
+    pub assets_hero: Option<String>,
+    pub assets_logotype: Option<String>,
+    pub assets_logotype_dark: Option<String>,
+    pub assets_game_tile: Option<String>,
+    pub assets_reward_tile: Option<String>,
+    pub assets_video_thumbnail: Option<String>,
 }
 
 impl QuestConfig {
     fn from_value(value: &Value) -> Self {
         let text = |value: &Value| value.as_str().unwrap_or_default().to_owned();
+        let opt_text = |value: &Value| value.as_str().filter(|s| !s.is_empty()).map(str::to_owned);
+        let task_details: BTreeMap<String, QuestTask> = value["task_config_v2"]["tasks"]
+            .as_object()
+            .map(|tasks| {
+                tasks
+                    .iter()
+                    .map(|(k, v)| (k.clone(), QuestTask::from_value(k, v)))
+                    .collect()
+            })
+            .unwrap_or_default();
+        let rewards: Vec<QuestReward> = value["rewards_config"]["rewards"]
+            .as_array()
+            .map(|rewards| rewards.iter().map(QuestReward::from_value).collect())
+            .unwrap_or_default();
+        let assets = &value["assets"];
         Self {
             starts_at: text(&value["starts_at"]),
             expires_at: text(&value["expires_at"]),
             quest_name: text(&value["messages"]["quest_name"]),
             game_title: text(&value["messages"]["game_title"]),
             game_publisher: text(&value["messages"]["game_publisher"]),
-            tasks: value["task_config_v2"]["tasks"]
-                .as_object()
-                .map(|tasks| tasks.keys().cloned().collect())
-                .unwrap_or_default(),
-            reward_types: value["rewards_config"]["rewards"]
-                .as_array()
-                .map(|rewards| rewards.iter().filter_map(|r| r["type"].as_u64()).collect())
-                .unwrap_or_default(),
-            rewards_expire_at: value["rewards_config"]["rewards_expire_at"]
-                .as_str()
-                .map(str::to_owned),
+            tasks: task_details.keys().cloned().collect(),
+            task_details,
+            reward_types: rewards.iter().map(|r| r.kind).collect(),
+            rewards,
+            rewards_assignment_method: value["rewards_config"]["assignment_method"]
+                .as_u64()
+                .unwrap_or(1),
+            rewards_expire_at: opt_text(&value["rewards_config"]["rewards_expire_at"]),
             platforms: value["rewards_config"]["platforms"]
                 .as_array()
                 .map_or(0, Vec::len),
+            features: value["features"]
+                .as_array()
+                .map(|list| list.iter().filter_map(Value::as_u64).collect())
+                .unwrap_or_default(),
+            cta_link: text(&value["cta_config"]["link"]),
+            cta_button_label: text(&value["cta_config"]["button_label"]),
+            cta_subtitle: opt_text(&value["cta_config"]["subtitle"]),
+            cosponsor_name: opt_text(&value["cosponsor_metadata"]["name"]),
+            assets_hero: opt_text(&assets["hero"]),
+            assets_logotype: opt_text(&assets["logotype"]),
+            assets_logotype_dark: opt_text(&assets["logotype_dark"]),
+            assets_game_tile: opt_text(&assets["game_tile"]),
+            assets_reward_tile: opt_text(&assets["reward_tile"]).or_else(|| {
+                value["rewards_config"]["rewards"]
+                    .as_array()
+                    .and_then(|list| list.first())
+                    .and_then(|r| opt_text(&r["asset"]))
+            }),
+            assets_video_thumbnail: opt_text(&assets["video_player_thumbnail"]),
         }
     }
 
-    fn has_reward(&self, kind: u64) -> bool {
+    pub fn has_reward(&self, kind: u64) -> bool {
         self.reward_types.contains(&kind)
     }
 
-    fn has_task(&self, kind: &str) -> bool {
+    pub fn has_task(&self, kind: &str) -> bool {
         self.tasks.contains(kind)
+    }
+
+    pub fn has_feature(&self, flag: u64) -> bool {
+        self.features.contains(&flag)
+    }
+
+    /// `nj` of module 417404: the collectible reward entry, if any.
+    pub fn collectible_reward(&self) -> Option<&QuestReward> {
+        self.rewards.iter().find(|r| r.kind == reward::COLLECTIBLE)
+    }
+
+    /// `JX` of module 417404: collectible reward has a Nitro extension or permanent perk.
+    pub fn has_collectible_premium_benefit(&self) -> bool {
+        self.collectible_reward()
+            .and_then(|r| r.expiration_mode)
+            .is_some_and(|mode| {
+                mode == reward_mode::EXPIRATION_PREMIUM_EXTENSION
+                    || mode == reward_mode::EXPIRATION_PREMIUM_PERMANENT
+            })
+    }
+
+    /// `Y7` of module 417404: collectible reward becomes permanent with Nitro.
+    pub fn is_collectible_premium_permanent(&self) -> bool {
+        self.collectible_reward().and_then(|r| r.expiration_mode)
+            == Some(reward_mode::EXPIRATION_PREMIUM_PERMANENT)
+    }
+
+    /// `ks` of module 417404: has an Orbs (virtual currency) reward.
+    pub fn has_virtual_currency_reward(&self) -> bool {
+        self.has_reward(reward::VIRTUAL_CURRENCY)
+    }
+
+    /// `r7` of module 417404: has a reward-code reward.
+    pub fn has_reward_code(&self) -> bool {
+        self.has_reward(reward::REWARD_CODE)
+    }
+
+    /// `_Z` / `wo` of module 417404: orb quantity (with optional Nitro multiplier).
+    pub fn orb_quantity(&self, is_nitro: bool) -> Option<u64> {
+        let r = self
+            .rewards
+            .iter()
+            .find(|r| r.kind == reward::VIRTUAL_CURRENCY)?;
+        if is_nitro {
+            r.premium_orb_quantity.or(r.orb_quantity)
+        } else {
+            r.orb_quantity
+        }
+    }
+
+    /// `kr` of module 417404: tiered assignment where every reward is a reward code.
+    pub fn is_tiered_reward_code(&self) -> bool {
+        self.rewards_assignment_method == reward_mode::ASSIGNMENT_TIERED
+            && !self.rewards.is_empty()
+            && self.rewards.iter().all(|r| r.kind == reward::REWARD_CODE)
+    }
+
+    /// `xv` of module 417404 / 651892: primary reward name (or with article).
+    pub fn primary_reward_name(&self, with_article: bool) -> String {
+        if let Some(first) = self.rewards.first() {
+            if with_article && !first.name_with_article.is_empty() {
+                first.name_with_article.clone()
+            } else if !first.name.is_empty() {
+                first.name.clone()
+            } else {
+                self.quest_name.clone()
+            }
+        } else {
+            self.quest_name.clone()
+        }
+    }
+
+    /// `Xi` of module 792620: video title from the watch-video task.
+    pub fn video_title(&self) -> Option<&str> {
+        self.task_details
+            .get(task::WATCH_VIDEO_ON_MOBILE)
+            .or_else(|| self.task_details.get(task::WATCH_VIDEO))
+            .and_then(|t| t.video_title.as_deref())
     }
 }
 
@@ -283,9 +618,344 @@ impl Quest {
         parse_ms(&self.config.expires_at).is_some_and(|end| end <= now_ms)
     }
 
+    /// `if` of module 710969: rewards have not expired yet.
+    pub fn is_claimable(&self, now_ms: i64) -> bool {
+        self.config
+            .rewards_expire_at
+            .as_deref()
+            .and_then(parse_ms)
+            .is_none_or(|end| end > now_ms)
+    }
+
     /// `Y.GR` of module 710969: finished but not yet claimed.
     pub fn awaits_claim(&self) -> bool {
         self.is_completed() && !self.is_claimed()
+    }
+
+    // ---- Official task predicates (modules 792620, 814793) ----
+
+    /// `t` / `xZ` of module 792620.
+    pub fn is_play_on_desktop(&self) -> bool {
+        self.config.has_task(task::PLAY_ON_DESKTOP)
+    }
+
+    /// `fE` of module 792620.
+    pub fn is_stream_on_desktop(&self) -> bool {
+        self.config.has_task(task::STREAM_ON_DESKTOP)
+    }
+
+    /// `g5` / `uD` of module 792620.
+    pub fn is_play_on_console(&self) -> bool {
+        self.config.has_task(task::PLAY_ON_XBOX) || self.config.has_task(task::PLAY_ON_PLAYSTATION)
+    }
+
+    /// `no` of module 792620: desktop-only play quest (not console).
+    pub fn is_desktop_only_play(&self) -> bool {
+        !self.is_play_on_console() && self.is_play_on_desktop()
+    }
+
+    /// `IO` of module 792620.
+    pub fn is_watch_video_desktop(&self) -> bool {
+        self.config.has_task(task::WATCH_VIDEO)
+    }
+
+    /// `K$` of module 792620: mobile-only video quest.
+    pub fn is_watch_video_mobile_only(&self) -> bool {
+        self.config.has_task(task::WATCH_VIDEO_ON_MOBILE) && !self.is_watch_video_desktop()
+    }
+
+    /// `vv` of module 792620: any watch-video quest.
+    pub fn is_watch_video(&self) -> bool {
+        self.is_watch_video_desktop() || self.config.has_task(task::WATCH_VIDEO_ON_MOBILE)
+    }
+
+    /// `vl` of module 792620.
+    pub fn is_play_activity(&self) -> bool {
+        self.config.has_task(task::PLAY_ACTIVITY)
+    }
+
+    /// `I6` of module 792620.
+    pub fn is_achievement_in_game(&self) -> bool {
+        self.config.has_task(task::ACHIEVEMENT_IN_GAME)
+    }
+
+    /// `Ov` of module 792620.
+    pub fn is_achievement_in_activity(&self) -> bool {
+        self.config.has_task(task::ACHIEVEMENT_IN_ACTIVITY)
+    }
+
+    /// `Cr` of module 792620: in-game or in-activity achievement task.
+    pub fn is_achievement_quest(&self) -> bool {
+        self.is_achievement_in_game() || self.is_achievement_in_activity()
+    }
+
+    /// `GL` of module 792620: play/stream/console/in-game quest.
+    pub fn is_game_play_quest(&self) -> bool {
+        self.is_play_on_desktop()
+            || self.is_stream_on_desktop()
+            || self.is_play_on_console()
+            || self.is_achievement_in_game()
+    }
+
+    /// `vA` of module 814793: activity or achievement-in-activity quest.
+    pub fn is_activity_quest(&self) -> bool {
+        self.is_play_activity() || self.is_achievement_in_activity()
+    }
+
+    /// `ui` of module 814793: multi-game play quest (`PLAY_ON_DESKTOP` with >1 applications).
+    pub fn is_multi_game_play_quest(&self) -> bool {
+        self.config
+            .task_details
+            .get(task::PLAY_ON_DESKTOP)
+            .is_some_and(|t| t.applications.len() > 1)
+    }
+
+    /// `_e` of module 814793: "play any Activity on Discord" quest.
+    pub fn is_any_activity_quest(&self) -> bool {
+        self.config
+            .task_details
+            .get(task::PLAY_ACTIVITY)
+            .and_then(|t| t.applications.first())
+            .is_some_and(|id| id == ANY_ACTIVITY_APP_ID)
+    }
+
+    /// `bg` of module 574112: console platforms supported by this quest.
+    pub fn supported_consoles(&self) -> Vec<ConsolePlatform> {
+        let mut out = Vec::new();
+        if self.config.has_task(task::PLAY_ON_XBOX) {
+            out.push(ConsolePlatform::Xbox);
+        }
+        if self.config.has_task(task::PLAY_ON_PLAYSTATION) {
+            out.push(ConsolePlatform::PlayStation);
+        }
+        out
+    }
+
+    /// `UR` of module 574112: task platforms (Desktop / Console) supported by this quest.
+    pub fn supported_platforms(&self) -> Vec<QuestPlatform> {
+        let mut out = Vec::new();
+        if self.is_play_on_desktop()
+            || self.is_stream_on_desktop()
+            || self.is_watch_video()
+            || self.is_play_activity()
+            || self.is_achievement_in_game()
+            || self.is_achievement_in_activity()
+        {
+            out.push(QuestPlatform::Desktop);
+        }
+        if self.is_play_on_console() {
+            out.push(QuestPlatform::Console);
+        }
+        out
+    }
+
+    /// `YL` of module 792620: active console heartbeat not yet expired.
+    pub fn is_progressing_on_console(&self, now_ms: i64) -> bool {
+        let Some(status) = self.user_status.as_ref() else {
+            return false;
+        };
+        [task::PLAY_ON_XBOX, task::PLAY_ON_PLAYSTATION]
+            .iter()
+            .any(|kind| {
+                status
+                    .progress
+                    .get(*kind)
+                    .and_then(|p| p.heartbeat_expires_at.as_deref())
+                    .and_then(parse_ms)
+                    .is_some_and(|exp| exp > now_ms)
+            })
+    }
+
+    /// `JC` of module 792620: third-party / achievement task details if present.
+    pub fn third_party_task_details(&self) -> Option<ThirdPartyTaskDetails> {
+        let entry = self
+            .config
+            .task_details
+            .get(task::ACHIEVEMENT_IN_ACTIVITY)
+            .or_else(|| self.config.task_details.get(task::ACHIEVEMENT_IN_GAME))?;
+        let progress = self
+            .user_status
+            .as_ref()
+            .and_then(|s| s.progress.get(&entry.kind))
+            .map_or(0., |p| p.value);
+        let pct = if entry.target > 0. {
+            ((progress / entry.target).min(1.) * 10_000.).floor() / 10_000.
+        } else {
+            0.
+        };
+        Some(ThirdPartyTaskDetails {
+            title: entry.task_title.clone().unwrap_or_default(),
+            description: entry.task_description.clone().unwrap_or_default(),
+            target: entry.target,
+            progress,
+            percent_complete: pct,
+        })
+    }
+
+    /// `Yh` / `R` of module 792620: resolved task progress details.
+    pub fn task_details(&self) -> TaskDetails {
+        let chosen_key: Option<&str> = if self.is_achievement_quest() {
+            return TaskDetails {
+                progress_seconds: 0.,
+                target_seconds: 1.,
+                target_minutes: 1,
+                percent_complete: 0.,
+                task_type: task::STREAM_ON_DESKTOP.to_owned(),
+                applications: Vec::new(),
+            };
+        } else if self.is_play_on_console() {
+            // Prefer the task with the highest progress if any, otherwise Xbox/PlayStation/Desktop.
+            self.user_status
+                .as_ref()
+                .and_then(|s| {
+                    s.progress
+                        .iter()
+                        .filter(|(k, _)| self.config.task_details.contains_key(*k))
+                        .max_by(|a, b| {
+                            a.1.value
+                                .partial_cmp(&b.1.value)
+                                .unwrap_or(std::cmp::Ordering::Equal)
+                        })
+                        .map(|(k, _)| k.as_str())
+                })
+                .or_else(|| {
+                    [
+                        task::PLAY_ON_XBOX,
+                        task::PLAY_ON_PLAYSTATION,
+                        task::PLAY_ON_DESKTOP,
+                    ]
+                    .into_iter()
+                    .find(|k| self.config.task_details.contains_key(*k))
+                })
+        } else if self.is_watch_video() {
+            [task::WATCH_VIDEO_ON_MOBILE, task::WATCH_VIDEO]
+                .into_iter()
+                .find(|k| self.config.task_details.contains_key(*k))
+        } else if self.is_play_on_desktop() {
+            Some(task::PLAY_ON_DESKTOP)
+        } else if self.is_play_activity() {
+            Some(task::PLAY_ACTIVITY)
+        } else {
+            self.config.task_details.keys().next().map(String::as_str)
+        };
+        let Some(entry) = chosen_key.and_then(|k| self.config.task_details.get(k)) else {
+            return TaskDetails {
+                progress_seconds: 0.,
+                target_seconds: 1.,
+                target_minutes: 1,
+                percent_complete: 0.,
+                task_type: task::STREAM_ON_DESKTOP.to_owned(),
+                applications: Vec::new(),
+            };
+        };
+        let target = entry.target.max(1.);
+        let raw_progress = if self.is_completed() {
+            target
+        } else {
+            let v = self
+                .user_status
+                .as_ref()
+                .and_then(|s| {
+                    s.progress
+                        .get(&entry.kind)
+                        .map(|p| p.value)
+                        .or(Some(s.stream_progress_seconds))
+                })
+                .unwrap_or(0.);
+            v.min(target * 0.99).max(0.)
+        };
+        let percent = ((raw_progress / target).min(1.) * 10_000.).floor() / 10_000.;
+        let applications = self
+            .config
+            .task_details
+            .get(task::PLAY_ON_DESKTOP)
+            .map(|t| t.applications.clone())
+            .unwrap_or_default();
+        TaskDetails {
+            progress_seconds: raw_progress,
+            target_seconds: target,
+            target_minutes: (target / 60.).ceil().max(1.) as u64,
+            percent_complete: percent,
+            task_type: entry.kind.clone(),
+            applications,
+        }
+    }
+
+    /// `Pd` of module 79545: CTA state machine across all 8 quest states.
+    pub fn cta_state(&self, now_ms: i64) -> QuestCtaState {
+        let enrolled = self.is_enrolled();
+        let completed = self.is_completed();
+        let claimed = self.is_claimed();
+        let progress = self.third_party_task_details().map_or_else(
+            || self.task_details().percent_complete,
+            |d| d.percent_complete,
+        );
+        if self.is_expired(now_ms) {
+            if claimed {
+                QuestCtaState::ExpiredClaimed
+            } else if self.is_claimable(now_ms) && completed {
+                QuestCtaState::ExpiredClaimable
+            } else {
+                QuestCtaState::Expired
+            }
+        } else if claimed {
+            QuestCtaState::Claimed
+        } else if enrolled && completed {
+            QuestCtaState::Completed
+        } else if enrolled && progress > 0. {
+            QuestCtaState::Incomplete
+        } else if enrolled {
+            QuestCtaState::Enrolled
+        } else {
+            QuestCtaState::Unenrolled
+        }
+    }
+
+    /// `cc` of module 79545: primary task type driving CTA labels.
+    pub fn primary_task_type(&self) -> &str {
+        if self.is_watch_video_desktop() {
+            task::WATCH_VIDEO
+        } else {
+            self.config
+                .task_details
+                .values()
+                .next()
+                .map_or(task::STREAM_ON_DESKTOP, |t| t.kind.as_str())
+        }
+    }
+
+    /// `Qo` of module 61387: active platform screen (Select / Desktop / Console).
+    pub fn active_platform_screen(
+        &self,
+        selected: Option<QuestPlatform>,
+        now_ms: i64,
+    ) -> ActivePlatformScreen {
+        if self.is_progressing_on_console(now_ms) {
+            return ActivePlatformScreen::Console;
+        }
+        let details = self.task_details();
+        if details.percent_complete > 0. {
+            return match details.task_type.as_str() {
+                task::PLAY_ON_XBOX | task::PLAY_ON_PLAYSTATION => ActivePlatformScreen::Console,
+                _ => ActivePlatformScreen::Desktop,
+            };
+        }
+        if let Some(sel) = selected {
+            return match sel {
+                QuestPlatform::Desktop => ActivePlatformScreen::Desktop,
+                QuestPlatform::Console => ActivePlatformScreen::Console,
+            };
+        }
+        let platforms = self.supported_platforms();
+        let has_desktop = platforms.contains(&QuestPlatform::Desktop);
+        let has_console = platforms.contains(&QuestPlatform::Console);
+        if has_desktop && has_console {
+            ActivePlatformScreen::Select
+        } else if has_console {
+            ActivePlatformScreen::Console
+        } else {
+            ActivePlatformScreen::Desktop
+        }
     }
 
     /// `eA`/`eE` of module 61387: whether a quest matches one filter option.
@@ -520,11 +1190,47 @@ pub struct QuestStore {
     pub fetched_current_quests: bool,
     pub enrollment_blocked_until: Option<String>,
     pub access_suspended_until: Option<String>,
+    /// Selected task platform per quest id (`selectedTaskPlatform` of module 859703 / `tZ` of module 61387).
+    pub selected_task_platform: BTreeMap<String, QuestPlatform>,
+    /// Console launch/connection error hints per quest id (module 178540).
+    pub console_error_hints: BTreeMap<String, Vec<String>>,
 }
 
 impl QuestStore {
     pub fn get_quest(&self, id: &str) -> Option<&Quest> {
         self.quests.iter().find(|quest| quest.id == id)
+    }
+
+    pub fn selected_platform(&self, quest_id: &str) -> Option<QuestPlatform> {
+        self.selected_task_platform.get(quest_id).copied()
+    }
+
+    pub fn set_selected_platform(&mut self, quest_id: &str, platform: Option<QuestPlatform>) {
+        if let Some(platform) = platform {
+            self.selected_task_platform
+                .insert(quest_id.to_owned(), platform);
+        } else {
+            self.selected_task_platform.remove(quest_id);
+        }
+    }
+
+    pub fn error_hints(&self, quest_id: &str) -> &[String] {
+        self.console_error_hints
+            .get(quest_id)
+            .map(Vec::as_slice)
+            .unwrap_or(&[])
+    }
+
+    pub fn set_error_hints(&mut self, quest_id: &str, hints: Vec<String>) {
+        if hints.is_empty() {
+            self.console_error_hints.remove(quest_id);
+        } else {
+            self.console_error_hints.insert(quest_id.to_owned(), hints);
+        }
+    }
+
+    pub fn clear_error_hints(&mut self, quest_id: &str) {
+        self.console_error_hints.remove(quest_id);
     }
 
     pub fn claimed_quests(&self) -> impl Iterator<Item = &ClaimedQuest> {

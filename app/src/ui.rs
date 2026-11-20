@@ -267,6 +267,8 @@ mod profile_menu;
 mod profile_other;
 mod profile_theme;
 mod profile_voice;
+mod quest_bar;
+mod quest_copy;
 mod quests;
 mod quickswitcher;
 mod rail_folder_menu;
@@ -6781,6 +6783,7 @@ impl Root {
             .flex_col()
             .children(settings::client_theme::panels_cover())
             .child(measure)
+            .children(self.quest_bar(cx))
             .children(self.activity_panel(cx))
             .children(self.clips_panels(cx))
             .children(self.voice_panel(cx))

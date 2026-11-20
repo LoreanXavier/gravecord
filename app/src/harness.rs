@@ -1551,6 +1551,12 @@ pub async fn run(
                 let line = root.update(cx, |root, cx| root.script_command_permissions(&arg, cx));
                 let _ = writeln!(output, "{line}");
             }
+            // `quest-bar <expand|collapse|console|console-connected|warning|clear>`: controls the Quest Bar (66246).
+            ["quest-bar", rest @ ..] => {
+                let arg = rest.join(" ");
+                let line = root.update(cx, |root, cx| root.script_quest_bar(&arg, cx));
+                let _ = writeln!(output, "{line}");
+            }
             // `search last` / `search answer <total>`: the open search's request, and an answer to it;
             // `search page <n>`: the pager turns to page n.
             ["search", rest @ ..] => {
