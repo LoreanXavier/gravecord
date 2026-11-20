@@ -594,7 +594,7 @@ impl Root {
                             }
                         })
                         .child(label),
-                    ConnectionMeta::Item { label, icon } => base
+                    ConnectionMeta::Item { label, icon, .. } => base
                         .flex()
                         .items_center()
                         .children(

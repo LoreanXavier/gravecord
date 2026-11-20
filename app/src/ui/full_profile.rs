@@ -281,6 +281,7 @@ pub(in crate::ui) enum ConnectionMeta {
     Item {
         label: String,
         icon: &'static str,
+        alt: &'static str,
     },
 }
 
@@ -620,12 +621,14 @@ pub(in crate::ui) fn connection_metadata(kind: &str, metadata: &Value) -> Vec<Co
                 out.push(ConnectionMeta::Item {
                     label: dc_intl::t!("Y88M5x", count = dota),
                     icon: STEAM_DOTA2_ICON,
+                    alt: dc_intl::t("HKUEZo"),
                 });
             }
             if tf2 > -1. {
                 out.push(ConnectionMeta::Item {
                     label: dc_intl::t!("Y88M5x", count = tf2),
                     icon: STEAM_TF2_ICON,
+                    alt: dc_intl::t("C8p1Sh"),
                 });
             }
         }
@@ -714,6 +717,92 @@ pub(in crate::ui) fn connection_metadata(kind: &str, metadata: &Value) -> Vec<Co
     out
 }
 
+/// Custom application role-connection metadata (`VW` of module 169869): sorts keys by `application_metadata[key].name`
+/// and renders boolean tags (`7`/`8`), ISO dates (`5`/`6`), and integer counters (`1`..=`4`) via `HLoinF`.
+pub(in crate::ui) fn application_connection_metadata(
+    metadata: &Value,
+    app_metadata: &Value,
+) -> Vec<ConnectionMeta> {
+    let (Some(meta_obj), Some(schema_obj)) = (metadata.as_object(), app_metadata.as_object())
+    else {
+        return Vec::new();
+    };
+    if meta_obj.is_empty() || schema_obj.is_empty() {
+        return Vec::new();
+    }
+    let mut keys: Vec<&String> = meta_obj.keys().collect();
+    keys.sort_by(|a, b| {
+        let na = schema_obj
+            .get(*a)
+            .and_then(|v| v["name"].as_str())
+            .unwrap_or("");
+        let nb = schema_obj
+            .get(*b)
+            .and_then(|v| v["name"].as_str())
+            .unwrap_or("");
+        na.cmp(nb)
+    });
+    let mut out = Vec::new();
+    for key in keys {
+        let Some(schema) = schema_obj.get(key) else {
+            continue;
+        };
+        let name = schema["name"].as_str().unwrap_or(key.as_str());
+        let raw_val = meta_obj.get(key);
+        let raw_str = raw_val.and_then(Value::as_str).unwrap_or("");
+        match schema["type"].as_u64() {
+            // `BOOLEAN_EQUAL` (7) / `BOOLEAN_NOT_EQUAL` (8)
+            Some(7) => {
+                if raw_str == "1" {
+                    out.push(ConnectionMeta::Tag {
+                        label: name.to_owned(),
+                        paypal: false,
+                    });
+                }
+            }
+            Some(8) => {
+                if raw_str != "1" {
+                    out.push(ConnectionMeta::Tag {
+                        label: name.to_owned(),
+                        paypal: false,
+                    });
+                }
+            }
+            // `DATETIME_LESS_THAN_EQUAL` (5) / `DATETIME_GREATER_THAN_EQUAL` (6)
+            Some(5 | 6) => {
+                if let Some(date) = profile_date(raw_str) {
+                    out.push(ConnectionMeta::Text(dc_intl::format(
+                        "HLoinF",
+                        &[
+                            ("value", dc_intl::Arg::Str(std::borrow::Cow::Owned(date))),
+                            ("name", dc_intl::Arg::Str(std::borrow::Cow::Borrowed(name))),
+                        ],
+                    )));
+                }
+            }
+            // `INTEGER_LESS_THAN_EQUAL` (1) .. `INTEGER_NOT_EQUAL` (4)
+            Some(1..=4) => {
+                let n = metadata_number(raw_val.unwrap_or(&Value::Null));
+                if n.is_finite() && n >= 0. {
+                    let formatted = metadata_count(n);
+                    out.push(ConnectionMeta::Text(dc_intl::format(
+                        "HLoinF",
+                        &[
+                            (
+                                "value",
+                                dc_intl::Arg::Str(std::borrow::Cow::Owned(formatted)),
+                            ),
+                            ("name", dc_intl::Arg::Str(std::borrow::Cow::Borrowed(name))),
+                        ],
+                    )));
+                }
+            }
+            _ => {}
+        }
+    }
+    out
+}
+
 /// `getPlatformUserUrl` of module 573648: the profile link a platform builds from the account's name or id.
 fn connection_url(kind: &str, id: &str, name: &str) -> Option<String> {
     let name = encode_uri_segment(name);
@@ -777,6 +866,11 @@ fn parse_connected_accounts(body: &Value) -> Vec<ConnectedAccount> {
             let id = item["id"].as_str().unwrap_or_default();
             let name = item["name"].as_str().unwrap_or_default().to_owned();
             let metadata = &item["metadata"];
+            let mut meta_items = connection_metadata(kind, metadata);
+            meta_items.extend(application_connection_metadata(
+                metadata,
+                &item["application_metadata"],
+            ));
             Some(ConnectedAccount {
                 kind: kind.to_owned(),
                 created_at: metadata["created_at"].as_str().and_then(profile_date),
@@ -787,7 +881,7 @@ fn parse_connected_accounts(body: &Value) -> Vec<ConnectedAccount> {
                 twitter_verified: twitter_verified(kind, metadata),
                 url: connection_url(kind, id, &name),
                 id: id.to_owned(),
-                metadata: connection_metadata(kind, metadata),
+                metadata: meta_items,
                 name,
             })
         })
@@ -1743,15 +1837,26 @@ impl Root {
                                     }
                                 })
                                 .child(label),
-                            ConnectionMeta::Item { label, icon } => base
+                            ConnectionMeta::Item { label, icon, alt } => base
                                 .flex()
                                 .items_center()
-                                .children(
-                                    self.images
-                                        .get(&connection_icon_key(icon))
-                                        .cloned()
-                                        .map(|picture| img(picture).size(px(18.)).mr(px(4.))),
-                                )
+                                .children(self.images.get(&connection_icon_key(icon)).cloned().map(
+                                    |picture| {
+                                        let key = format!("conn-meta-{}-{icon}", account.id);
+                                        self.with_tip(
+                                            key.clone(),
+                                            super::tooltip::Tip::text(
+                                                alt,
+                                                super::tooltip::Side::Top,
+                                            ),
+                                            div()
+                                                .id(SharedString::from(key))
+                                                .mr(px(4.))
+                                                .child(img(picture).size(px(18.))),
+                                            cx,
+                                        )
+                                    },
+                                ))
                                 .child(label),
                         }
                         .into_any_element()
@@ -3935,11 +4040,13 @@ mod tests {
                 text("1 Game"),
                 ConnectionMeta::Item {
                     label: "0 items".to_owned(),
-                    icon: STEAM_DOTA2_ICON
+                    icon: STEAM_DOTA2_ICON,
+                    alt: "DOTA 2",
                 },
                 ConnectionMeta::Item {
                     label: "3 items".to_owned(),
-                    icon: STEAM_TF2_ICON
+                    icon: STEAM_TF2_ICON,
+                    alt: "Team Fortress 2",
                 },
             ]
         );
@@ -3974,6 +4081,19 @@ mod tests {
         // A missing count is left out, a count that is not a number too.
         assert!(connection_metadata("letterboxd", &json!({"watches": "many"})).is_empty());
         assert!(connection_metadata("github", &json!({"followers_count": "5"})).is_empty());
+
+        // Custom application role-connection metadata (`VW` of module 169869).
+        let custom = super::application_connection_metadata(
+            &json!({"wins": "42", "pro": "1", "joined": "2024-05-01T00:00:00Z"}),
+            &json!({
+                "wins": {"key": "wins", "name": "Wins", "type": 2},
+                "pro": {"key": "pro", "name": "Pro Tier", "type": 7},
+                "joined": {"key": "joined", "name": "Joined", "type": 6}
+            }),
+        );
+        assert_eq!(custom.len(), 3);
+        assert_eq!(custom[1], tag("Pro Tier"));
+        assert_eq!(custom[2], text("42 Wins"));
     }
 
     #[test]

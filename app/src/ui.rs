@@ -236,6 +236,7 @@ mod nitro;
 mod nitro_purchase;
 mod nitro_upsell;
 mod notice_bar;
+mod notification_center;
 mod notifications;
 mod notify;
 mod now_playing_menu;
@@ -296,6 +297,7 @@ mod safety_tools;
 mod saved;
 mod screening;
 mod search;
+mod search_feedback;
 mod search_filters;
 mod search_pager;
 mod send_state;
@@ -663,6 +665,14 @@ pub struct Root {
     hub_add_server_modal: Option<discover::hub_add_server::HubAddServerModal>,
     /// Role Subscription Tier Card & Welcome modal (module 31637, `role_subscription_card`).
     role_subscription_modal: Option<role_subscription_card::RoleSubscriptionModal>,
+    /// Search Feedback Survey modal (module 770950, `search_feedback`).
+    search_feedback_modal: Option<search_feedback::SearchFeedbackModal>,
+    /// Payment Source Picker dropdown modal (module 637141, `settings::payment_sources`).
+    payment_source_picker: Option<settings::payment_sources::PaymentSourcePickerState>,
+    /// Notification Center Inbox overlay (module 617823, `notification_center`).
+    notification_center_modal: Option<notification_center::NotificationCenterModal>,
+    /// Wishlist & Game Shop Gift CTA modal (module 909004, `shop::gift_cta`).
+    shop_gift_cta_modal: Option<shop::gift_cta::ShopGiftCtaModal>,
     /// Ignored users whose "Don't show this again" restricted-profile bypass was clicked (module 148540 `ip`).
     restricted_profile_bypass: std::collections::HashSet<dc_state::Id>,
     /// Soundboard Echo store & hover details state (module 120246, `soundboard_echo`).
@@ -1211,6 +1221,10 @@ impl Root {
             channel_link_modal: None,
             hub_add_server_modal: None,
             role_subscription_modal: None,
+            search_feedback_modal: None,
+            payment_source_picker: None,
+            notification_center_modal: None,
+            shop_gift_cta_modal: None,
             restricted_profile_bypass: std::collections::HashSet::new(),
             soundboard_echo: Default::default(),
             badge_modal: None,
@@ -11375,6 +11389,10 @@ impl Render for Root {
                         || this.channel_link_modal.is_some()
                         || this.hub_add_server_modal.is_some()
                         || this.role_subscription_modal.is_some()
+                        || this.search_feedback_modal.is_some()
+                        || this.payment_source_picker.is_some()
+                        || this.notification_center_modal.is_some()
+                        || this.shop_gift_cta_modal.is_some()
                         || this.library.game_menu.is_some()
                         || this.library.hide_confirm.is_some())
                 {
@@ -11385,6 +11403,10 @@ impl Render for Root {
                     this.channel_link_modal = None;
                     this.hub_add_server_modal = None;
                     this.role_subscription_modal = None;
+                    this.search_feedback_modal = None;
+                    this.payment_source_picker = None;
+                    this.notification_center_modal = None;
+                    this.shop_gift_cta_modal = None;
                     this.close_library_game_menu();
                     cx.notify();
                     cx.stop_propagation();
@@ -12551,6 +12573,10 @@ impl Render for Root {
             .children(self.channel_link_modal_layer(cx))
             .children(self.hub_add_server_modal_layer(cx))
             .children(self.role_subscription_modal_layer(cx))
+            .children(self.search_feedback_modal_layer(cx))
+            .children(self.payment_source_picker_layer(cx))
+            .children(self.notification_center_layer(cx))
+            .children(self.shop_gift_cta_modal_layer(cx))
             .children(self.composer_ai_modal(cx))
             .children(self.friend_nickname_layer(window, cx))
             .children(self.favorite_nickname_layer(window, cx))
