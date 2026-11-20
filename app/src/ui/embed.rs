@@ -535,13 +535,22 @@ impl Root {
             return None;
         }
         let suppress = self.can_suppress_embeds(message);
-        let cards: Vec<AnyElement> = message
+        let mut cards: Vec<AnyElement> = message
             .embeds
             .iter()
             .enumerate()
             .filter(|(_, embed)| !embed_layout::left_out(embed))
             .filter_map(|(index, embed)| self.embed(message, index, embed, suppress, cx))
             .collect();
+        // Module 107543: Quest Promoted Card for `https://discord.com/quests/{id}` links.
+        if !self.quests.store.quests.is_empty()
+            && message.content.contains("/quests/")
+            && let Some(qid) = super::quest_promoted::extract_quest_link_id(&message.content)
+            && let Some(quest) = self.quests.store.quests.iter().find(|q| q.id == qid)
+        {
+            let prefix = format!("msg-quest-{}", message.id);
+            cards.push(self.quest_promoted_card(quest, &prefix, cx));
+        }
         (!cards.is_empty()).then(|| {
             div()
                 .parity("embeds")

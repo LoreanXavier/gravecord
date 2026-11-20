@@ -738,6 +738,8 @@ pub struct RoleInfo {
     pub secondary_color: Option<u32>,
     /// `colors.tertiary_color`: the third stop of the holographic style.
     pub tertiary_color: Option<u32>,
+    /// `tags.subscription_listing_id` present: a Server Subscriptions tier role (module 25742 `SERVER_SHOP` filter).
+    pub has_subscription_listing: bool,
 }
 
 /// A role's colours as module 176201 `K3` reads them: the primary, then the optional second and third.
@@ -759,6 +761,9 @@ impl RoleInfo {
             managed: role["managed"].as_bool().unwrap_or(false),
             secondary_color: colors["secondary_color"].as_u64().map(|c| c as u32),
             tertiary_color: colors["tertiary_color"].as_u64().map(|c| c as u32),
+            has_subscription_listing: role["tags"]
+                .get("subscription_listing_id")
+                .is_some_and(|v| !v.is_null()),
         }
     }
 

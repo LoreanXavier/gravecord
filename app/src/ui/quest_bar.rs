@@ -884,15 +884,14 @@ impl Root {
             .into_any_element()
     }
 
-    /// Actions `...` trigger button (`DEoVWZ` of module 66246).
+    /// Actions `...` trigger button (`DEoVWZ` of module 66246 -> opens `270045` context menu).
     fn quest_bar_actions_button(
         &self,
         quest_id: &str,
-        cta_link: &str,
+        _cta_link: &str,
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let qid = quest_id.to_owned();
-        let link = cta_link.to_owned();
         div()
             .id("quest-bar-actions")
             .flex_none()
@@ -903,20 +902,26 @@ impl Root {
             .flex()
             .items_center()
             .justify_center()
-            .on_click(cx.listener(move |this, _, _, cx| {
-                if !link.is_empty() {
-                    cx.open_url(&link);
-                } else {
-                    this.quests.bar.dismissed_ids.push(qid.clone());
-                    cx.notify();
-                }
+            .on_click(cx.listener(move |this, ev: &gpui::ClickEvent, _, cx| {
+                cx.stop_propagation();
+                let pos = ev.position();
+                this.open_quest_menu(
+                    qid.clone(),
+                    super::quest_menu::QuestSurface::QuestBar,
+                    false,
+                    true,
+                    true,
+                    f32::from(pos.x),
+                    (f32::from(pos.y) - 180.).max(8.),
+                    cx,
+                );
             }))
             .child(icon("more_horizontal", 14., "--interactive-text-default"))
             .when(false, |el| el.child(dc_intl::t("DEoVWZ")))
             .into_any_element()
     }
 
-    /// Local state transitions for Quest CTA clicks (respecting no-unsolicited-account-writes policy).
+    /// Quest CTA click dispatcher (`201805` / `968779` / `452411`).
     pub(super) fn handle_quest_cta_action(
         &mut self,
         quest_id: &str,
@@ -925,9 +930,17 @@ impl Root {
         cx: &mut Context<Self>,
     ) {
         match action {
-            CtaAction::Enroll => self.quest_enroll_local(quest_id, cx),
-            CtaAction::ConnectConsole | CtaAction::ConnectAccount | CtaAction::ViewConnection => {
+            CtaAction::Enroll => {
+                self.send_quest_enroll(quest_id, super::quest_menu::QuestSurface::QuestHome, cx);
+            }
+            CtaAction::ConnectConsole => {
                 self.open_settings_page("connections", cx);
+            }
+            CtaAction::ConnectAccount => {
+                self.open_quest_split_modal(quest_id.to_owned(), false, true, cx);
+            }
+            CtaAction::ViewConnection => {
+                self.open_quest_split_modal(quest_id.to_owned(), true, true, cx);
             }
             CtaAction::OpenGameLink
             | CtaAction::WatchVideo
@@ -940,7 +953,10 @@ impl Root {
                     self.open_quests(cx);
                 }
             }
-            CtaAction::ClaimReward | CtaAction::ViewReward | CtaAction::SeeCode => {
+            CtaAction::ClaimReward => {
+                self.trigger_quest_claim(quest_id, cx);
+            }
+            CtaAction::ViewReward | CtaAction::SeeCode => {
                 self.open_quests(cx);
             }
             CtaAction::CheckForLaunches | CtaAction::CheckConnection => {

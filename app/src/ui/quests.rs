@@ -22,6 +22,9 @@ use super::quest_copy::{
     format_month_day, game_cta_subtitle, platform_menu_aria_label, platform_menu_options,
     primary_cta_label, redemption_instructions, resolve_cta, reward_name,
 };
+use super::quest_menu::{QuestMenuState, QuestSurface};
+use super::quest_promoted::EnrollmentBlockedModal;
+use super::quest_split_modal::SplitQuestModalState;
 use super::{Root, color, icon};
 use crate::net::Request;
 use crate::parity::Parity;
@@ -104,6 +107,14 @@ pub(super) struct State {
     pub open_platform_menu: Option<String>,
     /// Bottom-left Quest Bar state (module 66246).
     pub bar: QuestBarState,
+    /// Quest card context menu, disclosure modal, and error/unverified alerts (modules 270045, 348559, 201805).
+    pub menus: QuestMenuState,
+    /// `SplitQuestModal` account connect flow (module 968779).
+    pub split_modal: Option<SplitQuestModalState>,
+    /// Enrollment-blocked ("You've been busy!", module 124232) countdown modal.
+    pub enrollment_blocked_modal: Option<EnrollmentBlockedModal>,
+    /// Capture-only promoted card preview quest id (module 107543).
+    pub promoted_preview_quest: Option<String>,
 }
 
 impl Default for State {
@@ -124,6 +135,10 @@ impl Default for State {
             open_platform_selector: None,
             open_platform_menu: None,
             bar: QuestBarState::default(),
+            menus: QuestMenuState::default(),
+            split_modal: None,
+            enrollment_blocked_modal: None,
+            promoted_preview_quest: None,
         }
     }
 }
@@ -522,7 +537,7 @@ impl Root {
 
         // Header (`container_CXA5dw`, 150px tall)
         let play_link = quest.config.cta_link.clone();
-        let actions_link = quest.config.cta_link.clone();
+        let actions_qid = quest.id.clone();
         let details_qid = quest.id.clone();
         let video_tip = tile_video_play_tooltip(quest, now);
         let header = div()
@@ -647,11 +662,22 @@ impl Root {
                                     .flex()
                                     .items_center()
                                     .justify_center()
-                                    .on_click(cx.listener(move |_, _, _, cx| {
-                                        if !actions_link.is_empty() {
-                                            cx.open_url(&actions_link);
-                                        }
-                                    }))
+                                    .on_click(cx.listener(
+                                        move |this, ev: &gpui::ClickEvent, _, cx| {
+                                            cx.stop_propagation();
+                                            let pos = ev.position();
+                                            this.open_quest_menu(
+                                                actions_qid.clone(),
+                                                QuestSurface::QuestHome,
+                                                true,
+                                                true,
+                                                true,
+                                                f32::from(pos.x),
+                                                f32::from(pos.y) + 6.,
+                                                cx,
+                                            );
+                                        },
+                                    ))
                                     .child(icon("more_horizontal", 14., "--text-overlay-light"))
                                     .when(false, |el| el.child(dc_intl::t("DEoVWZ"))),
                             ),

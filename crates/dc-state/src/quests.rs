@@ -52,6 +52,9 @@ pub mod feature {
     pub const PACKAGE_HOLIDAY_SEASON: u64 = 33;
     pub const PACKAGE_NEW_YEARS: u64 = 34;
     pub const CLOUD_GAMING_PROVIDER_NVIDIA: u64 = 43;
+    pub const NITRO_2_POINT_0_CTA: u64 = 39;
+    pub const ORBS_MULTIPLIER_QUEST: u64 = 40;
+    pub const XBOX_GAME_PASS_QUEST: u64 = 44;
 }
 
 /// `QuestRewardAssignmentMethod` & collectible `expirationMode` (module 417404).
@@ -297,6 +300,7 @@ pub struct QuestTask {
     pub task_title: Option<String>,
     pub task_description: Option<String>,
     pub video_title: Option<String>,
+    pub account_link_instructions: Option<String>,
 }
 
 impl QuestTask {
@@ -318,6 +322,9 @@ impl QuestTask {
                 .as_str()
                 .map(str::to_owned),
             video_title: value["messages"]["video_title"].as_str().map(str::to_owned),
+            account_link_instructions: value["account_link_instructions"]
+                .as_str()
+                .map(str::to_owned),
         }
     }
 }
@@ -1420,6 +1427,68 @@ pub fn video_progress_request(quest_id: &str, timestamp: f64) -> QuestRequest {
         method: "POST",
         route: format!("/quests/{quest_id}/video-progress"),
         body: Some(json!({"timestamp": timestamp})),
+    }
+}
+
+/// Dismiss a quest surface (`343559.g5`): `POST /quests/{questId}/dismissible-content/{questContent}/dismiss`.
+pub fn dismiss_content_request(quest_id: &str, quest_content: u64) -> QuestRequest {
+    QuestRequest {
+        method: "POST",
+        route: format!("/quests/{quest_id}/dismissible-content/{quest_content}/dismiss"),
+        body: Some(json!({
+            "is_targeted": false,
+            "traffic_metadata_sealed": null,
+        })),
+    }
+}
+
+/// Start console heartbeat (`343559.js` `QUEST_ON_CONSOLE_START`): `POST /quests/{id}/console/start`.
+pub fn console_start_request(quest_id: &str, preview: bool) -> QuestRequest {
+    let route = if preview {
+        format!("/quests/{quest_id}/console/start?preview=true")
+    } else {
+        format!("/quests/{quest_id}/console/start")
+    };
+    QuestRequest {
+        method: "POST",
+        route,
+        body: Some(json!({})),
+    }
+}
+
+/// Stop console heartbeat (`343559.js` `QUEST_ON_CONSOLE_STOP`): `POST /quests/{id}/console/stop`.
+pub fn console_stop_request(quest_id: &str) -> QuestRequest {
+    QuestRequest {
+        method: "POST",
+        route: format!("/quests/{quest_id}/console/stop"),
+        body: Some(json!({})),
+    }
+}
+
+/// Preview control: `DELETE /quests/{id}/preview/dismissibility` (`270045.js`).
+pub fn preview_reset_dismissibility_request(quest_id: &str) -> QuestRequest {
+    QuestRequest {
+        method: "DELETE",
+        route: format!("/quests/{quest_id}/preview/dismissibility"),
+        body: None,
+    }
+}
+
+/// Preview control: `DELETE /quests/{id}/preview/status` (`270045.js`).
+pub fn preview_reset_status_request(quest_id: &str) -> QuestRequest {
+    QuestRequest {
+        method: "DELETE",
+        route: format!("/quests/{quest_id}/preview/status"),
+        body: None,
+    }
+}
+
+/// Preview control: `POST /quests/{id}/preview/complete` `{ percent }` (`270045.js`).
+pub fn preview_complete_request(quest_id: &str, percent: f64) -> QuestRequest {
+    QuestRequest {
+        method: "POST",
+        route: format!("/quests/{quest_id}/preview/complete"),
+        body: Some(json!({ "percent": percent.clamp(0.0, 1.0) })),
     }
 }
 

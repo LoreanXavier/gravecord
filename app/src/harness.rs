@@ -1747,6 +1747,36 @@ pub async fn run(
                 let line = root.update(cx, |root, cx| root.script_user_activity_card(&arg, cx));
                 let _ = writeln!(output, "{line}");
             }
+            // `copy-combo <tier 1..11|reset>`: Copy combo easter egg green tooltip (206845).
+            ["copy-combo", rest @ ..] => {
+                let arg = rest.join(" ");
+                let line = root.update(cx, |root, cx| root.script_copy_combo(&arg, cx));
+                let _ = writeln!(output, "{line}");
+            }
+            // `premium-uncancel [notice|modal|modal-tier1|confirmed|close]`: Keep Nitro winback notice & modal (174705).
+            ["premium-uncancel", rest @ ..] => {
+                let arg = rest.join(" ");
+                let line = root.update(cx, |root, cx| root.script_premium_uncancel(&arg, cx));
+                let _ = writeln!(output, "{line}");
+            }
+            // `quest-menu [open|disclosure|error|unverified|close]`: Quest card context menu & disclosure modal (270045 + 348559 + 201805).
+            ["quest-menu", rest @ ..] => {
+                let arg = rest.join(" ");
+                let line = root.update(cx, |root, cx| root.script_quest_menu(&arg, cx));
+                let _ = writeln!(output, "{line}");
+            }
+            // `quest-promoted [open|blocked|close]`: Quest Promoted Card & enrollment blocked modal (107543 + 124232).
+            ["quest-promoted", rest @ ..] => {
+                let arg = rest.join(" ");
+                let line = root.update(cx, |root, cx| root.script_quest_promoted(&arg, cx));
+                let _ = writeln!(output, "{line}");
+            }
+            // `quest-split [connect|connected|error|close]`: SplitQuestModal account connect flow (968779 + 976019 + 491145).
+            ["quest-split", rest @ ..] => {
+                let arg = rest.join(" ");
+                let line = root.update(cx, |root, cx| root.script_quest_split(&arg, cx));
+                let _ = writeln!(output, "{line}");
+            }
             // `search last` / `search answer <total>`: the open search's request, and an answer to it;
             // `search page <n>`: the pager turns to page n.
             ["search", rest @ ..] => {

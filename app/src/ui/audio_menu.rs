@@ -301,10 +301,14 @@ impl Root {
             .child(
                 div()
                     .flex_1()
+                    .min_w_0()
+                    .overflow_hidden()
+                    .mr(px(8.))
                     .flex()
                     .flex_col()
                     .child(
                         div()
+                            .truncate()
                             .text_size(px(14.))
                             .line_height(px(18.))
                             .font_weight(FontWeight(500.))
@@ -314,13 +318,18 @@ impl Root {
                     .child(
                         div()
                             .mt(px(2.))
+                            .truncate()
                             .text_size(px(12.))
                             .line_height(px(16.))
                             .text_color(tone(call, "--text-muted"))
                             .child(detail),
                     ),
             )
-            .child(icon("menu_caret", 20., "--text-muted"))
+            .child(
+                div()
+                    .flex_none()
+                    .child(icon("menu_caret", 20., "--text-muted")),
+            )
             .into_any_element()
     }
 
@@ -409,7 +418,7 @@ impl Root {
                         cx.notify();
                     }))
                     .when(device_row, |this| {
-                        this.child(div().mr(px(8.)).child(icon(
+                        this.child(div().flex_none().mr(px(8.)).child(icon(
                             if side == Side::Input {
                                 "mic"
                             } else {
@@ -422,10 +431,14 @@ impl Root {
                     .child(
                         div()
                             .flex_1()
+                            .min_w_0()
+                            .overflow_hidden()
+                            .mr(px(8.))
                             .flex()
                             .flex_col()
                             .child(
                                 div()
+                                    .truncate()
                                     .text_size(px(14.))
                                     .line_height(px(18.))
                                     .font_weight(FontWeight(500.))
@@ -435,19 +448,32 @@ impl Root {
                             .children(detail.map(|detail| {
                                 div()
                                     .mt(px(2.))
+                                    .truncate()
                                     .text_size(px(12.))
                                     .line_height(px(16.))
                                     .text_color(tone(call, "--text-muted"))
                                     .child(detail)
                             })),
                     )
-                    .child(radio(picked))
+                    .child(div().flex_none().child(radio(picked)))
                     .into_any_element(),
             );
         }
-        let left = (f32::from(menu.at.x) + MENU_WIDTH - 4.)
-            .min((self.viewport.0 - 200.).max(8.))
-            .max(8.);
+        // Official `.menu_X9uJ2e`: `min-width: 188px; max-width: 320px`. Allow submenu to grow up to
+        // 300px for long Windows device names and truncate cleanly inside its border without pushing
+        // the radio circle out of the box.
+        const SUBMENU_MAX_W: f32 = 300.;
+        let right_side = f32::from(menu.at.x) + MENU_WIDTH - 4.;
+        let left = if right_side + SUBMENU_MAX_W + 8. <= self.viewport.0 {
+            right_side.max(8.)
+        } else {
+            let flipped = f32::from(menu.at.x) - SUBMENU_MAX_W + 4.;
+            if flipped >= 8. {
+                flipped
+            } else {
+                (self.viewport.0 - SUBMENU_MAX_W - 8.).max(8.)
+            }
+        };
         let est_height = 16. + rows.len() as f32 * 52.;
         let top = (self.audio_menu_top(menu) + top_offset)
             .min((self.viewport.1 - 8. - est_height).max(8.))
@@ -461,7 +487,9 @@ impl Root {
                     div()
                         .id("audio-submenu")
                         .occlude()
-                        .w(px(192.))
+                        .min_w(px(192.))
+                        .max_w(px(SUBMENU_MAX_W))
+                        .overflow_hidden()
                         .p(px(8.))
                         .rounded(px(8.))
                         .border_1()
@@ -556,6 +584,7 @@ impl Root {
             .popout("audio-menu", PopKind::Fade, PopSide::Top)
             .occlude()
             .w(px(MENU_WIDTH))
+            .overflow_hidden()
             .p(px(8.))
             .rounded(px(8.))
             .border_1()
@@ -665,6 +694,9 @@ impl Root {
                         .child(
                             div()
                                 .flex_1()
+                                .min_w_0()
+                                .truncate()
+                                .mr(px(8.))
                                 .text_size(px(14.))
                                 .line_height(px(18.))
                                 .font_weight(FontWeight(500.))
@@ -673,6 +705,7 @@ impl Root {
                         )
                         .child(
                             div()
+                                .flex_none()
                                 .size(px(20.))
                                 .rounded(px(4.))
                                 .border_1()
@@ -726,13 +759,16 @@ impl Root {
                     this.audio_menu = None;
                     this.open_settings_section("Voice & Video", cx);
                 }))
+                .child(div().flex_none().mr(px(8.)).child(icon(
+                    "settings",
+                    20.,
+                    "--interactive-text-default",
+                )))
                 .child(
                     div()
-                        .mr(px(8.))
-                        .child(icon("settings", 20., "--interactive-text-default")),
-                )
-                .child(
-                    div()
+                        .flex_1()
+                        .min_w_0()
+                        .truncate()
                         .text_size(px(14.))
                         .line_height(px(18.))
                         .font_weight(FontWeight(500.))

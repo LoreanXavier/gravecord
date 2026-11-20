@@ -478,7 +478,13 @@ impl Root {
                             )
                             .into_any_element()
                         } else {
-                            line.into_any_element()
+                            div()
+                                .flex()
+                                .items_center()
+                                .gap(px(4.))
+                                .child(line)
+                                .child(self.copy_username_button(user.username.clone(), cx))
+                                .into_any_element()
                         }
                     })
                     .when(!badges.is_empty(), |this| {
