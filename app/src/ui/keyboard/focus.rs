@@ -294,6 +294,8 @@ impl Root {
                 self.role_verify_open(),
                 self.safety_tools_open(),
                 self.invite_accept_open(),
+                self.monetization_modal_open(),
+                self.command_permissions_open(),
                 self.menu.is_some(),
                 self.context.open.is_some(),
                 self.plus_menu,

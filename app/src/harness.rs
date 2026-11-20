@@ -1540,6 +1540,17 @@ pub async fn run(
                 let line = root.update(cx, |root, cx| root.script_invite_no_suggestions(cx));
                 let _ = writeln!(output, "{line}");
             }
+            // `monetization-eligibility`: opens Server Subscriptions monetization eligibility checklist (module 715395).
+            ["monetization-eligibility"] => {
+                let line = root.update(cx, |root, cx| root.script_monetization_eligibility(cx));
+                let _ = writeln!(output, "{line}");
+            }
+            // `command-permissions [lockout|picker]`: opens Application Command Permissions editor (module 365200).
+            ["command-permissions", rest @ ..] => {
+                let arg = rest.join(" ");
+                let line = root.update(cx, |root, cx| root.script_command_permissions(&arg, cx));
+                let _ = writeln!(output, "{line}");
+            }
             // `search last` / `search answer <total>`: the open search's request, and an answer to it;
             // `search page <n>`: the pager turns to page n.
             ["search", rest @ ..] => {
