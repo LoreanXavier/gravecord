@@ -4037,7 +4037,7 @@ impl Root {
                             .and_then(|states| states.iter().find(|state| state.user_id == user));
                         let deaf = self.self_deaf || held.is_some_and(|state| state.self_deaf);
                         (
-                            self.self_mute || deaf || held.is_some_and(|state| state.self_mute),
+                            self.engine_mute() || held.is_some_and(|state| state.self_mute),
                             deaf,
                         )
                     }),

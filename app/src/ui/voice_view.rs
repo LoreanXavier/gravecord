@@ -2769,7 +2769,7 @@ impl Root {
         shown: bool,
         cx: &mut Context<Self>,
     ) -> AnyElement {
-        let muted = self.self_mute || self.self_deaf;
+        let muted = self.engine_mute();
         let soundboard_reason = self.soundboard_disabled();
         let tray = |id: &'static str, glyph: &'static str| {
             div().id(id).size(px(24.)).cursor_pointer().child(icon(

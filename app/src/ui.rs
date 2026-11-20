@@ -189,6 +189,7 @@ mod boost_page;
 pub(crate) mod cdn;
 mod channel_browser;
 mod discover;
+mod emoji_studio;
 mod favorite_nickname;
 mod favorites;
 mod feedback;
@@ -336,6 +337,7 @@ mod soundboard;
 mod stream_menus;
 mod stream_volume;
 mod tag_badges;
+mod tag_badges_extra;
 mod threads;
 mod tooltip;
 mod tutorial_tips;
@@ -616,6 +618,9 @@ pub struct Root {
     requested: HashSet<String>,
     /// The select image and image crop modals (`image_crop`).
     image_crop: image_crop::State,
+    /// Emoji Studio modal (module 894399, `emoji_studio`).
+    emoji_studio: Option<emoji_studio::EmojiStudio>,
+    emoji_studio_generation: u64,
     badge_modal: Option<badge_modal::BadgeModal>,
     /// The application storefront modal (module 719847, `app_storefront`).
     app_storefront: Option<app_storefront::Open>,
@@ -1145,6 +1150,8 @@ impl Root {
             images: image_retry::Images::default(),
             requested: HashSet::new(),
             image_crop: Default::default(),
+            emoji_studio: None,
+            emoji_studio_generation: 0,
             badge_modal: None,
             app_storefront: None,
             frames_announcement: false,
@@ -2497,6 +2504,11 @@ impl Root {
                 if key.starts_with(server_emoji::EMOJIS_PREFIX) {
                     self.fetched.insert(key.clone(), body.clone());
                     self.emojis_fetched(&key, cx);
+                    return;
+                }
+                if key.starts_with(emoji_studio::STUDIO_UPLOAD_PREFIX) {
+                    self.fetched.insert(key.clone(), body.clone());
+                    self.emoji_studio_fetched(&key, cx);
                     return;
                 }
                 if key.starts_with(server_settings_pages::INVITES_PREFIX)
@@ -6390,7 +6402,7 @@ impl Root {
                 .justify_center()
                 .child(icon("audio_chevron", 16., tint(muted)))
         };
-        let mic_muted = self.self_mute || self.self_deaf;
+        let mic_muted = self.engine_mute();
         let mic_chevron = chevron(mic_muted, audio_menu::Side::Input);
         let headphones_chevron = chevron(self.self_deaf, audio_menu::Side::Output);
         // Not in the pinned client: GameActivityToggle's button before the microphone
@@ -6420,10 +6432,7 @@ impl Root {
             .child({
                 let in_call = self.call.is_some();
                 let soundboard_ring = in_call && self.soundboard.user_playing(user.id);
-                let voice_ring = in_call
-                    && !self.self_mute
-                    && !self.self_deaf
-                    && self.speaking.contains(&user.id);
+                let voice_ring = in_call && !self.engine_mute() && self.speaking.contains(&user.id);
                 div()
                     .id("panel-avatar")
                     .relative()
@@ -11150,6 +11159,7 @@ impl Render for Root {
         )
         .size_full();
         let image_crop_layers = self.image_crop_layers(window, cx);
+        let emoji_studio_layer = self.emoji_studio_layer(window, cx);
         let locale_error = self.locale_error_layer();
         let app_storefront = self.app_storefront_layer(window, cx);
         let element = div()
@@ -11215,6 +11225,10 @@ impl Render for Root {
                     return;
                 }
                 if this.image_crop_key(keys, window, cx) {
+                    cx.stop_propagation();
+                    return;
+                }
+                if this.emoji_studio_key(keys, cx) {
                     cx.stop_propagation();
                     return;
                 }
@@ -12419,6 +12433,7 @@ impl Render for Root {
             .children(self.folder_menu_layer(cx))
             .children(self.settings_dialogs(cx))
             .children(image_crop_layers)
+            .children(emoji_studio_layer)
             .children(self.modify_attachment_modal(cx))
             .children(self.report_issue_modal(cx))
             .children(self.game_profile_layer(cx))

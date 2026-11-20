@@ -653,7 +653,7 @@ impl Root {
         });
         QuickFacts {
             in_voice: self.call.is_some(),
-            self_mute: self.self_mute,
+            self_mute: self.engine_mute(),
             server_mute: state
                 .as_ref()
                 .is_some_and(|state| state.mute || state.suppress),

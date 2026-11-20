@@ -1,11 +1,11 @@
 //! Server Settings > Emoji (module 989433 `ob`, rows `of`, sections `oN`/`op`/`oA`; styles module 378243).
 //!
 //! `GET /guilds/{id}/emojis` lists them, split into Emoji and Animated Emoji, newest first. Upload Emoji takes image
-//! files and posts each as module 810877 `W` does for a dropped file: the name is the file's stem through
-//! `sanitizeEmojiName` (module 690521), the image a data URI (`POST /guilds/{id}/emojis`). A name edited in its row is
-//! committed with Enter (`PATCH /guilds/{id}/emojis/{emoji}`), the trash deletes (`DELETE`). The button's Emoji Studio
-//! cropper is not drawn: picked files upload as dropped ones do. Several files post one after the other (`UD` of
-//! module 824832) and the ones refused are listed in "Failed to upload files" (module 940372, rows of module 534606).
+//! files: picking a single file opens Emoji Studio (module 894399, `emoji_studio.rs`), while multiple files or dropped
+//! files post one after the other (`UD` of module 824832) as module 810877 `W` does, with the name through
+//! `sanitizeEmojiName` (module 690521) and the image a data URI (`POST /guilds/{id}/emojis`). A name edited in its row
+//! is committed with Enter (`PATCH /guilds/{id}/emojis/{emoji}`), the trash deletes (`DELETE`), and refused files are
+//! listed in "Failed to upload files" (module 940372, rows of module 534606).
 
 use super::chat_notices::upload_errors_alert;
 use super::{Root, avatar_source, color, icon};
@@ -292,7 +292,7 @@ impl Root {
         cx.notify();
     }
 
-    /// Upload Emoji: image files, each posted under its file name.
+    /// Upload Emoji: a single picked file opens Emoji Studio (module 894399); multiple files bulk-upload.
     fn pick_emoji_files(&mut self, guild: Id, cx: &mut Context<Self>) {
         let picked = cx.prompt_for_paths(PathPromptOptions {
             files: true,
@@ -302,7 +302,13 @@ impl Root {
         });
         cx.spawn(async move |this, cx| {
             if let Ok(Ok(Some(paths))) = picked.await {
-                let _ = this.update(cx, |this, cx| this.upload_emojis(guild, paths, cx));
+                let _ = this.update(cx, |this, cx| {
+                    if paths.len() == 1 {
+                        this.open_emoji_studio_path(Some(guild), &paths[0], cx);
+                    } else {
+                        this.upload_emojis(guild, paths, cx);
+                    }
+                });
             }
         })
         .detach();
