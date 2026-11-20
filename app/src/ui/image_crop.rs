@@ -12,7 +12,7 @@
 //! The geometry is in `image_crop/math.rs`, the pixels in `image_crop/output.rs`.
 
 mod math;
-mod output;
+pub(super) mod output;
 
 pub(crate) use math::UploadType;
 

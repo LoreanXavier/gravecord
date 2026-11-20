@@ -1487,6 +1487,12 @@ pub async fn run(
                 let line = root.update(cx, |root, cx| root.script_emoji_bulk_errors(cx));
                 let _ = writeln!(output, "{line}");
             }
+            // `emoji-studio [path]`: opens Emoji Studio (module 894399) on a file or synthetic test PNG.
+            ["emoji-studio", rest @ ..] => {
+                let arg = rest.join(" ");
+                let line = root.update(cx, |root, cx| root.script_open_emoji_studio(&arg, cx));
+                let _ = writeln!(output, "{line}");
+            }
             // `search last` / `search answer <total>`: the open search's request, and an answer to it;
             // `search page <n>`: the pager turns to page n.
             ["search", rest @ ..] => {

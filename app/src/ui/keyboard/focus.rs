@@ -289,6 +289,7 @@ impl Root {
                 self.image_crop.select.is_some(),
                 self.image_crop.crop.is_some(),
                 self.image_crop.confirm.is_some(),
+                self.emoji_studio_open(),
                 self.menu.is_some(),
                 self.context.open.is_some(),
                 self.plus_menu,

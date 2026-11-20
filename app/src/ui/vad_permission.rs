@@ -2,7 +2,8 @@
 //! lacks Use Voice Activity mutes the connection (module 754712 `SET_VAD_PERMISSION` sets `tf`, which every default
 //! connection's mute includes, and a self-mute toggle does nothing while it holds), and the "Push to Talk Required"
 //! modal (`wI`, size `md`) offers the switch. The input mode itself stays Voice Activity until the user switches.
-//! GAP: the panel and menus still show the account's own mute choice, where the official `isSelfMute` reads muted.
+//! Every self-mute display (user panel, audio meter, call bar, context menus, overlay quick actions and tray) reads
+//! [`Root::engine_mute`] so `isSelfMute` reports muted while Use Voice Activity is missing.
 
 use super::Root;
 use super::chat_notices::{Alert, Then};
@@ -48,6 +49,16 @@ pub(super) fn has_permission(
     };
     // `(suppress, asking to speak)`.
     stage || can || voice_state.is_none_or(|(suppress, asking)| suppress || asking)
+}
+
+/// Effective self-mute (`t7` of 754712 / `isSelfMute` read across user panel, menus, overlay and tray): muted when
+/// explicitly self-muted, self-deafened, or missing Use Voice Activity in Voice Activity mode.
+pub(super) fn effective_self_mute(
+    self_mute: bool,
+    self_deaf: bool,
+    has_vad_permission: bool,
+) -> bool {
+    self_mute || self_deaf || !has_vad_permission
 }
 
 impl Root {
@@ -103,7 +114,7 @@ impl Root {
 
     /// The connection's mute: the account's choice, deafen, or a missing Use Voice Activity (`t7` of 754712).
     pub(super) fn engine_mute(&self) -> bool {
-        self.self_mute || self.self_deaf || !self.vad.has_permission
+        effective_self_mute(self.self_mute, self.self_deaf, self.vad.has_permission)
     }
 
     fn apply_engine_mute(&self) {
@@ -180,5 +191,14 @@ mod tests {
             Some((false, false)),
             Some((false, true))
         ));
+    }
+
+    #[test]
+    fn missing_vad_permission_reports_self_muted() {
+        assert!(!effective_self_mute(false, false, true));
+        assert!(effective_self_mute(true, false, true));
+        assert!(effective_self_mute(false, true, true));
+        // Missing USE_VAD forces muted display even when self_mute and self_deaf are both off.
+        assert!(effective_self_mute(false, false, false));
     }
 }

@@ -237,7 +237,10 @@ impl Root {
         div()
             .id(id)
             .on_hover(cx.listener(|this, inside: &bool, _, cx| {
-                if *inside && let Some(menu) = this.audio_menu.as_mut() && menu.sub.is_some() {
+                if *inside
+                    && let Some(menu) = this.audio_menu.as_mut()
+                    && menu.sub.is_some()
+                {
                     menu.sub = None;
                     cx.notify();
                 }
@@ -566,7 +569,7 @@ impl Root {
             };
         let panel = if call {
             let (level, _) = prefs.processing.meter();
-            let live = !(self.self_mute || self.self_deaf);
+            let live = !self.engine_mute();
             let progress = if live {
                 (level + 100.).clamp(0., 100.)
             } else {

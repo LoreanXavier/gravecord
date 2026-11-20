@@ -13,7 +13,7 @@ impl Root {
         Voice {
             connected: self.call.as_ref().is_some_and(|call| call.connected),
             speaking: me.is_some_and(|me| self.speaking.contains(&me)),
-            self_mute: self.self_mute || self.self_deaf,
+            self_mute: self.engine_mute(),
             self_deaf: self.self_deaf,
             server_mute: state.is_some_and(|state| state.mute),
             server_deaf: state.is_some_and(|state| state.deaf),

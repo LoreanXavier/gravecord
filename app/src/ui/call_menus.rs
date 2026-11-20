@@ -1136,11 +1136,7 @@ impl Root {
             user,
             me,
             developer: self.developer_mode(),
-            muted: if me {
-                self.self_mute || self.self_deaf
-            } else {
-                local_mute
-            },
+            muted: if me { self.engine_mute() } else { local_mute },
             deafened: me && self.self_deaf,
             soundboard_muted: self.context.soundboard_muted.contains(&user),
             video_disabled: video_disabled(user),
