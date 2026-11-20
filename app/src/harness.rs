@@ -1649,6 +1649,40 @@ pub async fn run(
                 let line = root.update(cx, |root, cx| root.script_shop_gift_cta(&arg, cx));
                 let _ = writeln!(output, "{line}");
             }
+            // `soundmoji [nitro|join|default|volume|noperm]`: Soundmoji popout & volume slider (456086).
+            ["soundmoji", rest @ ..] => {
+                let arg = rest.join(" ");
+                let line = root.update(cx, |root, cx| root.script_soundmoji(&arg, cx));
+                let _ = writeln!(output, "{line}");
+            }
+            // `server-shop [products|subs|empty|preview]`: Server Shop storefront modal (38137).
+            ["server-shop", rest @ ..] => {
+                let arg = rest.join(" ");
+                let line = root.update(cx, |root, cx| root.script_server_shop(&arg, cx));
+                let _ = writeln!(output, "{line}");
+            }
+            // `onboarding-flow [cover|connections|prompt|rules]`: Member-facing Server Onboarding flow (215764).
+            ["onboarding-flow", rest @ ..] => {
+                let arg = rest.join(" ");
+                let line = root.update(cx, |root, cx| root.script_onboarding_flow(&arg, cx));
+                let _ = writeln!(output, "{line}");
+            }
+            // `nitro-referral [select|remind|sent|error|rowerr|bannererr]`: Share Nitro Trial Friend Picker (581846).
+            ["nitro-referral", rest @ ..] => {
+                let arg = rest.join(" ");
+                let line = window
+                    .update(cx, |_, window, cx| {
+                        root.update(cx, |root, cx| root.script_nitro_referral(&arg, window, cx))
+                    })
+                    .unwrap_or_default();
+                let _ = writeln!(output, "{line}");
+            }
+            // `shop-checkout-review [open|closed|paypal]`: Shop Checkout Review modal (582695).
+            ["shop-checkout-review", rest @ ..] => {
+                let arg = rest.join(" ");
+                let line = root.update(cx, |root, cx| root.script_shop_checkout_review(&arg, cx));
+                let _ = writeln!(output, "{line}");
+            }
             // `search last` / `search answer <total>`: the open search's request, and an answer to it;
             // `search page <n>`: the pager turns to page n.
             ["search", rest @ ..] => {

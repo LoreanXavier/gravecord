@@ -234,6 +234,7 @@ mod nameplate_animation;
 mod nameplates;
 mod nitro;
 mod nitro_purchase;
+mod nitro_referral;
 mod nitro_upsell;
 mod notice_bar;
 mod notification_center;
@@ -243,6 +244,7 @@ mod now_playing_menu;
 mod oauth;
 mod oauth_spec;
 mod official_messages;
+mod onboarding_flow;
 mod overlay;
 mod overlay_chat;
 mod overlay_panel;
@@ -308,10 +310,12 @@ mod server_boost;
 mod server_community;
 mod server_discovery;
 mod server_monetization;
+mod server_shop;
 pub(crate) mod shop;
 mod slash;
 mod slowmode;
 mod soundboard_echo;
+mod soundmoji;
 mod splash;
 pub(crate) mod start_cache;
 mod status_menu;
@@ -673,6 +677,16 @@ pub struct Root {
     notification_center_modal: Option<notification_center::NotificationCenterModal>,
     /// Wishlist & Game Shop Gift CTA modal (module 909004, `shop::gift_cta`).
     shop_gift_cta_modal: Option<shop::gift_cta::ShopGiftCtaModal>,
+    /// Soundmoji popout & volume slider (module 456086, `soundmoji`).
+    soundmoji_popout: Option<soundmoji::SoundmojiContext>,
+    /// Server Shop storefront modal (module 38137, `server_shop`).
+    server_shop_modal: Option<server_shop::ServerShopModal>,
+    /// Member-facing Server Onboarding 4-step flow (module 215764, `onboarding_flow`).
+    onboarding_flow_modal: Option<onboarding_flow::OnboardingFlowModal>,
+    /// Share Nitro Trial Friend Picker & Reminder modal (module 581846, `nitro_referral`).
+    nitro_referral_modal: Option<nitro_referral::NitroReferralModal>,
+    /// Shop Checkout Review modal (module 582695, `shop::checkout_review`).
+    shop_checkout_review_modal: Option<shop::checkout_review::ShopCheckoutReviewModal>,
     /// Ignored users whose "Don't show this again" restricted-profile bypass was clicked (module 148540 `ip`).
     restricted_profile_bypass: std::collections::HashSet<dc_state::Id>,
     /// Soundboard Echo store & hover details state (module 120246, `soundboard_echo`).
@@ -1225,6 +1239,11 @@ impl Root {
             payment_source_picker: None,
             notification_center_modal: None,
             shop_gift_cta_modal: None,
+            soundmoji_popout: None,
+            server_shop_modal: None,
+            onboarding_flow_modal: None,
+            nitro_referral_modal: None,
+            shop_checkout_review_modal: None,
             restricted_profile_bypass: std::collections::HashSet::new(),
             soundboard_echo: Default::default(),
             badge_modal: None,
@@ -11393,6 +11412,11 @@ impl Render for Root {
                         || this.payment_source_picker.is_some()
                         || this.notification_center_modal.is_some()
                         || this.shop_gift_cta_modal.is_some()
+                        || this.soundmoji_popout.is_some()
+                        || this.server_shop_modal.is_some()
+                        || this.onboarding_flow_modal.is_some()
+                        || this.nitro_referral_modal.is_some()
+                        || this.shop_checkout_review_modal.is_some()
                         || this.library.game_menu.is_some()
                         || this.library.hide_confirm.is_some())
                 {
@@ -11407,6 +11431,11 @@ impl Render for Root {
                     this.payment_source_picker = None;
                     this.notification_center_modal = None;
                     this.shop_gift_cta_modal = None;
+                    this.close_soundmoji_popout();
+                    this.close_server_shop();
+                    this.close_onboarding_flow();
+                    this.close_nitro_referral();
+                    this.close_shop_checkout_review();
                     this.close_library_game_menu();
                     cx.notify();
                     cx.stop_propagation();
@@ -12577,6 +12606,11 @@ impl Render for Root {
             .children(self.payment_source_picker_layer(cx))
             .children(self.notification_center_layer(cx))
             .children(self.shop_gift_cta_modal_layer(cx))
+            .children(self.soundmoji_popout_layer(cx))
+            .children(self.server_shop_modal_layer(cx))
+            .children(self.onboarding_flow_modal_layer(cx))
+            .children(self.nitro_referral_modal_layer(cx))
+            .children(self.shop_checkout_review_layer(cx))
             .children(self.composer_ai_modal(cx))
             .children(self.friend_nickname_layer(window, cx))
             .children(self.favorite_nickname_layer(window, cx))
