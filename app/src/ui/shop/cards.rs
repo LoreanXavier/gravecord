@@ -42,49 +42,55 @@ impl Root {
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let item = product.items.first();
-        let deco = move |this: &mut Root, id: &str, avatar: f32, ring: f32| -> AnyElement {
-            let art = this.shop_img_box(&item_static(id), avatar.max(ring), avatar.max(ring));
-            div()
-                .size_full()
-                .flex()
-                .items_center()
-                .justify_center()
-                .child(
-                    div()
-                        .relative()
-                        .size(px(ring))
-                        .flex()
-                        .items_center()
-                        .justify_center()
-                        .child(
-                            div()
-                                .size(px(avatar))
-                                .rounded_full()
-                                .bg(if brand {
-                                    color("--background-brand")
-                                } else {
-                                    color("--background-mod-strong")
-                                })
-                                .flex()
-                                .items_center()
-                                .justify_center()
-                                .child(icon(
-                                    "sb_discord",
-                                    avatar * 0.55,
-                                    if brand { "--white" } else { "--text-muted" },
-                                )),
-                        )
-                        .children(art.map(|art| {
-                            img(art)
-                                .absolute()
-                                .top_0()
-                                .left_0()
-                                .size(px(ring))
-                                .object_fit(ObjectFit::Contain)
-                        })),
-                )
-                .into_any_element()
-        };
+        // Module 929283: the avatar with its decoration, "Avatar Decoration Preview: {label}".
+        let deco =
+            move |this: &mut Root, id: &str, label: &str, avatar: f32, ring: f32| -> AnyElement {
+                let art = this.shop_img_box(&item_static(id), avatar.max(ring), avatar.max(ring));
+                div()
+                    .id(gpui::SharedString::from(format!(
+                        "shop-card-decoration-{id}"
+                    )))
+                    .aria_label(decoration_preview_label(label))
+                    .size_full()
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .child(
+                        div()
+                            .relative()
+                            .size(px(ring))
+                            .flex()
+                            .items_center()
+                            .justify_center()
+                            .child(
+                                div()
+                                    .size(px(avatar))
+                                    .rounded_full()
+                                    .bg(if brand {
+                                        color("--background-brand")
+                                    } else {
+                                        color("--background-mod-strong")
+                                    })
+                                    .flex()
+                                    .items_center()
+                                    .justify_center()
+                                    .child(icon(
+                                        "sb_discord",
+                                        avatar * 0.55,
+                                        if brand { "--white" } else { "--text-muted" },
+                                    )),
+                            )
+                            .children(art.map(|art| {
+                                img(art)
+                                    .absolute()
+                                    .top_0()
+                                    .left_0()
+                                    .size(px(ring))
+                                    .object_fit(ObjectFit::Contain)
+                            })),
+                    )
+                    .into_any_element()
+            };
         match product.kind {
             data::KIND_BUNDLE => self.shop_bundle_preview(product, size, hovering, brand),
             data::KIND_EXTERNAL => {
@@ -129,8 +135,9 @@ impl Root {
             }
             data::KIND_AVATAR_DECORATION => {
                 let id = item.map_or(product.sku_id.clone(), |item| item.sku_id.clone());
+                let label = item.map_or(product.name.as_str(), |item| item.label.as_str());
                 if brand {
-                    deco(self, &id, size * 0.46, size * 0.55)
+                    deco(self, &id, label, size * 0.46, size * 0.55)
                 } else {
                     // `SIZE_120` with its 144px decoration, centred in the preview area above the 56px foot
                     // (`productPreviewContainer_UGbKo5.hasBottomContent`), at the scale of a 242px card.
@@ -139,7 +146,7 @@ impl Root {
                         .size_full()
                         .px(px(8. * scale))
                         .pb(px(56. * scale))
-                        .child(deco(self, &id, 120. * scale, 144. * scale))
+                        .child(deco(self, &id, label, 120. * scale, 144. * scale))
                         .into_any_element()
                 }
             }
@@ -891,9 +898,23 @@ mod tests {
     }
 }
 
-/// `DT/PwH` of module 395744: the frame preview's accessible name.
-pub(super) fn frame_preview_label(label: &str) -> String {
+/// `DT/PwH` of modules 395744 and 665411 (`role: img`): the frame preview's accessible name.
+pub(in crate::ui) fn frame_preview_label(label: &str) -> String {
     dc_intl::format("DT/PwH", &[("a11y_text", label.into())])
+}
+
+/// `Do2lxE` of module 929283: the avatar decoration preview's accessible name.
+pub(in crate::ui) fn decoration_preview_label(label: &str) -> String {
+    dc_intl::format("Do2lxE", &[("a11y_text", label.into())])
+}
+
+/// Module 872200's `role: img` name: "Nameplate Preview: {label}" for a nameplate, else "Preview of your Nameplate in
+/// the member list".
+pub(in crate::ui) fn nameplate_preview_label(label: Option<&str>) -> String {
+    match label {
+        Some(label) => dc_intl::format("YJig7C", &[("a11y_text", label.into())]),
+        None => dc_intl::t("SZeUdR").to_owned(),
+    }
 }
 
 #[cfg(test)]
@@ -903,6 +924,18 @@ mod frame_label_tests {
         assert_eq!(
             super::frame_preview_label("Cozy Vines"),
             "Profile Frame Preview: Cozy Vines"
+        );
+        assert_eq!(
+            super::decoration_preview_label("Cat Ears"),
+            "Avatar Decoration Preview: Cat Ears"
+        );
+        assert_eq!(
+            super::nameplate_preview_label(Some("Koi Pond")),
+            "Nameplate Preview: Koi Pond"
+        );
+        assert_eq!(
+            super::nameplate_preview_label(None),
+            "Preview of your Nameplate in the member list"
         );
     }
 }

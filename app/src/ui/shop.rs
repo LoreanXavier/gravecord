@@ -5,11 +5,11 @@
 //! page), 821816 (Browse), 987421 (the card), 110676 (the blocks).
 pub(crate) mod art_cache;
 mod browse;
-mod cards;
+pub(in crate::ui) mod cards;
 pub(super) mod data;
 mod editor_wishlist;
 mod featured;
-pub(super) mod game_shop;
+pub(in crate::ui) mod game_shop;
 mod modal;
 
 use super::discover::{gutter_scrollbar, text};
@@ -540,10 +540,7 @@ impl Root {
                             .items
                             .iter()
                             .any(|i| i.kind == data::KIND_AVATAR_DECORATION)
-                        && product
-                            .items
-                            .iter()
-                            .any(|i| i.kind == data::KIND_NAMEPLATE);
+                        && product.items.iter().any(|i| i.kind == data::KIND_NAMEPLATE);
                     let avatar = if three { 72. } else { 80. } * scale;
                     for item in &product.items {
                         match item.kind {

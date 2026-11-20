@@ -2007,6 +2007,8 @@ pub struct PrivateChannel {
     pub message_request: bool,
     pub spam: bool,
     pub request_timestamp: Option<DateTime<Utc>>,
+    /// `blocked_user_warning_dismissed`: the "Leave group?" warning about blocked or ignored members was dismissed.
+    pub blocked_user_warning_dismissed: bool,
 }
 
 impl PrivateChannel {
@@ -2024,6 +2026,7 @@ impl PrivateChannel {
             message_request: false,
             spam: false,
             request_timestamp: None,
+            blocked_user_warning_dismissed: false,
         };
         channel.update(value);
         Some(channel)
@@ -2066,6 +2069,9 @@ impl PrivateChannel {
         }
         if let Some(spam) = value["is_spam"].as_bool() {
             self.spam = spam;
+        }
+        if let Some(dismissed) = value["blocked_user_warning_dismissed"].as_bool() {
+            self.blocked_user_warning_dismissed = dismissed;
         }
         if value.get("is_message_request_timestamp").is_some() {
             self.request_timestamp = value["is_message_request_timestamp"]

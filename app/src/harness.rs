@@ -625,6 +625,25 @@ pub async fn run(
                 root.update(cx, |root, cx| root.script_invite_permission(cx));
                 let _ = writeln!(output, "invite-permission: shown");
             }
+            // Capture only: `frames-announcement` opens "New in the Shop: Profile Frames" (module 627781) whatever the
+            // account's dismissals.
+            // Capture only: `storefront <app id>` opens the application storefront modal (module 719847) as its Store
+            // button does.
+            ["storefront", app] => {
+                let app = (*app).to_owned();
+                root.update(cx, |root, cx| root.open_app_storefront(app, None, cx));
+                let _ = writeln!(output, "storefront: opened");
+            }
+            // Capture only: `not-spam <channel>` presses Mark as Not Spam of that spam request (module 190857).
+            ["not-spam", channel] => {
+                let channel = channel.parse::<u64>().unwrap_or(0);
+                root.update(cx, |root, cx| root.mark_not_spam(channel, cx));
+                let _ = writeln!(output, "not-spam: pressed");
+            }
+            ["frames-announcement"] => {
+                root.update(cx, |root, cx| root.script_frames_announcement(cx));
+                let _ = writeln!(output, "frames-announcement: shown");
+            }
             ["invite-error", code] => {
                 let line = root.update(cx, |root, cx| root.script_invite_error(code, cx));
                 let _ = writeln!(output, "invite-error: {line}");

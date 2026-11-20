@@ -608,6 +608,9 @@ pub fn set_custom_theme(current: &[u8], theme: u64, custom: &CustomTheme) -> (St
 /// `privacy.friend_source_flags` (a `UInt32Value`): who may send the account a friend request. The bits are
 /// `MUTUAL_FRIENDS` 2, `MUTUAL_GUILDS` 4 and `NO_RELATION` 8 (module 652215); all three is "Everyone".
 pub const FRIEND_SOURCE_FLAGS: ProtoPref = pref("friend_source_flags", &[8, 11], 1);
+/// `privacy.non_spam_retraining_opt_in` (19, a `BoolValue`, `WY` of module 253932): a spam request marked as not spam
+/// forwards its message to Discord; unset until the question of module 693864 is answered with its box ticked.
+pub const NON_SPAM_RETRAINING_OPT_IN: ProtoPref = pref("non_spam_retraining_opt_in", &[8, 19], 1);
 /// `default_guilds_restricted_v2` (27) and `default_message_request_restricted` (17), both `BoolValue`s: direct
 /// messages and message requests off for servers that have no entry of their own.
 pub const DM_DEFAULT_RESTRICTED: ProtoPref = pref("permissions_dms_default", &[8, 27], 1);

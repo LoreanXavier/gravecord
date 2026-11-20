@@ -235,6 +235,62 @@ pub(crate) fn failure(body: &Value) -> Failure {
     }
 }
 
+/// The `date_of_birth` error of a refused submit as module 784578 shows it (React joins an array's strings).
+pub(crate) fn underage_message(body: &Value) -> Option<String> {
+    let text = match &body["date_of_birth"] {
+        Value::String(text) => text.clone(),
+        Value::Array(parts) => parts
+            .iter()
+            .filter_map(Value::as_str)
+            .collect::<Vec<_>>()
+            .concat(),
+        _ => return None,
+    };
+    (!text.is_empty()).then_some(text)
+}
+
+/// The id of module 784578's dialog; closing it any way goes back to the login (`c`).
+pub(super) const UNDERAGE_ID: &str = "existing-user-age-gate-underage";
+
+/// "Discord is for ages 13 and up" (module 784578 on the dialog of 189213): the server's message (else `WqEH4D`),
+/// then "You have **30 days** to verify your age...", Learn More and Back to Login.
+pub(super) fn underage_alert(message: Option<String>) -> super::chat_notices::Alert {
+    use super::chat_notices::{Alert, AlertButton, Then};
+    let message = message.unwrap_or_else(|| dc_intl::t("WqEH4D").to_owned());
+    let subtitle = dc_intl::format_runs(
+        "3TZUIw",
+        &[
+            ("underageMessage", message.as_str().into()),
+            ("days", dc_intl::Arg::Num(30.)),
+        ],
+    )
+    .into_iter()
+    .map(|(text, tag)| (text, tag.as_deref() == Some("$b")))
+    .collect();
+    Alert {
+        id: UNDERAGE_ID,
+        title: dc_intl::t("NR/zrG").to_owned(),
+        subtitle: Some(subtitle),
+        content: None,
+        buttons: vec![
+            AlertButton {
+                id: "age-gate-underage-learn-more",
+                label: dc_intl::t("hvVgAZ").to_owned(),
+                tone: super::modal::Tone::Secondary,
+                then: Then::OpenArticle {
+                    url: AGE_GATE_ARTICLE,
+                },
+            },
+            AlertButton {
+                id: "age-gate-underage-back",
+                label: dc_intl::t("szzQ6H").to_owned(),
+                tone: super::modal::Tone::Primary,
+                then: Then::BackToLogin,
+            },
+        ],
+    }
+}
+
 fn today() -> NaiveDate {
     chrono::Local::now().date_naive()
 }
@@ -571,8 +627,12 @@ impl Root {
         };
         match owner {
             Owner::Modal => match message {
-                // GAP: `AGE_GATE_FAILURE_MODAL_OPEN` puts module 784578's underage dialog in its place.
-                None => self.birthday.modal = None,
+                // `AGE_GATE_FAILURE_MODAL_OPEN` (module 612200 `MP`) puts module 784578's underage dialog in its
+                // place, with the server's `date_of_birth` message.
+                None => {
+                    self.birthday.modal = None;
+                    self.chat_extra.alert = Some(underage_alert(underage_message(body)));
+                }
                 Some(message) => {
                     if let Some(modal) = self.birthday.modal.as_mut() {
                         modal.error = Some(message);
@@ -593,6 +653,18 @@ impl Root {
         }
         cx.notify();
         true
+    }
+
+    /// `c` of module 784578: `AGE_GATE_MODAL_CLOSE`, then the login (`transitionTo(LOGIN)`, the session ends here).
+    pub(super) fn back_to_login(&mut self, cx: &mut Context<Self>) {
+        self.birthday.modal = None;
+        self.leave_voice(cx);
+        cx.emit(super::logout::RootEvent::LogOut);
+    }
+
+    /// The dialog closed by Escape: [`Self::back_to_login`] on the next frame.
+    pub(super) fn back_to_login_later(&mut self) {
+        self.chat_extra.back_to_login = true;
     }
 
     /// A message whose `$link` run opens the age gate article.
@@ -1166,6 +1238,25 @@ impl Root {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_underage_dialog_reads_the_servers_message_like_module_784578() {
+        assert_eq!(
+            underage_message(&serde_json::json!({"date_of_birth": ["You are too young."]}))
+                .as_deref(),
+            Some("You are too young.")
+        );
+        assert_eq!(underage_message(&serde_json::json!({"message": "x"})), None);
+        let alert = underage_alert(None);
+        assert_eq!(alert.title, "Discord is for ages 13 and up");
+        let subtitle = alert.subtitle.expect("a subtitle");
+        let text: String = subtitle.iter().map(|(run, _)| run.as_str()).collect();
+        assert!(
+            text.starts_with("You must be at least 13 years old to use Discord. You have 30 days")
+        );
+        assert!(subtitle.iter().any(|(run, bold)| *bold && run == "30 days"));
+        assert_eq!(alert.buttons.len(), 2);
+    }
 
     fn date(year: i32, month: u32, day: u32) -> NaiveDate {
         NaiveDate::from_ymd_opt(year, month, day).unwrap()

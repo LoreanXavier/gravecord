@@ -118,6 +118,16 @@ pub(super) enum Then {
     LeaveGuild {
         guild: Id,
     },
+    /// A help article opened while the dialog stays (Learn More of module 784578: `window.open`).
+    OpenArticle {
+        url: &'static str,
+    },
+    /// Back to Login of module 784578 (and its close): `AGE_GATE_MODAL_CLOSE`, then the login.
+    BackToLogin,
+    /// Accept of "Accept friend request?" (module 691464): the accept again with `confirm_stranger_request`.
+    AcceptStranger {
+        user: Id,
+    },
     /// The confirm of modules 32167 and 413201 (`gF` of module 365258, after 413201 sets the activity default).
     SyncActivity {
         restricting: bool,
@@ -497,6 +507,13 @@ pub(super) struct State {
     /// The requests still to go of each chain, by chain number.
     chains: HashMap<u64, VecDeque<(Id, Value)>>,
     next_chain: u64,
+    /// `isStranger` of `RelationshipStore` (module 994500): per person, whether they are a stranger and until when
+    /// (ms since the epoch) the answer holds (`friend_accept.rs`).
+    pub strangers: HashMap<Id, (bool, i64)>,
+    /// The underage dialog (module 784578) was closed without a button: the next frame goes back to the login.
+    pub back_to_login: bool,
+    /// Requests accepted at once whose answer has not come yet (put back if the server asks for the confirmation).
+    pub accepting: std::collections::HashSet<Id>,
 }
 
 /// A thread action of the context menu.
@@ -888,6 +905,12 @@ impl Root {
             Then::UploadLogs => self.voice_upload_logs(cx),
             Then::SaveSoundboardKeybind => self.soundboard_keybind_save(),
             Then::AcceptMessageRequest { channel } => self.mr_accept_now(channel, cx),
+            Then::AcceptStranger { user } => self.accept_stranger(user, cx),
+            Then::OpenArticle { url } => {
+                self.chat_extra.alert = closed;
+                self.follow_link(url, url, cx);
+            }
+            Then::BackToLogin => self.back_to_login(cx),
             Then::ScheduledInbox => self.open_inbox_scheduled(cx),
             Then::ReportRaid { guild } => {
                 let channel = self
@@ -953,6 +976,12 @@ impl Root {
             .is_some_and(|alert| alert.id == super::vad_permission::WARNING_ID)
         {
             self.clear_vad_warning();
+        }
+        if closed
+            .as_ref()
+            .is_some_and(|alert| alert.id == super::birthday::UNDERAGE_ID)
+        {
+            self.back_to_login_later();
         }
         match closed.and_then(|alert| alert.content) {
             Some(Content::SoundboardKeybind { original }) => {

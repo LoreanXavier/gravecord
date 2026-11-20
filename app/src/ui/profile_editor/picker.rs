@@ -37,6 +37,8 @@ impl State {
 #[derive(Clone)]
 struct Entry {
     sku: u64,
+    /// The item's `label`, the tile's accessible name.
+    label: String,
     art: Vec<String>,
     locked: bool,
     nitro: bool,
@@ -90,6 +92,7 @@ fn entries(
             }
             out.push(Entry {
                 sku,
+                label: item.label.clone(),
                 art,
                 locked,
                 nitro: nitro == Some(true),
@@ -176,8 +179,20 @@ impl Root {
             art.extend(self.picker_image(url));
         }
         let wide = kind == Kind::Nameplate;
+        // A frame tile holds module 665411's preview (`role: img`, "Profile Frame Preview: {label}"); a nameplate
+        // tile is named after the plate (`s.label ?? "Nameplate"`, module 478733) over module 872200's preview.
+        let label: Option<String> = match kind {
+            Kind::Frame => Some(crate::ui::shop::cards::frame_preview_label(&entry.label)),
+            Kind::Nameplate => Some(if entry.label.is_empty() {
+                dc_intl::t("x5CoXR").to_owned()
+            } else {
+                entry.label.clone()
+            }),
+            _ => None,
+        };
         let mut tile = div()
             .id(SharedString::from(format!("picker-item-{sku}")))
+            .when_some(label, |tile, label| tile.aria_label(label))
             .relative()
             .flex_none()
             .w(px(if wide { 224. } else { width }))

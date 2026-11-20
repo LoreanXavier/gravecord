@@ -97,6 +97,8 @@ impl Root {
             self.remember_channel(channel);
         }
         if let Some(channel) = channel {
+            // `CHANNEL_SELECT` of module 528607: "Leave group?" for a group with blocked or ignored people.
+            self.warn_group_blocked(channel);
             self.open_channel_messages(channel);
             // `CHANNEL_SELECT` asks the gateway for the channel's call (module 470710 `A`).
             let private = self

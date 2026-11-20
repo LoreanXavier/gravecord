@@ -67,6 +67,23 @@ pub(super) enum VoiceAlert {
         channel: Id,
         user: Id,
     },
+    /// "Leave group?" (module 876717, `voice_blocked`).
+    LeaveGroupBlocked {
+        channel: Id,
+        blocked: Vec<Id>,
+        ignored: Vec<Id>,
+    },
+    /// "Confirm this isn't spam" (module 693864, `small_dialogs`) with its two boxes.
+    NotSpam {
+        channel: Id,
+        forward: bool,
+        dont_show: bool,
+    },
+    /// "Hardware Acceleration will make this better" (module 845187, `small_dialogs`) for the running Activity.
+    HardwareAcceleration {
+        name: String,
+        dont_show: bool,
+    },
     /// "You have been invited to speak." (module 427412).
     InvitedToSpeak {
         channel: Id,
@@ -403,7 +420,10 @@ impl Root {
     pub(super) fn event_left_by_leaving(&self) -> Option<(Id, Id)> {
         let call = self.call.as_ref()?;
         let known = self.stores.guild(call.guild)?;
-        let channel = known.channels.iter().find(|known| known.id == call.channel)?;
+        let channel = known
+            .channels
+            .iter()
+            .find(|known| known.id == call.channel)?;
         if channel.kind != ChannelKind::Voice {
             return None;
         }
@@ -565,6 +585,8 @@ impl Root {
                 self.join_past_blocked(guild, channel, people, cx);
             }
             Some(VoiceAlert::BlockedJoined { user, .. }) => self.stay_past_blocked(user),
+            Some(VoiceAlert::LeaveGroupBlocked { channel, .. }) => self.ack_group_blocked(channel),
+            Some(VoiceAlert::HardwareAcceleration { .. }) => self.close_hardware_prompt(),
             Some(VoiceAlert::InvitedToSpeak { channel }) => self.answer_speak_invite(channel, true),
             Some(VoiceAlert::CallConfirm { .. }) => self.close_call_confirm(),
             _ => self.voice_alert = None,
@@ -611,6 +633,21 @@ impl Root {
             VoiceAlert::InvitedToSpeak { channel } => {
                 return Some(self.invited_to_speak_modal(*channel, cx));
             }
+            VoiceAlert::LeaveGroupBlocked {
+                channel,
+                blocked,
+                ignored,
+            } => {
+                return Some(self.leave_group_blocked_modal(*channel, blocked, ignored, cx));
+            }
+            VoiceAlert::NotSpam {
+                channel,
+                forward,
+                dont_show,
+            } => return Some(self.not_spam_modal(*channel, *forward, *dont_show, cx)),
+            VoiceAlert::HardwareAcceleration { name, dont_show } => {
+                return Some(self.hardware_acceleration_modal(name, *dont_show, cx));
+            }
             VoiceAlert::CallConfirm { target, dont_ask } => {
                 return Some(self.call_confirm_modal(*target, *dont_ask, cx));
             }
@@ -623,6 +660,9 @@ impl Root {
         let spec = match alert {
             VoiceAlert::JoinBlocked { .. }
             | VoiceAlert::BlockedJoined { .. }
+            | VoiceAlert::LeaveGroupBlocked { .. }
+            | VoiceAlert::NotSpam { .. }
+            | VoiceAlert::HardwareAcceleration { .. }
             | VoiceAlert::InvitedToSpeak { .. }
             | VoiceAlert::CallConfirm { .. }
             | VoiceAlert::ReloadActivity { .. } => return None,
@@ -758,36 +798,34 @@ impl Root {
             }
             // Module 521549: No, just disconnect (`selectVoiceChannel(null)`) and the critical Yes, end the event
             // (`endEvent`, then the disconnect).
-            VoiceAlert::EventEndOnLeave { guild, event } => {
-                modal::Spec {
-                    id: "event-end-on-leave-modal",
-                    title: dc_intl::t("4Ao8LC").into(),
-                    subtitle: Some(div().child(dc_intl::t("0I0B8f")).into_any_element()),
-                    body: None,
-                    buttons: vec![
-                        modal::button(
-                            "event-leave-quietly",
-                            dc_intl::t("P60OAX"),
-                            modal::Tone::Secondary,
-                            |this, _, cx| {
-                                this.voice_alert = None;
-                                this.leave_voice(cx);
-                            },
-                        ),
-                        modal::button(
-                            "event-leave-and-end",
-                            dc_intl::t("mjB9pd"),
-                            modal::Tone::Critical,
-                            move |this, _, cx| {
-                                this.voice_alert = None;
-                                this.end_guild_event(guild, event, cx);
-                                this.leave_voice(cx);
-                            },
-                        ),
-                    ],
-                    close: close(),
-                }
-            }
+            VoiceAlert::EventEndOnLeave { guild, event } => modal::Spec {
+                id: "event-end-on-leave-modal",
+                title: dc_intl::t("4Ao8LC").into(),
+                subtitle: Some(div().child(dc_intl::t("0I0B8f")).into_any_element()),
+                body: None,
+                buttons: vec![
+                    modal::button(
+                        "event-leave-quietly",
+                        dc_intl::t("P60OAX"),
+                        modal::Tone::Secondary,
+                        |this, _, cx| {
+                            this.voice_alert = None;
+                            this.leave_voice(cx);
+                        },
+                    ),
+                    modal::button(
+                        "event-leave-and-end",
+                        dc_intl::t("mjB9pd"),
+                        modal::Tone::Critical,
+                        move |this, _, cx| {
+                            this.voice_alert = None;
+                            this.end_guild_event(guild, event, cx);
+                            this.leave_voice(cx);
+                        },
+                    ),
+                ],
+                close: close(),
+            },
             VoiceAlert::StageEndOnLeave { channel } => modal::Spec {
                 id: "stage-end-on-leave-modal",
                 title: dc_intl::t("pADdJu").into(),

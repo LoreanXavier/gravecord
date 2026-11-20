@@ -279,9 +279,8 @@ impl Root {
             .on_click(
                 cx.listener(move |this, _, _, cx| match application.filter(|_| game) {
                     Some(app) => this.answer_game_request(user_id, app, true),
-                    // GAP: `maybeConfirmFriendRequestAccept`'s stranger confirmation (691464) is not built; the friends
-                    // list's accept has none either.
-                    None => this.set_relationship(user_id, Some(0), cx),
+                    // `maybeConfirmFriendRequestAccept` (module 393426, the stranger confirmation of 691464).
+                    None => this.accept_friend_request(user_id, cx),
                 }),
             );
         let ignore = self

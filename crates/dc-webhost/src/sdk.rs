@@ -60,6 +60,9 @@ pub enum Ask {
     OpenExternalLink { nonce: String, url: String },
     /// `REQUEST_PROXY_TICKET_REFRESH`.
     ProxyTicket { nonce: String },
+    /// `ENCOURAGE_HW_ACCELERATION`: the host may ask the user to turn hardware acceleration on, then answers
+    /// `{enabled}` with the setting as it is.
+    EncourageHardwareAcceleration { nonce: String },
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -380,7 +383,9 @@ impl Bridge {
                 }
                 post(reply(cmd, nonce, json!({"locale": ctx.locale})))
             }
-            "ENCOURAGE_HW_ACCELERATION" => post(reply(cmd, nonce, json!({"enabled": true}))),
+            "ENCOURAGE_HW_ACCELERATION" => vec![Action::Ask(Ask::EncourageHardwareAcceleration {
+                nonce: nonce.to_owned(),
+            })],
             "CAPTURE_LOG" | "SEND_ANALYTICS_EVENT" => post(reply(cmd, nonce, Value::Null)),
             "SET_ORIENTATION_LOCK_STATE" => post(reply(cmd, nonce, Value::Null)),
             "SET_CONFIG" => {

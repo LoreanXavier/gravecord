@@ -335,6 +335,13 @@ impl Root {
     /// with `{}` (a friend request, or accepting one) or `{type: 2}` (block), `DELETE` for `None`. The store
     /// changes at once; the gateway's RELATIONSHIP events confirm it.
     pub(super) fn set_relationship(&mut self, user: Id, kind: Option<u64>, cx: &mut Context<Self>) {
+        // Accepting an incoming request goes through `maybeConfirmFriendRequestAccept` (module 393426).
+        if matches!(kind, Some(kind) if kind != 2)
+            && self.stores.relationships.get(&user) == Some(&RELATIONSHIP_INCOMING)
+        {
+            self.accept_friend_request(user, cx);
+            return;
+        }
         let body = match kind {
             Some(2) => Some(json!({"type": 2})),
             Some(_) => Some(json!({})),
@@ -376,7 +383,7 @@ impl Root {
         cx.notify();
     }
 
-    /// Accept is `PUT {}` on the relationship; ignore, cancel and remove are `DELETE`.
+    /// Ignore, cancel and remove are `DELETE` on the relationship (accept is `accept_friend_request`).
     fn relationship_action(&mut self, user: Id, accept: bool) {
         let _ = self.requests.send(Request::Rest {
             key: None,
@@ -520,8 +527,7 @@ impl Root {
                 )
                 .on_click(cx.listener(move |this, _, _, cx| {
                     cx.stop_propagation();
-                    this.relationship_action(id, true);
-                    cx.notify();
+                    this.accept_friend_request(id, cx);
                 }))
                 .into_any_element(),
                 action(
