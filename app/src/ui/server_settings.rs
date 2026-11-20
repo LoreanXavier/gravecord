@@ -1639,6 +1639,7 @@ impl Root {
                             .children(notice)
                             .children(self.onboarding_notice(open.guild, cx)),
                     )
+                    .children(self.settings_impersonate_bar(open.guild, cx))
                     .child(div().absolute().top_0().right_0().child(window_controls())),
             )
             .with_priority(1)

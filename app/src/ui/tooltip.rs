@@ -70,6 +70,8 @@ pub(super) enum Body {
         label: String,
         count: usize,
     },
+    /// Green confirmation tooltip (`tooltipGreen_3_v8qp`, modules 664343 & 206845): `--green-360` background and white text.
+    Green(SharedString),
 }
 
 #[derive(Clone)]
@@ -79,6 +81,8 @@ pub(super) struct Tip {
     pub spacing: f32,
     /// How long the pointer rests on the target before the tooltip opens, in milliseconds (`delay` in module 280336).
     pub delay: u64,
+    /// Optional shake offset in px (`Shaker`, module 568602, used by module 206845 at tiers 10-11).
+    pub shake: (f32, f32),
 }
 
 impl Tip {
@@ -88,6 +92,7 @@ impl Tip {
             side,
             spacing: SPACING,
             delay: 0,
+            shake: (0., 0.),
         }
     }
 
@@ -97,6 +102,7 @@ impl Tip {
             side,
             spacing: SPACING,
             delay: 0,
+            shake: (0., 0.),
         }
     }
 
@@ -116,6 +122,12 @@ impl Tip {
         self
     }
 
+    /// The same tip, offset by `shake` pixels (`568602.b`).
+    pub fn shaken(mut self, shake: (f32, f32)) -> Self {
+        self.shake = shake;
+        self
+    }
+
     /// The server rail keeps its tooltips 12px from the icon.
     pub fn rail(body: Body) -> Self {
         Self {
@@ -123,6 +135,7 @@ impl Tip {
             side: Side::Right,
             spacing: 12.,
             delay: 0,
+            shake: (0., 0.),
         }
     }
 }
@@ -237,6 +250,8 @@ struct Placed {
     caret: AnyElement,
     /// The scale the tooltip draws at (`.95` to 1 with its opacity, module 280336), about its body's centre.
     scale: f32,
+    /// Optional shake offset (`568602.b`).
+    shake: (f32, f32),
 }
 
 impl IntoElement for Placed {
@@ -295,6 +310,8 @@ impl Element for Placed {
             self.spacing,
             window.viewport_size(),
         );
+        let shake = point(px(self.shake.0), px(self.shake.1));
+        let origin = point(origin.x + shake.x, origin.y + shake.y);
         let placed = Bounds::new(origin, laid_body.size);
         let caret_at = caret_origin(self.anchor, placed, self.side);
         window.with_element_offset(origin - laid_body.origin, |window| {
@@ -333,12 +350,17 @@ pub(super) fn placed_content(anchor: Bounds<Pixels>, content: AnyElement) -> Any
         body: frame().child(content).into_any_element(),
         caret: caret(Side::Top).into_any_element(),
         scale: 1.,
+        shake: (0., 0.),
     })
     .with_priority(10)
     .into_any_element()
 }
 
 fn caret(side: Side) -> impl IntoElement {
+    caret_colored(side, "--background-surface-high", Some("--border-subtle"))
+}
+
+fn caret_colored(side: Side, fill: &'static str, stroke: Option<&'static str>) -> impl IntoElement {
     // The drawing points down; turn it to point at the target.
     let turn = match side {
         Side::Top => 0.,
@@ -360,11 +382,8 @@ fn caret(side: Side) -> impl IntoElement {
         .flex_none()
         .w(px(16.))
         .h(px(10.))
-        .child(layer(
-            "icons/tooltip_caret_fill.svg",
-            "--background-surface-high",
-        ))
-        .child(layer("icons/tooltip_caret_stroke.svg", "--border-subtle"))
+        .child(layer("icons/tooltip_caret_fill.svg", fill))
+        .children(stroke.map(|s| layer("icons/tooltip_caret_stroke.svg", s)))
 }
 
 fn frame() -> gpui::Div {
@@ -563,6 +582,16 @@ impl Root {
             Body::Text(text) => frame()
                 .text_size(px(14.))
                 .line_height(px(18.))
+                .font_weight(FontWeight(500.))
+                .text_center()
+                .child(div().max_w(px(MAX_WIDTH - 24.)).child(text.clone()))
+                .into_any_element(),
+            Body::Green(text) => frame()
+                .bg(color("--green-360"))
+                .border_color(color("--green-360"))
+                .text_color(color("--white"))
+                .text_size(px(14.))
+                .line_height(px(16.))
                 .font_weight(FontWeight(500.))
                 .text_center()
                 .child(div().max_w(px(MAX_WIDTH - 24.)).child(text.clone()))
@@ -940,8 +969,15 @@ impl Root {
                 let opacity = progress.clamp(0., 1.);
                 let body = div().child(body).opacity(opacity).into_any_element();
                 let has_caret = !matches!(active.tip.body, Body::Reaction { .. });
+                let is_green = matches!(active.tip.body, Body::Green(_));
                 let caret = div()
-                    .when(has_caret, |this| this.child(caret(active.tip.side)))
+                    .when(has_caret, |this| {
+                        if is_green {
+                            this.child(caret_colored(active.tip.side, "--green-360", None))
+                        } else {
+                            this.child(caret(active.tip.side))
+                        }
+                    })
                     .opacity(opacity)
                     .into_any_element();
                 Some(
@@ -956,6 +992,7 @@ impl Root {
                         } else {
                             0.95 + 0.05 * progress
                         },
+                        shake: active.tip.shake,
                     })
                     .with_priority(10)
                     .into_any_element(),

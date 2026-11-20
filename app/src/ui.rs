@@ -341,12 +341,17 @@ mod server_welcome;
 pub(crate) mod server_welcome_new;
 #[cfg(feature = "capture")]
 pub(crate) use server_landing::FORCE_LANDING;
+mod copy_combo;
 mod dm_call;
 mod dm_call_view;
 mod incoming_call;
 mod member_safety;
 mod member_window;
 mod nitro_trials_picker;
+mod premium_uncancel;
+mod quest_menu;
+mod quest_promoted;
+mod quest_split_modal;
 mod server_members;
 mod server_onboarding;
 mod server_role_editor;
@@ -712,6 +717,10 @@ pub struct Root {
     subscription_pause_modal: Option<subscription_pause::SubscriptionPauseModal>,
     /// Safety Hub Violation Appeal 4-slide modal (module 894683 + 351876 + 393033, `violation_appeal`).
     violation_appeal_modal: Option<violation_appeal::ViolationAppealModal>,
+    /// Copy combo easter egg state (module 206845, `copy_combo`).
+    copy_combo: copy_combo::CopyComboState,
+    /// `PREMIUM_UNCANCEL` Keep Nitro winback modal (module 174705, `premium_uncancel`).
+    premium_uncancel_modal: Option<premium_uncancel::PremiumUncancelModal>,
     /// Suspended User Safety Hub full page + embedded standing/violations body (module 187686 + 37380).
     suspended_safety_hub: Option<suspended_safety_hub::SuspendedSafetyHub>,
     /// Send Nitro Trials Picker & confirmation modal (module 303682 + 810852, `nitro_trials_picker`).
@@ -1282,6 +1291,8 @@ impl Root {
             game_gift_redeem_modal: None,
             subscription_pause_modal: None,
             violation_appeal_modal: None,
+            copy_combo: copy_combo::CopyComboState::default(),
+            premium_uncancel_modal: None,
             suspended_safety_hub: None,
             nitro_trials_picker: None,
             user_activity_preview: None,
@@ -2299,6 +2310,11 @@ impl Root {
                 if key == boost_cancel::CANCEL_SLOT_KEY {
                     self.boost_cancel_fetched(&body);
                     cx.notify();
+                    return;
+                }
+                if key.starts_with(premium_uncancel::UNCANCEL_KEY) {
+                    let ok = !body.is_null() && body.get("code").is_none();
+                    self.handle_premium_uncancel_response(ok, Some(&body), cx);
                     return;
                 }
                 if key == channel_link::UNLINK_LOBBY_KEY {
@@ -11469,6 +11485,13 @@ impl Render for Root {
                         || this.suspended_safety_hub.is_some()
                         || this.nitro_trials_picker.is_some()
                         || this.user_activity_preview.is_some()
+                        || this.premium_uncancel_modal.is_some()
+                        || this.quests.split_modal.is_some()
+                        || this.quests.enrollment_blocked_modal.is_some()
+                        || this.quests.promoted_preview_quest.is_some()
+                        || this.quests.menus.menu.is_some()
+                        || this.quests.menus.disclosure.is_some()
+                        || this.quests.menus.alert.is_some()
                         || this.library.game_menu.is_some()
                         || this.library.hide_confirm.is_some())
                 {
@@ -11498,6 +11521,13 @@ impl Render for Root {
                     this.close_suspended_safety_hub();
                     this.close_nitro_trials_picker();
                     this.close_user_activity_preview();
+                    this.premium_uncancel_modal = None;
+                    this.quests.split_modal = None;
+                    this.quests.enrollment_blocked_modal = None;
+                    this.quests.promoted_preview_quest = None;
+                    this.quests.menus.menu = None;
+                    this.quests.menus.disclosure = None;
+                    this.quests.menus.alert = None;
                     this.close_library_game_menu();
                     cx.notify();
                     cx.stop_propagation();
@@ -12690,6 +12720,11 @@ impl Render for Root {
             .children(self.subscription_pause_modal_layer(cx))
             .children(self.nitro_trials_picker_layer(window, cx))
             .children(self.user_activity_preview_layer(cx))
+            .children(self.premium_uncancel_layer(cx))
+            .children(self.quest_split_modal_layer(cx))
+            .children(self.quest_promoted_overlay_layer(cx))
+            .children(self.quest_disclosure_and_alert_layer(cx))
+            .children(self.quest_menu_layer(cx))
             .children(self.composer_ai_modal(cx))
             .children(self.friend_nickname_layer(window, cx))
             .children(self.favorite_nickname_layer(window, cx))

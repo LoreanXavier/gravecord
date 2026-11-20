@@ -76,6 +76,8 @@ fn block_feedback_dismissed(now: chrono::DateTime<chrono::Utc>) -> bool {
 pub(super) enum Notice {
     /// `VOICE_DISABLED`: the voice call was taken over by another session of this account; (guild, channel).
     VoiceDisabled(Id, Id),
+    /// `PREMIUM_UNCANCEL`: a canceled Nitro subscription ending within 7 days (modules 596339 & 174705).
+    PremiumUncancel(i64, dc_state::premium::PremiumType),
     /// `BLOCK_USER_FEEDBACK_NAGBAR`.
     BlockFeedback,
 }
@@ -85,6 +87,8 @@ pub(super) enum Notice {
 pub(super) struct State {
     /// The voice channel (and its guild, 0 for a DM) that another session took the call from.
     pub remote_disconnect: Option<(Id, Id)>,
+    /// Capture/demo override for `PREMIUM_UNCANCEL` (days_left, premium_type).
+    pub uncancel_demo: Option<(i64, dc_state::premium::PremiumType)>,
 }
 
 impl State {
@@ -107,12 +111,31 @@ impl State {
 }
 
 impl Root {
-    /// The notice shown now: the voice one first (it is earlier in the table), then the block survey's.
+    /// The notice shown now: `VOICE_DISABLED`, then `PREMIUM_UNCANCEL` (module 174705), then `BLOCK_USER_FEEDBACK_NAGBAR`.
     pub(super) fn shown_notice(&self) -> Option<Notice> {
         if let Some(notice) = self.vv.notices.shown() {
             return Some(notice);
         }
+        if let Some((days_left, tier)) = self.vv.notices.uncancel_demo {
+            return Some(Notice::PremiumUncancel(days_left, tier));
+        }
+        if let Some((days_left, tier)) = self.premium_uncancel_holds() {
+            return Some(Notice::PremiumUncancel(days_left, tier));
+        }
         self.block_feedback_holds().then_some(Notice::BlockFeedback)
+    }
+
+    /// `PREMIUM_UNCANCEL` predicate (modules 596339 & 174705): fast-path `None` when no subscription is loaded.
+    fn premium_uncancel_holds(&self) -> Option<(i64, dc_state::premium::PremiumType)> {
+        let sub = self.premium_subscription()?;
+        let now = chrono::Utc::now();
+        let days_left = super::premium_uncancel::uncancel_days_left(&sub, now)?;
+        if super::premium_uncancel::is_notice_dismissed(now) {
+            return None;
+        }
+        let tier =
+            dc_state::premium::plan_premium_type(sub.plan_id).unwrap_or_else(|| self.premium());
+        Some((days_left, tier))
     }
 
     /// `BLOCK_USER_FEEDBACK_NAGBAR`'s predicate, not dismissed, in a sampled session.
@@ -162,6 +185,9 @@ impl Root {
         }
         let (guild, channel) = match self.shown_notice()? {
             Notice::VoiceDisabled(guild, channel) => (guild, channel),
+            Notice::PremiumUncancel(days_left, tier) => {
+                return Some(self.premium_uncancel_bar(days_left, tier, cx));
+            }
             Notice::BlockFeedback => return Some(self.block_feedback_bar(cx)),
         };
         let text = color("--notice-text-warning");
@@ -230,6 +256,83 @@ impl Root {
                 )
                 .into_any_element(),
         )
+    }
+
+    /// `PREMIUM_UNCANCEL` bar (`colorPremiumTier*_Q02kKo`, modules 596339 & 174705): gradient behind white text,
+    /// `NitroWheelIcon`, localized copy (`fXv4wm`/`ZOHZMr`/`outyHh`), action button opening `174705` winback modal,
+    /// and close button dismissing until `current_period_end`.
+    fn premium_uncancel_bar(
+        &self,
+        days_left: i64,
+        tier: dc_state::premium::PremiumType,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let (copy, cta) = super::premium_uncancel::notice_copy(tier, days_left);
+        div()
+            .id("app-notice-premium-uncancel")
+            .relative()
+            .flex_none()
+            .w_full()
+            .h(px(36.))
+            .pl(px(8.))
+            .pr(px(36.))
+            .flex()
+            .items_center()
+            .justify_center()
+            .gap(px(8.))
+            .bg(super::premium_uncancel::notice_gradient(tier))
+            .border_t_1()
+            .border_l_1()
+            .border_color(color("--app-frame-border"))
+            .rounded_tl(px(8.))
+            .text_size(px(14.))
+            .line_height(px(36.))
+            .font_weight(FontWeight(500.))
+            .text_color(color("--white"))
+            .child(icon("nitro_wheel", 18., "--white"))
+            .child(copy)
+            .child(
+                div()
+                    .id("app-notice-premium-uncancel-cta")
+                    .ml(px(6.))
+                    .h(px(24.))
+                    .px(px(10.))
+                    .flex()
+                    .items_center()
+                    .border_1()
+                    .border_color(color("--white"))
+                    .rounded(px(4.))
+                    .line_height(px(22.))
+                    .cursor_pointer()
+                    .hover(|s| s.bg(gpui::rgba(0xffffff24)))
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        this.vv.notices.uncancel_demo = None;
+                        this.open_premium_uncancel_modal(days_left, tier, cx);
+                    }))
+                    .child(cta),
+            )
+            .child(
+                div()
+                    .id("app-notice-premium-uncancel-close")
+                    .absolute()
+                    .top(px(0.))
+                    .right(px(0.))
+                    .size(px(36.))
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .cursor_pointer()
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        this.vv.notices.uncancel_demo = None;
+                        let end = this
+                            .premium_subscription()
+                            .and_then(|s| s.current_period_end);
+                        super::premium_uncancel::dismiss_notice_until(end.as_deref());
+                        cx.notify();
+                    }))
+                    .child(icon("mod_close", 18., "--white")),
+            )
+            .into_any_element()
     }
 
     /// `colorBrand_Q02kKo`: `--brand-500` behind white text, the button white on hover with brand text.

@@ -249,6 +249,9 @@ impl Root {
                             .child(
                                 div()
                                     .flex_1()
+                                    .min_w_0()
+                                    .truncate()
+                                    .mr(px(8.))
                                     .text_size(px(14.))
                                     .line_height(px(18.))
                                     .font_weight(FontWeight(500.))
@@ -257,6 +260,7 @@ impl Root {
                             )
                             .child(
                                 div()
+                                    .flex_none()
                                     .size(px(18.))
                                     .rounded(px(4.))
                                     .border_1()
@@ -448,10 +452,14 @@ impl Root {
                                     .child(
                                         div()
                                             .flex_1()
+                                            .min_w_0()
+                                            .overflow_hidden()
+                                            .mr(px(12.))
                                             .flex()
                                             .flex_col()
                                             .child(
                                                 div()
+                                                    .truncate()
                                                     .text_size(px(14.))
                                                     .line_height(px(18.))
                                                     .text_color(color("--text-default"))
@@ -459,6 +467,7 @@ impl Root {
                                             )
                                             .child(
                                                 div()
+                                                    .truncate()
                                                     .text_size(px(12.))
                                                     .line_height(px(16.))
                                                     .text_color(color("--text-subtle"))
@@ -467,8 +476,12 @@ impl Root {
                                                     )),
                                             ),
                                     )
-                                    .child(icon("file_language", 18., "--text-default"))
-                                    .child(div().ml(px(16.)).child(icon(
+                                    .child(div().flex_none().child(icon(
+                                        "file_language",
+                                        18.,
+                                        "--text-default",
+                                    )))
+                                    .child(div().flex_none().ml(px(16.)).child(icon(
                                         "file_more",
                                         18.,
                                         "--text-default",

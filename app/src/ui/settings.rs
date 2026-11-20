@@ -1721,7 +1721,8 @@ impl Root {
             .into_any_element()
     }
 
-    fn settings_footer(&self) -> AnyElement {
+    fn settings_footer(&self, cx: &mut Context<Self>) -> AnyElement {
+        const VERSION_KEY: &str = "copy-combo-version";
         let footnote = |text: String, tint: &str| {
             div()
                 .text_size(px(10.))
@@ -1729,30 +1730,69 @@ impl Root {
                 .text_color(color(tint))
                 .child(text)
         };
+        let copied = self.copy_combo.is_copied_for(VERSION_KEY);
+        let tip = if copied {
+            let combo = self.copy_combo.combo;
+            let mut t = super::tooltip::Tip::body(
+                super::tooltip::Body::Green(SharedString::from(super::copy_combo::combo_label(
+                    combo,
+                ))),
+                super::tooltip::Side::Top,
+            );
+            if super::copy_combo::is_shaking(combo) && !super::motion::reduced() {
+                t = t.shaken(super::copy_combo::shake_offset(
+                    self.copy_combo.shake_tick,
+                    super::motion::reduced(),
+                ));
+            }
+            t
+        } else {
+            // Module 276530 `eJ` + 206845: "Click to copy version" (`9Al4Qd`), 500ms delay.
+            super::tooltip::Tip::text(dc_intl::t("9Al4Qd"), super::tooltip::Side::Top)
+                .after(super::copy_combo::DEFAULT_DELAY_MS)
+        };
+        let version_row = div()
+            .id(VERSION_KEY)
+            .h(px(16.))
+            .flex()
+            .items_center()
+            .gap(px(10.))
+            .cursor_pointer()
+            .on_hover(cx.listener(|this, over: &bool, _, cx| {
+                if *over {
+                    this.copy_combo.on_hover_enter(VERSION_KEY);
+                } else {
+                    this.copy_combo.on_hover_leave(VERSION_KEY);
+                }
+                cx.notify();
+            }))
+            .on_click(cx.listener(|this, _, window, cx| {
+                this.trigger_copy_combo(
+                    VERSION_KEY,
+                    super::copy_combo::build_version_copy_text(),
+                    super::tooltip::Side::Top,
+                    window,
+                    cx,
+                );
+            }))
+            .child(footnote(
+                format!(
+                    "{} {} ({})",
+                    pin::RELEASE_CHANNEL,
+                    pin::CLIENT_BUILD_NUMBER,
+                    &pin::VERSION_HASH[..7]
+                ),
+                "--text-muted",
+            ))
+            .child(footnote(
+                // The official line is the host's version; gravecord's is its own.
+                format!("{} (x64)", env!("CARGO_PKG_VERSION")),
+                "--text-muted",
+            ));
         div()
             .flex()
             .flex_col()
-            .child(
-                div()
-                    .h(px(16.))
-                    .flex()
-                    .items_center()
-                    .gap(px(10.))
-                    .child(footnote(
-                        format!(
-                            "{} {} ({})",
-                            pin::RELEASE_CHANNEL,
-                            pin::CLIENT_BUILD_NUMBER,
-                            &pin::VERSION_HASH[..7]
-                        ),
-                        "--text-muted",
-                    ))
-                    .child(footnote(
-                        // The official line is the host's version; gravecord's is its own.
-                        format!("{} (x64)", env!("CARGO_PKG_VERSION")),
-                        "--text-muted",
-                    )),
-            )
+            .child(self.with_tip(VERSION_KEY, tip, version_row, cx))
             .child(
                 div()
                     .h(px(21.))
@@ -1917,7 +1957,7 @@ impl Root {
                                     .flex_col()
                                     .gap(px(24.))
                                     .child(div().flex().flex_col().gap(px(8.)).children(sections))
-                                    .child(self.settings_footer()),
+                                    .child(self.settings_footer(cx)),
                             ),
                     )
                     // `withShadow_cR4ic2::after`: once the list is scrolled past 12px, the fixed head fades into it.

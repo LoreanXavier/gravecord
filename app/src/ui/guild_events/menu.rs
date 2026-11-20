@@ -263,6 +263,8 @@ fn row(
         .child(
             div()
                 .flex_1()
+                .min_w_0()
+                .truncate()
                 .text_size(px(14.))
                 .line_height(px(18.))
                 .font_weight(FontWeight(500.))
@@ -270,11 +272,11 @@ fn row(
                 .child(label.to_owned()),
         )
         .when(caret, |this| {
-            this.child(
-                div()
-                    .ml(px(8.))
-                    .child(icon("menu_caret_right", 20., "--icon-subtle")),
-            )
+            this.child(div().flex_none().ml(px(8.)).child(icon(
+                "menu_caret_right",
+                20.,
+                "--icon-subtle",
+            )))
         })
 }
 
