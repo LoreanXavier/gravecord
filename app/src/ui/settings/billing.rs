@@ -493,7 +493,7 @@ impl Root {
         }
     }
 
-    fn cancel_tier(&self) -> PremiumType {
+    pub(super) fn cancel_tier(&self) -> PremiumType {
         self.premium_subscription()
             .and_then(|sub| sub.premium_type())
             .unwrap_or(PremiumType::Nitro)
@@ -601,12 +601,17 @@ impl Root {
             }))
             .into_any_element();
         let confirm = if next {
-            // GAP: Next opens the PREVIEW step (module 347378), which is not built.
+            // Module 347378: Next opens the PREVIEW step for subscriptions keeping Server Boosts.
             modal::button(
                 "settings-cancel-confirm",
                 dc_intl::t("PDTjLN"),
                 modal::Tone::Critical,
-                |_, _, _| {},
+                |this, _, cx| {
+                    this.settings_extra.dialog = None;
+                    if let Some(sub) = this.premium_subscription() {
+                        this.open_cancel_nitro_preview(&sub, cx);
+                    }
+                },
             )
         } else {
             modal::button(

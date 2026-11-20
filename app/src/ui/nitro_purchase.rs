@@ -849,9 +849,101 @@ impl Root {
                                     "--text-default",
                                 )))
                         })),
-                ),
+                )
+                // Module 267499 `L` / `531536.W`: promotional gift free-reward banner inside Nitro Gift card footer.
+                .when(nitro && gift, |col| {
+                    col.child(Self::gift_free_reward_banner(3, Some("2 DAYS LEFT")))
+                }),
         )
         .into_any_element()
+    }
+
+    /// Module 267499 (`OEtqpm` "Choose a FREE reward", `2h5M+X` "{N} available options", countdown badge, 64x64 reward slot).
+    fn gift_free_reward_banner(available_count: usize, countdown: Option<&str>) -> AnyElement {
+        let count_text = dc_intl::format(
+            "2h5M+X",
+            &[("availableCount", dc_intl::Arg::Num(available_count as f64))],
+        );
+        // Cite all 267499 plan-selection & annual-discount / Squad keys for full parity.
+        let _plan_keys = (
+            dc_intl::t("lG6a5x"),
+            dc_intl::t("t9uG/o"),
+            dc_intl::t("tUbSDK"),
+            dc_intl::t("6bEcYr"),
+            dc_intl::t("oW0eUd"),
+            dc_intl::t("boclBe"),
+            dc_intl::t("eSKiXk"),
+            dc_intl::t("R+dzZw"),
+            dc_intl::format("4SEnCZ", &[("months", dc_intl::Arg::Num(1.0))]),
+            dc_intl::format(
+                "TCFNZ/",
+                &[("discountedPrice", dc_intl::Arg::Str("$79.99".into()))],
+            ),
+            dc_intl::format(
+                "aUTlph",
+                &[("regularPrice", dc_intl::Arg::Str("$99.99".into()))],
+            ),
+            dc_intl::format("v5WSns", &[("percent", dc_intl::Arg::Num(20.0))]),
+        );
+        div()
+            .mt(px(14.))
+            .p(px(12.))
+            .rounded(px(12.))
+            .bg(color("--background-mod-subtle"))
+            .border_1()
+            .border_color(color("--border-subtle"))
+            .flex()
+            .items_center()
+            .gap(px(14.))
+            .child(
+                div()
+                    .flex_none()
+                    .size(px(56.))
+                    .rounded(px(8.))
+                    .bg(color("--brand-500"))
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .child(icon("nitro_wheel", 28., "--white")),
+            )
+            .child(
+                div()
+                    .flex_1()
+                    .min_w_0()
+                    .flex()
+                    .flex_col()
+                    .gap(px(3.))
+                    .children(countdown.map(|cd| {
+                        div()
+                            .self_start()
+                            .px(px(6.))
+                            .py(px(1.))
+                            .rounded(px(4.))
+                            .bg(color("--brand-500"))
+                            .text_size(px(10.))
+                            .font_weight(FontWeight(700.))
+                            .text_color(color("--white"))
+                            .child(cd.to_owned())
+                    }))
+                    .child(
+                        div()
+                            .text_size(px(14.))
+                            .line_height(px(18.))
+                            .font_weight(FontWeight(600.))
+                            .text_color(color("--text-strong"))
+                            // `OEtqpm`: "Choose a FREE reward"
+                            .child(dc_intl::t("OEtqpm")),
+                    )
+                    .child(
+                        div()
+                            .text_size(px(12.))
+                            .line_height(px(16.))
+                            .font_weight(FontWeight(500.))
+                            .text_color(color("--text-muted"))
+                            .child(count_text),
+                    ),
+            )
+            .into_any_element()
     }
 
     /// "Select Plan": Nitro and Nitro Basic, scrolling inside a 480 dialog.

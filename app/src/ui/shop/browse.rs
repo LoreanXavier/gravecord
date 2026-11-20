@@ -404,6 +404,9 @@ impl Root {
         );
         let skus: Vec<String> = category.products.iter().map(|p| p.sku_id.clone()).collect();
         let grid = self.shop_grid(&skus, false, window, cx);
+        let breadcrumb = self.shop_collection_breadcrumb(&category.name, cx);
+        let related = self.shop_vault_and_related_row(cx);
+        let footer = self.shop_collection_footer(cx);
         div()
             .parity("shop-collection")
             .w_full()
@@ -425,12 +428,21 @@ impl Root {
                     .child(
                         div()
                             .absolute()
+                            .top(px(10.))
+                            .left(px(16.))
+                            .child(breadcrumb),
+                    )
+                    .child(
+                        div()
+                            .absolute()
                             .left(px(24.))
                             .bottom(px(16.))
                             .child(text(24., 32., 600., "--text-strong").child(category.name)),
                     ),
             )
             .child(grid)
+            .child(related)
+            .child(footer)
             .into_any_element()
     }
 

@@ -341,6 +341,7 @@ mod server_welcome;
 pub(crate) mod server_welcome_new;
 #[cfg(feature = "capture")]
 pub(crate) use server_landing::FORCE_LANDING;
+mod claim_account;
 mod copy_combo;
 mod dm_call;
 mod dm_call_view;
@@ -375,6 +376,7 @@ mod tag_badges;
 mod tag_badges_extra;
 mod threads;
 mod tooltip;
+mod transfer_ownership;
 mod tutorial_tips;
 mod unread;
 mod unread_notice;
@@ -721,6 +723,14 @@ pub struct Root {
     copy_combo: copy_combo::CopyComboState,
     /// `PREMIUM_UNCANCEL` Keep Nitro winback modal (module 174705, `premium_uncancel`).
     premium_uncancel_modal: Option<premium_uncancel::PremiumUncancelModal>,
+    /// Unclaimed account Finish Signing Up modal (module 110744, `claim_account`).
+    claim_account_modal: Option<claim_account::ClaimAccountModal>,
+    /// Guild Transfer Ownership confirmation & email pincode modal (modules 922269 + 79779, `transfer_ownership`).
+    transfer_ownership_modal: Option<transfer_ownership::TransferOwnershipModal>,
+    /// Nitro Subscription Management & Cancel Preview modal (modules 488110 + 347378 + 95337 + 702698 + 412314 + 456459).
+    nitro_mgmt_overlay: Option<settings::nitro_mgmt::NitroMgmtOverlay>,
+    /// Shop Collection Detail, Vault, Related Drops & Seasonal Promos showcase overlay (modules 19576 + 367234).
+    shop_collections_overlay: Option<shop::collections::ShopCollectionsOverlay>,
     /// Suspended User Safety Hub full page + embedded standing/violations body (module 187686 + 37380).
     suspended_safety_hub: Option<suspended_safety_hub::SuspendedSafetyHub>,
     /// Send Nitro Trials Picker & confirmation modal (module 303682 + 810852, `nitro_trials_picker`).
@@ -1293,6 +1303,10 @@ impl Root {
             violation_appeal_modal: None,
             copy_combo: copy_combo::CopyComboState::default(),
             premium_uncancel_modal: None,
+            claim_account_modal: None,
+            transfer_ownership_modal: None,
+            nitro_mgmt_overlay: None,
+            shop_collections_overlay: None,
             suspended_safety_hub: None,
             nitro_trials_picker: None,
             user_activity_preview: None,
@@ -2315,6 +2329,23 @@ impl Root {
                 if key.starts_with(premium_uncancel::UNCANCEL_KEY) {
                     let ok = !body.is_null() && body.get("code").is_none();
                     self.handle_premium_uncancel_response(ok, Some(&body), cx);
+                    return;
+                }
+                if key == claim_account::CLAIM_KEY {
+                    self.handle_claim_account_response(&body, cx);
+                    return;
+                }
+                if key == transfer_ownership::TRANSFER_KEY
+                    || key == transfer_ownership::PINCODE_KEY
+                    || key == transfer_ownership::PINCODE_RESEND_KEY
+                {
+                    self.handle_transfer_ownership_response(&key, &body, cx);
+                    return;
+                }
+                if key == settings::nitro_mgmt::CANCEL_PREVIEW_KEY
+                    || key == settings::nitro_mgmt::REDEEM_OFFER_KEY
+                {
+                    cx.notify();
                     return;
                 }
                 if key == channel_link::UNLINK_LOBBY_KEY {
@@ -11486,6 +11517,10 @@ impl Render for Root {
                         || this.nitro_trials_picker.is_some()
                         || this.user_activity_preview.is_some()
                         || this.premium_uncancel_modal.is_some()
+                        || this.claim_account_modal.is_some()
+                        || this.transfer_ownership_modal.is_some()
+                        || this.nitro_mgmt_overlay.is_some()
+                        || this.shop_collections_overlay.is_some()
                         || this.quests.split_modal.is_some()
                         || this.quests.enrollment_blocked_modal.is_some()
                         || this.quests.promoted_preview_quest.is_some()
@@ -11522,6 +11557,10 @@ impl Render for Root {
                     this.close_nitro_trials_picker();
                     this.close_user_activity_preview();
                     this.premium_uncancel_modal = None;
+                    this.close_claim_account_if_allowed();
+                    this.transfer_ownership_modal = None;
+                    this.nitro_mgmt_overlay = None;
+                    this.shop_collections_overlay = None;
                     this.quests.split_modal = None;
                     this.quests.enrollment_blocked_modal = None;
                     this.quests.promoted_preview_quest = None;
@@ -12721,6 +12760,10 @@ impl Render for Root {
             .children(self.nitro_trials_picker_layer(window, cx))
             .children(self.user_activity_preview_layer(cx))
             .children(self.premium_uncancel_layer(cx))
+            .children(self.claim_account_modal_layer(cx))
+            .children(self.transfer_ownership_modal_layer(cx))
+            .children(self.nitro_mgmt_overlay_layer(cx))
+            .children(self.shop_collections_overlay_layer(cx))
             .children(self.quest_split_modal_layer(cx))
             .children(self.quest_promoted_overlay_layer(cx))
             .children(self.quest_disclosure_and_alert_layer(cx))

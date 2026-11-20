@@ -29,6 +29,7 @@ mod keybinds;
 mod languages;
 mod model;
 mod mods;
+pub(in crate::ui) mod nitro_mgmt;
 pub(super) mod nitro_page;
 mod notifications_page;
 mod overlay_page;

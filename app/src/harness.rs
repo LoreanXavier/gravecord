@@ -1777,6 +1777,30 @@ pub async fn run(
                 let line = root.update(cx, |root, cx| root.script_quest_split(&arg, cx));
                 let _ = writeln!(output, "{line}");
             }
+            // `claim-account [form|required|error|success|close]`: Unclaimed account Finish Signing Up modal (110744).
+            ["claim-account", rest @ ..] => {
+                let arg = rest.join(" ");
+                let line = root.update(cx, |root, cx| root.script_claim_account(&arg, cx));
+                let _ = writeln!(output, "{line}");
+            }
+            // `transfer-ownership [confirm|monetized|pincode|ineligible|close]`: Guild Transfer Ownership flow (922269 + 79779).
+            ["transfer-ownership", rest @ ..] => {
+                let arg = rest.join(" ");
+                let line = root.update(cx, |root, cx| root.script_transfer_ownership(&arg, cx));
+                let _ = writeln!(output, "{line}");
+            }
+            // `nitro-mgmt [alerts|squad-primary|squad-member|discount|preview-cancel|preview-cancel-expanded|pending-change|welcome-back|close]`: Nitro subscription management & cancel preview (488110 + 347378 + 95337 + 702698 + 412314 + 456459).
+            ["nitro-mgmt", rest @ ..] => {
+                let arg = rest.join(" ");
+                let line = root.update(cx, |root, cx| root.script_nitro_mgmt(&arg, cx));
+                let _ = writeln!(output, "{line}");
+            }
+            // `shop-collections [promos|vault|close]`: Shop Collection Detail, Vault, Related Drops & Seasonal Promos (19576 + 367234).
+            ["shop-collections", rest @ ..] => {
+                let arg = rest.join(" ");
+                let line = root.update(cx, |root, cx| root.script_shop_collections(&arg, cx));
+                let _ = writeln!(output, "{line}");
+            }
             // `search last` / `search answer <total>`: the open search's request, and an answer to it;
             // `search page <n>`: the pager turns to page n.
             ["search", rest @ ..] => {
