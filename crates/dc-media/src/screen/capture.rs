@@ -280,6 +280,12 @@ impl Capture {
         let handler = {
             let reader = reader.clone();
             TypedEventHandler::<Direct3D11CaptureFramePool, IInspectable>::new(move |pool, _| {
+                // Keep WinRT's free-threaded frame-arrival thread-pool thread out of Windows EcoQoS throttling
+                // while the app is unfocused (e.g. Alt-Tabbed to a game/fullscreen window during screen share).
+                thread_local! {
+                    static CALLBACK_UNTHROTTLED: crate::throttle::Guard = crate::throttle::Guard::acquire();
+                }
+                CALLBACK_UNTHROTTLED.with(|_| {});
                 let Some(pool) = pool.as_ref() else {
                     return Ok(());
                 };
@@ -657,9 +663,8 @@ mod tests {
         assert!(empty.is_none());
 
         let drops = Rc::new(Cell::new(0));
-        let mut queue: VecDeque<Counted> = (1..=4)
-            .map(|id| Counted(id, Rc::clone(&drops)))
-            .collect();
+        let mut queue: VecDeque<Counted> =
+            (1..=4).map(|id| Counted(id, Rc::clone(&drops))).collect();
         let kept = drain_latest(|| queue.pop_front()).unwrap();
         assert_eq!(kept.0, 4);
         assert_eq!(drops.get(), 3);

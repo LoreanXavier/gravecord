@@ -5,12 +5,100 @@
 //! acquiring thread out of Windows EcoQoS (`ThreadPowerThrottling`) until dropped.
 #![allow(unsafe_code)]
 
+use std::time::Duration;
+
 #[cfg(windows)]
 use std::collections::HashMap;
 #[cfg(windows)]
 use std::os::windows::io::{AsRawHandle, FromRawHandle, OwnedHandle};
 #[cfg(windows)]
 use std::sync::{Mutex, OnceLock};
+
+/// Sub-millisecond sleep timer backed by Windows' `CREATE_WAITABLE_TIMER_HIGH_RESOLUTION` waitable timer.
+///
+/// Unlike `std::thread::sleep` (which rounds up to Windows' 15.625 ms system clock tick without a global
+/// `timeBeginPeriod(1)` call), a high-resolution waitable timer wakes within ~0.5 ms without disturbing the OS
+/// compositor or foreground apps.
+pub struct Waiter {
+    #[cfg(windows)]
+    handle: Option<windows::Win32::Foundation::HANDLE>,
+}
+
+// SAFETY: A Win32 waitable timer handle has no thread affinity and is owned exclusively by this `Waiter`.
+#[cfg(windows)]
+unsafe impl Send for Waiter {}
+
+impl Default for Waiter {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl Waiter {
+    pub fn new() -> Self {
+        #[cfg(windows)]
+        {
+            use windows::Win32::System::Threading::{
+                CREATE_WAITABLE_TIMER_HIGH_RESOLUTION, CreateWaitableTimerExW, TIMER_ALL_ACCESS,
+            };
+            use windows::core::PCWSTR;
+            // SAFETY: passing null timer attributes and unnamed timer asks Windows for a private handle.
+            let handle = unsafe {
+                CreateWaitableTimerExW(
+                    None,
+                    PCWSTR::null(),
+                    CREATE_WAITABLE_TIMER_HIGH_RESOLUTION,
+                    TIMER_ALL_ACCESS.0,
+                )
+            }
+            .ok();
+            Self { handle }
+        }
+        #[cfg(not(windows))]
+        Self {}
+    }
+
+    pub fn sleep(&self, duration: Duration) {
+        if duration.is_zero() {
+            return;
+        }
+        #[cfg(windows)]
+        {
+            use windows::Win32::System::Threading::{SetWaitableTimer, WaitForSingleObject};
+            let Some(handle) = self.handle else {
+                std::thread::sleep(duration);
+                return;
+            };
+            let ticks = (duration.as_nanos().min(i64::MAX as u128) as i64 / 100).max(1);
+            let due = -ticks;
+            // SAFETY: `handle` is an open waitable timer owned by `self`; `due` lives through `SetWaitableTimer`.
+            let armed = unsafe { SetWaitableTimer(handle, &due, 0, None, None, false) }.is_ok();
+            if armed {
+                let timeout_ms = duration.as_millis().min(u32::MAX as u128 - 50) as u32 + 50;
+                // SAFETY: `handle` stays open until `Drop`.
+                unsafe {
+                    let _ = WaitForSingleObject(handle, timeout_ms);
+                }
+            } else {
+                std::thread::sleep(duration);
+            }
+        }
+        #[cfg(not(windows))]
+        std::thread::sleep(duration);
+    }
+}
+
+#[cfg(windows)]
+impl Drop for Waiter {
+    fn drop(&mut self) {
+        if let Some(handle) = self.handle.take() {
+            // SAFETY: closing the owned timer handle on drop.
+            unsafe {
+                let _ = windows::Win32::Foundation::CloseHandle(handle);
+            }
+        }
+    }
+}
 
 /// Holds the acquiring thread out of Windows power throttling until dropped. Guards are counted per thread: the
 /// system default policy returns when the last guard for that thread drops.
@@ -141,5 +229,12 @@ mod tests {
         drop(second);
         let again = Guard::acquire();
         drop(again);
+    }
+
+    #[test]
+    fn waiter_handles_zero_and_short_waits() {
+        let waiter = Waiter::new();
+        waiter.sleep(Duration::ZERO);
+        waiter.sleep(Duration::from_millis(1));
     }
 }

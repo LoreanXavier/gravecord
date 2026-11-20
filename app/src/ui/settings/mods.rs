@@ -699,12 +699,16 @@ impl Root {
     }
 
     fn pick_backup(&mut self, cx: &mut Context<Self>) {
-        let picked = cx.prompt_for_paths(gpui::PathPromptOptions {
-            files: true,
-            directories: false,
-            multiple: false,
-            prompt: None,
-        });
+        let picked = super::super::native_dialog::open_paths(
+            gpui::PathPromptOptions {
+                files: true,
+                directories: false,
+                multiple: false,
+                prompt: None,
+            },
+            super::super::native_dialog::JSON_FILTERS,
+            cx,
+        );
         cx.spawn(async move |this, cx| {
             let Ok(Ok(Some(paths))) = picked.await else {
                 return;
@@ -712,7 +716,10 @@ impl Root {
             let Some(path) = paths.into_iter().next() else {
                 return;
             };
-            let outcome = import_file(&path);
+            let outcome = cx
+                .background_executor()
+                .spawn(async move { import_file(&path) })
+                .await;
             let _ = this.update(cx, |this, cx| {
                 this.settings_extra.mods.outcome = Some(outcome);
                 cx.notify();
@@ -731,12 +738,21 @@ impl Root {
         );
         let body =
             serde_json::to_vec_pretty(&plugins::export(&plugins::snapshot())).unwrap_or_default();
-        let chosen = cx.prompt_for_new_path(&directory, Some(&name));
+        let chosen = super::super::native_dialog::save_path(
+            &directory,
+            Some(&name),
+            super::super::native_dialog::JSON_FILTERS,
+            cx,
+        );
         cx.spawn(async move |this, cx| {
             let Ok(Ok(Some(path))) = chosen.await else {
                 return;
             };
-            let saved = std::fs::write(&path, body).is_ok();
+            let write_path = path.clone();
+            let saved = cx
+                .background_executor()
+                .spawn(async move { std::fs::write(&write_path, body).is_ok() })
+                .await;
             let _ = this.update(cx, |this, cx| {
                 if saved {
                     this.settings_extra.mods.exported = Some(path.display().to_string());

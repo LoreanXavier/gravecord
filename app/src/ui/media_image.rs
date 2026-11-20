@@ -632,6 +632,27 @@ impl Root {
             color("--background-base-low")
         };
 
+        let animated_gif = !hidden
+            && attachment.is_image()
+            && (attachment.is_animated()
+                || image
+                    .as_ref()
+                    .is_some_and(|pic| super::gif_tiles::animated(pic.bytes())));
+        let group = SharedString::from(format!("{id_prefix}-grp-{}", attachment.id));
+        let favorite_target = animated_gif.then(|| {
+            let src = if attachment.proxy_url.is_empty() {
+                attachment.url.clone()
+            } else {
+                attachment.proxy_url.clone()
+            };
+            super::gifs::FavoriteTarget {
+                url: attachment.url.clone(),
+                src,
+                width: attachment.width.unwrap_or(1).max(1),
+                height: attachment.height.unwrap_or(1).max(1),
+                format: 1,
+            }
+        });
         let failed = image.is_none() && attachment.is_image() && self.image_has_failed(&key);
         let inner_media = div()
             .relative()
@@ -670,6 +691,7 @@ impl Root {
 
         div()
             .id(SharedString::from(format!("{id_prefix}-{}", attachment.id)))
+            .group(group.clone())
             .relative()
             .w(w)
             .h(h)
@@ -682,6 +704,14 @@ impl Root {
             .when(!hidden, |this| {
                 let open_key = key.clone();
                 this.children(self.alt_text_overlay(attachment, cx))
+                    .children(favorite_target.map(|target| {
+                        self.gif_favorite_button(
+                            format!("{id_prefix}-gif-fav-{}", attachment.id),
+                            group,
+                            target,
+                            cx,
+                        )
+                    }))
                     .on_hover(cx.listener(move |this, inside: &bool, _, cx| {
                         this.media_hover(&hovered, *inside, cx)
                     }))

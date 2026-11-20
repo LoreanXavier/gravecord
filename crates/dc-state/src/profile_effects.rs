@@ -62,6 +62,22 @@ impl Equipped {
         })
     }
 
+    fn from_legacy_object(obj: &Value, now_ms: f64) -> Option<Self> {
+        let sku_id = crate::id(&obj["id"])
+            .or_else(|| obj["id"].as_u64())
+            .or_else(|| crate::id(&obj["sku_id"]))
+            .or_else(|| obj["sku_id"].as_u64())?;
+        let expires_at = obj["expires_at"]
+            .as_str()
+            .and_then(|text| DateTime::parse_from_rfc3339(text).ok())
+            .map(|time| time.timestamp());
+        let effect = Self { sku_id, expires_at };
+        effect
+            .expires_at
+            .is_none_or(|end| (end as f64) * 1000. > now_ms)
+            .then_some(effect)
+    }
+
     /// The effect a profile payload shows: the server profile's own effect when the viewer looks at that server
     /// (`t?.profileEffect ?? e.profileEffect` in the display profile of module 527212), else the account's.
     pub fn from_profile(body: &Value, guild: Option<Id>, now_ms: f64) -> Option<Self> {
@@ -71,8 +87,13 @@ impl Equipped {
             .and_then(|id| id.parse::<Id>().ok());
         let scoped = guild
             .filter(|guild| Some(*guild) == member_guild)
-            .and_then(|_| Self::from_collectibles(&member["collectibles"], now_ms));
-        scoped.or_else(|| Self::from_collectibles(&body["user_profile"]["collectibles"], now_ms))
+            .and_then(|_| {
+                Self::from_collectibles(&member["collectibles"], now_ms)
+                    .or_else(|| Self::from_legacy_object(&member["profile_effect"], now_ms))
+            });
+        scoped
+            .or_else(|| Self::from_collectibles(&body["user_profile"]["collectibles"], now_ms))
+            .or_else(|| Self::from_legacy_object(&body["user_profile"]["profile_effect"], now_ms))
     }
 }
 
@@ -114,10 +135,12 @@ pub struct EffectLayer {
 
 impl EffectLayer {
     fn from_value(value: &Value) -> Option<Self> {
+        let randomized = value["randomizedSources"]
+            .as_array()
+            .or_else(|| value["randomized_sources"].as_array());
         Some(Self {
             src: value["src"].as_str()?.to_owned(),
-            randomized_sources: value["randomizedSources"]
-                .as_array()
+            randomized_sources: randomized
                 .map(|sources| {
                     sources
                         .iter()
@@ -128,8 +151,13 @@ impl EffectLayer {
             looping: value["loop"].as_bool().unwrap_or(false),
             start_ms: value["start"].as_f64().unwrap_or(0.),
             duration_ms: value["duration"].as_f64().unwrap_or(0.),
-            loop_delay_ms: value["loopDelay"].as_f64(),
-            z_index: value["zIndex"].as_i64().unwrap_or(0),
+            loop_delay_ms: value["loopDelay"]
+                .as_f64()
+                .or_else(|| value["loop_delay"].as_f64()),
+            z_index: value["zIndex"]
+                .as_i64()
+                .or_else(|| value["z_index"].as_i64())
+                .unwrap_or(0),
             position: (
                 value["position"]["x"].as_f64().unwrap_or(0.),
                 value["position"]["y"].as_f64().unwrap_or(0.),
@@ -192,29 +220,46 @@ impl ProfileEffect {
         if item["type"].as_i64() != Some(COLLECTIBLE_PROFILE_EFFECT) {
             return None;
         }
-        let text = |key: &str| item[key].as_str().unwrap_or_default().to_owned();
+        let text = |camel: &str, snake: &str| {
+            item[camel]
+                .as_str()
+                .or_else(|| item[snake].as_str())
+                .unwrap_or_default()
+                .to_owned()
+        };
         let mut layers: Vec<EffectLayer> = item["effects"]
             .as_array()
             .map(|layers| layers.iter().filter_map(EffectLayer::from_value).collect())
             .unwrap_or_default();
         layers.sort_by_key(|layer| layer.z_index);
+        let animation_val = if !item["animationType"].is_null() {
+            &item["animationType"]
+        } else {
+            &item["animation_type"]
+        };
         Some(Self {
-            sku_id: crate::id(&item["sku_id"]).or_else(|| item["sku_id"].as_u64())?,
-            title: text("title"),
-            description: text("description"),
-            accessibility_label: text("accessibilityLabel"),
-            animation_type: AnimationType::from_value(&item["animationType"]),
-            reduced_motion_src: text("reducedMotionSrc"),
-            thumbnail_preview_src: text("thumbnailPreviewSrc"),
-            static_frame_src: item["staticFrameSrc"].as_str().map(str::to_owned),
+            sku_id: crate::id(&item["sku_id"])
+                .or_else(|| item["sku_id"].as_u64())
+                .or_else(|| crate::id(&item["skuId"]))
+                .or_else(|| item["skuId"].as_u64())?,
+            title: text("title", "title"),
+            description: text("description", "description"),
+            accessibility_label: text("accessibilityLabel", "accessibility_label"),
+            animation_type: AnimationType::from_value(animation_val),
+            reduced_motion_src: text("reducedMotionSrc", "reduced_motion_src"),
+            thumbnail_preview_src: text("thumbnailPreviewSrc", "thumbnail_preview_src"),
+            static_frame_src: item["staticFrameSrc"]
+                .as_str()
+                .or_else(|| item["static_frame_src"].as_str())
+                .map(str::to_owned),
             layers,
         })
     }
 
-    /// The effect of a `GET /collectibles-products/<sku>` body: its first item, which must be a profile effect
-    /// (`getProduct(sku).items[0]` in module 942426).
+    /// The effect of a `GET /collectibles-products/<sku>` body: the first profile effect item
+    /// (`getProduct(sku).items` in module 942426).
     pub fn from_product(body: &Value) -> Option<Self> {
-        Self::from_item(body["items"].as_array()?.first()?)
+        body["items"].as_array()?.iter().find_map(Self::from_item)
     }
 
     /// How many sources the random pick can choose between: the shortest non-empty `randomizedSources` list among the
@@ -395,6 +440,45 @@ mod tests {
         };
         assert_eq!(layer.local_time(50.), None);
         assert_eq!(layer.local_time(5100.), Some(5000.));
+    }
+
+    #[test]
+    fn from_profile_falls_back_to_legacy_profile_effect_and_snake_case_items() {
+        let body = json!({
+            "user_profile": {
+                "collectibles": [],
+                "profile_effect": { "id": "1564419597501989044", "expires_at": null }
+            }
+        });
+        let equipped = Equipped::from_profile(&body, None, 1000.).unwrap();
+        assert_eq!(equipped.sku_id, SKU);
+
+        let snake = json!({
+            "items": [
+                {"type": 0, "sku_id": "99"},
+                {
+                    "type": 1,
+                    "sku_id": "1564419597501989044",
+                    "title": "Snake",
+                    "animation_type": 1,
+                    "reduced_motion_src": "https://cdn.discordapp.com/media/still.png",
+                    "thumbnail_preview_src": "https://cdn.discordapp.com/media/thumb.png",
+                    "effects": [{
+                        "src": "https://cdn.discordapp.com/media/layer.png",
+                        "loop": true,
+                        "duration": 2000,
+                        "start": 0,
+                        "loop_delay": 500,
+                        "z_index": 2
+                    }]
+                }
+            ]
+        });
+        let effect = ProfileEffect::from_product(&snake).unwrap();
+        assert_eq!(effect.animation_type, AnimationType::Persistent);
+        assert_eq!(effect.layers.len(), 1);
+        assert_eq!(effect.layers[0].loop_delay_ms, Some(500.));
+        assert_eq!(effect.layers[0].z_index, 2);
     }
 
     #[test]

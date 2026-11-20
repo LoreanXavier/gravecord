@@ -20,6 +20,13 @@ use std::{
 
 pub(super) const ANIMATION_PREFIX: &str = "nameplate-animation:";
 
+/// Where the nameplate is placed (module 88686 / 351952).
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(super) enum Placement {
+    MemberList,
+    Channel,
+}
+
 #[derive(Clone, Copy, PartialEq, Eq)]
 struct Spec {
     width: u32,
@@ -29,6 +36,7 @@ struct Spec {
     tint: Option<u32>,
     hovered: bool,
     selected: bool,
+    placement: Placement,
 }
 
 pub(super) struct Cache {
@@ -222,11 +230,11 @@ impl Cache {
     }
 }
 
-fn gradient_alpha(position: f32, hovered: bool, selected: bool) -> f32 {
+fn gradient_alpha(position: f32, hovered: bool, selected: bool, placement: Placement) -> f32 {
     let middle = 20. / 255.;
     let end = if selected {
         128. / 255.
-    } else if hovered {
+    } else if hovered && placement == Placement::MemberList {
         77. / 255.
     } else {
         51. / 255.
@@ -274,6 +282,7 @@ fn compose(source: &RgbaImage, spec: Spec) -> RgbaImage {
                 (x as f32 + 0.5) / spec.width as f32,
                 spec.hovered,
                 spec.selected,
+                spec.placement,
             )
         } else {
             0.
@@ -340,7 +349,7 @@ impl Root {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let members: Vec<_> = self
+        let mut members: Vec<(Id, Id)> = self
             .guild
             .and_then(|guild| self.stores.member_lists.get(&guild))
             .into_iter()
@@ -352,16 +361,79 @@ impl Root {
                 _ => None,
             })
             .collect();
-        let selected = self.profile.as_ref().map(|profile| profile.user);
+        let selected_profile = self.profile.as_ref().map(|profile| profile.user);
+        let dm_view_open = self.guild.is_none()
+            && !self.nitro_open
+            && !self.shop_active()
+            && !self.quests_active()
+            && !self.message_requests_active()
+            && !self.library_active();
+        let selected_dm_channel = dm_view_open.then_some(self.channel).flatten();
+        let menu_dm_channel = self
+            .context
+            .open
+            .as_ref()
+            .and_then(|open| match open.target {
+                super::context_menu::Target::Dm(id) => Some(id),
+                _ => None,
+            });
+        let mut dm_hovered_user = None;
+        let mut dm_selected_user = None;
+        let mut dm_static_requests: Vec<(String, String)> = Vec::new();
+        if self.guild.is_none() {
+            for channel in &self.stores.private_channels {
+                if channel.kind == 3 {
+                    // Group DM member list when that group DM is open.
+                    if selected_dm_channel == Some(channel.id) {
+                        for uid in &channel.recipients {
+                            if let Some(user) = self.stores.users.get(uid)
+                                && let Some(plate) = &user.nameplate
+                            {
+                                members.push((user.id, plate.sku_id));
+                                dm_static_requests.push((
+                                    format!("nameplate:{}", plate.sku_id),
+                                    plate.static_url(),
+                                ));
+                            }
+                        }
+                    }
+                    continue;
+                }
+                if let Some(recipient) = self.stores.dm_recipient(channel)
+                    && let Some(plate) = &recipient.nameplate
+                {
+                    members.push((recipient.id, plate.sku_id));
+                    dm_static_requests
+                        .push((format!("nameplate:{}", plate.sku_id), plate.static_url()));
+                    if self.hovered_dm == Some(channel.id) {
+                        dm_hovered_user = Some(recipient.id);
+                    }
+                    if selected_dm_channel == Some(channel.id)
+                        || menu_dm_channel == Some(channel.id)
+                    {
+                        dm_selected_user = Some(recipient.id);
+                    }
+                }
+            }
+        }
+        for (key, url) in dm_static_requests {
+            self.request_image(key, url);
+        }
         let can_animate = window.is_window_active() && !crate::ui::motion::reduced();
         // Not in the pinned client: AlwaysAnimate's `nameplates` (`animate:true,loop:true`, `plugin_hooks/always_animate.rs`).
-        let always = super::plugin_hooks::always_animate(super::plugin_hooks::AnimatePart::Nameplates);
+        let always =
+            super::plugin_hooks::always_animate(super::plugin_hooks::AnimatePart::Nameplates);
         let active: Vec<_> = members
             .iter()
             .filter_map(|(user, sku)| {
-                let hovered = self.hovered_nameplate == Some(*user);
-                (always || (can_animate && (hovered || selected == Some(*user))))
-                    .then_some((*user, *sku, hovered))
+                let hovered =
+                    self.hovered_nameplate == Some(*user) || dm_hovered_user == Some(*user);
+                let selected = selected_profile == Some(*user) || dm_selected_user == Some(*user);
+                (always || (can_animate && (hovered || selected))).then_some((
+                    *user,
+                    *sku,
+                    hovered || always,
+                ))
             })
             .collect();
         let preparation = self.nameplates.borrow_mut().prepare(&active, &members);
@@ -451,6 +523,49 @@ impl Root {
         text_width: Rc<Cell<f32>>,
         probe: bool,
     ) -> Option<AnyElement> {
+        let selected = self
+            .profile
+            .as_ref()
+            .is_some_and(|profile| profile.user == user.id);
+        let hovered = self.hovered_nameplate == Some(user.id);
+        self.render_nameplate(
+            user,
+            hovered,
+            selected,
+            Placement::MemberList,
+            text_width,
+            probe,
+        )
+    }
+
+    /// Direct Messages row nameplate (modules 181254 `eY`, 214881, 351952 `CHANNEL` placement).
+    pub(super) fn dm_nameplate(
+        &self,
+        user: &User,
+        hovered: bool,
+        selected: bool,
+        text_width: Rc<Cell<f32>>,
+        probe: bool,
+    ) -> Option<AnyElement> {
+        self.render_nameplate(
+            user,
+            hovered,
+            selected,
+            Placement::Channel,
+            text_width,
+            probe,
+        )
+    }
+
+    fn render_nameplate(
+        &self,
+        user: &User,
+        hovered: bool,
+        selected: bool,
+        placement: Placement,
+        text_width: Rc<Cell<f32>>,
+        probe: bool,
+    ) -> Option<AnyElement> {
         let plate = user.nameplate.as_ref()?;
         let image = self
             .images
@@ -458,13 +573,12 @@ impl Root {
             .clone();
         let sku = plate.sku_id;
         let user_id = user.id;
-        let selected = self
-            .profile
-            .as_ref()
-            .is_some_and(|profile| profile.user == user_id);
         let tint = plate.background(theme() == dc_tokens::Theme::Light);
-        let hovered = self.hovered_nameplate == Some(user_id);
         let cache = self.nameplates.clone();
+        let mask_adjust = match placement {
+            Placement::MemberList => 10.,
+            Placement::Channel => -5.,
+        };
         Some(
             div()
                 .when(probe, |this| this.parity("member-nameplate"))
@@ -489,13 +603,15 @@ impl Root {
                             let spec = Spec {
                                 width,
                                 height,
-                                // Member content includes a 32px avatar, 12px gap, then the measured text; source adds 10px.
-                                mask_start: ((text_width.get() + 32. + 12. + 10.) * scale)
+                                // Content includes 8px left padding + 32px avatar + 12px gap + measured text + placement offset (351952).
+                                mask_start: ((text_width.get() + 32. + 12. + mask_adjust) * scale)
+                                    .max(0.)
                                     .to_bits(),
                                 scale: scale.to_bits(),
                                 tint,
                                 hovered,
                                 selected,
+                                placement,
                             };
                             if let Some(frame) =
                                 cache.borrow_mut().frame(user_id, sku, image.bytes(), spec)
@@ -585,6 +701,7 @@ mod tests {
             tint: None,
             hovered: false,
             selected: false,
+            placement: Placement::MemberList,
         };
         let mut cache = Cache::default();
         let first = cache.frame(1, 2, encoded.get_ref(), spec).unwrap();
@@ -614,10 +731,30 @@ mod tests {
 
     #[test]
     fn member_mask_and_state_opacities_follow_source() {
-        assert_eq!(gradient_alpha(0.2, false, false), 20. / 255.);
-        assert_eq!(gradient_alpha(1., false, false), 51. / 255.);
-        assert_eq!(gradient_alpha(1., true, false), 77. / 255.);
-        assert_eq!(gradient_alpha(1., true, true), 128. / 255.);
+        assert_eq!(
+            gradient_alpha(0.2, false, false, Placement::MemberList),
+            20. / 255.
+        );
+        assert_eq!(
+            gradient_alpha(1., false, false, Placement::MemberList),
+            51. / 255.
+        );
+        assert_eq!(
+            gradient_alpha(1., true, false, Placement::MemberList),
+            77. / 255.
+        );
+        assert_eq!(
+            gradient_alpha(1., true, true, Placement::MemberList),
+            128. / 255.
+        );
+        assert_eq!(
+            gradient_alpha(1., true, false, Placement::Channel),
+            51. / 255.
+        );
+        assert_eq!(
+            gradient_alpha(1., false, true, Placement::Channel),
+            128. / 255.
+        );
         let source = RgbaImage::from_pixel(200, 20, Rgba([255, 255, 255, 255]));
         let spec = Spec {
             width: 200,
@@ -627,6 +764,7 @@ mod tests {
             tint: Some(0),
             hovered: false,
             selected: false,
+            placement: Placement::MemberList,
         };
         let image = compose(&source, spec);
         assert!(image.get_pixel(20, 10)[3] < image.get_pixel(120, 10)[3]);
@@ -651,6 +789,7 @@ mod tests {
             tint: None,
             hovered: false,
             selected: false,
+            placement: Placement::MemberList,
         };
         let image = compose(&source, spec);
         assert_eq!(image.get_pixel(19, 10).0, [0; 4]);

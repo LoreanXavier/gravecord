@@ -4,77 +4,21 @@
 
 use super::{Config, Output, Profile};
 use crate::mfrt::Runtime;
+use crate::throttle::Waiter as HighResWaiter;
 use crate::{Error, Result, h264};
 use std::collections::VecDeque;
 use std::time::{Duration, Instant};
 use windows::{
     Win32::{
-        Foundation::{CloseHandle, HANDLE},
         Media::MediaFoundation::*,
-        System::{
-            Com::CoTaskMemFree,
-            Threading::{
-                CREATE_WAITABLE_TIMER_HIGH_RESOLUTION, CreateWaitableTimerExW, SetWaitableTimer,
-                TIMER_ALL_ACCESS, WaitForSingleObject,
-            },
-            Variant::VARIANT,
-        },
+        System::{Com::CoTaskMemFree, Variant::VARIANT},
     },
-    core::{IUnknown, Interface, PCWSTR},
+    core::{IUnknown, Interface},
 };
 
 const INPUT_WAIT: Duration = Duration::from_millis(200);
 const OUTPUT_WAIT: Duration = Duration::from_millis(25);
 const WAIT_POLL: Duration = Duration::from_millis(1);
-
-struct HighResWaiter(Option<HANDLE>);
-
-impl HighResWaiter {
-    fn new() -> Self {
-        // SAFETY: passing null timer attributes and unnamed timer asks Windows for a private handle.
-        let handle = unsafe {
-            CreateWaitableTimerExW(
-                None,
-                PCWSTR::null(),
-                CREATE_WAITABLE_TIMER_HIGH_RESOLUTION,
-                TIMER_ALL_ACCESS.0,
-            )
-        }
-        .ok();
-        Self(handle)
-    }
-
-    fn sleep(&self, duration: Duration) {
-        let Some(handle) = self.0 else {
-            std::thread::sleep(duration);
-            return;
-        };
-        let ticks = (duration.as_nanos().min(i64::MAX as u128) as i64 / 100).max(1);
-        let due = -ticks;
-        // SAFETY: `handle` is an open waitable timer owned by `self`; `due` lives through `SetWaitableTimer`.
-        let armed = unsafe { SetWaitableTimer(handle, &due, 0, None, None, false) }.is_ok();
-        if armed {
-            let timeout_ms = duration.as_millis().min(u32::MAX as u128 - 50) as u32 + 50;
-            // SAFETY: `handle` stays open until `Drop`.
-            unsafe {
-                let _ = WaitForSingleObject(handle, timeout_ms);
-            }
-        } else {
-            std::thread::sleep(duration);
-        }
-    }
-}
-
-impl Drop for HighResWaiter {
-    fn drop(&mut self) {
-        if let Some(handle) = self.0.take() {
-            // SAFETY: closing the owned timer handle on drop.
-            unsafe {
-                let _ = CloseHandle(handle);
-            }
-        }
-    }
-}
 
 fn unavailable(what: &str, error: impl std::fmt::Display) -> Error {
     Error::unavailable(format!("hardware H.264 encoder: {what}: {error}"))
@@ -208,10 +152,10 @@ impl Encoder {
             let _ = attributes.SetUINT32(&MF_LOW_LATENCY, 1);
             let codec: ICodecAPI = transform.cast().map_err(|e| unavailable("codec api", e))?;
             let _ = codec.SetValue(&CODECAPI_AVLowLatencyMode, &VARIANT::from(true));
-            // 0 is fastest, 100 best quality: at the same bitrate the quality end keeps small text readable.
-            // Advisory: an encoder that rejects it keeps its own preset.
+            // 0 is fastest, 100 slowest/highest GPU load: a balanced real-time preset keeps text sharp without
+            // stalling 60 fps hardware encoding or competing with foreground apps/DWM during Alt-Tab.
             let quality =
-                codec.SetValue(&CODECAPI_AVEncCommonQualityVsSpeed, &VARIANT::from(100_u32));
+                codec.SetValue(&CODECAPI_AVEncCommonQualityVsSpeed, &VARIANT::from(50_u32));
             tracing::debug!(
                 accepted = quality.is_ok(),
                 "hardware H.264 encoder quality-vs-speed set to quality"

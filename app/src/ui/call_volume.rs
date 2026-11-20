@@ -47,12 +47,33 @@ fn glyph(position: f32, muted: bool) -> &'static str {
     }
 }
 
+/// Whether the bottom-right call volume control (`renderBottomRight` of module 540462) should target a tile.
+/// `selectedParticipant` is strictly `null` in DM voice-only mode (`guild == 0 && !video`), never targets the local
+/// user, and ignores ended streams.
+fn resolve_target(
+    guild: u64,
+    dm_video: bool,
+    focus: Option<(u64, TileKind)>,
+    ended_stream_owner: Option<u64>,
+    me: Option<u64>,
+) -> Option<(u64, bool)> {
+    if guild == 0 && !dm_video {
+        return None;
+    }
+    let (user, kind) = focus?;
+    if kind == TileKind::Stream && ended_stream_owner == Some(user) {
+        return None;
+    }
+    (Some(user) != me).then_some((user, kind == TileKind::Stream))
+}
+
 impl Root {
     /// The focused tile of someone else: the user and whether the tile is their stream.
     fn call_volume_target(&self) -> Option<(u64, bool)> {
-        let (user, kind) = self.vv.focus.tile?;
+        let (guild, _) = self.vv.shown_call;
+        let ended_owner = self.video.ended_focus.map(|ended| ended.owner());
         let me = self.stores.current_user.as_ref().map(|me| me.id);
-        (Some(user) != me).then_some((user, kind == TileKind::Stream))
+        resolve_target(guild, self.dmc.video, self.vv.focus.tile, ended_owner, me)
     }
 
     /// The level in percent (100 is unity) and whether the target is muted here.
@@ -285,5 +306,36 @@ mod tests {
     fn unity_sits_at_half_of_a_bar_that_runs_to_200_percent() {
         assert!((volume_to_slider(100.) / max() - 0.5).abs() < 1e-4);
         assert!((slider_to_volume(0.5 * max()) - 100.).abs() < 1e-2);
+    }
+
+    #[test]
+    fn dm_voice_only_and_ended_streams_have_no_volume_target() {
+        // DM voice-only mode (`guild == 0 && !dm_video`) must never show a call volume speaker.
+        assert_eq!(
+            resolve_target(0, false, Some((42, TileKind::Stream)), None, Some(1)),
+            None
+        );
+        assert_eq!(
+            resolve_target(0, false, Some((42, TileKind::User)), None, Some(1)),
+            None
+        );
+        // Active DM video/stream mode shows it for another participant, never for self or an ended stream.
+        assert_eq!(
+            resolve_target(0, true, Some((42, TileKind::Stream)), None, Some(1)),
+            Some((42, true))
+        );
+        assert_eq!(
+            resolve_target(0, true, Some((42, TileKind::Stream)), Some(42), Some(1)),
+            None
+        );
+        assert_eq!(
+            resolve_target(0, true, Some((1, TileKind::Stream)), None, Some(1)),
+            None
+        );
+        // Guild voice channel with a focused non-local tile still shows it.
+        assert_eq!(
+            resolve_target(99, false, Some((42, TileKind::User)), None, Some(1)),
+            Some((42, false))
+        );
     }
 }

@@ -425,9 +425,17 @@ impl Root {
                 }
             }));
         let mut layers = vec![
-            deferred(div().id("event-menu-layer").child(body))
-                .with_priority(2)
-                .into_any_element(),
+            deferred(
+                div()
+                    .id("event-menu-layer")
+                    .absolute()
+                    .top_0()
+                    .left_0()
+                    .size_full()
+                    .child(body),
+            )
+            .with_priority(2)
+            .into_any_element(),
         ];
         if menu.calendar && first.contains(&Item::Calendar) {
             layers.push(self.event_calendar_submenu(left, top, target, cx));

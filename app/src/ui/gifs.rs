@@ -78,6 +78,17 @@ pub(crate) struct Gif {
     pub height: f32,
 }
 
+/// Target payload for the official GIF Favorite Star button (`439401` / `343552`).
+/// `format`: `1` = `GIF_TYPE_IMAGE` (animated GIF/WebP), `2` = `GIF_TYPE_VIDEO` (GIFV embed).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(super) struct FavoriteTarget {
+    pub url: String,
+    pub src: String,
+    pub width: u32,
+    pub height: u32,
+    pub format: u32,
+}
+
 /// One result of `/gifs/search` or `/gifs/trending-gifs`.
 pub(crate) fn gifs_of(body: &Value) -> Vec<Gif> {
     body.as_array()
@@ -363,19 +374,27 @@ impl Root {
             .collect()
     }
 
-    /// `toggle` in module 497685: the GIF joins the favourites or leaves them, and the whole message goes to the
-    /// account's frecency settings (the server replaces `favorite_gifs` as one).
-    fn toggle_favorite_gif(&mut self, gif: &Gif, cx: &mut Context<Self>) {
+    /// Whether `url` is currently in the account's favorite GIFs (`439401` / `497685`).
+    pub(super) fn is_favorite_gif(&self, url: &str) -> bool {
+        self.favorite_gif_list().iter().any(|item| item.url == url)
+    }
+
+    /// Toggles a chat/lightbox GIF or GIFV in the account's favorite GIFs (`439401` / `497685`),
+    /// persisting through `PATCH /users/@me/settings-proto/2`.
+    pub(super) fn toggle_favorite_gif_target(
+        &mut self,
+        target: &FavoriteTarget,
+        cx: &mut Context<Self>,
+    ) {
         if self.favorite_gifs.is_none() && !self.frecency_arrived() {
             return;
         }
-        let video = gif.picture.contains(".mp4") || gif.picture.contains(".webm");
         let favorite = dc_proto::frecency::FavoriteGif {
-            url: gif.url.clone(),
-            format: if video { 2 } else { 1 },
-            src: gif.picture.clone(),
-            width: gif.width.round() as u32,
-            height: gif.height.round() as u32,
+            url: target.url.clone(),
+            format: target.format,
+            src: target.src.clone(),
+            width: target.width.max(1),
+            height: target.height.max(1),
             order: 0,
         };
         let list = dc_proto::frecency::toggle_favorite_gif(self.favorite_gif_list(), favorite);
@@ -395,6 +414,86 @@ impl Root {
         }
         self.favorite_gifs = Some(list);
         cx.notify();
+    }
+
+    /// Official chat/media GIF Favorite Star overlay button (module 439401 `GifFavoriteButton`,
+    /// module 343552, CSS `gifFavoriteButton_cT9zhv` / `gifFavoriteButton_YUQhib`).
+    pub(super) fn gif_favorite_button(
+        &self,
+        id: String,
+        media_group: SharedString,
+        target: FavoriteTarget,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let favorite = self.is_favorite_gif(&target.url);
+        let tip_text = if favorite {
+            dc_intl::t!("5/NS74")
+        } else {
+            dc_intl::t!("nIH0v8")
+        };
+        let button_group = SharedString::from(format!("{id}-btn"));
+        let tip_key = format!("{id}-tip");
+        let button = div()
+            .id(SharedString::from(id))
+            .parity("gif-favorite-button")
+            .group(button_group.clone())
+            .p(px(6.))
+            .rounded(px(5.))
+            .bg(color("--background-base-low"))
+            .flex()
+            .items_center()
+            .justify_center()
+            .cursor_pointer()
+            .opacity(0.)
+            .group_hover(media_group, |style| style.opacity(1.))
+            .on_mouse_down(gpui::MouseButton::Left, |_, _, cx| cx.stop_propagation())
+            .on_click(cx.listener(move |this, _, _, cx| {
+                this.toggle_favorite_gif_target(&target, cx);
+                cx.stop_propagation();
+            }))
+            .child(
+                icon(
+                    if favorite {
+                        "gif_favorite_filled"
+                    } else {
+                        "gif_favorite"
+                    },
+                    20.,
+                    if favorite {
+                        "--yellow-300"
+                    } else {
+                        "--icon-strong"
+                    },
+                )
+                .group_hover(button_group, |style| {
+                    style.text_color(color("--yellow-300"))
+                }),
+            );
+        div()
+            .absolute()
+            .top(px(8.))
+            .right(px(8.))
+            .child(self.with_tip(
+                tip_key,
+                super::tooltip::Tip::text(tip_text, super::tooltip::Side::Top),
+                button,
+                cx,
+            ))
+            .into_any_element()
+    }
+
+    /// `toggle` in module 497685: the GIF joins the favourites or leaves them, and the whole message goes to the
+    /// account's frecency settings (the server replaces `favorite_gifs` as one).
+    fn toggle_favorite_gif(&mut self, gif: &Gif, cx: &mut Context<Self>) {
+        let video = gif.picture.contains(".mp4") || gif.picture.contains(".webm");
+        let target = FavoriteTarget {
+            url: gif.url.clone(),
+            src: gif.picture.clone(),
+            width: gif.width.round() as u32,
+            height: gif.height.round() as u32,
+            format: if video { 2 } else { 1 },
+        };
+        self.toggle_favorite_gif_target(&target, cx);
     }
 
     /// Pictures for a GIF answer that just arrived: category tiles and the trending preview, or result tiles.

@@ -37,12 +37,37 @@ impl Clip {
     }
 }
 
-pub(super) fn decode(bytes: &[u8]) -> Option<Arc<Clip>> {
-    let decoder = image::codecs::png::PngDecoder::new(Cursor::new(bytes)).ok()?;
-    if !decoder.is_apng().ok()? {
-        return None;
+fn frame_delay(frame: &image::Frame) -> Duration {
+    let (numerator, denominator) = frame.delay().numer_denom_ms();
+    if numerator == 0 || denominator == 0 {
+        return Duration::from_millis(100);
     }
-    let frames = decoder.apng().ok()?.into_frames().collect_frames().ok()?;
+    let asked = Duration::from_secs_f64(numerator as f64 / denominator as f64 / 1000.);
+    if asked <= Duration::from_millis(10) {
+        Duration::from_millis(100)
+    } else {
+        asked
+    }
+}
+
+pub(super) fn decode(bytes: &[u8]) -> Option<Arc<Clip>> {
+    let frames: Vec<image::Frame> = if bytes.starts_with(b"RIFF") {
+        let mut decoder = image::codecs::webp::WebPDecoder::new(Cursor::new(bytes)).ok()?;
+        if !decoder.has_animation() {
+            return None;
+        }
+        let _ = decoder.set_background_color(image::Rgba([0, 0, 0, 0]));
+        decoder.into_frames().collect_frames().ok()?
+    } else if bytes.starts_with(b"GIF8") {
+        let decoder = image::codecs::gif::GifDecoder::new(Cursor::new(bytes)).ok()?;
+        decoder.into_frames().collect_frames().ok()?
+    } else {
+        let decoder = image::codecs::png::PngDecoder::new(Cursor::new(bytes)).ok()?;
+        if !decoder.is_apng().ok()? {
+            return None;
+        }
+        decoder.apng().ok()?.into_frames().collect_frames().ok()?
+    };
     if frames.is_empty() {
         return None;
     }
@@ -52,11 +77,7 @@ pub(super) fn decode(bytes: &[u8]) -> Option<Arc<Clip>> {
         duration: Duration::ZERO,
     };
     for frame in frames {
-        let (numerator, denominator) = frame.delay().numer_denom_ms();
-        if numerator == 0 || denominator == 0 {
-            return None;
-        }
-        clip.duration += Duration::from_secs_f64(numerator as f64 / denominator as f64 / 1000.);
+        clip.duration += frame_delay(&frame);
         clip.ends.push(clip.duration);
         clip.frames.push(Arc::new(frame.into_buffer()));
     }

@@ -358,7 +358,12 @@ impl Root {
             "save dialog then file write",
             image.bytes().len(),
         );
-        let chosen = cx.prompt_for_new_path(&directory, Some(&name));
+        let chosen = super::native_dialog::save_path(
+            &directory,
+            Some(&name),
+            super::native_dialog::ALL_FILTERS,
+            cx,
+        );
         cx.spawn(async move |this, cx| {
             let saved = match chosen.await {
                 Ok(Ok(Some(path))) => Some(std::fs::write(path, image.bytes()).is_ok()),

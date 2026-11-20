@@ -32,6 +32,7 @@ fn failed(what: &str, error: impl std::fmt::Display) -> Error {
 pub(super) struct Decoder {
     transform: IMFTransform,
     _runtime: Runtime,
+    waiter: crate::throttle::Waiter,
     pictures: i64,
     /// Pictures released so far; while it keeps up with `pictures` the transform runs without delay.
     released: i64,
@@ -85,6 +86,7 @@ impl Decoder {
             let mut decoder = Self {
                 transform,
                 _runtime: runtime,
+                waiter: crate::throttle::Waiter::new(),
                 pictures: 0,
                 released: 0,
                 output: None,
@@ -166,7 +168,7 @@ impl Decoder {
             let in_step = self.released + 1 >= self.pictures;
             let mut steps = 0;
             while picture.is_none() && in_step && steps < SETTLE_STEPS {
-                std::thread::sleep(std::time::Duration::from_millis(1));
+                self.waiter.sleep(std::time::Duration::from_millis(1));
                 picture = self.drain()?;
                 steps += 1;
             }

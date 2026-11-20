@@ -922,7 +922,13 @@ impl Root {
         }
         let mut out = Vec::new();
         out.extend(self.clips_enabled_badge(cx));
-        if let Some((user, TileKind::Stream)) = self.vv.focus.tile {
+        if self.dmc.video
+            && let Some((user, TileKind::Stream)) = self.vv.focus.tile
+            && !self
+                .video
+                .ended_focus
+                .is_some_and(|ended| ended.owner() == user)
+        {
             let label = self.video_stream_of(user).and_then(|info| info.label);
             out.push(live_indicator(label));
         }
@@ -1191,6 +1197,13 @@ impl Root {
         };
         let size = window.viewport_size();
         let (width, height) = (f32::from(size.width), f32::from(size.height));
+        if guild == 0 {
+            self.dmc.video = self
+                .dm_call_people(channel)
+                .iter()
+                .any(|person| person.video)
+                || self.call.as_ref().is_some_and(|call| call.camera);
+        }
         let body = self.call_view(guild, channel, width, height, cx);
         Some(
             gpui::deferred(
@@ -2812,7 +2825,20 @@ impl Root {
             primary_box(id).child(lottie_icon::icon(lottie, anim, state, 20., color(tint)))
         };
         // The microphone and camera buttons each carry a 20px chevron nub after a pixel of gap.
-        let nub = |id: &'static str, tint: &'static str| {
+        // An open popout flips the single chevron 180° upward instead of drawing a second icon on top.
+        let nub = |id: &'static str, tint: &'static str, open: bool| {
+            let caret = if open {
+                gpui::svg()
+                    .path("icons/voice_view_caret.svg")
+                    .size(px(16.))
+                    .text_color(color(tint))
+                    .with_transformation(gpui::Transformation::rotate(gpui::radians(
+                        std::f32::consts::PI,
+                    )))
+                    .into_any_element()
+            } else {
+                icon("voice_view_caret", 16., tint).into_any_element()
+            };
             div()
                 .id(id)
                 .w(px(20.))
@@ -2822,7 +2848,7 @@ impl Root {
                 .items_center()
                 .justify_center()
                 .cursor_pointer()
-                .child(icon("voice_view_caret", 16., tint))
+                .child(caret)
         };
         let mic_main = div()
             .id("call-mic")
@@ -2853,36 +2879,11 @@ impl Root {
         let mic_nub = nub(
             "call-mic-chevron",
             if muted { "--red-400" } else { "--white" },
+            mic_open,
         )
         .relative()
         .child(self.anchor_probe("call-mic-chevron"))
         .when(muted, |this| this.bg(mid("--opacity-red-12")))
-        .when(mic_open, |this| {
-            // The open menu turns its chevron up.
-            this.child(
-                div()
-                    .absolute()
-                    .inset_0()
-                    .rounded_r(px(8.))
-                    .flex()
-                    .items_center()
-                    .justify_center()
-                    .bg(if muted {
-                        mid("--opacity-red-12")
-                    } else {
-                        rgba(0)
-                    })
-                    .child(
-                        gpui::svg()
-                            .path("icons/voice_view_caret.svg")
-                            .size(px(16.))
-                            .text_color(color(if muted { "--red-400" } else { "--white" }))
-                            .with_transformation(gpui::Transformation::rotate(gpui::radians(
-                                std::f32::consts::PI,
-                            ))),
-                    ),
-            )
-        })
         .on_click(cx.listener(|this, _, _, cx| {
             this.clear_tip();
             if this.opener_was_open("call-mic-chevron") {
@@ -2970,6 +2971,7 @@ impl Root {
                         nub(
                             "call-camera-chevron",
                             if camera_on { active_text } else { "--white" },
+                            open,
                         ),
                         "call-camera-chevron",
                         open,
@@ -3087,7 +3089,7 @@ impl Root {
                                 "call-screen-chevron-tip",
                                 Tip::text("More Stream Options", Side::Top),
                                 self.bar_opener(
-                                    nub("call-screen-chevron", "--icon-voice-connected"),
+                                    nub("call-screen-chevron", "--icon-voice-connected", open),
                                     "call-screen-chevron",
                                     open,
                                     cx,
@@ -3465,7 +3467,9 @@ impl Root {
                             cx.stop_propagation();
                         })
                         .on_click(|_, _, cx| cx.stop_propagation())
-                        .children(self.call_volume_control(cx))
+                        .when(guild != 0 || self.dmc.video, |this| {
+                            this.children(self.call_volume_control(cx))
+                        })
                         // `canStayOnTop`: in the popped-out window (module 619344).
                         .when(self.vv.popout_render, |this| {
                             let on = self.vv.popout_on_top;
