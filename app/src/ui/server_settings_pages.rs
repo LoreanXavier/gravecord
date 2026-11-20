@@ -1000,6 +1000,12 @@ impl Root {
                     )
             })
             .collect::<Vec<_>>();
+        let linked = self.linked_channels_for_guild(guild, None);
+        let has_linked = !linked.is_empty();
+        let linked_rows: Vec<AnyElement> = linked
+            .into_iter()
+            .map(|row| self.linked_channel_invite_row(row, true, cx))
+            .collect();
         div()
             .flex()
             .flex_col()
@@ -1036,7 +1042,11 @@ impl Root {
                             .line_height(px(18.))
                             .font_weight(FontWeight(500.))
                             .text_color(color("--text-muted"))
-                            .child("Active invite links"),
+                            .child(if !rows.is_empty() || has_linked {
+                                dc_intl::t("DjWsya")
+                            } else {
+                                dc_intl::t("AmwmLg")
+                            }),
                     )
                     .child(
                         div()
@@ -1096,13 +1106,21 @@ impl Root {
             .child(
                 div()
                     .flex()
-                    .child(head("Inviter", 203.))
-                    .child(head("Invite Code", 163.))
-                    .child(head("Uses", 71.))
-                    .child(head("Expires", 121.))
-                    .child(head("Roles", 102.)),
+                    .child(head(dc_intl::t("EgHyKy"), 203.))
+                    .child(head(
+                        if has_linked {
+                            dc_intl::t("l7VISQ")
+                        } else {
+                            dc_intl::t("LBlFEN")
+                        },
+                        163.,
+                    ))
+                    .child(head(dc_intl::t("erWrmA"), 71.))
+                    .child(head(dc_intl::t("1aM27d"), 121.))
+                    .child(head(dc_intl::t("LPJmL/"), 102.)),
             )
             .children(rows)
+            .children(linked_rows)
             .into_any_element()
     }
 
