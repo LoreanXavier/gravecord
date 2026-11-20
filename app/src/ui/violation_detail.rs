@@ -181,10 +181,20 @@ impl Root {
                                 .cursor_pointer()
                                 .child(chunk)
                                 .on_click(cx.listener(|this, _, _, cx| {
-                                    if let Some(m) = this.violation_detail_modal.as_mut() {
-                                        m.appeal = ViolationAppealState::Appealed;
+                                    if let Some(m) = this.violation_detail_modal.clone() {
+                                        let token = this
+                                            .suspended_safety_hub
+                                            .as_ref()
+                                            .map(|h| h.suspended_token.clone());
+                                        this.open_violation_appeal(
+                                            format!("violation:{}", m.classification),
+                                            m.classification,
+                                            m.explainer_url,
+                                            m.appeal == ViolationAppealState::CoppaAgeVerify,
+                                            token,
+                                            cx,
+                                        );
                                     }
-                                    cx.notify();
                                 }))
                                 .into_any_element()
                         } else {
