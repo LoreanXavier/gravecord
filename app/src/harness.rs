@@ -1683,6 +1683,46 @@ pub async fn run(
                 let line = root.update(cx, |root, cx| root.script_shop_checkout_review(&arg, cx));
                 let _ = writeln!(output, "{line}");
             }
+            // `join-request-page [rejected|submitted|incomplete|withdraw|discard]`: Join Request applicant page (840336).
+            ["join-request-page", rest @ ..] => {
+                let arg = rest.join(" ");
+                let line = root.update(cx, |root, cx| root.script_join_request_page(&arg, cx));
+                let _ = writeln!(output, "{line}");
+            }
+            // `app-sub-cancel [survey|confirm]`: Premium App Subscription Cancel & Survey modal (548750).
+            ["app-sub-cancel", rest @ ..] => {
+                let arg = rest.join(" ");
+                let line = window
+                    .update(cx, |_, window, cx| {
+                        root.update(cx, |root, cx| root.script_app_sub_cancel(&arg, window, cx))
+                    })
+                    .unwrap_or_default();
+                let _ = writeln!(output, "{line}");
+            }
+            // `violation-detail [eligible|coppa|expired|appealed]`: Safety Hub Violation Detail modal (163002).
+            ["violation-detail", rest @ ..] => {
+                let arg = rest.join(" ");
+                let line = root.update(cx, |root, cx| root.script_violation_detail(&arg, cx));
+                let _ = writeln!(output, "{line}");
+            }
+            // `purchase-waivers [trial|discount|err|unchecked]`: Purchase Legal Waivers & Install modal (357465).
+            ["purchase-waivers", rest @ ..] => {
+                let arg = rest.join(" ");
+                let line = root.update(cx, |root, cx| root.script_purchase_waivers(&arg, cx));
+                let _ = writeln!(output, "{line}");
+            }
+            // `game-gift-redeem [success|link|claim|owned|exhausted]`: Game Item Gift Redeem modal (173971).
+            ["game-gift-redeem", rest @ ..] => {
+                let arg = rest.join(" ");
+                let line = root.update(cx, |root, cx| root.script_game_gift_redeem(&arg, cx));
+                let _ = writeln!(output, "{line}");
+            }
+            // `subscription-pause [select|paused|confirm|error]`: Pause/Cancel Nitro Subscription modal (318998).
+            ["subscription-pause", rest @ ..] => {
+                let arg = rest.join(" ");
+                let line = root.update(cx, |root, cx| root.script_subscription_pause(&arg, cx));
+                let _ = writeln!(output, "{line}");
+            }
             // `search last` / `search answer <total>`: the open search's request, and an answer to it;
             // `search page <n>`: the pager turns to page n.
             ["search", rest @ ..] => {

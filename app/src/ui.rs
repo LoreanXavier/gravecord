@@ -39,6 +39,7 @@ mod alt_text;
 mod announcements;
 mod app_dm;
 mod app_storefront;
+mod app_sub_cancel;
 mod apps;
 mod attachment_modal;
 mod audio_attachment;
@@ -109,6 +110,7 @@ mod full_profile_recent;
 mod game_add_to_profile;
 mod game_announcements;
 mod game_communities;
+mod game_gift_redeem;
 mod game_similar;
 mod games_spec;
 mod gateway_screens;
@@ -132,6 +134,7 @@ mod inventory_feed;
 mod inventory_popout;
 mod invite;
 mod invite_embed;
+mod join_request_page;
 mod keyboard;
 mod last_channel;
 mod library;
@@ -275,6 +278,7 @@ mod profile_menu;
 mod profile_other;
 mod profile_theme;
 mod profile_voice;
+mod purchase_waivers;
 mod quest_bar;
 mod quest_copy;
 mod quests;
@@ -358,6 +362,7 @@ mod settings;
 mod soundboard;
 mod stream_menus;
 mod stream_volume;
+mod subscription_pause;
 mod tag_badges;
 mod tag_badges_extra;
 mod threads;
@@ -373,6 +378,7 @@ mod video_player;
 mod video_stats;
 mod video_tiles;
 mod view_as_role;
+mod violation_detail;
 mod voice;
 mod voice_alerts;
 mod voice_badge;
@@ -687,6 +693,18 @@ pub struct Root {
     nitro_referral_modal: Option<nitro_referral::NitroReferralModal>,
     /// Shop Checkout Review modal (module 582695, `shop::checkout_review`).
     shop_checkout_review_modal: Option<shop::checkout_review::ShopCheckoutReviewModal>,
+    /// Join Request applicant status page (module 840336, `join_request_page`).
+    join_request_modal: Option<join_request_page::JoinRequestModal>,
+    /// Premium Application Subscription Cancel & Survey modal (module 548750, `app_sub_cancel`).
+    app_sub_cancel_modal: Option<app_sub_cancel::AppSubCancelModal>,
+    /// Safety Hub Account Standing Violation Detail modal (module 163002, `violation_detail`).
+    violation_detail_modal: Option<violation_detail::ViolationDetailModal>,
+    /// Application Installation & Purchase Legal Waivers modal (module 357465, `purchase_waivers`).
+    purchase_waivers_modal: Option<purchase_waivers::PurchaseWaiversModal>,
+    /// Social Layer Game Item Gift Redeem modal (module 173971, `game_gift_redeem`).
+    game_gift_redeem_modal: Option<game_gift_redeem::GameGiftRedeemModal>,
+    /// Pause or Cancel Nitro Subscription modal (module 318998, `subscription_pause`).
+    subscription_pause_modal: Option<subscription_pause::SubscriptionPauseModal>,
     /// Ignored users whose "Don't show this again" restricted-profile bypass was clicked (module 148540 `ip`).
     restricted_profile_bypass: std::collections::HashSet<dc_state::Id>,
     /// Soundboard Echo store & hover details state (module 120246, `soundboard_echo`).
@@ -1244,6 +1262,12 @@ impl Root {
             onboarding_flow_modal: None,
             nitro_referral_modal: None,
             shop_checkout_review_modal: None,
+            join_request_modal: None,
+            app_sub_cancel_modal: None,
+            violation_detail_modal: None,
+            purchase_waivers_modal: None,
+            game_gift_redeem_modal: None,
+            subscription_pause_modal: None,
             restricted_profile_bypass: std::collections::HashSet::new(),
             soundboard_echo: Default::default(),
             badge_modal: None,
@@ -11417,6 +11441,12 @@ impl Render for Root {
                         || this.onboarding_flow_modal.is_some()
                         || this.nitro_referral_modal.is_some()
                         || this.shop_checkout_review_modal.is_some()
+                        || this.join_request_modal.is_some()
+                        || this.app_sub_cancel_modal.is_some()
+                        || this.violation_detail_modal.is_some()
+                        || this.purchase_waivers_modal.is_some()
+                        || this.game_gift_redeem_modal.is_some()
+                        || this.subscription_pause_modal.is_some()
                         || this.library.game_menu.is_some()
                         || this.library.hide_confirm.is_some())
                 {
@@ -11436,6 +11466,12 @@ impl Render for Root {
                     this.close_onboarding_flow();
                     this.close_nitro_referral();
                     this.close_shop_checkout_review();
+                    this.close_join_request_modal();
+                    this.close_app_sub_cancel();
+                    this.close_violation_detail();
+                    this.close_purchase_waivers();
+                    this.close_game_gift_redeem();
+                    this.close_subscription_pause();
                     this.close_library_game_menu();
                     cx.notify();
                     cx.stop_propagation();
@@ -12611,6 +12647,12 @@ impl Render for Root {
             .children(self.onboarding_flow_modal_layer(cx))
             .children(self.nitro_referral_modal_layer(cx))
             .children(self.shop_checkout_review_layer(cx))
+            .children(self.join_request_modal_layer(cx))
+            .children(self.app_sub_cancel_modal_layer(cx))
+            .children(self.violation_detail_modal_layer(cx))
+            .children(self.purchase_waivers_modal_layer(cx))
+            .children(self.game_gift_redeem_modal_layer(cx))
+            .children(self.subscription_pause_modal_layer(cx))
             .children(self.composer_ai_modal(cx))
             .children(self.friend_nickname_layer(window, cx))
             .children(self.favorite_nickname_layer(window, cx))
