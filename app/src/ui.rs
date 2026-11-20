@@ -188,6 +188,7 @@ mod avatar_play;
 mod boost_page;
 pub(crate) mod cdn;
 mod channel_browser;
+mod command_permissions;
 mod discover;
 mod emoji_studio;
 mod favorite_nickname;
@@ -296,6 +297,7 @@ mod server_automod;
 mod server_boost;
 mod server_community;
 mod server_discovery;
+mod server_monetization;
 pub(crate) mod shop;
 mod slash;
 mod slowmode;
@@ -635,6 +637,10 @@ pub struct Root {
     safety_tools: Option<safety_tools::SafetyToolsModal>,
     /// Invite Accept preview + Server Settings expander modal (module 700156, `invite_accept`).
     invite_accept: Option<invite_accept::InviteAcceptModal>,
+    /// Server Subscriptions monetization eligibility checklist (module 715395, `server_monetization`).
+    monetization_modal: Option<server_monetization::MonetizationModal>,
+    /// Application command permissions editor modal (module 365200, `command_permissions`).
+    command_permissions: Option<command_permissions::CommandPermissionsModal>,
     /// Soundboard Echo store & hover details state (module 120246, `soundboard_echo`).
     soundboard_echo: soundboard_echo::SoundboardEchoState,
     badge_modal: Option<badge_modal::BadgeModal>,
@@ -1172,6 +1178,8 @@ impl Root {
             role_verify: None,
             safety_tools: None,
             invite_accept: None,
+            monetization_modal: None,
+            command_permissions: None,
             soundboard_echo: Default::default(),
             badge_modal: None,
             app_storefront: None,
@@ -2552,6 +2560,11 @@ impl Root {
                 if key.starts_with(invite_accept::PREVIEW_KEY_PREFIX) {
                     self.fetched.insert(key.clone(), body.clone());
                     self.invite_accept_preview_fetched(&key, cx);
+                    return;
+                }
+                if key.starts_with(server_monetization::ELIGIBILITY_KEY_PREFIX) {
+                    self.fetched.insert(key.clone(), body.clone());
+                    self.monetization_eligibility_fetched(&key, cx);
                     return;
                 }
                 if key.starts_with(server_settings_pages::INVITES_PREFIX)
@@ -11207,6 +11220,8 @@ impl Render for Root {
         let role_verify_layer = self.role_verify_layer(window, cx);
         let safety_tools_layer = self.safety_tools_layer(cx);
         let invite_accept_layer = self.invite_accept_layer(window, cx);
+        let monetization_layer = self.monetization_eligibility_layer(cx);
+        let command_permissions_layer = self.command_permissions_layer(cx);
         let soundboard_echo_layer = self.soundboard_echo_layer(cx);
         let locale_error = self.locale_error_layer();
         let app_storefront = self.app_storefront_layer(window, cx);
@@ -11293,6 +11308,14 @@ impl Render for Root {
                     return;
                 }
                 if this.invite_accept_key(keys, cx) {
+                    cx.stop_propagation();
+                    return;
+                }
+                if this.monetization_modal_key(keys, cx) {
+                    cx.stop_propagation();
+                    return;
+                }
+                if this.command_permissions_key(keys, cx) {
                     cx.stop_propagation();
                     return;
                 }
@@ -12503,6 +12526,8 @@ impl Render for Root {
             .children(role_verify_layer)
             .children(safety_tools_layer)
             .children(invite_accept_layer)
+            .children(monetization_layer)
+            .children(command_permissions_layer)
             .children(self.modify_attachment_modal(cx))
             .children(self.report_issue_modal(cx))
             .children(self.game_profile_layer(cx))

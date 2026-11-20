@@ -1758,3 +1758,111 @@ fn grey(level: u8) -> gpui::Rgba {
         a: 1.,
     }
 }
+
+/// Orbs redemption gate state for Social Layer Storefront PDP (module 112423 `ei`, `eG`, `eq`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[allow(dead_code)]
+pub(crate) enum OrbsGate {
+    Hidden,
+    CanCheckout,
+    NotEnoughOrbs,
+    NeedsNitro,
+}
+
+/// Formats the primary Orbs CTA label for module 112423 (`ei`: "Earn More Orbs" / "Redeem for {orbPrice}").
+#[allow(dead_code)]
+pub(crate) fn pdp_orbs_cta(gate: OrbsGate, orb_price: Option<u64>) -> Option<String> {
+    let price = orb_price?;
+    match gate {
+        OrbsGate::Hidden => None,
+        OrbsGate::NotEnoughOrbs => Some(dc_intl::t("H57f41").to_owned()),
+        OrbsGate::CanCheckout | OrbsGate::NeedsNitro => {
+            let formatted: String = dc_intl::format_runs(
+                "lOtBOI",
+                &[
+                    ("orbPrice", (price as i64).into()),
+                    ("orbIconHook", "".into()),
+                ],
+            )
+            .into_iter()
+            .map(|(text, _)| text)
+            .collect();
+            Some(formatted)
+        }
+    }
+}
+
+/// Formats the fiat Buy button label for module 112423 (`eq`: "Buy for {priceString}" or "Buy Now").
+#[allow(dead_code)]
+pub(crate) fn pdp_buy_label(price: Option<&str>) -> String {
+    match price {
+        Some(p) if !p.is_empty() => dc_intl::t!("YkXGyY", priceString = p),
+        _ => dc_intl::t("boqtTA").to_owned(),
+    }
+}
+
+/// Storefront PDP static labels (module 112423 `el`, `eL`, `eq`, `e$`).
+#[allow(dead_code)]
+pub(crate) fn pdp_labels(
+    muted: bool,
+) -> (
+    &'static str,
+    &'static str,
+    &'static str,
+    &'static str,
+    &'static str,
+    &'static str,
+) {
+    (
+        dc_intl::t("U7DAV9"), // Included in bundle
+        dc_intl::t("pj0XBN"), // Get Nitro
+        dc_intl::t("QAZA5f"), // Gift Item
+        dc_intl::t("+v/1Dk"), // Go to Shop
+        dc_intl::t("Ej3B3Y"), // Share Link
+        if muted {
+            dc_intl::t("YqAjXy") // Unmute
+        } else {
+            dc_intl::t("w4m945") // Mute
+        },
+    )
+}
+
+#[cfg(test)]
+mod storefront_pdp_tests {
+    use super::*;
+
+    #[test]
+    fn all_112423_shop_orbs_and_pdp_strings_resolve() {
+        for key in [
+            "U7DAV9", "H57f41", "lOtBOI", "pj0XBN", "YkXGyY", "boqtTA", "QAZA5f", "35vxnc",
+            "IqlPbQ", "RWouSQ", "+v/1Dk", "Ej3B3Y", "YqAjXy", "w4m945", "cpT0Cq",
+        ] {
+            assert!(
+                dc_intl::has_key(key),
+                "missing en-US key {key} in shop/modal 112423"
+            );
+        }
+        assert_eq!(
+            pdp_orbs_cta(OrbsGate::NotEnoughOrbs, Some(1500)).as_deref(),
+            Some("Earn More Orbs")
+        );
+        assert!(
+            pdp_orbs_cta(OrbsGate::CanCheckout, Some(1500))
+                .unwrap()
+                .contains("1,500")
+                || pdp_orbs_cta(OrbsGate::CanCheckout, Some(1500))
+                    .unwrap()
+                    .contains("1500")
+        );
+        assert_eq!(pdp_orbs_cta(OrbsGate::Hidden, Some(1500)), None);
+        assert_eq!(pdp_buy_label(Some("$4.99")), "Buy for $4.99");
+        assert_eq!(pdp_buy_label(None), "Buy Now");
+        let (bundle, nitro, gift, shop, share, mute) = pdp_labels(true);
+        assert_eq!(bundle, "Included in bundle");
+        assert_eq!(nitro, "Get Nitro");
+        assert_eq!(gift, "Gift Item");
+        assert_eq!(shop, "Go to Shop");
+        assert_eq!(share, "Share Link");
+        assert_eq!(mute, "Unmute");
+    }
+}

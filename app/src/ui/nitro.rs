@@ -1793,6 +1793,202 @@ impl Root {
     }
 }
 
+/// Full Nitro perk card catalog and eligibility selector (`useBentoBoxes`, module 221168).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[allow(dead_code)]
+pub(crate) enum BentoKind {
+    ServerProfiles,
+    ReferralProgram,
+    CustomThemes,
+    DisplayNameStyles,
+    PremiumGroup,
+    ShowYourStyle,
+    YourSpace,
+    Emojis,
+    NoLimits,
+    ThreePPromotions,
+    OrbRewards,
+    OrbMultiplier,
+    CombinedOrbs,
+    YouTube,
+    XboxPartnerPass,
+}
+
+/// Eligibility flags read by module 221168 `ew` to order the What's New bento boxes.
+#[derive(Clone, Copy, Debug, Default)]
+#[allow(dead_code)]
+pub(crate) struct BentoEligibility {
+    pub bonus_orbs: bool,
+    pub bonus_orb_multiplier: u32,
+    pub youtube_eligible: bool,
+    pub xbox_eligible: bool,
+    pub three_p_eligible: bool,
+    pub premium_group_eligible: bool,
+    pub nitro_rewards_v2: bool,
+}
+
+/// Resolved perk card copy for any `BentoKind` (module 221168 `eL`).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct BentoCardCopy {
+    pub title: String,
+    pub description: String,
+    pub cta: Option<String>,
+    pub badge: Option<String>,
+}
+
+/// Builds the localized copy of a Nitro perk card (`eL` of module 221168).
+#[allow(dead_code)]
+pub(crate) fn bento_card_copy(kind: BentoKind, e: BentoEligibility) -> BentoCardCopy {
+    let mult = e.bonus_orb_multiplier.max(2) as i64;
+    match kind {
+        BentoKind::ServerProfiles => BentoCardCopy {
+            title: dc_intl::t("I9TYMg").to_owned(),
+            description: dc_intl::t("HMSHeH").to_owned(),
+            cta: Some(dc_intl::t("jVcuVY").to_owned()),
+            badge: None,
+        },
+        BentoKind::ReferralProgram => BentoCardCopy {
+            title: dc_intl::t("tPY4o9").to_owned(),
+            description: dc_intl::format(
+                "jRPQUH",
+                &[(
+                    "learnMoreLink",
+                    "https://support.discord.com/hc/en-us/articles/18570422416919".into(),
+                )],
+            ),
+            cta: Some(dc_intl::t("hvVgAZ").to_owned()),
+            badge: None,
+        },
+        BentoKind::CustomThemes => BentoCardCopy {
+            title: dc_intl::t("Wme3nX").to_owned(),
+            description: dc_intl::t("/aAIqV").to_owned(),
+            cta: Some(dc_intl::t("jVcuVY").to_owned()),
+            badge: None,
+        },
+        BentoKind::DisplayNameStyles => BentoCardCopy {
+            title: dc_intl::t("Ij3Zmv").to_owned(),
+            description: dc_intl::t("UsOUxY").to_owned(),
+            cta: Some(dc_intl::t("jVcuVY").to_owned()),
+            badge: None,
+        },
+        BentoKind::PremiumGroup => BentoCardCopy {
+            title: "Nitro Squad".to_owned(),
+            description: dc_intl::t("tPY4o9").to_owned(),
+            cta: Some(dc_intl::t("hvVgAZ").to_owned()),
+            badge: Some(dc_intl::t("oW0eUd").to_uppercase()),
+        },
+        BentoKind::ShowYourStyle => BentoCardCopy {
+            title: dc_intl::t("Ij3Zmv").to_owned(),
+            description: dc_intl::t("UsOUxY").to_owned(),
+            cta: Some(dc_intl::t("jVcuVY").to_owned()),
+            badge: None,
+        },
+        BentoKind::YourSpace => BentoCardCopy {
+            title: dc_intl::t("Wme3nX").to_owned(),
+            description: dc_intl::t("/aAIqV").to_owned(),
+            cta: Some(dc_intl::t("jVcuVY").to_owned()),
+            badge: None,
+        },
+        BentoKind::Emojis => BentoCardCopy {
+            title: dc_intl::t("zY5PPb").to_owned(),
+            description: dc_intl::t("R5Xag2").to_owned(),
+            cta: None,
+            badge: None,
+        },
+        BentoKind::NoLimits => BentoCardCopy {
+            title: dc_intl::t("6b3ydG").to_owned(),
+            description: dc_intl::t("Y+IJyg").to_owned(),
+            cta: None,
+            badge: None,
+        },
+        BentoKind::ThreePPromotions => BentoCardCopy {
+            title: if e.nitro_rewards_v2 {
+                dc_intl::t("E4U4SS").to_owned()
+            } else {
+                dc_intl::t("NG1e6l").to_owned()
+            },
+            description: if e.nitro_rewards_v2 {
+                dc_intl::t("B4uSy/").to_owned()
+            } else {
+                dc_intl::format(
+                    "LOYRxB",
+                    &[(
+                        "helpCenterLink",
+                        "https://support.discord.com/hc/en-us/articles/4409494125719".into(),
+                    )],
+                )
+            },
+            cta: Some(if e.nitro_rewards_v2 {
+                dc_intl::t("RzWDqY").to_owned()
+            } else {
+                dc_intl::t("7ioAjs").to_owned()
+            }),
+            badge: (!e.nitro_rewards_v2).then(|| dc_intl::t("y2b7CA").to_uppercase()),
+        },
+        BentoKind::OrbRewards => BentoCardCopy {
+            title: dc_intl::t("Tzhw6e").to_owned(),
+            description: dc_intl::format("djzJx6", &[("bonusOrbMultiplier", mult.into())]),
+            cta: Some(dc_intl::t("hvVgAZ").to_owned()),
+            badge: (!e.nitro_rewards_v2).then(|| dc_intl::t("oW0eUd").to_uppercase()),
+        },
+        BentoKind::OrbMultiplier => BentoCardCopy {
+            title: dc_intl::t("Csf5Ol").to_owned(),
+            description: dc_intl::format("G5k+lZ", &[("bonusOrbMultiplier", mult.into())]),
+            cta: Some(dc_intl::t("jVcuVY").to_owned()),
+            badge: None,
+        },
+        BentoKind::CombinedOrbs => BentoCardCopy {
+            title: dc_intl::t("Tzhw6e").to_owned(),
+            description: dc_intl::format("djzJx6", &[("bonusOrbMultiplier", mult.into())]),
+            cta: Some(dc_intl::t("RzWDqY").to_owned()),
+            badge: (!e.nitro_rewards_v2).then(|| dc_intl::t("oW0eUd").to_uppercase()),
+        },
+        BentoKind::YouTube => BentoCardCopy {
+            title: "Level up your YouTube with Premium".to_owned(),
+            description: dc_intl::t("B4uSy/").to_owned(),
+            cta: Some(dc_intl::t("RzWDqY").to_owned()),
+            badge: None,
+        },
+        BentoKind::XboxPartnerPass => BentoCardCopy {
+            title: "Xbox Game Pass".to_owned(),
+            description: dc_intl::t("B4uSy/").to_owned(),
+            cta: Some(dc_intl::t("2pG5Ga").to_owned()),
+            badge: None,
+        },
+    }
+}
+
+/// Orders eligible What's New bento cards exactly as module 221168 `ew` does.
+#[allow(dead_code)]
+pub(crate) fn select_whats_new_bentos(e: BentoEligibility) -> Vec<BentoKind> {
+    let mut out = Vec::new();
+    if e.youtube_eligible {
+        out.push(BentoKind::YouTube);
+    }
+    if e.xbox_eligible && e.nitro_rewards_v2 {
+        out.push(BentoKind::XboxPartnerPass);
+    }
+    if e.three_p_eligible {
+        out.push(BentoKind::ThreePPromotions);
+    }
+    if e.bonus_orbs {
+        out.push(BentoKind::CombinedOrbs);
+    }
+    if e.premium_group_eligible {
+        out.push(BentoKind::PremiumGroup);
+    }
+    if !e.bonus_orbs {
+        out.push(BentoKind::OrbRewards);
+    }
+    out.extend_from_slice(&[
+        BentoKind::DisplayNameStyles,
+        BentoKind::CustomThemes,
+        BentoKind::ServerProfiles,
+        BentoKind::ReferralProgram,
+    ]);
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1819,5 +2015,35 @@ mod tests {
             .map(|(_, rows)| 66 + 69 * rows.len())
             .collect();
         assert_eq!(heights, [342, 411, 825]);
+    }
+
+    #[test]
+    fn all_221168_nitro_bento_catalog_strings_and_selector_work() {
+        for key in [
+            "I9TYMg", "HMSHeH", "jVcuVY", "tPY4o9", "jRPQUH", "hvVgAZ", "oW0eUd", "Ij3Zmv",
+            "UsOUxY", "Wme3nX", "/aAIqV", "zY5PPb", "R5Xag2", "6b3ydG", "Y+IJyg", "E4U4SS",
+            "B4uSy/", "RzWDqY", "NG1e6l", "7ioAjs", "LOYRxB", "y2b7CA", "Csf5Ol", "G5k+lZ",
+            "Tzhw6e", "djzJx6", "2pG5Ga",
+        ] {
+            assert!(
+                dc_intl::has_key(key),
+                "missing en-US key {key} in nitro 221168"
+            );
+        }
+        let e = BentoEligibility {
+            bonus_orbs: true,
+            bonus_orb_multiplier: 2,
+            youtube_eligible: true,
+            three_p_eligible: true,
+            ..Default::default()
+        };
+        let picked = select_whats_new_bentos(e);
+        assert_eq!(picked[0], BentoKind::YouTube);
+        assert!(picked.contains(&BentoKind::CombinedOrbs));
+        assert!(picked.contains(&BentoKind::ServerProfiles));
+        let orbs = bento_card_copy(BentoKind::OrbMultiplier, e);
+        assert!(orbs.description.contains("2x"));
+        let sp = bento_card_copy(BentoKind::ServerProfiles, e);
+        assert_eq!(sp.title, "Elevate your per-server profile");
     }
 }
