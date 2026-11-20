@@ -211,6 +211,7 @@ mod image_crop;
 pub(crate) mod image_fit;
 pub(crate) mod image_retry;
 mod inline_video;
+mod invite_accept;
 mod jump;
 mod launcher_home;
 mod media_image;
@@ -282,6 +283,7 @@ mod rtc_channel;
 mod running_game_panel;
 mod running_games;
 mod safety_notice;
+mod safety_tools;
 mod saved;
 mod screening;
 mod search;
@@ -629,6 +631,10 @@ pub struct Root {
     forum_demo: Option<forum_demo::ForumDemo>,
     /// Role Connection Verification modal (module 488358, `role_connection_verify`).
     role_verify: Option<role_connection_verify::RoleConnectionVerify>,
+    /// DM Safety Tools modal (module 556127, `safety_tools`).
+    safety_tools: Option<safety_tools::SafetyToolsModal>,
+    /// Invite Accept preview + Server Settings expander modal (module 700156, `invite_accept`).
+    invite_accept: Option<invite_accept::InviteAcceptModal>,
     /// Soundboard Echo store & hover details state (module 120246, `soundboard_echo`).
     soundboard_echo: soundboard_echo::SoundboardEchoState,
     badge_modal: Option<badge_modal::BadgeModal>,
@@ -1164,6 +1170,8 @@ impl Root {
             emoji_studio_generation: 0,
             forum_demo: None,
             role_verify: None,
+            safety_tools: None,
+            invite_accept: None,
             soundboard_echo: Default::default(),
             badge_modal: None,
             app_storefront: None,
@@ -2534,6 +2542,16 @@ impl Root {
                 {
                     self.fetched.insert(key.clone(), body.clone());
                     self.role_connection_fetched(&key, cx);
+                    return;
+                }
+                if key.starts_with(safety_tools::FALSE_POSITIVE_PREFIX) {
+                    self.fetched.insert(key.clone(), body.clone());
+                    self.safety_tools_fetched(&key, cx);
+                    return;
+                }
+                if key.starts_with(invite_accept::PREVIEW_KEY_PREFIX) {
+                    self.fetched.insert(key.clone(), body.clone());
+                    self.invite_accept_preview_fetched(&key, cx);
                     return;
                 }
                 if key.starts_with(server_settings_pages::INVITES_PREFIX)
@@ -11187,6 +11205,8 @@ impl Render for Root {
         let emoji_studio_layer = self.emoji_studio_layer(window, cx);
         let forum_demo_layer = self.forum_demo_layer(window, cx);
         let role_verify_layer = self.role_verify_layer(window, cx);
+        let safety_tools_layer = self.safety_tools_layer(cx);
+        let invite_accept_layer = self.invite_accept_layer(window, cx);
         let soundboard_echo_layer = self.soundboard_echo_layer(cx);
         let locale_error = self.locale_error_layer();
         let app_storefront = self.app_storefront_layer(window, cx);
@@ -11265,6 +11285,14 @@ impl Render for Root {
                     return;
                 }
                 if this.role_verify_key(keys, cx) {
+                    cx.stop_propagation();
+                    return;
+                }
+                if this.safety_tools_key(keys, cx) {
+                    cx.stop_propagation();
+                    return;
+                }
+                if this.invite_accept_key(keys, cx) {
                     cx.stop_propagation();
                     return;
                 }
@@ -12473,6 +12501,8 @@ impl Render for Root {
             .children(soundboard_echo_layer)
             .children(forum_demo_layer)
             .children(role_verify_layer)
+            .children(safety_tools_layer)
+            .children(invite_accept_layer)
             .children(self.modify_attachment_modal(cx))
             .children(self.report_issue_modal(cx))
             .children(self.game_profile_layer(cx))

@@ -23,11 +23,17 @@ const TOO_MANY_INVITES: u64 = 30016;
 /// `INVITES_HELP` (module 652215).
 const INVITES_HELP: &str = "https://support.discord.com/hc/en-us/articles/208866998-Invites-101";
 
+/// `IS_GUEST_INVITE` flag bit (module 821418 / 137811).
+pub(super) const IS_GUEST_INVITE: u64 = 1;
+
 pub(crate) struct Invite {
     pub channel: Id,
     pub search: Entity<Editor>,
     _events: Subscription,
     pub query: String,
+    pub role_search: Entity<Editor>,
+    _role_events: Subscription,
+    pub role_query: String,
     pub code: Option<String>,
     /// People this dialog already sent the link to.
     pub sent: HashSet<Id>,
@@ -35,14 +41,18 @@ pub(crate) struct Invite {
     pub error: Option<InviteError>,
     /// `currentPage` of module 137811's modal state.
     pub page: InvitePage,
-    /// `maxAge`, `maxUses`, `temporary` and `roleIds` of the modal state: what the link has, and on the settings page
-    /// what Generate a New Link asks for.
+    /// `maxAge`, `maxUses`, `temporary`, `flags` and `roleIds` of the modal state: what the link has, and on the
+    /// settings page what Generate a New Link asks for.
     pub max_age: u64,
     pub max_uses: u64,
     pub temporary: bool,
+    pub flags: u64,
     pub roles: Vec<Id>,
     /// The settings page's open select.
     pub open_select: Option<InviteSelect>,
+    /// Force the no-suggestions layout (`137811` `HFbByJ`/`ueBhA9` + `QKJru/` checkbox + `Yx4IiC` gear) when true.
+    #[cfg(feature = "capture")]
+    pub force_no_suggestions: bool,
 }
 
 /// `eZ.QR` of module 172799.
@@ -113,13 +123,24 @@ pub(super) fn expiry_line(max_age: u64, max_uses: u64) -> String {
 
 /// The body Generate a New Link posts (`eQ` of module 137811 through `createInvite` of module 574332, which drops an
 /// empty `role_ids`; `target_user_id` and `target_application_id` are undefined for a server invite and never sent).
+#[cfg(test)]
 pub(super) fn generate_body(max_age: u64, max_uses: u64, temporary: bool, roles: &[Id]) -> Value {
+    generate_body_with_flags(max_age, max_uses, temporary, 0, roles)
+}
+
+pub(super) fn generate_body_with_flags(
+    max_age: u64,
+    max_uses: u64,
+    temporary: bool,
+    flags: u64,
+    roles: &[Id],
+) -> Value {
     let mut body = json!({
         "max_age": max_age,
         "max_uses": max_uses,
         "target_type": null,
         "temporary": temporary,
-        "flags": 0,
+        "flags": flags,
     });
     if !roles.is_empty() {
         body["role_ids"] = roles.iter().map(|role| role.to_string()).collect();
@@ -197,7 +218,7 @@ impl Root {
         };
         let search = cx.new(|cx| {
             let mut editor = Editor::new(editor_style(), cx);
-            editor.set_placeholder("Search for friends".to_owned());
+            editor.set_placeholder(dc_intl::t("CmSHYx").to_owned());
             editor
         });
         let events = cx.subscribe(&search, |this, editor, event: &EditorEvent, cx| {
@@ -208,6 +229,23 @@ impl Root {
                         editor.update(cx, |editor, _| editor.set_text(text))
                     }
                     EditorEvent::Cancel => this.invite = None,
+                }
+            }
+            cx.notify();
+        });
+        let role_search = cx.new(|cx| {
+            let mut editor = Editor::new(editor_style(), cx);
+            editor.set_placeholder(dc_intl::t("/djIh7").to_owned());
+            editor
+        });
+        let role_events = cx.subscribe(&role_search, |this, editor, event: &EditorEvent, cx| {
+            if let Some(invite) = this.invite.as_mut() {
+                match event {
+                    EditorEvent::Edited => invite.role_query = editor.read(cx).text().to_owned(),
+                    EditorEvent::Submit(text) => {
+                        editor.update(cx, |editor, _| editor.set_text(text))
+                    }
+                    EditorEvent::Cancel => invite.open_select = None,
                 }
             }
             cx.notify();
@@ -231,6 +269,9 @@ impl Root {
             search,
             _events: events,
             query: String::new(),
+            role_search,
+            _role_events: role_events,
+            role_query: String::new(),
             code: previous,
             sent: HashSet::new(),
             error: None,
@@ -238,8 +279,11 @@ impl Root {
             max_age: MAX_AGE,
             max_uses: 0,
             temporary: false,
+            flags: 0,
             roles: Vec::new(),
             open_select: None,
+            #[cfg(feature = "capture")]
+            force_no_suggestions: false,
         });
         cx.notify();
     }
@@ -265,7 +309,13 @@ impl Root {
             return;
         }
         invite.error = None;
-        let body = generate_body(invite.max_age, invite.max_uses, temporary, &invite.roles);
+        let body = generate_body_with_flags(
+            invite.max_age,
+            invite.max_uses,
+            temporary,
+            invite.flags,
+            &invite.roles,
+        );
         let _ = self.requests.send(Request::Rest {
             key: Some(CREATE_KEY.to_owned()),
             method: reqwest::Method::POST,
@@ -818,8 +868,59 @@ impl Root {
                     }),
             );
         }
-        // GAP: the roles select does not filter as one types (the combobox query of module 873200); Invite a Guest
-        // (2023-02_guest_voice_invites, off by default) is not drawn.
+        let is_voice_channel = self.invite_guild().is_some_and(|guild| {
+            guild
+                .channels
+                .iter()
+                .find(|ch| ch.id == invite.channel)
+                .is_some_and(|ch| {
+                    matches!(
+                        ch.kind,
+                        dc_state::ChannelKind::Voice | dc_state::ChannelKind::Other(13)
+                    )
+                })
+        });
+        if is_voice_channel {
+            let guest_on = (invite.flags & IS_GUEST_INVITE) != 0;
+            body = body.child(
+                div()
+                    .id("invite-settings-guest")
+                    .cursor_pointer()
+                    .flex()
+                    .items_start()
+                    .gap(px(24.))
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        if let Some(invite) = this.invite.as_mut() {
+                            invite.flags ^= IS_GUEST_INVITE;
+                        }
+                        cx.notify();
+                    }))
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w(px(0.))
+                            .flex()
+                            .flex_col()
+                            .gap(px(4.))
+                            .child(
+                                div()
+                                    .text_size(px(16.))
+                                    .line_height(px(20.))
+                                    .font_weight(FontWeight(500.))
+                                    .text_color(color("--text-strong"))
+                                    .child(dc_intl::t("siexRS")),
+                            )
+                            .child(
+                                div()
+                                    .text_size(px(14.))
+                                    .line_height(px(18.))
+                                    .text_color(color("--text-subtle"))
+                                    .child(dc_intl::t("/FeTK6")),
+                            ),
+                    )
+                    .child(super::create_channel::switch(guest_on)),
+            );
+        }
         let back = |this: &mut Root| {
             if let Some(invite) = this.invite.as_mut() {
                 invite.page = InvitePage::Main;
@@ -922,55 +1023,94 @@ impl Root {
                     })
                     .collect()
             }
-            InviteSelect::Roles => self
-                .invite_roles()
-                .into_iter()
-                .map(|role| {
-                    let chosen = invite.roles.contains(&role);
+            InviteSelect::Roles => {
+                let role_q = invite.role_query.trim().to_lowercase();
+                let filtered: Vec<Id> = self
+                    .invite_roles()
+                    .into_iter()
+                    .filter(|&role| {
+                        role_q.is_empty()
+                            || self.invite_role_name(role).to_lowercase().contains(&role_q)
+                    })
+                    .collect();
+                let mut list: Vec<AnyElement> = vec![
                     div()
-                        .id(SharedString::from(format!("{key}-{role}")))
                         .flex_none()
-                        .h(px(40.))
-                        .rounded(px(4.))
-                        .cursor_pointer()
-                        .hover(|style| style.bg(color("--background-mod-normal")))
+                        .h(px(36.))
+                        .px(px(8.))
+                        .mb(px(4.))
+                        .rounded(px(6.))
+                        .border_1()
+                        .border_color(color("--input-border-default"))
+                        .bg(color("--input-background-default"))
                         .flex()
                         .items_center()
-                        .child(
+                        .child(invite.role_search.clone())
+                        .into_any_element(),
+                ];
+                if filtered.is_empty() {
+                    list.push(
+                        div()
+                            .h(px(36.))
+                            .px(px(8.))
+                            .flex()
+                            .items_center()
+                            .text_size(px(14.))
+                            .text_color(color("--text-muted"))
+                            .child(dc_intl::t("ojoWgX"))
+                            .into_any_element(),
+                    );
+                } else {
+                    for role in filtered {
+                        let chosen = invite.roles.contains(&role);
+                        list.push(
                             div()
-                                .w(px(32.))
-                                .mr(px(4.))
+                                .id(SharedString::from(format!("{key}-{role}")))
+                                .flex_none()
+                                .h(px(40.))
+                                .rounded(px(4.))
+                                .cursor_pointer()
+                                .hover(|style| style.bg(color("--background-mod-normal")))
                                 .flex()
-                                .justify_center()
-                                .child(self.invite_role_dot(role)),
-                        )
-                        .child(
-                            div()
-                                .flex_1()
-                                .text_size(px(16.))
-                                .line_height(px(20.))
-                                .text_color(color("--text-strong"))
-                                .child(self.invite_role_name(role)),
-                        )
-                        .child(
-                            div()
-                                .px(px(4.))
-                                .child(super::server_onboarding::checkbox(chosen, false)),
-                        )
-                        // `closeOnSelect: false`: the list stays open.
-                        .on_click(cx.listener(move |this, _, _, cx| {
-                            if let Some(invite) = this.invite.as_mut() {
-                                if invite.roles.contains(&role) {
-                                    invite.roles.retain(|known| *known != role);
-                                } else {
-                                    invite.roles.push(role);
-                                }
-                            }
-                            cx.notify();
-                        }))
-                        .into_any_element()
-                })
-                .collect(),
+                                .items_center()
+                                .child(
+                                    div()
+                                        .w(px(32.))
+                                        .mr(px(4.))
+                                        .flex()
+                                        .justify_center()
+                                        .child(self.invite_role_dot(role)),
+                                )
+                                .child(
+                                    div()
+                                        .flex_1()
+                                        .text_size(px(16.))
+                                        .line_height(px(20.))
+                                        .text_color(color("--text-strong"))
+                                        .child(self.invite_role_name(role)),
+                                )
+                                .child(
+                                    div()
+                                        .px(px(4.))
+                                        .child(super::server_onboarding::checkbox(chosen, false)),
+                                )
+                                // `closeOnSelect: false`: the list stays open.
+                                .on_click(cx.listener(move |this, _, _, cx| {
+                                    if let Some(invite) = this.invite.as_mut() {
+                                        if invite.roles.contains(&role) {
+                                            invite.roles.retain(|known| *known != role);
+                                        } else {
+                                            invite.roles.push(role);
+                                        }
+                                    }
+                                    cx.notify();
+                                }))
+                                .into_any_element(),
+                        );
+                    }
+                }
+                list
+            }
         };
         let height = (rows.len().min(5) as f32) * 40. + 8.;
         Some(
@@ -1052,146 +1192,233 @@ impl Root {
             .unwrap_or_default();
         let copy_link = link.clone();
         let shown_link = link;
-        let body = div()
+        #[cfg(feature = "capture")]
+        let force_empty = invite.force_no_suggestions;
+        #[cfg(not(feature = "capture"))]
+        let force_empty = false;
+        let has_suggestions = !force_empty && (!people.is_empty() || !query.is_empty());
+
+        let copy_bar = div()
+            .h(px(40.))
+            .rounded(px(8.))
+            .border_1()
+            .border_color(color("--input-border-default"))
+            .bg(color("--input-background-default"))
             .flex()
-            .flex_col()
+            .items_center()
             .child(
                 div()
-                    .h(px(40.))
-                    .pl(px(4.))
-                    .rounded(px(8.))
-                    .border_1()
-                    .border_color(color("--input-border-default"))
-                    .bg(color("--input-background-default"))
+                    .flex_1()
+                    .pl(px(10.))
+                    .line_height(px(20.))
+                    .text_color(color("--text-default"))
+                    .child(if self.streamer_hides_invites() && !shown_link.is_empty() {
+                        crate::ui::settings::HIDDEN_INVITE_LINK.to_owned()
+                    } else {
+                        shown_link
+                    }),
+            )
+            .child(
+                div()
+                    .id("invite-copy")
+                    .mr(px(4.))
+                    .h(px(30.))
+                    .px(px(20.))
+                    .rounded(px(4.))
+                    .bg(color("--background-brand"))
+                    .cursor_pointer()
                     .flex()
                     .items_center()
-                    .gap(px(4.))
-                    .child(
-                        div()
-                            .size(px(30.))
-                            .flex()
-                            .items_center()
-                            .justify_center()
-                            .child(icon("gif_search", 16., "--icon-default")),
-                    )
-                    .child(
-                        div()
-                            .flex_1()
-                            .min_w(px(0.))
-                            .pr(px(12.))
-                            .child(invite.search.clone()),
-                    ),
-            )
-            .child(
-                div()
-                    .id("invite-list")
-                    .h(px(325.))
-                    .mx(px(-24.))
-                    .pl(px(24.))
-                    .pr(px(8.))
-                    .py(px(12.))
-                    .overflow_y_scroll()
-                    .children(rows),
-            )
-            .child(
-                div()
-                    .mx(px(-24.))
-                    .h(px(9.))
-                    .border_t_1()
-                    .border_color(color("--border-subtle")),
-            )
-            .child(
-                div()
-                    .pt(px(16.))
-                    .child(
-                        div()
-                            .mb(px(8.))
-                            .line_height(px(20.))
-                            .font_weight(FontWeight(500.))
-                            .text_color(color("--text-strong"))
-                            .child("Or, send a server invite link to a friend"),
-                    )
-                    .child(
-                        div()
-                            .h(px(40.))
-                            .rounded(px(8.))
-                            .border_1()
-                            .border_color(color("--input-border-default"))
-                            .bg(color("--input-background-default"))
-                            .flex()
-                            .items_center()
-                            .child(
-                                div()
-                                    .flex_1()
-                                    .pl(px(10.))
-                                    .line_height(px(20.))
-                                    .text_color(color("--text-default"))
-                                    .child(
-                                        if self.streamer_hides_invites() && !shown_link.is_empty() {
-                                            crate::ui::settings::HIDDEN_INVITE_LINK.to_owned()
-                                        } else {
-                                            shown_link
-                                        },
-                                    ),
-                            )
-                            .child(
-                                div()
-                                    .id("invite-copy")
-                                    .mr(px(4.))
-                                    .h(px(30.))
-                                    .px(px(20.))
-                                    .rounded(px(4.))
-                                    .bg(color("--background-brand"))
-                                    .cursor_pointer()
-                                    .flex()
-                                    .items_center()
-                                    .text_size(px(14.))
-                                    .font_weight(FontWeight(500.))
-                                    .text_color(color("--white"))
-                                    .on_click(cx.listener(move |this, _, _, cx| {
-                                        if !copy_link.is_empty() {
-                                            cx.write_to_clipboard(ClipboardItem::new_string(
-                                                copy_link.clone(),
-                                            ));
-                                            this.show_app_toast("Copied!", cx);
-                                        }
-                                    }))
-                                    .child("Copy"),
-                            ),
-                    )
-                    .child(
-                        div()
-                            .mt(px(16.))
-                            .flex()
-                            .text_size(px(12.))
-                            .line_height(px(16.))
-                            .child(div().text_color(color("--text-muted")).child(format!(
-                                "{}\u{a0}",
-                                expiry_line(invite.max_age, invite.max_uses)
-                            )))
-                            .child(
-                                div()
-                                    .id("invite-edit-link")
-                                    .cursor_pointer()
-                                    .hover(|style| style.underline())
-                                    .text_color(color("--text-link"))
-                                    .on_click(cx.listener(|this, _, _, cx| {
-                                        if let Some(invite) = this.invite.as_mut() {
-                                            invite.page = InvitePage::Settings;
-                                        }
-                                        cx.notify();
-                                    }))
-                                    .child(dc_intl::t("VNe8P/")),
-                            ),
-                    )
-                    .children(
-                        invite
-                            .error
-                            .clone()
-                            .map(|error| self.invite_error_line(error, cx)),
-                    ),
-            )
-            .into_any_element();
+                    .text_size(px(14.))
+                    .font_weight(FontWeight(500.))
+                    .text_color(color("--white"))
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        if !copy_link.is_empty() {
+                            cx.write_to_clipboard(ClipboardItem::new_string(copy_link.clone()));
+                            this.show_app_toast("Copied!", cx);
+                        }
+                    }))
+                    .child("Copy"),
+            );
+
+        let body = if !has_suggestions {
+            // No-suggestions variant of module 137811 (`HFbByJ`/`ueBhA9`, `QKJru/` never-expire checkbox, `Yx4IiC` gear).
+            let is_owner = self
+                .current_guild()
+                .zip(self.stores.current_user.as_ref())
+                .is_some_and(|(g, me)| g.owner_id == Some(me.id));
+            let intro = if is_owner {
+                dc_intl::t("HFbByJ")
+            } else {
+                dc_intl::t("ueBhA9")
+            };
+            let never_expires = invite.max_age == 0;
+            div()
+                .flex()
+                .flex_col()
+                .child(
+                    div()
+                        .mb(px(12.))
+                        .text_size(px(14.))
+                        .line_height(px(18.))
+                        .text_color(color("--text-subtle"))
+                        .child(intro),
+                )
+                .child(copy_bar)
+                .child(
+                    div()
+                        .mt(px(14.))
+                        .flex()
+                        .items_center()
+                        .justify_between()
+                        .child(
+                            div()
+                                .id("invite-never-expire")
+                                .cursor_pointer()
+                                .flex()
+                                .items_center()
+                                .gap(px(8.))
+                                .on_click(cx.listener(|this, _, _, cx| {
+                                    if let Some(invite) = this.invite.as_mut() {
+                                        invite.max_age =
+                                            if invite.max_age == 0 { MAX_AGE } else { 0 };
+                                    }
+                                    this.generate_invite(cx);
+                                }))
+                                .child(super::server_onboarding::checkbox(never_expires, false))
+                                .child(
+                                    div()
+                                        .text_size(px(14.))
+                                        .line_height(px(18.))
+                                        .text_color(color("--text-default"))
+                                        .child(dc_intl::t("QKJru/")),
+                                ),
+                        )
+                        .child(
+                            div()
+                                .id("invite-settings-gear")
+                                .size(px(32.))
+                                .rounded(px(6.))
+                                .cursor_pointer()
+                                .hover(|s| s.bg(color("--background-mod-subtle")))
+                                .flex()
+                                .items_center()
+                                .justify_center()
+                                .child(icon(
+                                    "guild_menu_settings",
+                                    18.,
+                                    "--interactive-text-default",
+                                ))
+                                .on_click(cx.listener(|this, _, _, cx| {
+                                    if let Some(invite) = this.invite.as_mut() {
+                                        invite.page = InvitePage::Settings;
+                                    }
+                                    cx.notify();
+                                })),
+                        ),
+                )
+                .children(
+                    invite
+                        .error
+                        .clone()
+                        .map(|error| self.invite_error_line(error, cx)),
+                )
+                .into_any_element()
+        } else {
+            div()
+                .flex()
+                .flex_col()
+                .child(
+                    div()
+                        .h(px(40.))
+                        .pl(px(4.))
+                        .rounded(px(8.))
+                        .border_1()
+                        .border_color(color("--input-border-default"))
+                        .bg(color("--input-background-default"))
+                        .flex()
+                        .items_center()
+                        .gap(px(4.))
+                        .child(
+                            div()
+                                .size(px(30.))
+                                .flex()
+                                .items_center()
+                                .justify_center()
+                                .child(icon("gif_search", 16., "--icon-default")),
+                        )
+                        .child(
+                            div()
+                                .flex_1()
+                                .min_w(px(0.))
+                                .pr(px(12.))
+                                .child(invite.search.clone()),
+                        ),
+                )
+                .child(
+                    div()
+                        .id("invite-list")
+                        .h(px(325.))
+                        .mx(px(-24.))
+                        .pl(px(24.))
+                        .pr(px(8.))
+                        .py(px(12.))
+                        .overflow_y_scroll()
+                        .children(rows),
+                )
+                .child(
+                    div()
+                        .mx(px(-24.))
+                        .h(px(9.))
+                        .border_t_1()
+                        .border_color(color("--border-subtle")),
+                )
+                .child(
+                    div()
+                        .pt(px(16.))
+                        .child(
+                            div()
+                                .mb(px(8.))
+                                .line_height(px(20.))
+                                .font_weight(FontWeight(500.))
+                                .text_color(color("--text-strong"))
+                                .child(dc_intl::t("MLkj7N")),
+                        )
+                        .child(copy_bar)
+                        .child(
+                            div()
+                                .mt(px(16.))
+                                .flex()
+                                .text_size(px(12.))
+                                .line_height(px(16.))
+                                .child(div().text_color(color("--text-muted")).child(format!(
+                                    "{}\u{a0}",
+                                    expiry_line(invite.max_age, invite.max_uses)
+                                )))
+                                .child(
+                                    div()
+                                        .id("invite-edit-link")
+                                        .cursor_pointer()
+                                        .hover(|style| style.underline())
+                                        .text_color(color("--text-link"))
+                                        .on_click(cx.listener(|this, _, _, cx| {
+                                            if let Some(invite) = this.invite.as_mut() {
+                                                invite.page = InvitePage::Settings;
+                                            }
+                                            cx.notify();
+                                        }))
+                                        .child(dc_intl::t("VNe8P/")),
+                                ),
+                        )
+                        .children(
+                            invite
+                                .error
+                                .clone()
+                                .map(|error| self.invite_error_line(error, cx)),
+                        ),
+                )
+                .into_any_element()
+        };
         Some(modal::render(
             modal::Spec {
                 id: "invite-modal",
@@ -1215,6 +1442,20 @@ impl Root {
             },
             cx,
         ))
+    }
+
+    /// Capture helper: `invite-no-suggestions` opens the invite modal in its empty-friends layout (module 137811).
+    #[cfg(feature = "capture")]
+    pub(crate) fn script_invite_no_suggestions(&mut self, cx: &mut Context<Self>) -> String {
+        self.open_invite(cx);
+        if let Some(invite) = self.invite.as_mut() {
+            invite.force_no_suggestions = true;
+            if invite.code.is_none() {
+                invite.code = Some("gravecord".to_owned());
+            }
+        }
+        cx.notify();
+        "invite-no-suggestions: opened".to_owned()
     }
 }
 
@@ -1354,5 +1595,20 @@ mod tests {
                 "Seems like something's gone wrong. Sorry about that.".into()
             ))
         );
+    }
+
+    #[test]
+    fn guest_invite_flags_and_no_suggestions_strings_resolve() {
+        let body = generate_body_with_flags(3600, 5, false, IS_GUEST_INVITE, &[]);
+        assert_eq!(body["flags"], json!(IS_GUEST_INVITE));
+        for key in [
+            "siexRS", "/FeTK6", "HFbByJ", "ueBhA9", "QKJru/", "Yx4IiC", "ojoWgX", "CmSHYx",
+            "MLkj7N",
+        ] {
+            assert!(
+                dc_intl::has_key(key),
+                "missing en-US key {key} in invite 137811"
+            );
+        }
     }
 }
