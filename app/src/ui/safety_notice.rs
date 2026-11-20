@@ -128,17 +128,21 @@ impl Root {
             .iter()
             .enumerate()
             .filter_map(|(index, cta)| {
-                // `sJ`: "See Details" (`QsqdXC`) with a classification, "Learn More" (`8/GdRB`) with a link.
-                let (label, link) = match cta.as_str() {
+                let (label, link, open_tools) = match cta.as_str() {
                     "policy_violation_detail" => {
                         notice.classification_id.as_ref()?;
-                        (dc_intl::t("QsqdXC"), None)
+                        (dc_intl::t("QsqdXC"), None, false)
                     }
-                    "learn_more_link" => {
-                        (dc_intl::t("8/GdRB"), Some(notice.learn_more_link.clone()?))
-                    }
+                    "learn_more_link" => (
+                        dc_intl::t("8/GdRB"),
+                        Some(notice.learn_more_link.clone()?),
+                        false,
+                    ),
+                    "safety_tools" => (dc_intl::t("eXlt01"), None, true),
                     _ => return None,
                 };
+                let channel_id = self.channel.unwrap_or(0);
+                let author_id = message.author.id;
                 // `detailsButton_LQmP0J` (`margin-inline: 8px`, `padding: 8px 0`) on an `Anchor` (`--text-link`,
                 // underlined under the pointer) in the body's 16px with `line-height: 1`.
                 let anchor = div()
@@ -153,15 +157,21 @@ impl Root {
                     .cursor_pointer()
                     .hover(|style| style.underline())
                     .child(label);
-                Some(match link {
-                    Some(url) => anchor
+                Some(match (link, open_tools) {
+                    (Some(url), _) => anchor
                         .on_click(cx.listener(move |this, _, _, cx| {
                             cx.stop_propagation();
                             this.follow_link(&url, &url, cx);
                         }))
                         .into_any_element(),
+                    (None, true) => anchor
+                        .on_click(cx.listener(move |this, _, _, cx| {
+                            cx.stop_propagation();
+                            this.open_safety_tools(channel_id, author_id, cx);
+                        }))
+                        .into_any_element(),
                     // GAP: "See Details" opens the violation's details (module 163002), which is not ported.
-                    None => anchor.into_any_element(),
+                    (None, false) => anchor.into_any_element(),
                 })
             })
             .collect();

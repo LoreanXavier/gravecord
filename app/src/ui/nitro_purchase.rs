@@ -33,6 +33,185 @@ pub(crate) enum Step {
     GiftSelect,
     Checkout,
     Payment,
+    /// Post-purchase confirmation (module 231308 `G`, `B`, `b`; CSS 13792, 896554).
+    Confirm,
+}
+
+/// Plan tier/interval identity used by module 231308's confirmation copy (`B`, `G`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[allow(dead_code)]
+pub(crate) enum ConfirmPlan {
+    BasicMonth,
+    BasicYear,
+    ClassicMonth,
+    ClassicYear,
+    NitroMonth,
+    Nitro3Month,
+    Nitro6Month,
+    NitroYear,
+}
+
+impl ConfirmPlan {
+    fn rank(self) -> usize {
+        match self {
+            Self::BasicMonth => 0,
+            Self::BasicYear => 1,
+            Self::ClassicMonth => 2,
+            Self::ClassicYear => 3,
+            Self::NitroMonth => 4,
+            Self::Nitro3Month => 5,
+            Self::Nitro6Month => 6,
+            Self::NitroYear => 7,
+        }
+    }
+
+    fn tier(self) -> u8 {
+        match self {
+            Self::BasicMonth | Self::BasicYear => 0,
+            Self::ClassicMonth | Self::ClassicYear => 1,
+            Self::NitroMonth | Self::Nitro3Month | Self::Nitro6Month | Self::NitroYear => 2,
+        }
+    }
+
+    fn is_multi_month(self) -> bool {
+        matches!(
+            self,
+            Self::Nitro3Month | Self::Nitro6Month | Self::NitroYear
+        )
+    }
+
+    pub(crate) fn from_sku(plan_sku: u64, yearly: bool) -> Self {
+        match (plan_sku, yearly) {
+            (sku::TIER_0, false) => Self::BasicMonth,
+            (sku::TIER_0, true) => Self::BasicYear,
+            (sku::TIER_1, false) => Self::ClassicMonth,
+            (sku::TIER_1, true) => Self::ClassicYear,
+            (_, false) => Self::NitroMonth,
+            (_, true) => Self::NitroYear,
+        }
+    }
+}
+
+/// Context for the Nitro purchase confirmation step (module 231308 `G`).
+#[derive(Clone, Debug, Default)]
+pub(crate) struct ConfirmState {
+    pub starting_plan: Option<ConfirmPlan>,
+    pub pending_payment: bool,
+    pub is_downgrade: bool,
+    pub has_fractional_credits: bool,
+    pub followup_sku_name: Option<String>,
+    pub post_success_guild: Option<(dc_state::Id, String)>,
+    pub deeplink: bool,
+}
+
+/// `MVz.FRACTIONAL_PREMIUM_ABOUT` (module 652215 / 975571).
+const FRACTIONAL_PREMIUM_ARTICLE: &str =
+    "https://support.discord.com/hc/en-us/articles/26362805097623";
+
+/// Header wordmark (`b` of module 231308: `PREMIUM_PAYMENT_STARTED` -> NITRO, `PREMIUM_UPDATED` -> NITRO UPDATED,
+/// `PREMIUM_ACTIVATED` -> NITRO ACTIVATED).
+pub(crate) fn confirm_banner_wordmark(state: &ConfirmState) -> &'static str {
+    if state.pending_payment {
+        "NITRO"
+    } else if state.starting_plan.is_some() {
+        "NITRO UPDATED"
+    } else {
+        "NITRO ACTIVATED"
+    }
+}
+
+/// Primary button label (`G` of module 231308).
+pub(crate) fn confirm_button_label(state: &ConfirmState) -> String {
+    if state.deeplink {
+        dc_intl::t("sRApon").to_owned()
+    } else if let Some(name) = state.followup_sku_name.as_deref() {
+        dc_intl::t!("1qGgm4", skuName = name)
+    } else if state.is_downgrade {
+        dc_intl::t("QJ9EyM").to_owned()
+    } else if state.post_success_guild.is_some() {
+        dc_intl::t("ta3cXY").to_owned()
+    } else {
+        dc_intl::t("TkTvBz").to_owned()
+    }
+}
+
+/// Body paragraphs for module 231308 (`G` + `B` plan-switch branches).
+pub(crate) fn confirm_paragraphs(plan: ConfirmPlan, state: &ConfirmState) -> Vec<String> {
+    let new_sub_copy = |p: ConfirmPlan, pending: bool| -> String {
+        match (p.tier(), pending) {
+            (0, true) => dc_intl::t("o6hBiR").to_owned(),
+            (0, false) => dc_intl::t("AGf/ye").to_owned(),
+            (1, true) => dc_intl::t("o6hBiR").to_owned(),
+            (1, false) => dc_intl::t("knvOVz").to_owned(),
+            (_, true) => dc_intl::t("A4THYt").to_owned(),
+            (_, false) => dc_intl::t("aTUr3Z").to_owned(),
+        }
+    };
+
+    if state.deeplink {
+        return vec![format!("{} {}", dc_intl::t("bIVRSQ"), dc_intl::t("0UJqOy"))];
+    }
+    if let Some(sku_name) = state.followup_sku_name.as_deref() {
+        return vec![dc_intl::t!("tsQOs+", skuName = sku_name)];
+    }
+    if state.has_fractional_credits && !state.is_downgrade {
+        let lead = if plan.tier() == 0 {
+            dc_intl::t("L9lcG/").to_owned()
+        } else {
+            dc_intl::t("UPpbP3").to_owned()
+        };
+        let credits = dc_intl::format(
+            "EoDFuN",
+            &[("helpCenterLink", FRACTIONAL_PREMIUM_ARTICLE.into())],
+        );
+        return vec![lead, credits];
+    }
+    if let Some(starting) = state.starting_plan {
+        let text = if starting.rank() < plan.rank() {
+            match (plan, state.pending_payment) {
+                (ConfirmPlan::ClassicMonth, true) => dc_intl::t("o6hBiR").to_owned(),
+                (ConfirmPlan::ClassicMonth, false) => dc_intl::t("knvOVz").to_owned(),
+                (ConfirmPlan::NitroMonth, true) => dc_intl::t("A4THYt").to_owned(),
+                (ConfirmPlan::NitroMonth, false) => dc_intl::t("f8Dquh").to_owned(),
+                (ConfirmPlan::ClassicYear, true) => dc_intl::t("MHAxpE").to_owned(),
+                (ConfirmPlan::ClassicYear, false) => dc_intl::t("YZd5rw").to_owned(),
+                (ConfirmPlan::NitroYear, true) => {
+                    dc_intl::format("mULxLW", &[("numFreeGuildSubscriptions", 2.into())])
+                }
+                (ConfirmPlan::NitroYear, false) => {
+                    dc_intl::format("M/Lknl", &[("numFreeGuildSubscriptions", 2.into())])
+                }
+                (ConfirmPlan::Nitro3Month | ConfirmPlan::Nitro6Month, _) => {
+                    dc_intl::t("aaCoW6").to_owned()
+                }
+                (ConfirmPlan::BasicMonth | ConfirmPlan::BasicYear, _) => {
+                    dc_intl::t("XEoQ7+").to_owned()
+                }
+            }
+        } else if starting.tier() == 2 && plan.tier() == 1 {
+            dc_intl::t("PNX4NM").to_owned()
+        } else {
+            match plan.tier() {
+                0 => dc_intl::t("XEoQ7+").to_owned(),
+                1 => dc_intl::t("nLI1Kr").to_owned(),
+                _ => {
+                    if starting.is_multi_month() {
+                        dc_intl::t("qSZZVA").to_owned()
+                    } else {
+                        dc_intl::t("RNjcNg").to_owned()
+                    }
+                }
+            }
+        };
+        return vec![text];
+    }
+    if let Some((_, guild_name)) = &state.post_success_guild {
+        return vec![
+            new_sub_copy(plan, state.pending_payment),
+            dc_intl::t!("6aZ0NR", guildName = guild_name.as_str()),
+        ];
+    }
+    vec![new_sub_copy(plan, state.pending_payment)]
 }
 
 /// `ZkOo1U`: the message a gift to a person starts with (module 418200 `$` state, set when the recipient can get a
@@ -132,6 +311,8 @@ pub(crate) struct Purchase {
     pub sound: Option<GiftSound>,
     /// "Add emoji confetti" (module 418200 `emojiConfetti`).
     pub confetti: Option<GiftConfetti>,
+    /// Post-purchase confirmation details (module 231308).
+    pub confirm: ConfirmState,
 }
 
 /// The sound a gift carries: its id and name, and the emoji characters shown before the name (`emojiName`).
@@ -185,6 +366,7 @@ impl Root {
             message_subscription: None,
             sound: None,
             confetti: None,
+            confirm: ConfirmState::default(),
         });
         cx.notify();
     }
@@ -257,6 +439,7 @@ impl Root {
             message_subscription: None,
             sound: None,
             confetti: None,
+            confirm: ConfirmState::default(),
         });
         cx.notify();
     }
@@ -445,6 +628,7 @@ impl Root {
             (Step::GiftSelect, _) => self.gift_select_modal(window, cx),
             (Step::Checkout, _) => self.checkout_modal(window, cx),
             (Step::Payment, _) => self.payment_modal(window, cx),
+            (Step::Confirm, _) => self.confirm_modal(window, cx),
         })
     }
 
@@ -1663,6 +1847,150 @@ impl Root {
         )
     }
 
+    /// Post-purchase confirmation modal (`G` + `B` + `b` of module 231308; CSS `13792`, `896554`).
+    fn confirm_modal(&self, window: &Window, cx: &mut Context<Self>) -> AnyElement {
+        let Some(purchase) = self.nitro.purchase.as_ref() else {
+            return div().into_any_element();
+        };
+        let plan = ConfirmPlan::from_sku(purchase.sku, purchase.yearly);
+        let state = &purchase.confirm;
+        let wordmark = confirm_banner_wordmark(state);
+        let paragraphs = confirm_paragraphs(plan, state);
+        let button_label = confirm_button_label(state);
+        let post_guild = state.post_success_guild.as_ref().map(|(id, _)| *id);
+
+        // `gradientOuterBorder_JXikcP` + `gradientInnerBorder_JXikcP` (CSS 13792).
+        let badge = div()
+            .mb(px(16.))
+            .p(px(2.))
+            .rounded(px(8.))
+            .bg(linear_gradient(
+                90.,
+                linear_color_stop(gpui::rgb(0x9b1da5), 0.),
+                linear_color_stop(gpui::rgb(0x1e2353), 1.),
+            ))
+            .child(
+                div()
+                    .px(px(16.))
+                    .py(px(12.))
+                    .rounded(px(6.))
+                    .bg(color("--background-base-low"))
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .text_size(px(18.))
+                    .line_height(px(20.))
+                    .font_weight(FontWeight(800.))
+                    .text_color(color("--text-strong"))
+                    .child(wordmark),
+            );
+
+        let mut text_col = div().flex().flex_col().items_center().gap(px(8.));
+        for para in paragraphs {
+            text_col = text_col.child(
+                div()
+                    .text_center()
+                    .text_size(px(15.))
+                    .line_height(px(20.))
+                    .font_weight(FontWeight(500.))
+                    .text_color(color("--interactive-text-default"))
+                    .child(para),
+            );
+        }
+
+        // `confirmation_FapcSR` (56px top, 32px horizontal, 48px bottom).
+        let body = div()
+            .pt(px(32.))
+            .px(px(32.))
+            .pb(px(40.))
+            .flex()
+            .flex_col()
+            .items_center()
+            .child(badge)
+            .child(text_col)
+            .child(
+                div()
+                    .id("nitro-confirm-cta")
+                    .mt(px(20.))
+                    .h(px(40.))
+                    .px(px(24.))
+                    .rounded(px(8.))
+                    .bg(color("--brand-500"))
+                    .hover(|s| s.bg(color("--brand-560")))
+                    .cursor_pointer()
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .text_size(px(14.))
+                    .font_weight(FontWeight(500.))
+                    .text_color(color("--white"))
+                    .child(button_label)
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        this.close_purchase();
+                        if let Some(gid) = post_guild {
+                            this.select(gid, None);
+                        }
+                        cx.notify();
+                    })),
+            );
+
+        self.purchase_shell(
+            "nitro-purchase-confirm",
+            480.,
+            "",
+            false,
+            body.into_any_element(),
+            None,
+            window,
+            cx,
+        )
+    }
+
+    /// Capture helper: `nitro-confirm [activated|updated|basic|credits|guild|pending]` opens module 231308.
+    #[cfg(feature = "capture")]
+    pub(crate) fn script_nitro_confirm(&mut self, arg: &str, cx: &mut Context<Self>) -> String {
+        let mut confirm = ConfirmState::default();
+        let (plan_sku, yearly) = if arg.contains("basic") {
+            (sku::TIER_0, false)
+        } else {
+            (sku::TIER_2, true)
+        };
+        if arg.contains("updated") {
+            confirm.starting_plan = Some(ConfirmPlan::NitroMonth);
+        } else if arg.contains("credits") {
+            confirm.has_fractional_credits = true;
+        } else if arg.contains("guild") {
+            let gid = self
+                .guild
+                .or_else(|| self.stores.guilds.first().map(|g| g.id))
+                .unwrap_or(1);
+            let name = self
+                .stores
+                .guild(gid)
+                .map(|g| g.name.clone())
+                .unwrap_or_else(|| "gravecord fixture".to_owned());
+            confirm.post_success_guild = Some((gid, name));
+        } else if arg.contains("pending") {
+            confirm.pending_payment = true;
+        }
+        self.nitro.purchase = Some(Purchase {
+            gift: false,
+            step: Step::Confirm,
+            sku: plan_sku,
+            yearly,
+            scroll: ScrollHandle::new(),
+            recipient: false,
+            recipient_user: None,
+            message: None,
+            message_subscription: None,
+            sound: None,
+            confetti: None,
+            confirm,
+        });
+        cx.notify();
+        format!("nitro-confirm: opened ({arg})")
+    }
+
     /// `POST /auth/handoff` for the billing page; the answer opens the browser (`checkout_handoff_ready`).
     /// A capture build never starts it.
     #[cfg(not(feature = "capture"))]
@@ -1701,6 +2029,11 @@ impl Root {
                 &key,
                 &token,
             ));
+            if let Some(purchase) = self.nitro.purchase.as_mut() {
+                purchase.step = Step::Confirm;
+                purchase.confirm.pending_payment = true;
+            }
+            cx.notify();
         }
     }
 }
@@ -1751,5 +2084,74 @@ mod tests {
             gifts_away(0, "Patron"),
             "0 gifts away from the Patron Badge!"
         );
+    }
+
+    #[test]
+    fn confirm_copy_and_all_231308_strings_resolve() {
+        use super::{
+            ConfirmPlan, ConfirmState, confirm_banner_wordmark, confirm_button_label,
+            confirm_paragraphs,
+        };
+        for key in [
+            "knvOVz", "o6hBiR", "f8Dquh", "A4THYt", "YZd5rw", "MHAxpE", "M/Lknl", "mULxLW",
+            "aaCoW6", "XEoQ7+", "PNX4NM", "nLI1Kr", "qSZZVA", "RNjcNg", "AGf/ye", "aTUr3Z",
+            "bIVRSQ", "0UJqOy", "tsQOs+", "L9lcG/", "EoDFuN", "UPpbP3", "6aZ0NR", "sRApon",
+            "1qGgm4", "QJ9EyM", "ta3cXY", "TkTvBz",
+        ] {
+            assert!(
+                dc_intl::has_key(key),
+                "missing en-US key {key} in nitro_purchase 231308"
+            );
+        }
+        let fresh = ConfirmState::default();
+        assert_eq!(confirm_banner_wordmark(&fresh), "NITRO ACTIVATED");
+        assert_eq!(confirm_button_label(&fresh), "Sweet!");
+        assert!(confirm_paragraphs(ConfirmPlan::BasicMonth, &fresh)[0].contains("Nitro Basic"));
+        assert!(confirm_paragraphs(ConfirmPlan::NitroYear, &fresh)[0].contains("superpowered"));
+
+        let upgrade = ConfirmState {
+            starting_plan: Some(ConfirmPlan::NitroMonth),
+            ..Default::default()
+        };
+        assert_eq!(confirm_banner_wordmark(&upgrade), "NITRO UPDATED");
+        assert!(confirm_paragraphs(ConfirmPlan::NitroYear, &upgrade)[0].contains("2"));
+
+        let downgrade = ConfirmState {
+            starting_plan: Some(ConfirmPlan::NitroYear),
+            is_downgrade: true,
+            ..Default::default()
+        };
+        assert_eq!(confirm_button_label(&downgrade), "Got It");
+        assert!(confirm_paragraphs(ConfirmPlan::ClassicMonth, &downgrade)[0].contains("Boosts"));
+
+        let credits = ConfirmState {
+            has_fractional_credits: true,
+            ..Default::default()
+        };
+        assert_eq!(
+            confirm_paragraphs(ConfirmPlan::NitroMonth, &credits).len(),
+            2
+        );
+
+        let guild = ConfirmState {
+            post_success_guild: Some((1, "TestGuild".into())),
+            ..Default::default()
+        };
+        assert_eq!(confirm_button_label(&guild), "Join Server");
+        assert!(confirm_paragraphs(ConfirmPlan::NitroMonth, &guild)[1].contains("TestGuild"));
+
+        let pending = ConfirmState {
+            pending_payment: true,
+            ..Default::default()
+        };
+        assert_eq!(confirm_banner_wordmark(&pending), "NITRO");
+        assert!(confirm_paragraphs(ConfirmPlan::NitroMonth, &pending)[0].contains("email"));
+
+        let deeplink = ConfirmState {
+            deeplink: true,
+            ..Default::default()
+        };
+        assert_eq!(confirm_button_label(&deeplink), "Return to app");
+        assert!(confirm_paragraphs(ConfirmPlan::NitroMonth, &deeplink)[0].contains("close"));
     }
 }

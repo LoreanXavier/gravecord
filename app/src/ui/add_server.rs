@@ -499,13 +499,8 @@ impl Root {
                 let text = add.invite.read(cx).text().to_owned();
                 match invite_code(&text) {
                     Some(code) => {
-                        let _ = self.requests.send(Request::Rest {
-                            key: None,
-                            method: reqwest::Method::POST,
-                            route: format!("/invites/{code}"),
-                            body: Some(json!({})),
-                        });
                         self.add_server = None;
+                        self.open_invite_accept(code, cx);
                     }
                     None => {
                         if let Some(add) = self.add_server.as_mut() {

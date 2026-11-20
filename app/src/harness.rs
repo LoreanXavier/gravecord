@@ -1511,6 +1511,35 @@ pub async fn run(
                 let line = root.update(cx, |root, cx| root.script_role_connection_verify(&arg, cx));
                 let _ = writeln!(output, "{line}");
             }
+            // `safety-tools [actions|tips|about]`: opens DM Safety Tools modal (module 556127).
+            ["safety-tools", rest @ ..] => {
+                let arg = rest.join(" ");
+                let line = root.update(cx, |root, cx| root.script_safety_tools(&arg, cx));
+                let _ = writeln!(output, "{line}");
+            }
+            // `invite-accept [expanded|stream|app|group|friend|error]`: opens Invite Accept modal (module 700156).
+            ["invite-accept", rest @ ..] => {
+                let arg = rest.join(" ");
+                let line = root.update(cx, |root, cx| root.script_invite_accept(&arg, cx));
+                let _ = writeln!(output, "{line}");
+            }
+            // `oauth-success [guild|user|external|error]`: opens OAuth2 Authorized Success page (module 595244).
+            ["oauth-success", rest @ ..] => {
+                let arg = rest.join(" ");
+                let line = root.update(cx, |root, cx| root.script_oauth_success(&arg, cx));
+                let _ = writeln!(output, "{line}");
+            }
+            // `nitro-confirm [activated|updated|basic|credits|guild|pending]`: opens Nitro confirmation (module 231308).
+            ["nitro-confirm", rest @ ..] => {
+                let arg = rest.join(" ");
+                let line = root.update(cx, |root, cx| root.script_nitro_confirm(&arg, cx));
+                let _ = writeln!(output, "{line}");
+            }
+            // `invite-no-suggestions`: opens Invite modal in the no-suggestions variant (module 137811).
+            ["invite-no-suggestions"] => {
+                let line = root.update(cx, |root, cx| root.script_invite_no_suggestions(cx));
+                let _ = writeln!(output, "{line}");
+            }
             // `search last` / `search answer <total>`: the open search's request, and an answer to it;
             // `search page <n>`: the pager turns to page n.
             ["search", rest @ ..] => {

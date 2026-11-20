@@ -645,13 +645,58 @@ pub(super) struct ConsentData {
 
 // --- the flow -----------------------------------------------------------------------------------------------------
 
+/// OAuth2 Authorized Success state (module 595244 `dR` / `P` / `Sm` / `xb`).
 #[derive(Clone, Debug, PartialEq)]
+pub(super) struct AuthorizedSuccess {
+    pub app_id: Option<String>,
+    pub app_name: Option<String>,
+    pub guild_id: Option<dc_state::Id>,
+    pub guild_name: Option<String>,
+    pub shows_close_window_text: bool,
+}
+
+/// Formats the Authorized Success subtitle (`P` of module 595244).
+pub(super) fn authorized_success_subtext(
+    app_name: Option<&str>,
+    guild_name: Option<&str>,
+) -> String {
+    match (app_name, guild_name) {
+        (Some(app), Some(guild)) => {
+            dc_intl::t!("IlF6IY", installedApplicationName = app, guildName = guild)
+        }
+        (Some(app), None) => dc_intl::t!("vTVC5T", installedApplicationName = app),
+        (None, _) => dc_intl::t("Dp+rgP").to_owned(),
+    }
+}
+
+/// Formats the "Go to {guildName}" primary button label (`dR` of module 595244: > 30 chars falls back to "Go to Server").
+pub(super) fn authorized_guild_button_label(guild_name: &str) -> String {
+    if guild_name.chars().count() > 30 {
+        dc_intl::t("M35zFB").to_owned()
+    } else {
+        dc_intl::t!("UdYYP3", guildName = guild_name)
+    }
+}
+
+#[derive(Clone, Debug, PartialEq)]
+#[allow(dead_code)]
 pub(super) enum View {
     /// Requests are out; the modal is not shown yet.
     Loading,
     Consent,
     /// An error the modal shows (`title: Error`, the message as the subtitle, a Close button).
     Failed(String),
+    /// Authorized success page (`dR` / `P` / `i8` of module 595244).
+    Authorized(AuthorizedSuccess),
+    /// External browser connection handoff (`Sm` of module 595244: "Connect to {appName}").
+    ExternalConnect {
+        app_name: String,
+    },
+    /// External browser connection error (`xb` / `bc` of module 595244).
+    ExternalError {
+        message: Option<String>,
+        shows_close_window_text: bool,
+    },
 }
 
 /// What a POST of `/oauth2/authorize` is for.
@@ -700,7 +745,14 @@ impl Flow {
     }
 
     pub(super) fn consent_open(&self) -> bool {
-        matches!(self.view, View::Consent | View::Failed(_))
+        matches!(
+            self.view,
+            View::Consent
+                | View::Failed(_)
+                | View::Authorized(_)
+                | View::ExternalConnect { .. }
+                | View::ExternalError { .. }
+        )
     }
 
     #[cfg(feature = "capture")]
@@ -982,11 +1034,42 @@ impl Root {
         }
     }
 
-    /// Ends the flow with the SDK's answer.
+    /// Ends the flow with the SDK's answer, or transitions a standalone grant to the Authorized Success page (595244).
     fn oauth_finish(&mut self, result: Result<Value, (u32, String)>, cx: &mut Context<Self>) {
         let Some(flow) = self.activities.oauth.take() else {
             return;
         };
+        if flow.nonce.is_empty() && result.is_ok() {
+            let app_id = flow
+                .get
+                .as_ref()
+                .and_then(|g| g["application"]["id"].as_str())
+                .map(str::to_owned);
+            let app_name = flow
+                .get
+                .as_ref()
+                .and_then(|g| g["application"]["name"].as_str())
+                .map(str::to_owned);
+            let guild_id = flow
+                .args
+                .guild_id
+                .as_deref()
+                .and_then(|s| s.parse::<dc_state::Id>().ok());
+            let guild_name = guild_id
+                .and_then(|gid| self.stores.guild(gid))
+                .map(|g| g.name.clone());
+            self.open_oauth_authorized_view(
+                View::Authorized(AuthorizedSuccess {
+                    app_id,
+                    app_name,
+                    guild_id,
+                    guild_name,
+                    shows_close_window_text: false,
+                }),
+                cx,
+            );
+            return;
+        }
         match &result {
             Ok(_) => tracing::info!("authorization answered: code handed to the activity"),
             Err((code, message)) => {
@@ -1337,13 +1420,312 @@ impl Root {
 }
 
 impl Root {
-    /// The consent modal, or its error.
+    /// Opens the OAuth2 Authorized Success page (module 595244 `dR` / `Sm` / `xb`).
+    pub(super) fn open_oauth_authorized_view(&mut self, view: View, cx: &mut Context<Self>) {
+        let mut flow = Flow::new(
+            String::new(),
+            Args {
+                client_id: String::new(),
+                response_type: "code".to_owned(),
+                redirect_uri: None,
+                code_challenge: None,
+                code_challenge_method: None,
+                state: None,
+                nonce: None,
+                scopes: Vec::new(),
+                permissions: 0,
+                guild_id: None,
+                channel_id: None,
+                prompt: None,
+                integration_type: None,
+            },
+        );
+        flow.view = view;
+        self.activities.oauth = Some(flow);
+        cx.notify();
+    }
+
+    /// Capture helper: `oauth-success [guild|user|external|error]` opens module 595244's views.
+    #[cfg(feature = "capture")]
+    pub(crate) fn script_oauth_success(&mut self, arg: &str, cx: &mut Context<Self>) -> String {
+        let guild_id = self
+            .guild
+            .or_else(|| self.stores.guilds.first().map(|g| g.id));
+        let guild_name = guild_id
+            .and_then(|gid| self.stores.guild(gid))
+            .map(|g| g.name.clone())
+            .unwrap_or_else(|| "gravecord fixture".to_owned());
+        let view = if arg.contains("external") {
+            View::ExternalConnect {
+                app_name: "Steam".to_owned(),
+            }
+        } else if arg.contains("error") {
+            View::ExternalError {
+                message: None,
+                shows_close_window_text: true,
+            }
+        } else if arg.contains("user") {
+            View::Authorized(AuthorizedSuccess {
+                app_id: Some("880218394199220334".to_owned()),
+                app_name: Some("Wordle".to_owned()),
+                guild_id: None,
+                guild_name: None,
+                shows_close_window_text: false,
+            })
+        } else {
+            View::Authorized(AuthorizedSuccess {
+                app_id: Some("880218394199220334".to_owned()),
+                app_name: Some("Midjourney Bot".to_owned()),
+                guild_id,
+                guild_name: Some(guild_name),
+                shows_close_window_text: false,
+            })
+        };
+        self.open_oauth_authorized_view(view, cx);
+        format!("oauth-success: opened ({arg})")
+    }
+
+    /// The consent modal, or its error / authorized success page (module 595244).
     pub(super) fn oauth_layer(
         &mut self,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Option<AnyElement> {
         let flow = self.activities.oauth.as_ref()?;
+        let _auth_location = dc_intl::t("3S2494");
+        if let View::Authorized(success) = &flow.view {
+            let subtext = authorized_success_subtext(
+                success.app_name.as_deref(),
+                success.guild_name.as_deref(),
+            );
+            let shows_close = success.shows_close_window_text;
+            let guild_id = success.guild_id;
+            let guild_name = success.guild_name.clone();
+            let app_id = success.app_id.clone();
+            let can_send = self.channel.is_some() && guild_id.is_none();
+
+            let mut buttons = vec![super::modal::button(
+                "oauth-success-close",
+                dc_intl::t("cpT0Cq"),
+                super::modal::Tone::Secondary,
+                |this, _, cx| {
+                    this.activities.oauth = None;
+                    cx.notify();
+                },
+            )];
+            if let (Some(gid), Some(gname)) = (guild_id, guild_name) {
+                let label = authorized_guild_button_label(&gname);
+                buttons.push(super::modal::button(
+                    "oauth-success-go-guild",
+                    label,
+                    super::modal::Tone::Primary,
+                    move |this, _, cx| {
+                        this.activities.oauth = None;
+                        this.select(gid, None);
+                        cx.notify();
+                    },
+                ));
+            } else if can_send && app_id.is_some() {
+                buttons.push(super::modal::button(
+                    "oauth-success-open-app",
+                    dc_intl::t("0cCDKP"),
+                    super::modal::Tone::Primary,
+                    |this, _, cx| {
+                        this.activities.oauth = None;
+                        cx.notify();
+                    },
+                ));
+            }
+
+            let body = div()
+                .py(px(12.))
+                .flex()
+                .flex_col()
+                .items_center()
+                .child(
+                    div()
+                        .size(px(80.))
+                        .rounded_full()
+                        .bg(color("--status-positive"))
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .child(icon("checkmark_large", 40., "--white")),
+                )
+                .child(
+                    div()
+                        .mt(px(20.))
+                        .text_center()
+                        .text_size(px(20.))
+                        .line_height(px(24.))
+                        .font_weight(FontWeight(600.))
+                        .text_color(color("--text-strong"))
+                        .child(dc_intl::t("se5gLj")),
+                )
+                .child(
+                    div()
+                        .mt(px(12.))
+                        .max_w(px(300.))
+                        .text_center()
+                        .text_size(px(14.))
+                        .line_height(px(20.))
+                        .text_color(color("--text-default"))
+                        .child(subtext),
+                )
+                .when(shows_close, |d| {
+                    d.child(
+                        div()
+                            .mt(px(12.))
+                            .text_center()
+                            .text_size(px(12.))
+                            .line_height(px(16.))
+                            .text_color(color("--text-muted"))
+                            .child(dc_intl::t("k7J/w/")),
+                    )
+                });
+
+            return Some(super::modal::render(
+                super::modal::Spec {
+                    id: "oauth-authorized-success",
+                    title: String::new().into(),
+                    subtitle: None,
+                    body: Some(body.into_any_element()),
+                    buttons,
+                    close: Box::new(|this, _, cx| {
+                        this.activities.oauth = None;
+                        cx.notify();
+                    }),
+                },
+                cx,
+            ));
+        }
+        if let View::ExternalConnect { app_name } = &flow.view {
+            let app = app_name.clone();
+            let initial = app.chars().next().unwrap_or('A').to_uppercase().to_string();
+            let body = div()
+                .py(px(12.))
+                .flex()
+                .flex_col()
+                .items_center()
+                .gap(px(20.))
+                .child(
+                    div()
+                        .size(px(86.))
+                        .rounded(px(20.))
+                        .bg(color("--brand-500"))
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .text_size(px(34.))
+                        .font_weight(FontWeight(700.))
+                        .text_color(color("--white"))
+                        .child(initial),
+                )
+                .child(
+                    div()
+                        .flex()
+                        .flex_col()
+                        .items_center()
+                        .gap(px(8.))
+                        .child(
+                            div()
+                                .text_center()
+                                .text_size(px(22.))
+                                .line_height(px(28.))
+                                .font_weight(FontWeight(600.))
+                                .text_color(color("--text-strong"))
+                                .child(dc_intl::t!("1Q+p1k", appName = app.as_str())),
+                        )
+                        .child(
+                            div()
+                                .text_center()
+                                .text_size(px(14.))
+                                .line_height(px(20.))
+                                .text_color(color("--text-muted"))
+                                .child(dc_intl::t!("Mr7x5U", appName = app.as_str())),
+                        ),
+                );
+            return Some(super::modal::render(
+                super::modal::Spec {
+                    id: "oauth-external-connect",
+                    title: String::new().into(),
+                    subtitle: None,
+                    body: Some(body.into_any_element()),
+                    buttons: vec![super::modal::button(
+                        "oauth-external-close",
+                        dc_intl::t("31Bci5"),
+                        super::modal::Tone::Primary,
+                        |this, _, cx| {
+                            this.activities.oauth = None;
+                            cx.notify();
+                        },
+                    )],
+                    close: Box::new(|this, _, cx| {
+                        this.activities.oauth = None;
+                        cx.notify();
+                    }),
+                },
+                cx,
+            ));
+        }
+        if let View::ExternalError {
+            message,
+            shows_close_window_text,
+        } = &flow.view
+        {
+            let msg = message
+                .clone()
+                .unwrap_or_else(|| dc_intl::t("/B7kXy").to_owned());
+            let fallback = dc_intl::t("mqn873");
+            let shown_msg = if msg.is_empty() {
+                fallback.to_owned()
+            } else {
+                msg
+            };
+            let shows_close = *shows_close_window_text;
+            let body = div()
+                .flex()
+                .flex_col()
+                .gap(px(8.))
+                .child(
+                    div()
+                        .text_size(px(14.))
+                        .line_height(px(20.))
+                        .text_color(color("--text-default"))
+                        .child(shown_msg),
+                )
+                .when(shows_close, |d| {
+                    d.child(
+                        div()
+                            .text_size(px(12.))
+                            .line_height(px(16.))
+                            .text_color(color("--text-muted"))
+                            .child(dc_intl::t("k7J/w/")),
+                    )
+                });
+            return Some(super::modal::render(
+                super::modal::Spec {
+                    id: "oauth-external-error",
+                    title: dc_intl::t("j2d6Km").into(),
+                    subtitle: None,
+                    body: Some(body.into_any_element()),
+                    buttons: vec![super::modal::button(
+                        "oauth-external-error-close",
+                        dc_intl::t("31Bci5"),
+                        super::modal::Tone::Primary,
+                        |this, _, cx| {
+                            this.activities.oauth = None;
+                            cx.notify();
+                        },
+                    )],
+                    close: Box::new(|this, _, cx| {
+                        this.activities.oauth = None;
+                        cx.notify();
+                    }),
+                },
+                cx,
+            ));
+        }
         if let View::Failed(message) = &flow.view {
             let message = message.clone();
             return Some(super::modal::render(
@@ -1861,6 +2243,30 @@ mod tests {
         assert_eq!(
             failure_message(&json!({"body": {"scope": "bad"}})),
             Some("scope: bad".to_owned())
+        );
+    }
+
+    #[test]
+    fn authorized_success_views_and_strings_match_595244() {
+        for key in [
+            "3S2494", "k7J/w/", "se5gLj", "IlF6IY", "vTVC5T", "Dp+rgP", "31Bci5", "1Q+p1k",
+            "Mr7x5U", "mqn873", "cpT0Cq", "M35zFB", "UdYYP3", "0cCDKP", "j2d6Km", "/B7kXy",
+        ] {
+            assert!(
+                dc_intl::has_key(key),
+                "missing en-US key {key} in oauth 595244"
+            );
+        }
+        assert!(authorized_success_subtext(Some("Wordle"), Some("My Guild")).contains("My Guild"));
+        assert!(authorized_success_subtext(Some("Wordle"), None).contains("your apps"));
+        assert_eq!(
+            authorized_success_subtext(None, None),
+            "This application has been authorized and added to the server."
+        );
+        assert_eq!(authorized_guild_button_label("Short"), "Go to Short");
+        assert_eq!(
+            authorized_guild_button_label("A Very Long Server Name Exceeding Thirty Chars"),
+            "Go to Server"
         );
     }
 }
