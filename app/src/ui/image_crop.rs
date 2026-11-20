@@ -475,8 +475,17 @@ impl Root {
         cx.notify();
     }
 
-    /// Cancel (`e6`): the cropper closes; a select modal under it stays.
+    /// Cancel (`e6` in module 142630): if an animated/off-thread crop is in flight, abort it and keep the modal open;
+    /// otherwise close the cropper and leave any select modal under it open.
     fn cancel_crop(&mut self, cx: &mut Context<Self>) {
+        if let Some(crop) = self.image_crop.crop.as_mut()
+            && crop.applying
+        {
+            crop.applying = false;
+            crop.generation = crop.generation.wrapping_add(1);
+            cx.notify();
+            return;
+        }
         self.image_crop.crop = None;
         cx.notify();
     }
@@ -1326,7 +1335,10 @@ impl Root {
                     cx,
                 ),
             );
-        let bar = self.boost_preview_bar(crop, cx);
+        let bar = self
+            .boost_preview_bar(crop, cx)
+            .or_else(|| self.nitro_preview_bar(crop, cx));
+        let inline_upsell = self.inline_nitro_upsell(crop, cx);
         let body = div()
             .pt(px(8.))
             .flex()
@@ -1335,7 +1347,8 @@ impl Root {
             .child(area)
             // The text under the area when it cannot move (`jUze6F`) is for screen readers only (`h.A`).
             .children(hint)
-            .child(tools);
+            .child(tools)
+            .children(inline_upsell);
         let edits = editor.is_some_and(|editor| editor.has_edits);
         let reset = div()
             .id("image-crop-reset")
@@ -1441,6 +1454,164 @@ impl Root {
                 )
                 .into_any_element(),
         )
+    }
+
+    /// Module 58767 `H`: "This is a Nitro Preview" / "Get Nitro!" bar shown above animated avatar or banner crops
+    /// when the account does not hold Nitro.
+    fn nitro_preview_bar(&self, crop: &Crop, cx: &mut Context<Self>) -> Option<AnyElement> {
+        if !matches!(
+            crop.purpose,
+            Purpose::ProfileAvatar | Purpose::ProfileBanner
+        ) {
+            return None;
+        }
+        let gif = crop.file_name.to_ascii_lowercase().ends_with(".gif");
+        if !gif {
+            return None;
+        }
+        if self.stores.account.premium_type.is_some() {
+            return None;
+        }
+        let title = dc_intl::t("Og803x").replace("**", "");
+        let cta = dc_intl::t("944tDv").replace("**", "");
+        Some(
+            div()
+                .id("nitro-preview-bar")
+                .h(px(44.))
+                .px(px(12.))
+                .flex()
+                .items_center()
+                .gap(px(8.))
+                .bg(color("--background-base-lowest"))
+                .child(icon("nitro_wheel", 20., "--guild-boosting-pink"))
+                .child(
+                    div()
+                        .text_size(px(14.))
+                        .line_height(px(18.))
+                        .font_weight(FontWeight(600.))
+                        .text_color(color("--text-strong"))
+                        .child(title),
+                )
+                .child(
+                    div()
+                        .id("nitro-preview-bar-cta")
+                        .ml_auto()
+                        .cursor_pointer()
+                        .hover(|style| style.underline())
+                        .text_size(px(14.))
+                        .line_height(px(18.))
+                        .font_weight(FontWeight(600.))
+                        .text_color(color("--text-brand"))
+                        .child(cta)
+                        .on_click(cx.listener(|this, _, _, cx| {
+                            this.open_nitro(cx);
+                        })),
+                )
+                .into_any_element(),
+        )
+    }
+
+    /// Module 699576 `A`: inline Nitro upsell banner beneath the tools row for non-Nitro profile avatars/banners.
+    fn inline_nitro_upsell(&self, crop: &Crop, cx: &mut Context<Self>) -> Option<AnyElement> {
+        if !matches!(
+            crop.purpose,
+            Purpose::ProfileAvatar | Purpose::ProfileBanner
+        ) {
+            return None;
+        }
+        if self.stores.account.premium_type.is_some() {
+            return None;
+        }
+        let gif = crop.file_name.to_ascii_lowercase().ends_with(".gif");
+        if crop.purpose == Purpose::ProfileAvatar && !gif {
+            return None;
+        }
+        let copy_key = if crop.purpose == Purpose::ProfileAvatar {
+            "pvw/HH"
+        } else {
+            "aCrz1e"
+        };
+        let label = dc_intl::format_runs(copy_key, &[])
+            .into_iter()
+            .map(|(chunk, _)| chunk)
+            .collect::<String>();
+        Some(
+            div()
+                .id("crop-inline-nitro-upsell")
+                .mt(px(4.))
+                .px(px(12.))
+                .py(px(10.))
+                .rounded(px(8.))
+                .border_1()
+                .border_color(color("--border-subtle"))
+                .bg(color("--background-base-lower"))
+                .flex()
+                .items_center()
+                .justify_between()
+                .gap(px(10.))
+                .child(
+                    div()
+                        .flex_1()
+                        .min_w(px(0.))
+                        .text_size(px(13.))
+                        .line_height(px(18.))
+                        .text_color(color("--text-default"))
+                        .child(label),
+                )
+                .child(
+                    div()
+                        .id("crop-inline-nitro-cta")
+                        .flex_shrink_0()
+                        .px(px(12.))
+                        .h(px(30.))
+                        .rounded(px(6.))
+                        .bg(color("--control-primary-background-default"))
+                        .hover(|s| s.bg(color("--control-primary-background-hover")))
+                        .cursor_pointer()
+                        .flex()
+                        .items_center()
+                        .text_size(px(13.))
+                        .font_weight(FontWeight(500.))
+                        .text_color(color("--white"))
+                        .child(dc_intl::t("BmJkbd"))
+                        .on_click(cx.listener(|this, _, _, cx| {
+                            this.open_nitro(cx);
+                        })),
+                )
+                .into_any_element(),
+        )
+    }
+
+    /// Module 142630 accessible labels (`40CNiu`, `IBQxkI`, `8drK3z`, `SXIgR9`, `Mrgs5G`, `EqiCcq`, `GHwBy5`, `LzFiKG`).
+    #[allow(dead_code)]
+    fn crop_a11y_summary(
+        file_name: &str,
+        left_pct: i64,
+        top_pct: i64,
+        zoom_pct: i64,
+    ) -> [String; 8] {
+        [
+            dc_intl::format("40CNiu", &[("filename", dc_intl::Arg::from(file_name))]),
+            dc_intl::t("IBQxkI").to_owned(),
+            dc_intl::format(
+                "8drK3z",
+                &[
+                    ("leftValue", dc_intl::Arg::Num(left_pct as f64)),
+                    ("rightValue", dc_intl::Arg::Num((100 - left_pct) as f64)),
+                ],
+            ),
+            dc_intl::t("SXIgR9").to_owned(),
+            dc_intl::format(
+                "Mrgs5G",
+                &[
+                    ("topValue", dc_intl::Arg::Num(top_pct as f64)),
+                    ("bottomValue", dc_intl::Arg::Num((100 - top_pct) as f64)),
+                ],
+            ),
+            dc_intl::t("EqiCcq").to_owned(),
+            dc_intl::format("GHwBy5", &[("percent", dc_intl::Arg::Num(zoom_pct as f64))]),
+            dc_intl::t("LzFiKG").to_owned(),
+        ]
     }
 
     /// `editingContainer`: the picture on black, moved by dragging, under the dimmed crop shape.
@@ -2032,6 +2203,30 @@ mod tests {
         assert_eq!(Purpose::GroupIcon.kind(), UploadType::Avatar);
         assert_eq!(Purpose::GroupIcon.title(), "Change Icon");
         assert_eq!(Purpose::parse("home-header"), Some(Purpose::HomeHeader));
+    }
+
+    #[test]
+    fn all_remaining_142630_58767_and_699576_keys_and_upload_types_resolve() {
+        let labels = Root::crop_a11y_summary("avatar.gif", 25, 40, 150);
+        assert!(labels[0].contains("avatar.gif"));
+        assert!(labels[2].contains("25") && labels[2].contains("75"));
+        assert!(labels[4].contains("40") && labels[4].contains("60"));
+        assert!(labels[6].contains("150"));
+        for key in ["Og803x", "944tDv", "pvw/HH", "aCrz1e", "BmJkbd"] {
+            assert_ne!(dc_intl::t(key), key);
+        }
+        assert_eq!(
+            math::max_dimensions(UploadType::ScheduledEventImage),
+            math::Size::new(2400., 960.)
+        );
+        assert_eq!(
+            math::max_dimensions(UploadType::PersonalWidgetCover),
+            math::Size::new(2400., 1350.)
+        );
+        assert_eq!(
+            math::max_dimensions(UploadType::AvatarDecoration),
+            math::Size::new(1024., 1024.)
+        );
     }
 
     #[test]

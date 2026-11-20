@@ -1723,6 +1723,30 @@ pub async fn run(
                 let line = root.update(cx, |root, cx| root.script_subscription_pause(&arg, cx));
                 let _ = writeln!(output, "{line}");
             }
+            // `violation-appeal [speed-bump|signal|confirm|sent|close]`: Violation Appeal modal (894683 + 351876).
+            ["violation-appeal", rest @ ..] => {
+                let arg = rest.join(" ");
+                let line = root.update(cx, |root, cx| root.script_violation_appeal(&arg, cx));
+                let _ = writeln!(output, "{line}");
+            }
+            // `suspended-hub [underage|verified|manual-review|loading|error|close]`: Suspended Safety Hub (187686 + 37380).
+            ["suspended-hub", rest @ ..] => {
+                let arg = rest.join(" ");
+                let line = root.update(cx, |root, cx| root.script_suspended_safety_hub(&arg, cx));
+                let _ = writeln!(output, "{line}");
+            }
+            // `trials-picker [select|ineligible|error|reminder|confirm|close]`: Send Nitro Trials Picker (303682 + 810852).
+            ["trials-picker", rest @ ..] => {
+                let arg = rest.join(" ");
+                let line = root.update(cx, |root, cx| root.script_nitro_trials_picker(&arg, cx));
+                let _ = writeln!(output, "{line}");
+            }
+            // `user-activity-card [open|close]`: Legacy UserActivity card preview (663249).
+            ["user-activity-card", rest @ ..] => {
+                let arg = rest.join(" ");
+                let line = root.update(cx, |root, cx| root.script_user_activity_card(&arg, cx));
+                let _ = writeln!(output, "{line}");
+            }
             // `search last` / `search answer <total>`: the open search's request, and an answer to it;
             // `search page <n>`: the pager turns to page n.
             ["search", rest @ ..] => {

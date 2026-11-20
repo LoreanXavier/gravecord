@@ -170,8 +170,33 @@ impl Root {
                             this.open_safety_tools(channel_id, author_id, cx);
                         }))
                         .into_any_element(),
-                    // GAP: "See Details" opens the violation's details (module 163002), which is not ported.
-                    (None, false) => anchor.into_any_element(),
+                    (None, false) => {
+                        let classification = notice
+                            .classification_id
+                            .clone()
+                            .unwrap_or_else(|| "Community Guidelines".to_owned());
+                        let explainer = notice
+                            .learn_more_link
+                            .clone()
+                            .unwrap_or_else(|| "https://discord.com/guidelines".to_owned());
+                        anchor
+                            .on_click(cx.listener(move |this, _, _, cx| {
+                                cx.stop_propagation();
+                                this.violation_detail_modal =
+                                    Some(super::violation_detail::ViolationDetailModal {
+                                        classification: classification.clone(),
+                                        guild_name: None,
+                                        origin: super::violation_detail::ViolationOrigin::User,
+                                        actions: Vec::new(),
+                                        expiration_date: None,
+                                        explainer_url: explainer.clone(),
+                                        appeal:
+                                            super::violation_detail::ViolationAppealState::Eligible,
+                                    });
+                                cx.notify();
+                            }))
+                            .into_any_element()
+                    }
                 })
             })
             .collect();

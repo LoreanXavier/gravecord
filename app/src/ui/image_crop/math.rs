@@ -2,20 +2,28 @@
 //! the maximum output sizes `P` of 142630, and the canvas draw of `R7` in module 830917. Everything is in CSS pixels
 //! of the editing area unless named natural (the decoded picture's own pixels), in `f64` as the bundle computes.
 
-/// The upload types of module 339984 `HL` that a reachable call site opens the cropper with.
+/// All upload types of module 339984 `HL` handled by module 142630 `P`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[allow(dead_code)]
 pub(crate) enum UploadType {
     Avatar,
+    AvatarDecoration,
     Banner,
     GuildBanner,
     HomeHeader,
     GuildIcon,
+    VideoBackground,
+    ScheduledEventImage,
+    PersonalWidgetField,
+    PersonalWidgetCover,
 }
 
 /// `wL` of module 339984: the profile banner's width over its height.
 pub(crate) const BANNER_RATIO: f64 = 17. / 6.;
 /// `AB`: the server banner's ratio.
 const GUILD_BANNER_RATIO: f64 = 16. / 9.;
+/// `SCHEDULED_EVENT_IMAGE` ratio (2400 / 960 = 2.5).
+const SCHEDULED_EVENT_RATIO: f64 = 2.5;
 /// The widest the crop area gets (`432` throughout module 424632): the modal's content width.
 pub(crate) const MAX_WIDTH: f64 = 432.;
 
@@ -50,9 +58,28 @@ pub(crate) struct Bounds {
 pub(crate) fn max_dimensions(kind: UploadType) -> Size {
     match kind {
         UploadType::Banner => Size::new(2400., 848.),
-        UploadType::Avatar | UploadType::GuildIcon => Size::new(1024., 1024.),
-        UploadType::GuildBanner => Size::new(2400., 1350.),
+        UploadType::Avatar
+        | UploadType::AvatarDecoration
+        | UploadType::GuildIcon
+        | UploadType::PersonalWidgetField => Size::new(1024., 1024.),
+        UploadType::GuildBanner | UploadType::PersonalWidgetCover => Size::new(2400., 1350.),
+        UploadType::ScheduledEventImage => Size::new(2400., 960.),
         UploadType::HomeHeader => Size::new(2400., 600.),
+        UploadType::VideoBackground => Size::new(1280., 720.),
+    }
+}
+
+/// `P(type, cropAspectRatio)` of module 142630: fits an optional custom aspect ratio inside `max_dimensions`.
+#[allow(dead_code)]
+pub(crate) fn max_dimensions_with_aspect(kind: UploadType, aspect_ratio: Option<f64>) -> Size {
+    let base = max_dimensions(kind);
+    let Some(ratio) = aspect_ratio.filter(|r| r.is_finite() && *r > 0.) else {
+        return base;
+    };
+    if ratio >= base.width / base.height {
+        Size::new(base.width, base.width / ratio)
+    } else {
+        Size::new(base.height * ratio, base.height)
     }
 }
 
@@ -80,13 +107,24 @@ fn fit(ratio: f64, max_height: f64, width: f64, height: f64) -> Size {
 /// `Qx`: the size the picture is drawn at for a type, from its size at the editing area's full height.
 pub(crate) fn image_dimensions(kind: UploadType, width: f64, height: f64) -> Size {
     match kind {
-        UploadType::Avatar | UploadType::GuildIcon => Size::new(width, height),
+        UploadType::Avatar
+        | UploadType::AvatarDecoration
+        | UploadType::GuildIcon
+        | UploadType::PersonalWidgetField => Size::new(width, height),
         // `pj = 432 / wL`.
         UploadType::Banner => fit(BANNER_RATIO, MAX_WIDTH / BANNER_RATIO, width, height),
         // `Jz = 432 / AB`.
-        UploadType::GuildBanner => fit(
-            GUILD_BANNER_RATIO,
-            MAX_WIDTH / GUILD_BANNER_RATIO,
+        UploadType::GuildBanner | UploadType::VideoBackground | UploadType::PersonalWidgetCover => {
+            fit(
+                GUILD_BANNER_RATIO,
+                MAX_WIDTH / GUILD_BANNER_RATIO,
+                width,
+                height,
+            )
+        }
+        UploadType::ScheduledEventImage => fit(
+            SCHEDULED_EVENT_RATIO,
+            MAX_WIDTH / SCHEDULED_EVENT_RATIO,
             width,
             height,
         ),
@@ -103,7 +141,10 @@ pub(crate) fn crop_dimensions(
     bound_height: f64,
 ) -> Size {
     match kind {
-        UploadType::Avatar | UploadType::GuildIcon => {
+        UploadType::Avatar
+        | UploadType::AvatarDecoration
+        | UploadType::GuildIcon
+        | UploadType::PersonalWidgetField => {
             let side = width.min(height);
             Size::new(side, side)
         }
@@ -111,9 +152,13 @@ pub(crate) fn crop_dimensions(
             let w = width.min(MAX_WIDTH);
             Size::new(w, w * (1. / BANNER_RATIO))
         }
-        UploadType::GuildBanner => {
+        UploadType::GuildBanner | UploadType::VideoBackground | UploadType::PersonalWidgetCover => {
             let w = width.min(MAX_WIDTH);
             Size::new(w, (9. / 16. * w).min(bound_height))
+        }
+        UploadType::ScheduledEventImage => {
+            let w = width.min(MAX_WIDTH);
+            Size::new(w, (w / SCHEDULED_EVENT_RATIO).min(bound_height))
         }
         UploadType::HomeHeader => {
             let w = width.min(MAX_WIDTH);

@@ -346,6 +346,7 @@ mod dm_call_view;
 mod incoming_call;
 mod member_safety;
 mod member_window;
+mod nitro_trials_picker;
 mod server_members;
 mod server_onboarding;
 mod server_role_editor;
@@ -364,6 +365,7 @@ mod soundboard;
 mod stream_menus;
 mod stream_volume;
 mod subscription_pause;
+mod suspended_safety_hub;
 mod tag_badges;
 mod tag_badges_extra;
 mod threads;
@@ -375,10 +377,12 @@ mod upload_area;
 mod upload_error;
 mod upload_progress;
 mod uploads;
+mod user_activity_card;
 mod video_player;
 mod video_stats;
 mod video_tiles;
 mod view_as_role;
+mod violation_appeal;
 mod violation_detail;
 mod voice;
 mod voice_alerts;
@@ -706,6 +710,14 @@ pub struct Root {
     game_gift_redeem_modal: Option<game_gift_redeem::GameGiftRedeemModal>,
     /// Pause or Cancel Nitro Subscription modal (module 318998, `subscription_pause`).
     subscription_pause_modal: Option<subscription_pause::SubscriptionPauseModal>,
+    /// Safety Hub Violation Appeal 4-slide modal (module 894683 + 351876 + 393033, `violation_appeal`).
+    violation_appeal_modal: Option<violation_appeal::ViolationAppealModal>,
+    /// Suspended User Safety Hub full page + embedded standing/violations body (module 187686 + 37380).
+    suspended_safety_hub: Option<suspended_safety_hub::SuspendedSafetyHub>,
+    /// Send Nitro Trials Picker & confirmation modal (module 303682 + 810852, `nitro_trials_picker`).
+    nitro_trials_picker: Option<nitro_trials_picker::NitroTrialsPickerModal>,
+    /// Preview overlay for legacy UserActivity cards (module 663249, `user_activity_card`).
+    user_activity_preview: Option<Vec<user_activity_card::UserActivityCardData>>,
     /// Ignored users whose "Don't show this again" restricted-profile bypass was clicked (module 148540 `ip`).
     restricted_profile_bypass: std::collections::HashSet<dc_state::Id>,
     /// Soundboard Echo store & hover details state (module 120246, `soundboard_echo`).
@@ -1269,6 +1281,10 @@ impl Root {
             purchase_waivers_modal: None,
             game_gift_redeem_modal: None,
             subscription_pause_modal: None,
+            violation_appeal_modal: None,
+            suspended_safety_hub: None,
+            nitro_trials_picker: None,
+            user_activity_preview: None,
             restricted_profile_bypass: std::collections::HashSet::new(),
             soundboard_echo: Default::default(),
             badge_modal: None,
@@ -11449,6 +11465,10 @@ impl Render for Root {
                         || this.purchase_waivers_modal.is_some()
                         || this.game_gift_redeem_modal.is_some()
                         || this.subscription_pause_modal.is_some()
+                        || this.violation_appeal_modal.is_some()
+                        || this.suspended_safety_hub.is_some()
+                        || this.nitro_trials_picker.is_some()
+                        || this.user_activity_preview.is_some()
                         || this.library.game_menu.is_some()
                         || this.library.hide_confirm.is_some())
                 {
@@ -11474,6 +11494,10 @@ impl Render for Root {
                     this.close_purchase_waivers();
                     this.close_game_gift_redeem();
                     this.close_subscription_pause();
+                    this.close_violation_appeal();
+                    this.close_suspended_safety_hub();
+                    this.close_nitro_trials_picker();
+                    this.close_user_activity_preview();
                     this.close_library_game_menu();
                     cx.notify();
                     cx.stop_propagation();
@@ -12658,10 +12682,14 @@ impl Render for Root {
             .children(self.shop_checkout_review_layer(cx))
             .children(self.join_request_modal_layer(cx))
             .children(self.app_sub_cancel_modal_layer(cx))
+            .children(self.suspended_safety_hub_layer(cx))
             .children(self.violation_detail_modal_layer(cx))
+            .children(self.violation_appeal_modal_layer(window, cx))
             .children(self.purchase_waivers_modal_layer(cx))
             .children(self.game_gift_redeem_modal_layer(cx))
             .children(self.subscription_pause_modal_layer(cx))
+            .children(self.nitro_trials_picker_layer(window, cx))
+            .children(self.user_activity_preview_layer(cx))
             .children(self.composer_ai_modal(cx))
             .children(self.friend_nickname_layer(window, cx))
             .children(self.favorite_nickname_layer(window, cx))
