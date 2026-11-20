@@ -433,74 +433,50 @@ impl Root {
         }
     }
 
-    /// Whether a guild channel or thread is age-restricted (`isNSFW` of module 323073 `Gc`: the channel's own `nsfw`
-    /// flag, or its parent's for a thread).
-    fn channel_is_nsfw(&self, channel_id: Id) -> bool {
-        for guild in &self.stores.guilds {
-            if let Some(ch) = guild.channels.iter().find(|known| known.id == channel_id) {
-                return ch.nsfw;
-            }
-            if let Some(thread) = guild.threads.iter().find(|known| known.id == channel_id) {
-                return guild
+    /// Why the forwarded message cannot go to `destination` (`getDestinationIsUnavailable`, `P` in module 969223).
+    fn forward_blocked(&self, destination: Destination) -> Option<&'static str> {
+        let message = self.forward.as_ref()?.message.as_ref()?;
+        let channel_in = |id: Id| {
+            self.stores.guilds.iter().find_map(|guild| {
+                if let Some(known) = guild.channels.iter().find(|known| known.id == id) {
+                    return Some((guild, known));
+                }
+                let thread = guild.threads.iter().find(|known| known.id == id)?;
+                guild
                     .channels
                     .iter()
                     .find(|known| known.id == thread.parent_id)
-                    .is_some_and(|parent| parent.nsfw);
-            }
-        }
-        false
-    }
-
-    /// Why the forwarded message cannot go to `destination` (`getDestinationIsUnavailable`, module 969223):
-    /// `KgPx1D` when forwarding from an age-restricted channel to an unrestricted one (including DMs), `P7yvbm` for
-    /// files without Attach Files, `Wr4RIX` for embeds without Embed Links, `quj4DY` for voice messages without Send
-    /// Voice Messages, in that order.
-    fn forward_blocked(&self, destination: Destination) -> Option<&'static str> {
-        let message = self.forward.as_ref()?.message.as_ref()?;
-        let origin_nsfw = self.channel_is_nsfw(message.channel_id);
-        let dest_channel = match destination {
-            Destination::Channel(channel) => self
-                .stores
-                .guilds
-                .iter()
-                .flat_map(|guild| &guild.channels)
-                .find(|known| known.id == channel),
+                    .map(|parent| (guild, parent))
+            })
+        };
+        let source_restricted = channel_in(message.channel_id)
+            .is_some_and(|(guild, known)| age_restricted(known, guild));
+        let target = match destination {
+            Destination::Channel(id) => channel_in(id),
             Destination::Dm(_) => None,
         };
-        let dest_nsfw = dest_channel.is_some_and(|known| known.nsfw);
-        let has_files = !message.attachments.is_empty()
-            || message
-                .forwarded
-                .as_ref()
-                .is_some_and(|copy| !copy.attachments.is_empty());
-        let has_embeds = !message.embeds.is_empty()
-            || message
-                .forwarded
-                .as_ref()
-                .is_some_and(|copy| !copy.embeds.is_empty());
-        let has_voice = message.is_voice_message()
-            || message
-                .forwarded
-                .as_ref()
-                .is_some_and(|copy| copy.flags & dc_state::VOICE_MESSAGE_FLAG != 0);
-        let can_attach = dest_channel
-            .is_none_or(|known| self.can_in_channel(known, dc_state::permissions::ATTACH_FILES));
-        let can_embed = dest_channel
-            .is_none_or(|known| self.can_in_channel(known, dc_state::permissions::EMBED_LINKS));
-        let can_voice = dest_channel.is_none_or(|known| {
-            self.can_in_channel(known, dc_state::permissions::SEND_VOICE_MESSAGES)
-        });
-        forward_unavailable_reason(
-            origin_nsfw,
-            dest_nsfw,
-            dest_channel.is_some(),
-            has_files,
-            has_embeds,
-            has_voice,
-            can_attach,
-            can_embed,
-            can_voice,
-        )
+        let check = ForwardCheck {
+            source_restricted,
+            destination_restricted: target
+                .is_some_and(|(guild, known)| age_restricted(known, guild)),
+            guild_destination: target.is_some(),
+            nsfw_disallowed: !self.stores.account.nsfw_allowed,
+            restrict_experiment: self
+                .stores
+                .experiments
+                .variant(FORWARD_AGE_RESTRICTED_EXPERIMENT)
+                == Some(1),
+            external_sticker: target.is_some_and(|(guild, _)| {
+                message.sticker_items.iter().any(|(id, _, _)| {
+                    self.stores.stickers.sticker(*id).is_some_and(|sticker| {
+                        sticker.is_guild() && sticker.guild_id != Some(guild.id)
+                    })
+                })
+            }),
+        };
+        let can =
+            |permission| target.is_some_and(|(_, known)| self.can_in_channel(known, permission));
+        destination_unavailable(message, &check, can).map(dc_intl::t)
     }
 
     /// A destination's picture (32px), name and second line, as its row in the modal draws them.
@@ -1216,32 +1192,73 @@ pub(super) fn profile_link(user: Id) -> String {
     format!("https://discord.com/users/{user}")
 }
 
-/// Pure destination check of `getDestinationIsUnavailable` (module 969223 `P`).
-#[allow(clippy::too_many_arguments)]
-fn forward_unavailable_reason(
-    origin_nsfw: bool,
-    dest_nsfw: bool,
-    dest_is_guild_channel: bool,
-    has_files: bool,
-    has_embeds: bool,
-    has_voice: bool,
-    can_attach: bool,
-    can_embed: bool,
-    can_voice: bool,
+/// `2026-08-forward-age-restricted-destinations` (module 969223): variation 1 sets
+/// `disableAgeRestrictedDestinations`.
+const FORWARD_AGE_RESTRICTED_EXPERIMENT: &str = "2026-08-forward-age-restricted-destinations";
+
+/// `Gc` of module 874850: an NSFW channel, or one in a server whose `nsfw_level` is EXPLICIT (1) or AGE_RESTRICTED
+/// (3).
+fn age_restricted(channel: &dc_state::Channel, guild: &dc_state::Guild) -> bool {
+    channel.nsfw || matches!(guild.nsfw_level, 1 | 3)
+}
+
+/// What `getDestinationIsUnavailable` reads besides the message and the destination's permissions.
+struct ForwardCheck {
+    source_restricted: bool,
+    destination_restricted: bool,
+    /// A server channel (DMs skip the permission checks).
+    guild_destination: bool,
+    /// `nsfwAllowed === false` on the current user.
+    nsfw_disallowed: bool,
+    restrict_experiment: bool,
+    /// A sticker of another server is attached (`USE_EXTERNAL_STICKERS` decides).
+    external_sticker: bool,
+}
+
+/// `P` of module 969223, in its order: an age-restricted message only goes to another age-restricted channel
+/// (`KgPx1D`); an account not allowed NSFW cannot forward into an age-restricted channel under the experiment
+/// (`QHrFo6`); then, in a server channel, files without Attach Files (`P7yvbm`), embeds without Embed Links unless the
+/// message has text or a forwarded copy with text or files (`Wr4RIX`), another server's sticker without Use External
+/// Stickers (`0Yyrua`) and a voice message without Send Voice Messages (`quj4DY`). Returns the string key.
+/// GAP: the age-assurance branch of `QHrFo6` (`u5()` with `AGE_GATED_SPACES`) is not run (owner excluded age
+/// verification) and checkpoint-card components (`Wr4RIX` without Embed Links) are not parsed.
+fn destination_unavailable(
+    message: &Message,
+    check: &ForwardCheck,
+    can: impl Fn(u64) -> bool,
 ) -> Option<&'static str> {
-    if origin_nsfw && !(dest_is_guild_channel && dest_nsfw) {
-        return Some(dc_intl::t("KgPx1D"));
+    if check.source_restricted && !check.destination_restricted {
+        return Some("KgPx1D");
     }
-    if dest_is_guild_channel {
-        if has_files && !can_attach {
-            return Some(dc_intl::t("P7yvbm"));
-        }
-        if has_embeds && !can_embed {
-            return Some(dc_intl::t("Wr4RIX"));
-        }
-        if has_voice && !can_voice {
-            return Some(dc_intl::t("quj4DY"));
-        }
+    if check.guild_destination
+        && check.destination_restricted
+        && check.nsfw_disallowed
+        && check.restrict_experiment
+    {
+        return Some("QHrFo6");
+    }
+    if !check.guild_destination {
+        return None;
+    }
+    let copy = message.forwarded.as_deref();
+    let files =
+        !message.attachments.is_empty() || copy.is_some_and(|copy| !copy.attachments.is_empty());
+    if files && !can(dc_state::permissions::ATTACH_FILES) {
+        return Some("P7yvbm");
+    }
+    let embeds = !message.embeds.is_empty() || copy.is_some_and(|copy| !copy.embeds.is_empty());
+    let has_text = !message.content.is_empty()
+        || copy.is_some_and(|copy| !copy.content.is_empty() || !copy.attachments.is_empty());
+    if embeds && !can(dc_state::permissions::EMBED_LINKS) && !has_text {
+        return Some("Wr4RIX");
+    }
+    if check.external_sticker && !can(dc_state::stickers::USE_EXTERNAL_STICKERS) {
+        return Some("0Yyrua");
+    }
+    let voice = message.is_voice_message()
+        || copy.is_some_and(|copy| copy.flags & dc_state::VOICE_MESSAGE_FLAG != 0);
+    if voice && !can(dc_state::permissions::SEND_VOICE_MESSAGES) {
+        return Some("quj4DY");
     }
     None
 }
@@ -1249,28 +1266,120 @@ fn forward_unavailable_reason(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serde_json::json;
+
+    fn message(extra: serde_json::Value) -> Message {
+        let mut value = json!({"id": "5", "channel_id": "23", "content": "", "timestamp": "2026-11-07T19:00:00+00:00",
+            "author": {"id": "7", "username": "a", "discriminator": "0"}});
+        for (key, field) in extra.as_object().unwrap() {
+            value[key] = field.clone();
+        }
+        Message::from_value(&value).unwrap()
+    }
+
+    fn check() -> ForwardCheck {
+        ForwardCheck {
+            source_restricted: false,
+            destination_restricted: false,
+            guild_destination: true,
+            nsfw_disallowed: false,
+            restrict_experiment: false,
+            external_sticker: false,
+        }
+    }
 
     #[test]
-    fn nsfw_forward_refuses_unrestricted_channels_and_dms_only() {
-        // NSFW origin -> non-NSFW guild channel: refused.
+    fn age_restricted_messages_only_go_to_age_restricted_channels() {
+        let plain = message(json!({"content": "hi"}));
+        let from_nsfw = ForwardCheck {
+            source_restricted: true,
+            ..check()
+        };
         assert_eq!(
-            forward_unavailable_reason(true, false, true, false, false, false, true, true, true),
-            Some(dc_intl::t("KgPx1D")),
+            destination_unavailable(&plain, &from_nsfw, |_| true),
+            Some("KgPx1D")
         );
-        // NSFW origin -> DM: refused.
+        let dm = ForwardCheck {
+            guild_destination: false,
+            ..from_nsfw
+        };
         assert_eq!(
-            forward_unavailable_reason(true, false, false, false, false, false, true, true, true),
-            Some(dc_intl::t("KgPx1D")),
+            destination_unavailable(&plain, &dm, |_| true),
+            Some("KgPx1D")
         );
-        // NSFW origin -> NSFW guild channel: allowed.
+        let both = ForwardCheck {
+            source_restricted: true,
+            destination_restricted: true,
+            ..check()
+        };
+        assert_eq!(destination_unavailable(&plain, &both, |_| true), None);
         assert_eq!(
-            forward_unavailable_reason(true, true, true, false, false, false, true, true, true),
-            None,
+            dc_intl::t("KgPx1D"),
+            "Messages cannot be forwarded from age-restricted to unrestricted channels."
         );
-        // Non-NSFW origin -> embed without permission: refused with Wr4RIX.
+    }
+
+    #[test]
+    fn an_account_without_nsfw_cannot_forward_into_an_age_restricted_channel_under_the_experiment()
+    {
+        let plain = message(json!({"content": "hi"}));
+        let into = ForwardCheck {
+            destination_restricted: true,
+            nsfw_disallowed: true,
+            ..check()
+        };
+        assert_eq!(destination_unavailable(&plain, &into, |_| true), None);
+        let on = ForwardCheck {
+            restrict_experiment: true,
+            ..into
+        };
         assert_eq!(
-            forward_unavailable_reason(false, false, true, false, true, false, true, false, true),
-            Some(dc_intl::t("Wr4RIX")),
+            destination_unavailable(&plain, &on, |_| true),
+            Some("QHrFo6")
         );
+        let allowed = ForwardCheck {
+            nsfw_disallowed: false,
+            ..on
+        };
+        assert_eq!(destination_unavailable(&plain, &allowed, |_| true), None);
+    }
+
+    #[test]
+    fn permissions_are_checked_in_order() {
+        let embed_only = message(json!({"embeds": [{"type": "rich", "title": "t"}]}));
+        let no_embed_links = |permission| permission != dc_state::permissions::EMBED_LINKS;
+        assert_eq!(
+            destination_unavailable(&embed_only, &check(), no_embed_links),
+            Some("Wr4RIX")
+        );
+        // Text alongside the embed lets it through.
+        let with_text =
+            message(json!({"content": "see", "embeds": [{"type": "rich", "title": "t"}]}));
+        assert_eq!(
+            destination_unavailable(&with_text, &check(), no_embed_links),
+            None
+        );
+        let sticker = ForwardCheck {
+            external_sticker: true,
+            ..check()
+        };
+        assert_eq!(
+            destination_unavailable(&with_text, &sticker, |permission| permission
+                != dc_state::stickers::USE_EXTERNAL_STICKERS),
+            Some("0Yyrua")
+        );
+        let file = message(
+            json!({"attachments": [{"id": "1", "filename": "b.txt", "url": "u", "size": 1}]}),
+        );
+        assert_eq!(
+            destination_unavailable(&file, &check(), |_| false),
+            Some("P7yvbm")
+        );
+        // DMs skip the permission checks.
+        let dm = ForwardCheck {
+            guild_destination: false,
+            ..check()
+        };
+        assert_eq!(destination_unavailable(&file, &dm, |_| false), None);
     }
 }

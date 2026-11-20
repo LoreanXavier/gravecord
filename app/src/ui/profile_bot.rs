@@ -939,10 +939,12 @@ impl Root {
         let default: Hsla = palette.token("--text-default").into();
         let strong: Hsla = palette.token("--text-strong").into();
         let subtle: Hsla = palette.token("--text-subtle").into();
-        let bio = body
-            .and_then(|body| body["user_profile"]["bio"].as_str())
-            .filter(|bio| !bio.is_empty())
-            .map(str::to_owned);
+        let bio = super::dm_profile::shown_bio(
+            id,
+            body.and_then(|body| body["user_profile"]["bio"].as_str())
+                .filter(|bio| !bio.is_empty())
+                .map(str::to_owned),
+        );
         let app = profile_app(body);
         let links: Vec<(&'static str, &'static str, String)> = app
             .map(|app| {

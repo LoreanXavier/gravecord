@@ -719,7 +719,7 @@ impl Root {
         // `V` of 263577: no address, or an address that failed, draws the UnknownGameIcon; while it loads, nothing.
         let unknown = match &art_key {
             None => true,
-            Some((key, _)) => picture.is_none() && self.images.retries.failures(key) > 0,
+            Some((key, _)) => picture.is_none() && self.image_has_failed(key),
         };
         let light = palette.theme.as_ref().map_or_else(
             || super::theme() == super::Theme::Light,

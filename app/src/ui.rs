@@ -3085,10 +3085,16 @@ impl Root {
         }
     }
 
-    /// Failed downloads of `key` since it last arrived, for the harness's state lines.
+    /// Failed downloads of `key` since it last arrived (harness state lines).
     #[cfg(feature = "capture")]
     pub(crate) fn image_failures(&self, key: &str) -> u32 {
         self.images.retries.failures(key)
+    }
+
+    /// Whether `key` has failed to download (permanent 4xx such as 404, or retries exhausted): drives
+    /// "Image failed to load." on attachments (module 251843) and `UnknownGameIcon` on activity cards (module 263577).
+    pub(crate) fn image_has_failed(&self, key: &str) -> bool {
+        self.images.retries.is_resting(key) || self.images.retries.failures(key) > 0
     }
 
     /// Capture only: `image state <prefix>`: each picture whose key starts with `prefix`, arrived (with its encoded
@@ -3183,6 +3189,9 @@ impl Root {
                 .retries
                 .failed(&key, failure, image_retry::now_ms(), image_retry::jitter())
         else {
+            if self.images.retries.is_resting(&key) {
+                cx.notify();
+            }
             return;
         };
         cx.spawn(async move |this, cx| {
@@ -11164,6 +11173,13 @@ impl Render for Root {
                 this.clips_mouse_up(cx);
                 this.video_mouse_up(cx);
             }))
+            // The text area menu (module 216603) of the field the release landed on, after that field's handlers.
+            .on_mouse_up(
+                MouseButton::Right,
+                cx.listener(|this, event: &gpui::MouseUpEvent, window, cx| {
+                    this.text_area_right_click(event.position, window, cx);
+                }),
+            )
             // A scroll moves the content under a pointer that stays put; Chromium then sends the element a
             // mouseleave and its tooltip closes. gpui only rereads hover on a move, so the tooltip closes here.
             .on_scroll(cx.listener(|this, _: &gpui::ScrollEvent, _, cx| {
@@ -11727,7 +11743,9 @@ impl Render for Root {
                         || this.group_leave.is_some()
                         || this.member_action.is_some())
                 {
-                    this.group_edit = None;
+                    if this.group_edit.is_some() {
+                        this.request_close_group_edit(cx);
+                    }
                     this.group_leave = None;
                     this.friend_menu = None;
                     this.confirm_remove_friend = None;
@@ -12287,12 +12305,12 @@ impl Render for Root {
             .children(self.pin_modal(cx))
             .children(self.voice_discard_modal(cx))
             .children(self.too_long_modal(cx))
+            .children(self.search_popout(window, cx))
             .children(
                 (!self.context.in_overlay)
                     .then(|| self.context_menu_layer(window, cx))
                     .flatten(),
             )
-            .children(self.search_popout(window, cx))
             .children(self.file_menu_layer(cx))
             .children(self.file_expanded_layer(cx))
             .children(self.view_reactions_modal(cx))
@@ -12359,6 +12377,7 @@ impl Render for Root {
             .children(self.friend_nickname_layer(window, cx))
             .children(self.favorite_nickname_layer(window, cx))
             .children(self.group_edit_layer(window, cx))
+            .children(self.chat_alert_modal_at(true, cx))
             .children(self.group_leave_layer(cx))
             .children(self.member_action_layer(window, cx))
             .children(self.inventory_about_layer(cx))

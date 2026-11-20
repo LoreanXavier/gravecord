@@ -89,6 +89,8 @@ pub(super) enum Target {
     },
     /// The composer's text area (`textarea-context`, module 194400).
     Composer,
+    /// Any other text field (`textarea-context`, module 216603); the field is kept in `State::text_area`.
+    TextArea,
     /// The "..." of an application's page in the directory (module 586193 `l4`).
     AppDirectory(Id),
     /// The "..." of an app's page in the App Launcher (`app-details-more-menu` of module 621377).
@@ -104,6 +106,8 @@ pub(super) enum Target {
     PickerEmoji,
     /// A sticker of the sticker picker (the same `expression-picker` menu).
     PickerSticker(Id),
+    /// A GIF of the GIF picker's results (`gif-picker`, module 400017); its link is kept in `State::gif_link`.
+    PickerGif,
     /// A soundboard sound of the picker or of a server's Soundboard page (`sound-button-context`, module 923819);
     /// the sound is kept in `State::picker_sound`.
     PickerSound,
@@ -379,13 +383,17 @@ pub(super) enum Act {
     PluginCopyStickerLink,
     PluginOpenStickerLink,
     PluginRemoveFromRecents,
+    /// "Edit Tags" of a forum post (module 565846): a submenu of the forum's tags, five at most.
+    EditTags,
+    /// "Copy Link" of a GIF picker result (`gif-picker`, module 400017).
+    CopyGifLink,
 }
 
 impl Act {
     /// Every row kind once (`Correction` with its first index). `ordinal` is an exhaustive match, so adding a variant
     /// without listing it here fails the build or the `act_list_is_complete` test.
     #[cfg(test)]
-    pub(super) const ALL: [Act; 168] = [
+    pub(super) const ALL: [Act; 170] = [
         Act::InventoryAbout,
         Act::InventoryHide,
         Act::ReportApp,
@@ -554,6 +562,8 @@ impl Act {
         Act::PluginRemoveFromRecents,
         Act::ConnectSpotify,
         Act::PlayOnSpotify,
+        Act::EditTags,
+        Act::CopyGifLink,
     ];
 
     #[cfg(test)]
@@ -727,6 +737,8 @@ impl Act {
             Act::PluginRemoveFromRecents => 165,
             Act::ConnectSpotify => 166,
             Act::PlayOnSpotify => 167,
+            Act::EditTags => 168,
+            Act::CopyGifLink => 169,
         }
     }
 }
@@ -755,6 +767,7 @@ pub(super) fn status(act: Act) -> Status {
         | Act::ShowAllChannels => Wired,
         Act::EditMainProfile | Act::EditGuildProfile => Wired,
         Act::CleanUpGdms | Act::GdmSortNewest | Act::GdmSortOldest => Wired,
+        Act::EditTags | Act::CopyGifLink => Wired,
         Act::ModerationSettings => Wired,
         Act::ToggleProgressBar => Wired,
         Act::RemovePermission => Wired,
@@ -922,6 +935,8 @@ pub(super) struct SubRow {
     pub radio: bool,
     /// Opens a nested list, as the "Category" row of a channel's Move to.
     pub caret: bool,
+    /// A check box row (`MenuCheckboxItem`) without a role dot: a forum tag of Edit Tags.
+    pub checkbox: bool,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -1499,6 +1514,24 @@ pub(super) fn composer_items(menu: &ComposerMenu) -> Vec<Entry> {
     tidy(out)
 }
 
+/// `textarea-context` of module 216603, for every field but the composer: the corrections of module 413756, then Add to
+/// Dictionary (or Remove from Dictionary), the Spellcheck switch and Languages, then Cut and Copy when text is
+/// selected, then Paste.
+pub(super) fn text_area_items(menu: &ComposerMenu) -> Vec<Entry> {
+    let full = composer_items(&ComposerMenu {
+        ai: false,
+        ..menu.clone()
+    });
+    // The composer's ungrouped Suggestions and Send Message Button rows are its own.
+    tidy(
+        full.into_iter()
+            .filter(|entry| {
+                !matches!(entry, Entry::Row(row) if matches!(row.act, Act::Suggestions | Act::SubmitButton))
+            })
+            .collect(),
+    )
+}
+
 /// What a channel menu depends on.
 #[derive(Clone, Copy, Debug, Default)]
 pub(super) struct ChannelFacts {
@@ -2069,6 +2102,72 @@ pub(super) struct ThreadFacts {
     /// A private thread (type 12) and its `thread_metadata.invitable`.
     pub private_thread: bool,
     pub invitable: bool,
+    /// Edit Tags shows (module 565846): see `can_edit_tags`.
+    pub edit_tags: bool,
+}
+
+/// Module 565846: a forum post whose forum offers tags the account may use (`OT` of module 691060: the moderated ones
+/// only with Manage Threads), edited by a member with Manage Threads in the forum or by the post's owner while the post
+/// is not locked (`NI` of module 406704), in a post that is open, or archived and unlocked for one who can send in it
+/// (`Id`).
+pub(super) fn can_edit_tags(facts: &ThreadFacts, usable_tags: usize) -> bool {
+    facts.forum_post
+        && usable_tags > 0
+        && (facts.manage || (!facts.locked && facts.owner))
+        && (!facts.archived || (!facts.locked && facts.can_send))
+}
+
+/// The tags Edit Tags lists (`OT` of module 691060): the forum's, the moderated ones only with Manage Threads.
+pub(super) fn usable_tags(
+    available: &[dc_state::ForumTag],
+    manage: bool,
+) -> Vec<&dc_state::ForumTag> {
+    available
+        .iter()
+        .filter(|tag| manage || !tag.moderated)
+        .collect()
+}
+
+/// The applied-tag limit of module 565846 (`p.length >= 5`).
+pub(super) const MAX_POST_TAGS: usize = 5;
+
+/// One tag of the Edit Tags submenu: ticked when applied; a tag not applied is disabled once five are.
+pub(super) fn edit_tag_rows(tags: &[&dc_state::ForumTag], applied: &[Id]) -> Vec<SubRow> {
+    let full = applied.len() >= MAX_POST_TAGS;
+    tags.iter()
+        .map(|tag| {
+            let on = applied.contains(&tag.id);
+            SubRow {
+                label: tag.name.clone(),
+                on,
+                disabled: full && !on,
+                id: tag.id,
+                checkbox: true,
+                ..SubRow::default()
+            }
+        })
+        .collect()
+}
+
+/// The applied tags after Edit Tags toggled `tag` (`updateForumPostTags`): removed when applied, else added while
+/// under five; `None` when nothing changes.
+pub(super) fn toggled_tags(applied: &[Id], tag: Id) -> Option<Vec<Id>> {
+    if applied.contains(&tag) {
+        return Some(applied.iter().copied().filter(|id| *id != tag).collect());
+    }
+    if applied.len() >= MAX_POST_TAGS {
+        return None;
+    }
+    let mut next = applied.to_vec();
+    next.push(tag);
+    Some(next)
+}
+
+/// `gif-picker` of module 400017: Copy Link with the link icon.
+pub(super) fn gif_picker_items() -> Vec<Entry> {
+    vec![Entry::Row(
+        Row::new(Act::CopyGifLink, dc_intl::tr("Copy Link")).icon("menu_copy_message_link"),
+    )]
 }
 
 /// `lK` of module 406704 (`R(thread, canSend, manage)`): an archived thread may be opened again by whoever can send in
@@ -2156,6 +2255,9 @@ pub(super) fn thread_items(facts: ThreadFacts, level: &str) -> Vec<Entry> {
             Act::EditChannel,
             post_or(facts, dc_intl::tr("Edit Post"), dc_intl::tr("Edit Thread")),
         ));
+    }
+    if facts.edit_tags {
+        own.push(Row::new(Act::EditTags, dc_intl::t!("436ZFw")).caret());
     }
     own.push(Row::new(Act::CopyLink, dc_intl::tr("Copy Link")));
     group(&mut out, own);
@@ -2698,8 +2800,10 @@ pub(super) struct Open {
 #[derive(Default)]
 pub(super) struct State {
     pub open: Option<Open>,
-    /// What the composer menu was opened on, kept while it is open.
+    /// What the composer menu (or the text area menu) was opened on, kept while it is open.
     pub composer: Option<ComposerMenu>,
+    /// The field the text area menu was opened on.
+    pub text_area: Option<gpui::WeakEntity<crate::editor::Editor>>,
     /// People whose soundboard sounds are muted here, for the whole session.
     pub soundboard_muted: std::collections::HashSet<Id>,
     /// Each person's volume (a factor) and local mute in the call.
@@ -2719,6 +2823,8 @@ pub(super) struct State {
     pub recent_entry: Option<serde_json::Value>,
     /// The picker's emoji whose menu is open.
     pub picker_emoji: Option<super::picker::Item>,
+    /// The GIF whose menu is open: its link.
+    pub gif_link: Option<String>,
     /// The sound whose menu is open, and the call's server it was opened for (`activeCallGuildId`).
     pub picker_sound: Option<(super::soundboard::Sound, Option<Id>)>,
     /// The open menu was opened in the overlay window (its Chat widget's rail): it is drawn there, not in the app.
@@ -3505,6 +3611,7 @@ impl Root {
                 ),
             ],
             Target::Composer => composer_items(&self.context.composer.clone().unwrap_or_default()),
+            Target::TextArea => text_area_items(&self.context.composer.clone().unwrap_or_default()),
             Target::AppDirectory(_) => app_directory_items(developer),
             Target::LauncherApp(_) => launcher_app_items(developer),
             Target::GameProfile(_) => game_profile_items(developer),
@@ -3606,6 +3713,7 @@ impl Root {
             Target::PickerSticker(sticker) => {
                 picker_sticker_items(self.sticker_favorited(sticker), developer)
             }
+            Target::PickerGif => gif_picker_items(),
             Target::PickerEmoji => {
                 let Some(item) = self.context.picker_emoji.clone() else {
                     return;
@@ -3775,29 +3883,35 @@ impl Root {
                     .is_some_and(|parent| self.my_permission(guild, Some(parent), MANAGE_THREADS));
                 let owner = thread.owner_id.is_some()
                     && thread.owner_id == self.stores.current_user.as_ref().map(|me| me.id);
+                let mut facts = ThreadFacts {
+                    unread: self.has_unread_or_mentions(id),
+                    manage,
+                    owner,
+                    joined: thread.joined,
+                    developer,
+                    archived: thread.archived,
+                    locked: thread.locked,
+                    forum_post: parent.as_ref().is_some_and(Channel::is_forum),
+                    pinned: thread.pinned(),
+                    can_send: parent.as_ref().is_some_and(|parent| {
+                        self.my_permission(guild, Some(parent), permissions::SEND_MESSAGES)
+                            && self.my_permission(
+                                guild,
+                                Some(parent),
+                                permissions::SEND_MESSAGES_IN_THREADS,
+                            )
+                    }),
+                    media: parent.as_ref().is_some_and(Channel::is_media),
+                    private_thread: thread.kind == 12,
+                    invitable: thread.invitable,
+                    edit_tags: false,
+                };
+                let tags = parent.as_ref().map_or(0, |parent| {
+                    usable_tags(&parent.available_tags, manage).len()
+                });
+                facts.edit_tags = can_edit_tags(&facts, tags);
                 thread_items(
-                    ThreadFacts {
-                        unread: self.has_unread_or_mentions(id),
-                        manage,
-                        owner,
-                        joined: thread.joined,
-                        developer,
-                        archived: thread.archived,
-                        locked: thread.locked,
-                        forum_post: parent.as_ref().is_some_and(Channel::is_forum),
-                        pinned: thread.pinned(),
-                        can_send: parent.as_ref().is_some_and(|parent| {
-                            self.my_permission(guild, Some(parent), permissions::SEND_MESSAGES)
-                                && self.my_permission(
-                                    guild,
-                                    Some(parent),
-                                    permissions::SEND_MESSAGES_IN_THREADS,
-                                )
-                        }),
-                        media: parent.as_ref().is_some_and(Channel::is_media),
-                        private_thread: thread.kind == 12,
-                        invitable: thread.invitable,
-                    },
+                    facts,
                     level_label(
                         THREAD_LEVELS
                             .iter()
@@ -4607,6 +4721,12 @@ impl Root {
                 }
             }
             // Module 740024. GAP: an expired signed address is not refreshed first (`AN` of module 679164).
+            (Act::CopyGifLink, Target::PickerGif) => {
+                if let Some(link) = self.context.gif_link.clone() {
+                    cx.write_to_clipboard(ClipboardItem::new_string(link));
+                    self.show_success_toast(dc_intl::t!("+5kSoW").to_owned(), cx);
+                }
+            }
             (Act::CopyLink, Target::AttachmentLink) => {
                 if let Some((url, _)) = self.context.attachment_link.take() {
                     cx.write_to_clipboard(ClipboardItem::new_string(url));
@@ -4674,8 +4794,10 @@ impl Root {
                     | Target::InventoryFeed
                     | Target::InventoryFeedAtPointer
                     | Target::Composer
+                    | Target::TextArea
                     | Target::Favorites
                     | Target::PickerEmoji
+                    | Target::PickerGif
                     | Target::PickerSound
                     | Target::DmListMore
                     | Target::GdmCleanupSort
@@ -5164,13 +5286,16 @@ impl Root {
                     guild: Some(guild),
                 },
             ) => self.run_stage_user_act(act, guild, user),
-            (Act::Correction(index), Target::Composer) => {
+            (Act::Correction(index), Target::Composer | Target::TextArea) => {
                 let menu = self.context.composer.clone().unwrap_or_default();
+                let Some(field) = self.context_field(target) else {
+                    return;
+                };
                 if let (Some((range, word)), Some(correction)) =
                     (menu.word, menu.suggestions.get(usize::from(index)))
                 {
                     let correction = correction.clone();
-                    self.composer.update(cx, |composer, cx| {
+                    field.update(cx, |composer, cx| {
                         // The word must still stand where it was; else the occurrence nearest the caret is used.
                         let text = composer.text().to_owned();
                         let range = if text.get(range.clone()) == Some(word.as_str()) {
@@ -5187,20 +5312,17 @@ impl Root {
                             composer.replace_range(range, &correction, cx);
                         }
                     });
-                    window.focus(
-                        &gpui::Focusable::focus_handle(self.composer.read(cx), cx),
-                        cx,
-                    );
+                    window.focus(&gpui::Focusable::focus_handle(field.read(cx), cx), cx);
                 }
             }
-            (Act::AddToDictionary, Target::Composer) => {
+            (Act::AddToDictionary, Target::Composer | Target::TextArea) => {
                 if let Some((_, word)) = self.context.composer.as_ref().and_then(|m| m.word.clone())
                 {
                     spellcheck::learn_word(&word);
                     self.refresh_spelling(cx);
                 }
             }
-            (Act::RemoveFromDictionary, Target::Composer) => {
+            (Act::RemoveFromDictionary, Target::Composer | Target::TextArea) => {
                 if let Some(word) = self
                     .context
                     .composer
@@ -5214,23 +5336,31 @@ impl Root {
             (Act::SubmitButton, Target::Composer) => {
                 self.toggle_pref("enable_send_button_outside_experiment", false);
             }
-            (Act::Spellcheck, Target::Composer) => {
+            (Act::Spellcheck, Target::Composer | Target::TextArea) => {
                 spellcheck::toggle();
                 self.refresh_spelling(cx);
             }
-            (Act::SpellLanguages, Target::Composer) => cx.open_url(SPELLCHECK_HELP),
+            (Act::SpellLanguages, Target::Composer | Target::TextArea) => {
+                cx.open_url(SPELLCHECK_HELP)
+            }
             (Act::AiFixGrammar, Target::Composer) => self.composer_fix_grammar(cx),
             (Act::AiTranslate, Target::Composer) => self.composer_translate(None, cx),
             (Act::AiTransforms, Target::Composer) => {}
-            (Act::Cut, Target::Composer) => self
-                .composer
-                .update(cx, |composer, cx| composer.cut_selection(cx)),
-            (Act::Copy, Target::Composer) => self
-                .composer
-                .update(cx, |composer, cx| composer.copy_selection(cx)),
-            (Act::Paste, Target::Composer) => self
-                .composer
-                .update(cx, |composer, cx| composer.paste_clipboard(cx)),
+            (Act::Cut, Target::Composer | Target::TextArea) => {
+                if let Some(field) = self.context_field(target) {
+                    field.update(cx, |field, cx| field.cut_selection(cx));
+                }
+            }
+            (Act::Copy, Target::Composer | Target::TextArea) => {
+                if let Some(field) = self.context_field(target) {
+                    field.update(cx, |field, cx| field.copy_selection(cx));
+                }
+            }
+            (Act::Paste, Target::Composer | Target::TextArea) => {
+                if let Some(field) = self.context_field(target) {
+                    field.update(cx, |field, cx| field.paste_clipboard(cx));
+                }
+            }
             // The caret of a muted target's row is gone: the row itself turns the mute off.
             (
                 Act::Mute,
@@ -5374,7 +5504,119 @@ impl Root {
     /// The store changed: the composer draws its underlines again (a learned word is gone from them at once).
     fn refresh_spelling(&mut self, cx: &mut Context<Self>) {
         self.composer.update(cx, |_, cx| cx.notify());
+        if let Some(field) = self
+            .context
+            .text_area
+            .as_ref()
+            .and_then(|field| field.upgrade())
+        {
+            field.update(cx, |_, cx| cx.notify());
+        }
         cx.notify();
+    }
+
+    /// A forum post's usable tags (`OT` of module 691060) and the ones applied to it.
+    fn post_tags(&self, thread: Id) -> Option<(Vec<dc_state::ForumTag>, Vec<Id>)> {
+        let guild = self.guild_of_channel(thread)?;
+        let known = self.stores.guild(guild)?;
+        let post = known.threads.iter().find(|known| known.id == thread)?;
+        let forum = known
+            .channels
+            .iter()
+            .find(|channel| channel.id == post.parent_id)?;
+        let manage = self.my_permission(guild, Some(forum), MANAGE_THREADS);
+        Some((
+            usable_tags(&forum.available_tags, manage)
+                .into_iter()
+                .cloned()
+                .collect(),
+            post.applied_tags.clone(),
+        ))
+    }
+
+    /// `updateForumPostTags` (module 919577): an archived post is opened again first (`unarchiveThreadIfNecessary`),
+    /// then `PATCH /channels/{post}` with the tags.
+    fn update_post_tags(&mut self, thread: Id, tags: Vec<Id>) {
+        let archived = self
+            .thread_state(thread)
+            .is_some_and(|(archived, _)| archived);
+        let mut steps = std::collections::VecDeque::new();
+        if archived {
+            steps.push_back((thread, json!({"archived": false})));
+        }
+        steps.push_back((
+            thread,
+            json!({"applied_tags": tags.iter().map(Id::to_string).collect::<Vec<_>>()}),
+        ));
+        self.send_thread_chain(steps);
+    }
+
+    /// The field a composer or text area menu acts on.
+    fn context_field(&self, target: Target) -> Option<gpui::Entity<crate::editor::Editor>> {
+        match target {
+            Target::TextArea => self.context.text_area.as_ref()?.upgrade(),
+            _ => Some(self.composer.clone()),
+        }
+    }
+
+    /// A right button release that landed on a text field other than the composer (whose menu its own handler opens):
+    /// the text area menu of module 216603 on that field, with the field's misspelling under the pointer.
+    pub(super) fn text_area_right_click(
+        &mut self,
+        at: Point<Pixels>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(field) = crate::editor::take_right_click(at).and_then(|field| field.upgrade())
+        else {
+            return;
+        };
+        if field == self.composer {
+            return;
+        }
+        let click = field.update(cx, |field, cx| field.context_click(at, window, cx));
+        let text = field.read(cx).text().to_owned();
+        let enabled = spellcheck::is_enabled();
+        let menu = ComposerMenu {
+            learned: click
+                .word
+                .is_none()
+                .then(|| spellcheck::find_learned_word_in(&text))
+                .flatten(),
+            word: click.word.clone().filter(|_| enabled),
+            suggestions: Vec::new(),
+            selection: !click.selected.is_empty(),
+            enabled,
+            send_button: false,
+            ai: false,
+            ai_busy: None,
+        };
+        self.context.text_area = Some(field.downgrade());
+        let Some((_, word)) = menu.word.clone() else {
+            self.context.composer = Some(menu);
+            self.open_context_menu(Target::TextArea, at, cx);
+            return;
+        };
+        cx.spawn(async move |this, cx| {
+            let suggestions = cx
+                .background_executor()
+                .spawn(async move {
+                    spellcheck::ensure_languages();
+                    spellcheck::service()
+                        .suggest(&word)
+                        .recv()
+                        .ok()
+                        .unwrap_or_default()
+                })
+                .await;
+            let _ = this.update(cx, |this, cx| {
+                let mut menu = menu;
+                menu.suggestions = suggestions;
+                this.context.composer = Some(menu);
+                this.open_context_menu(Target::TextArea, at, cx);
+            });
+        })
+        .detach();
     }
 
     pub(super) fn dm_user(&self, channel: Id) -> Option<Id> {
@@ -5576,6 +5818,15 @@ impl Root {
             Act::MoveTo => self.move_rows(target),
             // Not in the pinned client: PinDMs' submenu (`plugin_hooks/pin_dms.rs`).
             Act::PluginPinDms => self.pin_dms_sub_rows(target),
+            Act::EditTags => match target {
+                Target::Thread(thread) => self
+                    .post_tags(thread)
+                    .map(|(tags, applied)| {
+                        edit_tag_rows(&tags.iter().collect::<Vec<_>>(), &applied)
+                    })
+                    .unwrap_or_default(),
+                _ => Vec::new(),
+            },
             _ => Vec::new(),
         }
     }
@@ -5759,6 +6010,15 @@ impl Root {
             // Not in the pinned client: PinDMs' submenu (`plugin_hooks/pin_dms.rs`).
             Act::PluginPinDms => {
                 self.pin_dms_run_sub(target, index, cx);
+            }
+            Act::EditTags => {
+                if let (Some(row), Target::Thread(thread)) = (row, target)
+                    && let Some((_, applied)) = self.post_tags(thread)
+                    && let Some(next) = toggled_tags(&applied, row.id)
+                {
+                    self.update_post_tags(thread, next);
+                }
+                return;
             }
             Act::AiTranslate => {
                 if let Some((code, name)) = super::composer_ai::languages().into_iter().nth(index) {
@@ -6100,9 +6360,11 @@ impl Root {
                         sub: second,
                         radio,
                         caret,
+                        checkbox,
                         ..
                     } = sub;
-                    let role = dot.is_some();
+                    // A role's row, or a forum tag's (Edit Tags): the check box at the end.
+                    let role = dot.is_some() || checkbox;
                     if radio || caret {
                         let height = if second.is_some() { 52. } else { 36. };
                         let mut item = div()
@@ -6219,6 +6481,8 @@ impl Root {
                                 )
                                 .into_any_element(),
                         ),
+                        // GAP: a forum tag's emoji (`leftIcon` of module 565846) is not drawn before its name.
+                        None if checkbox => None,
                         None => on
                             .then(|| icon("checkbox_check", 16., "--text-link").into_any_element()),
                     };
@@ -7746,6 +8010,140 @@ mod tests {
                 "-",
                 "Paste"
             ]
+        );
+    }
+
+    #[test]
+    fn edit_tags_follows_module_565846() {
+        let post = ThreadFacts {
+            forum_post: true,
+            owner: true,
+            can_send: true,
+            ..ThreadFacts::default()
+        };
+        assert!(can_edit_tags(&post, 2));
+        // No usable tags, not a forum post, a locked post of someone else's or our own without Manage Threads.
+        assert!(!can_edit_tags(&post, 0));
+        assert!(!can_edit_tags(
+            &ThreadFacts {
+                forum_post: false,
+                ..post
+            },
+            2
+        ));
+        assert!(!can_edit_tags(
+            &ThreadFacts {
+                locked: true,
+                ..post
+            },
+            2
+        ));
+        assert!(can_edit_tags(
+            &ThreadFacts {
+                locked: true,
+                owner: false,
+                manage: true,
+                ..post
+            },
+            2
+        ));
+        assert!(!can_edit_tags(
+            &ThreadFacts {
+                owner: false,
+                ..post
+            },
+            2
+        ));
+        // An archived post only while unlocked and the account can send in it.
+        assert!(can_edit_tags(
+            &ThreadFacts {
+                archived: true,
+                ..post
+            },
+            2
+        ));
+        assert!(!can_edit_tags(
+            &ThreadFacts {
+                archived: true,
+                can_send: false,
+                ..post
+            },
+            2
+        ));
+        // The row sits before Copy Link with a caret.
+        let rows = labels(&thread_items(
+            ThreadFacts {
+                edit_tags: true,
+                joined: true,
+                ..post
+            },
+            "x",
+        ));
+        let at = rows.iter().position(|label| label == "Edit Tags").unwrap();
+        assert_eq!(rows[at + 1], "Copy Link");
+    }
+
+    #[test]
+    fn edit_tags_lists_usable_tags_and_stops_at_five() {
+        let tag = |id: Id, moderated: bool| dc_state::ForumTag {
+            id,
+            name: format!("t{id}"),
+            moderated,
+            emoji_name: None,
+            emoji_id: None,
+        };
+        let forum = vec![tag(1, false), tag(2, true), tag(3, false)];
+        assert_eq!(usable_tags(&forum, false).len(), 2);
+        assert_eq!(usable_tags(&forum, true).len(), 3);
+        let tags = usable_tags(&forum, true);
+        let rows = edit_tag_rows(&tags, &[1]);
+        assert!(rows[0].on && rows[0].checkbox && !rows[1].on && !rows[1].disabled);
+        let full = edit_tag_rows(&tags, &[1, 4, 5, 6, 7]);
+        assert!(!full[0].disabled && full[1].disabled);
+        assert_eq!(toggled_tags(&[1, 3], 1), Some(vec![3]));
+        assert_eq!(toggled_tags(&[1], 3), Some(vec![1, 3]));
+        assert_eq!(toggled_tags(&[1, 4, 5, 6, 7], 3), None);
+        assert_eq!(dc_intl::t("436ZFw"), "Edit Tags");
+    }
+
+    #[test]
+    fn gif_picker_menu_is_copy_link() {
+        assert_eq!(labels(&gif_picker_items()), ["Copy Link"]);
+    }
+
+    #[test]
+    fn text_area_menu_has_spelling_then_cut_copy_paste_without_the_composer_rows() {
+        let menu = ComposerMenu {
+            word: Some((0..4, "helo".to_owned())),
+            suggestions: vec!["hello".to_owned()],
+            selection: true,
+            enabled: true,
+            send_button: true,
+            ai: true,
+            ..ComposerMenu::default()
+        };
+        assert_eq!(
+            labels(&text_area_items(&menu)),
+            [
+                "hello",
+                "-",
+                "Add to Dictionary",
+                "Spellcheck",
+                "Languages",
+                "-",
+                "Cut",
+                "Copy",
+                "Paste"
+            ]
+        );
+        // Nothing selected: Paste alone in its group (module 216603 shows Cut and Copy only with text).
+        let menu = ComposerMenu {
+            enabled: true,
+            ..ComposerMenu::default()
+        };
+        assert_eq!(
+            labels(&text_area_items(&menu)),
+            ["Spellcheck", "Languages", "-", "Paste"]
         );
     }
 }

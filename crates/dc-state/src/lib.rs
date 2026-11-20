@@ -3534,7 +3534,8 @@ impl Stores {
             data["user"]["id"].as_str().unwrap_or_default(),
         )
         .with_legacy(&data["experiments"]);
-        self.guild_experiments = experiments::GuildExperiments::from_ready(&data["guild_experiments"]);
+        self.guild_experiments =
+            experiments::GuildExperiments::from_ready(&data["guild_experiments"]);
         self.mfa_enabled = data["user"]["mfa_enabled"].as_bool().unwrap_or(false);
         self.account = Account::from_value(&data["user"]);
         self.theme = data["user_settings_proto"]
@@ -4109,12 +4110,10 @@ impl Stores {
         if data["embeds"].is_array() {
             known.embeds = Embed::list(&data["embeds"], Some(message));
         }
-        // Removing or replacing attachments arrives on MESSAGE_UPDATE with the new list.
-        if let Some(attachments) = data["attachments"].as_array() {
-            known.attachments = attachments
-                .iter()
-                .filter_map(Attachment::from_value)
-                .collect();
+        // An edit that removes a file (or a late update that carries the uploaded list) replaces the attachments, as
+        // the official update merge does (`null != t.attachments && n.set("attachments", ...)`, `R` in module 432005).
+        if let Some(files) = data["attachments"].as_array() {
+            known.attachments = files.iter().filter_map(Attachment::from_value).collect();
         }
     }
 

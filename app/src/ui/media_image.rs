@@ -632,6 +632,7 @@ impl Root {
             color("--background-base-low")
         };
 
+        let failed = image.is_none() && attachment.is_image() && self.image_has_failed(&key);
         let inner_media = div()
             .relative()
             .size_full()
@@ -640,6 +641,7 @@ impl Root {
             .children(image.map(|image| {
                 self.media_image_frozen(image, &key, (w, h), 8., (mosaic_cell, hidden), cx)
             }))
+            .when(failed && !hidden, |this| this.child(self.image_failed(cx)))
             .children((mosaic_cell && !hidden && attachment.is_video()).then(|| {
                 div()
                     .absolute()
@@ -700,6 +702,57 @@ impl Root {
                     )
             })
             .children(wrapper.and_then(|wrapper| self.attachment_obscure_overlay(wrapper, cx)))
+            .into_any_element()
+    }
+}
+
+/// The illustration of the Image component's error state (`u` of module 251843, 288x162).
+const IMAGE_ERROR_ART: &str = "https://cdn.discordapp.com/assets/content/9704f78db46554d26701d9fdb7e758c796cea63014fb2633f39bec487a3322b6.svg";
+
+impl Root {
+    /// The Image component's error state (`N` of module 251843): the picture did not load. `imageErrorWrapper_W6wEGA`
+    /// (a centred column, `--space-8` apart and above and below) with the illustration (`imageErrorIllustration`: at
+    /// most 160 wide, contained, shrinking first) and "Image failed to load." (`body-sm/medium`, `text-subtle`).
+    fn image_failed(&self, cx: &mut Context<Self>) -> AnyElement {
+        let art = self.images.get(IMAGE_ERROR_ART).cloned();
+        if art.is_none() {
+            self.want_image(IMAGE_ERROR_ART.to_owned(), IMAGE_ERROR_ART.to_owned(), cx);
+        }
+        div()
+            .absolute()
+            .inset_0()
+            .flex()
+            .flex_col()
+            .items_center()
+            .justify_center()
+            .gap(px(8.))
+            .py(px(8.))
+            .overflow_hidden()
+            .child(
+                div()
+                    .min_h(px(0.))
+                    .flex_shrink(1.)
+                    .w_full()
+                    .max_w(px(160.))
+                    .flex()
+                    .justify_center()
+                    .children(art.map(|art| {
+                        img(art)
+                            .w_full()
+                            .max_h_full()
+                            .h(px(160. * 162. / 288.))
+                            .object_fit(gpui::ObjectFit::Contain)
+                    })),
+            )
+            .child(
+                div()
+                    .flex_none()
+                    .text_size(px(14.))
+                    .line_height(px(18.))
+                    .font_weight(FontWeight(500.))
+                    .text_color(color("--text-subtle"))
+                    .child(dc_intl::t!("sAfT1K")),
+            )
             .into_any_element()
     }
 }

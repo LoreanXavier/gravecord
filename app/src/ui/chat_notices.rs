@@ -128,12 +128,34 @@ pub(super) enum Then {
     AcceptStranger {
         user: Id,
     },
+    /// Discard of "Discard unsaved changes?" (module 73028): the Edit Group modal closes without saving.
+    DiscardGroupEdit,
     /// The confirm of modules 32167 and 413201 (`gF` of module 365258, after 413201 sets the activity default).
     SyncActivity {
         restricting: bool,
         guilds: Vec<Id>,
         activity: Option<u64>,
     },
+}
+
+/// The id of module 73028's confirm, drawn over the Edit Group modal it guards.
+pub(super) const DISCARD_GROUP_EDIT: &str = "group-edit-discard";
+
+/// `closeOrShowDiscardChangesAlert` of module 73028: "Discard unsaved changes?", its body, Keep Editing and Discard
+/// (`critical-primary`).
+pub(super) fn discard_group_edit_alert() -> Alert {
+    let mut alert = Alert::show(
+        DISCARD_GROUP_EDIT,
+        dc_intl::t("pvRCSu"),
+        Some(dc_intl::t("DRi46S").to_owned()),
+        Some(dc_intl::t("DmDzZB").to_owned()),
+        Some(dc_intl::t("6GQDFu").to_owned()),
+        Then::DiscardGroupEdit,
+    );
+    if let Some(confirm) = alert.buttons.last_mut() {
+        confirm.tone = Tone::Critical;
+    }
+    alert
 }
 
 /// Module 987176 as module 190857 opens it before a message request is accepted: the title, its subtitle, Cancel and
@@ -568,7 +590,7 @@ pub(super) fn thread_bodies(step: ThreadStep, archived: bool, flags: u64) -> Vec
 
 impl Root {
     /// The thread as the store has it: (archived, flags).
-    fn thread_state(&self, thread: Id) -> Option<(bool, u64)> {
+    pub(super) fn thread_state(&self, thread: Id) -> Option<(bool, u64)> {
         self.stores
             .guilds
             .iter()
@@ -820,7 +842,7 @@ impl Root {
         }
     }
 
-    fn send_thread_chain(&mut self, steps: VecDeque<(Id, Value)>) {
+    pub(super) fn send_thread_chain(&mut self, steps: VecDeque<(Id, Value)>) {
         let chain = self.chat_extra.next_chain;
         self.chat_extra.next_chain += 1;
         self.chat_extra.chains.insert(chain, steps);
@@ -961,6 +983,7 @@ impl Root {
             Then::LeaveGuild { guild } => {
                 let _ = self.requests.send(super::guild_menu::leave_request(guild));
             }
+            Then::DiscardGroupEdit => self.group_edit = None,
             Then::DeauthorizeApp { application, token } => {
                 self.deauthorize_app(&application, &token, cx);
             }
@@ -1075,7 +1098,20 @@ impl Root {
     }
 
     pub(super) fn chat_alert_modal(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
-        let alert = self.chat_extra.alert.clone()?;
+        self.chat_alert_modal_at(false, cx)
+    }
+
+    /// The alert, at its own place in the layers, or (`over_group_edit`) the discard confirm over Edit Group.
+    pub(super) fn chat_alert_modal_at(
+        &self,
+        over_group_edit: bool,
+        cx: &mut Context<Self>,
+    ) -> Option<AnyElement> {
+        let alert = self
+            .chat_extra
+            .alert
+            .clone()
+            .filter(|alert| (alert.id == DISCARD_GROUP_EDIT) == over_group_edit)?;
         let blocked = alert.content.as_ref().is_some_and(Content::blocks_submit);
         let buttons = alert
             .buttons
