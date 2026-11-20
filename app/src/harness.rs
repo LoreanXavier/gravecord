@@ -1621,6 +1621,34 @@ pub async fn run(
                 let line = root.update(cx, |root, cx| root.script_role_sub(&arg, cx));
                 let _ = writeln!(output, "{line}");
             }
+            // `search-feedback [bad|step2|good]`: Search Feedback Survey modal (770950).
+            ["search-feedback", rest @ ..] => {
+                let arg = rest.join(" ");
+                let line = window
+                    .update(cx, |_, window, cx| {
+                        root.update(cx, |root, cx| root.script_search_feedback(&arg, window, cx))
+                    })
+                    .unwrap_or_default();
+                let _ = writeln!(output, "{line}");
+            }
+            // `payment-picker [default|streamer]`: Payment Source Picker modal (637141).
+            ["payment-picker", rest @ ..] => {
+                let arg = rest.join(" ");
+                let line = root.update(cx, |root, cx| root.script_payment_picker(&arg, cx));
+                let _ = writeln!(output, "{line}");
+            }
+            // `notification-center [rows|empty]`: Notification Center Inbox overlay (617823).
+            ["notification-center", rest @ ..] => {
+                let arg = rest.join(" ");
+                let line = root.update(cx, |root, cx| root.script_notification_center(&arg, cx));
+                let _ = writeln!(output, "{line}");
+            }
+            // `shop-gift-cta [friend|self|generic|connected|error]`: Wishlist & Game Shop Gift CTA modal (909004).
+            ["shop-gift-cta", rest @ ..] => {
+                let arg = rest.join(" ");
+                let line = root.update(cx, |root, cx| root.script_shop_gift_cta(&arg, cx));
+                let _ = writeln!(output, "{line}");
+            }
             // `search last` / `search answer <total>`: the open search's request, and an answer to it;
             // `search page <n>`: the pager turns to page n.
             ["search", rest @ ..] => {

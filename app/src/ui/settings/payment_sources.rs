@@ -464,6 +464,396 @@ impl Root {
             }
         }
     }
+
+    /// Payment source picker dropdown & trial notice (`Ay` of module 637141).
+    pub(in crate::ui) fn payment_source_picker_layer(
+        &self,
+        cx: &mut gpui::Context<Self>,
+    ) -> Option<AnyElement> {
+        let picker = self.payment_source_picker.as_ref()?;
+        let hide_pii = picker.hide_personal_info;
+        let selected_id = picker.selected_id.as_deref();
+        let selected_src = picker
+            .sources
+            .iter()
+            .find(|s| Some(s.id.as_str()) == selected_id)
+            .or_else(|| picker.sources.first());
+        let selected_label = selected_src
+            .map(|s| picker_option_label(s, hide_pii))
+            .unwrap_or_else(|| dc_intl::t("eQ2bLp").to_owned());
+        let notice = selected_src.and_then(|s| picker_trial_notice(s, picker.is_trial));
+        let dropdown_open = picker.dropdown_open;
+
+        let dialog = div()
+            .id("payment-source-picker-modal")
+            .occlude()
+            .w(px(460.))
+            .rounded(px(12.))
+            .border_1()
+            .border_color(color("--border-subtle"))
+            .bg(color("--background-surface-high"))
+            .shadow(vec![gpui::BoxShadow {
+                color: gpui::hsla(0., 0., 0., 0.3),
+                offset: gpui::point(px(0.), px(12.)),
+                blur_radius: px(28.),
+                spread_radius: px(0.),
+                inset: false,
+            }])
+            .flex()
+            .flex_col()
+            .child(
+                div()
+                    .px(px(24.))
+                    .pt(px(20.))
+                    .pb(px(12.))
+                    .flex()
+                    .items_center()
+                    .justify_between()
+                    .child(
+                        div()
+                            .text_size(px(18.))
+                            .line_height(px(24.))
+                            .font_weight(FontWeight(600.))
+                            .text_color(color("--text-strong"))
+                            .child(dc_intl::tr("Payment Methods")),
+                    )
+                    .child(
+                        div()
+                            .id("payment-picker-close")
+                            .size(px(32.))
+                            .rounded(px(8.))
+                            .cursor_pointer()
+                            .hover(|s| s.bg(color("--background-mod-subtle")))
+                            .flex()
+                            .items_center()
+                            .justify_center()
+                            .child(crate::ui::icon(
+                                "modal_close",
+                                18.,
+                                "--interactive-icon-default",
+                            ))
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                this.payment_source_picker = None;
+                                cx.notify();
+                            })),
+                    ),
+            )
+            .child(
+                div()
+                    .px(px(24.))
+                    .pb(px(20.))
+                    .flex()
+                    .flex_col()
+                    .gap(px(12.))
+                    .when(picker.sources.is_empty(), |col| {
+                        col.child(
+                            div()
+                                .id("payment-picker-add-empty")
+                                .h(px(40.))
+                                .w_full()
+                                .rounded(px(8.))
+                                .bg(color("--control-primary-background-default"))
+                                .cursor_pointer()
+                                .flex()
+                                .items_center()
+                                .justify_center()
+                                .text_size(px(14.))
+                                .font_weight(FontWeight(500.))
+                                .text_color(color("--white"))
+                                .child(dc_intl::t("eQ2bLp"))
+                                .on_click(cx.listener(|this, _, _, cx| {
+                                    this.payment_source_picker = None;
+                                    this.billing_address_modal = Some(
+                                        crate::ui::billing_address::BillingAddressModal::demo(
+                                            "US", false,
+                                        ),
+                                    );
+                                    cx.notify();
+                                })),
+                        )
+                    })
+                    .when(!picker.sources.is_empty(), |col| {
+                        col.child(
+                            div()
+                                .id("payment-picker-select")
+                                .h(px(44.))
+                                .px(px(12.))
+                                .rounded(px(8.))
+                                .border_1()
+                                .border_color(color("--input-border-default"))
+                                .bg(color("--input-background-default"))
+                                .cursor_pointer()
+                                .flex()
+                                .items_center()
+                                .justify_between()
+                                .child(
+                                    div()
+                                        .text_size(px(14.))
+                                        .font_weight(FontWeight(500.))
+                                        .text_color(color("--text-strong"))
+                                        .child(selected_label),
+                                )
+                                .child(crate::ui::icon(
+                                    "chevron_down",
+                                    16.,
+                                    "--interactive-icon-default",
+                                ))
+                                .on_click(cx.listener(|this, _, _, cx| {
+                                    if let Some(p) = this.payment_source_picker.as_mut() {
+                                        p.dropdown_open = !p.dropdown_open;
+                                    }
+                                    cx.notify();
+                                })),
+                        )
+                        .when(dropdown_open, |col| {
+                            col.child(
+                                div()
+                                    .p(px(4.))
+                                    .rounded(px(8.))
+                                    .border_1()
+                                    .border_color(color("--border-subtle"))
+                                    .bg(color("--background-base-lower"))
+                                    .flex()
+                                    .flex_col()
+                                    .gap(px(2.))
+                                    .children(picker.sources.iter().enumerate().map(|(i, src)| {
+                                        let is_sel = selected_src.is_some_and(|s| s.id == src.id);
+                                        let label = picker_option_label(src, hide_pii);
+                                        let id_str = src.id.clone();
+                                        div()
+                                            .id(gpui::SharedString::from(format!(
+                                                "payment-picker-opt-{i}"
+                                            )))
+                                            .h(px(36.))
+                                            .px(px(10.))
+                                            .rounded(px(6.))
+                                            .when(is_sel, |d| {
+                                                d.bg(color("--background-mod-strong"))
+                                            })
+                                            .hover(|s| s.bg(color("--background-mod-subtle")))
+                                            .cursor_pointer()
+                                            .flex()
+                                            .items_center()
+                                            .justify_between()
+                                            .text_size(px(14.))
+                                            .text_color(color("--text-strong"))
+                                            .child(label)
+                                            .when(is_sel, |d| {
+                                                d.child(crate::ui::icon(
+                                                    "select_check",
+                                                    14.,
+                                                    "--control-primary-background-default",
+                                                ))
+                                            })
+                                            .on_click(cx.listener(move |this, _, _, cx| {
+                                                if let Some(p) =
+                                                    this.payment_source_picker.as_mut()
+                                                {
+                                                    p.selected_id = Some(id_str.clone());
+                                                    p.dropdown_open = false;
+                                                }
+                                                cx.notify();
+                                            }))
+                                    }))
+                                    .child(div().my(px(4.)).h(px(1.)).bg(color("--border-subtle")))
+                                    .child(
+                                        div()
+                                            .id("payment-picker-add-new")
+                                            .h(px(36.))
+                                            .px(px(10.))
+                                            .rounded(px(6.))
+                                            .hover(|s| s.bg(color("--background-mod-subtle")))
+                                            .cursor_pointer()
+                                            .flex()
+                                            .items_center()
+                                            .text_size(px(14.))
+                                            .font_weight(FontWeight(500.))
+                                            .text_color(color("--text-link"))
+                                            .child(dc_intl::t("eQ2bLp"))
+                                            .on_click(cx.listener(|this, _, _, cx| {
+                                                this.payment_source_picker = None;
+                                                this.billing_address_modal = Some(
+                                                    crate::ui::billing_address::BillingAddressModal::demo(
+                                                        "US", false,
+                                                    ),
+                                                );
+                                                cx.notify();
+                                            })),
+                                    ),
+                            )
+                        })
+                    })
+                    .when_some(notice, |col, (text, is_error)| {
+                        col.child(
+                            div()
+                                .p(px(10.))
+                                .rounded(px(8.))
+                                .border_1()
+                                .border_color(if is_error {
+                                    color("--text-feedback-critical")
+                                } else {
+                                    color("--border-subtle")
+                                })
+                                .bg(color("--background-base-lower"))
+                                .text_size(px(12.))
+                                .line_height(px(16.))
+                                .text_color(if is_error {
+                                    color("--text-feedback-critical")
+                                } else {
+                                    color("--text-muted")
+                                })
+                                .child(text),
+                        )
+                    }),
+            );
+
+        Some(
+            gpui::deferred(
+                div()
+                    .id("payment-picker-backdrop")
+                    .occlude()
+                    .absolute()
+                    .inset_0()
+                    .bg(gpui::rgba(0x000000b8))
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        this.payment_source_picker = None;
+                        cx.notify();
+                    }))
+                    .child(dialog),
+            )
+            .with_priority(3)
+            .into_any_element(),
+        )
+    }
+
+    #[cfg(feature = "capture")]
+    pub(crate) fn script_payment_picker(
+        &mut self,
+        arg: &str,
+        cx: &mut gpui::Context<Self>,
+    ) -> String {
+        use serde_json::json;
+        let sources: Vec<PaymentSource> = [
+            json!({"id": "1", "type": 1, "brand": "visa", "last_4": "4242", "expires_month": 3, "expires_year": 2029, "default": true}),
+            json!({"id": "2", "type": 2, "email": "billing@example.com"}),
+            json!({"id": "3", "type": 16, "bank": "rabobank"}),
+            json!({"id": "4", "type": 15, "bank": "bank_austria"}),
+            json!({"id": "5", "type": 20}),
+            json!({"id": "6", "type": 21}),
+        ]
+        .iter()
+        .filter_map(PaymentSource::from_server)
+        .collect();
+        self.payment_source_picker = Some(PaymentSourcePickerState {
+            sources,
+            selected_id: Some("1".to_owned()),
+            hide_personal_info: arg == "streamer",
+            is_trial: true,
+            dropdown_open: true,
+        });
+        cx.notify();
+        format!("payment-picker: {arg}")
+    }
+}
+
+/// Interactive Payment Source Picker modal state (module 637141).
+#[derive(Clone, Debug)]
+pub(in crate::ui) struct PaymentSourcePickerState {
+    pub sources: Vec<PaymentSource>,
+    pub selected_id: Option<String>,
+    pub hide_personal_info: bool,
+    pub is_trial: bool,
+    pub dropdown_open: bool,
+}
+
+/// Official `T`/`Sm` option label formatter of module 637141 (all 18 payment source types + Streamer Mode masking).
+pub(in crate::ui) fn picker_option_label(source: &PaymentSource, hide_pii: bool) -> String {
+    use dc_intl::Arg;
+    use std::borrow::Cow;
+    const MASKED_EMAIL: &str = "***@***.***";
+    match source.kind {
+        kind::CARD => {
+            if source.is_link_bank() {
+                let date = if hide_pii { "********" } else { "2026-01-01" };
+                dc_intl::format("ixNwPL", &[("date", Arg::Str(Cow::Borrowed(date)))])
+            } else {
+                let last4 = if hide_pii { "****" } else { &source.last4 };
+                dc_intl::format("QvBAQk", &[("last4", Arg::Str(Cow::Borrowed(last4)))])
+            }
+        }
+        kind::PAYPAL | kind::SOFORT | kind::PRZELEWY24 => {
+            if hide_pii {
+                MASKED_EMAIL.to_owned()
+            } else {
+                source.email.clone()
+            }
+        }
+        kind::GIROPAY => dc_intl::t("y+0MQZ").to_owned(),
+        kind::PAYSAFE_CARD => dc_intl::t("e3APTT").to_owned(),
+        kind::GCASH => dc_intl::t("PjehcF").to_owned(),
+        kind::GRABPAY_MY => dc_intl::t("T5davE").to_owned(),
+        kind::MOMO_WALLET => dc_intl::t("J0A1Vk").to_owned(),
+        kind::VENMO => {
+            if hide_pii {
+                "***".to_owned()
+            } else {
+                format!("@{}", source.username)
+            }
+        }
+        kind::KAKAOPAY => dc_intl::t("CSVexi").to_owned(),
+        kind::GOPAY_WALLET => dc_intl::t("43J8JK").to_owned(),
+        kind::BANCONTACT => dc_intl::t("1ITkfq").to_owned(),
+        kind::EPS => {
+            let bank = bank_name(EPS_BANKS, source.bank.as_deref().unwrap_or(""));
+            dc_intl::format("hSPoZw", &[("bank", Arg::Str(Cow::Owned(bank)))])
+        }
+        kind::IDEAL => {
+            let raw = source.bank.as_deref().unwrap_or("");
+            if raw.is_empty() {
+                dc_intl::t("nSbwqC").to_owned()
+            } else {
+                let bank = bank_name(IDEAL_BANKS, raw);
+                dc_intl::format("9kUlRU", &[("bank", Arg::Str(Cow::Owned(bank)))])
+            }
+        }
+        kind::CASH_APP => {
+            if hide_pii {
+                "***".to_owned()
+            } else {
+                source.username.clone()
+            }
+        }
+        kind::PIX => dc_intl::t("JG3WQU").to_owned(),
+        kind::PIX_AUTOMATICO => dc_intl::t("JkKNss").to_owned(),
+        _ => dc_intl::t("eQ2bLp").to_owned(),
+    }
+}
+
+/// Official `H` trial notice of module 637141 (`SvheW9` ineligible, `d7ZLKA` authorization hold).
+pub(in crate::ui) fn picker_trial_notice(
+    source: &PaymentSource,
+    is_trial: bool,
+) -> Option<(String, bool)> {
+    if !is_trial {
+        return None;
+    }
+    let can_redeem_trial = matches!(source.kind, kind::CARD | kind::PAYPAL);
+    if !can_redeem_trial {
+        return Some((dc_intl::t("SvheW9").to_owned(), true));
+    }
+    let msg = dc_intl::format(
+        "d7ZLKA",
+        &[(
+            "helpDeskArticle",
+            dc_intl::Arg::Str(std::borrow::Cow::Borrowed(
+                "https://support.discord.com/hc/en-us/articles/360017693772",
+            )),
+        )],
+    );
+    Some((msg, false))
 }
 
 #[cfg(test)]
@@ -558,5 +948,30 @@ mod tests {
         assert_eq!(link.type_string(), "bank");
         assert_eq!(link.subtext(), None);
         assert!(text(&link.label()).starts_with("Bank Account added on "));
+    }
+
+    #[test]
+    fn picker_labels_and_streamer_masking_match_637141() {
+        let card = PaymentSource::from_server(
+            &json!({"id": "1", "type": 1, "brand": "visa", "last_4": "4242"}),
+        )
+        .unwrap();
+        assert_eq!(picker_option_label(&card, false), "Card ending in 4242");
+        assert_eq!(picker_option_label(&card, true), "Card ending in ****");
+
+        let paypal =
+            PaymentSource::from_server(&json!({"id": "2", "type": 2, "email": "a@b.com"})).unwrap();
+        assert_eq!(picker_option_label(&paypal, false), "a@b.com");
+        assert_eq!(picker_option_label(&paypal, true), "***@***.***");
+
+        let pix = PaymentSource::from_server(&json!({"id": "3", "type": 20})).unwrap();
+        assert_eq!(picker_option_label(&pix, false), "Pix");
+        assert!(picker_trial_notice(&pix, true).unwrap().1);
+        assert!(!picker_trial_notice(&card, true).unwrap().1);
+
+        for kind_id in [3u64, 7, 8, 9, 10, 12, 13, 14, 15, 16, 20, 21] {
+            let src = PaymentSource::from_server(&json!({"id": "x", "type": kind_id})).unwrap();
+            assert!(!picker_option_label(&src, false).is_empty());
+        }
     }
 }

@@ -10,6 +10,7 @@ pub(super) mod data;
 mod editor_wishlist;
 mod featured;
 pub(in crate::ui) mod game_shop;
+pub(crate) mod gift_cta;
 mod modal;
 
 use super::discover::{gutter_scrollbar, text};
