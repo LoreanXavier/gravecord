@@ -6,6 +6,7 @@
 pub(crate) mod art_cache;
 mod browse;
 pub(in crate::ui) mod cards;
+pub(crate) mod checkout_review;
 pub(super) mod data;
 mod editor_wishlist;
 mod featured;
