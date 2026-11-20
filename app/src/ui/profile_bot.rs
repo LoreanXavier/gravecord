@@ -1309,6 +1309,475 @@ fn bot_data_access_tab(
         .into_any_element()
 }
 
+impl Root {
+    /// `ip` of module 148540 (`RestrictedUserProfileModalV2`): confirmation dialog before viewing a blocked or
+    /// ignored user's profile (`b33pLD` "Show Profile?", `T7QiLn`/`MnEowy`, `kcuWva`, `QxrDY1`/`W6fjkS`,
+    /// `783123` `UJKH/l` "Yes, show profile", `254828` `QbcRCJ` "Don't show this again").
+    pub(super) fn restricted_profile_modal(
+        &mut self,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Option<AnyElement> {
+        let open = self.full_profile.as_ref()?;
+        let user_id = open.user;
+        let guild = open.guild;
+        let blocked = self.is_blocked(user_id);
+        let name = self
+            .stores
+            .users
+            .get(&user_id)
+            .map(|u| u.display_name().to_owned())
+            .unwrap_or_else(|| user_id.to_string());
+        let subtitle = dc_intl::format(
+            if blocked { "T7QiLn" } else { "MnEowy" },
+            &[(
+                "username",
+                dc_intl::Arg::Str(std::borrow::Cow::Borrowed(&name)),
+            )],
+        );
+        let aria = dc_intl::format(
+            "KRe1Fk",
+            &[("name", dc_intl::Arg::Str(std::borrow::Cow::Borrowed(&name)))],
+        );
+        let bullet1 = dc_intl::t("kcuWva");
+        let bullet2 = dc_intl::t(if blocked { "QxrDY1" } else { "W6fjkS" });
+        let avatar_img = self.stores.users.get(&user_id).and_then(|u| {
+            let (key, _) = self.guild_avatar_source_in(u, guild);
+            self.images.get(&key).cloned()
+        });
+        let no_avatar = avatar_img.is_none();
+
+        let bullet_row = |text_str: &'static str| {
+            div()
+                .w_full()
+                .px(px(12.))
+                .py(px(10.))
+                .rounded(px(8.))
+                .bg(super::color("--background-surface-high"))
+                .border_1()
+                .border_color(super::color("--border-subtle"))
+                .flex()
+                .items_center()
+                .gap(px(10.))
+                .child(super::icon("circle_check", 18., "--text-default"))
+                .child(
+                    div()
+                        .flex_1()
+                        .min_w(px(0.))
+                        .text_size(px(14.))
+                        .line_height(px(20.))
+                        .text_color(super::color("--text-default"))
+                        .child(text_str),
+                )
+        };
+
+        let card = div()
+            .id("restricted-profile-modal")
+            .occlude()
+            .on_mouse_down(gpui::MouseButton::Left, |_, _, cx| cx.stop_propagation())
+            .relative()
+            .w(px(440.))
+            .rounded(px(12.))
+            .border_1()
+            .border_color(super::color("--border-subtle"))
+            .bg(super::color("--background-base-low"))
+            .p(px(24.))
+            .flex()
+            .flex_col()
+            .items_center()
+            .gap(px(16.))
+            .when(false, |el| el.child(aria))
+            // Close button
+            .child(
+                div()
+                    .id("restricted-profile-close")
+                    .absolute()
+                    .top(px(14.))
+                    .right(px(14.))
+                    .size(px(28.))
+                    .rounded(px(6.))
+                    .hover(|s| s.bg(super::color("--background-mod-subtle")))
+                    .cursor_pointer()
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        this.full_profile = None;
+                        cx.notify();
+                    }))
+                    .child(super::icon("close", 16., "--interactive-text-default")),
+            )
+            // Avatar
+            .child(
+                div()
+                    .mt(px(8.))
+                    .size(px(80.))
+                    .rounded_full()
+                    .overflow_hidden()
+                    .bg(super::color("--background-surface-high"))
+                    .border_2()
+                    .border_color(super::color("--border-subtle"))
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .children(avatar_img.map(|im| {
+                        img(im)
+                            .size_full()
+                            .rounded_full()
+                            .object_fit(gpui::ObjectFit::Cover)
+                    }))
+                    .when(no_avatar, |el| {
+                        el.child(super::icon(
+                            "safety_warning",
+                            32.,
+                            "--text-feedback-warning",
+                        ))
+                    }),
+            )
+            // Heading + subtitle
+            .child(
+                div()
+                    .w_full()
+                    .flex()
+                    .flex_col()
+                    .items_center()
+                    .gap(px(6.))
+                    .text_center()
+                    .child(
+                        div()
+                            .text_size(px(20.))
+                            .line_height(px(26.))
+                            .font_weight(FontWeight(600.))
+                            .text_color(super::color("--text-strong"))
+                            .child(dc_intl::t("b33pLD")),
+                    )
+                    .child(
+                        div()
+                            .text_size(px(14.))
+                            .line_height(px(20.))
+                            .font_weight(FontWeight(500.))
+                            .text_color(super::color("--text-default"))
+                            .child(subtitle),
+                    ),
+            )
+            // Two reassurance bullets
+            .child(
+                div()
+                    .w_full()
+                    .flex()
+                    .flex_col()
+                    .gap(px(8.))
+                    .child(bullet_row(bullet1))
+                    .child(bullet_row(bullet2)),
+            )
+            // Action buttons (`783123` + `254828`)
+            .child(
+                div()
+                    .w_full()
+                    .mt(px(4.))
+                    .flex()
+                    .flex_col()
+                    .gap(px(8.))
+                    .child(
+                        div()
+                            .id("restricted-profile-show")
+                            .w_full()
+                            .h(px(38.))
+                            .rounded(px(8.))
+                            .bg(super::color("--control-secondary-background-default"))
+                            .hover(|s| s.bg(super::color("--control-secondary-background-hover")))
+                            .cursor_pointer()
+                            .flex()
+                            .items_center()
+                            .justify_center()
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                if let Some(open) = this.full_profile.as_mut() {
+                                    open.restricted_revealed = true;
+                                }
+                                cx.notify();
+                            }))
+                            .child(
+                                div()
+                                    .text_size(px(14.))
+                                    .line_height(px(18.))
+                                    .font_weight(FontWeight(500.))
+                                    .text_color(super::color("--control-secondary-text-default"))
+                                    .child(dc_intl::t("UJKH/l")),
+                            ),
+                    )
+                    .when(!blocked, |col| {
+                        col.child(
+                            div()
+                                .id("restricted-profile-dont-show-again")
+                                .w_full()
+                                .h(px(34.))
+                                .rounded(px(8.))
+                                .hover(|s| s.bg(super::color("--background-mod-subtle")))
+                                .cursor_pointer()
+                                .flex()
+                                .items_center()
+                                .justify_center()
+                                .on_click(cx.listener(move |this, _, _, cx| {
+                                    this.restricted_profile_bypass.insert(user_id);
+                                    if let Some(open) = this.full_profile.as_mut() {
+                                        open.restricted_revealed = true;
+                                    }
+                                    cx.notify();
+                                }))
+                                .child(
+                                    div()
+                                        .text_size(px(14.))
+                                        .line_height(px(18.))
+                                        .font_weight(FontWeight(500.))
+                                        .text_color(super::color("--text-link"))
+                                        .child(dc_intl::t("QbcRCJ")),
+                                ),
+                        )
+                    }),
+            );
+
+        Some(
+            deferred(
+                div()
+                    .id("restricted-profile-backdrop")
+                    .occlude()
+                    .absolute()
+                    .inset_0()
+                    .bg(rgba(0x000000b3))
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .on_mouse_down(
+                        gpui::MouseButton::Left,
+                        cx.listener(|this, _, _, cx| {
+                            this.full_profile = None;
+                            cx.notify();
+                        }),
+                    )
+                    .child(card),
+            )
+            .with_priority(3)
+            .into_any_element(),
+        )
+    }
+
+    /// `is` of module 148540 (`NonUserBotProfileModal`): webhook / system / `0000` bot profile modal with a single
+    /// Bio tab (`ZzAR2Y`), bio text, and Created On date (`A//N4k`).
+    pub(super) fn non_user_bot_modal(
+        &mut self,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Option<AnyElement> {
+        let open = self.full_profile.as_ref()?;
+        let user_id = open.user;
+        let guild = open.guild;
+        let user = self.stores.users.get(&user_id)?.clone();
+        let display_name = user.display_name().to_owned();
+        let body = self.fetched.get(&format!("profile:{user_id}"));
+        let bio = body
+            .and_then(|b| b["user_profile"]["bio"].as_str())
+            .unwrap_or_default()
+            .to_owned();
+        let palette = self.profile_palette(user_id, guild, false);
+        let strong: Hsla = palette.token("--text-strong").into();
+        let default: Hsla = palette.token("--text-default").into();
+        let subtle: Hsla = palette.token("--text-subtle").into();
+        let created_el =
+            self.full_profile_member_since(user_id, guild, strong, default, subtle, cx);
+        let (av_key, _) = self.guild_avatar_source_in(&user, guild);
+        let av_img = self.images.get(&av_key).cloned();
+
+        let card = div()
+            .id("non-user-bot-profile-modal")
+            .occlude()
+            .on_mouse_down(gpui::MouseButton::Left, |_, _, cx| cx.stop_propagation())
+            .w(px(600.))
+            .max_h(px((self.viewport.1 - 32.).max(320.)))
+            .rounded(px(12.))
+            .overflow_hidden()
+            .border_1()
+            .border_color(super::color("--border-subtle"))
+            .bg(super::color("--background-base-low"))
+            .flex()
+            .flex_col()
+            // Banner
+            .child(
+                div()
+                    .relative()
+                    .w_full()
+                    .h(px(120.))
+                    .bg(super::color("--control-primary-background-default"))
+                    .child(
+                        div()
+                            .id("non-user-bot-close")
+                            .absolute()
+                            .top(px(12.))
+                            .right(px(12.))
+                            .size(px(28.))
+                            .rounded_full()
+                            .bg(rgba(0x00000066))
+                            .cursor_pointer()
+                            .flex()
+                            .items_center()
+                            .justify_center()
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                this.full_profile = None;
+                                cx.notify();
+                            }))
+                            .child(super::icon("close", 14., "--text-overlay-light")),
+                    ),
+            )
+            // Avatar + name
+            .child(
+                div()
+                    .px(px(24.))
+                    .pt(px(16.))
+                    .pb(px(12.))
+                    .flex()
+                    .items_center()
+                    .gap(px(16.))
+                    .child(
+                        div()
+                            .size(px(72.))
+                            .rounded_full()
+                            .overflow_hidden()
+                            .bg(super::color("--background-surface-high"))
+                            .border_2()
+                            .border_color(super::color("--border-subtle"))
+                            .children(av_img.map(|im| {
+                                img(im)
+                                    .size_full()
+                                    .rounded_full()
+                                    .object_fit(gpui::ObjectFit::Cover)
+                            })),
+                    )
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w(px(0.))
+                            .flex()
+                            .flex_col()
+                            .gap(px(2.))
+                            .child(
+                                div()
+                                    .text_size(px(20.))
+                                    .line_height(px(24.))
+                                    .font_weight(FontWeight(700.))
+                                    .text_color(super::color("--text-strong"))
+                                    .child(display_name),
+                            )
+                            .child(
+                                div()
+                                    .text_size(px(13.))
+                                    .line_height(px(18.))
+                                    .text_color(super::color("--text-muted"))
+                                    .child(user.username.clone()),
+                            ),
+                    ),
+            )
+            // Single Bio tab header (`ZzAR2Y`)
+            .child(
+                div()
+                    .mx(px(24.))
+                    .border_b_1()
+                    .border_color(super::color("--border-subtle"))
+                    .flex()
+                    .child(
+                        div()
+                            .pb(px(8.))
+                            .border_b_2()
+                            .border_color(super::color("--text-strong"))
+                            .text_size(px(14.))
+                            .line_height(px(18.))
+                            .font_weight(FontWeight(500.))
+                            .text_color(super::color("--text-strong"))
+                            .child(dc_intl::t("ZzAR2Y")),
+                    ),
+            )
+            // Bio + Created On (`A//N4k`)
+            .child(
+                div()
+                    .p(px(24.))
+                    .flex()
+                    .flex_col()
+                    .gap(px(16.))
+                    .when(!bio.is_empty(), |col| {
+                        col.child(
+                            div()
+                                .text_size(px(14.))
+                                .line_height(px(20.))
+                                .text_color(super::color("--text-default"))
+                                .child(bio),
+                        )
+                    })
+                    .child(
+                        div()
+                            .flex()
+                            .flex_col()
+                            .gap(px(4.))
+                            .child(
+                                div()
+                                    .text_size(px(12.))
+                                    .line_height(px(16.))
+                                    .font_weight(FontWeight(600.))
+                                    .text_color(super::color("--text-strong"))
+                                    .child(dc_intl::t("A//N4k")),
+                            )
+                            .child(created_el),
+                    ),
+            );
+
+        Some(
+            deferred(
+                div()
+                    .id("non-user-bot-backdrop")
+                    .occlude()
+                    .absolute()
+                    .inset_0()
+                    .bg(rgba(0x000000b3))
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .on_mouse_down(
+                        gpui::MouseButton::Left,
+                        cx.listener(|this, _, _, cx| {
+                            this.full_profile = None;
+                            cx.notify();
+                        }),
+                    )
+                    .child(card),
+            )
+            .with_priority(3)
+            .into_any_element(),
+        )
+    }
+
+    #[cfg(feature = "capture")]
+    pub(crate) fn script_restricted_profile(
+        &mut self,
+        mode: &str,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> String {
+        let uid: Id = 903_573_240_566_399_026;
+        self.restricted_profile_bypass.remove(&uid);
+        match mode.trim() {
+            "ignored" => {
+                self.stores.relationships.remove(&uid);
+                self.stores.ignored.insert(uid);
+            }
+            _ => {
+                self.stores.ignored.remove(&uid);
+                self.stores
+                    .relationships
+                    .insert(uid, super::blocked::RELATIONSHIP_BLOCKED);
+            }
+        }
+        self.open_full_profile(uid, window, cx);
+        format!("restricted-profile: mode={}", mode.trim())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -185,6 +185,7 @@ mod av_errors;
 #[cfg(feature = "capture")]
 mod avatar_demo;
 mod avatar_play;
+mod billing_address;
 mod boost_page;
 pub(crate) mod cdn;
 mod channel_browser;
@@ -201,6 +202,7 @@ pub(crate) mod frame_clock;
 mod game_genres;
 mod game_profile;
 pub(crate) mod gif_tiles;
+mod gift_ready;
 mod graphic_dialogs;
 mod guild_events;
 mod guild_guide;
@@ -230,6 +232,7 @@ mod nameplate_animation;
 mod nameplates;
 mod nitro;
 mod nitro_purchase;
+mod nitro_upsell;
 mod notice_bar;
 mod notifications;
 mod notify;
@@ -643,6 +646,14 @@ pub struct Root {
     monetization_modal: Option<server_monetization::MonetizationModal>,
     /// Application command permissions editor modal (module 365200, `command_permissions`).
     command_permissions: Option<command_permissions::CommandPermissionsModal>,
+    /// Billing address form modal (module 718718, `billing_address`).
+    billing_address_modal: Option<billing_address::BillingAddressModal>,
+    /// Nitro offer countdown & feature upsell modal (module 811611, `nitro_upsell`).
+    nitro_upsell_modal: Option<nitro_upsell::NitroUpsellModal>,
+    /// Gift Ready post-purchase delivery modal (module 998035, `gift_ready`).
+    gift_ready_modal: Option<gift_ready::GiftReadyModal>,
+    /// Ignored users whose "Don't show this again" restricted-profile bypass was clicked (module 148540 `ip`).
+    restricted_profile_bypass: std::collections::HashSet<dc_state::Id>,
     /// Soundboard Echo store & hover details state (module 120246, `soundboard_echo`).
     soundboard_echo: soundboard_echo::SoundboardEchoState,
     badge_modal: Option<badge_modal::BadgeModal>,
@@ -1182,6 +1193,10 @@ impl Root {
             invite_accept: None,
             monetization_modal: None,
             command_permissions: None,
+            billing_address_modal: None,
+            nitro_upsell_modal: None,
+            gift_ready_modal: None,
+            restricted_profile_bypass: std::collections::HashSet::new(),
             soundboard_echo: Default::default(),
             badge_modal: None,
             app_storefront: None,
@@ -11322,6 +11337,18 @@ impl Render for Root {
                     cx.stop_propagation();
                     return;
                 }
+                if keys.key == "escape"
+                    && (this.billing_address_modal.is_some()
+                        || this.nitro_upsell_modal.is_some()
+                        || this.gift_ready_modal.is_some())
+                {
+                    this.billing_address_modal = None;
+                    this.nitro_upsell_modal = None;
+                    this.gift_ready_modal = None;
+                    cx.notify();
+                    cx.stop_propagation();
+                    return;
+                }
                 if keys.key == "escape" && this.voice_rec.borrow().confirm {
                     this.voice_rec.borrow_mut().confirm = false;
                     cx.notify();
@@ -12531,6 +12558,9 @@ impl Render for Root {
             .children(invite_accept_layer)
             .children(monetization_layer)
             .children(command_permissions_layer)
+            .children(self.billing_address_overlay(cx))
+            .children(self.nitro_upsell_overlay(cx))
+            .children(self.gift_ready_overlay(cx))
             .children(self.modify_attachment_modal(cx))
             .children(self.report_issue_modal(cx))
             .children(self.game_profile_layer(cx))

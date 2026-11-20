@@ -1557,6 +1557,36 @@ pub async fn run(
                 let line = root.update(cx, |root, cx| root.script_quest_bar(&arg, cx));
                 let _ = writeln!(output, "{line}");
             }
+            // `billing-address [us|ca|errors|ca-errors|intl]`: opens Billing Address form modal (module 718718).
+            ["billing-address", rest @ ..] => {
+                let arg = rest.join(" ");
+                let line = root.update(cx, |root, cx| root.script_billing_address(&arg, cx));
+                let _ = writeln!(output, "{line}");
+            }
+            // `nitro-upsell [sticker|trial|upload|length|emoji|burst|theme]`: opens Nitro offer/upsell modal (811611).
+            ["nitro-upsell", rest @ ..] => {
+                let arg = rest.join(" ");
+                let line = root.update(cx, |root, cx| root.script_nitro_upsell(&arg, cx));
+                let _ = writeln!(output, "{line}");
+            }
+            // `gift-ready [ready|sent|bulk|error]`: opens Gift Ready delivery modal (module 998035).
+            ["gift-ready", rest @ ..] => {
+                let arg = rest.join(" ");
+                let line = root.update(cx, |root, cx| root.script_gift_ready(&arg, cx));
+                let _ = writeln!(output, "{line}");
+            }
+            // `restricted-profile [blocked|ignored]`: opens blocked/ignored profile confirmation modal (148540).
+            ["restricted-profile", rest @ ..] => {
+                let arg = rest.join(" ");
+                let line = window
+                    .update(cx, |_, window, cx| {
+                        root.update(cx, |root, cx| {
+                            root.script_restricted_profile(&arg, window, cx)
+                        })
+                    })
+                    .unwrap_or_default();
+                let _ = writeln!(output, "{line}");
+            }
             // `search last` / `search answer <total>`: the open search's request, and an answer to it;
             // `search page <n>`: the pager turns to page n.
             ["search", rest @ ..] => {

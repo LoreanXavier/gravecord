@@ -46,6 +46,112 @@ pub(super) struct Editing {
     _events: Subscription,
 }
 
+/// `ButtonStates` (`w` of module 979604): action state for a game row in Library > My Games.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum AppButtonState {
+    Play,
+    Install,
+    Update,
+    Paused,
+    Locate,
+    Uninstalling,
+    Queued,
+    Downloading,
+    UnsupportedOs,
+    AddToLibrary,
+    PreorderWait,
+}
+
+/// All 10 playful uninstalling verbs from module 979604 (`getText` `"uninstalling"`).
+const UNINSTALL_VERBS: &[&str] = &[
+    "r9wmKn", // Uninstalling
+    "6CpimS", // Obliterating
+    "ysbNDc", // Vaporizing
+    "TLnXx/", // Destroying
+    "Qi8mne", // Terminating
+    "yvMu3S", // Annihilating
+    "PnNUZ/", // Dismantling
+    "hU2TEJ", // Deleting
+    "YyY51/", // Razing
+    "PbHJb3", // Expunging
+];
+
+/// Resolves the button state for a library entry (`getButtonState` of module 979604).
+fn app_button_state(entry: &Value) -> AppButtonState {
+    let flags = entry["flags"].as_u64().unwrap_or(0);
+    // `hM6.HIDDEN = 1 << 0`
+    if (flags & 1) != 0 {
+        return AppButtonState::AddToLibrary;
+    }
+    if entry["sku"]["preorder_release_at"].is_string()
+        || entry["is_preorder"].as_bool().unwrap_or(false)
+    {
+        return AppButtonState::PreorderWait;
+    }
+    match entry["action_state"].as_str().unwrap_or_default() {
+        "play" => AppButtonState::Play,
+        "install" => AppButtonState::Install,
+        "update" => AppButtonState::Update,
+        "paused" => AppButtonState::Paused,
+        "locate" => AppButtonState::Locate,
+        "uninstalling" => AppButtonState::Uninstalling,
+        "queued" => AppButtonState::Queued,
+        "downloading" => AppButtonState::Downloading,
+        "unsupported_os" => AppButtonState::UnsupportedOs,
+        _ => {
+            if cfg!(target_os = "windows") {
+                AppButtonState::Install
+            } else {
+                AppButtonState::UnsupportedOs
+            }
+        }
+    }
+}
+
+/// Button text for a library action state (`getText` of module 979604).
+fn app_button_label(state: AppButtonState, uninstall_idx: usize) -> &'static str {
+    match state {
+        AppButtonState::Play => dc_intl::tr("Play"),
+        AppButtonState::Install | AppButtonState::UnsupportedOs => dc_intl::t("nL0WvC"),
+        AppButtonState::Update => dc_intl::t("tkhwp9"),
+        AppButtonState::Paused => dc_intl::t("6EKrh4"),
+        AppButtonState::Locate => dc_intl::t("nIj+a0"),
+        AppButtonState::Uninstalling => {
+            dc_intl::t(UNINSTALL_VERBS[uninstall_idx % UNINSTALL_VERBS.len()])
+        }
+        AppButtonState::Queued => dc_intl::t("TiJg5l"),
+        AppButtonState::Downloading => dc_intl::t("Tdhepf"),
+        AppButtonState::PreorderWait => dc_intl::t("xiXyPc"),
+        AppButtonState::AddToLibrary => dc_intl::t("r3fwuQ"),
+    }
+}
+
+/// Optional disabled-state helper text (`render` of module 979604: `Aqe2ZC`, `LBm0A4`/`0/xHFO`, `QUSQIA`).
+fn app_button_disabled_reason(entry: &Value, state: AppButtonState) -> Option<String> {
+    match state {
+        AppButtonState::PreorderWait => entry["sku"]["preorder_release_at"].as_str().map(|date| {
+            dc_intl::format(
+                "Aqe2ZC",
+                &[("date", dc_intl::Arg::Str(std::borrow::Cow::Borrowed(date)))],
+            )
+        }),
+        AppButtonState::UnsupportedOs => {
+            let os = dc_intl::t("0/xHFO");
+            Some(dc_intl::format(
+                "LBm0A4",
+                &[(
+                    "operatingSystem",
+                    dc_intl::Arg::Str(std::borrow::Cow::Borrowed(os)),
+                )],
+            ))
+        }
+        AppButtonState::Install if entry["has_no_build"].as_bool().unwrap_or(false) => {
+            Some(dc_intl::t("QUSQIA").to_owned())
+        }
+        _ => None,
+    }
+}
+
 #[derive(Default)]
 pub(super) struct Library {
     pub open: bool,
@@ -55,6 +161,8 @@ pub(super) struct Library {
     editing: Option<Editing>,
     /// The location whose "Remove Location" question is up.
     removing: Option<String>,
+    /// Local override of an entry's install state for interactive action feedback (module 979604).
+    action_overrides: std::collections::BTreeMap<String, AppButtonState>,
 }
 
 /// A library entry's 64px icon (`getIconURL`).
@@ -1057,7 +1165,7 @@ impl Root {
     /// `row_-JvGQh` at `--custom-game-list-row-min-height` 62px, the 30/20/20/30 columns) and the icon size is
     /// assumed. Not drawn: the actions column (privacy, overlay and cloud-sync marks, Play/Install with its dropdown),
     /// sorting, the hover state and the context menu.
-    fn library_table(&self, entries: &[Value]) -> AnyElement {
+    fn library_table(&self, entries: &[Value], cx: &mut Context<Self>) -> AnyElement {
         let header_cell = |label: &'static str, share: f32, first: bool| {
             div()
                 .w(gpui::relative(share))
@@ -1142,7 +1250,7 @@ impl Root {
                             )
                             .child(cell(0.2).child(platform))
                             .child(cell(0.2).child(dc_intl::tr("never played")))
-                            .child(div().w(gpui::relative(0.3))),
+                            .child(self.library_action_cell(entry, cx)),
                     )
                     .into_any_element()
             })
@@ -1172,6 +1280,122 @@ impl Root {
                     .child(div().w(gpui::relative(0.3))),
             )
             .children(rows)
+            .into_any_element()
+    }
+
+    /// `LibraryApplicationButton` cell (module 979604): Play / Install / Update / Paused / Downloading / Queued /
+    /// Uninstalling / Locate / Coming Soon / Add to library + progress bar & disabled reason tooltip.
+    fn library_action_cell(&self, entry: &Value, cx: &mut Context<Self>) -> AnyElement {
+        let app_id = entry["application"]["id"]
+            .as_str()
+            .unwrap_or("0")
+            .to_owned();
+        let state = self
+            .library
+            .action_overrides
+            .get(&app_id)
+            .copied()
+            .unwrap_or_else(|| app_button_state(entry));
+        let uninstall_idx = app_id
+            .bytes()
+            .fold(0usize, |a, b| a.wrapping_add(b as usize));
+        let label = app_button_label(state, uninstall_idx);
+        let disabled_reason = app_button_disabled_reason(entry, state);
+        let progress = entry["progress_percent"]
+            .as_f64()
+            .map(|p| p.clamp(0., 100.) as f32);
+        let is_actionable = matches!(
+            state,
+            AppButtonState::Install
+                | AppButtonState::Update
+                | AppButtonState::AddToLibrary
+                | AppButtonState::Play
+        ) && disabled_reason.is_none();
+        let style = match state {
+            AppButtonState::Install | AppButtonState::Update | AppButtonState::AddToLibrary
+                if is_actionable =>
+            {
+                "primary"
+            }
+            AppButtonState::Play => "active",
+            _ => "secondary",
+        };
+        let next_state = match state {
+            AppButtonState::Install => AppButtonState::Downloading,
+            AppButtonState::Update => AppButtonState::Downloading,
+            AppButtonState::AddToLibrary => AppButtonState::Install,
+            _ => state,
+        };
+        let id_click = app_id.clone();
+
+        div()
+            .w(gpui::relative(0.3))
+            .flex()
+            .items_center()
+            .justify_end()
+            .gap(px(10.))
+            .when_some(disabled_reason, |row, reason| {
+                row.child(
+                    div()
+                        .text_size(px(12.))
+                        .line_height(px(16.))
+                        .text_color(color("--text-muted"))
+                        .child(reason),
+                )
+            })
+            .child(
+                div()
+                    .flex()
+                    .flex_col()
+                    .items_end()
+                    .gap(px(4.))
+                    .child(Self::library_button(
+                        SharedString::from(format!("library-app-cta-{app_id}")),
+                        label,
+                        style,
+                        32.,
+                        is_actionable,
+                        move |this, _, cx| {
+                            if next_state != state {
+                                this.library
+                                    .action_overrides
+                                    .insert(id_click.clone(), next_state);
+                                cx.notify();
+                            }
+                        },
+                        cx,
+                    ))
+                    .when(
+                        matches!(
+                            state,
+                            AppButtonState::Downloading
+                                | AppButtonState::Paused
+                                | AppButtonState::Uninstalling
+                        ),
+                        |col| {
+                            let pct =
+                                progress.unwrap_or(if state == AppButtonState::Uninstalling {
+                                    45.
+                                } else {
+                                    35.
+                                });
+                            let fill = if state == AppButtonState::Paused {
+                                color("--background-mod-strong")
+                            } else {
+                                color("--status-positive")
+                            };
+                            col.child(
+                                div()
+                                    .w(px(100.))
+                                    .h(px(4.))
+                                    .rounded_full()
+                                    .bg(color("--background-mod-subtle"))
+                                    .overflow_hidden()
+                                    .child(div().h_full().w(px(pct)).bg(fill)),
+                            )
+                        },
+                    ),
+            )
             .into_any_element()
     }
 
@@ -1240,7 +1464,7 @@ impl Root {
                 if shown.is_empty() {
                     self.library_empty()
                 } else {
-                    self.library_table(&shown)
+                    self.library_table(&shown, cx)
                 }
             }
         };

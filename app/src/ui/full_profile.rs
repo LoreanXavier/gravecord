@@ -200,6 +200,8 @@ pub(super) struct FullProfile {
     board_expanded: std::collections::HashSet<String>,
     /// The bot profile modal's tab (`e1` of module 148540, `initialSection ?? BOT_INFO`).
     pub(super) bot_tab: super::profile_bot::BotTab,
+    /// Restricted blocked/ignored profile gate dismissed for this open (`ip` of module 148540).
+    pub(super) restricted_revealed: bool,
     _events: Subscription,
 }
 
@@ -998,6 +1000,7 @@ impl Root {
             saved_note: String::new(),
             board_expanded: std::collections::HashSet::new(),
             bot_tab: super::profile_bot::BotTab::Info,
+            restricted_revealed: false,
             _events: events,
         });
         // The bot modal (`e8` of module 148540) has no activity tab, so an app's outbox is not read.
@@ -2635,14 +2638,25 @@ impl Root {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Option<AnyElement> {
-        // `iN` of module 148540: an app's profile is the bot modal `e8`.
-        if self
-            .full_profile
-            .as_ref()
-            .and_then(|open| self.stores.users.get(&open.user))
-            .is_some_and(super::profile_bot::app_bot)
-        {
-            return self.bot_profile_modal(window, cx);
+        // `iN` of module 148540: restricted blocked/ignored profile -> `ip`, non-user bot -> `is`, app bot -> `e8`,
+        // regular user -> `ig` (`UserProfileModalV2`).
+        if let Some(open) = self.full_profile.as_ref() {
+            let open_user = open.user;
+            let revealed = open.restricted_revealed;
+            let is_restricted = !revealed
+                && (self.is_blocked(open_user) || self.stores.is_ignored(open_user))
+                && !self.restricted_profile_bypass.contains(&open_user);
+            if is_restricted {
+                return self.restricted_profile_modal(window, cx);
+            }
+            if let Some(user) = self.stores.users.get(&open_user) {
+                if user.non_user_bot() {
+                    return self.non_user_bot_modal(window, cx);
+                }
+                if super::profile_bot::app_bot(user) {
+                    return self.bot_profile_modal(window, cx);
+                }
+            }
         }
         let (open_user, open_guild, open_tab, explicit, note_entity) = {
             let open = self.full_profile.as_ref()?;
