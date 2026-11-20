@@ -16,10 +16,20 @@
 
 use super::discover::{gutter_scrollbar, text};
 use super::motion::{PopKind, PopSide, Popout as _};
+use super::quest_bar::{QuestBarState, progress_badge};
+use super::quest_copy::{
+    CtaAction, CtaContext, CtaSurface, CtaVariant, InstructionsContext, card_description,
+    format_month_day, game_cta_subtitle, platform_menu_aria_label, platform_menu_options,
+    primary_cta_label, redemption_instructions, resolve_cta, reward_name,
+};
 use super::{Root, color, icon};
 use crate::net::Request;
 use crate::parity::Parity;
-use dc_state::quests::{Filter, QuestStore, SortMethod, VirtualCurrencyStore, filter_and_sort};
+use dc_intl::Arg;
+use dc_state::quests::{
+    ActivePlatformScreen, Filter, Quest, QuestCtaState, QuestPlatform, QuestStore, SortMethod,
+    VirtualCurrencyStore, filter_and_sort,
+};
 use gpui::{
     AnyElement, Context, IntoElement, ScrollHandle, SharedString, Window, deferred, div, img,
     linear_color_stop, linear_gradient, point, prelude::*, px, rgba,
@@ -86,6 +96,14 @@ pub(super) struct State {
     pub hero_size: Option<(u32, u32)>,
     /// The claimed card under the pointer (`hovered_HjAsMI`).
     pub claimed_hover: Option<String>,
+    /// Quest Home tile under the pointer (module 793217).
+    pub hovered_tile: Option<String>,
+    /// Quest whose console/desktop platform selector dropdown is open (module 793217 `eb`).
+    pub open_platform_selector: Option<String>,
+    /// Quest whose `Play` platform dropdown is open (module 452411 `tc`).
+    pub open_platform_menu: Option<String>,
+    /// Bottom-left Quest Bar state (module 66246).
+    pub bar: QuestBarState,
 }
 
 impl Default for State {
@@ -102,6 +120,10 @@ impl Default for State {
             hero_requested: false,
             hero_size: None,
             claimed_hover: None,
+            hovered_tile: None,
+            open_platform_selector: None,
+            open_platform_menu: None,
+            bar: QuestBarState::default(),
         }
     }
 }
@@ -130,107 +152,48 @@ fn cover_at(size: (u32, u32), area: (f32, f32), position: (f32, f32)) -> (f32, f
 }
 
 /// A popout opens below its button when the page has room for it and above otherwise (module 265872's auto flip).
-/// The standard quest tile (`n3`, module 635668, unhovered and not enrolled), from `container_fBxaQT`,
-/// `footer_2uXjfk` and `reward_tq3QTU` of 507de6202a746728.css. UNCONFIRMED: no tile was captured, so every value
-/// is the bundle's and none was compared with a frame. The width is `eW` (`(1220 - 2 * SPACE_XL * 0.75) / 3`) with
-/// `SPACE_XL` assumed 24 for the cozy density. Not drawn (assets are per-quest uploads absent from the snapshot, or
-/// state the harness cannot reach): the hero picture (a flat block of its 85 % height stands in), the reward tile
-/// picture, the header badge (`nM`: time left and task kind), the hover state and the footer description.
-fn quest_tile(quest: &dc_state::quests::Quest) -> AnyElement {
-    let base = |alpha: f32| {
-        let mut base = color("--background-base-low");
-        base.a = alpha;
-        base
-    };
-    div()
-        .flex_none()
-        .relative()
-        .w(px((1220. - 2. * 24. * 0.75) / 3.))
-        .h(px(260.))
-        .rounded(px(16.))
-        .overflow_hidden()
-        .border_1()
-        .border_color(color("--border-subtle"))
-        .bg(color("--background-base-low"))
-        // `heroBackground_fBxaQT`: 85 % of the height, faded over its last 16px.
-        .child(
-            div()
-                .absolute()
-                .top_0()
-                .left_0()
-                .w_full()
-                .h(px(260. * 0.85))
-                .bg(color("--background-base-lowest")),
-        )
-        // `scrim_fBxaQT`: clear down to a third, the page colour from two thirds (an 11-stop curve in the CSS).
-        .child(
-            div()
-                .absolute()
-                .top(px(-10.))
-                .left_0()
-                .w_full()
-                .h(px(270.))
-                .bg(linear_gradient(
-                    180.,
-                    linear_color_stop(base(0.), 0.23),
-                    linear_color_stop(base(1.), 0.66),
-                )),
-        )
-        // `footer_2uXjfk` with `reward_tq3QTU`: 20px inset, a 52px tile beside the game title and the reward line.
-        .child(
-            div()
-                .absolute()
-                .bottom_0()
-                .left_0()
-                .w_full()
-                .px(px(20.))
-                .pb(px(20.))
-                .flex()
-                .flex_col()
-                .gap(px(8.))
-                .child(
-                    div()
-                        .flex()
-                        .items_center()
-                        .gap(px(6.))
-                        .child(
-                            div()
-                                .flex_none()
-                                .size(px(52.))
-                                .rounded(px(10.))
-                                .bg(color("--background-base-lowest")),
-                        )
-                        .child(
-                            div()
-                                .flex_1()
-                                .min_w(px(0.))
-                                .flex()
-                                .flex_col()
-                                .child(
-                                    text(14., 18., 500., "--text-overlay-light")
-                                        .text_color(rgba(0xffffffcc))
-                                        .child(quest.config.game_publisher.clone()),
-                                )
-                                .child(
-                                    text(16., 20., 500., "--text-overlay-light")
-                                        .overflow_hidden()
-                                        .whitespace_nowrap()
-                                        .child(quest.config.quest_name.clone()),
-                                ),
-                        ),
-                )
-                // `footerPromotedRow_2uXjfk`: "Promoted" (string `o6FLcF`), white at 80 %.
-                .child(
-                    text(14., 18., 400., "--text-overlay-light")
-                        .text_color(rgba(0xffffffcc))
-                        .child("Promoted"),
-                ),
-        )
-        .into_any_element()
-}
-
 fn opens_below(button_bottom: f32, menu_height: f32, viewport_height: f32) -> bool {
     button_bottom + 8. + menu_height <= viewport_height
+}
+
+/// Platform label helper for module 793217 (`ep` / `eT` / `eb`).
+fn tile_platform_option_label(platform: Option<QuestPlatform>, short: bool) -> &'static str {
+    match (platform, short) {
+        (Some(QuestPlatform::Desktop), false) => dc_intl::t("QXc01+"),
+        (Some(QuestPlatform::Console), false) => dc_intl::t("8lAfuB"),
+        (Some(QuestPlatform::Desktop), true) => dc_intl::t("g6Dr44"),
+        (Some(QuestPlatform::Console), true) => dc_intl::t("iyNbj5"),
+        (None, _) => dc_intl::t("WLDKSb"),
+    }
+}
+
+/// Video header button tooltip label (`$` of module 793217).
+fn tile_video_play_tooltip(quest: &Quest, now_ms: i64) -> &'static str {
+    if quest.is_completed() {
+        dc_intl::t("YsCuyF")
+    } else if quest.is_enrolled() {
+        dc_intl::t("74KqrR")
+    } else if quest.is_expired(now_ms) {
+        dc_intl::t("I6JG46")
+    } else {
+        dc_intl::t("umdNin")
+    }
+}
+
+/// Whether the standard footer (`eL` of module 793217) renders the secondary external link CTA beside the primary CTA.
+fn tile_shows_external_cta(state: QuestCtaState, quest: &Quest) -> bool {
+    match state {
+        QuestCtaState::ExpiredClaimable
+        | QuestCtaState::Expired
+        | QuestCtaState::ExpiredClaimed
+        | QuestCtaState::Unenrolled => true,
+        QuestCtaState::Claimed | QuestCtaState::Completed => {
+            quest.is_watch_video() || quest.is_activity_quest()
+        }
+        QuestCtaState::Incomplete | QuestCtaState::Enrolled => {
+            quest.is_watch_video() || quest.is_activity_quest() || quest.is_achievement_in_game()
+        }
+    }
 }
 
 impl Root {
@@ -330,7 +293,39 @@ impl Root {
         let failed = crate::net::is_fetch_failure(&body);
         match key {
             CURRENT_KEY if failed => self.quests.store.fail_current(),
-            CURRENT_KEY => self.quests.store.apply_current(&body),
+            CURRENT_KEY => {
+                self.quests.store.apply_current(&body);
+                let wanted: Vec<String> = self
+                    .quests
+                    .store
+                    .quests
+                    .iter()
+                    .flat_map(|q| {
+                        [
+                            q.config
+                                .assets_hero
+                                .as_deref()
+                                .map(|a| quest_asset(&q.id, a)),
+                            q.config
+                                .assets_reward_tile
+                                .as_deref()
+                                .or(q.config.assets_game_tile.as_deref())
+                                .map(|a| quest_asset(&q.id, a)),
+                            q.config
+                                .assets_logotype_dark
+                                .as_deref()
+                                .or(q.config.assets_logotype.as_deref())
+                                .map(|a| quest_asset(&q.id, a)),
+                        ]
+                    })
+                    .flatten()
+                    .collect();
+                for url in wanted {
+                    if !self.images.contains_key(&url) {
+                        self.request_image(url.clone(), url);
+                    }
+                }
+            }
             CLAIMED_KEY if failed => self.quests.store.fail_claimed(),
             CLAIMED_KEY => {
                 self.quests.store.apply_claimed(&body);
@@ -434,22 +429,1120 @@ impl Root {
         .collect()
     }
 
-    /// The quest cards of the grid (`n6` of module 635668, `carouselItems_mtY8m_`: a 20px gap). UNCONFIRMED: no card
-    /// was ever captured (the account has no quests); see [`quest_tile`]. Still missing as captures: an enrolled card,
-    /// a completed card, a claimed card (Claimed Quests tab) and each reward kind's tile.
-    fn quest_tiles(&self, quests: &[&dc_state::quests::Quest]) -> Vec<AnyElement> {
+    /// The quest cards of the grid (module 793217, CSS `CXA5dw` / `clpvxq` / `DLRZY4` / `bvFqCe`).
+    fn quest_tiles(&self, quests: &[&Quest], cx: &mut Context<Self>) -> Vec<AnyElement> {
         if quests.is_empty() {
             return Vec::new();
         }
+        let avail = (self.viewport.0 - self.combined_sidebar_width() - 48.).max(360.);
+        let cols = if avail >= 1180. {
+            3.
+        } else if avail >= 740. {
+            2.
+        } else {
+            1.
+        };
+        let card_w = ((avail - (cols - 1.) * 20.) / cols).clamp(320., 460.);
         vec![
             div()
                 .mt(px(24.))
+                .w_full()
                 .flex_none()
                 .flex()
+                .flex_wrap()
                 .gap(px(20.))
-                .children(quests.iter().map(|quest| quest_tile(quest)))
+                .children(
+                    quests
+                        .iter()
+                        .enumerate()
+                        .map(|(idx, quest)| self.quest_tile(quest, idx == 0, card_w, cx)),
+                )
                 .into_any_element(),
         ]
+    }
+
+    /// Full Quest Home card (`eF` / `$` / `eU` / `eD` / `W` of module 793217).
+    fn quest_tile(
+        &self,
+        quest: &Quest,
+        featured: bool,
+        width: f32,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let now = chrono::Utc::now().timestamp_millis();
+        let is_video = quest.is_watch_video_desktop();
+        let expired = quest.is_expired(now);
+        let claimed = quest.is_claimed();
+        let enrolled = quest.is_enrolled();
+        let completed = quest.is_completed();
+        let is_nitro = self.stores.account.premium_type == Some(2);
+        let hovered = self.quests.hovered_tile.as_deref() == Some(quest.id.as_str());
+        let hover_id = quest.id.clone();
+
+        let hero_img = quest
+            .config
+            .assets_hero
+            .as_deref()
+            .map(|a| quest_asset(&quest.id, a))
+            .and_then(|u| self.images.get(&u).cloned());
+        let reward_img = quest
+            .config
+            .assets_reward_tile
+            .as_deref()
+            .or(quest.config.assets_game_tile.as_deref())
+            .map(|a| quest_asset(&quest.id, a))
+            .and_then(|u| self.images.get(&u).cloned());
+        let logo_img = quest
+            .config
+            .assets_logotype_dark
+            .as_deref()
+            .or(quest.config.assets_logotype.as_deref())
+            .map(|a| quest_asset(&quest.id, a))
+            .and_then(|u| self.images.get(&u).cloned());
+
+        let promoter = quest
+            .config
+            .cosponsor_name
+            .as_deref()
+            .unwrap_or(&quest.config.game_publisher)
+            .to_owned();
+        let expiry_str = format_month_day(&quest.config.expires_at);
+        let ends_copy = dc_intl::format(
+            "7D8r4F",
+            &[(
+                "expiryDate",
+                Arg::Str(std::borrow::Cow::Borrowed(&expiry_str)),
+            )],
+        );
+        let error_hints = self.quests.store.error_hints(&quest.id);
+        let warning_hint = self.quests.bar.warning_override.map(|w| w.hint_text());
+        let show_hint_bar = !completed
+            && !quest.is_progressing_on_console(now)
+            && (!error_hints.is_empty() || warning_hint.is_some());
+
+        // Header (`container_CXA5dw`, 150px tall)
+        let play_link = quest.config.cta_link.clone();
+        let actions_link = quest.config.cta_link.clone();
+        let details_qid = quest.id.clone();
+        let video_tip = tile_video_play_tooltip(quest, now);
+        let header = div()
+            .relative()
+            .w_full()
+            .h(px(150.))
+            .rounded_t(px(8.))
+            .overflow_hidden()
+            .bg(color("--background-surface-high"))
+            // Hero image or rich dark-brand fallback gradient
+            .child(
+                div()
+                    .absolute()
+                    .inset_0()
+                    .bg(linear_gradient(
+                        135.,
+                        linear_color_stop(rgba(0x5865f244), 0.),
+                        linear_color_stop(color("--background-base-lowest"), 1.),
+                    ))
+                    .children(
+                        hero_img.map(|im| img(im).size_full().object_fit(gpui::ObjectFit::Cover)),
+                    ),
+            )
+            // `overlay_CXA5dw`: smooth bottom scrim into `--background-surface-high`
+            .child(div().absolute().inset_0().bg(linear_gradient(
+                0.,
+                linear_color_stop(color("--background-surface-high"), 0.),
+                linear_color_stop(color("--background-surface-high").opacity(0.), 0.72),
+            )))
+            // `contents_CXA5dw`: top pills/utility buttons, partner logo, promoted-by + expiry
+            .child(
+                div()
+                    .relative()
+                    .size_full()
+                    .p(px(12.))
+                    .flex()
+                    .flex_col()
+                    .justify_between()
+                    // `topRow_CXA5dw`
+                    .child(
+                        div()
+                            .w_full()
+                            .flex()
+                            .items_center()
+                            .gap(px(8.))
+                            .child(
+                                div()
+                                    .flex_1()
+                                    .min_w(px(0.))
+                                    .flex()
+                                    .items_center()
+                                    .gap(px(8.))
+                                    .when(featured && !expired, |row| {
+                                        row.child(
+                                            div()
+                                                .px(px(8.))
+                                                .h(px(20.))
+                                                .rounded_full()
+                                                .bg(color("--control-primary-background-default"))
+                                                .flex()
+                                                .items_center()
+                                                .child(
+                                                    text(11., 14., 700., "--text-overlay-light")
+                                                        .child(dc_intl::t("Jt6u7B")),
+                                                ),
+                                        )
+                                    })
+                                    .when(quest.preview, |row| {
+                                        row.child(
+                                            div()
+                                                .px(px(8.))
+                                                .h(px(20.))
+                                                .rounded_full()
+                                                .bg(color("--background-mod-strong"))
+                                                .flex()
+                                                .items_center()
+                                                .child(
+                                                    text(11., 14., 700., "--text-overlay-light")
+                                                        .child(dc_intl::t("SKNnqq")),
+                                                ),
+                                        )
+                                    }),
+                            )
+                            // Video play button (`utilButtonWrapper_CXA5dw`, 24x24 circle)
+                            .when(is_video, |row| {
+                                row.child(
+                                    div()
+                                        .id(SharedString::from(format!(
+                                            "quest-tile-play-{}",
+                                            quest.id
+                                        )))
+                                        .flex_none()
+                                        .size(px(24.))
+                                        .rounded_full()
+                                        .bg(rgba(0x11121499))
+                                        .hover(|s| s.bg(rgba(0x111214cc)))
+                                        .cursor_pointer()
+                                        .flex()
+                                        .items_center()
+                                        .justify_center()
+                                        .on_click(cx.listener(move |_, _, _, cx| {
+                                            if !play_link.is_empty() {
+                                                cx.open_url(&play_link);
+                                            }
+                                        }))
+                                        .child(icon("clips_play", 12., "--text-overlay-light"))
+                                        .when(false, |el| {
+                                            el.child(video_tip).child(dc_intl::t("RscU7I"))
+                                        }),
+                                )
+                            })
+                            // Actions button (`DEoVWZ`)
+                            .child(
+                                div()
+                                    .id(SharedString::from(format!("quest-tile-more-{}", quest.id)))
+                                    .flex_none()
+                                    .size(px(24.))
+                                    .rounded_full()
+                                    .bg(rgba(0x11121499))
+                                    .hover(|s| s.bg(rgba(0x111214cc)))
+                                    .cursor_pointer()
+                                    .flex()
+                                    .items_center()
+                                    .justify_center()
+                                    .on_click(cx.listener(move |_, _, _, cx| {
+                                        if !actions_link.is_empty() {
+                                            cx.open_url(&actions_link);
+                                        }
+                                    }))
+                                    .child(icon("more_horizontal", 14., "--text-overlay-light"))
+                                    .when(false, |el| el.child(dc_intl::t("DEoVWZ"))),
+                            ),
+                    )
+                    // Partner logotype (`partnerLogotypes_CXA5dw`)
+                    .children(logo_img.map(|im| {
+                        div()
+                            .h(px(30.))
+                            .flex()
+                            .items_center()
+                            .child(img(im).max_h(px(30.)).max_w(px(140.)))
+                    }))
+                    // `bottomRow_CXA5dw`: "Promoted by" + verified badge + publisher | "Ends M/D"
+                    .child(
+                        div()
+                            .w_full()
+                            .flex()
+                            .items_center()
+                            .justify_between()
+                            .gap(px(8.))
+                            .child(
+                                div()
+                                    .flex_1()
+                                    .min_w(px(0.))
+                                    .flex()
+                                    .items_center()
+                                    .gap(px(4.))
+                                    .child(
+                                        text(12., 16., 500., "--text-muted")
+                                            .flex_none()
+                                            .child(dc_intl::t("VAbKhK")),
+                                    )
+                                    .child(
+                                        div()
+                                            .flex_none()
+                                            .size(px(15.))
+                                            .rounded_full()
+                                            .bg(color("--status-positive"))
+                                            .flex()
+                                            .items_center()
+                                            .justify_center()
+                                            .child(icon(
+                                                "checkbox_check",
+                                                9.,
+                                                "--text-overlay-light",
+                                            ))
+                                            .when(false, |el| el.child(dc_intl::t("OfMjx9"))),
+                                    )
+                                    .child(
+                                        text(12., 16., 500., "--text-overlay-light")
+                                            .overflow_hidden()
+                                            .whitespace_nowrap()
+                                            .child(promoter),
+                                    ),
+                            )
+                            .when(!expired && !claimed, |row| {
+                                row.child(
+                                    text(12., 16., 500., "--text-muted")
+                                        .flex_none()
+                                        .child(ends_copy),
+                                )
+                            }),
+                    ),
+            );
+
+        // Optional warning/error hint strip (`W` of module 793217)
+        let hint_strip = show_hint_bar.then(|| {
+            let is_err = !error_hints.is_empty();
+            let msg = if is_err {
+                error_hints[0].clone()
+            } else {
+                warning_hint.unwrap_or_default().to_owned()
+            };
+            div()
+                .w_full()
+                .px(px(12.))
+                .py(px(8.))
+                .bg(color("--background-base-lowest"))
+                .border_t_1()
+                .border_color(color("--border-subtle"))
+                .flex()
+                .items_center()
+                .justify_between()
+                .gap(px(8.))
+                .child(
+                    div()
+                        .flex_1()
+                        .min_w(px(0.))
+                        .flex()
+                        .items_center()
+                        .gap(px(6.))
+                        .child(icon(
+                            if is_err {
+                                "standing_circle_error"
+                            } else {
+                                "circle_info"
+                            },
+                            14.,
+                            if is_err {
+                                "--text-feedback-critical"
+                            } else {
+                                "--text-default"
+                            },
+                        ))
+                        .child(text(12., 16., 500., "--text-muted").child(msg)),
+                )
+                .when(is_err, |row| {
+                    row.child(
+                        div()
+                            .id(SharedString::from(format!(
+                                "quest-hint-details-{}",
+                                details_qid
+                            )))
+                            .flex_none()
+                            .cursor_pointer()
+                            .on_click(cx.listener(move |this, _, _, cx| {
+                                this.quests.bar.expanded = true;
+                                this.quests.store.set_selected_platform(
+                                    &details_qid,
+                                    Some(QuestPlatform::Console),
+                                );
+                                cx.notify();
+                            }))
+                            .child(
+                                text(12., 16., 600., "--text-overlay-light")
+                                    .hover(|s| s.underline())
+                                    .child(dc_intl::t("yKJi+/")),
+                            ),
+                    )
+                })
+                .into_any_element()
+        });
+
+        // Body (`eU` of module 793217, `container_clpvxq`)
+        let details = quest.task_details();
+        let pct = quest
+            .third_party_task_details()
+            .map_or(details.percent_complete, |d| d.percent_complete);
+        let pct_int = (pct * 100.).floor().clamp(0., 100.) as u64;
+        let heading = dc_intl::format(
+            "EAYZAr",
+            &[(
+                "questName",
+                Arg::Str(std::borrow::Cow::Borrowed(&quest.config.quest_name)),
+            )],
+        );
+        let is_orbs = quest.config.has_virtual_currency_reward();
+        let reward_heading: AnyElement = if claimed && is_orbs {
+            let orbs = quest
+                .user_status
+                .as_ref()
+                .and_then(|s| s.orb_quantity_claimed)
+                .or_else(|| quest.config.orb_quantity(is_nitro))
+                .unwrap_or(0) as i64;
+            div()
+                .flex()
+                .items_center()
+                .gap(px(4.))
+                .child(icon("pm_orbs", 14., "--text-strong"))
+                .child(text(16., 20., 600., "--text-strong").child(dc_intl::format(
+                    "nLXlh+",
+                    &[("orbAmount", Arg::Num((orbs) as f64))],
+                )))
+                .into_any_element()
+        } else if claimed {
+            text(16., 20., 600., "--text-strong")
+                .child(reward_name(quest, is_nitro, false))
+                .into_any_element()
+        } else if is_orbs {
+            let orbs = quest.config.orb_quantity(is_nitro).unwrap_or(0) as i64;
+            let orb_text = dc_intl::format("nLXlh+", &[("orbAmount", Arg::Num((orbs) as f64))]);
+            let claim_text: String = dc_intl::format_runs(
+                "0IUT4Y",
+                &[(
+                    "rewardWithArticleHook",
+                    Arg::Str(std::borrow::Cow::Borrowed(&orb_text)),
+                )],
+            )
+            .into_iter()
+            .map(|(t, _)| t)
+            .collect();
+            div()
+                .flex()
+                .items_center()
+                .gap(px(4.))
+                .child(icon("pm_orbs", 14., "--text-strong"))
+                .child(text(16., 20., 600., "--text-strong").child(claim_text))
+                .into_any_element()
+        } else {
+            let with_art = reward_name(quest, is_nitro, true);
+            let claim_text: String = dc_intl::format_runs(
+                "0IUT4Y",
+                &[(
+                    "rewardWithArticleHook",
+                    Arg::Str(std::borrow::Cow::Borrowed(&with_art)),
+                )],
+            )
+            .into_iter()
+            .map(|(t, _)| t)
+            .collect();
+            text(16., 20., 600., "--text-strong")
+                .child(claim_text)
+                .into_any_element()
+        };
+        let description = card_description(
+            quest,
+            InstructionsContext {
+                has_nitro: is_nitro,
+                without_markdown: false,
+                has_game_profile_link: false,
+                needs_to_connect: false,
+            },
+        );
+        let extra_note: Option<String> = if claimed {
+            redemption_instructions(quest, 0)
+                .map(str::to_owned)
+                .or_else(|| Some(game_cta_subtitle(quest)))
+        } else {
+            None
+        };
+
+        let reward_visual = if enrolled {
+            progress_badge(76., pct_int, completed)
+        } else {
+            div()
+                .flex_none()
+                .size(px(80.))
+                .rounded(px(10.))
+                .overflow_hidden()
+                .bg(color("--background-base-lowest"))
+                .border_1()
+                .border_color(color("--border-subtle"))
+                .flex()
+                .items_center()
+                .justify_center()
+                .children(
+                    reward_img.map(|im| img(im).size_full().object_fit(gpui::ObjectFit::Cover)),
+                )
+                .when(
+                    quest.config.assets_reward_tile.is_none()
+                        && quest.config.assets_game_tile.is_none(),
+                    |el| {
+                        el.child(icon(
+                            if is_orbs { "pm_orbs" } else { "home_quests" },
+                            32.,
+                            "--text-brand",
+                        ))
+                    },
+                )
+                .into_any_element()
+        };
+
+        let body = div()
+            .w_full()
+            .px(px(16.))
+            .pt(px(12.))
+            .pb(px(16.))
+            .flex()
+            .flex_col()
+            .gap(px(14.))
+            .child(
+                div()
+                    .w_full()
+                    .flex()
+                    .items_start()
+                    .gap(px(12.))
+                    .child(reward_visual)
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w(px(0.))
+                            .flex()
+                            .flex_col()
+                            .gap(px(4.))
+                            .child(text(13., 17., 500., "--text-brand").child(heading))
+                            .child(reward_heading)
+                            .child(text(13., 18., 400., "--text-muted").child(description))
+                            .children(
+                                extra_note
+                                    .map(|note| text(12., 16., 400., "--text-subtle").child(note)),
+                            ),
+                    ),
+            )
+            .child(self.quest_tile_footer(quest, now, cx));
+
+        div()
+            .id(SharedString::from(format!("quest-tile-{}", quest.id)))
+            .flex_none()
+            .w(px(width))
+            .rounded(px(10.))
+            .border_1()
+            .border_color(color(if hovered {
+                "--border-normal"
+            } else {
+                "--border-subtle"
+            }))
+            .bg(color("--background-surface-high"))
+            .flex()
+            .flex_col()
+            .on_hover(cx.listener(move |this, over: &bool, _, cx| {
+                if *over {
+                    this.quests.hovered_tile = Some(hover_id.clone());
+                } else if this.quests.hovered_tile.as_deref() == Some(hover_id.as_str()) {
+                    this.quests.hovered_tile = None;
+                }
+                cx.notify();
+            }))
+            .child(header)
+            .children(hint_strip)
+            .child(body)
+            .into_any_element()
+    }
+
+    /// Footer (`eD` / `ew` / `eb` / `e_` / `eQ` / `eL` of module 793217 + `452411` CTA button).
+    fn quest_tile_footer(&self, quest: &Quest, now_ms: i64, cx: &mut Context<Self>) -> AnyElement {
+        let state = quest.cta_state(now_ms);
+        let blocked = self.quests.store.enrollment_blocked_until.is_some();
+
+        // `ew`: Enrollment blocked while unenrolled -> Unavailable + Why?
+        if state == QuestCtaState::Unenrolled && blocked {
+            return div()
+                .w_full()
+                .flex()
+                .items_center()
+                .gap(px(8.))
+                .child(
+                    div()
+                        .flex_1()
+                        .min_w(px(0.))
+                        .h(px(36.))
+                        .rounded(px(8.))
+                        .bg(color("--control-secondary-background-default"))
+                        .opacity(0.55)
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .child(
+                            text(14., 18., 500., "--control-secondary-text-default")
+                                .child(dc_intl::t("8LKchl")),
+                        ),
+                )
+                .child(
+                    div()
+                        .id(SharedString::from(format!("quest-why-{}", quest.id)))
+                        .flex_1()
+                        .min_w(px(0.))
+                        .h(px(36.))
+                        .rounded(px(8.))
+                        .bg(color("--control-primary-background-default"))
+                        .hover(|s| s.bg(color("--control-primary-background-hover")))
+                        .cursor_pointer()
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .on_click(cx.listener(|_, _, _, cx| {
+                            cx.open_url("https://support.discord.com/hc/articles/22225719947543");
+                        }))
+                        .child(
+                            text(14., 18., 500., "--control-primary-text-default")
+                                .child(dc_intl::t("vY9GgG")),
+                        ),
+                )
+                .into_any_element();
+        }
+
+        let (has_xbox, has_psn) = self.quest_console_connections();
+        let has_console_conn = has_xbox || has_psn;
+        let selected = self.quests.store.selected_platform(&quest.id);
+        let active_screen = quest.active_platform_screen(selected, now_ms);
+        let is_progressing = quest.is_progressing_on_console(now_ms);
+        let awaiting_console = quest.is_play_on_console() && !has_console_conn && !is_progressing;
+
+        // `eb`: Enrolled console quest with platform selector (`drVw4T`, `QXc01+`, `8lAfuB`, `g6Dr44`, `iyNbj5`, `WLDKSb`)
+        if state == QuestCtaState::Enrolled && quest.is_play_on_console() {
+            let platforms = quest.supported_platforms();
+            let selector_open =
+                self.quests.open_platform_selector.as_deref() == Some(quest.id.as_str());
+            let qid_toggle = quest.id.clone();
+            let qid_desk = quest.id.clone();
+            let qid_cons = quest.id.clone();
+            let selected_chip = match active_screen {
+                ActivePlatformScreen::Desktop => Some(QuestPlatform::Desktop),
+                ActivePlatformScreen::Console => Some(QuestPlatform::Console),
+                ActivePlatformScreen::Select => None,
+            };
+            let trigger_text = if active_screen == ActivePlatformScreen::Select {
+                dc_intl::t("drVw4T")
+            } else {
+                tile_platform_option_label(selected_chip, true)
+            };
+            let trigger_icon = match selected_chip {
+                Some(QuestPlatform::Desktop) => Some("platform_desktop"),
+                Some(QuestPlatform::Console) => Some("bot_game_controller"),
+                None => None,
+            };
+
+            let selector = div()
+                .relative()
+                .flex_1()
+                .min_w(px(0.))
+                .child(
+                    div()
+                        .id(SharedString::from(format!(
+                            "quest-platform-select-{}",
+                            quest.id
+                        )))
+                        .w_full()
+                        .h(px(36.))
+                        .px(px(10.))
+                        .rounded(px(8.))
+                        .border_1()
+                        .border_color(color("--control-secondary-border-default"))
+                        .bg(color(if active_screen == ActivePlatformScreen::Select {
+                            "--control-primary-background-default"
+                        } else {
+                            "--control-secondary-background-default"
+                        }))
+                        .cursor_pointer()
+                        .flex()
+                        .items_center()
+                        .justify_between()
+                        .gap(px(6.))
+                        .on_click(cx.listener(move |this, _, _, cx| {
+                            if this.quests.open_platform_selector.as_deref()
+                                == Some(qid_toggle.as_str())
+                            {
+                                this.quests.open_platform_selector = None;
+                            } else {
+                                this.quests.open_platform_selector = Some(qid_toggle.clone());
+                            }
+                            cx.notify();
+                        }))
+                        .child(
+                            div()
+                                .flex_1()
+                                .min_w(px(0.))
+                                .flex()
+                                .items_center()
+                                .gap(px(6.))
+                                .children(
+                                    trigger_icon.map(|ic| {
+                                        icon(ic, 15., "--control-secondary-icon-default")
+                                    }),
+                                )
+                                .child(
+                                    text(
+                                        13.,
+                                        18.,
+                                        500.,
+                                        if active_screen == ActivePlatformScreen::Select {
+                                            "--control-primary-text-default"
+                                        } else {
+                                            "--control-secondary-text-default"
+                                        },
+                                    )
+                                    .overflow_hidden()
+                                    .whitespace_nowrap()
+                                    .child(trigger_text),
+                                ),
+                        )
+                        .child(icon(
+                            if selector_open {
+                                "automod_chevron_up"
+                            } else {
+                                "automod_chevron_down"
+                            },
+                            14.,
+                            if active_screen == ActivePlatformScreen::Select {
+                                "--control-primary-text-default"
+                            } else {
+                                "--control-secondary-icon-default"
+                            },
+                        )),
+                )
+                .when(selector_open, |wrap| {
+                    wrap.child(
+                        deferred(
+                            div()
+                                .id(SharedString::from(format!(
+                                    "quest-platform-dropdown-{}",
+                                    quest.id
+                                )))
+                                .occlude()
+                                .absolute()
+                                .left_0()
+                                .right_0()
+                                .top(px(40.))
+                                .p(px(6.))
+                                .rounded(px(8.))
+                                .border_1()
+                                .border_color(color("--border-subtle"))
+                                .bg(color("--background-surface-high"))
+                                .flex()
+                                .flex_col()
+                                .gap(px(2.))
+                                .child(
+                                    div()
+                                        .id(SharedString::from(format!(
+                                            "quest-opt-desktop-{}",
+                                            quest.id
+                                        )))
+                                        .px(px(8.))
+                                        .py(px(6.))
+                                        .rounded(px(4.))
+                                        .hover(|s| s.bg(color("--background-mod-subtle")))
+                                        .cursor_pointer()
+                                        .flex()
+                                        .items_center()
+                                        .gap(px(8.))
+                                        .on_click(cx.listener(move |this, _, _, cx| {
+                                            this.quests.store.set_selected_platform(
+                                                &qid_desk,
+                                                Some(QuestPlatform::Desktop),
+                                            );
+                                            this.quests.store.clear_error_hints(&qid_desk);
+                                            this.quests.open_platform_selector = None;
+                                            cx.notify();
+                                        }))
+                                        .child(icon("platform_desktop", 15., "--text-default"))
+                                        .child(text(13., 18., 500., "--text-default").child(
+                                            tile_platform_option_label(
+                                                Some(QuestPlatform::Desktop),
+                                                false,
+                                            ),
+                                        )),
+                                )
+                                .child(
+                                    div()
+                                        .id(SharedString::from(format!(
+                                            "quest-opt-console-{}",
+                                            quest.id
+                                        )))
+                                        .px(px(8.))
+                                        .py(px(6.))
+                                        .rounded(px(4.))
+                                        .hover(|s| s.bg(color("--background-mod-subtle")))
+                                        .cursor_pointer()
+                                        .flex()
+                                        .items_center()
+                                        .gap(px(8.))
+                                        .on_click(cx.listener(move |this, _, _, cx| {
+                                            this.quests.store.set_selected_platform(
+                                                &qid_cons,
+                                                Some(QuestPlatform::Console),
+                                            );
+                                            this.quests.open_platform_selector = None;
+                                            cx.notify();
+                                        }))
+                                        .child(icon("bot_game_controller", 15., "--text-default"))
+                                        .child(text(13., 18., 500., "--text-default").child(
+                                            tile_platform_option_label(
+                                                Some(QuestPlatform::Console),
+                                                false,
+                                            ),
+                                        )),
+                                )
+                                .when(false, |el| {
+                                    el.child(tile_platform_option_label(None, false))
+                                }),
+                        )
+                        .with_priority(2),
+                    )
+                });
+
+            if active_screen == ActivePlatformScreen::Select {
+                return div().w_full().flex().child(selector).into_any_element();
+            }
+            if platforms.len() > 1 {
+                return div()
+                    .w_full()
+                    .flex()
+                    .items_center()
+                    .gap(px(8.))
+                    .child(self.quest_cta_button(
+                        quest,
+                        CtaContext {
+                            surface: CtaSurface::QuestHomeTile,
+                            now_ms,
+                            is_progressing,
+                            awaiting_console_connections: awaiting_console,
+                            active_screen,
+                            has_linked_game_account: false,
+                            animate_refresh_icon: true,
+                        },
+                        cx,
+                    ))
+                    .child(selector)
+                    .into_any_element();
+            }
+        }
+
+        // `e_`: Enrolled/Incomplete desktop-only play quest -> external CTA link full width
+        if matches!(state, QuestCtaState::Enrolled | QuestCtaState::Incomplete)
+            && quest.is_desktop_only_play()
+            && !quest.config.cta_button_label.is_empty()
+        {
+            return self.quest_external_cta_button(quest, cx);
+        }
+
+        // `eQ`: Completed/Claimed activity quest -> activity launch + primary CTA
+        if matches!(state, QuestCtaState::Completed | QuestCtaState::Claimed)
+            && quest.is_activity_quest()
+        {
+            let link = quest.config.cta_link.clone();
+            let short = primary_cta_label(quest, true);
+            return div()
+                .w_full()
+                .flex()
+                .items_center()
+                .gap(px(8.))
+                .child(
+                    div()
+                        .id(SharedString::from(format!("quest-activity-{}", quest.id)))
+                        .flex_1()
+                        .min_w(px(0.))
+                        .h(px(36.))
+                        .px(px(12.))
+                        .rounded(px(8.))
+                        .bg(color("--control-secondary-background-default"))
+                        .hover(|s| s.bg(color("--control-secondary-background-hover")))
+                        .cursor_pointer()
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .gap(px(6.))
+                        .on_click(cx.listener(move |_, _, _, cx| {
+                            if !link.is_empty() {
+                                cx.open_url(&link);
+                            }
+                        }))
+                        .child(icon(
+                            "bot_game_controller",
+                            15.,
+                            "--control-secondary-icon-default",
+                        ))
+                        .child(
+                            text(14., 18., 500., "--control-secondary-text-default").child(short),
+                        ),
+                )
+                .child(self.quest_cta_button(
+                    quest,
+                    CtaContext {
+                        surface: CtaSurface::QuestHomeTile,
+                        now_ms,
+                        is_progressing,
+                        awaiting_console_connections: awaiting_console,
+                        active_screen,
+                        has_linked_game_account: false,
+                        animate_refresh_icon: true,
+                    },
+                    cx,
+                ))
+                .into_any_element();
+        }
+
+        // `eL`: standard footer (optional external CTA + primary CTA from module 452411)
+        let show_external =
+            tile_shows_external_cta(state, quest) && !quest.config.cta_button_label.is_empty();
+        div()
+            .w_full()
+            .flex()
+            .items_center()
+            .gap(px(8.))
+            .when(show_external, |row| {
+                row.child(self.quest_external_cta_button(quest, cx))
+            })
+            .child(self.quest_cta_button(
+                quest,
+                CtaContext {
+                    surface: CtaSurface::QuestHomeTile,
+                    now_ms,
+                    is_progressing,
+                    awaiting_console_connections: awaiting_console,
+                    active_screen,
+                    has_linked_game_account: false,
+                    animate_refresh_icon: true,
+                },
+                cx,
+            ))
+            .into_any_element()
+    }
+
+    fn quest_external_cta_button(&self, quest: &Quest, cx: &mut Context<Self>) -> AnyElement {
+        let link = quest.config.cta_link.clone();
+        let label = quest.config.cta_button_label.clone();
+        div()
+            .id(SharedString::from(format!("quest-ext-cta-{}", quest.id)))
+            .flex_1()
+            .min_w(px(0.))
+            .h(px(36.))
+            .px(px(12.))
+            .rounded(px(8.))
+            .border_1()
+            .border_color(color("--control-secondary-border-default"))
+            .bg(color("--control-secondary-background-default"))
+            .hover(|s| s.bg(color("--control-secondary-background-hover")))
+            .cursor_pointer()
+            .flex()
+            .items_center()
+            .justify_center()
+            .on_click(cx.listener(move |_, _, _, cx| {
+                if !link.is_empty() {
+                    cx.open_url(&link);
+                }
+            }))
+            .child(
+                text(14., 18., 500., "--control-secondary-text-default")
+                    .overflow_hidden()
+                    .whitespace_nowrap()
+                    .child(label),
+            )
+            .into_any_element()
+    }
+
+    /// Quest CTA button + optional `Play` platform dropdown (`tm` / `tc` of module 452411).
+    fn quest_cta_button(
+        &self,
+        quest: &Quest,
+        ctx: CtaContext,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let spec = resolve_cta(quest, ctx);
+        let qid = quest.id.clone();
+        let link = quest.config.cta_link.clone();
+        let action = spec.action;
+        let primary = matches!(
+            spec.variant,
+            CtaVariant::Primary | CtaVariant::OverlayPrimary
+        );
+        let menu_open = action == CtaAction::OpenPlatformMenu
+            && self.quests.open_platform_menu.as_deref() == Some(quest.id.as_str());
+        let (xbox, psn) = self.quest_console_connections();
+        let menu_opts = if menu_open {
+            platform_menu_options(
+                quest,
+                self.quests.store.selected_platform(&quest.id),
+                None,
+                xbox,
+                psn,
+                !self.quests.store.error_hints(&quest.id).is_empty(),
+            )
+        } else {
+            Vec::new()
+        };
+
+        div()
+            .relative()
+            .flex_1()
+            .min_w(px(0.))
+            .child(
+                div()
+                    .id(SharedString::from(format!("quest-cta-{}", quest.id)))
+                    .w_full()
+                    .h(px(36.))
+                    .px(px(12.))
+                    .rounded(px(8.))
+                    .bg(color(if primary {
+                        "--control-primary-background-default"
+                    } else {
+                        "--control-secondary-background-default"
+                    }))
+                    .when(!spec.disabled, |el| {
+                        el.hover(|s| {
+                            s.bg(color(if primary {
+                                "--control-primary-background-hover"
+                            } else {
+                                "--control-secondary-background-hover"
+                            }))
+                        })
+                        .cursor_pointer()
+                        .on_click(cx.listener(move |this, _, _, cx| {
+                            this.handle_quest_cta_action(&qid, &link, action, cx);
+                        }))
+                    })
+                    .when(spec.disabled, |el| el.opacity(0.6))
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .gap(px(6.))
+                    .child(
+                        text(
+                            14.,
+                            18.,
+                            500.,
+                            if primary {
+                                "--control-primary-text-default"
+                            } else {
+                                "--control-secondary-text-default"
+                            },
+                        )
+                        .overflow_hidden()
+                        .whitespace_nowrap()
+                        .child(spec.label),
+                    )
+                    .when(spec.trailing_external, |el| {
+                        el.child(icon(
+                            "link_external_small",
+                            14.,
+                            if primary {
+                                "--control-primary-text-default"
+                            } else {
+                                "--control-secondary-icon-default"
+                            },
+                        ))
+                    })
+                    .when(spec.trailing_chevron, |el| {
+                        el.child(icon(
+                            if menu_open {
+                                "automod_chevron_up"
+                            } else {
+                                "automod_chevron_down"
+                            },
+                            14.,
+                            if primary {
+                                "--control-primary-text-default"
+                            } else {
+                                "--control-secondary-icon-default"
+                            },
+                        ))
+                    }),
+            )
+            .when(menu_open, |wrap| {
+                let aria = platform_menu_aria_label();
+                let qid_opt = quest.id.clone();
+                let link_opt = quest.config.cta_link.clone();
+                wrap.child(
+                    deferred(
+                        div()
+                            .id(SharedString::from(format!("quest-play-menu-{}", quest.id)))
+                            .occlude()
+                            .absolute()
+                            .left_0()
+                            .right_0()
+                            .top(px(40.))
+                            .p(px(6.))
+                            .rounded(px(8.))
+                            .border_1()
+                            .border_color(color("--border-subtle"))
+                            .bg(color("--background-surface-high"))
+                            .flex()
+                            .flex_col()
+                            .gap(px(2.))
+                            .when(false, |el| el.child(aria))
+                            .children(menu_opts.into_iter().map(move |opt| {
+                                let q = qid_opt.clone();
+                                let l = link_opt.clone();
+                                let target = opt.target;
+                                div()
+                                    .id(SharedString::from(format!(
+                                        "quest-play-opt-{}-{}",
+                                        q, opt.id
+                                    )))
+                                    .px(px(8.))
+                                    .py(px(6.))
+                                    .rounded(px(4.))
+                                    .hover(|s| s.bg(color("--background-mod-subtle")))
+                                    .cursor_pointer()
+                                    .flex()
+                                    .items_center()
+                                    .gap(px(8.))
+                                    .on_click(cx.listener(move |this, _, _, cx| {
+                                        this.quests.open_platform_menu = None;
+                                        match target {
+                                            super::quest_copy::PlatformMenuTarget::Desktop => {
+                                                this.quests.store.set_selected_platform(
+                                                    &q,
+                                                    Some(QuestPlatform::Desktop),
+                                                );
+                                                if !l.is_empty() {
+                                                    cx.open_url(&l);
+                                                }
+                                            }
+                                            super::quest_copy::PlatformMenuTarget::Console(_) => {
+                                                this.quests.store.set_selected_platform(
+                                                    &q,
+                                                    Some(QuestPlatform::Console),
+                                                );
+                                            }
+                                            super::quest_copy::PlatformMenuTarget::CheckConnection => {
+                                                this.quests.store.clear_error_hints(&q);
+                                            }
+                                        }
+                                        cx.notify();
+                                    }))
+                                    .child(text(13., 18., 500., "--text-default").child(opt.label))
+                            })),
+                    )
+                    .with_priority(2),
+                )
+            })
+            .into_any_element()
     }
 
     // ---- the page ----
@@ -601,7 +1694,7 @@ impl Root {
         let visible = self.visible_quests();
         let filtered = !self.quests.filters.is_empty();
         let loading = self.quests.store.is_fetching_current_quests && visible.is_empty();
-        let tiles = self.quest_tiles(&visible);
+        let tiles = self.quest_tiles(&visible, cx);
         let empty = visible.is_empty() && !loading;
         let hero = self.quests_hero(cx);
         let controls = self.quests_heading_controls(window, cx);
@@ -1342,6 +2435,10 @@ impl Root {
 }
 
 /// A quest asset's address (`N` of module 760914): a path as it is, a bare name under the quest's folder.
+pub(super) fn quest_asset_url(quest: &str, asset: &str) -> String {
+    quest_asset(quest, asset)
+}
+
 fn quest_asset(quest: &str, asset: &str) -> String {
     if asset.starts_with("http://") || asset.starts_with("https://") {
         asset.to_owned()
