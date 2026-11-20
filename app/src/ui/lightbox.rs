@@ -36,6 +36,10 @@ pub(super) struct Item {
     pub animated: bool,
     pub is_video: bool,
     pub video_src: Option<String>,
+    /// Silent looping video source for GIFV embeds (`embed.kind == "gifv"`), played via `inline_video`.
+    pub gifv_src: Option<String>,
+    /// Favorite GIF payload (module 439401 / 343552) for GIFV embeds and animated GIF images.
+    pub favorite: Option<super::gifs::FavoriteTarget>,
     /// An attachment's own facts for View Details and Copy Attachment ID (module 2323: only for attachments).
     pub details: Option<Details>,
 }
@@ -108,18 +112,68 @@ pub(super) fn items_of(message: &Message) -> Vec<Item> {
     for (index, embed) in message.embeds.iter().enumerate() {
         for (key, image) in super::embed::viewer_pictures(message.id, index, embed) {
             let base = image.proxy_url.clone().unwrap_or_else(|| image.url.clone());
+            let is_gifv = embed.kind == "gifv";
+            let gifv_video = is_gifv.then_some(embed.video.as_ref()).flatten();
+            let gifv_src = gifv_video
+                .filter(|video| {
+                    super::inline_video::supported_dimensions(video.width, video.height)
+                })
+                .map(|video| video.src().to_owned());
+            let animated = is_gifv || image.is_animated();
+            let favorite = if is_gifv {
+                gifv_video.or(Some(&image)).map(|media| {
+                    let src = media.src().to_owned();
+                    let url = embed
+                        .url
+                        .as_deref()
+                        .filter(|u| !u.is_empty())
+                        .unwrap_or(&src)
+                        .to_owned();
+                    super::gifs::FavoriteTarget {
+                        url,
+                        src,
+                        width: media.width.max(1),
+                        height: media.height.max(1),
+                        format: if gifv_video.is_some() { 2 } else { 1 },
+                    }
+                })
+            } else if animated {
+                let src = image.src().to_owned();
+                let url = embed
+                    .url
+                    .as_deref()
+                    .filter(|u| !u.is_empty())
+                    .unwrap_or(&src)
+                    .to_owned();
+                Some(super::gifs::FavoriteTarget {
+                    url,
+                    src,
+                    width: image.width.max(1),
+                    height: image.height.max(1),
+                    format: 1,
+                })
+            } else {
+                None
+            };
+            let (width, height) = gifv_video
+                .map(|video| (video.width.max(1), video.height.max(1)))
+                .unwrap_or((image.width, image.height));
             items.push(Item {
                 key,
-                url: image.url.clone(),
+                url: embed
+                    .url
+                    .clone()
+                    .filter(|u| is_gifv && !u.is_empty())
+                    .unwrap_or_else(|| image.url.clone()),
                 proxy: format!("{base}{}", if base.contains('?') { "&" } else { "?" }),
-                width: image.width,
-                height: image.height,
+                width,
+                height,
                 filename: filename_of(&image.url),
-                animated: filename_of(&image.url)
-                    .to_ascii_lowercase()
-                    .ends_with(".gif"),
+                animated,
                 is_video: false,
                 video_src: None,
+                gifv_src,
+                favorite,
                 details: None,
             });
         }
@@ -144,6 +198,8 @@ pub(super) fn items_of(message: &Message) -> Vec<Item> {
                 animated: false,
                 is_video: true,
                 video_src: Some(proxy.clone()),
+                gifv_src: None,
+                favorite: None,
                 details: None,
             });
         }
@@ -160,6 +216,21 @@ fn attachment_item(attachment: &Attachment) -> Item {
             attachment.proxy_url.clone()
         }
     });
+    let animated = attachment.is_animated();
+    let favorite = (!is_video && animated).then(|| {
+        let src = if attachment.proxy_url.is_empty() {
+            attachment.url.clone()
+        } else {
+            attachment.proxy_url.clone()
+        };
+        super::gifs::FavoriteTarget {
+            url: attachment.url.clone(),
+            src,
+            width: attachment.width.unwrap_or(1).max(1),
+            height: attachment.height.unwrap_or(1).max(1),
+            format: 1,
+        }
+    });
     Item {
         key: format!("attachment:{}", attachment.id),
         url: attachment.url.clone(),
@@ -167,9 +238,11 @@ fn attachment_item(attachment: &Attachment) -> Item {
         width: attachment.width.unwrap_or(1),
         height: attachment.height.unwrap_or(1),
         filename: attachment.filename.clone(),
-        animated: attachment.is_animated(),
+        animated,
         is_video,
         video_src,
+        gifv_src: None,
+        favorite,
         details: Some(Details {
             id: attachment.id,
             name: display_name(attachment.title.as_deref(), &attachment.filename),
@@ -290,11 +363,19 @@ impl Root {
         };
         let proxy = format!("{url}{}", if url.contains('?') { "&" } else { "?" });
         let filename = filename_of(&original);
+        let animated = filename.to_ascii_lowercase().ends_with(".gif");
+        let favorite = animated.then(|| super::gifs::FavoriteTarget {
+            url: original.clone(),
+            src: url.clone(),
+            width: width.max(1),
+            height: height.max(1),
+            format: 1,
+        });
         self.lightbox = Some(Lightbox {
             message,
             items: vec![Item {
                 key: format!("plain-picture:{url}"),
-                animated: filename.to_ascii_lowercase().ends_with(".gif"),
+                animated,
                 url: original,
                 proxy,
                 width,
@@ -302,6 +383,8 @@ impl Root {
                 filename,
                 is_video: false,
                 video_src: None,
+                gifv_src: None,
+                favorite,
                 details: None,
             }],
             index: 0,
@@ -520,6 +603,19 @@ impl Root {
 
         let forward_message = open.message.clone();
         let open_url = item.url.clone();
+        let favorite_target = item.favorite.clone().or_else(|| {
+            (!item.is_video
+                && picture
+                    .as_ref()
+                    .is_some_and(|pic| super::gif_tiles::animated(pic.bytes())))
+            .then(|| super::gifs::FavoriteTarget {
+                url: item.url.clone(),
+                src: item.proxy.trim_end_matches(['?', '&']).to_owned(),
+                width: item.width.max(1),
+                height: item.height.max(1),
+                format: 1,
+            })
+        });
         let pill = div()
             .absolute()
             .top(px(36.))
@@ -533,6 +629,45 @@ impl Root {
             .border_1()
             .border_color(midnight("--border-subtle"))
             .bg(panel)
+            .children(favorite_target.map(|target| {
+                let favored = self.is_favorite_gif(&target.url);
+                let tip_text = if favored {
+                    dc_intl::t!("5/NS74")
+                } else {
+                    dc_intl::t!("nIH0v8")
+                };
+                self.with_tip(
+                    "lightbox-favorite-tip",
+                    super::tooltip::Tip::text(tip_text, super::tooltip::Side::Bottom),
+                    div()
+                        .id("lightbox-favorite")
+                        .size(px(32.))
+                        .rounded(px(8.))
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .cursor_pointer()
+                        .hover(|style| style.bg(midnight("--background-mod-subtle")))
+                        .child(icon(
+                            if favored {
+                                "gif_favorite_filled"
+                            } else {
+                                "gif_favorite"
+                            },
+                            20.,
+                            if favored {
+                                "--yellow-300"
+                            } else {
+                                "--icon-default"
+                            },
+                        ))
+                        .on_click(cx.listener(move |this, _, _, cx| {
+                            this.toggle_favorite_gif_target(&target, cx);
+                            cx.stop_propagation();
+                        })),
+                    cx,
+                )
+            }))
             .children((!item.is_video).then(|| {
                 self.lightbox_button(
                     "lightbox-zoom",
@@ -692,9 +827,12 @@ impl Root {
                                 .into_iter()
                                 .flatten(),
                         )
-                        // An animation plays in its own decoded tile (`gif_tiles`): the media viewer always plays it.
+                        // An animation plays in its own decoded tile (`gif_tiles`) or looping video (`inline_video`
+                        // for GIFV embeds): the media viewer always plays it instead of freezing on a static frame.
                         .children(picture.map(|picture| {
-                            if super::gif_tiles::animated(picture.bytes()) {
+                            if item.gifv_src.is_none()
+                                && super::gif_tiles::animated(picture.bytes())
+                            {
                                 let ratio = self.ui_scale.get().max(1.);
                                 self.media_tile(
                                     &format!("lightbox-{}", item.key),
@@ -722,6 +860,14 @@ impl Root {
                                     .h(px(height as f32 * scale))
                                     .into_any_element()
                             }
+                        }))
+                        .children(item.gifv_src.as_deref().map(|src| {
+                            let ratio = self.ui_scale.get().max(1.);
+                            let decode_w = ((width as f32 * ratio).round().max(1.) as u32)
+                                .min(item.width.max(1));
+                            let decode_h = ((height as f32 * ratio).round().max(1.) as u32)
+                                .min(item.height.max(1));
+                            self.lightbox_inline_video(&item.key, src, (decode_w, decode_h), cx)
                         }))
                         .on_mouse_down(
                             MouseButton::Left,
@@ -1253,5 +1399,47 @@ mod tests {
             "cat.png"
         );
         assert_eq!(filename_of("https://cdn.example/"), "image");
+    }
+
+    #[test]
+    fn gifv_embeds_preserve_looping_video_src_and_favorite_target() {
+        let message = Message::from_value(&serde_json::json!({
+            "id": "1568692565136375900",
+            "channel_id": "200",
+            "content": "https://tenor.com/view/demo-gif-123",
+            "timestamp": "2026-11-20T12:00:00+00:00",
+            "author": {"id": "1", "username": "alice"},
+            "embeds": [{
+                "type": "gifv",
+                "url": "https://tenor.com/view/demo-gif-123",
+                "provider": {"name": "Tenor"},
+                "thumbnail": {
+                    "url": "https://media.tenor.com/demo/poster.png",
+                    "proxy_url": "https://images-ext-1.discordapp.net/external/demo/poster.png",
+                    "width": 498,
+                    "height": 280
+                },
+                "video": {
+                    "url": "https://media.tenor.com/demo/clip.mp4",
+                    "proxy_url": "https://images-ext-1.discordapp.net/external/demo/clip.mp4",
+                    "width": 498,
+                    "height": 280
+                }
+            }]
+        }))
+        .unwrap();
+        let items = items_of(&message);
+        assert_eq!(items.len(), 1);
+        assert_eq!(items[0].key, "embed:1568692565136375900:0:thumbnail");
+        assert!(items[0].animated);
+        assert!(!items[0].is_video);
+        assert_eq!(
+            items[0].gifv_src.as_deref(),
+            Some("https://images-ext-1.discordapp.net/external/demo/clip.mp4")
+        );
+        let fav = items[0].favorite.as_ref().unwrap();
+        assert_eq!(fav.url, "https://tenor.com/view/demo-gif-123");
+        assert_eq!(fav.format, 2);
+        assert_eq!((fav.width, fav.height), (498, 280));
     }
 }

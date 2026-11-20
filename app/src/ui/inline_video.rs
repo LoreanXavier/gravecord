@@ -38,6 +38,8 @@ struct Entry {
     retry_on_view: bool,
     /// The encoded bytes did not fit under `TOTAL_ENCODED`: the download repeats when room appears.
     waiting: bool,
+    /// Always autoplay regardless of the chat `animate_gifs` setting (used by the media lightbox).
+    always_play: bool,
     clip: Option<Arc<Clip>>,
     bytes: usize,
     clock: Playback,
@@ -87,7 +89,7 @@ fn should_play(visible: bool, focused: bool, autoplay: bool, hovered: bool) -> b
     visible && focused && (autoplay || hovered)
 }
 
-fn supported_dimensions(width: u32, height: u32) -> bool {
+pub(super) fn supported_dimensions(width: u32, height: u32) -> bool {
     (width <= 6016 && height <= 3384) || (width <= 3384 && height <= 6016)
 }
 
@@ -205,25 +207,42 @@ impl Cache {
     }
 
     fn register(&mut self, key: &str, url: &str, size: (u32, u32)) {
-        self.entries
-            .entry(key.to_owned())
-            .or_insert_with(|| Entry {
-                url: url.to_owned(),
-                size,
-                epoch: self.epoch,
-                fetched: false,
-                encoded: None,
-                decoding: false,
-                failed: false,
-                fetch_failures: 0,
-                retry_on_view: false,
-                waiting: false,
-                clip: None,
-                bytes: 0,
-                clock: Playback::default(),
-                frame: None,
+        self.register_with_play(key, url, size, false);
+    }
+
+    fn register_with_play(&mut self, key: &str, url: &str, size: (u32, u32), always_play: bool) {
+        let reused = (!self.entries.contains_key(key))
+            .then(|| {
+                self.entries
+                    .values()
+                    .find(|entry| entry.url == url)
+                    .and_then(|entry| entry.encoded.clone())
             })
-            .epoch = self.epoch;
+            .flatten();
+        let entry = self.entries.entry(key.to_owned()).or_insert_with(|| Entry {
+            url: url.to_owned(),
+            size,
+            epoch: self.epoch,
+            fetched: reused.is_some(),
+            encoded: reused,
+            decoding: false,
+            failed: false,
+            fetch_failures: 0,
+            retry_on_view: false,
+            waiting: false,
+            always_play,
+            clip: None,
+            bytes: 0,
+            clock: Playback::default(),
+            frame: None,
+        });
+        entry.epoch = self.epoch;
+        entry.always_play = always_play;
+        if entry.size != size && !entry.decoding {
+            entry.size = size;
+            entry.clip = None;
+            entry.bytes = 0;
+        }
     }
 
     fn prepare(&mut self, focused: bool, autoplay: bool) -> Preparation {
@@ -258,7 +277,7 @@ impl Cache {
             let play = should_play(
                 visible == Some(&true),
                 focused,
-                autoplay,
+                autoplay || entry.always_play,
                 self.hovered.as_ref() == Some(key),
             );
             if let Some(clip) = &entry.clip {
@@ -289,7 +308,7 @@ impl Cache {
             let play = should_play(
                 self.visible.get(key) == Some(&true),
                 focused,
-                autoplay,
+                autoplay || entry.always_play,
                 self.hovered.as_ref() == Some(key),
             );
             if play && !entry.failed {
@@ -541,6 +560,72 @@ impl Root {
                 )
                 .into_any_element(),
         )
+    }
+
+    /// Silent looping GIFV layer for the media lightbox: always plays while open in the focused window
+    /// and reuses already-downloaded chat GIFV bytes when available.
+    pub(super) fn lightbox_inline_video(
+        &self,
+        item_key: &str,
+        url: &str,
+        size: (u32, u32),
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let mut hash = std::hash::DefaultHasher::new();
+        url.hash(&mut hash);
+        let key = format!("{PREFIX}lb:{item_key}:{:x}", hash.finish());
+        self.inline_videos.borrow_mut().register_with_play(
+            &key,
+            url,
+            (size.0.max(1), size.1.max(1)),
+            true,
+        );
+        let cache = self.inline_videos.clone();
+        let root = cx.entity().downgrade();
+        div()
+            .absolute()
+            .inset_0()
+            .child(
+                canvas(
+                    |bounds, _, _| bounds,
+                    move |bounds, _, window, cx| {
+                        let visible = bounds.intersect(&window.content_mask().bounds);
+                        if visible.size.width <= px(0.) || visible.size.height <= px(0.) {
+                            return;
+                        }
+                        let notify = {
+                            let mut cache = cache.borrow_mut();
+                            cache.seen.insert(key.clone(), true);
+                            let epoch = cache.epoch;
+                            if let Some(entry) = cache.entries.get_mut(&key) {
+                                entry.epoch = epoch;
+                            }
+                            cache.visible.get(&key) != Some(&true)
+                        };
+                        if notify {
+                            let root = root.clone();
+                            cx.defer(move |cx| {
+                                let _ = root.update(cx, |_, cx| cx.notify());
+                            });
+                        }
+                        if let Some((image, retired)) = cache.borrow_mut().frame(&key) {
+                            if let Some(retired) = retired {
+                                cx.drop_image(retired, Some(window));
+                            }
+                            let _ = window.paint_image(
+                                bounds,
+                                bounds,
+                                Corners::all(px(0.)),
+                                image,
+                                0,
+                                false,
+                            );
+                        }
+                    },
+                )
+                .size_full(),
+            )
+            .into_any_element()
     }
 
     pub(super) fn release_inline_videos(&mut self, cx: &mut gpui::App) {

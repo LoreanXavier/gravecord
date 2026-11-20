@@ -236,35 +236,50 @@ struct Sniff {
     plays: u32,
 }
 
-/// `IHDR` and `acTL`, which both come before the first `IDAT`.
+/// `IHDR` and `acTL` for PNG/APNG, or header dimensions for WebP/GIF/JPEG.
 fn sniff(bytes: &[u8]) -> Option<Sniff> {
-    if !bytes.starts_with(b"\x89PNG\r\n\x1a\n") {
-        return None;
-    }
-    let (mut width, mut height, mut frames, mut plays) = (0, 0, 1, 1);
-    let mut at = 8;
-    while at + 8 <= bytes.len() {
-        let length = u32::from_be_bytes(bytes[at..at + 4].try_into().ok()?) as usize;
-        let kind = &bytes[at + 4..at + 8];
-        let body = bytes.get(at + 8..at + 8 + length)?;
-        match kind {
-            b"IHDR" if length >= 8 => {
-                width = u32::from_be_bytes(body[0..4].try_into().ok()?);
-                height = u32::from_be_bytes(body[4..8].try_into().ok()?);
+    if bytes.starts_with(b"\x89PNG\r\n\x1a\n") {
+        let (mut width, mut height, mut frames, mut plays) = (0, 0, 1, 1);
+        let mut at = 8;
+        while at + 8 <= bytes.len() {
+            let length = u32::from_be_bytes(bytes[at..at + 4].try_into().ok()?) as usize;
+            let kind = &bytes[at + 4..at + 8];
+            let body = bytes.get(at + 8..at + 8 + length)?;
+            match kind {
+                b"IHDR" if length >= 8 => {
+                    width = u32::from_be_bytes(body[0..4].try_into().ok()?);
+                    height = u32::from_be_bytes(body[4..8].try_into().ok()?);
+                }
+                b"acTL" if length >= 8 => {
+                    frames = u32::from_be_bytes(body[0..4].try_into().ok()?);
+                    plays = u32::from_be_bytes(body[4..8].try_into().ok()?);
+                }
+                b"IDAT" => break,
+                _ => {}
             }
-            b"acTL" if length >= 8 => {
-                frames = u32::from_be_bytes(body[0..4].try_into().ok()?);
-                plays = u32::from_be_bytes(body[4..8].try_into().ok()?);
-            }
-            b"IDAT" => break,
-            _ => {}
+            at += 12 + length;
         }
-        at += 12 + length;
+        return (width > 0 && height > 0 && frames > 0).then_some(Sniff {
+            width,
+            height,
+            frames,
+            plays,
+        });
     }
-    (width > 0 && height > 0 && frames > 0).then_some(Sniff {
+    let reader = image::ImageReader::new(Cursor::new(bytes))
+        .with_guessed_format()
+        .ok()?;
+    let (width, height) = reader.into_dimensions().ok()?;
+    let animated = super::gif_tiles::animated(bytes);
+    let plays = if animated {
+        super::gif_tiles::plays(bytes).unwrap_or(0)
+    } else {
+        1
+    };
+    (width > 0 && height > 0).then_some(Sniff {
         width,
         height,
-        frames,
+        frames: if animated { 24 } else { 1 },
         plays,
     })
 }
@@ -309,12 +324,28 @@ pub(super) fn render_image(mut buffer: RgbaImage) -> Arc<RenderImage> {
 }
 
 /// Decodes one layer or still to `wanted` pixels wide, frame by frame, so only the scaled frames are ever held.
+#[cfg(test)]
 fn decode(bytes: &[u8], wanted: u32) -> Option<Clip> {
+    decode_budgeted(bytes, wanted, CLIP_BUDGET)
+}
+
+fn push_animated_frame(clip: &mut Clip, frame: image::Frame, width: u32, height: u32) {
+    let (numerator, denominator) = frame.delay().numer_denom_ms();
+    let mut delay = f64::from(numerator) / f64::from(denominator.max(1));
+    if delay <= 10. {
+        delay = MIN_DELAY_MS;
+    }
+    clip.total_ms += delay;
+    clip.ends_ms.push(clip.total_ms);
+    clip.frames
+        .push(render_image(scale(frame.into_buffer(), width, height)));
+}
+
+fn decode_budgeted(bytes: &[u8], wanted: u32, budget: usize) -> Option<Clip> {
     let info = sniff(bytes)?;
-    let width = decode_width(info, wanted, CLIP_BUDGET);
+    let width = decode_width(info, wanted, budget.max(64 * 1024));
     let height =
         ((f64::from(width) * f64::from(info.height) / f64::from(info.width)).round() as u32).max(1);
-    let decoder = image::codecs::png::PngDecoder::new(Cursor::new(bytes)).ok()?;
     let mut clip = Clip {
         frames: Vec::new(),
         ends_ms: Vec::new(),
@@ -323,21 +354,38 @@ fn decode(bytes: &[u8], wanted: u32) -> Option<Clip> {
         size: (width, height),
         bytes: 0,
     };
-    if decoder.is_apng().ok()? {
-        for frame in decoder.apng().ok()?.into_frames() {
-            let frame = frame.ok()?;
-            let (numerator, denominator) = frame.delay().numer_denom_ms();
-            let mut delay = f64::from(numerator) / f64::from(denominator.max(1));
-            if delay <= 10. {
-                delay = MIN_DELAY_MS;
+    if bytes.starts_with(b"\x89PNG\r\n\x1a\n") {
+        let decoder = image::codecs::png::PngDecoder::new(Cursor::new(bytes)).ok()?;
+        if decoder.is_apng().ok()? {
+            for frame in decoder.apng().ok()?.into_frames() {
+                push_animated_frame(&mut clip, frame.ok()?, width, height);
             }
-            clip.total_ms += delay;
-            clip.ends_ms.push(clip.total_ms);
+        } else {
+            let picture = image::DynamicImage::from_decoder(decoder).ok()?.to_rgba8();
             clip.frames
-                .push(render_image(scale(frame.into_buffer(), width, height)));
+                .push(render_image(scale(picture, width, height)));
+            clip.ends_ms.push(0.);
+        }
+    } else if bytes.starts_with(b"RIFF") {
+        let mut decoder = image::codecs::webp::WebPDecoder::new(Cursor::new(bytes)).ok()?;
+        if decoder.has_animation() {
+            let _ = decoder.set_background_color(image::Rgba([0, 0, 0, 0]));
+            for frame in decoder.into_frames() {
+                push_animated_frame(&mut clip, frame.ok()?, width, height);
+            }
+        } else {
+            let picture = image::DynamicImage::from_decoder(decoder).ok()?.to_rgba8();
+            clip.frames
+                .push(render_image(scale(picture, width, height)));
+            clip.ends_ms.push(0.);
+        }
+    } else if bytes.starts_with(b"GIF8") {
+        let decoder = image::codecs::gif::GifDecoder::new(Cursor::new(bytes)).ok()?;
+        for frame in decoder.into_frames() {
+            push_animated_frame(&mut clip, frame.ok()?, width, height);
         }
     } else {
-        let picture = image::DynamicImage::from_decoder(decoder).ok()?.to_rgba8();
+        let picture = image::load_from_memory(bytes).ok()?.to_rgba8();
         clip.frames
             .push(render_image(scale(picture, width, height)));
         clip.ends_ms.push(0.);
@@ -411,6 +459,8 @@ pub(super) struct Cache {
     last_shown: Option<Instant>,
     requested: HashSet<String>,
     failed: HashSet<String>,
+    /// Transient download failures per layer URL before giving up until the next session/idle reset.
+    art_failures: HashMap<String, u32>,
     clips: HashMap<ClipKey, Slot>,
     decoding: HashMap<ClipKey, usize>,
     pass: u64,
@@ -463,6 +513,8 @@ impl Cache {
         if idle && self.instances.is_empty() && self.clips.is_empty() {
             self.encoded.clear();
             self.requested.clear();
+            self.art_failures.clear();
+            self.failed.clear();
             self.last_shown = None;
         }
     }
@@ -546,7 +598,7 @@ impl Root {
         let reduced = crate::ui::motion::reduced() || self.profile_effects.borrow().force_reduced;
         let now = Instant::now();
         let mut retired = Vec::new();
-        let mut decode_jobs: Vec<(ClipKey, Arc<Vec<u8>>)> = Vec::new();
+        let mut decode_jobs: Vec<(ClipKey, Arc<Vec<u8>>, usize)> = Vec::new();
         let mut needs_art: Vec<String> = Vec::new();
         let painted = {
             let mut guard = self.profile_effects.borrow_mut();
@@ -637,14 +689,17 @@ impl Root {
                     })
                     .collect(),
             };
-            let mut ready = wanted_mode != Mode::Hidden;
+            let per_clip_budget = (DECODED_BUDGET / sources.len().max(1)).min(CLIP_BUDGET);
+            let mut all_ready = wanted_mode != Mode::Hidden;
+            let mut any_ready = false;
             for (_, url, width) in &sources {
                 let clip_key = (url.clone(), *width);
                 if let Some(slot) = cache.clips.get_mut(&clip_key) {
                     slot.pass = pass;
+                    any_ready = true;
                     continue;
                 }
-                ready = false;
+                all_ready = false;
                 if cache.failed.contains(url) {
                     continue;
                 }
@@ -654,18 +709,23 @@ impl Root {
                 });
                 if let Some(bytes) = known {
                     if !cache.decoding.contains_key(&clip_key) {
+                        let available = DECODED_BUDGET
+                            .saturating_sub(cache.decoded_bytes())
+                            .min(per_clip_budget);
                         let estimate = sniff(&bytes)
                             .map(|info| {
-                                let used = decode_width(info, *width, CLIP_BUDGET);
+                                let used = decode_width(info, *width, available.max(64 * 1024));
                                 let height = (f64::from(used) * f64::from(info.height)
                                     / f64::from(info.width))
                                     as usize;
                                 info.frames as usize * used as usize * height * 4
                             })
                             .unwrap_or(0);
-                        if cache.decoded_bytes() + estimate <= DECODED_BUDGET {
+                        if available >= 64 * 1024
+                            && cache.decoded_bytes() + estimate <= DECODED_BUDGET
+                        {
                             cache.decoding.insert(clip_key.clone(), estimate);
-                            decode_jobs.push((clip_key, bytes));
+                            decode_jobs.push((clip_key, bytes, available));
                         }
                     }
                 } else if cache.requested.insert(url.clone()) {
@@ -685,12 +745,25 @@ impl Root {
                 }
             }
 
+            // Once playback has started (or when a lookahead/failed layer is pending alongside ready layers),
+            // keep painting the decoded layers instead of blanking out the entire profile effect.
+            let pending_initial = sources.iter().any(|(_, url, width)| {
+                !cache.clips.contains_key(&(url.clone(), *width)) && !cache.failed.contains(url)
+            });
+            let ready = wanted_mode != Mode::Hidden
+                && (all_ready
+                    || (wanted_mode == Mode::Live
+                        && any_ready
+                        && (instance.live_since.is_some() || !pending_initial)));
             let mut painted = None;
             if ready {
                 let clips: HashMap<usize, Arc<Clip>> = sources
                     .iter()
-                    .map(|(index, url, width)| {
-                        (*index, cache.clips[&(url.clone(), *width)].clip.clone())
+                    .filter_map(|(index, url, width)| {
+                        cache
+                            .clips
+                            .get(&(url.clone(), *width))
+                            .map(|slot| (*index, slot.clip.clone()))
                     })
                     .collect();
                 match wanted_mode {
@@ -837,7 +910,7 @@ impl Root {
     fn profile_effect_work(
         &self,
         art: Vec<String>,
-        decodes: Vec<(ClipKey, Arc<Vec<u8>>)>,
+        decodes: Vec<(ClipKey, Arc<Vec<u8>>, usize)>,
         retired: Vec<Arc<RenderImage>>,
         cx: &mut Context<Self>,
     ) {
@@ -847,12 +920,12 @@ impl Root {
                 url,
             });
         }
-        for (key, bytes) in decodes {
+        for (key, bytes, budget) in decodes {
             let wanted = key.1;
             cx.spawn(async move |this, cx| {
                 let clip = cx
                     .background_executor()
-                    .spawn(async move { decode(&bytes, wanted) })
+                    .spawn(async move { decode_budgeted(&bytes, wanted, budget) })
                     .await;
                 let _ = this.update(cx, |this, cx| {
                     let mut cache = this.profile_effects.borrow_mut();
@@ -954,6 +1027,8 @@ impl Root {
             let mut cache = self.profile_effects.borrow_mut();
             let pass = cache.pass;
             cache.last_shown = Some(Instant::now());
+            cache.art_failures.remove(url);
+            cache.failed.remove(url);
             cache
                 .encoded
                 .insert(url.to_owned(), (Arc::new(bytes), pass));
@@ -964,12 +1039,61 @@ impl Root {
         }
     }
 
-    pub(super) fn profile_effect_art_failed(&mut self, key: &str, cx: &mut Context<Self>) {
-        if let Some(url) = key.strip_prefix(ART_PREFIX) {
-            self.profile_effects
-                .borrow_mut()
-                .failed
-                .insert(url.to_owned());
+    pub(super) fn profile_effect_art_failed(
+        &mut self,
+        key: &str,
+        failure: super::image_retry::Failure,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(url) = key.strip_prefix(ART_PREFIX) else {
+            return;
+        };
+        let url_owned = url.to_owned();
+        let retry_delay_ms = {
+            let mut cache = self.profile_effects.borrow_mut();
+            if cache.encoded.contains_key(url) {
+                return;
+            }
+            if failure == super::image_retry::Failure::Transient {
+                let attempts = cache.art_failures.entry(url_owned.clone()).or_insert(0);
+                if *attempts < super::image_retry::MAX_RETRIES {
+                    *attempts += 1;
+                    let delay = (super::image_retry::BACKOFF_MIN_MS
+                        .saturating_mul(1u64 << (*attempts - 1).min(4)))
+                    .min(super::image_retry::BACKOFF_MAX_MS);
+                    Some(delay)
+                } else {
+                    cache.failed.insert(url_owned.clone());
+                    None
+                }
+            } else {
+                cache.failed.insert(url_owned.clone());
+                None
+            }
+        };
+        if let Some(delay_ms) = retry_delay_ms {
+            let retry_url = url_owned;
+            cx.spawn(async move |this, cx| {
+                cx.background_executor()
+                    .timer(Duration::from_millis(delay_ms))
+                    .await;
+                let _ = this.update(cx, |this, cx| {
+                    let should_send = {
+                        let cache = this.profile_effects.borrow();
+                        !cache.encoded.contains_key(&retry_url)
+                            && !cache.failed.contains(&retry_url)
+                    };
+                    if should_send {
+                        let _ = this.requests.send(Request::Image {
+                            key: art_key(&retry_url),
+                            url: retry_url,
+                        });
+                        cx.notify();
+                    }
+                });
+            })
+            .detach();
+        } else {
             cx.notify();
         }
     }

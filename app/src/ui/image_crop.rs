@@ -339,12 +339,16 @@ impl Root {
         if crate::storage::is_capture_run() {
             return;
         }
-        let picked = cx.prompt_for_paths(gpui::PathPromptOptions {
-            files: true,
-            directories: false,
-            multiple: false,
-            prompt: None,
-        });
+        let picked = super::native_dialog::open_paths(
+            gpui::PathPromptOptions {
+                files: true,
+                directories: false,
+                multiple: false,
+                prompt: None,
+            },
+            super::native_dialog::ALL_FILTERS,
+            cx,
+        );
         cx.spawn(async move |this, cx| {
             let Ok(Ok(Some(paths))) = picked.await else {
                 return;

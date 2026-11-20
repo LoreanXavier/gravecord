@@ -445,8 +445,13 @@ impl Root {
                     .into_any_element(),
             );
         }
-        let left = f32::from(menu.at.x) + MENU_WIDTH - 4.;
-        let top = self.audio_menu_top(menu) + top_offset;
+        let left = (f32::from(menu.at.x) + MENU_WIDTH - 4.)
+            .min((self.viewport.0 - 200.).max(8.))
+            .max(8.);
+        let est_height = 16. + rows.len() as f32 * 52.;
+        let top = (self.audio_menu_top(menu) + top_offset)
+            .min((self.viewport.1 - 8. - est_height).max(8.))
+            .max(8.);
         Some(
             div()
                 .absolute()
@@ -488,7 +493,9 @@ impl Root {
             Side::Input => 250.,
             Side::Output => 198.,
         };
-        f32::from(menu.at.y) - 4. - height
+        (f32::from(menu.at.y) - 4. - height)
+            .min((self.viewport.1 - 8. - height).max(8.))
+            .max(8.)
     }
 
     pub(super) fn audio_menu_layer(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
@@ -735,26 +742,43 @@ impl Root {
         );
         let panel =
             panel.on_mouse_down_out(cx.listener(|this, event: &gpui::MouseDownEvent, _, cx| {
+                let anchors = this.tip_anchors.borrow();
                 let in_sub = this
                     .audio_menu
                     .as_ref()
                     .is_some_and(|menu| menu.sub.is_some())
-                    && this
-                        .tip_anchors
-                        .borrow()
+                    && anchors
                         .get("audio-submenu")
                         .is_some_and(|bounds| bounds.contains(&event.position));
+                // Clicking a chevron while the menu is open lets its own click handler toggle or switch sides
+                // instead of closing here and immediately reopening on mouse-up.
+                let in_chevron = ["mic-chevron", "headphones-chevron", "call-mic-chevron"]
+                    .iter()
+                    .any(|key| {
+                        anchors
+                            .get(*key)
+                            .is_some_and(|bounds| bounds.contains(&event.position))
+                    });
+                drop(anchors);
                 if !in_sub
+                    && !in_chevron
                     && this.press_outside(super::keyboard::Layer::AudioMenu, cx)
                     && event.button != gpui::MouseButton::Right
                 {
                     cx.stop_propagation();
                 }
             }));
+        let left = f32::from(menu.at.x)
+            .min((self.viewport.0 - 8. - MENU_WIDTH).max(8.))
+            .max(8.);
         Some(
             deferred(
                 div()
-                    .child(div().absolute().left(menu.at.x).top(px(top)).child(panel))
+                    .absolute()
+                    .top_0()
+                    .left_0()
+                    .size_full()
+                    .child(div().absolute().left(px(left)).top(px(top)).child(panel))
                     .children(self.audio_submenu(menu, cx)),
             )
             .with_priority(2)

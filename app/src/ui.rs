@@ -235,6 +235,7 @@ pub(crate) mod motion;
 mod name_styles;
 mod nameplate_animation;
 mod nameplates;
+mod native_dialog;
 mod nitro;
 mod nitro_purchase;
 mod nitro_referral;
@@ -2877,7 +2878,7 @@ impl Root {
             }
             Update::ImageFailed { key, failure } => {
                 if key.starts_with(profile_effects::ART_PREFIX) {
-                    self.profile_effect_art_failed(&key, cx);
+                    self.profile_effect_art_failed(&key, failure, cx);
                 } else if key.starts_with(sticker_player::PREFIX) {
                     self.sticker_art_failed(&key);
                 } else if key.starts_with(inline_video::PREFIX) {
@@ -11100,6 +11101,7 @@ impl Render for Root {
         ));
         self.selection.borrow_mut().begin_frame();
         motion::set_window_active(window.is_window_active());
+        self.video_note_window(window, cx);
         // Not in the pinned client: VoiceStats follows its own switch (`plugin_hooks/voice_stats.rs`).
         self.voice_stats_observe(cx);
         // Not in the pinned client: MuteChannelMentions keeps the read states' filter current
@@ -12358,203 +12360,210 @@ impl Render for Root {
             .children(self.lottie_icon_probe())
             .children(self.system_bar())
             .child(motion::driver())
-            .child(motion::layers::faded(
-                self.regions.place(
-                    regions::Kind::Titlebar,
-                    regions::style_of(regions::Kind::Titlebar),
-                ),
-                base_opacity,
-            ))
-            .children(self.notice_bar(cx))
-            .child({
-                let rail = self
-                    .regions
-                    .place(regions::Kind::Rail, regions::style_of(regions::Kind::Rail));
-                let sidebar_width = self.sidebar_width();
-                let sidebar = if self.guild.is_some() {
+            .when(self.vv.fullscreen && self.call.is_some(), |this| {
+                // `call_fullscreen_layer` occludes 100% of the viewport; skip rebuilding the hidden
+                // titlebar, guild rail, channel sidebar, chat rows, member list, and user panel at 60 fps.
+                this.child(div().flex_1())
+            })
+            .when(!(self.vv.fullscreen && self.call.is_some()), |this| {
+                this.child(motion::layers::faded(
                     self.regions.place(
-                        regions::Kind::Sidebar,
-                        regions::style_of_sidebar(sidebar_width),
-                    )
-                } else if self.discover_active() {
-                    self.discover_sidebar(cx).into_any_element()
-                } else {
-                    self.regions.place(
-                        regions::Kind::Sidebar,
-                        regions::style_of_sidebar(sidebar_width),
-                    )
-                };
-                let content =
-                    if self.discover_active() {
-                        self.discover_page(window, cx)
-                    } else if self.guild.is_none() && self.channel.is_none() && self.nitro_open {
-                        self.nitro_page(window, cx)
-                    } else if self.quests_active() {
-                        self.quests_page(window, cx)
-                    } else if self.shop_active() {
-                        self.shop_page(window, cx)
-                    } else if self.message_requests_active() {
-                        self.message_requests_page(window, cx)
-                    } else if self.library_active() {
-                        self.library_view(window, cx)
-                    } else if self.guild.is_none() && self.channel.is_none() {
-                        self.friends_panel(window, cx).into_any_element()
-                    } else if self
-                        .member_view
-                        .as_ref()
-                        .is_some_and(|view| Some(view.guild) == self.guild)
-                    {
-                        self.member_safety_view(cx)
-                    } else if !self.guild_guide_open
-                        && !self.channel_browser_open
-                        && self.onboarding_blocked()
-                    {
-                        // Module 140354 in place of the channel, header included (`gk` of 596339).
-                        self.onboarding_blocked_page(cx)
-                    } else if self.voice_view_open() {
-                        self.voice_view(window, cx)
-                    } else if self.stage_view_open() {
-                        self.stage_view(cx)
-                    } else if self.guild_guide_open && self.guild.is_some() {
-                        self.guild_guide_view(cx)
-                    } else if self.channel_browser_open && self.guild.is_some() {
-                        self.channel_browser_view(window, cx, rows.into_any_element())
-                    } else if self.current_channel().is_some_and(Channel::is_forum) {
-                        self.forum_view_in(window, cx)
-                    } else if self.open_post_forum().is_some() && self.forum_split_fits(window) {
-                        self.forum_split_view(window, cx)
-                            .unwrap_or_else(|| div().into_any_element())
+                        regions::Kind::Titlebar,
+                        regions::style_of(regions::Kind::Titlebar),
+                    ),
+                    base_opacity,
+                ))
+                .children(self.notice_bar(cx))
+                .child({
+                    let rail = self
+                        .regions
+                        .place(regions::Kind::Rail, regions::style_of(regions::Kind::Rail));
+                    let sidebar_width = self.sidebar_width();
+                    let sidebar = if self.guild.is_some() {
+                        self.regions.place(
+                            regions::Kind::Sidebar,
+                            regions::style_of_sidebar(sidebar_width),
+                        )
+                    } else if self.discover_active() {
+                        self.discover_sidebar(cx).into_any_element()
                     } else {
-                        let gating = self.spoiler_gating_channel();
-                        // The New Thread panel sits beside the whole chat column, header included.
-                        div()
-                            .flex()
-                            .flex_1()
-                            .min_w(px(0.))
-                            .h_full()
-                            .child(
-                                div()
-                                    .parity("chat")
-                                    .flex()
-                                    .flex_col()
-                                    .flex_1()
-                                    .min_w(px(0.))
-                                    .h_full()
-                                    .pt(px(1.))
-                                    .overflow_hidden()
-                                    .child(match self.dm_call_area(window, cx) {
-                                        // The header moves into the call area while a call shows (module 540462
-                                        // `useExternalHeader`).
-                                        Some(area) => area,
-                                        None => self.regions.place(
-                                            regions::Kind::Header,
-                                            regions::style_of(regions::Kind::Header),
-                                        ),
-                                    })
-                                    .child(
-                                        div()
-                                            .flex()
-                                            .flex_col()
-                                            .flex_1()
-                                            .min_h(px(0.))
-                                            .bg(color("--background-base-lower"))
-                                            .flex_row()
-                                            // "Hide chat": the call has the whole column (`.wrapper.noChat`).
-                                            .when(self.dm_call_chat_hidden(), |chat| {
-                                                chat.flex_none().h(px(0.)).overflow_hidden()
-                                            })
-                                            .when_some(gating, |this, gating| {
-                                                // Module 289287 `renderChat`: a spoiler channel's gate (873614) in place
-                                                // of the chat until the account agrees.
-                                                this.child(self.spoiler_gate(gating, cx))
-                                            })
-                                            .when(gating.is_none(), |this| {
-                                                this.child(
+                        self.regions.place(
+                            regions::Kind::Sidebar,
+                            regions::style_of_sidebar(sidebar_width),
+                        )
+                    };
+                    let content =
+                        if self.discover_active() {
+                            self.discover_page(window, cx)
+                        } else if self.guild.is_none() && self.channel.is_none() && self.nitro_open {
+                            self.nitro_page(window, cx)
+                        } else if self.quests_active() {
+                            self.quests_page(window, cx)
+                        } else if self.shop_active() {
+                            self.shop_page(window, cx)
+                        } else if self.message_requests_active() {
+                            self.message_requests_page(window, cx)
+                        } else if self.library_active() {
+                            self.library_view(window, cx)
+                        } else if self.guild.is_none() && self.channel.is_none() {
+                            self.friends_panel(window, cx).into_any_element()
+                        } else if self
+                            .member_view
+                            .as_ref()
+                            .is_some_and(|view| Some(view.guild) == self.guild)
+                        {
+                            self.member_safety_view(cx)
+                        } else if !self.guild_guide_open
+                            && !self.channel_browser_open
+                            && self.onboarding_blocked()
+                        {
+                            // Module 140354 in place of the channel, header included (`gk` of 596339).
+                            self.onboarding_blocked_page(cx)
+                        } else if self.voice_view_open() {
+                            self.voice_view(window, cx)
+                        } else if self.stage_view_open() {
+                            self.stage_view(cx)
+                        } else if self.guild_guide_open && self.guild.is_some() {
+                            self.guild_guide_view(cx)
+                        } else if self.channel_browser_open && self.guild.is_some() {
+                            self.channel_browser_view(window, cx, rows.into_any_element())
+                        } else if self.current_channel().is_some_and(Channel::is_forum) {
+                            self.forum_view_in(window, cx)
+                        } else if self.open_post_forum().is_some() && self.forum_split_fits(window) {
+                            self.forum_split_view(window, cx)
+                                .unwrap_or_else(|| div().into_any_element())
+                        } else {
+                            let gating = self.spoiler_gating_channel();
+                            // The New Thread panel sits beside the whole chat column, header included.
+                            div()
+                                .flex()
+                                .flex_1()
+                                .min_w(px(0.))
+                                .h_full()
+                                .child(
+                                    div()
+                                        .parity("chat")
+                                        .flex()
+                                        .flex_col()
+                                        .flex_1()
+                                        .min_w(px(0.))
+                                        .h_full()
+                                        .pt(px(1.))
+                                        .overflow_hidden()
+                                        .child(match self.dm_call_area(window, cx) {
+                                            // The header moves into the call area while a call shows (module 540462
+                                            // `useExternalHeader`).
+                                            Some(area) => area,
+                                            None => self.regions.place(
+                                                regions::Kind::Header,
+                                                regions::style_of(regions::Kind::Header),
+                                            ),
+                                        })
+                                        .child(
                                             div()
                                                 .flex()
                                                 .flex_col()
                                                 .flex_1()
-                                                .min_w(px(0.))
-                                                .h_full()
-                                                // Module 626977 over the list: a locked thread's bar, or the
-                                                // notice of a channel just marked unread for every message.
-                                                .children(self.thread_lock_notice(cx))
-                                                .children(self.unread_settings_notice(cx))
-                                                .children(self.opt_in_channel_notice(cx))
-                                                .child(self.regions.place(
-                                                    regions::Kind::Messages,
-                                                    regions::style_of(regions::Kind::Messages),
-                                                ))
-                                                .child(match self.chat_blocker() {
-                                                    // `wrapper_ST_Y69` sits where the composer's form does: 8px in
-                                                    // and over the list's last 16px.
-                                                    Some(blocker) => div()
-                                                        .flex_none()
-                                                        .mt(px(-16.))
-                                                        .px(px(8.))
-                                                        .pb(px(8.))
-                                                        .child(match blocker {
-                                                            blocked::ChatBlocker::System {
-                                                                changelog,
-                                                            } => self
-                                                                .system_dm_composer(changelog, cx),
-                                                            blocked::ChatBlocker::Blocked(user) => {
-                                                                self.blocked_composer(user, cx)
-                                                            }
-                                                        })
-                                                        .into_any_element(),
-                                                    None if self.screening_pending() => {
-                                                        self.screening_composer(cx)
-                                                    }
-                                                    None if self.follow_blocker_applies() => {
-                                                        self.follow_composer(cx)
-                                                    }
-                                                    None => self
-                                                        .regions
-                                                        .place_composer()
-                                                        .unwrap_or_else(|| {
-                                                            self.composer_bar(cx).into_any_element()
-                                                        }),
-                                                }),
-                                        )
-                                            })
-                                            .children(self.search_panel(cx))
-                                            .when(
-                                                self.show_members
-                                                    && self.guild.is_some()
-                                                    && self.new_thread.is_none()
-                                                    && self.search.as_ref().is_none_or(|search| {
-                                                        search.shown.is_none()
-                                                    }),
-                                                |this| {
+                                                .min_h(px(0.))
+                                                .bg(color("--background-base-lower"))
+                                                .flex_row()
+                                                // "Hide chat": the call has the whole column (`.wrapper.noChat`).
+                                                .when(self.dm_call_chat_hidden(), |chat| {
+                                                    chat.flex_none().h(px(0.)).overflow_hidden()
+                                                })
+                                                .when_some(gating, |this, gating| {
+                                                    // Module 289287 `renderChat`: a spoiler channel's gate (873614) in place
+                                                    // of the chat until the account agrees.
+                                                    this.child(self.spoiler_gate(gating, cx))
+                                                })
+                                                .when(gating.is_none(), |this| {
                                                     this.child(
-                                                        div()
-                                                            .flex_none()
-                                                            .w(px(1.))
-                                                            .h_full()
-                                                            .bg(color("--background-mod-subtle")),
-                                                    )
+                                                div()
+                                                    .flex()
+                                                    .flex_col()
+                                                    .flex_1()
+                                                    .min_w(px(0.))
+                                                    .h_full()
+                                                    // Module 626977 over the list: a locked thread's bar, or the
+                                                    // notice of a channel just marked unread for every message.
+                                                    .children(self.thread_lock_notice(cx))
+                                                    .children(self.unread_settings_notice(cx))
+                                                    .children(self.opt_in_channel_notice(cx))
                                                     .child(self.regions.place(
-                                                        regions::Kind::Members,
-                                                        regions::style_of(regions::Kind::Members),
+                                                        regions::Kind::Messages,
+                                                        regions::style_of(regions::Kind::Messages),
                                                     ))
-                                                },
+                                                    .child(match self.chat_blocker() {
+                                                        // `wrapper_ST_Y69` sits where the composer's form does: 8px in
+                                                        // and over the list's last 16px.
+                                                        Some(blocker) => div()
+                                                            .flex_none()
+                                                            .mt(px(-16.))
+                                                            .px(px(8.))
+                                                            .pb(px(8.))
+                                                            .child(match blocker {
+                                                                blocked::ChatBlocker::System {
+                                                                    changelog,
+                                                                } => self
+                                                                    .system_dm_composer(changelog, cx),
+                                                                blocked::ChatBlocker::Blocked(user) => {
+                                                                    self.blocked_composer(user, cx)
+                                                                }
+                                                            })
+                                                            .into_any_element(),
+                                                        None if self.screening_pending() => {
+                                                            self.screening_composer(cx)
+                                                        }
+                                                        None if self.follow_blocker_applies() => {
+                                                            self.follow_composer(cx)
+                                                        }
+                                                        None => self
+                                                            .regions
+                                                            .place_composer()
+                                                            .unwrap_or_else(|| {
+                                                                self.composer_bar(cx).into_any_element()
+                                                            }),
+                                                    }),
                                             )
-                                            .children(self.dm_profile(window, cx))
-                                            .children(self.group_members_panel(cx)),
-                                    ),
-                            )
-                            .children(self.new_thread_panel(cx))
-                            .children(self.mod_view_panel(cx))
-                            .into_any_element()
-                    };
-                motion::layers::faded(self.main_row(rail, sidebar, content, cx), base_opacity)
+                                                })
+                                                .children(self.search_panel(cx))
+                                                .when(
+                                                    self.show_members
+                                                        && self.guild.is_some()
+                                                        && self.new_thread.is_none()
+                                                        && self.search.as_ref().is_none_or(|search| {
+                                                            search.shown.is_none()
+                                                        }),
+                                                    |this| {
+                                                        this.child(
+                                                            div()
+                                                                .flex_none()
+                                                                .w(px(1.))
+                                                                .h_full()
+                                                                .bg(color("--background-mod-subtle")),
+                                                        )
+                                                        .child(self.regions.place(
+                                                            regions::Kind::Members,
+                                                            regions::style_of(regions::Kind::Members),
+                                                        ))
+                                                    },
+                                                )
+                                                .children(self.dm_profile(window, cx))
+                                                .children(self.group_members_panel(cx)),
+                                        ),
+                                )
+                                .children(self.new_thread_panel(cx))
+                                .children(self.mod_view_panel(cx))
+                                .into_any_element()
+                        };
+                    motion::layers::faded(self.main_row(rail, sidebar, content, cx), base_opacity)
+                })
+                .child(self.sidebar_resize_handle(cx))
+                .child(motion::layers::faded(
+                    self.user_panel(cx).into_any_element(),
+                    base_opacity,
+                ))
             })
-            .child(self.sidebar_resize_handle(cx))
-            .child(motion::layers::faded(
-                self.user_panel(cx).into_any_element(),
-                base_opacity,
-            ))
             .children(self.forum_layer(cx))
             .children(self.context_menu(window, cx))
             .children(self.menu_submenu(window, cx))

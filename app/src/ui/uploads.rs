@@ -447,12 +447,16 @@ impl Root {
 
     /// The attach button: the system file dialog, several files allowed.
     pub(super) fn pick_files(&mut self, cx: &mut Context<Self>) {
-        let picked = cx.prompt_for_paths(PathPromptOptions {
-            files: true,
-            directories: false,
-            multiple: true,
-            prompt: None,
-        });
+        let picked = super::native_dialog::open_paths(
+            PathPromptOptions {
+                files: true,
+                directories: false,
+                multiple: true,
+                prompt: None,
+            },
+            super::native_dialog::ALL_FILTERS,
+            cx,
+        );
         cx.spawn(async move |this, cx| {
             if let Ok(Ok(Some(paths))) = picked.await {
                 let _ = this.update(cx, |this, cx| this.attach_files(paths, cx));

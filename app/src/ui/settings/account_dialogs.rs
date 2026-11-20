@@ -2844,7 +2844,12 @@ impl Root {
             .or_else(|| std::env::var_os("HOME"))
             .map(|home| std::path::PathBuf::from(home).join("Downloads"))
             .unwrap_or_default();
-        let chosen = cx.prompt_for_new_path(&directory, Some("discord_backup_codes.txt"));
+        let chosen = super::super::native_dialog::save_path(
+            &directory,
+            Some("discord_backup_codes.txt"),
+            super::super::native_dialog::ALL_FILTERS,
+            cx,
+        );
         let contents = contents.to_owned();
         cx.spawn(async move |this, cx| {
             if let Ok(Ok(Some(path))) = chosen.await {

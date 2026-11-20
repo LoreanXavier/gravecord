@@ -670,6 +670,8 @@ impl Decoders {
         let thread = std::thread::Builder::new()
             .name("dc-voice-decode".into())
             .spawn(move || {
+                let _unthrottled = dc_media::throttle::Guard::acquire();
+                let waiter = dc_media::throttle::Waiter::new();
                 let mut decoder = match Decoder::new() {
                     Ok(decoder) => {
                         *decoder_stats
@@ -687,8 +689,8 @@ impl Decoders {
                     }
                 };
                 tracing::debug!(backend = ?decoder.backend(), "video decoder started");
-                // Access units wait here for their playout time, less what a decode takes. The wait is a sleep
-                // (a high-resolution timer); a timed channel wait would round to Windows' 15.6 ms tick.
+                // Access units wait here for their playout time, less what a decode takes, using a high-resolution
+                // waitable timer so waits don't round up to Windows' 15.6 ms system clock tick.
                 let mut held: std::collections::VecDeque<Job> = std::collections::VecDeque::new();
                 let mut cost = Duration::from_millis(5);
                 loop {
@@ -711,7 +713,7 @@ impl Decoders {
                     let start = front.due.checked_sub(cost).unwrap_or(front.due);
                     let now = std::time::Instant::now();
                     if start > now && held.len() <= MAX_HELD {
-                        std::thread::sleep((start - now).min(HOLD_STEP));
+                        waiter.sleep((start - now).min(HOLD_STEP));
                         continue;
                     }
                     let Some(job) = held.pop_front() else {

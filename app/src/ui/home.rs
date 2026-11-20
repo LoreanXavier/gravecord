@@ -341,6 +341,18 @@ impl Root {
         let group = SharedString::from(format!("dm-row-{id}"));
         // `Pinned` (flag 2048 of the "@me" channel override, `xl` of module 816662).
         let pinned = self.stores.guild_settings.channel(0, id).flags & 2048 != 0;
+        // 181254 `eY`: `e1 = null != x && (s || b || eo)` (shown when selected, hovered, context-menu open, or AlwaysAnimate).
+        let show_nameplate = recipient.nameplate.is_some()
+            && (row_selected
+                || hovered
+                || super::plugin_hooks::always_animate(
+                    super::plugin_hooks::AnimatePart::Nameplates,
+                ));
+        let text_width = std::rc::Rc::new(std::cell::Cell::new(0f32));
+        let measured_width = text_width.clone();
+        let nameplate = show_nameplate
+            .then(|| self.dm_nameplate(&recipient, hovered, row_selected, text_width, false))
+            .flatten();
         Some(
             div()
                 .id(SharedString::from(format!("dm-{id}")))
@@ -381,6 +393,8 @@ impl Root {
                         // Not in the pinned client: MessagePeek's age of the last message
                         // (`plugin_hooks/message_peek.rs`).
                         .relative()
+                        .overflow_hidden()
+                        .children(nameplate)
                         .children(self.message_peek_time(id, hovered))
                         .h(px(42.))
                         .w(px(self.sidebar_row_width()))
@@ -435,16 +449,32 @@ impl Root {
                         )
                         .child(
                             div()
+                                .relative()
                                 .flex_1()
                                 .min_w(px(0.))
                                 .flex()
                                 .flex_col()
+                                .items_start()
                                 .text_color(color(look.text))
                                 .child(
                                     div()
+                                        .relative()
                                         .flex()
                                         .items_center()
+                                        .max_w_full()
                                         .min_w(px(0.))
+                                        .child(
+                                            gpui::canvas(
+                                                move |bounds, _, _| {
+                                                    measured_width.set(f32::from(bounds.size.width))
+                                                },
+                                                |_, _, _, _| {},
+                                            )
+                                            .absolute()
+                                            .top_0()
+                                            .left_0()
+                                            .size_full(),
+                                        )
                                         .child(
                                             div()
                                                 .min_w(px(0.))
@@ -562,17 +592,29 @@ impl Root {
                                 div()
                                     .id(SharedString::from(format!("dm-close-{id}")))
                                     .mr(px(8.))
-                                    .size(px(18.))
+                                    .size(px(if show_nameplate { 24. } else { 18. }))
                                     .flex_none()
                                     .rounded_full()
+                                    .when(show_nameplate, |this| {
+                                        this.bg(gpui::hsla(0., 0., 0., 0.35))
+                                    })
                                     .flex()
                                     .items_center()
                                     .justify_center()
                                     // A pinned DM keeps the button at rest (frame menus2/dm-pinned: the row's own
                                     // text colour at 0.7); the others show it under the pointer.
                                     .opacity(if pinned { 0.7 } else { 0. })
-                                    .group_hover(group, |style| style.opacity(0.7))
-                                    .hover(|style| style.opacity(1.))
+                                    .group_hover(group, |style| {
+                                        style.opacity(if show_nameplate { 0.9 } else { 0.7 })
+                                    })
+                                    .hover(move |style| {
+                                        let style = style.opacity(1.);
+                                        if show_nameplate {
+                                            style.bg(gpui::hsla(0., 0., 0., 0.55))
+                                        } else {
+                                            style
+                                        }
+                                    })
                                     .on_click(cx.listener(move |this, _, _, cx| {
                                         cx.stop_propagation();
                                         this.close_dm(id, cx);

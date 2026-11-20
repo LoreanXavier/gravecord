@@ -306,6 +306,13 @@ impl Root {
             grid
         } else {
             self.vv.shown_call = (0, channel);
+            if in_call {
+                // Module 540462: voice-only DM mode has no focused video/stream tile (`mode === VOICE`).
+                // Clear any stale focus left behind when a stream ended so neither the bottom-right volume
+                // control nor the header LIVE badge leaks into voice-only mode.
+                self.vv.focus.grid();
+                self.video.ended_focus = None;
+            }
             self.dm_call_avatars(&people, width, cx)
         };
         let header = self.header_with(cx, true).into_any_element();
@@ -533,20 +540,14 @@ impl Root {
             .items_center()
             .justify_center()
             .gap(px(12.))
-            .child(
-                join_video
-                    .on_click(cx.listener(move |this, _, _, cx| {
-                        this.tip = None;
-                        this.join_dm_call(channel, true, cx);
-                    })),
-            )
-            .child(
-                join_call
-                    .on_click(cx.listener(move |this, _, _, cx| {
-                        this.tip = None;
-                        this.join_dm_call(channel, false, cx);
-                    })),
-            )
+            .child(join_video.on_click(cx.listener(move |this, _, _, cx| {
+                this.tip = None;
+                this.join_dm_call(channel, true, cx);
+            })))
+            .child(join_call.on_click(cx.listener(move |this, _, _, cx| {
+                this.tip = None;
+                this.join_dm_call(channel, false, cx);
+            })))
             .children(decline.map(|button| {
                 button.on_click(cx.listener(move |this, _, _, cx| {
                     this.tip = None;

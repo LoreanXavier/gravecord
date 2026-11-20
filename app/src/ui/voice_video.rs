@@ -233,6 +233,13 @@ pub(super) struct Video {
     /// `ended_focus` failed instead of ending (`FAILED`): its tile is module 768088, kept while its owner still
     /// streams.
     pub(super) ended_failed: bool,
+    /// Native main window handle (HWND as usize on Windows), cached for cheap occlusion/minimize checks so a
+    /// backgrounded fullscreen stream does not keep uploading 15 MB textures and hammering `Present()` during Alt-Tab.
+    main_hwnd: usize,
+    /// Video conversion was skipped on the last check because the window was minimized/occluded or preview paused.
+    was_paused: bool,
+    /// Previous `window.is_window_active()` value so returning focus immediately paints the latest decoded picture.
+    last_window_active: bool,
 }
 
 impl Video {
@@ -300,6 +307,93 @@ pub(super) fn client_unfocused(cx: &gpui::App) -> bool {
     cx.active_window().is_none()
 }
 
+/// Pure geometry check: whether `cover` hides at least 90% of `target`'s area.
+fn rect_substantially_covers(target: (i32, i32, i32, i32), cover: (i32, i32, i32, i32)) -> bool {
+    let tw = i64::from(target.2 - target.0);
+    let th = i64::from(target.3 - target.1);
+    if tw <= 0 || th <= 0 {
+        return false;
+    }
+    let iw = i64::from(target.2.min(cover.2) - target.0.max(cover.0)).max(0);
+    let ih = i64::from(target.3.min(cover.3) - target.1.max(cover.1)).max(0);
+    iw * ih * 10 >= tw * th * 9
+}
+
+/// On Windows, returns `true` when the main window (`hwnd`) is minimized or behind another foreground window on the
+/// same monitor (e.g. Alt-Tabbing away from a fullscreen call or switching to a maximized app/game). Multi-monitor
+/// setups keep playing when the foreground window is on a different monitor.
+#[cfg(windows)]
+#[allow(unsafe_code)]
+fn main_window_video_occluded(hwnd_raw: usize, fullscreen: bool) -> bool {
+    use windows::Win32::Foundation::{HWND, RECT};
+    use windows::Win32::Graphics::Gdi::{MONITOR_DEFAULTTONEAREST, MonitorFromWindow};
+    #[cfg(not(feature = "capture"))]
+    use windows::Win32::UI::WindowsAndMessaging::IsWindowVisible;
+    use windows::Win32::UI::WindowsAndMessaging::{
+        GetForegroundWindow, GetWindowRect, IsIconic, IsZoomed,
+    };
+
+    if hwnd_raw == 0 {
+        return false;
+    }
+    let hwnd = HWND(hwnd_raw as *mut _);
+    // SAFETY: read-only Win32 window queries on the main window handle.
+    unsafe {
+        if IsIconic(hwnd).as_bool() {
+            return true;
+        }
+        // Headless capture tests render into a hidden window; only treat hidden as occluded in real builds.
+        #[cfg(not(feature = "capture"))]
+        if !IsWindowVisible(hwnd).as_bool() {
+            return true;
+        }
+        let fg = GetForegroundWindow();
+        if fg.0.is_null() || fg == hwnd {
+            return false;
+        }
+        let same_monitor = MonitorFromWindow(fg, MONITOR_DEFAULTTONEAREST)
+            == MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST);
+        if !same_monitor {
+            return false;
+        }
+        // In fullscreen mode on the same monitor, any other foreground window (Alt-Tab switcher, game, or app)
+        // means the user switched away from the fullscreen stream; stop hammering D3D11 Present() immediately.
+        if fullscreen || IsZoomed(fg).as_bool() {
+            return true;
+        }
+        let (mut our_rc, mut fg_rc) = (RECT::default(), RECT::default());
+        if GetWindowRect(hwnd, &mut our_rc).is_ok() && GetWindowRect(fg, &mut fg_rc).is_ok() {
+            return rect_substantially_covers(
+                (our_rc.left, our_rc.top, our_rc.right, our_rc.bottom),
+                (fg_rc.left, fg_rc.top, fg_rc.right, fg_rc.bottom),
+            );
+        }
+        false
+    }
+}
+
+#[cfg(not(windows))]
+fn main_window_video_occluded(_hwnd_raw: usize, _fullscreen: bool) -> bool {
+    false
+}
+
+#[cfg(windows)]
+fn raw_hwnd_of(window: &gpui::Window) -> usize {
+    use raw_window_handle::{HasWindowHandle, RawWindowHandle};
+    match HasWindowHandle::window_handle(window)
+        .ok()
+        .map(|h| h.as_raw())
+    {
+        Some(RawWindowHandle::Win32(handle)) => handle.hwnd.get() as usize,
+        _ => 0,
+    }
+}
+
+#[cfg(not(windows))]
+fn raw_hwnd_of(_window: &gpui::Window) -> usize {
+    0
+}
+
 pub(super) fn set_pause_own_preview_unfocused(on: bool) {
     let mut store = crate::storage::get("UnsyncedUserSettingsStore")
         .filter(serde_json::Value::is_object)
@@ -309,6 +403,19 @@ pub(super) fn set_pause_own_preview_unfocused(on: bool) {
 }
 
 impl Root {
+    /// Records the main window's native handle (once) and wakes paused video conversion as soon as focus returns.
+    pub(super) fn video_note_window(&mut self, window: &gpui::Window, cx: &mut Context<Self>) {
+        if self.video.main_hwnd == 0 {
+            self.video.main_hwnd = raw_hwnd_of(window);
+        }
+        let active = window.is_window_active();
+        let regained = active && !self.video.last_window_active;
+        self.video.last_window_active = active;
+        if regained && self.call.is_some() && self.video.was_paused {
+            self.video_convert(cx);
+        }
+    }
+
     /// A call was created: pictures of it go to the store, and the repaint task runs while the call lasts.
     pub(super) fn video_call_started(&mut self, cx: &mut Context<Self>) {
         if self.call.is_none() {
@@ -340,9 +447,8 @@ impl Root {
                         root.video_release(cx);
                         return false;
                     }
-                    if root.video.frames.take_dirty() {
+                    if root.video.frames.take_dirty() || root.video.was_paused {
                         root.video_convert(cx);
-                        cx.notify();
                     }
                     true
                 });
@@ -402,15 +508,24 @@ impl Root {
             for image in self.video.images.retain(|key| !gone.contains(key)) {
                 cx.drop_image(image, None);
             }
+            cx.notify();
         }
         // The sharer's own tile holds its picture while no window of the client is focused
         // (`pauseSelfStreamPreviewWhenUnfocused`, on unless the user turns it off: module 964404; module 555148 pauses
-        // the self stream's video then). The switch is the stream menu's `Pause Preview When Discord Isn't Focused`. Every
-        // picture of a 60 fps share would otherwise be converted for a window nobody looks at.
+        // the self stream's video then). Additionally, when the main window is minimized or covered by another
+        // foreground window on the same monitor (e.g. Alt-Tabbing out of a fullscreen call) and no popout window is
+        // open, pause all tile conversions/uploads so we stop allocating/uploading 15 MB textures and calling
+        // `Present()` behind the foreground app.
         let me = self.stores.current_user.as_ref().map(|me| me.id);
-        let unfocused = pause_own_preview_unfocused() && client_unfocused(cx);
-        let paused =
-            |key: &Key| unfocused && Some(key.0) == me && key.1 == VideoSource::Stream(key.0);
+        let client_inactive = client_unfocused(cx);
+        let pause_own = client_inactive && pause_own_preview_unfocused();
+        let pause_all = client_inactive
+            && !self.call_popped_out()
+            && main_window_video_occluded(self.video.main_hwnd, self.vv.fullscreen);
+        self.video.was_paused = pause_all || pause_own;
+        let paused = |key: &Key| {
+            pause_all || (pause_own && Some(key.0) == me && key.1 == VideoSource::Stream(key.0))
+        };
         for (key, seq, picture) in self.video.frames.pending(&mut self.video.images, paused) {
             cx.spawn(async move |this, cx| {
                 let image = cx
@@ -418,12 +533,15 @@ impl Root {
                     .spawn(async move { render_image(&picture) })
                     .await;
                 let _ = this.update(cx, |root, cx| {
+                    let had_image = image.is_some();
                     if let Some(old) = root.video.images.finish(key, seq, image) {
                         cx.drop_image(old, None);
                     }
                     // A newer picture that came during the conversion goes next, without waiting for another one.
                     root.video_convert(cx);
-                    cx.notify();
+                    if had_image {
+                        cx.notify();
+                    }
                 });
             })
             .detach();
@@ -1702,5 +1820,30 @@ mod camera_text_tests {
             camera_failure_text("Camera RGB frame is not 24-bit uncompressed"),
             "Camera RGB frame is not 24-bit uncompressed"
         );
+    }
+
+    #[test]
+    fn occlusion_rect_check_distinguishes_covered_from_side_by_side() {
+        use super::rect_substantially_covers;
+        // Fullscreen window completely covered by another app on the same monitor.
+        assert!(rect_substantially_covers(
+            (0, 0, 1920, 1080),
+            (0, 0, 1920, 1080)
+        ));
+        // Maximized app covering 95% (leaving only taskbar strip).
+        assert!(rect_substantially_covers(
+            (0, 0, 1920, 1080),
+            (0, 0, 1920, 1040)
+        ));
+        // Side-by-side half-screen window does NOT substantially cover it.
+        assert!(!rect_substantially_covers(
+            (0, 0, 1920, 1080),
+            (0, 0, 960, 1080)
+        ));
+        // Window on a second monitor does not overlap at all.
+        assert!(!rect_substantially_covers(
+            (0, 0, 1920, 1080),
+            (1920, 0, 3840, 1080)
+        ));
     }
 }

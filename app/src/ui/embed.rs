@@ -1089,16 +1089,43 @@ impl Root {
             Media::Image => {
                 let image = embed.image.as_ref()?;
                 let size = shrink(embed.fit(image), available);
+                let key = image_key(message.id, index, "image");
+                let group = SharedString::from(format!("embed-img-{}-{index}", message.id));
+                let favorite = (playable
+                    && (image.is_animated()
+                        || self
+                            .images
+                            .get(&key)
+                            .is_some_and(|pic| super::gif_tiles::animated(pic.bytes()))))
+                .then(|| {
+                    // Module 343552 `b`: favorite key prefers embed URL, falling back to proxy/original image URL.
+                    let src = image.src().to_owned();
+                    let url = embed
+                        .url
+                        .as_deref()
+                        .filter(|u| !u.is_empty())
+                        .unwrap_or(&src)
+                        .to_owned();
+                    super::gifs::FavoriteTarget {
+                        url,
+                        src,
+                        width: image.width.max(1),
+                        height: image.height.max(1),
+                        format: 1,
+                    }
+                });
                 Some(
-                    self.embed_picture(
-                        message,
-                        image_key(message.id, index, "image"),
-                        size,
-                        false,
-                        playable,
-                        cx,
-                    )
-                    .into_any_element(),
+                    self.embed_picture(message, key, size, false, playable, cx)
+                        .group(group.clone())
+                        .children(favorite.map(|target| {
+                            self.gif_favorite_button(
+                                format!("embed-gif-fav-{}-{index}", message.id),
+                                group,
+                                target,
+                                cx,
+                            )
+                        }))
+                        .into_any_element(),
                 )
             }
             Media::Gallery => {
@@ -1107,6 +1134,26 @@ impl Root {
             Media::Video => self.embed_video(message, index, embed, available, playable, cx),
             Media::Gifv => {
                 let size = shrink(embed_layout::gifv_size(embed)?, available);
+                let group = SharedString::from(format!("embed-gifv-{}-{index}", message.id));
+                let favorite = playable
+                    .then(|| embed.video.as_ref().or(embed.thumbnail.as_ref()))
+                    .flatten()
+                    .map(|media| {
+                        let src = media.src().to_owned();
+                        let url = embed
+                            .url
+                            .as_deref()
+                            .filter(|u| !u.is_empty())
+                            .unwrap_or(&src)
+                            .to_owned();
+                        super::gifs::FavoriteTarget {
+                            url,
+                            src,
+                            width: media.width.max(1),
+                            height: media.height.max(1),
+                            format: if embed.video.is_some() { 2 } else { 1 },
+                        }
+                    });
                 Some(
                     self.embed_picture(
                         message,
@@ -1116,9 +1163,18 @@ impl Root {
                         playable,
                         cx,
                     )
+                    .group(group.clone())
                     .when(playable, |this| {
                         this.children(self.inline_video(message.id, index, embed, cx))
                     })
+                    .children(favorite.map(|target| {
+                        self.gif_favorite_button(
+                            format!("embed-gifv-fav-{}-{index}", message.id),
+                            group,
+                            target,
+                            cx,
+                        )
+                    }))
                     .into_any_element(),
                 )
             }
