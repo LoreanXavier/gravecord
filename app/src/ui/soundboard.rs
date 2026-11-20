@@ -597,8 +597,8 @@ pub(crate) struct Picker {
 
 #[derive(Default)]
 pub(crate) struct Board {
-    defaults: Vec<Sound>,
-    guilds: HashMap<Id, Vec<Sound>>,
+    pub(super) defaults: Vec<Sound>,
+    pub(super) guilds: HashMap<Id, Vec<Sound>>,
     defaults_requested: bool,
     requested: HashSet<Id>,
     pub(super) picker: Option<Picker>,
@@ -834,6 +834,7 @@ impl Root {
                 self.soundboard_changed(guild, cx);
             }
             "VOICE_CHANNEL_EFFECT_SEND" => {
+                self.soundboard_echo_event(data, cx);
                 let effect = Effect::from_value(data);
                 let me = self.stores.current_user.as_ref().map(|user| user.id);
                 if heard(

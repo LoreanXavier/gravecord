@@ -102,26 +102,15 @@ fn elapsed(activity: &Activity, time: u64) -> String {
     let Some(start) = activity.started else {
         return String::new();
     };
-    let minutes = time.abs_diff(start) / 60_000;
-    let (key, amount) = if minutes < 1 {
-        ("Bf3PRU", 0)
-    } else if minutes < 60 {
-        ("A9P+dT", minutes)
-    } else if minutes < 1440 {
-        ("KwVzfh", minutes / 60)
-    } else {
-        ("hbUpBN", minutes / 1440)
-    };
-    dc_intl::format(
-        key,
-        &[
-            (
-                "name",
-                activity.value["name"].as_str().unwrap_or_default().into(),
-            ),
-            ("time", (amount as i64).into()),
-        ],
+    let name = activity.value["name"].as_str().unwrap_or_default();
+    super::play_time::format_play_time(
+        time.abs_diff(start),
+        super::play_time::Location::ActivityFeedNew,
+        super::play_time::Kind::Start,
+        Some(name),
+        false,
     )
+    .unwrap_or_default()
 }
 
 fn game_icon_url(game: &Value) -> Option<String> {

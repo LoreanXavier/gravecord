@@ -1493,6 +1493,24 @@ pub async fn run(
                 let line = root.update(cx, |root, cx| root.script_open_emoji_studio(&arg, cx));
                 let _ = writeln!(output, "{line}");
             }
+            // `forum-demo [upsell|book|game]`: opens Forum Channels demo modal (module 774538).
+            ["forum-demo", rest @ ..] => {
+                let arg = rest.join(" ");
+                let line = root.update(cx, |root, cx| root.script_open_forum_demo(&arg, cx));
+                let _ = writeln!(output, "{line}");
+            }
+            // `soundboard-echo [popout|details]`: stages Soundboard Echo pills & details popout (module 120246).
+            ["soundboard-echo", rest @ ..] => {
+                let arg = rest.join(" ");
+                let line = root.update(cx, |root, cx| root.script_soundboard_echo(&arg, cx));
+                let _ = writeln!(output, "{line}");
+            }
+            // `role-verify [step0|step1|step2]`: opens Role Connection Verification modal (module 488358).
+            ["role-verify", rest @ ..] => {
+                let arg = rest.join(" ");
+                let line = root.update(cx, |root, cx| root.script_role_connection_verify(&arg, cx));
+                let _ = writeln!(output, "{line}");
+            }
             // `search last` / `search answer <total>`: the open search's request, and an answer to it;
             // `search page <n>`: the pager turns to page n.
             ["search", rest @ ..] => {

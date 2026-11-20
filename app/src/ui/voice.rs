@@ -230,6 +230,7 @@ impl Root {
             self.streams_stop_all(cx);
         }
         self.soundboard_stop();
+        self.soundboard_echo.set_channel(Some(channel));
         // A new connection of this session (`S = null`): the notice of a call taken elsewhere goes.
         self.vv.notices.clear();
         info!("joining voice");
@@ -503,6 +504,7 @@ impl Root {
             info!(at = %std::panic::Location::caller(), tell, "voice call ended");
         }
         self.soundboard_stop();
+        self.soundboard_echo.set_channel(None);
         self.streams_stop_all(cx);
         self.leave_activity_on_call_end(cx);
         // Out of voice, Voice Activity is allowed again (`wA` with no channel).
@@ -728,6 +730,7 @@ impl Root {
                 info!("voice disconnected: {reason:?}");
                 self.speaking.clear();
                 self.soundboard_stop();
+                self.soundboard_echo.set_channel(None);
                 let dropped = self
                     .call
                     .as_ref()

@@ -194,6 +194,7 @@ mod favorite_nickname;
 mod favorites;
 mod feedback;
 mod fetch_failures;
+mod forum_demo;
 mod forums;
 pub(crate) mod frame_clock;
 mod game_genres;
@@ -248,6 +249,7 @@ mod permission_spec;
 mod picker;
 mod pins;
 mod plaintext_extensions;
+mod play_time;
 mod plugin_hooks;
 mod poll;
 mod popout_roles;
@@ -275,6 +277,7 @@ mod reminder_modal;
 mod reorder_hint;
 mod report;
 mod report_issue;
+mod role_connection_verify;
 mod rtc_channel;
 mod running_game_panel;
 mod running_games;
@@ -294,6 +297,7 @@ mod server_discovery;
 pub(crate) mod shop;
 mod slash;
 mod slowmode;
+mod soundboard_echo;
 mod splash;
 pub(crate) mod start_cache;
 mod status_menu;
@@ -621,6 +625,12 @@ pub struct Root {
     /// Emoji Studio modal (module 894399, `emoji_studio`).
     emoji_studio: Option<emoji_studio::EmojiStudio>,
     emoji_studio_generation: u64,
+    /// Forum Channels example/onboarding modal (module 774538, `forum_demo`).
+    forum_demo: Option<forum_demo::ForumDemo>,
+    /// Role Connection Verification modal (module 488358, `role_connection_verify`).
+    role_verify: Option<role_connection_verify::RoleConnectionVerify>,
+    /// Soundboard Echo store & hover details state (module 120246, `soundboard_echo`).
+    soundboard_echo: soundboard_echo::SoundboardEchoState,
     badge_modal: Option<badge_modal::BadgeModal>,
     /// The application storefront modal (module 719847, `app_storefront`).
     app_storefront: Option<app_storefront::Open>,
@@ -1152,6 +1162,9 @@ impl Root {
             image_crop: Default::default(),
             emoji_studio: None,
             emoji_studio_generation: 0,
+            forum_demo: None,
+            role_verify: None,
+            soundboard_echo: Default::default(),
             badge_modal: None,
             app_storefront: None,
             frames_announcement: false,
@@ -2509,6 +2522,18 @@ impl Root {
                 if key.starts_with(emoji_studio::STUDIO_UPLOAD_PREFIX) {
                     self.fetched.insert(key.clone(), body.clone());
                     self.emoji_studio_fetched(&key, cx);
+                    return;
+                }
+                if key.starts_with(soundboard_echo::ECHO_GUILD_PREFIX) {
+                    self.fetched.insert(key.clone(), body.clone());
+                    self.soundboard_echo_guild_fetched(&key, cx);
+                    return;
+                }
+                if key.starts_with(role_connection_verify::ROLE_CONN_ELIGIBILITY_PREFIX)
+                    || key.starts_with(role_connection_verify::ROLE_CONN_ASSIGN_PREFIX)
+                {
+                    self.fetched.insert(key.clone(), body.clone());
+                    self.role_connection_fetched(&key, cx);
                     return;
                 }
                 if key.starts_with(server_settings_pages::INVITES_PREFIX)
@@ -11160,6 +11185,9 @@ impl Render for Root {
         .size_full();
         let image_crop_layers = self.image_crop_layers(window, cx);
         let emoji_studio_layer = self.emoji_studio_layer(window, cx);
+        let forum_demo_layer = self.forum_demo_layer(window, cx);
+        let role_verify_layer = self.role_verify_layer(window, cx);
+        let soundboard_echo_layer = self.soundboard_echo_layer(cx);
         let locale_error = self.locale_error_layer();
         let app_storefront = self.app_storefront_layer(window, cx);
         let element = div()
@@ -11229,6 +11257,14 @@ impl Render for Root {
                     return;
                 }
                 if this.emoji_studio_key(keys, cx) {
+                    cx.stop_propagation();
+                    return;
+                }
+                if this.forum_demo_key(keys, cx) {
+                    cx.stop_propagation();
+                    return;
+                }
+                if this.role_verify_key(keys, cx) {
                     cx.stop_propagation();
                     return;
                 }
@@ -12434,6 +12470,9 @@ impl Render for Root {
             .children(self.settings_dialogs(cx))
             .children(image_crop_layers)
             .children(emoji_studio_layer)
+            .children(soundboard_echo_layer)
+            .children(forum_demo_layer)
+            .children(role_verify_layer)
             .children(self.modify_attachment_modal(cx))
             .children(self.report_issue_modal(cx))
             .children(self.game_profile_layer(cx))

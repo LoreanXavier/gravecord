@@ -27,6 +27,8 @@ enum Entry {
     AppDirectory,
     /// `opt-in` (module 36942): the checkbox that turns "only show the channels I joined" off.
     ShowAll,
+    /// `linked-roles` (module 480900 / 488358): opens Role Connection Verification when the guild has linked roles.
+    LinkedRoles,
     Notifications,
     Privacy,
     Profile,
@@ -168,6 +170,7 @@ const ENTRIES: [&[(Entry, &str, &str)]; 4] = [
     ],
     &[
         (Entry::ShowAll, "clips_eye", "Show All Channels"),
+        (Entry::LinkedRoles, "oauth_entry_link", "Linked Roles"),
         (
             Entry::Notifications,
             "guild_menu_notifications",
@@ -254,6 +257,7 @@ impl Root {
                         .as_ref()
                         .is_some_and(|user| user.has_flag(dc_state::USER_FLAG_STAFF))
             }
+            Entry::LinkedRoles => known.role_info.values().any(|role| role.guild_connection),
             _ => true,
         }
     }
@@ -292,6 +296,22 @@ impl Root {
             // `Lu` of module 234053 turns the opt-in flag of the server's notification settings (`d.e4`). Its other
             // branch, a member who never finished onboarding, onboards them instead and is not built.
             Entry::ShowAll => self.toggle_show_all_channels(guild),
+            Entry::LinkedRoles => {
+                if let Some(known) = self.stores.guild(guild)
+                    && let Some((&role_id, info)) = known
+                        .role_info
+                        .iter()
+                        .find(|(_, info)| info.guild_connection)
+                {
+                    let role_name = known
+                        .roles
+                        .get(&role_id)
+                        .cloned()
+                        .unwrap_or_else(|| "Linked Role".to_owned());
+                    let role_color = info.color;
+                    self.open_role_connection_verify(guild, role_id, role_name, role_color, cx);
+                }
+            }
             Entry::HideMuted => {
                 let hide = !self.hide_muted(guild);
                 if let Some(settings) = self.stores.guild_settings.guilds.get_mut(&guild) {
