@@ -16,10 +16,53 @@ use super::{Root, color, icon};
 use crate::editor::{Editor, EditorEvent};
 use crate::net::Request;
 use gpui::{
-    AnyElement, Context, Entity, Focusable, FontWeight, IntoElement, PathPromptOptions,
-    SharedString, Subscription, Window, div, img, prelude::*, px,
+    AnyElement, Context, Entity, Focusable, FontWeight, IntoElement, MouseButton,
+    PathPromptOptions, Pixels, Point, SharedString, Subscription, Window, deferred, div, img,
+    prelude::*, px,
 };
 use serde_json::{Value, json};
+
+/// `LibraryApplicationFlags` (`hM6` of module 652215, used by module 873079).
+pub(super) const LIB_FLAG_HIDDEN: u64 = 1;
+pub(super) const LIB_FLAG_PRIVATE: u64 = 2;
+pub(super) const LIB_FLAG_OVERLAY_DISABLED: u64 = 4;
+
+/// Context menu state for a library game row (`game-context`, module 873079).
+#[derive(Clone, Debug)]
+pub(super) struct LibraryGameMenu {
+    pub app_id: String,
+    pub branch_id: String,
+    pub sku_id: Option<String>,
+    pub name: String,
+    pub position: Point<Pixels>,
+    pub installed: bool,
+    pub running: bool,
+    pub up_to_date: bool,
+    pub has_manifest: bool,
+    pub has_voice_context: bool,
+    pub flags: u64,
+    pub has_library_app: bool,
+    pub copy_submenu_open: bool,
+}
+
+/// First-time-in-session hide confirmation modal state (module 873079 `oB7isi`/`HXfjKt`/`OWjIiV`).
+#[derive(Clone, Debug)]
+pub(super) struct LibraryHideConfirm {
+    pub app_id: String,
+    pub branch_id: String,
+    pub name: String,
+    pub next_flags: u64,
+}
+
+/// Official `LIBRARY_APPLICATION_BRANCH` flags update (`59636` `V`, `652215`).
+pub(super) fn library_flags_request(app_id: &str, branch_id: &str, flags: u64) -> Request {
+    Request::Rest {
+        key: Some(format!("library:flags:{app_id}:{branch_id}")),
+        method: reqwest::Method::PATCH,
+        route: format!("/users/@me/library/{app_id}/{branch_id}"),
+        body: Some(json!({ "flags": flags })),
+    }
+}
 
 /// `persistKey` of module 775228.
 const STORE_KEY: &str = "InstallationManagerStore";
@@ -163,6 +206,14 @@ pub(super) struct Library {
     removing: Option<String>,
     /// Local override of an entry's install state for interactive action feedback (module 979604).
     action_overrides: std::collections::BTreeMap<String, AppButtonState>,
+    /// Local override of an entry's `LibraryApplicationFlags` after toggling in `game-context` (module 873079).
+    flag_overrides: std::collections::BTreeMap<String, u64>,
+    /// Open `game-context` menu (module 873079).
+    pub(super) game_menu: Option<LibraryGameMenu>,
+    /// First-time hide confirmation modal (module 873079).
+    pub(super) hide_confirm: Option<LibraryHideConfirm>,
+    /// Tracks `hasRemovedLibraryApplicationThisSession` (module 873079).
+    removed_this_session: bool,
 }
 
 /// A library entry's 64px icon (`getIconURL`).
@@ -1206,9 +1257,19 @@ impl Root {
                         .pr(px(8.))
                         .text_color(color("--text-muted"))
                 };
+                let entry_for_menu = entry.clone();
+                let row_id = SharedString::from(format!("library-row-{index}"));
                 div()
+                    .id(row_id)
                     .mx(px(18.))
                     .rounded(px(8.))
+                    .hover(|s| s.bg(color("--background-mod-subtle")))
+                    .on_mouse_down(
+                        MouseButton::Right,
+                        cx.listener(move |this, ev: &gpui::MouseDownEvent, _, cx| {
+                            this.open_library_game_menu(&entry_for_menu, ev.position, cx);
+                        }),
+                    )
                     .child(
                         div()
                             .mx(px(8.))
@@ -1327,6 +1388,7 @@ impl Root {
             _ => state,
         };
         let id_click = app_id.clone();
+        let entry_overflow = entry.clone();
 
         div()
             .w(gpui::relative(0.3))
@@ -1396,7 +1458,569 @@ impl Root {
                         },
                     ),
             )
+            .child(
+                div()
+                    .id(SharedString::from(format!("library-app-more-{app_id}")))
+                    .size(px(32.))
+                    .rounded(px(8.))
+                    .cursor_pointer()
+                    .hover(|s| s.bg(color("--background-mod-subtle")))
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .child(icon("more_horizontal", 18., "--interactive-icon-default"))
+                    .on_mouse_down(
+                        MouseButton::Left,
+                        cx.listener(move |this, ev: &gpui::MouseDownEvent, _, cx| {
+                            cx.stop_propagation();
+                            this.open_library_game_menu(&entry_overflow, ev.position, cx);
+                        }),
+                    ),
+            )
             .into_any_element()
+    }
+
+    /// Opens the official `game-context` menu for a library row (module 873079).
+    pub(super) fn open_library_game_menu(
+        &mut self,
+        entry: &Value,
+        position: Point<Pixels>,
+        cx: &mut Context<Self>,
+    ) {
+        let app = &entry["application"];
+        let app_id = app["id"].as_str().unwrap_or("0").to_owned();
+        let branch_id = entry["branch_id"].as_str().unwrap_or(&app_id).to_owned();
+        let sku_id = entry["sku"]["id"]
+            .as_str()
+            .or_else(|| app["primary_sku_id"].as_str())
+            .map(str::to_owned);
+        let name = app["name"].as_str().unwrap_or("Game").to_owned();
+        let flags = self
+            .library
+            .flag_overrides
+            .get(&app_id)
+            .copied()
+            .unwrap_or_else(|| entry["flags"].as_u64().unwrap_or(0));
+        let state = self
+            .library
+            .action_overrides
+            .get(&app_id)
+            .copied()
+            .unwrap_or_else(|| app_button_state(entry));
+        let installed = entry["installed"].as_bool().unwrap_or(matches!(
+            state,
+            AppButtonState::Play | AppButtonState::Update
+        ));
+        let running = entry["running"].as_bool().unwrap_or(false);
+        let up_to_date = entry["up_to_date"].as_bool().unwrap_or(installed);
+        let has_manifest = entry["has_manifest"].as_bool().unwrap_or(true);
+        let has_voice_context = entry["has_voice_context"].as_bool().unwrap_or(false);
+        let has_library_app = entry["has_library_app"].as_bool().unwrap_or(true);
+        self.library.game_menu = Some(LibraryGameMenu {
+            app_id,
+            branch_id,
+            sku_id,
+            name,
+            position,
+            installed,
+            running,
+            up_to_date,
+            has_manifest,
+            has_voice_context,
+            flags,
+            has_library_app,
+            copy_submenu_open: false,
+        });
+        cx.notify();
+    }
+
+    pub(super) fn close_library_game_menu(&mut self) -> bool {
+        let mut closed = self.library.game_menu.take().is_some();
+        if self.library.hide_confirm.take().is_some() {
+            closed = true;
+        }
+        closed
+    }
+
+    fn library_apply_flags(
+        &mut self,
+        app_id: String,
+        branch_id: String,
+        next_flags: u64,
+        cx: &mut Context<Self>,
+    ) {
+        self.library
+            .flag_overrides
+            .insert(app_id.clone(), next_flags);
+        if (next_flags & LIB_FLAG_HIDDEN) != 0 {
+            self.library.removed_this_session = true;
+            self.library
+                .action_overrides
+                .insert(app_id.clone(), AppButtonState::AddToLibrary);
+        } else if self.library.action_overrides.get(&app_id) == Some(&AppButtonState::AddToLibrary)
+        {
+            self.library
+                .action_overrides
+                .insert(app_id.clone(), AppButtonState::Install);
+        }
+        let _ = self
+            .requests
+            .send(library_flags_request(&app_id, &branch_id, next_flags));
+        cx.notify();
+    }
+
+    /// Renders the official `game-context` menu (module 873079).
+    pub(in crate::ui) fn library_game_menu_layer(
+        &self,
+        cx: &mut Context<Self>,
+    ) -> Option<AnyElement> {
+        let menu = self.library.game_menu.clone()?;
+        let dev = self.developer_mode();
+        let x: f32 = menu.position.x.into();
+        let y: f32 = menu.position.y.into();
+        let left = (x - 210.).max(12.);
+        let top = y.max(48.);
+
+        type MenuAction = Box<dyn Fn(&mut Root, &mut Window, &mut Context<Root>)>;
+        let row = |id: SharedString,
+                   label: String,
+                   checked: Option<bool>,
+                   has_chevron: bool,
+                   on_click: MenuAction| {
+            div()
+                .id(id)
+                .h(px(32.))
+                .px(px(8.))
+                .rounded(px(4.))
+                .cursor_pointer()
+                .hover(|s| s.bg(color("--brand-500")).text_color(color("--white")))
+                .flex()
+                .items_center()
+                .justify_between()
+                .gap(px(8.))
+                .text_size(px(14.))
+                .line_height(px(18.))
+                .font_weight(FontWeight(500.))
+                .text_color(color("--interactive-text-default"))
+                .child(label)
+                .when_some(checked, |r, is_checked| {
+                    r.child(
+                        div()
+                            .size(px(18.))
+                            .rounded(px(4.))
+                            .border_1()
+                            .border_color(if is_checked {
+                                color("--control-primary-background-default")
+                            } else {
+                                color("--border-strong")
+                            })
+                            .bg(if is_checked {
+                                color("--control-primary-background-default")
+                            } else {
+                                gpui::hsla(0., 0., 0., 0.).into()
+                            })
+                            .flex()
+                            .items_center()
+                            .justify_center()
+                            .when(is_checked, |b| {
+                                b.child(icon("checkbox_check", 12., "--white"))
+                            }),
+                    )
+                })
+                .when(has_chevron, |r| {
+                    r.child(icon("chevron_right_20", 14., "--interactive-icon-default"))
+                })
+                .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                .on_click(cx.listener(move |this, _, window, cx| {
+                    on_click(this, window, cx);
+                }))
+                .into_any_element()
+        };
+
+        let mut items: Vec<AnyElement> = Vec::new();
+        if !menu.has_library_app {
+            let id_copy = menu.app_id.clone();
+            items.push(row(
+                "lib-ctx-copy-app-fallback".into(),
+                dc_intl::t("FfCL+6").to_owned(),
+                None,
+                false,
+                Box::new(move |this, _, cx| {
+                    cx.write_to_clipboard(gpui::ClipboardItem::new_string(id_copy.clone()));
+                    this.library.game_menu = None;
+                    cx.notify();
+                }),
+            ));
+        } else {
+            // `K`: Play Game (`XKUw8m`)
+            if !menu.running && menu.installed {
+                let app_id = menu.app_id.clone();
+                items.push(row(
+                    "lib-ctx-launch".into(),
+                    dc_intl::t("XKUw8m").to_owned(),
+                    None,
+                    false,
+                    Box::new(move |this, _, cx| {
+                        this.library
+                            .action_overrides
+                            .insert(app_id.clone(), AppButtonState::Play);
+                        this.library.game_menu = None;
+                        cx.notify();
+                    }),
+                ));
+            }
+            // `F`: Repair (`CKCcdz`)
+            if menu.installed && menu.up_to_date && !menu.running {
+                let app_id = menu.app_id.clone();
+                items.push(row(
+                    "lib-ctx-repair".into(),
+                    dc_intl::t("CKCcdz").to_owned(),
+                    None,
+                    false,
+                    Box::new(move |this, _, cx| {
+                        this.library
+                            .action_overrides
+                            .insert(app_id.clone(), AppButtonState::Downloading);
+                        this.library.game_menu = None;
+                        cx.notify();
+                    }),
+                ));
+            }
+            // `Z`: Uninstall (`DwgfOM`) or Install (`N+XVnt`)
+            if menu.installed {
+                if !menu.running {
+                    let app_id = menu.app_id.clone();
+                    items.push(row(
+                        "lib-ctx-uninstall".into(),
+                        dc_intl::t("DwgfOM").to_owned(),
+                        None,
+                        false,
+                        Box::new(move |this, _, cx| {
+                            this.library
+                                .action_overrides
+                                .insert(app_id.clone(), AppButtonState::Uninstalling);
+                            this.library.game_menu = None;
+                            cx.notify();
+                        }),
+                    ));
+                }
+            } else if menu.has_manifest {
+                let app_id = menu.app_id.clone();
+                items.push(row(
+                    "lib-ctx-install".into(),
+                    dc_intl::t("N+XVnt").to_owned(),
+                    None,
+                    false,
+                    Box::new(move |this, _, cx| {
+                        this.library
+                            .action_overrides
+                            .insert(app_id.clone(), AppButtonState::Downloading);
+                        this.library.game_menu = None;
+                        cx.notify();
+                    }),
+                ));
+            }
+
+            // `B`: Hide Playing Status (`fHDNJv`)
+            let private_on = (menu.flags & LIB_FLAG_PRIVATE) != 0;
+            {
+                let app_id = menu.app_id.clone();
+                let branch_id = menu.branch_id.clone();
+                let next_flags = menu.flags ^ LIB_FLAG_PRIVATE;
+                items.push(row(
+                    "lib-ctx-private".into(),
+                    dc_intl::t("fHDNJv").to_owned(),
+                    Some(private_on),
+                    false,
+                    Box::new(move |this, _, cx| {
+                        this.library_apply_flags(app_id.clone(), branch_id.clone(), next_flags, cx);
+                        if let Some(m) = this.library.game_menu.as_mut() {
+                            m.flags = next_flags;
+                        }
+                    }),
+                ));
+            }
+
+            // `Q`: Disable Overlay (`rgZKg2`)
+            let overlay_off = (menu.flags & LIB_FLAG_OVERLAY_DISABLED) != 0;
+            {
+                let app_id = menu.app_id.clone();
+                let branch_id = menu.branch_id.clone();
+                let next_flags = menu.flags ^ LIB_FLAG_OVERLAY_DISABLED;
+                items.push(row(
+                    "lib-ctx-overlay".into(),
+                    dc_intl::t("rgZKg2").to_owned(),
+                    Some(overlay_off),
+                    false,
+                    Box::new(move |this, _, cx| {
+                        this.library_apply_flags(app_id.clone(), branch_id.clone(), next_flags, cx);
+                        if let Some(m) = this.library.game_menu.as_mut() {
+                            m.flags = next_flags;
+                        }
+                    }),
+                ));
+            }
+
+            // `Y`: Create Desktop Shortcut (`T4tecH`) when installed on Windows
+            if menu.installed && cfg!(target_os = "windows") {
+                items.push(row(
+                    "lib-ctx-shortcut".into(),
+                    dc_intl::t("T4tecH").to_owned(),
+                    None,
+                    false,
+                    Box::new(|this, _, cx| {
+                        this.library.game_menu = None;
+                        cx.notify();
+                    }),
+                ));
+            }
+
+            // `q`: Hide Game from Library (`TuJXLx`) / Show Game in Library (`0dnEUJ`)
+            let is_hidden = (menu.flags & LIB_FLAG_HIDDEN) != 0;
+            if !menu.installed || is_hidden {
+                let app_id = menu.app_id.clone();
+                let branch_id = menu.branch_id.clone();
+                let name = menu.name.clone();
+                let next_flags = menu.flags ^ LIB_FLAG_HIDDEN;
+                items.push(row(
+                    "lib-ctx-hidden".into(),
+                    if is_hidden {
+                        dc_intl::t("0dnEUJ").to_owned()
+                    } else {
+                        dc_intl::t("TuJXLx").to_owned()
+                    },
+                    None,
+                    false,
+                    Box::new(move |this, _, cx| {
+                        this.library.game_menu = None;
+                        if is_hidden || this.library.removed_this_session {
+                            this.library_apply_flags(
+                                app_id.clone(),
+                                branch_id.clone(),
+                                next_flags,
+                                cx,
+                            );
+                        } else {
+                            this.library.hide_confirm = Some(LibraryHideConfirm {
+                                app_id: app_id.clone(),
+                                branch_id: branch_id.clone(),
+                                name: name.clone(),
+                                next_flags,
+                            });
+                            cx.notify();
+                        }
+                    }),
+                ));
+            }
+
+            // `z`: Developer Mode Copy ID submenu (`OpuAlK`: `qSHshq`, `g7oyyo`, `hReUdL`)
+            if dev {
+                items.push(
+                    div()
+                        .my(px(4.))
+                        .h(px(1.))
+                        .w_full()
+                        .bg(color("--border-subtle"))
+                        .into_any_element(),
+                );
+                items.push(row(
+                    "lib-ctx-dev-copy".into(),
+                    dc_intl::t("OpuAlK").to_owned(),
+                    None,
+                    true,
+                    Box::new(|this, _, cx| {
+                        if let Some(m) = this.library.game_menu.as_mut() {
+                            m.copy_submenu_open = !m.copy_submenu_open;
+                        }
+                        cx.notify();
+                    }),
+                ));
+            }
+
+            // `J`: In-Game Voice Settings (`pOul5/`)
+            if menu.has_voice_context {
+                items.push(
+                    div()
+                        .my(px(4.))
+                        .h(px(1.))
+                        .w_full()
+                        .bg(color("--border-subtle"))
+                        .into_any_element(),
+                );
+                items.push(row(
+                    "lib-ctx-ingame-voice".into(),
+                    dc_intl::t("pOul5/").to_owned(),
+                    None,
+                    false,
+                    Box::new(|this, _, cx| {
+                        this.library.game_menu = None;
+                        this.open_settings_section("Voice & Video", cx);
+                        cx.notify();
+                    }),
+                ));
+            }
+        }
+
+        let copy_submenu = (dev && menu.has_library_app && menu.copy_submenu_open).then(|| {
+            let app_id = menu.app_id.clone();
+            let branch_id = menu.branch_id.clone();
+            let sku_id = menu.sku_id.clone();
+            let mut sub_items: Vec<AnyElement> = vec![
+                row(
+                    "lib-ctx-copy-app-id".into(),
+                    dc_intl::t("qSHshq").to_owned(),
+                    None,
+                    false,
+                    Box::new(move |this, _, cx| {
+                        cx.write_to_clipboard(gpui::ClipboardItem::new_string(app_id.clone()));
+                        this.library.game_menu = None;
+                        cx.notify();
+                    }),
+                ),
+                row(
+                    "lib-ctx-copy-branch-id".into(),
+                    dc_intl::t("g7oyyo").to_owned(),
+                    None,
+                    false,
+                    Box::new(move |this, _, cx| {
+                        cx.write_to_clipboard(gpui::ClipboardItem::new_string(branch_id.clone()));
+                        this.library.game_menu = None;
+                        cx.notify();
+                    }),
+                ),
+            ];
+            if let Some(sku) = sku_id {
+                sub_items.push(row(
+                    "lib-ctx-copy-sku-id".into(),
+                    dc_intl::t("hReUdL").to_owned(),
+                    None,
+                    false,
+                    Box::new(move |this, _, cx| {
+                        cx.write_to_clipboard(gpui::ClipboardItem::new_string(sku.clone()));
+                        this.library.game_menu = None;
+                        cx.notify();
+                    }),
+                ));
+            }
+            div()
+                .id("lib-ctx-copy-submenu")
+                .occlude()
+                .w(px(188.))
+                .p(px(6.))
+                .rounded(px(8.))
+                .border_1()
+                .border_color(color("--border-subtle"))
+                .bg(color("--background-surface-high"))
+                .shadow(vec![gpui::BoxShadow {
+                    color: gpui::hsla(0., 0., 0., 0.24),
+                    offset: gpui::point(px(0.), px(8.)),
+                    blur_radius: px(16.),
+                    spread_radius: px(0.),
+                    inset: false,
+                }])
+                .flex()
+                .flex_col()
+                .children(sub_items)
+        });
+
+        let panel = div()
+            .id("library-game-context-menu")
+            .occlude()
+            .absolute()
+            .left(px(left))
+            .top(px(top))
+            .flex()
+            .items_end()
+            .gap(px(4.))
+            .child(
+                div()
+                    .w(px(210.))
+                    .p(px(6.))
+                    .rounded(px(8.))
+                    .border_1()
+                    .border_color(color("--border-subtle"))
+                    .bg(color("--background-surface-high"))
+                    .shadow(vec![gpui::BoxShadow {
+                        color: gpui::hsla(0., 0., 0., 0.28),
+                        offset: gpui::point(px(0.), px(8.)),
+                        blur_radius: px(16.),
+                        spread_radius: px(0.),
+                        inset: false,
+                    }])
+                    .flex()
+                    .flex_col()
+                    .children(items),
+            )
+            .children(copy_submenu);
+
+        Some(
+            deferred(
+                div()
+                    .id("library-game-menu-backdrop")
+                    .absolute()
+                    .inset_0()
+                    .on_mouse_down(
+                        MouseButton::Left,
+                        cx.listener(|this, _, _, cx| {
+                            this.library.game_menu = None;
+                            cx.notify();
+                        }),
+                    )
+                    .on_mouse_down(
+                        MouseButton::Right,
+                        cx.listener(|this, _, _, cx| {
+                            this.library.game_menu = None;
+                            cx.notify();
+                        }),
+                    )
+                    .child(panel),
+            )
+            .with_priority(3)
+            .into_any_element(),
+        )
+    }
+
+    /// First-time hide game confirmation modal (module 873079: `oB7isi`, `HXfjKt`, `OWjIiV`).
+    pub(super) fn library_hide_modal(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
+        let confirm = self.library.hide_confirm.clone()?;
+        let subtitle = dc_intl::format(
+            "HXfjKt",
+            &[(
+                "name",
+                dc_intl::Arg::Str(std::borrow::Cow::Borrowed(&confirm.name)),
+            )],
+        );
+        let close = |this: &mut Root, _: &mut Window, _: &mut Context<Root>| {
+            this.library.hide_confirm = None;
+        };
+        let app_id = confirm.app_id;
+        let branch_id = confirm.branch_id;
+        let next_flags = confirm.next_flags;
+        let spec = super::modal::Spec {
+            id: "library-hide-game",
+            title: dc_intl::t("oB7isi").into(),
+            subtitle: Some(div().child(subtitle).into_any_element()),
+            body: None,
+            buttons: vec![
+                super::modal::button(
+                    "library-hide-confirm",
+                    dc_intl::t("OWjIiV"),
+                    super::modal::Tone::Primary,
+                    move |this, _, cx| {
+                        this.library.hide_confirm = None;
+                        this.library_apply_flags(app_id.clone(), branch_id.clone(), next_flags, cx);
+                    },
+                ),
+                super::modal::button(
+                    "library-hide-cancel",
+                    dc_intl::tr("Cancel"),
+                    super::modal::Tone::Secondary,
+                    close,
+                ),
+            ],
+            close: Box::new(close),
+        };
+        Some(super::modal::render_small(spec, cx))
     }
 
     /// The Remove Location question (`eC.A`).
@@ -1439,6 +2063,39 @@ impl Root {
             close: Box::new(close),
         };
         Some(super::modal::render_small(spec, cx))
+    }
+
+    #[cfg(feature = "capture")]
+    pub(crate) fn script_library_game_menu(&mut self, arg: &str, cx: &mut Context<Self>) -> String {
+        if arg == "hide" {
+            self.library.game_menu = None;
+            self.library.hide_confirm = Some(LibraryHideConfirm {
+                app_id: "1001".to_owned(),
+                branch_id: "2001".to_owned(),
+                name: "Hades II".to_owned(),
+                next_flags: LIB_FLAG_HIDDEN,
+            });
+            cx.notify();
+            return "library-game-menu: hide".to_owned();
+        }
+        self.library.hide_confirm = None;
+        self.library.game_menu = Some(LibraryGameMenu {
+            app_id: "1001".to_owned(),
+            branch_id: "2001".to_owned(),
+            sku_id: Some("3001".to_owned()),
+            name: "Hades II".to_owned(),
+            position: gpui::point(px(1080.), px(160.)),
+            installed: arg != "uninstalled",
+            running: false,
+            up_to_date: true,
+            has_manifest: true,
+            has_voice_context: true,
+            flags: LIB_FLAG_PRIVATE,
+            has_library_app: arg != "fallback",
+            copy_submenu_open: true,
+        });
+        cx.notify();
+        format!("library-game-menu: {arg}")
     }
 
     /// The page in the main area.
@@ -1509,5 +2166,31 @@ mod tests {
         assert!((share - 0.9).abs() < 1e-6);
         assert_eq!(text, "90%");
         assert!((tint.r - (-85. * 0.9_f32 + 199.).round() / 255.).abs() < 1e-6);
+    }
+
+    #[test]
+    fn library_game_context_menu_flags_and_labels_match_873079() {
+        let Request::Rest {
+            method,
+            route,
+            body,
+            ..
+        } = library_flags_request("1001", "2002", LIB_FLAG_PRIVATE | LIB_FLAG_OVERLAY_DISABLED)
+        else {
+            panic!("expected rest");
+        };
+        assert_eq!(method, reqwest::Method::PATCH);
+        assert_eq!(route, "/users/@me/library/1001/2002");
+        assert_eq!(body, Some(json!({ "flags": 6 })));
+        assert_eq!(dc_intl::t("tKobzb"), "Application Actions");
+        assert_eq!(dc_intl::t("XKUw8m"), "Play Game");
+        assert_eq!(dc_intl::t("CKCcdz"), "Repair");
+        assert_eq!(dc_intl::t("DwgfOM"), "Uninstall");
+        assert_eq!(dc_intl::t("N+XVnt"), "Install");
+        assert_eq!(dc_intl::t("fHDNJv"), "Hide Playing Status");
+        assert_eq!(dc_intl::t("rgZKg2"), "Disable Overlay");
+        assert_eq!(dc_intl::t("T4tecH"), "Create Desktop Shortcut");
+        assert_eq!(dc_intl::t("TuJXLx"), "Hide Game from Library");
+        assert_eq!(dc_intl::t("0dnEUJ"), "Show Game in Library");
     }
 }

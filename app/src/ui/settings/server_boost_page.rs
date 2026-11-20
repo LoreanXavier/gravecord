@@ -365,6 +365,69 @@ impl Root {
                             })),
                     ),
             );
+        } else {
+            page = page.child(
+                at(0., 211.)
+                    .w(px(696.))
+                    .h(px(66.))
+                    .rounded(px(8.))
+                    .border_1()
+                    .border_color(color("--border-subtle"))
+                    .bg(color("--background-surface-high"))
+                    .child(
+                        at(14., 13.)
+                            .size(px(40.))
+                            .rounded(px(8.))
+                            .bg(rgb(88, 40, 150))
+                            .flex()
+                            .items_center()
+                            .justify_center()
+                            .child(icon("boost_gem", 24., "--white")),
+                    )
+                    .child(at(66., 13.).child(text(
+                        dc_intl::tr("Server Boosts"),
+                        16.,
+                        20.,
+                        600.,
+                        "--text-strong",
+                    )))
+                    .child(at(66., 36.).child(text(
+                        dc_intl::t("iqhIp4"),
+                        12.,
+                        16.,
+                        400.,
+                        "--text-muted",
+                    )))
+                    .child(
+                        at(516., 17.)
+                            .id("boost-cancel-manage")
+                            .w(px(166.))
+                            .h(px(32.))
+                            .rounded(px(8.))
+                            .border_1()
+                            .border_color(color("--control-critical-secondary-border-default"))
+                            .bg(color("--control-critical-secondary-background-default"))
+                            .cursor_pointer()
+                            .flex()
+                            .items_center()
+                            .justify_center()
+                            .child(text(
+                                dc_intl::t("CRwE7n"),
+                                13.,
+                                18.,
+                                500.,
+                                "--control-critical-secondary-text-default",
+                            ))
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                let guild_id = this.stores.guilds.first().map(|g| g.id);
+                                this.open_boost_cancel_modal(
+                                    "slot_primary".to_owned(),
+                                    guild_id,
+                                    cx,
+                                );
+                            })),
+                    ),
+            );
         }
         page = page.child(at(0., 308.).child(text(
             dc_intl::tr("These servers could use a Boost"),

@@ -1587,6 +1587,40 @@ pub async fn run(
                     .unwrap_or_default();
                 let _ = writeln!(output, "{line}");
             }
+            // `boost-cancel [confirm|preview|canceled|external|fractional|error]`: Cancel Server Boost modal (983511).
+            ["boost-cancel", rest @ ..] => {
+                let arg = rest.join(" ");
+                let line = root.update(cx, |root, cx| root.script_boost_cancel(&arg, cx));
+                let _ = writeln!(output, "{line}");
+            }
+            // `library-game-menu [installed|uninstalled|hide|fallback]`: Game Library context menu (873079).
+            ["library-game-menu", rest @ ..] => {
+                let arg = rest.join(" ");
+                let line = root.update(cx, |root, cx| root.script_library_game_menu(&arg, cx));
+                let _ = writeln!(output, "{line}");
+            }
+            // `channel-link [edit|confirm|noperm]`: Channel Link edit / unlink modals (106895, 428185, 422542).
+            ["channel-link", rest @ ..] => {
+                let arg = rest.join(" ");
+                let line = root.update(cx, |root, cx| root.script_channel_link(&arg, cx));
+                let _ = writeln!(output, "{line}");
+            }
+            // `hub-add-server [choose|templates|new|last|confirm]`: Student Hubs Add a Server modal (668822).
+            ["hub-add-server", rest @ ..] => {
+                let arg = rest.join(" ");
+                let line = window
+                    .update(cx, |_, window, cx| {
+                        root.update(cx, |root, cx| root.script_hub_add_server(&arg, window, cx))
+                    })
+                    .unwrap_or_default();
+                let _ = writeln!(output, "{line}");
+            }
+            // `role-sub [cards|tip|welcome]`: Role Subscription Tier Cards & Welcome modal (31637).
+            ["role-sub", rest @ ..] => {
+                let arg = rest.join(" ");
+                let line = root.update(cx, |root, cx| root.script_role_sub(&arg, cx));
+                let _ = writeln!(output, "{line}");
+            }
             // `search last` / `search answer <total>`: the open search's request, and an answer to it;
             // `search page <n>`: the pager turns to page n.
             ["search", rest @ ..] => {

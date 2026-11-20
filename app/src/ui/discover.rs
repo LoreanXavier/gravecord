@@ -7,6 +7,7 @@
 pub(super) mod app_data;
 mod apps;
 mod data;
+pub(crate) mod hub_add_server;
 mod hubs;
 mod profile;
 mod servers;

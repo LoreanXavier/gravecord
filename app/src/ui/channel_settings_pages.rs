@@ -789,16 +789,37 @@ impl Root {
                     })
             })
             .child(div().mb(px(20.)).h(px(1.)).bg(color("--border-subtle")))
-            .child(
+            .child({
+                let linked = guild
+                    .map(|g| self.linked_channels_for_guild(g, Some(channel)))
+                    .unwrap_or_default();
+                let has_linked = !linked.is_empty();
+                let linked_rows: Vec<AnyElement> = linked
+                    .into_iter()
+                    .map(|row| self.linked_channel_invite_row(row, false, cx))
+                    .collect();
                 div()
                     .flex()
-                    .child(head("Inviter", 203.))
-                    .child(head("Invite Code", 163.))
-                    .child(head("Uses", 71.))
-                    .child(head("Expires", 121.))
-                    .child(head("Roles", 102.)),
-            )
-            .children(rows)
+                    .flex_col()
+                    .child(
+                        div()
+                            .flex()
+                            .child(head(dc_intl::t("EgHyKy"), 203.))
+                            .child(head(
+                                if has_linked {
+                                    dc_intl::t("l7VISQ")
+                                } else {
+                                    dc_intl::t("LBlFEN")
+                                },
+                                163.,
+                            ))
+                            .child(head(dc_intl::t("erWrmA"), 71.))
+                            .child(head(dc_intl::t("1aM27d"), 121.))
+                            .child(head(dc_intl::t("LPJmL/"), 102.)),
+                    )
+                    .children(rows)
+                    .children(linked_rows)
+            })
             .into_any_element()
     }
 

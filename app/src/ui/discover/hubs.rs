@@ -200,6 +200,80 @@ impl Root {
                     .child("Join Hub")
                     .on_click(cx.listener(|this, _, window, cx| this.hub_dialog_open(window, cx))),
             );
+        let hub_cards: Vec<AnyElement> = self
+            .stores
+            .guilds
+            .iter()
+            .filter(|g| g.features.iter().any(|f| f == "HUB"))
+            .map(|hub| {
+                let dir_ch = hub.channels.first().map(|c| c.id).unwrap_or(hub.id);
+                let hub_id = hub.id;
+                let hub_name = hub.name.clone();
+                let hub_name_click = hub_name.clone();
+                div()
+                    .flex()
+                    .flex_col()
+                    .h(px(320.))
+                    .p(px(16.))
+                    .rounded(px(8.))
+                    .border_1()
+                    .border_color(color("--border-subtle"))
+                    .bg(color("--background-surface-high"))
+                    .child(
+                        div()
+                            .flex_none()
+                            .size(px(48.))
+                            .rounded(px(48.))
+                            .bg(color("--control-primary-background-default"))
+                            .flex()
+                            .items_center()
+                            .justify_center()
+                            .child(icon("discover_hub", 24., "--white")),
+                    )
+                    .child(
+                        text(20., 24., 600., "--text-strong")
+                            .mt(px(16.))
+                            .child(hub_name),
+                    )
+                    .child(
+                        text(14., 18., 400., "--text-default")
+                            .mt(px(12.))
+                            .child(dc_intl::t("pYFZ9p")),
+                    )
+                    .child(div().flex_1())
+                    .child(
+                        div()
+                            .id(SharedString::from(format!("discover-hub-add-{hub_id}")))
+                            .flex_none()
+                            .h(px(40.))
+                            .w_full()
+                            .rounded(px(8.))
+                            .border_1()
+                            .border_color(color("--control-primary-border-default"))
+                            .bg(color("--control-primary-background-default"))
+                            .hover(|s| s.bg(color("--control-primary-background-hover")))
+                            .flex()
+                            .items_center()
+                            .justify_center()
+                            .cursor_pointer()
+                            .text_size(px(16.))
+                            .line_height(px(20.))
+                            .font_weight(FontWeight(500.))
+                            .text_color(color("--white"))
+                            .child(dc_intl::t("H9jxS1"))
+                            .on_click(cx.listener(move |this, _, window, cx| {
+                                this.open_hub_add_server_modal(
+                                    dir_ch,
+                                    hub_id,
+                                    hub_name_click.clone(),
+                                    window,
+                                    cx,
+                                );
+                            })),
+                    )
+                    .into_any_element()
+            })
+            .collect();
         div()
             .w_full()
             .flex()
@@ -214,6 +288,7 @@ impl Root {
                     .grid()
                     .grid_cols(columns as u16)
                     .gap(px(16.))
+                    .children(hub_cards)
                     .child(card),
             )
             .child(div().w_full().h(px(1.)).bg(color("--border-subtle")))

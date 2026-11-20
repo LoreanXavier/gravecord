@@ -186,9 +186,11 @@ mod av_errors;
 mod avatar_demo;
 mod avatar_play;
 mod billing_address;
+mod boost_cancel;
 mod boost_page;
 pub(crate) mod cdn;
 mod channel_browser;
+mod channel_link;
 mod command_permissions;
 mod discover;
 mod emoji_studio;
@@ -285,6 +287,7 @@ mod reorder_hint;
 mod report;
 mod report_issue;
 mod role_connection_verify;
+mod role_subscription_card;
 mod rtc_channel;
 mod running_game_panel;
 mod running_games;
@@ -652,6 +655,14 @@ pub struct Root {
     nitro_upsell_modal: Option<nitro_upsell::NitroUpsellModal>,
     /// Gift Ready post-purchase delivery modal (module 998035, `gift_ready`).
     gift_ready_modal: Option<gift_ready::GiftReadyModal>,
+    /// Cancel Server Boost 3-step modal (module 983511, `boost_cancel`).
+    boost_cancel_modal: Option<boost_cancel::BoostCancelModal>,
+    /// Edit / Remove Channel Link modal (modules 106895, 428185, 422542 `eo`, `channel_link`).
+    channel_link_modal: Option<channel_link::ChannelLinkModal>,
+    /// Student Hubs "Add a server to {guildName}" modal (module 668822, `discover::hub_add_server`).
+    hub_add_server_modal: Option<discover::hub_add_server::HubAddServerModal>,
+    /// Role Subscription Tier Card & Welcome modal (module 31637, `role_subscription_card`).
+    role_subscription_modal: Option<role_subscription_card::RoleSubscriptionModal>,
     /// Ignored users whose "Don't show this again" restricted-profile bypass was clicked (module 148540 `ip`).
     restricted_profile_bypass: std::collections::HashSet<dc_state::Id>,
     /// Soundboard Echo store & hover details state (module 120246, `soundboard_echo`).
@@ -1196,6 +1207,10 @@ impl Root {
             billing_address_modal: None,
             nitro_upsell_modal: None,
             gift_ready_modal: None,
+            boost_cancel_modal: None,
+            channel_link_modal: None,
+            hub_add_server_modal: None,
+            role_subscription_modal: None,
             restricted_profile_bypass: std::collections::HashSet::new(),
             soundboard_echo: Default::default(),
             badge_modal: None,
@@ -2205,6 +2220,21 @@ impl Root {
                 }
                 if key.starts_with(boost_apply::KEY_PREFIX) {
                     self.boost_apply_fetched(&key, &body, cx);
+                    return;
+                }
+                if key == boost_cancel::CANCEL_SLOT_KEY {
+                    self.boost_cancel_fetched(&body);
+                    cx.notify();
+                    return;
+                }
+                if key == channel_link::UNLINK_LOBBY_KEY {
+                    self.channel_link_fetched(&body);
+                    cx.notify();
+                    return;
+                }
+                if key == discover::hub_add_server::HUB_ADD_ENTRY_KEY {
+                    self.hub_add_server_fetched(&body);
+                    cx.notify();
                     return;
                 }
                 if key == channel_status::STATUS_KEY {
@@ -11340,11 +11370,22 @@ impl Render for Root {
                 if keys.key == "escape"
                     && (this.billing_address_modal.is_some()
                         || this.nitro_upsell_modal.is_some()
-                        || this.gift_ready_modal.is_some())
+                        || this.gift_ready_modal.is_some()
+                        || this.boost_cancel_modal.is_some()
+                        || this.channel_link_modal.is_some()
+                        || this.hub_add_server_modal.is_some()
+                        || this.role_subscription_modal.is_some()
+                        || this.library.game_menu.is_some()
+                        || this.library.hide_confirm.is_some())
                 {
                     this.billing_address_modal = None;
                     this.nitro_upsell_modal = None;
                     this.gift_ready_modal = None;
+                    this.boost_cancel_modal = None;
+                    this.channel_link_modal = None;
+                    this.hub_add_server_modal = None;
+                    this.role_subscription_modal = None;
+                    this.close_library_game_menu();
                     cx.notify();
                     cx.stop_propagation();
                     return;
@@ -12504,6 +12545,12 @@ impl Render for Root {
             .children(self.graphic_dialog(cx))
             .children(self.birthday_layers(window, cx))
             .children(self.library_remove_modal(cx))
+            .children(self.library_hide_modal(cx))
+            .children(self.library_game_menu_layer(cx))
+            .children(self.boost_cancel_modal_layer(cx))
+            .children(self.channel_link_modal_layer(cx))
+            .children(self.hub_add_server_modal_layer(cx))
+            .children(self.role_subscription_modal_layer(cx))
             .children(self.composer_ai_modal(cx))
             .children(self.friend_nickname_layer(window, cx))
             .children(self.favorite_nickname_layer(window, cx))
