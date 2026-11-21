@@ -50,6 +50,21 @@ window.relay={open:s=>{fr.src=s},post:(d,o)=>{if(fr&&fr.contentWindow)fr.content
 if(document.getElementById('frame'))start();else document.addEventListener('DOMContentLoaded',start);
 })();"#;
 
+/// Ensures top-level embedded player documents (e.g. Spotify's 12px rounded card) keep a
+/// transparent canvas backdrop instead of inheriting an opaque white user-agent background.
+const TRANSPARENT_STYLE_SCRIPT: &str = r#"(function(){
+const apply=()=>{
+  if(!document.getElementById('gc-transparent-bg')){
+    const s=document.createElement('style');
+    s.id='gc-transparent-bg';
+    s.textContent='html,body{background:transparent!important;background-color:transparent!important;color-scheme:dark;}';
+    (document.head||document.documentElement).appendChild(s);
+  }
+};
+if(document.documentElement)apply();
+document.addEventListener('DOMContentLoaded',apply);
+})();"#;
+
 /// The origin the captcha page reports its messages under, in place of a framed page's origin.
 pub const CAPTCHA_ORIGIN: &str = "gravecord-captcha";
 
@@ -434,21 +449,72 @@ struct Popup {
 
 #[cfg(windows)]
 impl Popup {
+    fn class_name() -> windows::core::PCWSTR {
+        use std::sync::Once;
+        use windows::Win32::Foundation::{HINSTANCE, HWND, LPARAM, LRESULT, WPARAM};
+        use windows::Win32::Graphics::Gdi::HBRUSH;
+        use windows::Win32::System::LibraryLoader::GetModuleHandleW;
+        use windows::Win32::UI::WindowsAndMessaging::{
+            DefWindowProcW, HCURSOR, HICON, RegisterClassExW, WM_ERASEBKGND, WNDCLASSEXW,
+        };
+        use windows::core::{PCWSTR, w};
+
+        static REGISTERED: Once = Once::new();
+        let name = w!("GRAVECORD_WEBHOST");
+        REGISTERED.call_once(|| {
+            unsafe extern "system" fn wnd_proc(
+                hwnd: HWND,
+                msg: u32,
+                wparam: WPARAM,
+                lparam: LPARAM,
+            ) -> LRESULT {
+                if msg == WM_ERASEBKGND {
+                    // Never paint an opaque GDI background behind transparent WebView2 corners.
+                    return LRESULT(1);
+                }
+                // SAFETY: forwards unhandled window messages to Windows' default proc.
+                unsafe { DefWindowProcW(hwnd, msg, wparam, lparam) }
+            }
+            // SAFETY: registers a process-local window class once with no background brush.
+            unsafe {
+                let hinstance = HINSTANCE(GetModuleHandleW(PCWSTR::null()).unwrap_or_default().0);
+                let class = WNDCLASSEXW {
+                    cbSize: std::mem::size_of::<WNDCLASSEXW>() as u32,
+                    lpfnWndProc: Some(wnd_proc),
+                    hInstance: hinstance,
+                    hIcon: HICON::default(),
+                    hCursor: HCURSOR::default(),
+                    hbrBackground: HBRUSH::default(),
+                    lpszClassName: name,
+                    ..Default::default()
+                };
+                let _ = RegisterClassExW(&class);
+            }
+        });
+        name
+    }
+
     fn new(owner: NonZeroIsize) -> Option<Self> {
         use windows::Win32::Foundation::HWND;
+        use windows::Win32::Graphics::Dwm::{
+            DWMNCRP_DISABLED, DWMWA_NCRENDERING_POLICY, DwmSetWindowAttribute,
+        };
         use windows::Win32::UI::WindowsAndMessaging::{
-            CreateWindowExW, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW, WS_POPUP,
+            CreateWindowExW, WS_CLIPCHILDREN, WS_EX_NOACTIVATE, WS_EX_NOREDIRECTIONBITMAP,
+            WS_EX_TOOLWINDOW, WS_POPUP,
         };
         use windows::core::w;
         let owner = HWND(owner.get() as *mut std::ffi::c_void);
-        // SAFETY: a plain STATIC window on this thread; the owner handle is the app's live main window. It is made
-        // hidden: it shows once it has a place.
+        let class = Self::class_name();
+        // SAFETY: a borderless popup owned by the app's live main window, with
+        // WS_EX_NOREDIRECTIONBITMAP so DWM composites WebView2's transparent DirectComposition
+        // visual directly over GPUI without an opaque white GDI backing surface.
         let hwnd = unsafe {
             CreateWindowExW(
-                WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE,
-                w!("STATIC"),
+                WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE | WS_EX_NOREDIRECTIONBITMAP,
+                class,
                 w!(""),
-                WS_POPUP,
+                WS_POPUP | WS_CLIPCHILDREN,
                 0,
                 0,
                 1,
@@ -460,6 +526,17 @@ impl Popup {
             )
         }
         .ok()?;
+        // Ensure DWM never draws a non-client border or drop shadow around the embedded surface.
+        let policy = DWMNCRP_DISABLED.0 as u32;
+        // SAFETY: `hwnd` was just created on this thread and `policy` is a valid u32 attribute.
+        unsafe {
+            let _ = DwmSetWindowAttribute(
+                hwnd,
+                DWMWA_NCRENDERING_POLICY,
+                (&raw const policy).cast(),
+                std::mem::size_of::<u32>() as u32,
+            );
+        }
         Some(Self {
             hwnd,
             owner,
@@ -677,7 +754,10 @@ fn run(
             if let Some(value) = referer.and_then(|r| wry::http::HeaderValue::from_str(&r).ok()) {
                 headers.insert(wry::http::header::REFERER, value);
             }
-            builder.with_url(url).with_headers(headers)
+            builder
+                .with_url(url)
+                .with_headers(headers)
+                .with_initialization_script(TRANSPARENT_STYLE_SCRIPT)
         }
     };
     let view: WebView = match builder

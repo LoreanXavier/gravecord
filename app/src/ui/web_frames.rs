@@ -22,10 +22,11 @@ use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;
 
-/// Frames the box may go undrawn before its view closes (a frame or two can pass while a list re-lays out).
-const GRACE_FRAMES: u32 = 6;
-/// Views open at once at most: a channel full of Spotify links opens the ones on screen, not one per link.
-const MAX_FRAMES: usize = 8;
+/// Views kept alive per channel at once: scrolling up and down within the same channel/DM keeps loaded
+/// embeds parked (hidden, WebView2 rendering suspended) instead of reloading them; switching channels
+/// tears all of them down immediately. If a channel has more distinct embeds than this, the
+/// least-recently-seen hidden frame is evicted to make room for a newly visible one.
+const MAX_FRAMES: usize = 16;
 /// The page the official iframe sits in.
 const REFERER: &str = "https://discord.com/";
 
@@ -34,7 +35,8 @@ struct Frame {
     web: Option<WebHost>,
     /// Shown as far as the app goes (no overlay of its own over it).
     visible: bool,
-    unseen: u32,
+    /// Monotonic frame counter of the last paint that showed this frame, for LRU eviction when full.
+    last_seen: u64,
 }
 
 /// What the paint of a frame says about the boxes web views sit over. Shared with the boxes' paint callbacks.
@@ -127,6 +129,63 @@ pub(super) fn placement_of(bounds: Bounds<Pixels>, clip: Bounds<Pixels>, scale: 
 pub(super) struct WebFrames {
     pub(super) painted: Rc<RefCell<Painted>>,
     frames: HashMap<String, Frame>,
+    /// The channel/DM whose frames are currently cached; changing it closes all open frames immediately.
+    channel: Option<dc_state::Id>,
+    /// Monotonic frame counter used to pick the least-recently-seen hidden frame if `MAX_FRAMES` is reached.
+    tick: u64,
+}
+
+/// Pure channel + LRU slot reconciliation so unit tests exercise the exact same eviction rules as
+/// [`Root::web_frames_frame`]. Returns the anchors that were closed and removed.
+fn reconcile_slots(
+    frames: &mut HashMap<String, Frame>,
+    cached_channel: &mut Option<dc_state::Id>,
+    current_channel: Option<dc_state::Id>,
+    tick: &mut u64,
+    last_built: &HashMap<String, Option<String>>,
+) -> Vec<String> {
+    let mut closed = Vec::new();
+    if *cached_channel != current_channel {
+        *cached_channel = current_channel;
+        closed.extend(frames.drain().map(|(anchor, _)| anchor));
+    }
+    *tick = tick.wrapping_add(1);
+    let now = *tick;
+    for (anchor, url) in last_built {
+        let Some(url) = url else { continue };
+        if let Some(frame) = frames.get_mut(anchor) {
+            frame.last_seen = now;
+            if &frame.url != url {
+                frame.url = url.clone();
+                frame.web = None;
+                closed.push(anchor.clone());
+            }
+            continue;
+        }
+        if frames.len() >= MAX_FRAMES {
+            let victim = frames
+                .iter()
+                .filter(|(k, _)| !last_built.contains_key(*k))
+                .min_by_key(|(_, f)| f.last_seen)
+                .map(|(k, _)| k.clone());
+            if let Some(victim) = victim {
+                frames.remove(&victim);
+                closed.push(victim);
+            } else {
+                continue;
+            }
+        }
+        frames.insert(
+            anchor.clone(),
+            Frame {
+                url: url.clone(),
+                web: None,
+                visible: false,
+                last_seen: now,
+            },
+        );
+    }
+    closed
 }
 
 impl WebFrames {
@@ -246,7 +305,11 @@ impl Root {
 
     /// Called every frame: opens, shows, hides and closes the views from where their boxes were drawn in the last
     /// frame. Where a view sits is not set here: the box's paint sends it ([`Painted::place`]).
+    ///
+    /// Frames stay alive (hidden and suspended by WebView2) while scrolling within the same channel/DM so
+    /// scrolling back never reloads Spotify embeds; switching channels tears them all down immediately.
     pub(super) fn web_frames_frame(&mut self, window: &Window, _cx: &mut Context<Self>) {
+        let current_channel = self.channel;
         // A chat without frames costs a frame nothing here.
         if self.web_frames.frames.is_empty()
             && !self
@@ -257,43 +320,38 @@ impl Root {
                 .values()
                 .any(Option::is_some)
         {
+            self.web_frames.channel = current_channel;
             return;
         }
         let covered = self.web_surfaces_covered();
         let painted = self.web_frames.painted.clone();
         let mut painted = painted.borrow_mut();
-        let frames = &mut self.web_frames.frames;
-        for (anchor, url) in &painted.last_built {
-            let Some(url) = url else { continue };
-            let open = frames.len();
-            if let Some(frame) = frames.get_mut(anchor) {
-                if &frame.url != url {
-                    frame.url = url.clone();
-                    frame.web = None;
-                }
-            } else if open < MAX_FRAMES {
-                frames.insert(
-                    anchor.clone(),
-                    Frame {
-                        url: url.clone(),
-                        web: None,
-                        visible: false,
-                        unseen: 0,
-                    },
-                );
-            }
+        let evicted = reconcile_slots(
+            &mut self.web_frames.frames,
+            &mut self.web_frames.channel,
+            current_channel,
+            &mut self.web_frames.tick,
+            &painted.last_built,
+        );
+        for anchor in evicted {
+            painted.unlink(&anchor);
         }
-        let mut closed = Vec::new();
-        for (anchor, frame) in frames.iter_mut() {
+        let mut failed = Vec::new();
+        let visible = !covered;
+        for (anchor, frame) in self.web_frames.frames.iter_mut() {
             let Some(placement) = painted.last_place(anchor) else {
-                frame.unseen += 1;
-                if frame.unseen > GRACE_FRAMES {
-                    closed.push(anchor.clone());
+                // Scrolled out of the viewport within the same channel: Painted::finish already hid
+                // the popup and suspended WebView2 rendering; keep the frame parked until the user
+                // scrolls back or switches channels.
+                if !visible
+                    && frame.visible
+                    && let Some(web) = frame.web.as_ref()
+                {
+                    web.set_visible(false);
+                    frame.visible = false;
                 }
                 continue;
             };
-            frame.unseen = 0;
-            let visible = !covered;
             match frame.web.as_ref() {
                 None => {
                     let Some(dir) = crate::storage::data_dir().map(|dir| dir.join("webview"))
@@ -310,7 +368,7 @@ impl Root {
                         }
                         Err(error) => {
                             tracing::warn!("web frame could not open: {error}");
-                            closed.push(anchor.clone());
+                            failed.push(anchor.clone());
                         }
                     }
                 }
@@ -322,9 +380,9 @@ impl Root {
                 }
             }
         }
-        for anchor in closed {
+        for anchor in failed {
             painted.unlink(&anchor);
-            frames.remove(&anchor);
+            self.web_frames.frames.remove(&anchor);
         }
     }
 }
@@ -451,5 +509,95 @@ mod tests {
             ))
             .is_none()
         );
+    }
+
+    #[test]
+    fn same_channel_scroll_keeps_frames_alive_and_channel_switch_clears_them() {
+        let mut frames = HashMap::new();
+        let mut cached_channel = None;
+        let mut tick = 0;
+
+        let mut built = HashMap::new();
+        built.insert(
+            "webframe:m1:0".to_owned(),
+            Some("https://open.spotify.com/embed/track/1".to_owned()),
+        );
+        let evicted = reconcile_slots(
+            &mut frames,
+            &mut cached_channel,
+            Some(100),
+            &mut tick,
+            &built,
+        );
+        assert!(evicted.is_empty());
+        assert!(frames.contains_key("webframe:m1:0"));
+
+        // Scroll far away within the same channel for 120 frames: the frame stays cached instead of reloading.
+        let empty = HashMap::new();
+        for _ in 0..120 {
+            let evicted = reconcile_slots(
+                &mut frames,
+                &mut cached_channel,
+                Some(100),
+                &mut tick,
+                &empty,
+            );
+            assert!(evicted.is_empty());
+            assert!(frames.contains_key("webframe:m1:0"));
+        }
+
+        // Switching to another DM/channel clears all frames from the previous channel immediately.
+        let evicted = reconcile_slots(
+            &mut frames,
+            &mut cached_channel,
+            Some(200),
+            &mut tick,
+            &empty,
+        );
+        assert_eq!(evicted, vec!["webframe:m1:0".to_owned()]);
+        assert!(frames.is_empty());
+        assert_eq!(cached_channel, Some(200));
+    }
+
+    #[test]
+    fn exceeding_max_frames_in_one_channel_evicts_least_recently_seen_hidden_frame() {
+        let mut frames = HashMap::new();
+        let mut cached_channel = Some(42);
+        let mut tick = 0;
+
+        for i in 0..MAX_FRAMES {
+            let mut built = HashMap::new();
+            built.insert(
+                format!("webframe:m{i}:0"),
+                Some(format!("https://open.spotify.com/embed/track/{i}")),
+            );
+            let evicted = reconcile_slots(
+                &mut frames,
+                &mut cached_channel,
+                Some(42),
+                &mut tick,
+                &built,
+            );
+            assert!(evicted.is_empty());
+        }
+        assert_eq!(frames.len(), MAX_FRAMES);
+
+        // One more distinct embed scrolls into view: the oldest hidden embed (m0) is evicted.
+        let mut built = HashMap::new();
+        built.insert(
+            "webframe:m_new:0".to_owned(),
+            Some("https://open.spotify.com/embed/track/new".to_owned()),
+        );
+        let evicted = reconcile_slots(
+            &mut frames,
+            &mut cached_channel,
+            Some(42),
+            &mut tick,
+            &built,
+        );
+        assert_eq!(evicted, vec!["webframe:m0:0".to_owned()]);
+        assert!(!frames.contains_key("webframe:m0:0"));
+        assert!(frames.contains_key("webframe:m_new:0"));
+        assert_eq!(frames.len(), MAX_FRAMES);
     }
 }
