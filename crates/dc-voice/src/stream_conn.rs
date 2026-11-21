@@ -16,9 +16,11 @@ use crate::{
     },
     rtp::{self, Mode, Transport},
     session::{
-        DISCOVERY_TIMEOUT, HELLO_TIMEOUT, MAX_RESUMES, NEGOTIATION, PEER_GRACE, RENEGOTIATION,
-        Socket, UDP_KEEPALIVE, UdpFailures, log_ws_close, log_ws_stage_err, log_ws_stage_ok,
-        open_with_stages, sanitized_ws_error, send, text, transient_receive,
+        DISCOVERY_RETRY, DISCOVERY_TIMEOUT, HELLO_TIMEOUT, MAX_RESUMES, NEGOTIATION, OpenedSocket,
+        PEER_GRACE, RENEGOTIATION, RESUME_WINDOW, Socket, UDP_KEEPALIVE, UdpFailures,
+        close_code_is_resumable, log_ws_close, log_ws_stage_err, log_ws_stage_ok, open_with_stages,
+        rebind_udp, sanitized_ws_error, send_or_resume, text, text_or_resume, transient_receive,
+        ws_resume_backoff,
     },
     signal::{self, CLOSE_DISCONNECTED, Context, Limits},
     streams::{Role, StreamJoin},
@@ -33,7 +35,7 @@ use dc_media::{
     screen::{self, AudioChunk},
     synthetic::{self, Synthetic},
 };
-use dc_proto::voice_op::{VoiceOp, close};
+use dc_proto::voice_op::VoiceOp;
 use futures_util::StreamExt;
 use opus2::{Application, Bitrate, Channels, Encoder};
 use std::{
@@ -495,23 +497,33 @@ pub(crate) async fn run(
         token: &token,
     };
     let opened = open_with_stages("stream", &url).await?;
-    let mut ws: Socket = opened.ws;
+    let mut ws: Option<Socket> = Some(opened.ws);
+    let mut ws_resume_task: Option<tokio::task::JoinHandle<Result<OpenedSocket, &'static str>>> =
+        None;
+    let mut ws_resume_at: Option<Instant> = None;
+    let mut last_healthy_at = Instant::now();
     let mut diag_host = opened.host;
     let mut diag_port = opened.port;
     let mut tls_version = opened.tls_version;
     let mut connect_started = opened.opened_at;
-    text(&mut ws, signal::identify(&ids(), Context::Stream)).await?;
+    text(
+        ws.as_mut().expect("opened socket"),
+        signal::identify(&ids(), Context::Stream),
+    )
+    .await?;
 
     let mut dave = Dave::new(own, join.channel_id)?;
     let mut mode: Option<Mode> = None;
     let mut transport: Option<Transport> = None;
     let mut secured_at: Option<Instant> = None;
     let mut udp: Option<UdpSocket> = None;
+    let mut udp_peer: Option<SocketAddr> = None;
     let mut udp_failures = UdpFailures::default();
     let mut next_udp_ping = Instant::now();
     let mut udp_ping_sequence = 0u32;
     let mut discovering = false;
     let mut discovery_started = Instant::now();
+    let mut discovery_retry_at = Instant::now();
     let mut discovery_deadline = Instant::now();
     let mut routing_time_ms: Option<u64> = None;
     let mut ssrc = 0u32;
@@ -621,27 +633,29 @@ pub(crate) async fn run(
 
     loop {
         if let Some(reason) = reconnect.take() {
-            if transport.is_none() || resume_attempts >= MAX_RESUMES {
+            ws = None;
+            if let Some(task) = ws_resume_task.take() {
+                task.abort();
+            }
+            if transport.is_none()
+                || resume_attempts >= MAX_RESUMES
+                || last_healthy_at.elapsed() > RESUME_WINDOW
+            {
                 return Err(reason);
             }
-            debug!("stream socket lost; resuming");
+            let delay = ws_resume_backoff(resume_attempts);
             resume_attempts += 1;
+            debug!(
+                attempt = resume_attempts,
+                delay_ms = delay.as_millis() as u64,
+                "stream socket lost; scheduling in-place resume while keeping media alive"
+            );
             resuming = true;
-            waiting_announced = false;
-            deadline = Some(Instant::now() + RENEGOTIATION);
-            hello_deadline = Instant::now() + HELLO_TIMEOUT;
+            ws_resume_at = Some(Instant::now() + delay);
+            deadline = Some(Instant::now() + RENEGOTIATION + delay);
             heartbeat_ms = None;
             awaiting_ack = None;
             missed_acks = 0;
-            let reopened = open_with_stages("stream", &url)
-                .await
-                .map_err(|_| "Stream resume failed")?;
-            ws = reopened.ws;
-            diag_host = reopened.host;
-            diag_port = reopened.port;
-            tls_version = reopened.tls_version;
-            connect_started = reopened.opened_at;
-            text(&mut ws, signal::resume(&ids(), seq_ack)).await?;
         }
         pacer_clock.set(
             sender
@@ -652,12 +666,52 @@ pub(crate) async fn run(
         tokio::select! {
             changed = controls.changed() => {
                 if changed.is_err() || controls.borrow().stop {
-                    if announced && sending {
-                        let _ = text(&mut ws, signal::video(ssrc, None)).await;
+                    if let Some(task) = ws_resume_task.take() {
+                        task.abort();
+                    }
+                    if announced && sending && let Some(sock) = ws.as_mut() {
+                        let _ = text(sock, signal::video(ssrc, None)).await;
                     }
                     log_ws_close("stream", &diag_host, diag_port, connect_started.elapsed().as_millis() as u64, 1000, 0);
-                    let _ = timeout(Duration::from_secs(1), ws.close(None)).await;
+                    if let Some(sock) = ws.as_mut() {
+                        let _ = timeout(Duration::from_secs(1), sock.close(None)).await;
+                    }
                     return Ok(DisconnectReason::Requested);
+                }
+            },
+            resumed = async {
+                match ws_resume_task.as_mut() {
+                    Some(task) => task.await,
+                    None => std::future::pending().await,
+                }
+            } => {
+                ws_resume_task = None;
+                match resumed {
+                    Ok(Ok(mut reopened)) => {
+                        if udp_failures.has_recent_failures()
+                            && let Some(peer) = udp_peer
+                            && let Some(fresh_udp) = rebind_udp(peer).await
+                        {
+                            debug!("stream fast UDP reconnect refreshed local socket");
+                            udp = Some(fresh_udp);
+                            udp_failures.reset();
+                        }
+                        if text(&mut reopened.ws, signal::resume(&ids(), seq_ack)).await.is_ok() {
+                            diag_host = reopened.host;
+                            diag_port = reopened.port;
+                            tls_version = reopened.tls_version;
+                            connect_started = reopened.opened_at;
+                            ws = Some(reopened.ws);
+                            heartbeat_at = Instant::now();
+                            hello_deadline = Instant::now() + HELLO_TIMEOUT;
+                            deadline = Some(Instant::now() + RENEGOTIATION);
+                        } else {
+                            reconnect = Some("Stream resume failed");
+                        }
+                    }
+                    _ => {
+                        reconnect = Some("Stream resume failed");
+                    }
                 }
             },
             wake = pacer_wakes.recv() => {
@@ -666,7 +720,10 @@ pub(crate) async fn run(
                 }
                 if let (Some(sender), Some(crypto), Some(socket)) = (sender.as_mut(), transport.as_mut(), udp.as_ref()) {
                     let was_empty = sender.idle();
-                    sender.flush(Instant::now(), crypto, |data| udp_failures.send(socket, data, "Stream UDP send failed"))?;
+                    let _ = sender.flush(Instant::now(), crypto, |data| {
+                        udp_failures.send_best_effort(socket, data);
+                        Ok::<(), &'static str>(())
+                    });
                     if !was_empty && sender.idle() && sent_keyframe && !live_announced {
                         live_announced = true;
                         awaiting_keyframe = false;
@@ -722,7 +779,21 @@ pub(crate) async fn run(
                     return Err(MEDIA_CLOCK_STOPPED);
                 }
                 let now = Instant::now();
+                if ws.is_none()
+                    && ws_resume_task.is_none()
+                    && ws_resume_at.is_some_and(|at| now >= at)
+                {
+                    ws_resume_at = None;
+                    let url_clone = url.clone();
+                    ws_resume_task = Some(tokio::spawn(async move {
+                        open_with_stages("stream", &url_clone).await
+                    }));
+                }
                 if deadline.is_some_and(|d| now >= d) {
+                    if resuming && transport.is_some() && resume_attempts < MAX_RESUMES {
+                        reconnect = Some("Stream resume acknowledgement timed out");
+                        continue;
+                    }
                     return Err(if heartbeat_ms.is_none() {
                         "Stream voice Hello timed out"
                     } else if transport.is_none() {
@@ -731,30 +802,36 @@ pub(crate) async fn run(
                         "Stream DAVE negotiation timed out"
                     });
                 }
-                if heartbeat_ms.is_none() && now >= hello_deadline {
+                if ws.is_some() && heartbeat_ms.is_none() && now >= hello_deadline {
                     if transport.is_none() {
                         return Err("Stream voice Hello timed out");
                     }
                     reconnect = Some("Stream voice Hello timed out");
                     continue;
                 }
-                if discovering && now >= discovery_deadline {
-                    log_ws_stage_err(
-                        "stream",
-                        "udp_discovery",
-                        &diag_host,
-                        diag_port,
-                        discovery_started.elapsed().as_millis() as u64,
-                        "timed_out",
-                    );
-                    return Err("Stream voice UDP discovery timed out");
+                if discovering {
+                    if now >= discovery_deadline {
+                        log_ws_stage_err(
+                            "stream",
+                            "udp_discovery",
+                            &diag_host,
+                            diag_port,
+                            discovery_started.elapsed().as_millis() as u64,
+                            "timed_out",
+                        );
+                        return Err("Stream voice UDP discovery timed out");
+                    }
+                    if now >= discovery_retry_at && let Some(socket) = &udp {
+                        udp_failures.send_best_effort(socket, &rtp::discovery_request(ssrc));
+                        discovery_retry_at = now + DISCOVERY_RETRY;
+                    }
                 }
                 if !discovering && now >= next_udp_ping && let Some(socket) = &udp {
                     udp_ping_sequence = udp_ping_sequence.wrapping_add(1);
-                    udp_failures.send(socket, &rtp::keepalive(udp_ping_sequence), "Stream UDP keepalive failed")?;
+                    udp_failures.send_best_effort(socket, &rtp::keepalive(udp_ping_sequence));
                     next_udp_ping = now + UDP_KEEPALIVE;
                 }
-                if let Some(interval) = heartbeat_ms && now >= heartbeat_at {
+                if ws.is_some() && let Some(interval) = heartbeat_ms && now >= heartbeat_at {
                     if awaiting_ack.is_some() {
                         missed_acks += 1;
                         if missed_acks >= 2 {
@@ -764,15 +841,16 @@ pub(crate) async fn run(
                     }
                     heartbeat_nonce = heartbeat_nonce.wrapping_add(1);
                     heartbeat_sent = Instant::now();
-                    text(&mut ws, signal::heartbeat(heartbeat_nonce, seq_ack, server_version)).await?;
+                    text_or_resume(&mut ws, &mut reconnect, transport.is_some(), signal::heartbeat(heartbeat_nonce, seq_ack, server_version)).await?;
                     awaiting_ack = Some(heartbeat_nonce);
                     heartbeat_at = now + Duration::from_millis(interval);
                 }
                 if secured_at.is_some_and(|at| now >= at + PEER_GRACE) && !discovering && !resuming && dave.should_wait_for_peer() {
                     dave.enter_sole_member_waiting()?;
                 }
-                let enabled = dave.ready && transport.is_some() && !discovering && !resuming;
-                let waiting = dave.waiting && transport.is_some() && !discovering && !resuming;
+                // Media (UDP + DAVE) stays live while the control WebSocket resumes in the background (`921747.js`).
+                let enabled = dave.ready && transport.is_some() && !discovering;
+                let waiting = dave.waiting && transport.is_some() && !discovering;
                 if waiting && !waiting_announced {
                     deadline = None;
                     waiting_announced = true;
@@ -813,18 +891,20 @@ pub(crate) async fn run(
                     }
                     if let Some(capture) = &capture && let Some(reason) = capture.finished() {
                         debug!(reason, "stream capture ended");
-                        let _ = text(&mut ws, signal::video(ssrc, None)).await;
+                        if let Some(sock) = ws.as_mut() {
+                            let _ = text(sock, signal::video(ssrc, None)).await;
+                        }
                         return Err(SCREEN_CAPTURE_ENDED);
                     }
                     // Announce the source once, as soon as both ends are ready for it.
-                    if !announced && capture.is_some() && transport.is_some() && !discovering && !resuming && let Some(source) = source {
+                    if !announced && capture.is_some() && ws.is_some() && transport.is_some() && !discovering && !resuming && let Some(source) = source {
                         let bitrate = source.limits().bitrate;
                         let mut video = VideoSender::new(video_ssrc, rtx_ssrc, STREAM_MIN_BITRATE, CALL_START_BITRATE, bitrate);
                         video.set_keyframe_interval(keyframe_interval);
                         video.set_screen_share(true);
                         video.set_framerate(source.limits().framerate);
                         sender = Some(video);
-                        text(&mut ws, signal::video(ssrc, Some((video_ssrc, rtx_ssrc, Context::Stream, Some(source.limits()))))).await?;
+                        text_or_resume(&mut ws, &mut reconnect, transport.is_some(), signal::video(ssrc, Some((video_ssrc, rtx_ssrc, Context::Stream, Some(source.limits()))))).await?;
                         announced = true;
                         debug!("stream source announced");
                     }
@@ -877,19 +957,33 @@ pub(crate) async fn run(
                     while audio_open && pending_audio.len() >= 1920 {
                         let stereo: Vec<f32> = pending_audio.drain(..1920).collect();
                         if !audio_speaking {
-                            text(&mut ws, signal::speaking_flags(2, ssrc)).await?;
+                            if !resuming {
+                                text_or_resume(&mut ws, &mut reconnect, transport.is_some(), signal::speaking_flags(2, ssrc)).await?;
+                            }
                             audio_speaking = true;
                         }
                         let encoder = audio_encoder.as_mut().ok_or("Stream audio encoder missing")?;
                         let length = encoder.encode_float(&stereo, &mut encoded).map_err(|_| "Stream audio encoding failed")?;
                         let data = dave.session.encrypt_opus(&encoded[..length]).map_err(|_| "DAVE stream audio encryption failed")?.into_owned();
                         let header = rtp::header(audio_sequence, audio_timestamp, ssrc);
-                        if let (Some(crypto), Some(socket)) = (transport.as_mut(), udp.as_ref()) {
+                        if let Some(crypto) = transport.as_mut() {
                             let wire = crypto.seal_soundshare(&header, &data, now)?;
-                            udp_failures.send(socket, &wire, "Stream audio UDP send failed")?;
-                            outbound_audio_packets += 1;
-                            outbound_audio_bytes += wire.len() as u64;
-                            outbound_audio_frames += 1;
+                            if let Some(socket) = &udp {
+                                if udp_failures.send(socket, &wire, "Stream audio UDP send failed").is_err() {
+                                    if let Some(peer) = udp_peer
+                                        && let Some(fresh_udp) = rebind_udp(peer).await
+                                    {
+                                        debug!("stream audio UDP send outage triggered fast UDP reconnect");
+                                        udp = Some(fresh_udp);
+                                        udp_failures.reset();
+                                    } else {
+                                        return Err("Stream audio UDP send failed");
+                                    }
+                                }
+                                outbound_audio_packets += 1;
+                                outbound_audio_bytes += wire.len() as u64;
+                                outbound_audio_frames += 1;
+                            }
                         }
                         audio_sequence = audio_sequence.wrapping_add(1);
                         audio_timestamp = audio_timestamp.wrapping_add(rtp::FRAME_SAMPLES);
@@ -942,11 +1036,14 @@ pub(crate) async fn run(
                         tally[3] += receive::hand_over(&mut receivers, &mut decoders, &mut dave, now);
                         if let (Some(crypto), Some(socket)) = (transport.as_mut(), udp.as_ref()) {
                             for (header, body) in receivers.feedback(ssrc, now) {
-                                udp_failures.send(socket, &crypto.seal_rtcp(&header, &body)?, "Stream feedback send failed")?;
+                                // Feedback is best effort: a transient UDP error is only a lost RTCP packet.
+                                if let Ok(wire) = crypto.seal_rtcp(&header, &body) {
+                                    udp_failures.send_best_effort(socket, &wire);
+                                }
                             }
                         }
-                        if now >= sink_wants_at && hub.has_sink() {
-                            text(&mut ws, signal::media_sink_wants(100)).await?;
+                        if ws.is_some() && !resuming && now >= sink_wants_at && hub.has_sink() {
+                            text_or_resume(&mut ws, &mut reconnect, transport.is_some(), signal::media_sink_wants(100)).await?;
                             sink_wants_at = now + SINK_WANTS_INTERVAL;
                         }
                     } else if let Some(p) = &playout {
@@ -1201,12 +1298,14 @@ pub(crate) async fn run(
                     continue;
                 }
                 if discovering {
-                    let (address, port) = rtp::discovery_response(&packet[..length], ssrc)?;
+                    let Ok((address, port)) = rtp::discovery_response(&packet[..length], ssrc) else {
+                        continue;
+                    };
                     let elapsed_ms = discovery_started.elapsed().as_millis() as u64;
                     routing_time_ms = Some(elapsed_ms);
                     log_ws_stage_ok("stream", "udp_discovery", &diag_host, diag_port, elapsed_ms, None);
                     let mode = mode.ok_or("Missing voice encryption mode")?;
-                    text(&mut ws, signal::select_protocol(address, port, mode)).await?;
+                    text_or_resume(&mut ws, &mut reconnect, transport.is_some(), signal::select_protocol(address, port, mode)).await?;
                     discovering = false;
                     continue;
                 }
@@ -1288,7 +1387,10 @@ pub(crate) async fn run(
                             // NACK for a hole and PLI for a lost chain go as soon as they are due, not on the tick.
                             if let (Some(crypto), Some(socket)) = (transport.as_mut(), udp.as_ref()) {
                                 for (header, body) in receivers.feedback(ssrc, now) {
-                                    udp_failures.send(socket, &crypto.seal_rtcp(&header, &body)?, "Stream feedback send failed")?;
+                                    // Feedback is best effort: a transient UDP error never kills the stream.
+                                    if let Ok(wire) = crypto.seal_rtcp(&header, &body) {
+                                        udp_failures.send_best_effort(socket, &wire);
+                                    }
                                 }
                             }
                         }
@@ -1296,17 +1398,30 @@ pub(crate) async fn run(
                     _ => {}
                 }
             },
-            event = ws.next() => {
+            event = async {
+                match ws.as_mut() {
+                    Some(sock) => sock.next().await,
+                    None => std::future::pending().await,
+                }
+            } => {
                 let event = match event {
-                    Some(Ok(message)) if !matches!(&message, Message::Close(Some(frame)) if u16::from(frame.code) == close::SERVER_CRASH) => message,
                     Some(Ok(Message::Close(frame))) => {
                         let (code, reason_len) = frame.as_ref().map_or((u16::from(CloseCode::Status), 0usize), |f| {
                             (u16::from(f.code), f.reason.len())
                         });
                         log_ws_close("stream", &diag_host, diag_port, connect_started.elapsed().as_millis() as u64, code, reason_len);
-                        reconnect = Some("Stream voice socket failed");
-                        continue;
+                        if transport.is_some() && close_code_is_resumable(code) {
+                            ws = None;
+                            reconnect = Some("Stream socket closed; resuming");
+                            continue;
+                        }
+                        return Ok(if code == CLOSE_DISCONNECTED {
+                            DisconnectReason::Kicked
+                        } else {
+                            DisconnectReason::Closed(code)
+                        });
                     }
+                    Some(Ok(message)) => message,
                     Some(Err(err)) => {
                         log_ws_stage_err(
                             "stream",
@@ -1316,11 +1431,13 @@ pub(crate) async fn run(
                             connect_started.elapsed().as_millis() as u64,
                             &sanitized_ws_error(&err),
                         );
+                        ws = None;
                         reconnect = Some("Stream voice socket failed");
                         continue;
                     }
                     _ => {
                         log_ws_close("stream", &diag_host, diag_port, connect_started.elapsed().as_millis() as u64, u16::from(CloseCode::Abnormal), 0);
+                        ws = None;
                         reconnect = Some("Stream voice socket failed");
                         continue;
                     }
@@ -1366,6 +1483,7 @@ pub(crate) async fn run(
                                     }
                                     awaiting_ack = None;
                                     missed_acks = 0;
+                                    last_healthy_at = Instant::now();
                                     if !resuming {
                                         resume_attempts = 0;
                                     }
@@ -1392,23 +1510,23 @@ pub(crate) async fn run(
                                 rtx_ssrc = ready.rtx_ssrc;
                                 mode = Some(ready.mode);
                                 if server_version >= 6 {
-                                    text(&mut ws, signal::backend_version()).await?;
+                                    text_or_resume(&mut ws, &mut reconnect, transport.is_some(), signal::backend_version()).await?;
                                 }
+                                let peer = SocketAddr::new(ready.ip, ready.port);
                                 let socket = UdpSocket::bind(if ready.ip.is_ipv4() { "0.0.0.0:0" } else { "[::]:0" })
                                     .await
                                     .map_err(|_| "Could not bind stream UDP socket")?;
                                 socket
-                                    .connect(SocketAddr::new(ready.ip, ready.port))
+                                    .connect(peer)
                                     .await
                                     .map_err(|_| "Could not connect stream UDP socket")?;
-                                socket
-                                    .send(&rtp::discovery_request(ssrc))
-                                    .await
-                                    .map_err(|_| "Stream UDP discovery failed")?;
+                                let _ = socket.try_send(&rtp::discovery_request(ssrc));
+                                udp_peer = Some(peer);
                                 udp = Some(socket);
                                 discovering = true;
                                 discovery_started = Instant::now();
-                                discovery_deadline = Instant::now() + DISCOVERY_TIMEOUT;
+                                discovery_retry_at = discovery_started + DISCOVERY_RETRY;
+                                discovery_deadline = discovery_started + DISCOVERY_TIMEOUT;
                             }
                             Some(VoiceOp::SelectProtocolAck) => {
                                 if transport.is_some() || udp.is_none() || discovering {
@@ -1423,6 +1541,7 @@ pub(crate) async fn run(
                                 let key = signal::session_description(data, mode)?;
                                 transport = Some(Transport::new(mode, &key));
                                 secured_at = Some(Instant::now());
+                                last_healthy_at = Instant::now();
                                 log_ws_stage_ok(
                                     "stream",
                                     "op4_session_description",
@@ -1431,10 +1550,10 @@ pub(crate) async fn run(
                                     connect_started.elapsed().as_millis() as u64,
                                     tls_version,
                                 );
-                                text(&mut ws, signal::speaking_flags(0, ssrc)).await?;
-                                send(&mut ws, Message::Binary(dave.key_package()?.into())).await?;
+                                text_or_resume(&mut ws, &mut reconnect, transport.is_some(), signal::speaking_flags(0, ssrc)).await?;
+                                send_or_resume(&mut ws, &mut reconnect, transport.is_some(), Message::Binary(dave.key_package()?.into())).await?;
                                 if !sending && hub.has_sink() {
-                                    text(&mut ws, signal::media_sink_wants(100)).await?;
+                                    text_or_resume(&mut ws, &mut reconnect, transport.is_some(), signal::media_sink_wants(100)).await?;
                                     sink_wants_at = Instant::now() + SINK_WANTS_INTERVAL;
                                 }
                             }
@@ -1554,7 +1673,7 @@ pub(crate) async fn run(
                                         dave.ready = false;
                                     }
                                 } else {
-                                    text(&mut ws, signal::transition_ready(id)).await?;
+                                    text_or_resume(&mut ws, &mut reconnect, transport.is_some(), signal::transition_ready(id)).await?;
                                 }
                             }
                             Some(VoiceOp::DaveExecuteTransition) => {
@@ -1562,11 +1681,11 @@ pub(crate) async fn run(
                                 if dave.execute(id).is_err() {
                                     waiting_announced = false;
                                     if id != 0 {
-                                        text(&mut ws, signal::invalid_commit_welcome(id)).await?;
+                                        text_or_resume(&mut ws, &mut reconnect, transport.is_some(), signal::invalid_commit_welcome(id)).await?;
                                     }
                                     dave.reset()?;
                                     deadline = Some(Instant::now() + RENEGOTIATION);
-                                    send(&mut ws, Message::Binary(dave.key_package()?.into())).await?;
+                                    send_or_resume(&mut ws, &mut reconnect, transport.is_some(), Message::Binary(dave.key_package()?.into())).await?;
                                 }
                             }
                             Some(VoiceOp::DavePrepareEpoch) => {
@@ -1576,16 +1695,21 @@ pub(crate) async fn run(
                                 if signal::number(data, "epoch")? == 1 {
                                     dave.reinitialize()?;
                                     deadline = Some(Instant::now() + RENEGOTIATION);
-                                    send(&mut ws, Message::Binary(dave.key_package()?.into())).await?;
+                                    send_or_resume(&mut ws, &mut reconnect, transport.is_some(), Message::Binary(dave.key_package()?.into())).await?;
                                 }
                             }
                             Some(VoiceOp::Resumed) => {
                                 if !resuming {
                                     return Err("Unexpected stream resumption");
                                 }
-                                text(&mut ws, signal::speaking_flags(0, ssrc)).await?;
-                                audio_speaking = false;
+                                // `handleResumed` (`921747.js`): reset resume backoff and restore signaling cleanly.
                                 resuming = false;
+                                resume_attempts = 0;
+                                last_healthy_at = Instant::now();
+                                if dave.ready || dave.waiting {
+                                    deadline = None;
+                                }
+                                text_or_resume(&mut ws, &mut reconnect, transport.is_some(), signal::speaking_flags(if audio_speaking { 2 } else { 0 }, ssrc)).await?;
                             }
                             _ => debug!(op = message.raw_op, "stream signaling op ignored"),
                         }
@@ -1602,14 +1726,14 @@ pub(crate) async fn run(
                             op if op == VoiceOp::MlsProposals as u8 => {
                                 match dave.proposals(frame.payload) {
                                     Ok(Some(response)) => {
-                                        send(&mut ws, Message::Binary(response.into())).await?;
+                                        send_or_resume(&mut ws, &mut reconnect, transport.is_some(), Message::Binary(response.into())).await?;
                                     }
                                     Ok(None) => {}
                                     Err(_) => {
                                         waiting_announced = false;
                                         dave.reset()?;
                                         deadline = Some(Instant::now() + RENEGOTIATION);
-                                        send(&mut ws, Message::Binary(dave.key_package()?.into())).await?;
+                                        send_or_resume(&mut ws, &mut reconnect, transport.is_some(), Message::Binary(dave.key_package()?.into())).await?;
                                     }
                                 }
                             }
@@ -1618,7 +1742,7 @@ pub(crate) async fn run(
                                 match dave.group_changed(op, frame.payload) {
                                     Ok(id) => {
                                         if id != 0 {
-                                            text(&mut ws, signal::transition_ready(id)).await?;
+                                            text_or_resume(&mut ws, &mut reconnect, transport.is_some(), signal::transition_ready(id)).await?;
                                         }
                                     }
                                     Err(_) => {
@@ -1626,9 +1750,9 @@ pub(crate) async fn run(
                                             return Err("Truncated DAVE transition");
                                         };
                                         let id = u16::from_be_bytes([first, second]);
-                                        text(&mut ws, signal::invalid_commit_welcome(id)).await?;
+                                        text_or_resume(&mut ws, &mut reconnect, transport.is_some(), signal::invalid_commit_welcome(id)).await?;
                                         dave.reset()?;
-                                        send(&mut ws, Message::Binary(dave.key_package()?.into())).await?;
+                                        send_or_resume(&mut ws, &mut reconnect, transport.is_some(), Message::Binary(dave.key_package()?.into())).await?;
                                     }
                                 }
                                 if dave.ready {
@@ -1652,27 +1776,9 @@ pub(crate) async fn run(
                             _ => return Err("Unsupported DAVE opcode; stream stopped"),
                         }
                     }
-                    Message::Ping(data) => send(&mut ws, Message::Pong(data)).await?,
+                    Message::Ping(data) => send_or_resume(&mut ws, &mut reconnect, transport.is_some(), Message::Pong(data)).await?,
                     Message::Pong(_) => {}
-                    Message::Close(frame) => {
-                        let (code, reason_len) = frame.as_ref().map_or(
-                            (u16::from(CloseCode::Status), 0usize),
-                            |frame| (u16::from(frame.code), frame.reason.len()),
-                        );
-                        log_ws_close(
-                            "stream",
-                            &diag_host,
-                            diag_port,
-                            connect_started.elapsed().as_millis() as u64,
-                            code,
-                            reason_len,
-                        );
-                        return Ok(if code == CLOSE_DISCONNECTED {
-                            DisconnectReason::Kicked
-                        } else {
-                            DisconnectReason::Closed(code)
-                        });
-                    }
+                    Message::Close(_) => unreachable!("close frames handled before dispatch"),
                     Message::Frame(_) => return Err("Unsupported voice websocket frame"),
                 }
             }

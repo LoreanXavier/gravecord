@@ -1326,8 +1326,9 @@ impl Root {
         let Some(call) = &self.call else {
             return;
         };
-        if self.stream_identity().is_none() {
-            // The call was just joined: the watch needs the session of our own voice state.
+        if !call.connected || self.stream_identity().is_none() {
+            // Voice must connect before Go Live streams open (`225123.js` / `505293.js`): queue
+            // the watch so `Event::Connected` launches it right after voice is up.
             let others_count = self
                 .watched_streams()
                 .into_iter()
@@ -1435,13 +1436,14 @@ impl Root {
         })
     }
 
-    /// Our voice state arrived, or the call is gone: the watch that waited for it is sent or dropped.
+    /// Voice connected (and our voice state is present), or the call is gone: launch or drop the pending watch.
     pub(super) fn stream_pending_watch(&mut self, cx: &mut Context<Self>) {
-        if self.call.is_none() {
+        let Some(call) = &self.call else {
             self.video.pending_watch = None;
             return;
-        }
-        if self.stream_identity().is_some()
+        };
+        if call.connected
+            && self.stream_identity().is_some()
             && let Some((owner, multiple)) = self.video.pending_watch.take()
             && self.streams_in_call(owner)
         {
@@ -1584,8 +1586,8 @@ impl Root {
             && !dc_voice::ended_locally(reason)
             && let Some((join, update)) = live.tracker.lost()
         {
-            // Module 921747 `_handleDisconnect`: the connection is tried again after the backoff, on the server last
-            // named, until `STREAM_DELETE`, our own stop, or a new `STREAM_SERVER_UPDATE` replaces it.
+            // Module 921747 `_handleDisconnect` + 225123 `StreamRTCConnectionStore`: ping the
+            // stream server (`OP 21 STREAM_PING`) and reconnect after backoff once voice is up.
             let delay = live.retry.fail(&mut rand::rng());
             live.controls = live.controls.renew();
             live.generation = STREAM_GENERATION.fetch_add(1, Ordering::Relaxed) + 1;
@@ -1596,12 +1598,18 @@ impl Root {
                 delay_ms = delay.as_millis() as u64,
                 "stream connection lost; reconnecting"
             );
+            let _ = self.requests.send(Request::StreamOp {
+                op: Op::StreamPing,
+                data: streams::ping(&key),
+            });
             if let Some(update) = update {
                 self.stream_changed(update, true, cx);
             }
             cx.spawn(async move |this, cx| {
                 cx.background_executor().timer(delay).await;
-                let _ = this.update(cx, |root, _| root.stream_reconnect(key, generation, join));
+                let _ = this.update(cx, |root, cx| {
+                    root.stream_reconnect(key, generation, join, cx)
+                });
             })
             .detach();
             return;
@@ -1638,9 +1646,16 @@ impl Root {
     }
 
     /// The backoff of a lost stream connection ran out: connect again, unless the stream ended or another connection
-    /// took its place meanwhile.
-    fn stream_reconnect(&mut self, key: StreamKey, generation: u64, join: streams::StreamJoin) {
-        let Some(hub) = self.call.as_ref().map(|call| call.controls.hub()) else {
+    /// took its place meanwhile. If voice itself is still reconnecting, defer until voice connects first so the
+    /// stream never races ahead of voice on a degraded link.
+    fn stream_reconnect(
+        &mut self,
+        key: StreamKey,
+        generation: u64,
+        join: streams::StreamJoin,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(call) = self.call.as_ref() else {
             return;
         };
         let Some(live) = self
@@ -1651,6 +1666,17 @@ impl Root {
         else {
             return;
         };
+        if !call.connected {
+            cx.spawn(async move |this, cx| {
+                cx.background_executor().timer(Duration::from_secs(1)).await;
+                let _ = this.update(cx, |root, cx| {
+                    root.stream_reconnect(key, generation, join, cx)
+                });
+            })
+            .detach();
+            return;
+        }
+        let hub = call.controls.hub();
         let _ = self.requests.send(Request::StreamConnect {
             join,
             source: live.source,
