@@ -1877,6 +1877,7 @@ impl Root {
         let open = self.profile_editor.as_ref().expect("editor is open");
         let geometry = open.geometry;
         let board_widgets = open.board_widgets.clone();
+        let suggestions_dismissed = open.suggestions_dismissed;
         #[cfg(feature = "capture")]
         let forced = open.suggestions;
         #[cfg(not(feature = "capture"))]
@@ -1971,15 +1972,61 @@ impl Root {
                         .child(browse_btn),
                 )
                 .children(cards)
-                .when(!rows.is_empty(), |this| {
+                .when(!rows.is_empty() && !suggestions_dismissed, |this| {
+                    // Module 224360: "Suggested for you" dismissible aside (`zMUr6Z`, `pUR+3g`,
+                    // CSS `772168` `_vZOSei`: top border `--border-strong`, 16px pt, 8px gap).
                     this.child(
                         div()
+                            .id("profile-board-suggested-aside")
                             .w(px(board_width))
-                            .pt(px(8.))
+                            .border_t_1()
+                            .border_color(palette.token("--border-strong"))
+                            .pt(px(16.))
                             .flex()
                             .flex_col()
-                            .gap(px(16.))
-                            .children(rows),
+                            .gap(px(8.))
+                            .child(
+                                div()
+                                    .flex()
+                                    .items_center()
+                                    .justify_between()
+                                    .child(
+                                        div()
+                                            .text_size(px(12.))
+                                            .line_height(px(16.))
+                                            .font_weight(FontWeight(500.))
+                                            .text_color(palette.token("--text-subtle"))
+                                            .child(dc_intl::t("zMUr6Z")),
+                                    )
+                                    .child(
+                                        div()
+                                            .id("profile-board-dismiss-suggestions")
+                                            .size(px(24.))
+                                            .rounded(px(6.))
+                                            .cursor_pointer()
+                                            .hover(|s| {
+                                                s.bg(palette.token("--background-mod-subtle"))
+                                            })
+                                            .flex()
+                                            .items_center()
+                                            .justify_center()
+                                            .child(icon("close", 14., "--icon-subtle"))
+                                            .on_click(cx.listener(|this, _, _, cx| {
+                                                if let Some(ed) = this.profile_editor.as_mut() {
+                                                    ed.suggestions_dismissed = true;
+                                                }
+                                                cx.notify();
+                                            })),
+                                    ),
+                            )
+                            .child(
+                                div()
+                                    .w(px(board_width))
+                                    .flex()
+                                    .flex_col()
+                                    .gap(px(16.))
+                                    .children(rows),
+                            ),
                     )
                 });
         }

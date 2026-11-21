@@ -106,6 +106,37 @@ impl Root {
         };
         let picture = self.images.get(&format!("shelf-icon:{app}")).cloned();
         let elapsed = elapsed_text(running.started.elapsed().as_secs());
+        let invite_app = app.clone();
+        let invite_name = name.clone();
+        let invite_btn = self.with_tip(
+            "activity-invite-tip",
+            Tip::text(dc_intl::t("6F9ivu"), Side::Top),
+            div()
+                .id("activity-invite-play")
+                .size(px(32.))
+                .rounded(px(8.))
+                .flex()
+                .items_center()
+                .justify_center()
+                .cursor_pointer()
+                .hover(|style| style.bg(color("--interactive-background-hover")))
+                .child(icon("user_plus", 18., "--interactive-icon-default"))
+                .on_click(cx.listener(move |this, _, _, cx| {
+                    let is_private = this
+                        .stores
+                        .me()
+                        .and_then(|u| this.stores.presences.get(&u.id))
+                        .is_some_and(|s| s == "invisible");
+                    this.open_activity_invite_modal(
+                        invite_app.clone(),
+                        invite_name.clone(),
+                        format!("party-{}", invite_app),
+                        is_private,
+                        cx,
+                    );
+                })),
+            cx,
+        );
         let leave = self.with_tip(
             "activity-leave-tip",
             Tip::text("Leave Activity", Side::Top),
@@ -178,7 +209,14 @@ impl Root {
                                 ),
                         ),
                 )
-                .child(leave)
+                .child(
+                    div()
+                        .flex()
+                        .items_center()
+                        .gap(px(4.))
+                        .child(invite_btn)
+                        .child(leave),
+                )
                 .into_any_element(),
         )
     }

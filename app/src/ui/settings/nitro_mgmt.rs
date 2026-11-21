@@ -271,6 +271,23 @@ pub(in crate::ui) enum NitroMgmtOverlay {
         payment_source_id: String,
         new_currency_and_price: String,
     },
+    /// `205463` Leave Nitro Squad 2-step cancellation modal (`4e7WtF`, `3kVEg0`, `UFHNtO`,
+    /// `3PatSz`, `IrvJHs`, `cQDYKU`, `cY+Oob`, `DELETE /users/@me/billing/subscriptions/{sub}/members/{user}`).
+    LeaveSquad {
+        subscription_id: String,
+        step: u8,
+        removing: bool,
+    },
+}
+
+/// Builds `DELETE /users/@me/billing/subscriptions/{sub_id}/members/{user_id}` (`470147.oO`, module 205463).
+pub(in crate::ui) fn leave_squad_request(sub_id: &str, user_id: &str) -> Request {
+    Request::Rest {
+        key: Some(format!("billing:squad-leave:{sub_id}")),
+        method: reqwest::Method::DELETE,
+        route: format!("/users/@me/billing/subscriptions/{sub_id}/members/{user_id}"),
+        body: None,
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -805,7 +822,11 @@ pub(super) fn render_squad_card(
                                 .font_weight(FontWeight(500.))
                                 .text_color(color("--control-secondary-text-default"))
                                 .on_click(cx.listener(|this, _, _, cx| {
-                                    this.nitro_mgmt_overlay = None;
+                                    this.nitro_mgmt_overlay = Some(NitroMgmtOverlay::LeaveSquad {
+                                        subscription_id: "sub_squad".to_owned(),
+                                        step: 1,
+                                        removing: false,
+                                    });
                                     cx.notify();
                                 }))
                                 .child(dc_intl::t("NCu2JD"))
@@ -2353,6 +2374,245 @@ impl Root {
                     )
                     .into_any_element()
             }
+            NitroMgmtOverlay::LeaveSquad {
+                subscription_id,
+                step,
+                removing,
+            } => {
+                let sub_id = subscription_id.clone();
+                let step_num = *step;
+                let is_removing = *removing;
+                let squad_name = dc_intl::t("aFBQ3d");
+                let title = if step_num <= 1 {
+                    dc_intl::format(
+                        "4e7WtF",
+                        &[(
+                            "premiumGroupProductName",
+                            Arg::Str(Cow::Borrowed(squad_name)),
+                        )],
+                    )
+                } else {
+                    dc_intl::format(
+                        "IrvJHs",
+                        &[(
+                            "premiumGroupProductName",
+                            Arg::Str(Cow::Borrowed(squad_name)),
+                        )],
+                    )
+                };
+                let subtitle = if step_num <= 1 {
+                    dc_intl::format("3kVEg0", &[("cooldownMonths", Arg::Num(12.0))])
+                } else {
+                    dc_intl::format(
+                        "cQDYKU",
+                        &[
+                            (
+                                "premiumGroupProductName",
+                                Arg::Str(Cow::Borrowed(squad_name)),
+                            ),
+                            ("cooldownMonths", Arg::Num(12.0)),
+                        ],
+                    )
+                };
+                let perks = [
+                    (
+                        "nitroplan_special_nitro_badge_on_your_profile",
+                        "Nitro Badge",
+                    ),
+                    ("nitroplan_custom_profiles_and_more", "Custom Profiles"),
+                    ("nitroplan_custom_emoji_anywhere", "Custom Emoji & Stickers"),
+                    ("boost_gem", "2 Server Boosts"),
+                    ("golive_tab_screen", "HD Screen Share"),
+                    ("nitroplan_1gb_uploads", "500MB File Uploads"),
+                ];
+                div()
+                    .id("leave-squad-modal")
+                    .w(px(480.))
+                    .rounded(px(12.))
+                    .border_1()
+                    .border_color(color("--border-subtle"))
+                    .bg(color("--background-surface-high"))
+                    .flex()
+                    .flex_col()
+                    .on_click(|_, _, cx| cx.stop_propagation())
+                    .child(
+                        div()
+                            .px(px(24.))
+                            .pt(px(20.))
+                            .pb(px(12.))
+                            .flex()
+                            .items_start()
+                            .justify_between()
+                            .gap(px(12.))
+                            .child(
+                                div()
+                                    .flex_1()
+                                    .min_w_0()
+                                    .flex()
+                                    .flex_col()
+                                    .gap(px(6.))
+                                    .child(
+                                        div()
+                                            .text_size(px(20.))
+                                            .line_height(px(26.))
+                                            .font_weight(FontWeight(700.))
+                                            .text_color(color("--text-strong"))
+                                            .child(title),
+                                    )
+                                    .child(
+                                        div()
+                                            .text_size(px(14.))
+                                            .line_height(px(20.))
+                                            .text_color(color("--text-muted"))
+                                            .child(subtitle),
+                                    ),
+                            )
+                            .child(
+                                div()
+                                    .id("leave-squad-close")
+                                    .flex_none()
+                                    .size(px(28.))
+                                    .rounded(px(6.))
+                                    .hover(|s| s.bg(color("--background-mod-subtle")))
+                                    .cursor_pointer()
+                                    .flex()
+                                    .items_center()
+                                    .justify_center()
+                                    .on_click(cx.listener(|this, _, _, cx| {
+                                        this.nitro_mgmt_overlay = None;
+                                        cx.notify();
+                                    }))
+                                    .child(icon("close", 16., "--interactive-text-default")),
+                            ),
+                    )
+                    .when(step_num <= 1, |col| {
+                        col.child(
+                            div()
+                                .px(px(24.))
+                                .pb(px(16.))
+                                .flex()
+                                .flex_wrap()
+                                .gap(px(8.))
+                                .children(perks.into_iter().map(|(ic, label)| {
+                                    div()
+                                        .w(px(210.))
+                                        .p(px(10.))
+                                        .rounded(px(8.))
+                                        .border_1()
+                                        .border_color(color("--border-subtle"))
+                                        .bg(color("--background-base-lower"))
+                                        .flex()
+                                        .items_center()
+                                        .gap(px(8.))
+                                        .child(icon(ic, 18., "--text-brand"))
+                                        .child(
+                                            div()
+                                                .flex_1()
+                                                .min_w_0()
+                                                .text_size(px(13.))
+                                                .line_height(px(18.))
+                                                .font_weight(FontWeight(500.))
+                                                .text_color(color("--text-strong"))
+                                                .child(label),
+                                        )
+                                })),
+                        )
+                    })
+                    .child(
+                        div()
+                            .px(px(24.))
+                            .py(px(16.))
+                            .border_t_1()
+                            .border_color(color("--border-subtle"))
+                            .bg(color("--background-base-lower"))
+                            .rounded_b(px(12.))
+                            .flex()
+                            .items_center()
+                            .justify_end()
+                            .gap(px(8.))
+                            .child(
+                                div()
+                                    .id("leave-squad-keep")
+                                    .h(px(38.))
+                                    .px(px(16.))
+                                    .rounded(px(8.))
+                                    .border_1()
+                                    .border_color(color("--border-subtle"))
+                                    .bg(color("--control-secondary-background-default"))
+                                    .hover(|s| s.bg(color("--control-secondary-background-hover")))
+                                    .cursor_pointer()
+                                    .flex()
+                                    .items_center()
+                                    .text_size(px(14.))
+                                    .font_weight(FontWeight(600.))
+                                    .text_color(color("--text-strong"))
+                                    .child(dc_intl::t("UFHNtO"))
+                                    .on_click(cx.listener(|this, _, _, cx| {
+                                        this.nitro_mgmt_overlay = None;
+                                        cx.notify();
+                                    })),
+                            )
+                            .child(if step_num <= 1 {
+                                div()
+                                    .id("leave-squad-continue")
+                                    .h(px(38.))
+                                    .px(px(16.))
+                                    .rounded(px(8.))
+                                    .bg(color("--control-primary-background-default"))
+                                    .hover(|s| s.bg(color("--control-primary-background-hover")))
+                                    .cursor_pointer()
+                                    .flex()
+                                    .items_center()
+                                    .text_size(px(14.))
+                                    .font_weight(FontWeight(600.))
+                                    .text_color(color("--control-primary-text-default"))
+                                    .child(dc_intl::t("3PatSz"))
+                                    .on_click(cx.listener(|this, _, _, cx| {
+                                        if let Some(NitroMgmtOverlay::LeaveSquad { step, .. }) =
+                                            this.nitro_mgmt_overlay.as_mut()
+                                        {
+                                            *step = 2;
+                                        }
+                                        cx.notify();
+                                    }))
+                                    .into_any_element()
+                            } else {
+                                div()
+                                    .id("leave-squad-confirm")
+                                    .h(px(38.))
+                                    .px(px(16.))
+                                    .rounded(px(8.))
+                                    .bg(color("--control-critical-primary-background-default"))
+                                    .hover(|s| {
+                                        s.bg(color("--control-critical-primary-background-hover"))
+                                    })
+                                    .when(is_removing, |d| d.opacity(0.65))
+                                    .cursor_pointer()
+                                    .flex()
+                                    .items_center()
+                                    .text_size(px(14.))
+                                    .font_weight(FontWeight(600.))
+                                    .text_color(color("--white"))
+                                    .child(dc_intl::t("cY+Oob"))
+                                    .on_click(cx.listener(move |this, _, _, cx| {
+                                        if is_removing {
+                                            return;
+                                        }
+                                        let uid = this
+                                            .stores
+                                            .me()
+                                            .map(|u| u.id.to_string())
+                                            .unwrap_or_else(|| "@me".to_owned());
+                                        let _ =
+                                            this.requests.send(leave_squad_request(&sub_id, &uid));
+                                        this.nitro_mgmt_overlay = None;
+                                        cx.notify();
+                                    }))
+                                    .into_any_element()
+                            }),
+                    )
+                    .into_any_element()
+            }
         };
 
         Some(
@@ -2499,6 +2759,24 @@ impl Root {
                 cx.notify();
                 "nitro-mgmt: discount-applied".into()
             }
+            "leave-squad-1" => {
+                self.nitro_mgmt_overlay = Some(NitroMgmtOverlay::LeaveSquad {
+                    subscription_id: "sub_squad_1".into(),
+                    step: 1,
+                    removing: false,
+                });
+                cx.notify();
+                "nitro-mgmt: leave-squad-1".into()
+            }
+            "leave-squad-2" => {
+                self.nitro_mgmt_overlay = Some(NitroMgmtOverlay::LeaveSquad {
+                    subscription_id: "sub_squad_1".into(),
+                    step: 2,
+                    removing: false,
+                });
+                cx.notify();
+                "nitro-mgmt: leave-squad-2".into()
+            }
             "close" => {
                 self.nitro_mgmt_overlay = None;
                 cx.notify();
@@ -2566,5 +2844,22 @@ mod tests {
             status_action_labels(status::PAST_DUE, false),
             vec!["Cancel", "Restore Subscription"]
         );
+    }
+
+    #[test]
+    fn leave_squad_205463_route_and_keys() {
+        let Request::Rest { method, route, .. } = leave_squad_request("sub-99", "user-42") else {
+            panic!("expected Rest");
+        };
+        assert_eq!(method, reqwest::Method::DELETE);
+        assert_eq!(
+            route,
+            "/users/@me/billing/subscriptions/sub-99/members/user-42"
+        );
+        for k in [
+            "aFBQ3d", "4e7WtF", "3kVEg0", "UFHNtO", "IrvJHs", "cQDYKU", "3PatSz", "cY+Oob",
+        ] {
+            assert!(dc_intl::has_key(k), "missing 205463 key {k}");
+        }
     }
 }

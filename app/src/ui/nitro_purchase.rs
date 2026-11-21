@@ -658,6 +658,12 @@ pub(super) const HANDOFF_KEY: &str = "nitro:handoff";
 impl Root {
     /// "Subscribe" and "Gift Nitro": Select Plan, or Send a Gift.
     pub(super) fn open_purchase(&mut self, gift: bool, cx: &mut Context<Self>) {
+        // Module 195759: pre-purchase gate when account is unclaimed (`email.is_none()`).
+        #[cfg(not(feature = "capture"))]
+        if self.stores.account.email.is_none() {
+            self.open_claim_before_purchase(None, None, cx);
+            return;
+        }
         // Module 661925: pre-checkout gate when account email is unverified.
         #[cfg(not(feature = "capture"))]
         if !self.stores.account.verified {

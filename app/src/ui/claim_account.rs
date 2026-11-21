@@ -40,6 +40,13 @@ pub(super) struct ClaimAccountModal {
     pub password: Entity<Editor>,
 }
 
+/// Pre-purchase unclaimed gate modal (module 195759: `Nn0Px8`, `7btfmI`, `oEAioF`, `fiNVin`).
+#[derive(Clone, Debug, Default)]
+pub(super) struct ClaimBeforePurchaseModal {
+    pub title: Option<String>,
+    pub body: Option<String>,
+}
+
 /// Builds the `PATCH /users/@me` claim request (`631670.KD`, module 110744).
 pub fn claim_account_request(email: &str, password: &str) -> Request {
     Request::Rest {
@@ -591,10 +598,192 @@ impl Root {
             .into_any_element()
     }
 
-    /// Capture-only helper: `claim-account <form|required|success|error|close>`.
+    /// Opens the `195759` pre-purchase "Claim your account first" modal.
+    pub(super) fn open_claim_before_purchase(
+        &mut self,
+        title: Option<String>,
+        body: Option<String>,
+        cx: &mut Context<Self>,
+    ) {
+        self.claim_before_purchase_modal = Some(ClaimBeforePurchaseModal { title, body });
+        cx.notify();
+    }
+
+    /// Renders the `195759` pre-purchase unclaimed gate modal (`Nn0Px8`, `7btfmI`, `oEAioF`, `fiNVin`).
+    pub(super) fn claim_before_purchase_layer(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
+        let modal = self.claim_before_purchase_modal.as_ref()?;
+        let title = modal
+            .title
+            .clone()
+            .unwrap_or_else(|| dc_intl::t("Nn0Px8").to_owned());
+        let body = modal
+            .body
+            .clone()
+            .unwrap_or_else(|| dc_intl::t("7btfmI").to_owned());
+
+        let dialog = div()
+            .id("claim-before-purchase-modal")
+            .occlude()
+            .on_mouse_down(gpui::MouseButton::Left, |_, _, cx| cx.stop_propagation())
+            .w(px(400.))
+            .rounded(px(12.))
+            .border_1()
+            .border_color(color("--border-subtle"))
+            .bg(color("--background-surface-high"))
+            .flex()
+            .flex_col()
+            .child(
+                div()
+                    .px(px(24.))
+                    .pt(px(20.))
+                    .pb(px(12.))
+                    .flex()
+                    .items_center()
+                    .justify_between()
+                    .child(
+                        div()
+                            .text_size(px(20.))
+                            .line_height(px(26.))
+                            .font_weight(FontWeight(700.))
+                            .text_color(color("--text-strong"))
+                            .child(title),
+                    )
+                    .child(
+                        div()
+                            .id("claim-before-purchase-close")
+                            .size(px(28.))
+                            .rounded(px(6.))
+                            .hover(|s| s.bg(color("--background-mod-subtle")))
+                            .cursor_pointer()
+                            .flex()
+                            .items_center()
+                            .justify_center()
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                this.claim_before_purchase_modal = None;
+                                cx.notify();
+                            }))
+                            .child(icon("close", 16., "--interactive-text-default")),
+                    ),
+            )
+            .child(
+                div()
+                    .px(px(24.))
+                    .py(px(12.))
+                    .flex()
+                    .flex_col()
+                    .items_center()
+                    .gap(px(16.))
+                    .text_center()
+                    .child(
+                        div()
+                            .w(px(162.))
+                            .h(px(100.))
+                            .rounded(px(12.))
+                            .bg(rgba(0x5865f226))
+                            .border_1()
+                            .border_color(rgba(0x5865f244))
+                            .flex()
+                            .items_center()
+                            .justify_center()
+                            .child(icon("oauth_entry_shield", 44., "--text-brand")),
+                    )
+                    .child(
+                        div()
+                            .text_size(px(15.))
+                            .line_height(px(22.))
+                            .text_color(color("--text-muted"))
+                            .child(body),
+                    ),
+            )
+            .child(
+                div()
+                    .px(px(24.))
+                    .py(px(16.))
+                    .border_t_1()
+                    .border_color(color("--border-subtle"))
+                    .bg(color("--background-base-lower"))
+                    .rounded_b(px(12.))
+                    .flex()
+                    .items_center()
+                    .justify_end()
+                    .gap(px(8.))
+                    .child(
+                        div()
+                            .id("claim-before-purchase-cancel")
+                            .h(px(38.))
+                            .px(px(16.))
+                            .rounded(px(8.))
+                            .border_1()
+                            .border_color(color("--border-subtle"))
+                            .bg(color("--control-secondary-background-default"))
+                            .hover(|s| s.bg(color("--control-secondary-background-hover")))
+                            .cursor_pointer()
+                            .flex()
+                            .items_center()
+                            .text_size(px(14.))
+                            .font_weight(FontWeight(600.))
+                            .text_color(color("--text-strong"))
+                            .child(dc_intl::t("oEAioF"))
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                this.claim_before_purchase_modal = None;
+                                cx.notify();
+                            })),
+                    )
+                    .child(
+                        div()
+                            .id("claim-before-purchase-confirm")
+                            .h(px(38.))
+                            .px(px(16.))
+                            .rounded(px(8.))
+                            .bg(color("--control-primary-background-default"))
+                            .hover(|s| s.bg(color("--control-primary-background-hover")))
+                            .cursor_pointer()
+                            .flex()
+                            .items_center()
+                            .text_size(px(14.))
+                            .font_weight(FontWeight(600.))
+                            .text_color(color("--control-primary-text-default"))
+                            .child(dc_intl::t("fiNVin"))
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                this.claim_before_purchase_modal = None;
+                                this.open_claim_account_modal(false, cx);
+                            })),
+                    ),
+            );
+
+        Some(
+            gpui::deferred(
+                div()
+                    .id("claim-before-purchase-backdrop")
+                    .occlude()
+                    .absolute()
+                    .inset_0()
+                    .bg(rgba(0x000000b3))
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .on_mouse_down(
+                        gpui::MouseButton::Left,
+                        cx.listener(|this, _, _, cx| {
+                            this.claim_before_purchase_modal = None;
+                            cx.notify();
+                        }),
+                    )
+                    .child(dialog),
+            )
+            .with_priority(94)
+            .into_any_element(),
+        )
+    }
+
+    /// Capture-only helper: `claim-account <form|required|success|error|pre-purchase|close>`.
     #[cfg(feature = "capture")]
     pub(crate) fn script_claim_account(&mut self, mode: &str, cx: &mut Context<Self>) -> String {
         match mode.trim() {
+            "pre-purchase" => {
+                self.open_claim_before_purchase(None, None, cx);
+                "claim-account: pre-purchase".into()
+            }
             "form" => {
                 self.open_claim_account_modal(false, cx);
                 "claim-account: form".into()
@@ -623,6 +812,7 @@ impl Root {
             }
             "close" => {
                 self.claim_account_modal = None;
+                self.claim_before_purchase_modal = None;
                 cx.notify();
                 "claim-account: closed".into()
             }
@@ -671,5 +861,12 @@ mod tests {
             parse_claim_errors(&nested),
             (Some("Invalid email".into()), None)
         );
+    }
+
+    #[test]
+    fn claim_before_purchase_195759_intl_keys() {
+        for k in ["Nn0Px8", "7btfmI", "oEAioF", "fiNVin"] {
+            assert!(dc_intl::has_key(k), "missing 195759 key {k}");
+        }
     }
 }

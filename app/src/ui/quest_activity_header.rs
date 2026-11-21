@@ -31,6 +31,10 @@ pub(crate) struct QuestActivityHeaderState {
     pub progress_pct: u8,
     pub show_coachmark: bool,
     pub show_popout: bool,
+    /// Module 113273: Unenrolled Quest Enrollment Modal (`IrNgN4`, `V3NSJx`, `l7E81v`).
+    pub show_unenrolled_modal: bool,
+    pub dismissed_unenrolled_modal: bool,
+    pub enrolling: bool,
 }
 
 /// `POST /quests/{questId}/enroll` (module 131862 / 343559).
@@ -363,6 +367,153 @@ impl Root {
                 )
         });
 
+        // Module 113273: Unenrolled Quest Enrollment Modal (`IrNgN4`, `V3NSJx`, `l7E81v`,
+        // `UuzHh8`/`VYwSSu`, 480px blue gradient modal with 105x105 app + reward tiles).
+        let unenrolled_modal = (!state.enrolled
+            && state.show_unenrolled_modal
+            && !state.dismissed_unenrolled_modal)
+            .then(|| {
+                let quest_id_enroll = state.quest_id.clone();
+                let enrolling = state.enrolling;
+                let lead = dc_intl::format(
+                    "V3NSJx",
+                    &[("questName", Arg::Str(Cow::Borrowed(&state.quest_name)))],
+                );
+                let subtitle = format!("{lead} {}", state.task_summary);
+                div()
+                    .id("quest-activity-unenrolled-modal")
+                    .occlude()
+                    .on_mouse_down(gpui::MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                    .on_click(|_, _, cx| cx.stop_propagation())
+                    .relative()
+                    .w(px(480.))
+                    .rounded(px(12.))
+                    .overflow_hidden()
+                    .border_1()
+                    .border_color(color("--border-subtle"))
+                    .bg(color("--background-surface-high"))
+                    .flex()
+                    .flex_col()
+                    .child(
+                        div()
+                            .w_full()
+                            .h(px(176.))
+                            .bg(linear_gradient(
+                                135.,
+                                linear_color_stop(rgba(0x3b82f6ff), 0.),
+                                linear_color_stop(rgba(0x5865f2ff), 1.),
+                            ))
+                            .flex()
+                            .items_center()
+                            .justify_center()
+                            .gap(px(12.))
+                            .child(
+                                div()
+                                    .size(px(105.))
+                                    .rounded(px(16.))
+                                    .border_1()
+                                    .border_color(rgba(0xffffff3d))
+                                    .bg(rgba(0x00000033))
+                                    .flex()
+                                    .items_center()
+                                    .justify_center()
+                                    .child(icon("home_quests", 44., "--white")),
+                            )
+                            .child(
+                                div()
+                                    .size(px(105.))
+                                    .rounded(px(16.))
+                                    .border_1()
+                                    .border_color(rgba(0xffffff3d))
+                                    .bg(rgba(0xffffff22))
+                                    .flex()
+                                    .items_center()
+                                    .justify_center()
+                                    .child(icon("gift", 44., "--white")),
+                            ),
+                    )
+                    .child(
+                        div()
+                            .id("quest-activity-unenrolled-close")
+                            .absolute()
+                            .top(px(10.))
+                            .right(px(10.))
+                            .size(px(28.))
+                            .rounded(px(6.))
+                            .bg(rgba(0x00000044))
+                            .hover(|s| s.bg(rgba(0x00000066)))
+                            .cursor_pointer()
+                            .flex()
+                            .items_center()
+                            .justify_center()
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                if let Some(s) = this.quest_activity_header.as_mut() {
+                                    s.dismissed_unenrolled_modal = true;
+                                    s.show_unenrolled_modal = false;
+                                }
+                                cx.notify();
+                            }))
+                            .child(icon("close", 16., "--white")),
+                    )
+                    .child(
+                        div()
+                            .px(px(32.))
+                            .pt(px(24.))
+                            .pb(px(28.))
+                            .flex()
+                            .flex_col()
+                            .items_center()
+                            .gap(px(12.))
+                            .text_center()
+                            .child(
+                                div()
+                                    .text_size(px(22.))
+                                    .line_height(px(28.))
+                                    .font_weight(FontWeight(700.))
+                                    .text_color(color("--text-strong"))
+                                    .child(dc_intl::t("IrNgN4")),
+                            )
+                            .child(
+                                div()
+                                    .text_size(px(14.))
+                                    .line_height(px(20.))
+                                    .text_color(color("--text-muted"))
+                                    .child(subtitle),
+                            )
+                            .child(
+                                div()
+                                    .id("quest-activity-unenrolled-accept")
+                                    .mt(px(8.))
+                                    .w_full()
+                                    .h(px(40.))
+                                    .rounded(px(8.))
+                                    .bg(color("--control-primary-background-default"))
+                                    .hover(|s| s.bg(color("--control-primary-background-hover")))
+                                    .when(enrolling, |d| d.opacity(0.65))
+                                    .cursor_pointer()
+                                    .flex()
+                                    .items_center()
+                                    .justify_center()
+                                    .text_size(px(14.))
+                                    .font_weight(FontWeight(600.))
+                                    .text_color(color("--white"))
+                                    .child(dc_intl::t("l7E81v"))
+                                    .on_click(cx.listener(move |this, _, _, cx| {
+                                        let _ = this
+                                            .requests
+                                            .send(enroll_quest_request(&quest_id_enroll));
+                                        if let Some(s) = this.quest_activity_header.as_mut() {
+                                            s.enrolled = true;
+                                            s.enrolling = false;
+                                            s.show_unenrolled_modal = false;
+                                            s.show_coachmark = true;
+                                        }
+                                        cx.notify();
+                                    })),
+                            ),
+                    )
+            });
+
         Some(
             deferred(
                 div()
@@ -382,14 +533,16 @@ impl Root {
                     }))
                     .child(header_bar)
                     .children(coachmark)
-                    .children(popout),
+                    .children(popout)
+                    .children(unenrolled_modal),
             )
             .with_priority(95)
             .into_any_element(),
         )
     }
 
-    /// Capture harness: `quest-activity-header [coachmark|popout|unenrolled|close]` (module 131862).
+    /// Capture harness: `quest-activity-header [coachmark|popout|unenrolled|unenrolled-modal|close]`
+    /// (modules 131862 & 113273).
     #[cfg(feature = "capture")]
     pub(crate) fn script_quest_activity_header(
         &mut self,
@@ -399,12 +552,21 @@ impl Root {
         let base = QuestActivityHeaderState {
             quest_id: "quest_activity_131".to_owned(),
             quest_name: "Starfall Odyssey".to_owned(),
-            task_summary: "Play 15 minutes of Starfall Odyssey in Discord to earn 500 Orbs."
-                .to_owned(),
+            task_summary: dc_intl::format(
+                "UuzHh8",
+                &[
+                    ("activityName", Arg::Str(Cow::Borrowed("Starfall Odyssey"))),
+                    ("streamingDurationRequirement", Arg::Num(15.0)),
+                    ("questReward", Arg::Str(Cow::Borrowed("500 Orbs"))),
+                ],
+            ),
             enrolled: true,
             progress_pct: 40,
             show_coachmark: false,
             show_popout: false,
+            show_unenrolled_modal: false,
+            dismissed_unenrolled_modal: false,
+            enrolling: false,
         };
         match arg.trim() {
             "close" => {
@@ -429,6 +591,16 @@ impl Root {
                 cx.notify();
                 "quest-activity-header: unenrolled".to_owned()
             }
+            "unenrolled-modal" => {
+                self.quest_activity_header = Some(QuestActivityHeaderState {
+                    enrolled: false,
+                    progress_pct: 0,
+                    show_unenrolled_modal: true,
+                    ..base
+                });
+                cx.notify();
+                "quest-activity-header: unenrolled-modal".to_owned()
+            }
             _ => {
                 self.quest_activity_header = Some(QuestActivityHeaderState {
                     show_coachmark: true,
@@ -437,6 +609,16 @@ impl Root {
                 cx.notify();
                 "quest-activity-header: coachmark".to_owned()
             }
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn quest_unenrolled_113273_intl_keys() {
+        for k in ["IrNgN4", "V3NSJx", "l7E81v", "UuzHh8", "VYwSSu"] {
+            assert!(dc_intl::has_key(k), "missing 113273 key {k}");
         }
     }
 }

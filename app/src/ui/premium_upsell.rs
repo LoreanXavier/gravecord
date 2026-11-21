@@ -585,11 +585,55 @@ impl Root {
         )
     }
 
+    /// Upload-size Nitro upsell modal ("This video was shared with Nitro", module 232118:
+    /// `5x18pr`, `TaT999` for Basic/Classic or `2op/Su` for Free, `PcTCB7`, `pj0XBN`).
+    pub(super) fn nitro_upload_badge_upsell(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
+        if !self.nitro_upload_badge_upsell {
+            return None;
+        }
+        let max_size = "500MB";
+        let subtitle = video_upload_upsell_subtitle(self.premium(), max_size);
+        Some(self.premium_upsell(
+            Spec {
+                id: "nitro-upload-badge-upsell",
+                ids: [
+                    "nitro-upload-badge-close",
+                    "nitro-upload-badge-perks",
+                    "nitro-upload-badge-get",
+                ],
+                header: Header::Video,
+                title: dc_intl::t("5x18pr").into(),
+                subtitle: subtitle.into(),
+                secondary: dc_intl::t("PcTCB7").into(),
+                on_secondary: Box::new(|this, _, cx| {
+                    this.nitro_upload_badge_upsell = false;
+                    this.open_nitro(cx);
+                }),
+                on_primary: Box::new(|this, _, cx| {
+                    this.nitro_upload_badge_upsell = false;
+                    this.open_purchase(false, cx);
+                }),
+                close: Box::new(|this, _, cx| {
+                    this.nitro_upload_badge_upsell = false;
+                    cx.notify();
+                }),
+                priority: 3,
+            },
+            cx,
+        ))
+    }
+
     #[cfg(feature = "capture")]
     pub(crate) fn script_sticker_upsell(&mut self, arg: &str, cx: &mut Context<Self>) -> String {
         match arg.trim() {
+            "video-upload" => {
+                self.nitro_upload_badge_upsell = true;
+                cx.notify();
+                "sticker-upsell: video-upload".to_owned()
+            }
             "close" => {
                 self.sticker_upsell = None;
+                self.nitro_upload_badge_upsell = false;
                 cx.notify();
                 "sticker-upsell: closed".to_owned()
             }
@@ -605,10 +649,41 @@ impl Root {
     }
 }
 
+/// Subtitle selector for module 232118 (`TaT999` for Basic/Classic vs `2op/Su` for Free).
+pub(super) fn video_upload_upsell_subtitle(
+    premium: dc_state::premium::PremiumType,
+    max_size: &str,
+) -> String {
+    use dc_intl::Arg;
+    use dc_state::premium::PremiumType;
+    use std::borrow::Cow;
+    match premium {
+        PremiumType::Basic | PremiumType::Classic => dc_intl::format(
+            "TaT999",
+            &[
+                ("currentMaxSize", Arg::Str(Cow::Borrowed("50MB"))),
+                ("maxSize", Arg::Str(Cow::Borrowed(max_size))),
+            ],
+        ),
+        _ => dc_intl::format("2op/Su", &[("maxSize", Arg::Str(Cow::Borrowed(max_size)))]),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use dc_state::premium::PremiumType;
+
+    #[test]
+    fn video_upload_upsell_232118_copy() {
+        let free = video_upload_upsell_subtitle(PremiumType::None, "500MB");
+        assert!(free.contains("500MB"));
+        let basic = video_upload_upsell_subtitle(PremiumType::Basic, "500MB");
+        assert!(basic.contains("50MB") && basic.contains("500MB"));
+        for k in ["5x18pr", "TaT999", "2op/Su", "PcTCB7", "pj0XBN"] {
+            assert!(dc_intl::has_key(k), "missing 232118 key {k}");
+        }
+    }
 
     #[test]
     fn a_gif_avatar_needs_animated_avatars_and_a_banner_needs_nitro() {

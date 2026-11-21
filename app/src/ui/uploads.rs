@@ -748,17 +748,25 @@ impl Root {
     }
 
     pub(super) fn upload_area(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
+        // Module 102077 (`ChannelAttachmentArea` + `j` emptyOption_GdswDh):
+        // when a slash command is active with ATTACHMENT (11) options, render one slot card per
+        // active attachment option (`IJyOUf` / `JJzx48`, dashed 200x200 card, top-right option
+        // name badge, or filled `"{name}: {filename}"` preview).
+        let slash_attachment_cards = self.slash_attachment_option_cards(cx);
         let staged = self.staged_sticker_card(cx);
-        if self.pending_files.is_empty() && staged.is_none() {
+        if slash_attachment_cards.is_empty() && self.pending_files.is_empty() && staged.is_none() {
             return None;
         }
-        let cards: Vec<AnyElement> = self
-            .pending_files
-            .iter()
-            .enumerate()
-            .map(|(index, pending)| self.upload_card(index, pending, cx))
-            .chain(staged)
-            .collect();
+        let cards: Vec<AnyElement> = if !slash_attachment_cards.is_empty() {
+            slash_attachment_cards
+        } else {
+            self.pending_files
+                .iter()
+                .enumerate()
+                .map(|(index, pending)| self.upload_card(index, pending, cx))
+                .chain(staged)
+                .collect()
+        };
         let handle = self.upload_scroll.clone();
         let count = cards.len();
         let viewport = handle.bounds().size.width;
@@ -802,11 +810,204 @@ impl Root {
                 .into_any_element(),
         )
     }
+
+    /// Renders `102077` (`j` in `ChannelAttachmentArea`) cards for active slash command
+    /// `ATTACHMENT` (`11`) options: dashed `200x200` empty drop/click card (`emptyOption_GdswDh`,
+    /// `optionName_GdswDh`, `IJyOUf` / `JJzx48`) or filled `"{option}: {filename}"` card.
+    fn slash_attachment_option_cards(&self, cx: &mut Context<Self>) -> Vec<AnyElement> {
+        let Some(pending) = self.slash.pending.as_ref() else {
+            return Vec::new();
+        };
+        let opts = super::slash::active_options(&pending.cmd, &pending.filled);
+        opts.iter()
+            .filter(|opt| opt.kind == super::slash::ATTACHMENT)
+            .enumerate()
+            .map(|(idx, opt)| {
+                let opt_name = opt.name.clone();
+                let filled_name = pending
+                    .filled
+                    .iter()
+                    .find(|f| f.opt.name == opt.name)
+                    .map(|f| f.shown.clone());
+                if let Some(filename) = filled_name {
+                    div()
+                        .id(format!("slash-attachment-filled-{idx}"))
+                        .w(px(200.))
+                        .h(px(200.))
+                        .p(px(8.))
+                        .rounded(px(8.))
+                        .bg(color("--background-surface-high"))
+                        .border_1()
+                        .border_color(color("--border-normal"))
+                        .flex()
+                        .flex_col()
+                        .items_center()
+                        .justify_center()
+                        .gap(px(8.))
+                        .child(icon("cp_upload", 44., "--text-brand"))
+                        .child(
+                            div()
+                                .w_full()
+                                .flex()
+                                .items_center()
+                                .justify_center()
+                                .text_size(px(13.))
+                                .line_height(px(18.))
+                                .overflow_hidden()
+                                .whitespace_nowrap()
+                                .child(
+                                    div()
+                                        .text_color(color("--text-default"))
+                                        .child(format!("{opt_name}: ")),
+                                )
+                                .child(
+                                    div()
+                                        .font_weight(FontWeight(600.))
+                                        .text_color(color("--text-brand"))
+                                        .overflow_hidden()
+                                        .text_ellipsis()
+                                        .child(filename),
+                                ),
+                        )
+                        .into_any_element()
+                } else {
+                    div()
+                        .id(format!("slash-attachment-empty-{idx}"))
+                        .relative()
+                        .w(px(200.))
+                        .h(px(200.))
+                        .p(px(8.))
+                        .rounded(px(8.))
+                        .bg(color("--background-surface-high"))
+                        .border_2()
+                        .border_dashed()
+                        .border_color(color("--text-default"))
+                        .hover(|s| s.border_color(color("--text-link")))
+                        .cursor_pointer()
+                        .flex()
+                        .flex_col()
+                        .items_center()
+                        .justify_center()
+                        .on_click(cx.listener(|this, _, _, cx| {
+                            this.pick_files(cx);
+                        }))
+                        .child(
+                            div()
+                                .absolute()
+                                .top(px(8.))
+                                .right(px(8.))
+                                .px(px(6.))
+                                .py(px(2.))
+                                .rounded(px(4.))
+                                .bg(color("--background-base-lowest"))
+                                .text_size(px(12.))
+                                .line_height(px(16.))
+                                .font_weight(FontWeight(500.))
+                                .text_color(color("--text-default"))
+                                .child(opt_name),
+                        )
+                        .child(
+                            div()
+                                .w(px(160.))
+                                .flex()
+                                .flex_col()
+                                .items_center()
+                                .gap(px(8.))
+                                .child(icon("cp_upload", 56., "--text-muted"))
+                                .child(
+                                    div()
+                                        .text_center()
+                                        .text_size(px(13.))
+                                        .line_height(px(18.))
+                                        .text_color(color("--text-muted"))
+                                        .child(slash_attachment_help_text(None)),
+                                ),
+                        )
+                        .into_any_element()
+                }
+            })
+            .collect()
+    }
+}
+
+/// Help copy for an empty `102077` slash-command attachment option slot (`IJyOUf` / `JJzx48`).
+pub(super) fn slash_attachment_help_text(types: Option<&str>) -> String {
+    match types.filter(|s| !s.is_empty()) {
+        Some(t) => dc_intl::format(
+            "JJzx48",
+            &[("types", dc_intl::Arg::Str(std::borrow::Cow::Borrowed(t)))],
+        ),
+        None => dc_intl::t("IJyOUf").to_owned(),
+    }
+}
+
+/// Validates a file extension against an optional slash-command `fileTypes` allowlist (`102077` / `424170.M1`).
+/// Returns `Err((title, body))` using `azO1Pe` / `5U9LSo` when rejected.
+#[allow(dead_code)]
+pub(super) fn validate_slash_attachment_ext(
+    filename: &str,
+    allowed_types: &[&str],
+) -> Result<(), (String, String)> {
+    if allowed_types.is_empty() {
+        return Ok(());
+    }
+    let ext = filename
+        .rsplit('.')
+        .next()
+        .unwrap_or("")
+        .to_ascii_lowercase();
+    let matches = allowed_types.iter().any(|t| match *t {
+        "image" => matches!(
+            ext.as_str(),
+            "png" | "gif" | "jpg" | "jpeg" | "jfif" | "webp" | "avif"
+        ),
+        "video" => matches!(ext.as_str(), "mp4" | "mov" | "qt" | "webm"),
+        "audio" => matches!(
+            ext.as_str(),
+            "mp3" | "m4a" | "wav" | "ogg" | "opus" | "flac"
+        ),
+        other => other.trim_start_matches('.').eq_ignore_ascii_case(&ext),
+    });
+    if matches {
+        Ok(())
+    } else {
+        let joined = allowed_types.join(", ");
+        Err((
+            dc_intl::t("azO1Pe").to_owned(),
+            dc_intl::format(
+                "5U9LSo",
+                &[(
+                    "types",
+                    dc_intl::Arg::Str(std::borrow::Cow::Borrowed(&joined)),
+                )],
+            ),
+        ))
+    }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{file_kind, toggle_spoiler};
+    use super::{
+        file_kind, slash_attachment_help_text, toggle_spoiler, validate_slash_attachment_ext,
+    };
+
+    #[test]
+    fn slash_attachment_102077_help_and_validation() {
+        assert_eq!(
+            slash_attachment_help_text(None),
+            "Drag and drop or click to upload file"
+        );
+        assert!(slash_attachment_help_text(Some("image")).contains("image"));
+        assert!(validate_slash_attachment_ext("photo.png", &["image"]).is_ok());
+        let err = validate_slash_attachment_ext("notes.txt", &["image"]).unwrap_err();
+        assert_eq!(err.0, "Invalid file type");
+        assert!(err.1.contains("image"));
+        for k in [
+            "IJyOUf", "JJzx48", "0r2WwT", "al+5qH", "Kzll3E", "azO1Pe", "5U9LSo",
+        ] {
+            assert!(dc_intl::has_key(k), "missing 102077 key {k}");
+        }
+    }
 
     #[test]
     fn the_spoiler_mark_switches_on_and_off() {

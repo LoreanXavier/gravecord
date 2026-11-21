@@ -17,6 +17,8 @@ pub(crate) enum PickGuildFeature {
     Default,
     ServerSubscriptionsOnboarding,
     ServerSubscriptionsTemplate,
+    /// Module 208652: "Create a Server Tag" scrollable guild picker (`xO5QzM`, `h+7Yx3`, `zRl6XR`).
+    CreateServerTag,
 }
 
 impl PickGuildFeature {
@@ -27,6 +29,7 @@ impl PickGuildFeature {
             Some("server-subscriptions-create-tier-from-template") => {
                 Self::ServerSubscriptionsTemplate
             }
+            Some("create-server-tag") => Self::CreateServerTag,
             _ => Self::Default,
         }
     }
@@ -35,6 +38,7 @@ impl PickGuildFeature {
         match self {
             Self::ServerSubscriptionsOnboarding => dc_intl::t("KzCF/6"),
             Self::ServerSubscriptionsTemplate => dc_intl::t("aTFQKh"),
+            Self::CreateServerTag => dc_intl::t("xO5QzM"),
             Self::Default => dc_intl::t("V42OaH"),
         }
     }
@@ -43,6 +47,7 @@ impl PickGuildFeature {
         match self {
             Self::ServerSubscriptionsOnboarding => dc_intl::t("xMW8FH"),
             Self::ServerSubscriptionsTemplate => dc_intl::t("oTbFQg"),
+            Self::CreateServerTag => dc_intl::t("h+7Yx3"),
             Self::Default => dc_intl::t("7dJ16X"),
         }
     }
@@ -91,15 +96,202 @@ impl Root {
                     me.is_none_or(|id| g.owner_id == Some(id))
                         || g.features.iter().any(|f| f == "ROLE_SUBSCRIPTIONS_ENABLED")
                 }
-                PickGuildFeature::Default => true,
+                PickGuildFeature::Default | PickGuildFeature::CreateServerTag => true,
             })
             .map(|g| (g.id, g.name.clone()))
             .collect()
     }
 
-    /// Modal layer for Guild Settings Picker / Creator Onboarding (`623509`).
+    /// Modal layer for Guild Settings Picker / Creator Onboarding (`623509`) and
+    /// "Create a Server Tag" guild picker (`208652`: `xO5QzM`, `h+7Yx3`, `zRl6XR`).
     pub(super) fn pick_guild_settings_layer(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
         let modal = self.pick_guild_settings_modal.as_ref()?;
+        if modal.feature == PickGuildFeature::CreateServerTag {
+            let rows: Vec<(Id, String, String, Option<u64>)> = self
+                .stores
+                .guilds
+                .iter()
+                .map(|g| {
+                    let acronym = g.acronym();
+                    let members = self.stores.member_counts.get_member_count(g.id);
+                    (g.id, g.name.clone(), acronym, members)
+                })
+                .collect();
+            let list = div()
+                .id("create-server-tag-guild-list")
+                .max_h(px(400.))
+                .overflow_y_scroll()
+                .flex()
+                .flex_col()
+                .gap(px(2.))
+                .children(rows.into_iter().enumerate().map(
+                    |(idx, (gid, name, acronym, member_count))| {
+                        let icon_img = self.images.get(&format!("guild:{gid}")).cloned();
+                        let member_text = member_count.map(|c| {
+                            dc_intl::format("zRl6XR", &[("count", dc_intl::Arg::Num(c as f64))])
+                        });
+                        // `R[MEDIUM]` of module 682163: 40px tile acronym font size by length.
+                        const SIZES: [f32; 7] = [16., 16., 14., 14., 12., 10., 8.];
+                        let acronym_size = SIZES[acronym.chars().count().min(SIZES.len() - 1)];
+                        div()
+                            .id(format!("create-server-tag-guild-{idx}"))
+                            .p(px(8.))
+                            .rounded(px(16.))
+                            .hover(|s| s.bg(color("--background-mod-normal")))
+                            .cursor_pointer()
+                            .flex()
+                            .items_center()
+                            .gap(px(12.))
+                            .on_click(cx.listener(move |this, _, _, cx| {
+                                this.pick_guild_settings_modal = None;
+                                this.select(gid, None);
+                                this.open_boost_page(cx);
+                                cx.notify();
+                            }))
+                            .child(
+                                div()
+                                    .flex_none()
+                                    .size(px(40.))
+                                    .rounded(px(12.))
+                                    .bg(color("--background-mod-subtle"))
+                                    .overflow_hidden()
+                                    .flex()
+                                    .items_center()
+                                    .justify_center()
+                                    .child(if let Some(img_handle) = icon_img {
+                                        gpui::img(img_handle)
+                                            .size(px(40.))
+                                            .rounded(px(12.))
+                                            .into_any_element()
+                                    } else {
+                                        div()
+                                            .text_size(px(acronym_size))
+                                            .line_height(px(acronym_size * 1.2))
+                                            .font_weight(FontWeight(500.))
+                                            .text_color(color("--text-strong"))
+                                            .whitespace_nowrap()
+                                            .child(acronym)
+                                            .into_any_element()
+                                    }),
+                            )
+                            .child(
+                                div()
+                                    .flex_1()
+                                    .min_w_0()
+                                    .flex()
+                                    .flex_col()
+                                    .gap(px(2.))
+                                    .child(
+                                        div()
+                                            .text_size(px(15.))
+                                            .line_height(px(20.))
+                                            .font_weight(FontWeight(500.))
+                                            .text_color(color("--text-subtle"))
+                                            .overflow_hidden()
+                                            .text_ellipsis()
+                                            .whitespace_nowrap()
+                                            .child(name),
+                                    )
+                                    .when_some(member_text, |col, m| {
+                                        col.child(
+                                            div()
+                                                .text_size(px(13.))
+                                                .line_height(px(16.))
+                                                .text_color(color("--text-subtle"))
+                                                .child(m),
+                                        )
+                                    }),
+                            )
+                    },
+                ));
+
+            let dialog = div()
+                .id("create-server-tag-modal")
+                .occlude()
+                .on_mouse_down(gpui::MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                .w(px(460.))
+                .rounded(px(12.))
+                .border_1()
+                .border_color(color("--border-subtle"))
+                .bg(color("--background-surface-high"))
+                .flex()
+                .flex_col()
+                .child(
+                    div()
+                        .px(px(24.))
+                        .pt(px(20.))
+                        .pb(px(12.))
+                        .flex()
+                        .items_start()
+                        .justify_between()
+                        .gap(px(12.))
+                        .child(
+                            div()
+                                .flex_1()
+                                .min_w_0()
+                                .flex()
+                                .flex_col()
+                                .gap(px(6.))
+                                .child(
+                                    div()
+                                        .text_size(px(20.))
+                                        .line_height(px(26.))
+                                        .font_weight(FontWeight(700.))
+                                        .text_color(color("--text-strong"))
+                                        .child(dc_intl::t("xO5QzM")),
+                                )
+                                .child(
+                                    div()
+                                        .text_size(px(14.))
+                                        .line_height(px(20.))
+                                        .text_color(color("--text-muted"))
+                                        .child(dc_intl::t("h+7Yx3")),
+                                ),
+                        )
+                        .child(
+                            div()
+                                .id("create-server-tag-close")
+                                .flex_none()
+                                .size(px(32.))
+                                .rounded(px(6.))
+                                .hover(|s| s.bg(color("--background-mod-subtle")))
+                                .cursor_pointer()
+                                .flex()
+                                .items_center()
+                                .justify_center()
+                                .child(icon("modal_close", 18., "--icon-subtle"))
+                                .on_click(cx.listener(|this, _, _, cx| {
+                                    this.pick_guild_settings_modal = None;
+                                    cx.notify();
+                                })),
+                        ),
+                )
+                .child(div().px(px(16.)).pb(px(16.)).child(list));
+
+            return Some(
+                deferred(
+                    div()
+                        .id("create-server-tag-backdrop")
+                        .occlude()
+                        .absolute()
+                        .inset_0()
+                        .bg(rgba(0x000000b8))
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .on_mouse_down(
+                            gpui::MouseButton::Left,
+                            cx.listener(|this, _, _, cx| {
+                                this.pick_guild_settings_modal = None;
+                                cx.notify();
+                            }),
+                        )
+                        .child(dialog),
+                )
+                .with_priority(96)
+                .into_any_element(),
+            );
+        }
         let guilds = self.eligible_picker_guilds(modal.feature);
         let selected = modal.selected_guild;
         let selected_label = selected
@@ -405,10 +597,30 @@ impl Root {
                 );
                 "pick-guild-settings: template".to_owned()
             }
+            "server-tag" => {
+                self.open_pick_guild_settings(None, PickGuildFeature::CreateServerTag, cx);
+                "pick-guild-settings: server-tag".to_owned()
+            }
             _ => {
                 self.open_pick_guild_settings(None, PickGuildFeature::Default, cx);
                 "pick-guild-settings: default".to_owned()
             }
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn create_server_tag_208652_intl_keys() {
+        assert_eq!(
+            PickGuildFeature::CreateServerTag.title(),
+            "Create a Server Tag"
+        );
+        for k in ["xO5QzM", "h+7Yx3", "zRl6XR"] {
+            assert!(dc_intl::has_key(k), "missing 208652 key {k}");
         }
     }
 }

@@ -12,14 +12,52 @@
 //!   "Join", `Ckxb6j` "Ask to Join") and expired compact/full cards (`Sq/E1I` "This invite has
 //!   expired", `x1UXGR` / `Ek+51n`, `s+J8Dl` "Launch Game", `jaYS/h` "Try Game").
 
-use super::{Root, color, icon};
+use super::{Root, color, editor_style, icon};
+use crate::editor::Editor;
+use crate::net::Request;
 use dc_intl::Arg;
 use dc_state::{Id, Message};
 use gpui::{
-    AnyElement, Context, FontWeight, IntoElement, deferred, div, linear_color_stop,
+    AnyElement, Context, Entity, FontWeight, IntoElement, deferred, div, linear_color_stop,
     linear_gradient, prelude::*, px, rgba,
 };
+use serde_json::json;
 use std::borrow::Cow;
+use std::collections::HashSet;
+
+/// State for the `196492` "Invite to Play" modal (`ActivityInviteManager` + `333189` searchable
+/// invite picker: `2tN7ih`, `MAxtks`, `BddRzS`, `5h0QOP`, `HBJiRR`, `Jf0OOQ`, `6F9ivu`, `i6A1Xw`).
+#[derive(Clone)]
+pub(crate) struct ActivityInviteModalState {
+    pub app_id: String,
+    pub app_name: String,
+    pub party_id: String,
+    pub is_private: bool,
+    pub query: Entity<Editor>,
+    pub sent_ids: HashSet<Id>,
+}
+
+/// Builds `POST /channels/{channel_id}/messages` with `{ activity: { type: 1, party_id }, application_id }`
+/// (`308368.A`, module 196492).
+pub(crate) fn send_activity_invite_request(
+    channel_id: Id,
+    party_id: &str,
+    app_id: &str,
+) -> Request {
+    Request::Rest {
+        key: Some(format!("activity-invite:{channel_id}")),
+        method: reqwest::Method::POST,
+        route: format!("/channels/{channel_id}/messages"),
+        body: Some(json!({
+            "content": "",
+            "activity": {
+                "type": ACTIVITY_JOIN,
+                "party_id": party_id,
+            },
+            "application_id": app_id,
+        })),
+    }
+}
 
 /// Activity invite message kinds from Discord's `MessageActivityTypes` (`584283`).
 pub(crate) const ACTIVITY_JOIN: u64 = 1;
@@ -816,6 +854,26 @@ impl Root {
                 cx.notify();
                 "activity-invite: expired".to_owned()
             }
+            "modal-private" => {
+                self.open_activity_invite_modal(
+                    "111111111111111111".to_owned(),
+                    "Starfall Odyssey".to_owned(),
+                    "party-demo-1".to_owned(),
+                    true,
+                    cx,
+                );
+                "activity-invite: modal-private".to_owned()
+            }
+            "modal-search" => {
+                self.open_activity_invite_modal(
+                    "111111111111111111".to_owned(),
+                    "Starfall Odyssey".to_owned(),
+                    "party-demo-1".to_owned(),
+                    false,
+                    cx,
+                );
+                "activity-invite: modal-search".to_owned()
+            }
             _ => {
                 self.activity_invite_preview = Some(vec![ActivityInviteCard {
                     id: "gm-live".to_owned(),
@@ -833,6 +891,524 @@ impl Root {
                 cx.notify();
                 "activity-invite: game".to_owned()
             }
+        }
+    }
+
+    /// Opens the `196492` "Invite to Play" modal (Branch A `is_private` alert, Branch B `333189` picker).
+    pub(super) fn open_activity_invite_modal(
+        &mut self,
+        app_id: String,
+        app_name: String,
+        party_id: String,
+        is_private: bool,
+        cx: &mut Context<Self>,
+    ) {
+        let query = cx.new(|cx| {
+            let mut ed = Editor::new(editor_style(), cx);
+            ed.set_placeholder(dc_intl::t("5h0QOP").to_owned());
+            ed
+        });
+        self.activity_invite_modal = Some(ActivityInviteModalState {
+            app_id,
+            app_name,
+            party_id,
+            is_private,
+            query,
+            sent_ids: HashSet::new(),
+        });
+        cx.notify();
+    }
+
+    /// Renders the `196492` "Invite to Play" modal overlay (`ActivityInviteManager` + `333189`).
+    pub(super) fn activity_invite_modal_layer(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
+        let modal = self.activity_invite_modal.as_ref()?;
+        let title = dc_intl::format(
+            "2tN7ih",
+            &[("name", Arg::Str(Cow::Borrowed(&modal.app_name)))],
+        );
+
+        // Branch A (`isPrivate === true`): 400px modal with `MAxtks` and `BddRzS` ("Okay").
+        if modal.is_private {
+            let dialog = div()
+                .id("activity-invite-private-modal")
+                .occlude()
+                .on_mouse_down(gpui::MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                .w(px(400.))
+                .rounded(px(12.))
+                .border_1()
+                .border_color(color("--border-subtle"))
+                .bg(color("--background-surface-high"))
+                .flex()
+                .flex_col()
+                .child(
+                    div()
+                        .px(px(24.))
+                        .pt(px(20.))
+                        .pb(px(12.))
+                        .flex()
+                        .items_center()
+                        .justify_between()
+                        .child(
+                            div()
+                                .flex_1()
+                                .min_w_0()
+                                .text_size(px(20.))
+                                .line_height(px(26.))
+                                .font_weight(FontWeight(700.))
+                                .text_color(color("--text-strong"))
+                                .child(title),
+                        )
+                        .child(
+                            div()
+                                .id("activity-invite-private-close")
+                                .size(px(28.))
+                                .rounded(px(6.))
+                                .hover(|s| s.bg(color("--background-mod-subtle")))
+                                .cursor_pointer()
+                                .flex()
+                                .items_center()
+                                .justify_center()
+                                .on_click(cx.listener(|this, _, _, cx| {
+                                    this.activity_invite_modal = None;
+                                    cx.notify();
+                                }))
+                                .child(icon("close", 16., "--interactive-text-default")),
+                        ),
+                )
+                .child(
+                    div()
+                        .px(px(24.))
+                        .pb(px(20.))
+                        .text_size(px(14.))
+                        .line_height(px(20.))
+                        .text_color(color("--text-muted"))
+                        .child(dc_intl::t("MAxtks").replace('\n', " ")),
+                )
+                .child(
+                    div()
+                        .px(px(24.))
+                        .py(px(14.))
+                        .border_t_1()
+                        .border_color(color("--border-subtle"))
+                        .bg(color("--background-base-lower"))
+                        .rounded_b(px(12.))
+                        .flex()
+                        .justify_end()
+                        .child(
+                            div()
+                                .id("activity-invite-private-ok")
+                                .h(px(38.))
+                                .px(px(20.))
+                                .rounded(px(8.))
+                                .bg(color("--control-primary-background-default"))
+                                .hover(|s| s.bg(color("--control-primary-background-hover")))
+                                .cursor_pointer()
+                                .flex()
+                                .items_center()
+                                .text_size(px(14.))
+                                .font_weight(FontWeight(600.))
+                                .text_color(color("--white"))
+                                .child(dc_intl::t("BddRzS"))
+                                .on_click(cx.listener(|this, _, _, cx| {
+                                    this.activity_invite_modal = None;
+                                    cx.notify();
+                                })),
+                        ),
+                );
+            return Some(
+                deferred(
+                    div()
+                        .id("activity-invite-modal-backdrop")
+                        .occlude()
+                        .absolute()
+                        .inset_0()
+                        .bg(rgba(0x000000b3))
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .on_mouse_down(
+                            gpui::MouseButton::Left,
+                            cx.listener(|this, _, _, cx| {
+                                this.activity_invite_modal = None;
+                                cx.notify();
+                            }),
+                        )
+                        .child(dialog),
+                )
+                .with_priority(95)
+                .into_any_element(),
+            );
+        }
+
+        // Branch B (`!isPrivate`): 480px searchable invite modal (`333189`, `5h0QOP`, `HBJiRR`,
+        // `Jf0OOQ`, `6F9ivu`, `i6A1Xw`).
+        let filter = modal.query.read(cx).text().trim().to_ascii_lowercase();
+        let mut playing_rows: Vec<(Id, String, String)> = Vec::new();
+        let mut other_rows: Vec<(Id, String, String)> = Vec::new();
+
+        let mut seen_dm_users: HashSet<Id> = HashSet::new();
+        for dm in &self.stores.private_channels {
+            let (name, sub, same_app) = if let Some(uid) = dm.recipients.first().copied() {
+                let user = self.stores.users.get(&uid);
+                if user.is_some_and(|u| u.system || u.bot) || !seen_dm_users.insert(uid) {
+                    continue;
+                }
+                let disp = user
+                    .map(|u| u.display_name().to_owned())
+                    .unwrap_or_else(|| {
+                        dm.name
+                            .clone()
+                            .unwrap_or_else(|| "Direct Message".to_owned())
+                    });
+                let uname = user.map(|u| u.username.clone()).unwrap_or_default();
+                let playing_same = self.stores.presence.get(uid, None).is_some_and(|p| {
+                    p.activities.iter().any(|a| {
+                        a.get("name")
+                            .and_then(|v| v.as_str())
+                            .is_some_and(|n| n.eq_ignore_ascii_case(&modal.app_name))
+                    })
+                });
+                (disp, uname, playing_same)
+            } else {
+                let n = dm.name.clone().unwrap_or_else(|| "Group DM".to_owned());
+                (n, "Group DM".to_owned(), false)
+            };
+            if !filter.is_empty()
+                && !name.to_ascii_lowercase().contains(&filter)
+                && !sub.to_ascii_lowercase().contains(&filter)
+            {
+                continue;
+            }
+            if same_app {
+                playing_rows.push((dm.id, name, sub));
+            } else {
+                other_rows.push((dm.id, name, sub));
+            }
+        }
+        if !filter.is_empty() {
+            for g in &self.stores.guilds {
+                for ch in &g.channels {
+                    if ch.kind == dc_state::ChannelKind::Text
+                        && ch.name.to_ascii_lowercase().contains(&filter)
+                    {
+                        other_rows.push((ch.id, format!("#{}", ch.name), g.name.clone()));
+                    }
+                }
+            }
+        }
+
+        let show_headers = !playing_rows.is_empty() && !other_rows.is_empty();
+        let app_id = modal.app_id.clone();
+        let party_id = modal.party_id.clone();
+        let sent_ids = modal.sent_ids.clone();
+
+        let make_row = |idx: usize, (cid, name, sub): (Id, String, String), prefix: &str| {
+            let is_sent = sent_ids.contains(&cid);
+            let app_c = app_id.clone();
+            let party_c = party_id.clone();
+            div()
+                .id(format!("activity-invite-row-{prefix}-{idx}"))
+                .h(px(48.))
+                .px(px(8.))
+                .rounded(px(8.))
+                .hover(|s| s.bg(color("--background-mod-subtle")))
+                .flex()
+                .items_center()
+                .justify_between()
+                .gap(px(12.))
+                .child(
+                    div()
+                        .flex_1()
+                        .min_w_0()
+                        .flex()
+                        .items_center()
+                        .gap(px(12.))
+                        .child(
+                            div()
+                                .flex_none()
+                                .size(px(32.))
+                                .rounded_full()
+                                .bg(color("--background-mod-strong"))
+                                .flex()
+                                .items_center()
+                                .justify_center()
+                                .text_size(px(13.))
+                                .font_weight(FontWeight(600.))
+                                .text_color(color("--text-strong"))
+                                .child(
+                                    name.chars()
+                                        .next()
+                                        .map(|c| c.to_ascii_uppercase().to_string())
+                                        .unwrap_or_else(|| "?".to_owned()),
+                                ),
+                        )
+                        .child(
+                            div()
+                                .flex_1()
+                                .min_w_0()
+                                .flex()
+                                .flex_col()
+                                .child(
+                                    div()
+                                        .text_size(px(14.))
+                                        .line_height(px(18.))
+                                        .font_weight(FontWeight(500.))
+                                        .text_color(color("--text-strong"))
+                                        .overflow_hidden()
+                                        .text_ellipsis()
+                                        .whitespace_nowrap()
+                                        .child(name),
+                                )
+                                .when(!sub.is_empty(), |col| {
+                                    col.child(
+                                        div()
+                                            .text_size(px(12.))
+                                            .line_height(px(16.))
+                                            .text_color(color("--text-muted"))
+                                            .overflow_hidden()
+                                            .text_ellipsis()
+                                            .whitespace_nowrap()
+                                            .child(sub),
+                                    )
+                                }),
+                        ),
+                )
+                .child(
+                    div()
+                        .id(format!("activity-invite-btn-{prefix}-{idx}"))
+                        .flex_none()
+                        .w(px(72.))
+                        .h(px(32.))
+                        .rounded(px(6.))
+                        .border_1()
+                        .border_color(color("--border-subtle"))
+                        .bg(if is_sent {
+                            color("--background-mod-subtle")
+                        } else {
+                            color("--control-secondary-background-default")
+                        })
+                        .when(!is_sent, |d| {
+                            d.hover(|s| s.bg(color("--control-secondary-background-hover")))
+                                .cursor_pointer()
+                        })
+                        .when(is_sent, |d| d.opacity(0.6))
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .text_size(px(13.))
+                        .font_weight(FontWeight(600.))
+                        .text_color(if is_sent {
+                            color("--text-muted")
+                        } else {
+                            color("--text-strong")
+                        })
+                        .child(dc_intl::t(if is_sent { "i6A1Xw" } else { "6F9ivu" }))
+                        .on_click(cx.listener(move |this, _, _, cx| {
+                            if is_sent {
+                                return;
+                            }
+                            let _ = this
+                                .requests
+                                .send(send_activity_invite_request(cid, &party_c, &app_c));
+                            if let Some(m) = this.activity_invite_modal.as_mut() {
+                                m.sent_ids.insert(cid);
+                            }
+                            cx.notify();
+                        })),
+                )
+        };
+
+        let mut list_items: Vec<AnyElement> = Vec::new();
+        if !playing_rows.is_empty() {
+            if show_headers {
+                let hdr = dc_intl::format(
+                    "HBJiRR",
+                    &[("name", Arg::Str(Cow::Borrowed(&modal.app_name)))],
+                );
+                list_items.push(
+                    div()
+                        .h(px(32.))
+                        .px(px(8.))
+                        .flex()
+                        .items_center()
+                        .text_size(px(12.))
+                        .font_weight(FontWeight(600.))
+                        .text_color(color("--text-muted"))
+                        .child(hdr)
+                        .into_any_element(),
+                );
+            }
+            for (idx, row) in playing_rows.into_iter().enumerate() {
+                list_items.push(make_row(idx, row, "play").into_any_element());
+            }
+        }
+        if !other_rows.is_empty() {
+            if show_headers {
+                list_items.push(
+                    div()
+                        .h(px(32.))
+                        .px(px(8.))
+                        .flex()
+                        .items_center()
+                        .text_size(px(12.))
+                        .font_weight(FontWeight(600.))
+                        .text_color(color("--text-muted"))
+                        .child(dc_intl::t("Jf0OOQ"))
+                        .into_any_element(),
+                );
+            }
+            for (idx, row) in other_rows.into_iter().enumerate() {
+                list_items.push(make_row(idx, row, "other").into_any_element());
+            }
+        }
+
+        let dialog = div()
+            .id("activity-invite-search-modal")
+            .occlude()
+            .on_mouse_down(gpui::MouseButton::Left, |_, _, cx| cx.stop_propagation())
+            .w(px(480.))
+            .rounded(px(12.))
+            .border_1()
+            .border_color(color("--border-subtle"))
+            .bg(color("--background-surface-high"))
+            .flex()
+            .flex_col()
+            .child(
+                div()
+                    .px(px(24.))
+                    .pt(px(20.))
+                    .pb(px(12.))
+                    .flex()
+                    .items_center()
+                    .justify_between()
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w_0()
+                            .text_size(px(20.))
+                            .line_height(px(26.))
+                            .font_weight(FontWeight(700.))
+                            .text_color(color("--text-strong"))
+                            .child(title),
+                    )
+                    .child(
+                        div()
+                            .id("activity-invite-search-close")
+                            .size(px(28.))
+                            .rounded(px(6.))
+                            .hover(|s| s.bg(color("--background-mod-subtle")))
+                            .cursor_pointer()
+                            .flex()
+                            .items_center()
+                            .justify_center()
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                this.activity_invite_modal = None;
+                                cx.notify();
+                            }))
+                            .child(icon("close", 16., "--interactive-text-default")),
+                    ),
+            )
+            .child(
+                div().px(px(24.)).pb(px(12.)).child(
+                    div()
+                        .h(px(38.))
+                        .px(px(10.))
+                        .rounded(px(8.))
+                        .border_1()
+                        .border_color(color("--border-subtle"))
+                        .bg(color("--background-base-lower"))
+                        .flex()
+                        .items_center()
+                        .gap(px(8.))
+                        .child(icon("search", 16., "--text-muted"))
+                        .child(div().flex_1().min_w_0().child(modal.query.clone())),
+                ),
+            )
+            .child(
+                div()
+                    .id("activity-invite-results")
+                    .px(px(16.))
+                    .pb(px(12.))
+                    .h(px(300.))
+                    .overflow_y_scroll()
+                    .flex()
+                    .flex_col()
+                    .gap(px(2.))
+                    .children(if list_items.is_empty() {
+                        vec![
+                            div()
+                                .flex_1()
+                                .flex()
+                                .flex_col()
+                                .items_center()
+                                .justify_center()
+                                .gap(px(8.))
+                                .child(icon("search", 32., "--text-muted"))
+                                .child(
+                                    div()
+                                        .text_size(px(14.))
+                                        .text_color(color("--text-muted"))
+                                        .child("No results found"),
+                                )
+                                .into_any_element(),
+                        ]
+                    } else {
+                        list_items
+                    }),
+            );
+
+        Some(
+            deferred(
+                div()
+                    .id("activity-invite-modal-backdrop")
+                    .occlude()
+                    .absolute()
+                    .inset_0()
+                    .bg(rgba(0x000000b3))
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .on_mouse_down(
+                        gpui::MouseButton::Left,
+                        cx.listener(|this, _, _, cx| {
+                            this.activity_invite_modal = None;
+                            cx.notify();
+                        }),
+                    )
+                    .child(dialog),
+            )
+            .with_priority(95)
+            .into_any_element(),
+        )
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn activity_invite_modal_196492_request_and_keys() {
+        let Request::Rest {
+            method,
+            route,
+            body,
+            ..
+        } = send_activity_invite_request(777, "party-9", "app-1")
+        else {
+            panic!("expected Rest");
+        };
+        assert_eq!(method, reqwest::Method::POST);
+        assert_eq!(route, "/channels/777/messages");
+        let b = body.unwrap();
+        assert_eq!(b["activity"]["type"], ACTIVITY_JOIN);
+        assert_eq!(b["activity"]["party_id"], "party-9");
+        assert_eq!(b["application_id"], "app-1");
+
+        for k in [
+            "2tN7ih", "BddRzS", "MAxtks", "5h0QOP", "6F9ivu", "i6A1Xw", "HBJiRR", "Jf0OOQ",
+        ] {
+            assert!(dc_intl::has_key(k), "missing 196492 key {k}");
         }
     }
 }

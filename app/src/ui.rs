@@ -713,6 +713,12 @@ pub struct Root {
     powerup_perk_modal: Option<boost_page::PowerupPerkModal>,
     /// Recurring Partner Reward Code Card modal (module 116011, `settings::gift_inventory_page`).
     partner_reward_modal: Option<settings::gift_inventory_page::PartnerRewardState>,
+    /// Pre-purchase unclaimed account gate modal (module 195759, `claim_account`).
+    claim_before_purchase_modal: Option<claim_account::ClaimBeforePurchaseModal>,
+    /// Upload-size Nitro upsell modal ("This video was shared with Nitro", module 232118).
+    nitro_upload_badge_upsell: bool,
+    /// "Invite to Play" ActivityInviteManager modal (module 196492 + 333189, `activity_invite_embed`).
+    activity_invite_modal: Option<activity_invite_embed::ActivityInviteModalState>,
     /// Nitro offer countdown & feature upsell modal (module 811611, `nitro_upsell`).
     nitro_upsell_modal: Option<nitro_upsell::NitroUpsellModal>,
     /// Gift Ready post-purchase delivery modal (module 998035, `gift_ready`).
@@ -1427,6 +1433,9 @@ impl Root {
             clear_activity_history_modal: None,
             powerup_perk_modal: None,
             partner_reward_modal: None,
+            claim_before_purchase_modal: None,
+            nitro_upload_badge_upsell: false,
+            activity_invite_modal: None,
             nitro_upsell_modal: None,
             gift_ready_modal: None,
             boost_cancel_modal: None,
@@ -11820,6 +11829,9 @@ impl Render for Root {
                         || this.clear_activity_history_modal.is_some()
                         || this.powerup_perk_modal.is_some()
                         || this.partner_reward_modal.is_some()
+                        || this.claim_before_purchase_modal.is_some()
+                        || this.nitro_upload_badge_upsell
+                        || this.activity_invite_modal.is_some()
                         || this.shop.wishlist_nux_sku.is_some()
                         || this.orb_wallet.delivered_modal.is_some()
                         || this.nitro_upsell_modal.is_some()
@@ -11915,6 +11927,9 @@ impl Render for Root {
                     this.clear_activity_history_modal = None;
                     this.powerup_perk_modal = None;
                     this.partner_reward_modal = None;
+                    this.claim_before_purchase_modal = None;
+                    this.nitro_upload_badge_upsell = false;
+                    this.activity_invite_modal = None;
                     this.shop.wishlist_nux_sku = None;
                     this.orb_wallet.delivered_modal = None;
                     this.nitro_upsell_modal = None;
@@ -12938,6 +12953,8 @@ impl Render for Root {
                             self.message_requests_page(window, cx)
                         } else if self.library_active() {
                             self.library_view(window, cx)
+                        } else if self.in_favorites() && self.channel.is_none() {
+                            self.favorites_empty_state(cx)
                         } else if self.guild.is_none() && self.channel.is_none() {
                             self.friends_panel(window, cx).into_any_element()
                         } else if self
@@ -12965,6 +12982,8 @@ impl Render for Root {
                         } else if self.open_post_forum().is_some() && self.forum_split_fits(window) {
                             self.forum_split_view(window, cx)
                                 .unwrap_or_else(|| div().into_any_element())
+                        } else if self.guild.is_some() && self.channel.is_none() {
+                            self.no_text_channels_view()
                         } else {
                             let gating = self.spoiler_gating_channel();
                             // The New Thread panel sits beside the whole chat column, header included.
@@ -13315,6 +13334,9 @@ impl Render for Root {
             .children(self.clear_activity_history_layer(cx))
             .children(self.powerup_perk_overlay(cx))
             .children(self.partner_reward_overlay(cx))
+            .children(self.claim_before_purchase_layer(cx))
+            .children(self.nitro_upload_badge_upsell(cx))
+            .children(self.activity_invite_modal_layer(cx))
             .children(self.wishlist_nux_overlay(cx))
             .children(self.nitro_upsell_overlay(cx))
             .children(self.gift_ready_overlay(cx))

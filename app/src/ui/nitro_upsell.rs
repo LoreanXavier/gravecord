@@ -32,6 +32,8 @@ pub enum UpsellKind {
     CustomProfileTryOut,
     /// Module 34255: "Get Another Week of Nitro" (`M/ytwa`, `xMkRkc`, `j7LkaR`, `mPWeSh`).
     TrialEndingWeek,
+    /// Module 166247: "You've got 7 days of Nitro" (`Xm5q5l`, `svsMII`, `WHWwCY`, `mHF+AF`).
+    ReverseTrial,
 }
 
 /// Active offer attached to a Nitro upsell modal (`trialOffer` / `discountOffer` of module 811611).
@@ -166,8 +168,17 @@ pub fn upsell_body_copy(kind: UpsellKind, is_tier0: bool) -> (Option<String>, St
             Some(dc_intl::t("M/ytwa").to_owned()),
             format_plain("xMkRkc", &[("price", Arg::Str(Cow::Borrowed("$2.99")))]),
         ),
+        UpsellKind::ReverseTrial => (
+            Some(dc_intl::t("Xm5q5l").to_owned()),
+            dc_intl::t("svsMII").to_owned(),
+        ),
     }
 }
+
+/// Official Help Center URL opened by `"Learn More"` (`WHWwCY`) in module 166247.
+const REVERSE_TRIAL_HELP_URL: &str = "https://support.discord.com/hc/en-us/articles/115000435108";
+/// Official reverse-trial hero artwork CDN URL (module 166247 / 664499).
+const REVERSE_TRIAL_ART_URL: &str = "https://cdn.discordapp.com/assets/content/0fd43f7e4e4408e8dcd461685e82ba9be4aef3381402dd1b8dc3fcf20e42d8bb.png";
 
 impl Root {
     #[cfg(feature = "capture")]
@@ -175,6 +186,7 @@ impl Root {
         let now = Utc::now();
         let exp_days = (now + chrono::Duration::days(3)).to_rfc3339();
         let (kind, discount, heading, context) = match arg.trim() {
+            "reverse-trial" => (UpsellKind::ReverseTrial, None, String::new(), None),
             "trial-ending" => (UpsellKind::TrialEndingWeek, None, String::new(), None),
             "trial" => (UpsellKind::CustomProfileTryOut, None, String::new(), None),
             "upload" => (
@@ -231,9 +243,171 @@ impl Root {
         format!("nitro-upsell: kind={kind:?}")
     }
 
-    /// Renders the Nitro Offer Countdown / Feature Upsell modal overlay (modules 811611 & 34255).
+    /// Renders the Nitro Offer Countdown / Feature Upsell modal overlay (modules 811611, 34255 & 166247).
     pub(super) fn nitro_upsell_overlay(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
         let modal = self.nitro_upsell_modal.as_ref()?;
+        // Module 166247: "You've got 7 days of Nitro" (Reverse Trial Initial Upsell Modal).
+        if modal.kind == UpsellKind::ReverseTrial {
+            let hero = if let Some(art) = self.images.get(REVERSE_TRIAL_ART_URL).cloned() {
+                gpui::img(art)
+                    .w(px(360.))
+                    .h(px(192.))
+                    .object_fit(gpui::ObjectFit::Contain)
+                    .into_any_element()
+            } else {
+                div()
+                    .size(px(88.))
+                    .rounded_full()
+                    .bg(rgba(0xffffff22))
+                    .border_1()
+                    .border_color(rgba(0xffffff44))
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .child(icon("nitro_wheel", 44., "--white"))
+                    .into_any_element()
+            };
+            let card = div()
+                .id("nitro-reverse-trial-modal")
+                .occlude()
+                .on_mouse_down(gpui::MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                .relative()
+                .w(px(480.))
+                .rounded(px(12.))
+                .overflow_hidden()
+                .border_1()
+                .border_color(color("--border-subtle"))
+                .bg(color("--background-surface-high"))
+                .flex()
+                .flex_col()
+                .child(
+                    div()
+                        .w_full()
+                        .h(px(192.))
+                        .bg(linear_gradient(
+                            270.,
+                            linear_color_stop(rgba(0xeb459eff), 0.),
+                            linear_color_stop(rgba(0x8547c6ff), 1.),
+                        ))
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .child(hero),
+                )
+                .child(
+                    div()
+                        .id("nitro-reverse-trial-close")
+                        .absolute()
+                        .top(px(8.))
+                        .right(px(8.))
+                        .size(px(28.))
+                        .rounded(px(6.))
+                        .bg(rgba(0x00000044))
+                        .hover(|s| s.bg(rgba(0x00000066)))
+                        .cursor_pointer()
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .on_click(cx.listener(|this, _, _, cx| {
+                            this.nitro_upsell_modal = None;
+                            cx.notify();
+                        }))
+                        .child(icon("close", 16., "--white")),
+                )
+                .child(
+                    div()
+                        .px(px(44.))
+                        .pt(px(24.))
+                        .pb(px(36.))
+                        .flex()
+                        .flex_col()
+                        .items_center()
+                        .gap(px(16.))
+                        .text_center()
+                        .child(text(24., 30., 700., "--text-strong").child(dc_intl::t("Xm5q5l")))
+                        .child(div().max_w(px(400.)).child(
+                            text(15., 22., 400., "--text-subtle").child(dc_intl::t("svsMII")),
+                        ))
+                        .child(
+                            div()
+                                .mt(px(8.))
+                                .w_full()
+                                .flex()
+                                .items_center()
+                                .gap(px(8.))
+                                .child(
+                                    div()
+                                        .id("nitro-reverse-trial-learn")
+                                        .flex_1()
+                                        .h(px(40.))
+                                        .rounded(px(8.))
+                                        .border_1()
+                                        .border_color(color("--border-subtle"))
+                                        .bg(color("--control-secondary-background-default"))
+                                        .hover(|s| {
+                                            s.bg(color("--control-secondary-background-hover"))
+                                        })
+                                        .cursor_pointer()
+                                        .flex()
+                                        .items_center()
+                                        .justify_center()
+                                        .child(
+                                            text(14., 18., 600., "--text-strong")
+                                                .child(dc_intl::t("WHWwCY")),
+                                        )
+                                        .on_click(|_, _, cx| cx.open_url(REVERSE_TRIAL_HELP_URL)),
+                                )
+                                .child(
+                                    div()
+                                        .id("nitro-reverse-trial-explore")
+                                        .flex_1()
+                                        .h(px(40.))
+                                        .rounded(px(8.))
+                                        .bg(color("--control-primary-background-default"))
+                                        .hover(|s| {
+                                            s.bg(color("--control-primary-background-hover"))
+                                        })
+                                        .cursor_pointer()
+                                        .flex()
+                                        .items_center()
+                                        .justify_center()
+                                        .gap(px(6.))
+                                        .child(icon("nitro_wheel", 18., "--white"))
+                                        .child(
+                                            text(14., 18., 600., "--white")
+                                                .child(dc_intl::t("mHF+AF")),
+                                        )
+                                        .on_click(cx.listener(|this, _, _, cx| {
+                                            this.nitro_upsell_modal = None;
+                                            this.open_nitro(cx);
+                                        })),
+                                ),
+                        ),
+                );
+            return Some(
+                deferred(
+                    div()
+                        .id("nitro-reverse-trial-backdrop")
+                        .occlude()
+                        .absolute()
+                        .inset_0()
+                        .bg(rgba(0x000000b3))
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .on_mouse_down(
+                            gpui::MouseButton::Left,
+                            cx.listener(|this, _, _, cx| {
+                                this.nitro_upsell_modal = None;
+                                cx.notify();
+                            }),
+                        )
+                        .child(card),
+                )
+                .with_priority(3)
+                .into_any_element(),
+            );
+        }
         // Module 34255: Nitro Trial Ending Modal ("Get Another Week of Nitro").
         if modal.kind == UpsellKind::TrialEndingWeek {
             let price = self
@@ -674,6 +848,13 @@ mod tests {
         assert!(b_end.contains("$2.99"));
         for k in ["M/ytwa", "xMkRkc", "j7LkaR", "mPWeSh"] {
             assert!(dc_intl::has_key(k), "missing 34255 key {k}");
+        }
+
+        let (h_rev, b_rev) = upsell_body_copy(UpsellKind::ReverseTrial, false);
+        assert_eq!(h_rev.as_deref(), Some("You've got 7 days of Nitro"));
+        assert!(b_rev.contains("Nitro"));
+        for k in ["Xm5q5l", "svsMII", "WHWwCY", "mHF+AF"] {
+            assert!(dc_intl::has_key(k), "missing 166247 key {k}");
         }
     }
 }

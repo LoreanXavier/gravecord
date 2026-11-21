@@ -1028,4 +1028,137 @@ impl Root {
                 .into_any_element(),
         )
     }
+
+    /// Favorites empty state (module 205375: `wh+Rz1`, `+SuGKb`, `6kk0gM` + CDN art `988572.A`).
+    pub(super) fn favorites_empty_state(&self, cx: &mut Context<Self>) -> AnyElement {
+        const ART_URL: &str = "https://cdn.discordapp.com/assets/content/88fc1694d1f36c93bf35b9cdc7dda25f1064d8205bfa103d62fd6cbf7fe636f7.png";
+        let hero = if let Some(art) = self.images.get(ART_URL).cloned() {
+            img(art)
+                .w(px(197.))
+                .h(px(107.))
+                .object_fit(gpui::ObjectFit::Contain)
+                .into_any_element()
+        } else {
+            div()
+                .w(px(197.))
+                .h(px(107.))
+                .rounded(px(12.))
+                .bg(color("--background-mod-subtle"))
+                .flex()
+                .items_center()
+                .justify_center()
+                .child(icon("clips_star", 44., "--text-brand"))
+                .into_any_element()
+        };
+        div()
+            .id("favorites-empty-state")
+            .flex_1()
+            .h_full()
+            .border_t_1()
+            .border_color(color("--app-frame-border"))
+            .bg(color("--background-base-lower"))
+            .flex()
+            .items_center()
+            .justify_center()
+            .child(
+                div()
+                    .w_full()
+                    .max_w(px(440.))
+                    .px(px(16.))
+                    .flex()
+                    .flex_col()
+                    .items_center()
+                    .gap(px(16.))
+                    .text_center()
+                    .child(hero)
+                    .child(
+                        div()
+                            .max_w(px(321.))
+                            .text_size(px(24.))
+                            .line_height(px(30.))
+                            .font_weight(FontWeight(600.))
+                            .text_color(color("--text-default"))
+                            .child(dc_intl::t("wh+Rz1")),
+                    )
+                    .child(
+                        div()
+                            .max_w(px(321.))
+                            .text_size(px(15.))
+                            .line_height(px(20.))
+                            .text_color(color("--text-muted"))
+                            .child(dc_intl::t("+SuGKb")),
+                    )
+                    .child(
+                        div()
+                            .id("favorites-empty-add")
+                            .h(px(38.))
+                            .px(px(16.))
+                            .rounded(px(8.))
+                            .bg(color("--control-primary-background-default"))
+                            .hover(|s| s.bg(color("--control-primary-background-hover")))
+                            .cursor_pointer()
+                            .flex()
+                            .items_center()
+                            .gap(px(6.))
+                            .text_size(px(14.))
+                            .font_weight(FontWeight(600.))
+                            .text_color(color("--control-primary-text-default"))
+                            .child(icon("plus_small", 18., "--white"))
+                            .child(dc_intl::t("6kk0gM"))
+                            .on_click(cx.listener(|this, _, window, cx| {
+                                this.open_quick_switcher(window, cx);
+                            })),
+                    ),
+            )
+            .into_any_element()
+    }
+
+    /// No accessible text channels fallback pane (module 205375: `ai6Lbr`, `LTr+x9`).
+    pub(super) fn no_text_channels_view(&self) -> AnyElement {
+        div()
+            .id("no-text-channels-pane")
+            .flex_1()
+            .h_full()
+            .bg(color("--background-base-lower"))
+            .flex()
+            .items_center()
+            .justify_center()
+            .child(
+                div()
+                    .w_full()
+                    .max_w(px(440.))
+                    .px(px(16.))
+                    .flex()
+                    .flex_col()
+                    .items_center()
+                    .gap(px(8.))
+                    .text_center()
+                    .child(
+                        div()
+                            .text_size(px(20.))
+                            .line_height(px(24.))
+                            .font_weight(FontWeight(600.))
+                            .text_color(color("--text-muted"))
+                            .child(dc_intl::t("ai6Lbr")),
+                    )
+                    .child(
+                        div()
+                            .text_size(px(15.))
+                            .line_height(px(20.))
+                            .text_color(color("--text-muted"))
+                            .child(dc_intl::t("LTr+x9")),
+                    ),
+            )
+            .into_any_element()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn favorites_empty_205375_intl_keys() {
+        for k in ["wh+Rz1", "+SuGKb", "6kk0gM", "ai6Lbr", "LTr+x9"] {
+            assert!(dc_intl::has_key(k), "missing 205375 key {k}");
+        }
+    }
 }

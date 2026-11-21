@@ -110,6 +110,8 @@ pub(super) struct Open {
     game_picker: Option<widgets::GamePickerState>,
     widget_comment_editors: std::collections::HashMap<String, Entity<Editor>>,
     widget_confirm_remove: Option<usize>,
+    /// Module 224360: whether the "Suggested for you" aside was dismissed.
+    suggestions_dismissed: bool,
     panel_collapsed: bool,
     upsell_closed: bool,
     /// The Nitro dialog of a picker's footer upsell (module 393027 from 571827) is up for this kind.
@@ -299,6 +301,7 @@ impl Root {
             game_picker: None,
             widget_comment_editors: std::collections::HashMap::new(),
             widget_confirm_remove: None,
+            suggestions_dismissed: false,
             panel_collapsed: false,
             upsell_closed: false,
             item_upsell: None,
