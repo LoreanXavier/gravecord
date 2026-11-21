@@ -389,6 +389,29 @@ pub struct Channel {
     pub default_sort_order: Option<u64>,
     /// `default_forum_layout`: 0 not set, 1 list, 2 gallery.
     pub default_forum_layout: u64,
+    /// `default_reaction_emoji`: forum/media default post reaction (module 939940).
+    pub default_reaction_emoji: Option<DefaultReactionEmoji>,
+}
+
+/// Default reaction emoji configured on a forum or media channel (`default_reaction_emoji`).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct DefaultReactionEmoji {
+    pub emoji_id: Option<Id>,
+    pub emoji_name: Option<String>,
+}
+
+impl DefaultReactionEmoji {
+    pub fn from_value(value: &Value) -> Option<Self> {
+        if value.is_null() || !value.is_object() {
+            return None;
+        }
+        let emoji_id = id(&value["emoji_id"]);
+        let emoji_name = text(&value["emoji_name"]);
+        (emoji_id.is_some() || emoji_name.is_some()).then_some(Self {
+            emoji_id,
+            emoji_name,
+        })
+    }
 }
 
 /// One entry of a forum's `available_tags`.
@@ -449,6 +472,9 @@ impl Channel {
             available_tags: ForumTag::list(&value["available_tags"]),
             default_sort_order: value["default_sort_order"].as_u64(),
             default_forum_layout: value["default_forum_layout"].as_u64().unwrap_or(0),
+            default_reaction_emoji: DefaultReactionEmoji::from_value(
+                &value["default_reaction_emoji"],
+            ),
         })
     }
 }
@@ -1081,11 +1107,26 @@ impl Guild {
         Self::acronym_of(&self.name)
     }
 
-    /// The acronym of any server name (an invite's guild need not be joined).
+    /// The acronym of any server name (module 23339 `oN`: strip `'s `, collapse each word run to its
+    /// first character while preserving punctuation such as `.`, and drop whitespace).
     pub fn acronym_of(name: &str) -> String {
-        name.split_whitespace()
-            .filter_map(|word| word.chars().next())
-            .collect()
+        let cleaned = name.replace("'s ", " ");
+        let mut out = String::new();
+        let mut in_word = false;
+        for ch in cleaned.chars() {
+            if ch.is_whitespace() {
+                in_word = false;
+            } else if ch.is_alphanumeric() || ch == '_' {
+                if !in_word {
+                    out.push(ch);
+                    in_word = true;
+                }
+            } else {
+                out.push(ch);
+                in_word = false;
+            }
+        }
+        out
     }
 
     /// Sidebar order: uncategorized channels, then each category with its children; text before voice inside a group.
@@ -5807,6 +5848,9 @@ mod tests {
         let mut stores = Stores::default();
         stores.dispatch("READY", &ready());
         assert_eq!(stores.guilds[0].acronym(), "gf");
+        assert_eq!(Guild::acronym_of("fun.club"), "f.c");
+        assert_eq!(Guild::acronym_of("Bob's Place Here"), "BPH");
+        assert_eq!(Guild::acronym_of("b"), "b");
     }
 
     #[test]

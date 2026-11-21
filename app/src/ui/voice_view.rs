@@ -2548,6 +2548,40 @@ impl Root {
                     .text_color(mid("--text-strong"))
                     .child(icon("voice_view_channel", 20., "--channels-default"))
                     .child(name)
+                    // `eA` of module 681281 / 665691 `bG`: All Participants Verified ShieldLockIcon
+                    // (`QyZ4Td` tooltip, `VHXh8a` aria-label) when DAVE E2EE is active and all
+                    // connected remote participants are verified (not on Stage channels).
+                    .children({
+                        let is_stage = self
+                            .current_channel()
+                            .is_some_and(|c| matches!(c.kind, dc_state::ChannelKind::Other(13)));
+                        let me = self.stores.me().map(|u| u.id);
+                        let all_verified = !is_stage
+                            && self.call.as_ref().is_some_and(|c| {
+                                c.channel == channel
+                                    && c.is_call_verified(me, &self.e2ee_verified_users)
+                            });
+                        all_verified.then(|| {
+                            self.with_tip(
+                                "call-header-e2ee-verified-tip",
+                                super::tooltip::Tip::text(
+                                    dc_intl::t("QyZ4Td"),
+                                    super::tooltip::Side::Bottom,
+                                ),
+                                div()
+                                    .id("call-header-e2ee-verified")
+                                    .aria_label(dc_intl::t("VHXh8a"))
+                                    .flex()
+                                    .items_center()
+                                    .child(icon(
+                                        "mod_chip_shield",
+                                        16.,
+                                        "--interactive-text-default",
+                                    )),
+                                cx,
+                            )
+                        })
+                    })
                     .children(focus.as_ref().map(|crumb| {
                         div()
                             .flex()

@@ -375,7 +375,7 @@ impl Root {
                             .child(dc_intl::t("U9UQJE"))
                             .on_click(cx.listener(|this, _, _, cx| {
                                 this.orb_wallet.open = false;
-                                this.open_nitro(cx);
+                                this.open_orb_multiplier_modal(cx);
                             })),
                     )
             }

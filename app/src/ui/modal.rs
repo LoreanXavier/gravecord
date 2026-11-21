@@ -27,6 +27,8 @@ pub(super) enum Tone {
     /// Primary while its request is in flight (`loading`, module 657718): the label is hidden (`opacity:0`), three
     /// pulsing dots take its place, and the click does nothing.
     PrimaryLoading,
+    /// Expressive Nitro/Boost gradient button (`expressive` variant, modules 291453 & 50292).
+    Expressive,
 }
 
 pub(super) type Handler = Box<dyn Fn(&mut Root, &mut Window, &mut Context<Root>)>;
@@ -191,11 +193,18 @@ fn footer_button_shape(
             color("--control-critical-secondary-border-default"),
             color("--control-critical-secondary-text-default"),
         ),
+        Tone::Expressive => (
+            gpui::rgba(0x9b51e0ff),
+            gpui::rgba(0xb86bff55),
+            color("--white"),
+        ),
     };
     // The `:hover` and `:active` colours of the variant, as the design system button sets them.
     let family = match spec.tone {
         Tone::Secondary => "secondary",
-        Tone::Primary | Tone::PrimaryDisabled | Tone::PrimaryLoading => "primary",
+        Tone::Primary | Tone::PrimaryDisabled | Tone::PrimaryLoading | Tone::Expressive => {
+            "primary"
+        }
         Tone::Active => "connected",
         Tone::Critical => "critical-primary",
         Tone::CriticalSecondary => "critical-secondary",

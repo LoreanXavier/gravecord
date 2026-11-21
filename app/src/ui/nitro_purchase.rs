@@ -325,6 +325,98 @@ pub(crate) struct Purchase {
     pub header_step_label: Option<&'static str>,
     /// Whether the purchase verification email was resent (module 615456 `StGVvC` / `Ex7sk9`).
     pub email_resent: bool,
+    /// Optional fractional Nitro credit / trial ending fine print banner (module 781949).
+    pub fractional_banner: Option<FractionalBannerState>,
+}
+
+/// Variant of the fractional Nitro credit / trial ending banner (module 781949 `uA`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[allow(dead_code)]
+pub(crate) enum FractionalBannerVariant {
+    Default,
+    Trial,
+    ReverseTrial,
+}
+
+/// State for module 781949 (`rzTJXq`, `8VIDrU`, `5e2wY0`, `sQcCKt`, `6r9LLp`, `c2BbVA`, `8Xm6uL`).
+#[derive(Clone, Debug)]
+pub(crate) struct FractionalBannerState {
+    pub variant: FractionalBannerVariant,
+    pub days: u32,
+    pub hours: u32,
+    pub trial_period: String,
+    pub trial_end: String,
+}
+
+impl FractionalBannerState {
+    pub(crate) fn format_styled(&self) -> Option<gpui::StyledText> {
+        use dc_intl::Arg;
+        use std::borrow::Cow;
+        let (key, args): (&'static str, Vec<(&'static str, Arg<'_>)>) = match self.variant {
+            FractionalBannerVariant::ReverseTrial => {
+                let days = self.days.max(1);
+                ("rzTJXq", vec![("days", Arg::Num(f64::from(days)))])
+            }
+            FractionalBannerVariant::Trial => match (self.days > 0, self.hours > 0) {
+                (true, true) => (
+                    "8VIDrU",
+                    vec![
+                        ("trialPeriod", Arg::Str(Cow::Borrowed(&self.trial_period))),
+                        ("trialEnd", Arg::Str(Cow::Borrowed(&self.trial_end))),
+                        ("days", Arg::Num(f64::from(self.days))),
+                        ("hours", Arg::Num(f64::from(self.hours))),
+                    ],
+                ),
+                (true, false) => (
+                    "5e2wY0",
+                    vec![
+                        ("trialPeriod", Arg::Str(Cow::Borrowed(&self.trial_period))),
+                        ("trialEnd", Arg::Str(Cow::Borrowed(&self.trial_end))),
+                        ("days", Arg::Num(f64::from(self.days))),
+                    ],
+                ),
+                (false, true) => (
+                    "sQcCKt",
+                    vec![
+                        ("trialPeriod", Arg::Str(Cow::Borrowed(&self.trial_period))),
+                        ("trialEnd", Arg::Str(Cow::Borrowed(&self.trial_end))),
+                        ("hours", Arg::Num(f64::from(self.hours))),
+                    ],
+                ),
+                (false, false) => return None,
+            },
+            FractionalBannerVariant::Default => match (self.days > 0, self.hours > 0) {
+                (true, true) => (
+                    "6r9LLp",
+                    vec![
+                        ("days", Arg::Num(f64::from(self.days))),
+                        ("hours", Arg::Num(f64::from(self.hours))),
+                    ],
+                ),
+                (true, false) => ("c2BbVA", vec![("days", Arg::Num(f64::from(self.days)))]),
+                (false, true) => ("8Xm6uL", vec![("hours", Arg::Num(f64::from(self.hours)))]),
+                (false, false) => return None,
+            },
+        };
+        let runs = dc_intl::format_runs(key, &args);
+        let mut text = String::new();
+        let mut highlights = Vec::new();
+        for (chunk, hook) in runs {
+            let start = text.len();
+            text.push_str(&chunk);
+            if hook.as_deref() == Some("$b") && start < text.len() {
+                highlights.push((
+                    start..text.len(),
+                    gpui::HighlightStyle {
+                        font_weight: Some(FontWeight(700.)),
+                        color: Some(color("--text-strong").into()),
+                        ..gpui::HighlightStyle::default()
+                    },
+                ));
+            }
+        }
+        Some(gpui::StyledText::new(text).with_highlights(highlights))
+    }
 }
 
 /// Trial or discount pill rendered in the Nitro purchase modal header (module 683166).
@@ -417,6 +509,7 @@ impl Root {
             offer_badge: None,
             header_step_label: None,
             email_resent: false,
+            fractional_banner: None,
         });
         cx.notify();
     }
@@ -493,6 +586,7 @@ impl Root {
             offer_badge: None,
             header_step_label: None,
             email_resent: false,
+            fractional_banner: None,
         });
         cx.notify();
     }
@@ -2025,6 +2119,71 @@ impl Root {
                         "--text-default",
                     )),
             );
+        let fractional = purchase.fractional_banner.as_ref().and_then(|fb| {
+            let styled = fb.format_styled()?;
+            Some(match fb.variant {
+                FractionalBannerVariant::ReverseTrial => div()
+                    .mt(px(12.))
+                    .p(px(12.))
+                    .rounded(px(8.))
+                    .border_1()
+                    .border_color(color("--border-subtle"))
+                    .bg(color("--background-base-lower"))
+                    .flex()
+                    .items_start()
+                    .gap(px(8.))
+                    .child(icon("circle_info", 16., "--text-link"))
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w_0()
+                            .text_size(px(13.))
+                            .line_height(px(18.))
+                            .text_color(color("--text-default"))
+                            .child(styled),
+                    )
+                    .into_any_element(),
+                FractionalBannerVariant::Trial => div()
+                    .mt(px(12.))
+                    .flex()
+                    .flex_col()
+                    .gap(px(10.))
+                    .child(
+                        div()
+                            .text_size(px(13.))
+                            .line_height(px(18.))
+                            .text_color(color("--text-muted"))
+                            .child(styled),
+                    )
+                    .child(div().w_full().h(px(1.)).bg(color("--border-subtle")))
+                    .into_any_element(),
+                FractionalBannerVariant::Default => div()
+                    .mt(px(12.))
+                    .p(px(12.))
+                    .rounded(px(8.))
+                    .border_1()
+                    .border_color(color("--border-subtle"))
+                    .bg(gpui::linear_gradient(
+                        135.,
+                        gpui::linear_color_stop(rgba(0x8547c633), 0.),
+                        gpui::linear_color_stop(rgba(0xb845c122), 1.),
+                    ))
+                    .flex()
+                    .items_center()
+                    .gap(px(10.))
+                    .child(icon("nitro_wheel", 20., "--white"))
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w_0()
+                            .text_size(px(13.))
+                            .line_height(px(18.))
+                            .text_color(color("--text-default"))
+                            .child(styled),
+                    )
+                    .into_any_element(),
+            })
+        });
         let body = div()
             .px(px(24.))
             .pt(px(16.))
@@ -2032,6 +2191,7 @@ impl Root {
             .flex()
             .flex_col()
             .child(Self::nitro_heading(name, 24., 24., true))
+            .children(fractional)
             .child(rows)
             .child(totals);
         let select = div()
@@ -2299,6 +2459,7 @@ impl Root {
             offer_badge: None,
             header_step_label: None,
             email_resent: false,
+            fractional_banner: None,
         });
         cx.notify();
         format!("nitro-confirm: opened ({arg})")
@@ -2327,6 +2488,7 @@ impl Root {
             offer_badge: None,
             header_step_label: None,
             email_resent: false,
+            fractional_banner: None,
         };
         match arg.trim() {
             "" | "trial" => {
@@ -2334,6 +2496,43 @@ impl Root {
                 self.nitro.purchase = Some(p);
                 cx.notify();
                 "nitro-offer-header: trial".to_owned()
+            }
+            "trial-fine-print" => {
+                p.offer_badge = Some(PurchaseOfferBadge::FreeTrial);
+                p.fractional_banner = Some(FractionalBannerState {
+                    variant: FractionalBannerVariant::Trial,
+                    days: 3,
+                    hours: 12,
+                    trial_period: "1 month".to_owned(),
+                    trial_end: "12/21/2026".to_owned(),
+                });
+                self.nitro.purchase = Some(p);
+                cx.notify();
+                "nitro-offer-header: trial-fine-print".to_owned()
+            }
+            "reverse-trial" => {
+                p.fractional_banner = Some(FractionalBannerState {
+                    variant: FractionalBannerVariant::ReverseTrial,
+                    days: 5,
+                    hours: 0,
+                    trial_period: String::new(),
+                    trial_end: String::new(),
+                });
+                self.nitro.purchase = Some(p);
+                cx.notify();
+                "nitro-offer-header: reverse-trial".to_owned()
+            }
+            "fractional-credit" => {
+                p.fractional_banner = Some(FractionalBannerState {
+                    variant: FractionalBannerVariant::Default,
+                    days: 2,
+                    hours: 6,
+                    trial_period: String::new(),
+                    trial_end: String::new(),
+                });
+                self.nitro.purchase = Some(p);
+                cx.notify();
+                "nitro-offer-header: fractional-credit".to_owned()
             }
             "two-week" => {
                 p.offer_badge = Some(PurchaseOfferBadge::TwoWeekTrial);
@@ -2523,6 +2722,7 @@ impl Root {
             offer_badge: None,
             header_step_label: None,
             email_resent: false,
+            fractional_banner: None,
         };
         match arg.trim() {
             "close" => {

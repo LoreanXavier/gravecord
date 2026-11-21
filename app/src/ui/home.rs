@@ -770,159 +770,184 @@ impl Root {
                             .child(dc_intl::tr("Find or start a conversation")),
                     ),
             )
-            .child(div().flex_none().h(px(8.)))
-            .child(
-                self.home_link(
-                    "friends",
-                    "home_friends",
-                    dc_intl::tr("Friends"),
-                    friends_selected,
-                )
-                .cursor_pointer()
-                .on_click(cx.listener(|this, _, _, cx| {
-                    this.select_home(None);
-                    cx.notify();
-                })),
-            )
-            // 596339 `Iy` sits after Friends; 309199 `SM`: it shows while the requests or the spam list is not empty.
-            .children(self.stores.message_requests_entry_visible().then(|| {
-                self.home_link(
-                    "message-requests",
-                    "message_requests_envelope",
-                    dc_intl::tr("Message Requests"),
-                    requests_selected,
-                )
-                .cursor_pointer()
-                .on_click(cx.listener(|this, _, _, cx| this.open_message_requests(cx)))
-            }))
-            .child(
-                self.home_link("nitro", "home_nitro", dc_intl::tr("Nitro"), nitro_selected)
-                    .cursor_pointer()
-                    .on_click(cx.listener(|this, _, _, cx| this.open_nitro(cx))),
-            )
-            .child(
-                self.home_link("shop", "home_shop", dc_intl::tr("Shop"), shop_selected)
-                    .cursor_pointer()
-                    .on_click(cx.listener(|this, _, _, cx| this.open_shop(cx)))
-                    .relative()
-                    // The NEW pill is gone once the page is open (the Shop capture has none).
-                    .when(!shop_selected && !quests_selected, |row| {
-                        row.child(
-                            div()
-                                .parity("shop-new-badge")
-                                .absolute()
-                                // The inset row's 16px end padding, plus its 8px outer gap.
-                                .right(px(24.))
-                                .top(px(12.))
-                                .h(px(16.))
-                                .px(px(8.))
-                                .rounded(px(8.))
-                                .bg(color("--badge-expressive-background"))
-                                .flex()
-                                .items_center()
-                                .text_size(px(12.))
-                                .line_height(px(16.))
-                                .font_weight(FontWeight(600.))
-                                .text_color(color("--badge-expressive-text"))
-                                .child(dc_intl::tr("NEW")),
-                        )
-                    }),
-            )
-            // `ID` of module 596339 after the Shop (`shouldShowFamilyCenterRow`); its close button opens module 371158.
-            // GAP: the row opens the Family Center panel of User Settings, not the `/family-center` page (`lU` of
-            // module 890623), which is not built.
-            .children(self.family_center_row_shown().then(|| {
-                self.home_link("family-center", "roles_group", dc_intl::t("Rkdixs"), false)
-                    .group("family-center-row")
-                    .cursor_pointer()
-                    .on_click(cx.listener(|this, _, _, cx| this.open_family_center_panel(cx)))
-                    .child(
-                        div()
-                            .absolute()
-                            .right(px(8.))
-                            .top(px(11.))
-                            .child(self.family_center_close_button("family-center-row", cx)),
-                    )
-                    .relative()
-            }))
-            .child(
-                self.home_link(
-                    "quests",
-                    "home_quests",
-                    dc_intl::tr("Quests"),
-                    quests_selected,
-                )
-                .on_click(cx.listener(|this, _, _, cx| this.open_quests(cx))),
-            )
             .child(
                 div()
-                    .flex_none()
-                    .mt(px(12.))
-                    .ml(px(9.))
-                    .w(px(self.sidebar_row_width() - 1.))
-                    .h(px(1.))
-                    .bg(color("--background-mod-subtle")),
-            )
-            .children(pin_sections)
-            .child(
-                div()
-                    .flex_none()
-                    .mt(px(12.))
-                    .h(px(24.))
-                    .pl(px(17.))
-                    // The actions end where the capture's do (the plus at x 343..359 of the 375 wide sidebar).
-                    .pr(px(12.))
+                    .id("home-sidebar-scroll")
+                    .flex_1()
+                    .min_h(px(0.))
                     .flex()
-                    .items_start()
-                    .pt(px(1.))
-                    .text_size(px(14.))
-                    .line_height(px(18.))
-                    .font_weight(FontWeight(500.))
-                    .text_color(color("--channels-default"))
-                    // `.privateChannelsHeaderContainer_Bce46W:hover` (814796).
-                    .hover(|style| style.text_color(color("--interactive-text-hover")))
-                    // Not in the pinned client: PinDMs' `canCollapseDmSection` makes the title fold the list
-                    // (`makeSpanProps`, `plugin_hooks/pin_dms.rs`).
-                    .child(if dm_foldable {
-                        div()
-                            .id("dm-header-fold")
+                    .flex_col()
+                    .overflow_y_scroll()
+                    .child(div().flex_none().h(px(8.)))
+                    .child(
+                        self.home_link(
+                            "friends",
+                            "home_friends",
+                            dc_intl::tr("Friends"),
+                            friends_selected,
+                        )
+                        .cursor_pointer()
+                        .on_click(cx.listener(|this, _, _, cx| {
+                            this.select_home(None);
+                            cx.notify();
+                        })),
+                    )
+                    // 596339 `Iy` sits after Friends; 309199 `SM`: it shows while the requests or the spam list is not empty.
+                    .children(self.stores.message_requests_entry_visible().then(|| {
+                        self.home_link(
+                            "message-requests",
+                            "message_requests_envelope",
+                            dc_intl::tr("Message Requests"),
+                            requests_selected,
+                        )
+                        .cursor_pointer()
+                        .on_click(cx.listener(|this, _, _, cx| this.open_message_requests(cx)))
+                    }))
+                    .child(
+                        self.home_link("nitro", "home_nitro", dc_intl::tr("Nitro"), nitro_selected)
+                            .cursor_pointer()
+                            .on_click(cx.listener(|this, _, _, cx| this.open_nitro(cx))),
+                    )
+                    .child(
+                        self.home_link("shop", "home_shop", dc_intl::tr("Shop"), shop_selected)
+                            .cursor_pointer()
+                            .on_click(cx.listener(|this, _, _, cx| this.open_shop(cx)))
+                            .relative()
+                            // The NEW pill is gone once the page is open (the Shop capture has none).
+                            .when(!shop_selected && !quests_selected, |row| {
+                                row.child(
+                                    div()
+                                        .parity("shop-new-badge")
+                                        .absolute()
+                                        // The inset row's 16px end padding, plus its 8px outer gap.
+                                        .right(px(24.))
+                                        .top(px(12.))
+                                        .h(px(16.))
+                                        .px(px(8.))
+                                        .rounded(px(8.))
+                                        .bg(color("--badge-expressive-background"))
+                                        .flex()
+                                        .items_center()
+                                        .text_size(px(12.))
+                                        .line_height(px(16.))
+                                        .font_weight(FontWeight(600.))
+                                        .text_color(color("--badge-expressive-text"))
+                                        .child(dc_intl::tr("NEW")),
+                                )
+                            }),
+                    )
+                    // `ID` of module 596339 after the Shop (`shouldShowFamilyCenterRow`); its close button opens module 371158.
+                    // GAP: the row opens the Family Center panel of User Settings, not the `/family-center` page (`lU` of
+                    // module 890623), which is not built.
+                    .children(self.family_center_row_shown().then(|| {
+                        self.home_link("family-center", "roles_group", dc_intl::t("Rkdixs"), false)
+                            .group("family-center-row")
                             .cursor_pointer()
                             .on_click(
-                                cx.listener(|this, _, _, cx| this.pin_dms_fold_dm_section(cx)),
+                                cx.listener(|this, _, _, cx| this.open_family_center_panel(cx)),
                             )
-                            .child(dc_intl::tr("Direct Messages"))
-                            .into_any_element()
-                    } else {
-                        dc_intl::tr("Direct Messages").into_any_element()
-                    })
-                    .child(div().flex_1())
-                    // `headerActions_Bce46W` (4px apart) in the `enlarge-target-size` capture
-                    // (active-now-watch/switch-fixture): More (module 830507 `j`) and Create DM, each a 24px box with
-                    // its 16px icon 4px in, 2px above the header's own box.
+                            .child(
+                                div().absolute().right(px(8.)).top(px(11.)).child(
+                                    self.family_center_close_button("family-center-row", cx),
+                                ),
+                            )
+                            .relative()
+                    }))
+                    .child(
+                        self.home_link(
+                            "quests",
+                            "home_quests",
+                            dc_intl::tr("Quests"),
+                            quests_selected,
+                        )
+                        .on_click(cx.listener(|this, _, _, cx| this.open_quests(cx))),
+                    )
                     .child(
                         div()
-                            .mt(px(-3.))
+                            .flex_none()
+                            .mt(px(12.))
+                            .ml(px(9.))
+                            .w(px(self.sidebar_row_width() - 1.))
+                            .h(px(1.))
+                            .bg(color("--background-mod-subtle")),
+                    )
+                    .children(pin_sections)
+                    .child(
+                        div()
+                            .flex_none()
+                            .mt(px(12.))
+                            .h(px(24.))
+                            .pl(px(17.))
+                            // The actions end where the capture's do (the plus at x 343..359 of the 375 wide sidebar).
+                            .pr(px(12.))
                             .flex()
-                            .gap(px(4.))
-                            .child(self.dm_header_more(cx))
-                            .child(
-                                // "Create DM": the same New Message picker as the Friends page's New Group DM.
+                            .items_start()
+                            .pt(px(1.))
+                            .text_size(px(14.))
+                            .line_height(px(18.))
+                            .font_weight(FontWeight(500.))
+                            .text_color(color("--channels-default"))
+                            // `.privateChannelsHeaderContainer_Bce46W:hover` (814796).
+                            .hover(|style| style.text_color(color("--interactive-text-hover")))
+                            // Not in the pinned client: PinDMs' `canCollapseDmSection` makes the title fold the list
+                            // (`makeSpanProps`, `plugin_hooks/pin_dms.rs`).
+                            .child(if dm_foldable {
                                 div()
-                                    .id("dm-plus")
-                                    .size(px(24.))
-                                    .p(px(4.))
+                                    .id("dm-header-fold")
                                     .cursor_pointer()
-                                    .on_click(cx.listener(|this, _, window, cx| {
-                                        this.open_group_dm_picker(window, cx)
+                                    .on_click(cx.listener(|this, _, _, cx| {
+                                        this.pin_dms_fold_dm_section(cx)
                                     }))
-                                    .child(icon("dm_plus", 16., "--text-muted")),
+                                    .child(dc_intl::tr("Direct Messages"))
+                                    .into_any_element()
+                            } else {
+                                dc_intl::tr("Direct Messages").into_any_element()
+                            })
+                            .child(div().flex_1())
+                            // `headerActions_Bce46W` (4px apart) in the `enlarge-target-size` capture
+                            // (active-now-watch/switch-fixture): More (module 830507 `j`) and Create DM, each a 24px box with
+                            // its 16px icon 4px in, 2px above the header's own box.
+                            .child(
+                                div()
+                                    .mt(px(-3.))
+                                    .flex()
+                                    .gap(px(4.))
+                                    .child(self.dm_header_more(cx))
+                                    .child(
+                                        // "Create DM": the same New Message picker as the Friends page's New Group DM.
+                                        div()
+                                            .id("dm-plus")
+                                            .size(px(24.))
+                                            .p(px(4.))
+                                            .cursor_pointer()
+                                            .on_click(cx.listener(|this, _, window, cx| {
+                                                this.open_group_dm_picker(window, cx)
+                                            }))
+                                            .child(icon("dm_plus", 16., "--text-muted")),
+                                    ),
                             ),
-                    ),
+                    )
+                    .children(rows)
+                    .when(no_private_channels, |list| {
+                        list.child(no_private_channels_art())
+                    })
+                    // `scroller_Bce46W`: padding-bottom so the last DM row clears the floating `user_panel`.
+                    .child(div().flex_none().h(px(24.))),
             )
-            .children(rows)
-            .when(no_private_channels, |list| {
-                list.child(no_private_channels_art())
-            })
+            .child(
+                div()
+                    .flex_none()
+                    .h((self.user_panel_height.unwrap_or(px(58.)) - px(8.)).max(px(0.))),
+            )
+            .children(super::settings::client_theme::active().is_none().then(|| {
+                div()
+                    .absolute()
+                    .left_0()
+                    .right(px(1.))
+                    .bottom_0()
+                    .h(px(8.))
+                    .bg(color("--background-base-lowest"))
+            }))
     }
 
     /// `FriendsStore.isInitialized()` (module 595623): true from the session's own `CONNECTION_OPEN`. A READY replayed

@@ -489,6 +489,7 @@ mod tests {
             available_tags: Vec::new(),
             default_sort_order: None,
             default_forum_layout: 0,
+            default_reaction_emoji: None,
         }
     }
 

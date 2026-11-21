@@ -2066,6 +2066,24 @@ pub async fn run(
                 });
                 let _ = writeln!(output, "{line:?}");
             }
+            // `orb-multiplier [upsell|nitro|xbox|close]`: Quest Orbs Multiplier Info / Upsell modal (50292).
+            ["orb-multiplier", rest @ ..] => {
+                let arg = rest.join(" ");
+                let line = root.update(cx, |root, cx| root.script_orb_multiplier(&arg, cx));
+                let _ = writeln!(output, "{line}");
+            }
+            // `forum-default-reaction [open|picker|error|close]`: Choose a default reaction modal (939940).
+            ["forum-default-reaction", rest @ ..] => {
+                let arg = rest.join(" ");
+                let line = root.update(cx, |root, cx| root.script_forum_default_reaction(&arg, cx));
+                let _ = writeln!(output, "{line}");
+            }
+            // `shop-embed [buy|orbs|sub-current|unavailable|close]`: Social Layer product embed & plan buttons (50777 + 376374).
+            ["shop-embed", rest @ ..] => {
+                let arg = rest.join(" ");
+                let line = root.update(cx, |root, cx| root.script_shop_embed(&arg, cx));
+                let _ = writeln!(output, "{line}");
+            }
             // `search last` / `search answer <total>`: the open search's request, and an answer to it;
             // `search page <n>`: the pager turns to page n.
             ["search", rest @ ..] => {
@@ -2901,6 +2919,14 @@ pub async fn run(
                     });
                     let _ = writeln!(output, "gif fixture added in memory");
                 }
+            }
+            ["rail-overflow"] => {
+                let msg = root.update(cx, |root, cx| root.script_rail_overflow(cx));
+                let _ = writeln!(output, "{msg}");
+            }
+            ["rail-scroll-bottom"] => {
+                let msg = root.update(cx, |root, cx| root.script_rail_scroll_bottom(cx));
+                let _ = writeln!(output, "{msg}");
             }
             ["note", label @ ..] => {
                 let state = root.read_with(cx, |root, cx| root.describe(cx));

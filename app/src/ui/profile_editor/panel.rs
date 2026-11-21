@@ -311,7 +311,54 @@ impl Root {
             .on_click(cx.listener(|this, _, _, cx| {
                 this.profile_editor_pick_image(super::upload::Target::Avatar, cx);
             }));
+        // Module 999618 on tile 930349: avatar decoration reset/remove affordance (`pJsnPf`,
+        // `2U4Bga`, `7v0T9P`, `HykynS`, `3Xph0/`, `SZPJG4`, `K77yQe`, `wgIPss`, `N86XcP`).
+        let deco_affordance = self.profile_editor_decoration_affordance().map(|reset| {
+            let (glyph, tip, label) = if reset {
+                ("clips_retry", dc_intl::t("wgIPss"), dc_intl::t("pJsnPf"))
+            } else {
+                ("clips_trash", dc_intl::t("N86XcP"), dc_intl::t("2U4Bga"))
+            };
+            self.with_tip(
+                "profile-editor-decoration-delete",
+                crate::ui::tooltip::Tip::text(tip, crate::ui::tooltip::Side::Top),
+                div()
+                    .id("profile-editor-decoration-delete-button")
+                    .aria_label(label)
+                    .size(px(28.))
+                    .rounded_full()
+                    .bg(color("--control-overlay-secondary-background-default"))
+                    .hover(|style| style.bg(color("--control-overlay-secondary-background-hover")))
+                    .cursor_pointer()
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .child(icon(glyph, 16., "--control-overlay-secondary-text-default"))
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        cx.stop_propagation();
+                        this.profile_editor_drop_decoration(cx);
+                    })),
+                cx,
+            )
+            .absolute()
+            .top(px(4.))
+            .right(px(4.))
+            .when(!reset, |button| {
+                button
+                    .opacity(0.)
+                    .group_hover("profile-editor-tile-decoration-group", |style| {
+                        style.opacity(1.)
+                    })
+            })
+        });
+        let deco_a11y = if user.avatar_decoration.is_some() {
+            dc_intl::t("HykynS")
+        } else {
+            dc_intl::t("3Xph0/")
+        };
         let decoration_tile = tile("profile-editor-tile-decoration", 100., 100.)
+            .group("profile-editor-tile-decoration-group")
+            .aria_label(deco_a11y)
             .flex()
             .items_center()
             .justify_center()
@@ -353,6 +400,7 @@ impl Root {
                     .left(px(38.))
                     .child(plus_badge())
             }))
+            .children(deco_affordance)
             .on_click(cx.listener(|this, _, _, cx| this.profile_editor_pick(Kind::Decoration, cx)));
         let banner_tile = tile("profile-editor-tile-banner", 208., 42.)
             .bg(rgba((banner << 8) | 0xff))

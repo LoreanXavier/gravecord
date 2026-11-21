@@ -706,9 +706,22 @@ impl Root {
     ) -> Vec<AnyElement> {
         let sku = product.sku_id.clone();
         let nitro = self.shop_has_nitro();
-        let label = match product.fiat_price(nitro) {
-            Some(price) if !orbs_only => format!("Buy for {}", price.text_exact()),
-            _ => "View Details".to_owned(),
+        let label = if orbs_only {
+            dc_intl::t("KLBTgF").to_owned()
+        } else {
+            match product.fiat_price(nitro) {
+                Some(price) => {
+                    let text = price.text_exact();
+                    dc_intl::format(
+                        "Xp5WTn",
+                        &[(
+                            "price",
+                            dc_intl::Arg::Str(std::borrow::Cow::Borrowed(&text)),
+                        )],
+                    )
+                }
+                None => dc_intl::t("boqtTA").to_owned(),
+            }
         };
         let buy = {
             let sku = sku.clone();
@@ -774,6 +787,369 @@ impl Root {
             );
         }
         out
+    }
+}
+
+/// App Storefront / Shop subscription button state (module 376374 `wF`: `6cfuDj`, `Xp5WTn`,
+/// `i4T8vz`, `uuzaAK`, `k1ew5N`, `Hs3Y+I`, `DLAKbi`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[allow(dead_code)]
+pub(in crate::ui) enum SubscriptionPlanButtonState {
+    Available,
+    Loading,
+    UpcomingPlan,
+    Subscribed,
+    Unavailable,
+}
+
+impl SubscriptionPlanButtonState {
+    pub(in crate::ui) fn label(self, rate: Option<&str>) -> String {
+        match self {
+            Self::Available | Self::Loading => match rate {
+                Some(r) => dc_intl::format(
+                    "i4T8vz",
+                    &[("rate", dc_intl::Arg::Str(std::borrow::Cow::Borrowed(r)))],
+                ),
+                None => dc_intl::t("uuzaAK").to_owned(),
+            },
+            Self::UpcomingPlan => dc_intl::format(
+                "k1ew5N",
+                &[(
+                    "rate",
+                    dc_intl::Arg::Str(std::borrow::Cow::Borrowed(rate.unwrap_or(""))),
+                )],
+            ),
+            Self::Subscribed => dc_intl::format(
+                "Hs3Y+I",
+                &[(
+                    "rate",
+                    dc_intl::Arg::Str(std::borrow::Cow::Borrowed(rate.unwrap_or(""))),
+                )],
+            ),
+            Self::Unavailable => dc_intl::t("DLAKbi").to_owned(),
+        }
+    }
+
+    pub(in crate::ui) fn disabled(self) -> bool {
+        matches!(
+            self,
+            Self::UpcomingPlan | Self::Subscribed | Self::Unavailable
+        )
+    }
+}
+
+/// One-time durable/consumable purchase button label (module 376374 `$P`: `6cfuDj` / `Xp5WTn`).
+pub(in crate::ui) fn one_time_purchase_label(owns_durable: bool, price: Option<&str>) -> String {
+    if owns_durable {
+        dc_intl::t("6cfuDj").to_owned()
+    } else if let Some(p) = price {
+        dc_intl::format(
+            "Xp5WTn",
+            &[("price", dc_intl::Arg::Str(std::borrow::Cow::Borrowed(p)))],
+        )
+    } else {
+        dc_intl::t("boqtTA").to_owned()
+    }
+}
+
+/// Social Layer / Game Shop embedded product details card (module 50777: `GiVd2Q`, `RWouSQ`,
+/// `JC15qj`, `Xp5WTn`, `boqtTA`, `IqlPbQ`, `KLBTgF`, `V91tvy`, `JCFN/y`).
+#[derive(Clone, Debug)]
+pub(crate) struct ShopProductEmbedPreview {
+    pub title: String,
+    pub price: Option<String>,
+    pub orb_price: Option<u64>,
+    pub bonus_orbs: Option<u64>,
+    pub available: bool,
+    pub eligible: bool,
+    pub sub_state: Option<(SubscriptionPlanButtonState, String)>,
+}
+
+impl Root {
+    /// Renders the Social Layer Storefront product embed preview card (modules 50777 + 376374).
+    pub(in crate::ui) fn shop_product_embed_layer(
+        &self,
+        cx: &mut Context<Self>,
+    ) -> Option<AnyElement> {
+        let card = self.shop_product_embed_preview.as_ref()?;
+        let buy_label = if let Some((st, ref rate)) = card.sub_state {
+            st.label(Some(rate))
+        } else if let Some(orbs) = card.orb_price {
+            dc_intl::format_runs("JC15qj", &[("orbPrice", dc_intl::Arg::Num(orbs as f64))])
+                .into_iter()
+                .filter(|(_, h)| h.as_deref() != Some("orbIconHook"))
+                .map(|(s, _)| s)
+                .collect::<String>()
+        } else {
+            one_time_purchase_label(!card.eligible, card.price.as_deref())
+        };
+        let buy_disabled =
+            card.sub_state.as_ref().is_some_and(|(st, _)| st.disabled()) || !card.eligible;
+        let bonus_badge = card.bonus_orbs.map(|n| {
+            dc_intl::format_runs("GiVd2Q", &[("orbCount", dc_intl::Arg::Num(n as f64))])
+                .into_iter()
+                .filter(|(_, h)| h.as_deref() != Some("orbIconHook"))
+                .map(|(s, _)| s)
+                .collect::<String>()
+        });
+
+        Some(
+            gpui::deferred(
+                div()
+                    .id("shop-product-embed-backdrop")
+                    .occlude()
+                    .absolute()
+                    .inset_0()
+                    .bg(gpui::rgba(0x000000b3))
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .p(px(24.))
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        this.shop_product_embed_preview = None;
+                        cx.notify();
+                    }))
+                    .child(
+                        div()
+                            .id("shop-product-embed-card")
+                            .w(px(440.))
+                            .p(px(16.))
+                            .rounded(px(12.))
+                            .border_1()
+                            .border_color(color("--border-subtle"))
+                            .bg(color("--background-surface-high"))
+                            .flex()
+                            .flex_col()
+                            .gap(px(12.))
+                            .on_click(|_, _, cx| cx.stop_propagation())
+                            .child(
+                                div()
+                                    .flex()
+                                    .items_center()
+                                    .gap(px(14.))
+                                    .child(
+                                        div()
+                                            .flex_none()
+                                            .size(px(64.))
+                                            .rounded(px(10.))
+                                            .bg(color("--brand-500"))
+                                            .flex()
+                                            .items_center()
+                                            .justify_center()
+                                            .child(icon("bot_game_controller", 30., "--white")),
+                                    )
+                                    .child(
+                                        div()
+                                            .flex_1()
+                                            .min_w_0()
+                                            .flex()
+                                            .flex_col()
+                                            .gap(px(3.))
+                                            .child(
+                                                div()
+                                                    .text_size(px(12.))
+                                                    .text_color(color("--text-muted"))
+                                                    .child(dc_intl::t("V91tvy")),
+                                            )
+                                            .child(
+                                                div()
+                                                    .text_size(px(16.))
+                                                    .font_weight(FontWeight(700.))
+                                                    .text_color(color("--text-strong"))
+                                                    .truncate()
+                                                    .child(card.title.clone()),
+                                            )
+                                            .child(
+                                                div()
+                                                    .flex()
+                                                    .items_center()
+                                                    .gap(px(8.))
+                                                    .child(if !card.available {
+                                                        div()
+                                                            .text_size(px(13.))
+                                                            .font_weight(FontWeight(600.))
+                                                            .text_color(color("--text-muted"))
+                                                            .child(dc_intl::t("RWouSQ"))
+                                                    } else {
+                                                        div()
+                                                            .text_size(px(14.))
+                                                            .font_weight(FontWeight(700.))
+                                                            .text_color(color("--text-strong"))
+                                                            .child(
+                                                                card.price
+                                                                    .clone()
+                                                                    .unwrap_or_default(),
+                                                            )
+                                                    })
+                                                    .children(bonus_badge.map(|b| {
+                                                        div()
+                                                            .px(px(6.))
+                                                            .py(px(2.))
+                                                            .rounded(px(4.))
+                                                            .bg(gpui::rgba(0x5865f233))
+                                                            .flex()
+                                                            .items_center()
+                                                            .gap(px(4.))
+                                                            .text_size(px(11.))
+                                                            .font_weight(FontWeight(600.))
+                                                            .text_color(color("--text-strong"))
+                                                            .child(icon(
+                                                                "shop_orb_18",
+                                                                12.,
+                                                                "--white",
+                                                            ))
+                                                            .child(b)
+                                                    })),
+                                            ),
+                                    ),
+                            )
+                            .child(
+                                div()
+                                    .flex()
+                                    .items_center()
+                                    .gap(px(8.))
+                                    .child(
+                                        self.with_tip(
+                                            "shop-embed-details-tip",
+                                            crate::ui::tooltip::Tip::text(
+                                                if card.eligible {
+                                                    dc_intl::t("KLBTgF")
+                                                } else {
+                                                    dc_intl::t("IqlPbQ")
+                                                },
+                                                crate::ui::tooltip::Side::Top,
+                                            ),
+                                            div()
+                                                .id("shop-embed-view-details")
+                                                .flex_1()
+                                                .h(px(36.))
+                                                .rounded(px(8.))
+                                                .bg(color("--control-secondary-background-default"))
+                                                .cursor_pointer()
+                                                .flex()
+                                                .items_center()
+                                                .justify_center()
+                                                .text_size(px(13.))
+                                                .font_weight(FontWeight(600.))
+                                                .text_color(color("--text-strong"))
+                                                .child(dc_intl::t("KLBTgF"))
+                                                .on_click(cx.listener(|this, _, _, cx| {
+                                                    this.shop_product_embed_preview = None;
+                                                    cx.notify();
+                                                })),
+                                            cx,
+                                        ),
+                                    )
+                                    .when(card.available, |row| {
+                                        row.child(
+                                            div()
+                                                .id("shop-embed-buy")
+                                                .flex_1()
+                                                .h(px(36.))
+                                                .rounded(px(8.))
+                                                .bg(color("--control-primary-background-default"))
+                                                .when(buy_disabled, |b| b.opacity(0.5))
+                                                .when(!buy_disabled, |b| b.cursor_pointer())
+                                                .flex()
+                                                .items_center()
+                                                .justify_center()
+                                                .gap(px(5.))
+                                                .text_size(px(13.))
+                                                .font_weight(FontWeight(600.))
+                                                .text_color(color("--white"))
+                                                .when(card.orb_price.is_some(), |b| {
+                                                    b.child(icon("shop_orb_18", 14., "--white"))
+                                                })
+                                                .child(buy_label),
+                                        )
+                                        .child(
+                                            div()
+                                                .id("shop-embed-gift")
+                                                .aria_label(dc_intl::t("JCFN/y"))
+                                                .size(px(36.))
+                                                .flex_none()
+                                                .rounded(px(8.))
+                                                .bg(color("--control-primary-background-default"))
+                                                .cursor_pointer()
+                                                .flex()
+                                                .items_center()
+                                                .justify_center()
+                                                .child(icon("shop_gift", 18., "--white")),
+                                        )
+                                    }),
+                            ),
+                    ),
+            )
+            .with_priority(96)
+            .into_any_element(),
+        )
+    }
+
+    /// Capture harness: `shop-embed [buy|orbs|sub-current|unavailable|close]` (modules 50777 + 376374).
+    #[cfg(feature = "capture")]
+    pub(crate) fn script_shop_embed(&mut self, arg: &str, cx: &mut Context<Self>) -> String {
+        match arg.trim() {
+            "close" => {
+                self.shop_product_embed_preview = None;
+                cx.notify();
+                "shop-embed: closed".to_owned()
+            }
+            "orbs" => {
+                self.shop_product_embed_preview = Some(ShopProductEmbedPreview {
+                    title: "Starfall Cosmetic Bundle".to_owned(),
+                    price: None,
+                    orb_price: Some(1200),
+                    bonus_orbs: None,
+                    available: true,
+                    eligible: true,
+                    sub_state: None,
+                });
+                cx.notify();
+                "shop-embed: orbs".to_owned()
+            }
+            "sub-current" => {
+                self.shop_product_embed_preview = Some(ShopProductEmbedPreview {
+                    title: "Creator Pro Tier".to_owned(),
+                    price: Some("$4.99/month".to_owned()),
+                    orb_price: None,
+                    bonus_orbs: None,
+                    available: true,
+                    eligible: true,
+                    sub_state: Some((
+                        SubscriptionPlanButtonState::Subscribed,
+                        "$4.99/month".to_owned(),
+                    )),
+                });
+                cx.notify();
+                "shop-embed: sub-current".to_owned()
+            }
+            "unavailable" => {
+                self.shop_product_embed_preview = Some(ShopProductEmbedPreview {
+                    title: "Limited Founder Pack".to_owned(),
+                    price: None,
+                    orb_price: None,
+                    bonus_orbs: None,
+                    available: false,
+                    eligible: false,
+                    sub_state: None,
+                });
+                cx.notify();
+                "shop-embed: unavailable".to_owned()
+            }
+            _ => {
+                self.shop_product_embed_preview = Some(ShopProductEmbedPreview {
+                    title: "Starfall Starter Skin".to_owned(),
+                    price: Some("$9.99".to_owned()),
+                    orb_price: None,
+                    bonus_orbs: Some(250),
+                    available: true,
+                    eligible: true,
+                    sub_state: None,
+                });
+                cx.notify();
+                "shop-embed: buy".to_owned()
+            }
+        }
     }
 }
 

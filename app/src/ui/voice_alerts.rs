@@ -614,6 +614,12 @@ impl Root {
                 }
             }
         }
+        if let VoiceAlert::StageFull { .. } = &alert {
+            self.request_image(
+                "voice-alert:stage-full".to_owned(),
+                "https://discord.com/assets/3ca8e729f3fc7da5.svg".to_owned(),
+            );
+        }
         self.voice_alert = Some(alert);
         cx.notify();
     }
@@ -632,6 +638,9 @@ impl Root {
             }
             VoiceAlert::InvitedToSpeak { channel } => {
                 return Some(self.invited_to_speak_modal(*channel, cx));
+            }
+            VoiceAlert::StageFull { guild, .. } => {
+                return Some(self.stage_full_graphic_modal(*guild, cx));
             }
             VoiceAlert::LeaveGroupBlocked {
                 channel,
@@ -704,50 +713,7 @@ impl Root {
                 )],
                 close: close(),
             },
-            VoiceAlert::StageFull { guild, .. } => {
-                let known = self.stores.guild(guild);
-                let community = known.is_some_and(|known| {
-                    known.features.iter().any(|feature| feature == "COMMUNITY")
-                });
-                let tier = known.map_or(0, |known| known.premium_tier);
-                let seats = known.map_or(0, |known| known.max_stage_video_channel_users);
-                let (subtitle, boost) = stage_full_text(community, tier, seats);
-                let buttons = if boost {
-                    vec![
-                        modal::button(
-                            "stage-full-no-thanks",
-                            dc_intl::t("f3Pet9"),
-                            modal::Tone::Secondary,
-                            |this, _, _| this.voice_alert = None,
-                        ),
-                        // `expressive` in the module; the boost dialog of `K4` (module 233824).
-                        modal::button(
-                            "stage-full-boost",
-                            dc_intl::t("Uj0md3"),
-                            modal::Tone::Primary,
-                            move |this, _, cx| {
-                                this.voice_alert = None;
-                                this.boost_this_server(guild, cx);
-                            },
-                        ),
-                    ]
-                } else {
-                    vec![modal::button(
-                        "stage-full-got-it",
-                        dc_intl::t("NX+WJN"),
-                        modal::Tone::Primary,
-                        |this, _, _| this.voice_alert = None,
-                    )]
-                };
-                modal::Spec {
-                    id: "stage-full-modal",
-                    title: dc_intl::t("pqPQL0").into(),
-                    subtitle: Some(div().child(dc_intl::t(subtitle)).into_any_element()),
-                    body: None,
-                    buttons,
-                    close: close(),
-                }
-            }
+            VoiceAlert::StageFull { .. } => unreachable!("returned as graphic_modal above"),
             VoiceAlert::StageBlocked {
                 guild,
                 channel,
@@ -912,6 +878,61 @@ impl Root {
                     ),
                 ],
                 close: Box::new(move |this, _, _| this.answer_speak_invite(channel, true)),
+            },
+            cx,
+        )
+    }
+
+    /// Module 291453 on the graphic modal of 772707 (`graphic: /assets/3ca8e729f3fc7da5.svg` +
+    /// expressive Boost button `Uj0md3` / `f3Pet9` or `NX+WJN` Got It).
+    fn stage_full_graphic_modal(&self, guild: Id, cx: &mut Context<Self>) -> AnyElement {
+        const STAGE_FULL_ART: &str = "https://discord.com/assets/3ca8e729f3fc7da5.svg";
+        let known = self.stores.guild(guild);
+        let community =
+            known.is_some_and(|known| known.features.iter().any(|feature| feature == "COMMUNITY"));
+        let tier = known.map_or(0, |known| known.premium_tier);
+        let seats = known.map_or(0, |known| known.max_stage_video_channel_users);
+        let (subtitle, boost) = stage_full_text(community, tier, seats);
+        let buttons = if boost {
+            vec![
+                modal::button(
+                    "stage-full-no-thanks",
+                    dc_intl::t("f3Pet9"),
+                    modal::Tone::Secondary,
+                    |this, _, _| this.voice_alert = None,
+                ),
+                modal::button(
+                    "stage-full-boost",
+                    dc_intl::t("Uj0md3"),
+                    modal::Tone::Expressive,
+                    move |this, _, cx| {
+                        this.voice_alert = None;
+                        this.boost_this_server(guild, cx);
+                    },
+                )
+                .with_icon("boost_gem", 16., "--white"),
+            ]
+        } else {
+            vec![modal::button(
+                "stage-full-got-it",
+                dc_intl::t("NX+WJN"),
+                modal::Tone::Primary,
+                |this, _, _| this.voice_alert = None,
+            )]
+        };
+        self.graphic_modal(
+            super::graphic_modal::Spec {
+                id: "stage-full-modal",
+                graphic: Some(super::graphic_modal::Graphic {
+                    url: STAGE_FULL_ART,
+                    width: 288.,
+                    height: 162.,
+                }),
+                title: dc_intl::t("pqPQL0").into(),
+                subtitle: Some(div().child(dc_intl::t(subtitle)).into_any_element()),
+                body: None,
+                buttons,
+                close: Box::new(|this, _, _| this.voice_alert = None),
             },
             cx,
         )
@@ -1134,7 +1155,19 @@ impl Root {
                 }
                 None => "voice alert: no event to end".to_owned(),
             },
-            _ => "usage: voice-alert reload-activity|end-event".to_owned(),
+            "stage-full" => {
+                let guild = self.guild.unwrap_or(1);
+                if let Some(g) = self.stores.guilds.iter_mut().find(|g| g.id == guild) {
+                    g.premium_tier = 1;
+                    g.max_stage_video_channel_users = 150;
+                }
+                self.voice_alert = Some(VoiceAlert::StageFull {
+                    guild,
+                    channel: self.channel.unwrap_or(1),
+                });
+                "voice alert: stage full".to_owned()
+            }
+            _ => "usage: voice-alert reload-activity|end-event|stage-full".to_owned(),
         }
     }
 }

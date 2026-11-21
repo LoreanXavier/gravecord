@@ -299,17 +299,66 @@ impl Root {
             Some(theme) => blend(theme.primary, theme.overlay),
             None => rgba((banner << 8) | 0xff),
         };
+        // `Y` of module 641318: interactive banner hover overlay (`N0bC3P` "Change Banner" or
+        // `O1sT5v` "Unlock Banner" with pencil / Nitro wheel icon).
+        let can_edit_banner = !guild_upsell;
+        let banner_label = if can_edit_banner {
+            dc_intl::t("N0bC3P")
+        } else {
+            dc_intl::t("O1sT5v")
+        };
+        let banner_icon = if can_edit_banner {
+            "clips_pencil"
+        } else {
+            "nitro_wheel"
+        };
         let banner_fill = div()
+            .id("profile-editor-preview-banner")
+            .group("profile-editor-preview-banner-group")
+            .relative()
             .w_full()
             .h(px(140.))
             .rounded_t(px(16.))
             .overflow_hidden()
             .bg(banner_bg)
+            .cursor_pointer()
             .children(banner_image.map(|image| {
                 img(image)
                     .w_full()
                     .h(px(140.))
                     .object_fit(gpui::ObjectFit::Cover)
+            }))
+            .child(
+                div()
+                    .absolute()
+                    .inset_0()
+                    .bg(color("--opacity-black-40"))
+                    .opacity(0.)
+                    .group_hover("profile-editor-preview-banner-group", |s| s.opacity(1.))
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .gap(px(6.))
+                    .child(
+                        gpui::svg()
+                            .path(format!("icons/{banner_icon}.svg"))
+                            .size(px(16.))
+                            .text_color(rgba(0xffffffff)),
+                    )
+                    .child(
+                        div()
+                            .text_size(px(13.))
+                            .font_weight(FontWeight(600.))
+                            .text_color(rgba(0xffffffff))
+                            .child(banner_label),
+                    ),
+            )
+            .on_click(cx.listener(move |this, _, _, cx| {
+                if can_edit_banner {
+                    this.profile_editor_pick_image(super::upload::Target::Banner, cx);
+                } else {
+                    this.profile_editor_open_guild_upsell(cx);
+                }
             }));
         let dot = avatar_size * 32. / 120.;
         let avatar = card_fill(
@@ -407,7 +456,107 @@ impl Root {
                 }))
                 .into_any_element()
         } else {
-            avatar.into_any_element()
+            let menu_open = open.avatar_menu_open;
+            avatar
+                .id("profile-editor-avatar-actions-trigger")
+                .group("profile-editor-avatar-actions-group")
+                .cursor_pointer()
+                .child(
+                    div()
+                        .absolute()
+                        .left(px(9.))
+                        .top(px(9.))
+                        .size(px(avatar_size))
+                        .rounded_full()
+                        .bg(color("--opacity-black-40"))
+                        .opacity(0.)
+                        .group_hover("profile-editor-avatar-actions-group", |s| s.opacity(1.))
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .child(
+                            gpui::svg()
+                                .path("icons/clips_pencil.svg")
+                                .size(px(20.))
+                                .text_color(rgba(0xffffffff)),
+                        ),
+                )
+                .on_click(cx.listener(|this, _, _, cx| {
+                    cx.stop_propagation();
+                    if let Some(open) = this.profile_editor.as_mut() {
+                        open.avatar_menu_open = !open.avatar_menu_open;
+                    }
+                    cx.notify();
+                }))
+                .when(menu_open, |el| {
+                    // `B` of module 641318: Avatar Actions popout menu (`ldIeAd`, `4OynCD`, `BVcYCx`).
+                    el.child(
+                        div()
+                            .id("profile-editor-avatar-actions-menu")
+                            .aria_label(dc_intl::t("ldIeAd"))
+                            .occlude()
+                            .absolute()
+                            .left(px(0.))
+                            .top(px(ring + 6.))
+                            .w(px(188.))
+                            .p(px(6.))
+                            .rounded(px(8.))
+                            .border_1()
+                            .border_color(color("--border-subtle"))
+                            .bg(color("--background-surface-higher"))
+                            .shadow(vec![gpui::BoxShadow {
+                                color: gpui::hsla(0., 0., 0., 0.28),
+                                offset: gpui::point(px(0.), px(8.)),
+                                blur_radius: px(16.),
+                                spread_radius: px(0.),
+                                inset: false,
+                            }])
+                            .flex()
+                            .flex_col()
+                            .gap(px(2.))
+                            .on_click(|_, _, cx| cx.stop_propagation())
+                            .child(
+                                div()
+                                    .id("profile-editor-menu-change-avatar")
+                                    .px(px(10.))
+                                    .py(px(8.))
+                                    .rounded(px(4.))
+                                    .cursor_pointer()
+                                    .hover(|s| s.bg(color("--background-mod-subtle")))
+                                    .text_size(px(14.))
+                                    .text_color(color("--text-strong"))
+                                    .child(dc_intl::t("4OynCD"))
+                                    .on_click(cx.listener(|this, _, _, cx| {
+                                        if let Some(open) = this.profile_editor.as_mut() {
+                                            open.avatar_menu_open = false;
+                                        }
+                                        this.profile_editor_pick_image(
+                                            super::upload::Target::Avatar,
+                                            cx,
+                                        );
+                                    })),
+                            )
+                            .child(
+                                div()
+                                    .id("profile-editor-menu-change-decoration")
+                                    .px(px(10.))
+                                    .py(px(8.))
+                                    .rounded(px(4.))
+                                    .cursor_pointer()
+                                    .hover(|s| s.bg(color("--background-mod-subtle")))
+                                    .text_size(px(14.))
+                                    .text_color(color("--text-strong"))
+                                    .child(dc_intl::t("BVcYCx"))
+                                    .on_click(cx.listener(|this, _, _, cx| {
+                                        if let Some(open) = this.profile_editor.as_mut() {
+                                            open.avatar_menu_open = false;
+                                        }
+                                        this.profile_editor_pick(super::Kind::Decoration, cx);
+                                    })),
+                            ),
+                    )
+                })
+                .into_any_element()
         };
         // The status bubble (`e0.A` with the prompt of module 645507): grows automatically when text wraps inside `bubble_width`.
         let bubble_width = (width - bubble_left - 20.).clamp(120., 180.);

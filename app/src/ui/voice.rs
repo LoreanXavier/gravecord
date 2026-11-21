@@ -55,6 +55,23 @@ impl Call {
         self.rtc_users.iter().any(|user| Some(*user) != me)
     }
 
+    /// `SecureFramesVerifiedStore.isCallVerified()` (modules 707890, 665691 `bG`, 681281):
+    /// true when DAVE E2EE is active (`dave_version > 0`), at least one other participant is
+    /// connected, and every connected remote participant is in `verified_users`.
+    pub fn is_call_verified(
+        &self,
+        me: Option<Id>,
+        verified_users: &std::collections::HashSet<Id>,
+    ) -> bool {
+        self.dave_version > 0
+            && self.has_others(me)
+            && self
+                .rtc_users
+                .iter()
+                .filter(|uid| Some(**uid) != me)
+                .all(|uid| verified_users.contains(uid))
+    }
+
     /// Connected media participants currently reported on the call.
     pub(super) fn rtc_users(&self) -> &[u64] {
         &self.rtc_users

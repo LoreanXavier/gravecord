@@ -212,6 +212,35 @@ impl Root {
         self.request_image(key, url);
         cx.notify();
     }
+
+    /// The avatar decoration tile's delete/reset button (module 999618 on 930349):
+    /// `Some(true)` = Reset to Default (`pJsnPf`, `wgIPss`, per-server profile whose main profile
+    /// has a decoration); `Some(false)` = Remove (`2U4Bga`, `N86XcP`); `None` = empty / nothing to drop.
+    pub(super) fn profile_editor_decoration_affordance(&self) -> Option<bool> {
+        let open = self.profile_editor.as_ref()?;
+        let me = self.stores.current_user.as_ref()?;
+        let has_saved = me.avatar_decoration.is_some();
+        let shown = match open.pending.avatar_decoration.as_ref() {
+            Some(Some(_)) => true,
+            Some(None) => false,
+            None => has_saved,
+        };
+        let has_main_fallback = open.guild.is_some() && me.avatar_decoration.is_some();
+        shown.then_some(has_main_fallback)
+    }
+
+    /// Removes or resets the avatar decoration on the open profile (module 999618).
+    pub(super) fn profile_editor_drop_decoration(&mut self, cx: &mut Context<Self>) {
+        let has_saved = self
+            .stores
+            .current_user
+            .as_ref()
+            .is_some_and(|me| me.avatar_decoration.is_some());
+        if let Some(open) = self.profile_editor.as_mut() {
+            open.pending.avatar_decoration = if has_saved { Some(None) } else { None };
+        }
+        cx.notify();
+    }
 }
 
 /// `z5` of module 919395: with no pending change the current avatar decides, else the pending one.

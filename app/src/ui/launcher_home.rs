@@ -606,6 +606,11 @@ impl Root {
         };
         let app_id = id.to_owned();
         let name = application["name"].as_str().unwrap_or_default().to_owned();
+        let is_partner = (application["flags"].as_u64().unwrap_or(0) & (1 << 10)) != 0;
+        let can_user_install =
+            application["integration_types_config"]["1"]["oauth2_install_params"].is_object();
+        let can_guild_install =
+            application["integration_types_config"]["0"]["oauth2_install_params"].is_object();
         let description = application["description"]
             .as_str()
             .unwrap_or_default()
@@ -756,12 +761,33 @@ impl Root {
             .child(
                 div()
                     .h(px(32.))
-                    .truncate()
-                    .text_size(px(24.))
-                    .line_height(px(32.))
-                    .font_weight(FontWeight(600.))
-                    .text_color(color("--text-strong"))
-                    .child(name.clone()),
+                    .flex()
+                    .items_center()
+                    .gap(px(8.))
+                    .child(
+                        div()
+                            .truncate()
+                            .text_size(px(24.))
+                            .line_height(px(32.))
+                            .font_weight(FontWeight(600.))
+                            .text_color(color("--text-strong"))
+                            .child(name.clone()),
+                    )
+                    .when(is_partner, |row| {
+                        // Module 991054: Partner pill badge (`LO4f0P`).
+                        row.child(
+                            div()
+                                .flex_none()
+                                .px(px(6.))
+                                .py(px(2.))
+                                .rounded(px(4.))
+                                .bg(color("--background-mod-strong"))
+                                .text_size(px(11.))
+                                .font_weight(FontWeight(600.))
+                                .text_color(color("--text-default"))
+                                .child(dc_intl::t("LO4f0P")),
+                        )
+                    }),
             )
             .when(!tags.is_empty(), |this| {
                 this.child(
@@ -806,7 +832,11 @@ impl Root {
                                     .line_height(px(18.))
                                     .font_weight(FontWeight(600.))
                                     .text_color(color("--text-brand"))
-                                    .child(if expanded { "Show Less" } else { "Show More" })
+                                    .child(if expanded {
+                                        dc_intl::t("u4YJ8g")
+                                    } else {
+                                        dc_intl::t("N/tajD")
+                                    })
                                     .child(super::icon("chevron_down", 18., "--text-brand").when(
                                         expanded,
                                         |this| {
@@ -826,6 +856,86 @@ impl Root {
                                         cx.notify();
                                     })),
                             )
+                        }),
+                )
+            })
+            .when(can_user_install || can_guild_install, |col| {
+                // Module 991054: App Install Type Selector rows (`aCg60P`/`YeiIUZ`, `E64YCz`/`bbtoKm`).
+                let row = |row_id: &'static str,
+                           glyph: &'static str,
+                           title_key: &'static str,
+                           sub_key: &'static str,
+                           integration_type: u8,
+                           app_for_url: String| {
+                    div()
+                        .id(row_id)
+                        .px(px(12.))
+                        .py(px(10.))
+                        .rounded(px(8.))
+                        .bg(color("--background-base-lowest"))
+                        .hover(|s| s.bg(color("--background-mod-subtle")))
+                        .cursor_pointer()
+                        .flex()
+                        .items_center()
+                        .justify_between()
+                        .gap(px(10.))
+                        .child(
+                            div()
+                                .flex()
+                                .items_center()
+                                .gap(px(10.))
+                                .child(super::icon(glyph, 20., "--interactive-text-active"))
+                                .child(
+                                    div()
+                                        .flex()
+                                        .flex_col()
+                                        .gap(px(2.))
+                                        .child(
+                                            div()
+                                                .text_size(px(14.))
+                                                .font_weight(FontWeight(500.))
+                                                .text_color(color("--interactive-text-active"))
+                                                .child(dc_intl::t(title_key)),
+                                        )
+                                        .child(
+                                            div()
+                                                .text_size(px(12.))
+                                                .text_color(color("--text-muted"))
+                                                .child(dc_intl::t(sub_key)),
+                                        ),
+                                ),
+                        )
+                        .child(super::icon("shop_arrow_right", 14., "--icon-subtle"))
+                        .on_click(cx.listener(move |_, _, _, cx| {
+                            cx.open_url(&format!(
+                                "https://discord.com/oauth2/authorize?client_id={app_for_url}&integration_type={integration_type}"
+                            ));
+                        }))
+                };
+                col.child(
+                    div()
+                        .flex()
+                        .flex_col()
+                        .gap(px(6.))
+                        .when(can_user_install, |list| {
+                            list.child(row(
+                                "launcher-install-user",
+                                "user_plus",
+                                "aCg60P",
+                                "YeiIUZ",
+                                1,
+                                app_id.clone(),
+                            ))
+                        })
+                        .when(can_guild_install, |list| {
+                            list.child(row(
+                                "launcher-install-guild",
+                                "storefront_store",
+                                "E64YCz",
+                                "bbtoKm",
+                                0,
+                                app_id.clone(),
+                            ))
                         }),
                 )
             })

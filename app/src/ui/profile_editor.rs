@@ -116,6 +116,8 @@ pub(super) struct Open {
     item_upsell: Option<Kind>,
     /// The per-server profile upsell (module 63473) is up (`servers.rs`).
     guild_upsell: bool,
+    /// Preview Avatar Actions popout menu (module 641318 `B`: Change Avatar / Change Decoration).
+    avatar_menu_open: bool,
     /// The status bubble's prompt, drawn once per open from the prompt list (module 645507).
     prompt: &'static str,
     /// The editor's sizes for the window it is drawn in (`geometry.rs`), updated every frame.
@@ -301,6 +303,7 @@ impl Root {
             upsell_closed: false,
             item_upsell: None,
             guild_upsell: false,
+            avatar_menu_open: false,
             prompt: preview::random_prompt(),
             geometry: geometry::Geometry::of(1280., 720.),
             #[cfg(feature = "capture")]

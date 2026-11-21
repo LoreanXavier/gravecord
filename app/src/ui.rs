@@ -352,6 +352,7 @@ mod copy_combo;
 mod dm_call;
 mod dm_call_view;
 mod e2ee_verify;
+mod forum_default_reaction;
 mod forum_post_perms;
 mod forum_tag_editor;
 mod game_leaderboard;
@@ -363,6 +364,7 @@ mod member_safety;
 mod member_window;
 mod nitro_resubscribe;
 mod nitro_trials_picker;
+mod orb_multiplier_modal;
 mod orb_wallet;
 mod pick_guild_settings;
 mod premium_uncancel;
@@ -612,6 +614,7 @@ pub struct Root {
     hovered_media: Option<String>,
     guild_guide_open: bool,
     guild_guide_scroll: gpui::ScrollHandle,
+    rail_scroll: gpui::ScrollHandle,
     sidebar_scroll: gpui::ScrollHandle,
     /// The full-window Server Boost page (`boost_page.rs`).
     boost_page: Option<boost_page::BoostPage>,
@@ -847,6 +850,12 @@ pub struct Root {
     guild_sub_selection_modal: Option<app_storefront::GuildSubscriptionSelectionModal>,
     /// Quest reward code claim instructions sub-modal (module 639852).
     quest_code_instructions_modal: Option<quest_reward_modal::QuestCodeInstructionsModal>,
+    /// Quest Orbs Multiplier Info / Nitro Upsell modal (module 50292).
+    orb_multiplier_modal: Option<orb_multiplier_modal::OrbMultiplierModal>,
+    /// Forum "Choose a default reaction" modal (module 939940).
+    forum_default_reaction_modal: Option<forum_default_reaction::ForumDefaultReactionModal>,
+    /// Social Layer / Shop product embed preview (modules 50777 + 376374).
+    shop_product_embed_preview: Option<shop::cards::ShopProductEmbedPreview>,
     /// Nitro Evolving Tenure Badge modal (module 384048).
     evolving_tenure_modal: Option<badge_modal::EvolvingTenureBadgeModal>,
     /// Quest Bar Bounty Card overlay (module 682908).
@@ -1337,6 +1346,7 @@ impl Root {
             hovered_media: None,
             guild_guide_open: false,
             guild_guide_scroll: gpui::ScrollHandle::new(),
+            rail_scroll: gpui::ScrollHandle::new(),
             sidebar_scroll: gpui::ScrollHandle::new(),
             boost_page: None,
             boost_apply: None,
@@ -1471,6 +1481,9 @@ impl Root {
             monetization_team_onboarding_modal: None,
             guild_sub_selection_modal: None,
             quest_code_instructions_modal: None,
+            orb_multiplier_modal: None,
+            forum_default_reaction_modal: None,
+            shop_product_embed_preview: None,
             evolving_tenure_modal: None,
             quest_bar_bounty: None,
             suspended_safety_hub: None,
@@ -2566,6 +2579,10 @@ impl Root {
                 }
                 if key == server_monetization::ACCEPT_TERMS_KEY {
                     self.handle_monetization_terms_response(&body, cx);
+                    return;
+                }
+                if key == forum_default_reaction::DEFAULT_REACTION_PATCH_KEY {
+                    self.handle_forum_default_reaction_response(&body, cx);
                     return;
                 }
                 if key == orb_wallet::TOTAL_REDEEMED_KEY
@@ -5631,18 +5648,24 @@ impl Root {
         let tile = match (live, image) {
             (Some(live), _) => tile.child(live),
             (None, Some(image)) => tile.child(img(image).size(px(40.)).rounded(px(12.))),
-            (None, None) => tile
-                // `childWrapper_JJ-hgR`: brand coloured while hovered or selected, over .15s.
-                .bg(motion::rail::tile_background(
-                    &row_key,
-                    selected,
-                    "--background-mod-subtle",
-                ))
-                .text_size(px(18.))
-                .line_height(px(21.6))
-                .font_weight(FontWeight(500.))
-                .text_color(motion::rail::tile_foreground(&row_key, selected))
-                .child(guild.acronym()),
+            (None, None) => {
+                let acronym = guild.acronym();
+                // `R[MEDIUM]` of module 682163: 40px tile acronym font size by length.
+                const SIZES: [f32; 7] = [16., 16., 14., 14., 12., 10., 8.];
+                let font_size = SIZES[acronym.chars().count().min(SIZES.len() - 1)];
+                tile
+                    // `childWrapper_JJ-hgR`: brand coloured while hovered or selected, over .15s.
+                    .bg(motion::rail::tile_background(
+                        &row_key,
+                        selected,
+                        "--background-mod-subtle",
+                    ))
+                    .text_size(px(font_size))
+                    .line_height(px(font_size * 1.2))
+                    .font_weight(FontWeight(500.))
+                    .text_color(motion::rail::tile_foreground(&row_key, selected))
+                    .child(acronym)
+            }
         };
         div()
             .relative()
@@ -5728,6 +5751,7 @@ impl Root {
             div()
                 .parity("rail")
                 .id("guild-rail-scroll")
+                .track_scroll(&self.rail_scroll)
                 .overflow_y_scroll()
                 .flex_1()
                 .min_h(px(0.))
@@ -5780,9 +5804,12 @@ impl Root {
                     // The Create Your Own Server tip (`tutorial_tips`).
                     .children(self.tutorial_rail_tip(cx)),
                 )
-                .child(self.discover_tile(cx));
+                .child(self.discover_tile(cx))
+                // `scroller_5dqHTG` carries `padding-bottom: 24px` (8px flex gap + 16px spacer) so the
+                // Discover button clears the floating `user_panel` by 8px when scrolled to the bottom.
+                .child(div().flex_none().h(px(16.)));
         // wrapper_5dqHTG reserves the observed panel border-box height + 8px - 16px.
-        let reserved = self.user_panel_height.unwrap_or(px(58.)) - px(8.);
+        let reserved = (self.user_panel_height.unwrap_or(px(58.)) - px(8.)).max(px(0.));
         div()
             .flex_none()
             .w(px(72.))
@@ -11810,6 +11837,9 @@ impl Render for Root {
                         || this.monetization_team_onboarding_modal.is_some()
                         || this.guild_sub_selection_modal.is_some()
                         || this.quest_code_instructions_modal.is_some()
+                        || this.orb_multiplier_modal.is_some()
+                        || this.forum_default_reaction_modal.is_some()
+                        || this.shop_product_embed_preview.is_some()
                         || this.evolving_tenure_modal.is_some()
                         || this.quest_bar_bounty.is_some()
                         || this.quests.split_modal.is_some()
@@ -11895,6 +11925,9 @@ impl Render for Root {
                     this.monetization_team_onboarding_modal = None;
                     this.guild_sub_selection_modal = None;
                     this.quest_code_instructions_modal = None;
+                    this.orb_multiplier_modal = None;
+                    this.forum_default_reaction_modal = None;
+                    this.shop_product_embed_preview = None;
                     this.evolving_tenure_modal = None;
                     this.quest_bar_bounty = None;
                     this.quests.split_modal = None;
@@ -13138,6 +13171,9 @@ impl Render for Root {
             .children(self.forum_post_perms_layer(cx))
             .children(self.monetization_team_onboarding_layer(cx))
             .children(self.guild_sub_selection_layer(cx))
+            .children(self.orb_multiplier_layer(cx))
+            .children(self.forum_default_reaction_layer(cx))
+            .children(self.shop_product_embed_layer(cx))
             .children(self.evolving_tenure_badge_layer(cx))
             .children(self.quest_bar_bounty_layer(cx))
             .children(self.quest_split_modal_layer(cx))
@@ -13542,6 +13578,59 @@ fn status_dot_large(status: &str, ring: &str) -> impl IntoElement {
             // Offline keeps a hole and idle its bite, as the smaller dots do.
             status_dot_inner(status, ring, 16.)
         })
+}
+
+#[cfg(feature = "capture")]
+impl Root {
+    /// Capture only: seed enough servers to overflow the left rail (including `"fun.club"` -> `"f.c"`)
+    /// so we can visually verify bottom scroll clearance above the floating user panel.
+    pub(crate) fn script_rail_overflow(&mut self, cx: &mut Context<Self>) -> String {
+        let names = [
+            "fun.club",
+            "Alpha Guild",
+            "Beta Squad",
+            "Gamma Labs",
+            "Delta Ops",
+            "Epsilon Hub",
+            "Zeta Gaming",
+            "Eta Music",
+            "Theta Art",
+            "Iota Dev",
+            "Kappa Club",
+            "Lambda Crew",
+            "Mu Forge",
+            "Nu Lounge",
+            "Xi Core",
+            "Omicron Zone",
+            "Pi Arena",
+            "b",
+        ];
+        for (idx, name) in names.iter().enumerate() {
+            let id = 9_900_000 + idx as u64;
+            if self.stores.guild(id).is_none() {
+                self.stores.dispatch(
+                    "GUILD_CREATE",
+                    &serde_json::json!({
+                        "id": id.to_string(),
+                        "name": name,
+                        "channels": [],
+                        "roles": [],
+                    }),
+                );
+            }
+        }
+        self.data_revision = self.data_revision.wrapping_add(1);
+        cx.notify();
+        format!("rail overflow seeded ({} guilds)", self.stores.guilds.len())
+    }
+
+    /// Capture only: scroll the guild rail to its maximum bottom offset.
+    pub(crate) fn script_rail_scroll_bottom(&mut self, cx: &mut Context<Self>) -> String {
+        let max_y = self.rail_scroll.max_offset().y;
+        self.rail_scroll.set_offset(gpui::point(px(0.), -max_y));
+        cx.notify();
+        format!("rail scrolled to bottom (max_y={:?})", max_y)
+    }
 }
 
 #[cfg(test)]

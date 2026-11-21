@@ -2463,6 +2463,24 @@ impl Root {
                                             })
                                             .child(
                                                 div()
+                                                    .id("forum-default-reaction-trigger")
+                                                    .cursor_pointer()
+                                                    .px(px(10.))
+                                                    .h(px(24.))
+                                                    .rounded(px(6.))
+                                                    .bg(color("--control-secondary-background-default"))
+                                                    .flex()
+                                                    .items_center()
+                                                    .text_size(px(12.))
+                                                    .font_weight(FontWeight(500.))
+                                                    .text_color(color("--text-strong"))
+                                                    .child(dc_intl::t("XlDE3k"))
+                                                    .on_click(cx.listener(move |this, _, _, cx| {
+                                                        this.open_forum_default_reaction(id, cx);
+                                                    })),
+                                            )
+                                            .child(
+                                                div()
                                                     .id("forum-guidelines-close")
                                                     .cursor_pointer()
                                                     .child(icon(
