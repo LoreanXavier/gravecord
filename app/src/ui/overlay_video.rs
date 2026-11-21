@@ -106,11 +106,24 @@ impl Root {
             }
         };
         div()
+            .id(gpui::SharedString::from(format!(
+                "overlay-video-tile-{}-{user}",
+                matches!(source, VideoSource::Stream(_)) as u8
+            )))
             .flex_none()
             .w(px(size.0))
             .h(px(size.1))
             .rounded(px(TILE_RADIUS))
             .overflow_hidden()
+            .when(matches!(source, VideoSource::Stream(_)), |tile| {
+                tile.on_mouse_down(
+                    gpui::MouseButton::Right,
+                    cx.listener(move |this, event: &gpui::MouseDownEvent, _window, cx| {
+                        cx.stop_propagation();
+                        this.open_overlay_stream_menu(user, event.position, cx);
+                    }),
+                )
+            })
             .child(content)
             .into_any_element()
     }

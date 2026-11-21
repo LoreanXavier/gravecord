@@ -498,6 +498,392 @@ impl Root {
     }
 }
 
+/// REST fetch key for accepting updated Creator Monetization terms (`710113`).
+pub(crate) const ACCEPT_TERMS_KEY: &str = "server-monetization:accept-terms";
+const MONETIZATION_TERMS_URL: &str = "https://support.discord.com/hc/en-us/articles/5330075836311";
+
+/// Open Creator Monetization Terms Update Accept modal (module 710113).
+#[derive(Clone, Debug)]
+pub(crate) struct MonetizationTermsModal {
+    pub guild_id: Id,
+    pub demonetized: bool,
+    pub busy: bool,
+    pub error: Option<String>,
+}
+
+/// `POST /guilds/{id}/creator-monetization/accept-new-terms` or `-demonetized` (module 710113).
+pub(crate) fn accept_monetization_terms_request(guild_id: Id, demonetized: bool) -> Request {
+    let suffix = if demonetized {
+        "accept-new-terms-demonetized"
+    } else {
+        "accept-new-terms"
+    };
+    Request::Rest {
+        key: Some(ACCEPT_TERMS_KEY.to_owned()),
+        method: reqwest::Method::POST,
+        route: format!("/guilds/{guild_id}/creator-monetization/{suffix}"),
+        body: Some(json!({})),
+    }
+}
+
+fn monetization_terms_styled(key: &str) -> gpui::StyledText {
+    let runs = dc_intl::format_runs(
+        key,
+        &[(
+            "termsURL",
+            dc_intl::Arg::Str(std::borrow::Cow::Borrowed(MONETIZATION_TERMS_URL)),
+        )],
+    );
+    let mut text = String::new();
+    let mut highlights = Vec::new();
+    for (chunk, hook) in runs {
+        let start = text.len();
+        text.push_str(&chunk);
+        if hook.as_deref() == Some("$link") && start < text.len() {
+            highlights.push((
+                start..text.len(),
+                gpui::HighlightStyle {
+                    color: Some(color("--text-link").into()),
+                    ..gpui::HighlightStyle::default()
+                },
+            ));
+        }
+    }
+    gpui::StyledText::new(text).with_highlights(highlights)
+}
+
+impl Root {
+    /// Opens the Creator Monetization Terms Update modal (`710113`).
+    #[allow(dead_code)]
+    pub(super) fn open_monetization_terms_modal(
+        &mut self,
+        guild_id: Id,
+        demonetized: bool,
+        cx: &mut Context<Self>,
+    ) {
+        self.monetization_terms_modal = Some(MonetizationTermsModal {
+            guild_id,
+            demonetized,
+            busy: false,
+            error: None,
+        });
+        cx.notify();
+    }
+
+    /// Handles the REST answer for `accept-new-terms` / `accept-new-terms-demonetized`.
+    pub(super) fn handle_monetization_terms_response(
+        &mut self,
+        body: &Value,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(modal) = self.monetization_terms_modal.as_mut() else {
+            return;
+        };
+        modal.busy = false;
+        let failed = body["error"].is_string() || body["status"].as_u64().is_some_and(|s| s >= 400);
+        if failed {
+            modal.error = Some(
+                body["body"]["message"]
+                    .as_str()
+                    .unwrap_or_else(|| dc_intl::t("5mlOCW"))
+                    .to_owned(),
+            );
+        } else {
+            self.monetization_terms_modal = None;
+        }
+        cx.notify();
+    }
+
+    /// Modal layer for Creator Monetization Terms Update (`710113`).
+    pub(super) fn monetization_terms_layer(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
+        let modal = self.monetization_terms_modal.as_ref()?;
+        let guild_id = modal.guild_id;
+        let demonetized = modal.demonetized;
+        let busy = modal.busy;
+
+        Some(
+            gpui::deferred(
+                div()
+                    .id("monetization-terms-backdrop")
+                    .occlude()
+                    .absolute()
+                    .inset_0()
+                    .bg(rgba(0x000000b3))
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .p(px(24.))
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        this.monetization_terms_modal = None;
+                        cx.notify();
+                    }))
+                    .child(
+                        div()
+                            .id("monetization-terms-modal")
+                            .w(px(520.))
+                            .rounded(px(12.))
+                            .border_1()
+                            .border_color(color("--border-subtle"))
+                            .bg(color("--background-surface-high"))
+                            .overflow_hidden()
+                            .flex()
+                            .flex_col()
+                            .on_click(|_, _, cx| cx.stop_propagation())
+                            .child(
+                                div()
+                                    .px(px(24.))
+                                    .pt(px(20.))
+                                    .pb(px(12.))
+                                    .flex()
+                                    .items_center()
+                                    .justify_between()
+                                    .gap(px(12.))
+                                    .child(
+                                        div()
+                                            .flex_1()
+                                            .min_w_0()
+                                            .text_size(px(20.))
+                                            .line_height(px(26.))
+                                            .font_weight(FontWeight(700.))
+                                            .text_color(color("--text-strong"))
+                                            .child(dc_intl::t("TP4GSt")),
+                                    )
+                                    .child(
+                                        div()
+                                            .id("monetization-terms-close")
+                                            .flex_none()
+                                            .size(px(32.))
+                                            .rounded(px(6.))
+                                            .cursor_pointer()
+                                            .flex()
+                                            .items_center()
+                                            .justify_center()
+                                            .child(icon("modal_close", 18., "--icon-subtle"))
+                                            .on_click(cx.listener(|this, _, _, cx| {
+                                                this.monetization_terms_modal = None;
+                                                cx.notify();
+                                            })),
+                                    ),
+                            )
+                            .child(
+                                div()
+                                    .px(px(24.))
+                                    .pb(px(20.))
+                                    .flex()
+                                    .flex_col()
+                                    .gap(px(14.))
+                                    .child(
+                                        div()
+                                            .id("monetization-terms-intro")
+                                            .cursor_pointer()
+                                            .text_size(px(14.))
+                                            .line_height(px(20.))
+                                            .text_color(color("--text-default"))
+                                            .child(monetization_terms_styled("c0IsON"))
+                                            .on_click(|_, _, cx| {
+                                                cx.open_url(MONETIZATION_TERMS_URL);
+                                            }),
+                                    )
+                                    .child(
+                                        div()
+                                            .rounded(px(8.))
+                                            .border_1()
+                                            .border_color(color("--border-subtle"))
+                                            .bg(color("--background-base-lower"))
+                                            .p(px(14.))
+                                            .flex()
+                                            .flex_col()
+                                            .gap(px(12.))
+                                            .child(
+                                                div()
+                                                    .flex()
+                                                    .flex_col()
+                                                    .gap(px(4.))
+                                                    .child(
+                                                        div()
+                                                            .text_size(px(14.))
+                                                            .font_weight(FontWeight(700.))
+                                                            .text_color(color("--text-strong"))
+                                                            .child(dc_intl::t("UzDaWD")),
+                                                    )
+                                                    .child(
+                                                        div()
+                                                            .text_size(px(13.))
+                                                            .line_height(px(18.))
+                                                            .text_color(color("--text-default"))
+                                                            .child(dc_intl::t("IDk8Fz")),
+                                                    ),
+                                            )
+                                            .child(div().h(px(1.)).bg(color("--border-subtle")))
+                                            .child(
+                                                div()
+                                                    .flex()
+                                                    .flex_col()
+                                                    .gap(px(4.))
+                                                    .child(
+                                                        div()
+                                                            .text_size(px(14.))
+                                                            .font_weight(FontWeight(700.))
+                                                            .text_color(color("--text-strong"))
+                                                            .child(dc_intl::t("36/RiT")),
+                                                    )
+                                                    .child(
+                                                        div()
+                                                            .text_size(px(13.))
+                                                            .line_height(px(18.))
+                                                            .text_color(color("--text-default"))
+                                                            .child(dc_intl::t("CBzNtr")),
+                                                    ),
+                                            ),
+                                    )
+                                    .child(
+                                        div()
+                                            .id("monetization-terms-footer-note")
+                                            .cursor_pointer()
+                                            .text_size(px(12.))
+                                            .line_height(px(16.))
+                                            .text_color(color("--text-muted"))
+                                            .child(monetization_terms_styled("+oNl6x"))
+                                            .on_click(|_, _, cx| {
+                                                cx.open_url(MONETIZATION_TERMS_URL);
+                                            }),
+                                    )
+                                    .children(modal.error.as_ref().map(|err| {
+                                        div()
+                                            .rounded(px(6.))
+                                            .border_1()
+                                            .border_color(color("--status-danger"))
+                                            .bg(rgba(0xda373c1a))
+                                            .px(px(12.))
+                                            .py(px(8.))
+                                            .text_size(px(13.))
+                                            .text_color(color("--text-feedback-critical"))
+                                            .child(err.clone())
+                                    })),
+                            )
+                            .child(
+                                div()
+                                    .px(px(24.))
+                                    .py(px(14.))
+                                    .bg(color("--background-base-lower"))
+                                    .border_t_1()
+                                    .border_color(color("--border-subtle"))
+                                    .flex()
+                                    .items_center()
+                                    .justify_end()
+                                    .gap(px(12.))
+                                    .child(
+                                        div()
+                                            .id("monetization-terms-later")
+                                            .cursor_pointer()
+                                            .px(px(14.))
+                                            .h(px(36.))
+                                            .rounded(px(6.))
+                                            .flex()
+                                            .items_center()
+                                            .text_size(px(14.))
+                                            .font_weight(FontWeight(500.))
+                                            .text_color(color("--text-default"))
+                                            .child(dc_intl::t("Jj8nUC"))
+                                            .on_click(cx.listener(|this, _, _, cx| {
+                                                this.monetization_terms_modal = None;
+                                                cx.notify();
+                                            })),
+                                    )
+                                    .child(
+                                        div()
+                                            .id("monetization-terms-accept")
+                                            .when(!busy, |d| d.cursor_pointer())
+                                            .when(busy, |d| d.opacity(0.6))
+                                            .px(px(20.))
+                                            .h(px(36.))
+                                            .rounded(px(6.))
+                                            .bg(color("--control-primary-background-default"))
+                                            .flex()
+                                            .items_center()
+                                            .text_size(px(14.))
+                                            .font_weight(FontWeight(600.))
+                                            .text_color(color("--white"))
+                                            .child(dc_intl::t("pC/ozD"))
+                                            .on_click(cx.listener(move |this, _, _, cx| {
+                                                if busy {
+                                                    return;
+                                                }
+                                                if let Some(m) =
+                                                    this.monetization_terms_modal.as_mut()
+                                                {
+                                                    m.busy = true;
+                                                    m.error = None;
+                                                }
+                                                let _ = this.requests.send(
+                                                    accept_monetization_terms_request(
+                                                        guild_id,
+                                                        demonetized,
+                                                    ),
+                                                );
+                                                cx.notify();
+                                            })),
+                                    ),
+                            ),
+                    ),
+            )
+            .with_priority(96)
+            .into_any_element(),
+        )
+    }
+
+    /// Capture harness: `monetization-terms [open|demonetized|error|close]` (module 710113).
+    #[cfg(feature = "capture")]
+    pub(crate) fn script_monetization_terms(
+        &mut self,
+        arg: &str,
+        cx: &mut Context<Self>,
+    ) -> String {
+        let guild_id = self
+            .guild
+            .or_else(|| self.stores.guilds.first().map(|g| g.id))
+            .unwrap_or(1);
+        match arg.trim() {
+            "" | "open" => {
+                self.monetization_terms_modal = Some(MonetizationTermsModal {
+                    guild_id,
+                    demonetized: false,
+                    busy: false,
+                    error: None,
+                });
+                cx.notify();
+                "monetization-terms: open".to_owned()
+            }
+            "demonetized" => {
+                self.monetization_terms_modal = Some(MonetizationTermsModal {
+                    guild_id,
+                    demonetized: true,
+                    busy: false,
+                    error: None,
+                });
+                cx.notify();
+                "monetization-terms: demonetized".to_owned()
+            }
+            "error" => {
+                self.monetization_terms_modal = Some(MonetizationTermsModal {
+                    guild_id,
+                    demonetized: false,
+                    busy: false,
+                    error: Some(dc_intl::t("5mlOCW").to_owned()),
+                });
+                cx.notify();
+                "monetization-terms: error".to_owned()
+            }
+            "close" => {
+                self.monetization_terms_modal = None;
+                cx.notify();
+                "monetization-terms: closed".to_owned()
+            }
+            other => format!("monetization-terms: unknown {other}"),
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

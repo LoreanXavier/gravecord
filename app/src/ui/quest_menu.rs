@@ -421,6 +421,8 @@ impl Root {
         let _ = self
             .requests
             .send(to_net_request(format!("quests:claim:{quest_id}"), req));
+        // Open the Quest Completion / Reward modal (module 670092).
+        self.open_quest_reward_modal(quest_id, cx);
         // Optimistically reflect claimed_at locally so the card updates cleanly in offline replay too.
         if let Some(quest) = self
             .quests

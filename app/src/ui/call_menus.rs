@@ -45,6 +45,7 @@ fn keeps_open(run: &Run) -> bool {
             | Run::ShowOwnCamera
             | Run::DisableVideo(_)
             | Run::ShareAudio
+            | Run::OverlayFitStream(_)
             | Run::Context(
                 Act::VoiceMute | Act::VoiceDeafen | Act::SoundboardMute | Act::DisableVideo,
                 _
@@ -62,6 +63,7 @@ const FLEXIBLE_MAX: f32 = 320.;
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum Subject {
     Stream(Id),
+    OverlayStream(Id),
     User(Id),
 }
 
@@ -123,6 +125,10 @@ pub(super) enum Run {
     CopyText(String),
     /// Report Problem of a stream (module 74329): module 956215 for the stream of this owner.
     ReportStream(Id),
+    /// Overlay Stream Video widget context menu (module 663912): Fit stream to container (`mpnvrV`).
+    OverlayFitStream(Id),
+    /// Overlay Stream Video widget context menu (module 663912): View Stream Privacy / Verification Code (`tjbJbf` / `8ErYvY`).
+    OverlayPrivacyCode(Id),
     /// A row whose feature this client does not have: drawn disabled, never live.
     Missing,
 }
@@ -133,6 +139,8 @@ pub(super) enum Slide {
     UserVolume(Id),
     StreamVolume(Id),
     AttenuationStrength,
+    /// Overlay Stream Video widget zoom 100%–300% (module 663912, `B3kEDs`).
+    OverlayStreamZoom(Id),
 }
 
 /// A row of a tile menu.
@@ -736,6 +744,119 @@ pub(super) struct StreamFacts {
     pub pause_preview: bool,
 }
 
+/// Overlay Stream Video widget context menu (module 663912: `Gl3Q30`, `S5anIc`, `q3O3J8`,
+/// `7Xq/nV`, `sWmtI6`, `/jwMtn`, `fhEzfj`, `B3kEDs` "Stream Zoom" 100–300, `mpnvrV` "Fit stream
+/// to container", `t4JBnI`, `tjbJbf`, `8ErYvY`, `sdnCxV`).
+pub(super) fn overlay_stream_items(
+    facts: &StreamFacts,
+    zoom_pct: u32,
+    fit_to_container: bool,
+) -> Vec<Item> {
+    let owner = facts.owner;
+    let mut header = vec![Item::Label(dc_intl::t("Gl3Q30").to_owned())];
+    if facts.own {
+        header.push(Item::Line(
+            Line::new("stop-streaming", dc_intl::t("S5anIc"), Run::StopStreaming)
+                .icon("menu_stop_stream")
+                .danger(),
+        ));
+    } else if facts.active {
+        header.push(Item::Line(
+            Line::new(
+                "stop-watching",
+                dc_intl::t("q3O3J8"),
+                Run::StopWatching(owner),
+            )
+            .icon("menu_stop_stream"),
+        ));
+    } else {
+        header.push(Item::Line(Line::new(
+            "watch-stream",
+            dc_intl::t("7Xq/nV"),
+            Run::Watch(owner),
+        )));
+    }
+
+    let mut audio = Vec::new();
+    if facts.active && !facts.own {
+        audio.push(Item::Line(
+            Line::new(
+                "overlay-stream-mute",
+                dc_intl::t("sWmtI6"),
+                Run::StreamMute(owner),
+            )
+            .check(facts.muted),
+        ));
+        audio.push(Item::Slider {
+            key: "overlay-stream-volume",
+            label: dc_intl::t("t4JBnI").to_owned(),
+            fraction: facts.volume,
+            slide: Slide::StreamVolume(owner),
+        });
+        if let Some((on, strength)) = facts.attenuation {
+            audio.push(Item::Line(
+                Line::new(
+                    "overlay-attenuation",
+                    dc_intl::t("/jwMtn"),
+                    Run::Attenuation,
+                )
+                .check(on),
+            ));
+            if on {
+                audio.push(Item::Slider {
+                    key: "overlay-attenuation-strength",
+                    label: dc_intl::t("fhEzfj").to_owned(),
+                    fraction: strength,
+                    slide: Slide::AttenuationStrength,
+                });
+            }
+        }
+    }
+
+    let zoom_fraction = ((zoom_pct.clamp(100, 300) - 100) as f32 / 200.).clamp(0., 1.);
+    let display = vec![
+        Item::Slider {
+            key: "overlay-stream-zoom",
+            label: dc_intl::t("B3kEDs").to_owned(),
+            fraction: zoom_fraction,
+            slide: Slide::OverlayStreamZoom(owner),
+        },
+        Item::Line(
+            Line::new(
+                "overlay-fit-stream",
+                dc_intl::t("mpnvrV"),
+                Run::OverlayFitStream(owner),
+            )
+            .check(fit_to_container),
+        ),
+    ];
+
+    let mut security = vec![
+        Item::Line(Line::new(
+            "overlay-privacy-code",
+            dc_intl::t("tjbJbf"),
+            Run::OverlayPrivacyCode(owner),
+        )),
+        Item::Line(Line::new(
+            "overlay-verification-code",
+            dc_intl::t("8ErYvY"),
+            Run::OverlayPrivacyCode(owner),
+        )),
+    ];
+    if !facts.own {
+        security.push(Item::Line(
+            Line::new(
+                "overlay-report-stream",
+                dc_intl::t("sdnCxV"),
+                Run::ReportStream(owner),
+            )
+            .danger(),
+        ));
+    }
+
+    groups(vec![header, audio, display, security])
+}
+
 /// `stream-context` (module 16001) in its `minimal` form: what a stream tile's right click and Options open.
 pub(super) fn stream_tile_items(facts: &StreamFacts) -> Vec<Item> {
     let owner = facts.owner;
@@ -1098,7 +1219,7 @@ impl Root {
         self.clear_tip();
         self.menu_scroll.set_offset(gpui::point(px(0.), px(0.)));
         self.vv.menu = Some(match subject {
-            Subject::Stream(owner) => Menu::Stream(owner, at),
+            Subject::Stream(owner) | Subject::OverlayStream(owner) => Menu::Stream(owner, at),
             Subject::User(user) => Menu::Tile(user, at),
         });
         self.vv.tile_menu = Some(Open {
@@ -1246,6 +1367,11 @@ impl Root {
     fn tile_menu_items_bare(&self, open: &Open) -> Vec<Item> {
         match open.subject {
             Subject::Stream(owner) => stream_tile_items(&self.stream_tile_facts(owner)),
+            Subject::OverlayStream(owner) => overlay_stream_items(
+                &self.stream_tile_facts(owner),
+                self.overlay_stream_zoom.get(&owner).copied().unwrap_or(100),
+                self.overlay_stream_fit.contains(&owner),
+            ),
             Subject::User(user) => {
                 let facts = self.user_tile_facts(user);
                 if open.minimal {
@@ -1332,6 +1458,18 @@ impl Root {
             Run::VoiceSettings => self.open_settings_section("Voice & Video", cx),
             Run::CopyText(text) => cx.write_to_clipboard(gpui::ClipboardItem::new_string(text)),
             Run::ReportStream(owner) => self.open_stream_report(owner, cx),
+            Run::OverlayFitStream(owner) => {
+                if !self.overlay_stream_fit.remove(&owner) {
+                    self.overlay_stream_fit.insert(owner);
+                }
+            }
+            Run::OverlayPrivacyCode(owner) => {
+                self.put_app_toast(
+                    format!("Stream privacy code verified for user {owner}."),
+                    true,
+                    cx,
+                );
+            }
             Run::Missing => {}
         }
         cx.notify();
@@ -1489,7 +1627,10 @@ impl Root {
     pub(super) fn tile_menu_layer(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
         let open = self.vv.tile_menu.as_ref()?;
         let still = match (self.vv.menu, open.subject) {
-            (Some(Menu::Stream(owner, _)), Subject::Stream(subject)) => owner == subject,
+            (
+                Some(Menu::Stream(owner, _)),
+                Subject::Stream(subject) | Subject::OverlayStream(subject),
+            ) => owner == subject,
             (Some(Menu::Tile(user, _)), Subject::User(subject)) => user == subject,
             _ => false,
         };
@@ -1845,6 +1986,11 @@ impl Root {
                 100,
                 snap_step(self.stream_attenuation_fraction(), 1, 100),
             ),
+            Slide::OverlayStreamZoom(owner) => (
+                100,
+                300,
+                self.overlay_stream_zoom.get(&owner).copied().unwrap_or(100),
+            ),
         };
         self.menu_slider_row(
             MenuSliderConfig {
@@ -1871,12 +2017,62 @@ impl Root {
                             this.commit_stream_attenuation(step_fraction(value, 1, 100));
                             this.apply_stream_attenuation();
                         }
+                        Slide::OverlayStreamZoom(owner) => {
+                            this.overlay_stream_zoom
+                                .insert(owner, value.clamp(100, 300));
+                        }
                     }
                     cx.notify();
                 }),
             },
             cx,
         )
+    }
+
+    /// Renders the Overlay Stream Video widget context menu (`663912`) at the root layer.
+    pub(super) fn overlay_stream_menu_layer(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
+        let open = self.vv.tile_menu.as_ref()?;
+        matches!(open.subject, Subject::OverlayStream(_))
+            .then(|| self.tile_menu_layer(cx))
+            .flatten()
+    }
+
+    /// Opens the Overlay Stream Video widget context menu (`663912`) at `at`.
+    pub(super) fn open_overlay_stream_menu(
+        &mut self,
+        owner: Id,
+        at: Point<Pixels>,
+        cx: &mut Context<Self>,
+    ) {
+        self.open_tile_menu(Subject::OverlayStream(owner), true, at, cx);
+    }
+
+    /// Capture harness: `overlay-stream-menu [open|close]` (module 663912).
+    #[cfg(feature = "capture")]
+    pub(crate) fn script_overlay_stream_menu(
+        &mut self,
+        arg: &str,
+        cx: &mut Context<Self>,
+    ) -> String {
+        match arg.trim() {
+            "close" => {
+                self.close_tile_menu(cx);
+                "overlay-stream-menu: closed".to_owned()
+            }
+            _ => {
+                let owner = self
+                    .stores
+                    .users
+                    .keys()
+                    .copied()
+                    .find(|id| Some(*id) != self.stores.current_user.as_ref().map(|u| u.id))
+                    .unwrap_or(2);
+                self.overlay_stream_zoom.entry(owner).or_insert(150);
+                self.overlay_stream_fit.insert(owner);
+                self.open_overlay_stream_menu(owner, gpui::point(px(460.), px(200.)), cx);
+                "overlay-stream-menu: open".to_owned()
+            }
+        }
     }
 }
 

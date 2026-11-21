@@ -343,6 +343,7 @@ pub(crate) mod server_welcome_new;
 pub(crate) use server_landing::FORCE_LANDING;
 mod accept_invite;
 mod app_test_mode;
+mod boost_uncancel;
 mod changelog;
 mod claim_account;
 mod copy_combo;
@@ -354,13 +355,16 @@ mod icymi;
 mod incoming_call;
 mod member_safety;
 mod member_window;
+mod nitro_resubscribe;
 mod nitro_trials_picker;
 mod premium_uncancel;
 mod quest_call_and_sheet;
 mod quest_menu;
 mod quest_promoted;
+mod quest_reward_modal;
 mod quest_split_modal;
 mod quest_survey;
+mod raid_alerts;
 mod server_members;
 mod server_onboarding;
 mod server_role_editor;
@@ -371,6 +375,7 @@ mod server_settings;
 mod server_settings_pages;
 mod server_sounds;
 mod server_stickers;
+mod server_subscriptions;
 mod server_tag;
 mod server_template;
 mod server_webhooks;
@@ -766,6 +771,29 @@ pub struct Root {
     server_shop_purchase_success: Option<server_shop::ServerShopPurchaseSuccessModal>,
     /// Single-recipient Share a Nitro Trial modal (module 536110).
     single_share_trial_modal: Option<nitro_trials_picker::SingleShareTrialModal>,
+    /// Guild Raid / Security Actions modal (modules 731204 + 671576).
+    security_actions_modal: Option<raid_alerts::SecurityActionsModal>,
+    /// Harness preview overlay for raid alert banners (module 731204).
+    #[cfg(feature = "capture")]
+    raid_alert_preview: Option<raid_alerts::RaidAlertPreview>,
+    /// Resubscribe to Nitro 2-step modal (module 674809).
+    nitro_resubscribe_modal: Option<nitro_resubscribe::NitroResubscribeModal>,
+    /// Quest Completion / Reward split modal (module 670092).
+    quest_reward_modal: Option<quest_reward_modal::QuestRewardModalState>,
+    /// Members List Quest Hover/Expand popout card (module 198525).
+    member_quest_popout: Option<quest_reward_modal::MemberQuestPopout>,
+    /// Uncancel Server Boost 2-step modal (module 342744).
+    boost_uncancel_modal: Option<boost_uncancel::BoostUncancelModal>,
+    /// Server Subscriptions Storefront page (modules 602844 + 456540 + 815332).
+    server_subscriptions_page: Option<server_subscriptions::ServerSubscriptionsPage>,
+    /// Creator Monetization Terms Update accept modal (module 710113).
+    monetization_terms_modal: Option<server_monetization::MonetizationTermsModal>,
+    /// Overlay Quick Actions Voice Channel Switcher popout (module 594831).
+    overlay_voice_switcher: overlay_chat::OverlayVoiceSwitcher,
+    /// Overlay Stream Video widget zoom 100–300% per owner (module 663912).
+    overlay_stream_zoom: HashMap<Id, u32>,
+    /// Overlay Stream Video widget fit-to-container flags per owner (module 663912).
+    overlay_stream_fit: std::collections::HashSet<Id>,
     /// Suspended User Safety Hub full page + embedded standing/violations body (module 187686 + 37380).
     suspended_safety_hub: Option<suspended_safety_hub::SuspendedSafetyHub>,
     /// Send Nitro Trials Picker & confirmation modal (module 303682 + 810852, `nitro_trials_picker`).
@@ -1355,6 +1383,18 @@ impl Root {
             verify_email_modal: None,
             server_shop_purchase_success: None,
             single_share_trial_modal: None,
+            security_actions_modal: None,
+            #[cfg(feature = "capture")]
+            raid_alert_preview: None,
+            nitro_resubscribe_modal: None,
+            quest_reward_modal: None,
+            member_quest_popout: None,
+            boost_uncancel_modal: None,
+            server_subscriptions_page: None,
+            monetization_terms_modal: None,
+            overlay_voice_switcher: Default::default(),
+            overlay_stream_zoom: HashMap::new(),
+            overlay_stream_fit: std::collections::HashSet::new(),
             suspended_safety_hub: None,
             nitro_trials_picker: None,
             user_activity_preview: None,
@@ -2426,6 +2466,28 @@ impl Root {
                 }
                 if key == icymi::ICYMI_FEED_KEY || key == icymi::ICYMI_HYDRATE_KEY {
                     self.handle_icymi_response(&key, &body, cx);
+                    return;
+                }
+                if key == raid_alerts::INCIDENT_ACTIONS_KEY || key == raid_alerts::FALSE_ALARM_KEY {
+                    self.handle_raid_alert_response(&key, &body, cx);
+                    return;
+                }
+                if key == nitro_resubscribe::RESUBSCRIBE_KEY {
+                    self.handle_nitro_resubscribe_response(&body, cx);
+                    return;
+                }
+                if key == boost_uncancel::UNCANCEL_SLOT_KEY {
+                    self.handle_boost_uncancel_response(&body, cx);
+                    return;
+                }
+                if key == server_subscriptions::GROUP_LISTINGS_KEY
+                    || key == server_subscriptions::SUBS_SETTINGS_KEY
+                {
+                    self.handle_server_subscriptions_response(&key, &body, cx);
+                    return;
+                }
+                if key == server_monetization::ACCEPT_TERMS_KEY {
+                    self.handle_monetization_terms_response(&body, cx);
                     return;
                 }
                 if key == channel_link::UNLINK_LOBBY_KEY {
@@ -11620,6 +11682,14 @@ impl Render for Root {
                         || this.verify_email_modal.is_some()
                         || this.server_shop_purchase_success.is_some()
                         || this.single_share_trial_modal.is_some()
+                        || this.security_actions_modal.is_some()
+                        || this.nitro_resubscribe_modal.is_some()
+                        || this.quest_reward_modal.is_some()
+                        || this.member_quest_popout.is_some()
+                        || this.boost_uncancel_modal.is_some()
+                        || this.server_subscriptions_page.is_some()
+                        || this.monetization_terms_modal.is_some()
+                        || this.overlay_voice_switcher.open
                         || this.quests.split_modal.is_some()
                         || this.quests.enrollment_blocked_modal.is_some()
                         || this.quests.promoted_preview_quest.is_some()
@@ -11673,6 +11743,18 @@ impl Render for Root {
                     this.verify_email_modal = None;
                     this.server_shop_purchase_success = None;
                     this.single_share_trial_modal = None;
+                    this.security_actions_modal = None;
+                    #[cfg(feature = "capture")]
+                    {
+                        this.raid_alert_preview = None;
+                    }
+                    this.nitro_resubscribe_modal = None;
+                    this.quest_reward_modal = None;
+                    this.member_quest_popout = None;
+                    this.boost_uncancel_modal = None;
+                    this.server_subscriptions_page = None;
+                    this.monetization_terms_modal = None;
+                    this.overlay_voice_switcher.open = false;
                     this.quests.split_modal = None;
                     this.quests.enrollment_blocked_modal = None;
                     this.quests.promoted_preview_quest = None;
@@ -12889,6 +12971,14 @@ impl Render for Root {
             .children(self.verify_email_modal_layer(cx))
             .children(self.server_shop_purchase_success_layer(cx))
             .children(self.single_share_trial_layer(cx))
+            .children(self.raid_alerts_layer(cx))
+            .children(self.nitro_resubscribe_layer(cx))
+            .children(self.quest_reward_and_member_popout_layer(cx))
+            .children(self.boost_uncancel_layer(cx))
+            .children(self.server_subscriptions_layer(cx))
+            .children(self.monetization_terms_layer(cx))
+            .children(self.overlay_voice_switcher_layer(cx))
+            .children(self.overlay_stream_menu_layer(cx))
             .children(self.quest_split_modal_layer(cx))
             .children(self.quest_promoted_overlay_layer(cx))
             .children(self.quest_disclosure_and_alert_layer(cx))

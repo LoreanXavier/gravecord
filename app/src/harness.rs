@@ -1879,6 +1879,60 @@ pub async fn run(
                 let line = root.update(cx, |root, cx| root.script_nitro_share_trial(&arg, cx));
                 let _ = writeln!(output, "{line}");
             }
+            // `raid-alerts [paused-both|paused-dms|paused-invites|raid|dm-spam|modal|close]`: Raid alerts & Security Actions (731204 + 671576).
+            ["raid-alerts", rest @ ..] => {
+                let arg = rest.join(" ");
+                let line = root.update(cx, |root, cx| root.script_raid_alerts(&arg, cx));
+                let _ = writeln!(output, "{line}");
+            }
+            // `nitro-resubscribe [confirm|gift|gift-tax|error|success|close]`: Resubscribe to Nitro 2-step modal (674809).
+            ["nitro-resubscribe", rest @ ..] => {
+                let arg = rest.join(" ");
+                let line = root.update(cx, |root, cx| root.script_nitro_resubscribe(&arg, cx));
+                let _ = writeln!(output, "{line}");
+            }
+            // `quest-reward-modal [claimed|loading|error|member-completed|member-progress|member-available|close]`: Quest Reward Split Modal (670092) & Members List Quest Popout (198525).
+            ["quest-reward-modal", rest @ ..] => {
+                let arg = rest.join(" ");
+                let line = root.update(cx, |root, cx| root.script_quest_reward_modal(&arg, cx));
+                let _ = writeln!(output, "{line}");
+            }
+            // `boost-uncancel [confirm|credits|error|saved|close]`: Uncancel Server Boost 2-step modal (342744).
+            ["boost-uncancel", rest @ ..] => {
+                let arg = rest.join(" ");
+                let line = root.update(cx, |root, cx| root.script_boost_uncancel(&arg, cx));
+                let _ = writeln!(output, "{line}");
+            }
+            // `server-subs [storefront|past-due|mobile|not-member|going-away|close]`: Server Subscriptions Storefront (602844 + 456540).
+            ["server-subs", rest @ ..] => {
+                let arg = rest.join(" ");
+                let line = root.update(cx, |root, cx| root.script_server_subscriptions(&arg, cx));
+                let _ = writeln!(output, "{line}");
+            }
+            // `monetization-terms [open|demonetized|error|close]`: Creator Monetization Terms Update modal (710113).
+            ["monetization-terms", rest @ ..] => {
+                let arg = rest.join(" ");
+                let line = root.update(cx, |root, cx| root.script_monetization_terms(&arg, cx));
+                let _ = writeln!(output, "{line}");
+            }
+            // `nitro-offer-header [trial|two-week|discount|gift-payment|gift-review|close]`: Nitro Purchase/Gift modal header & offer pills (683166).
+            ["nitro-offer-header", rest @ ..] => {
+                let arg = rest.join(" ");
+                let line = root.update(cx, |root, cx| root.script_nitro_offer_header(&arg, cx));
+                let _ = writeln!(output, "{line}");
+            }
+            // `overlay-voice-switcher [open|empty|search <q>|close]`: Overlay Voice Channel Switcher popout (594831).
+            ["overlay-voice-switcher", rest @ ..] => {
+                let arg = rest.join(" ");
+                let line = root.update(cx, |root, cx| root.script_overlay_voice_switcher(&arg, cx));
+                let _ = writeln!(output, "{line}");
+            }
+            // `overlay-stream-menu [open|close]`: Overlay Stream Video widget context menu (663912).
+            ["overlay-stream-menu", rest @ ..] => {
+                let arg = rest.join(" ");
+                let line = root.update(cx, |root, cx| root.script_overlay_stream_menu(&arg, cx));
+                let _ = writeln!(output, "{line}");
+            }
             // `search last` / `search answer <total>`: the open search's request, and an answer to it;
             // `search page <n>`: the pager turns to page n.
             ["search", rest @ ..] => {

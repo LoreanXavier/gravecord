@@ -399,6 +399,34 @@ impl Root {
                         "--text-muted",
                     )))
                     .child(
+                        at(356., 17.)
+                            .id("boost-uncancel-manage")
+                            .w(px(152.))
+                            .h(px(32.))
+                            .rounded(px(8.))
+                            .border_1()
+                            .border_color(color("--border-subtle"))
+                            .bg(color("--control-secondary-background-default"))
+                            .cursor_pointer()
+                            .flex()
+                            .items_center()
+                            .justify_center()
+                            .child(text(
+                                dc_intl::t("etZP4B"),
+                                13.,
+                                18.,
+                                500.,
+                                "--control-secondary-text-default",
+                            ))
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                this.open_boost_uncancel_modal(
+                                    "slot_primary".to_owned(),
+                                    false,
+                                    cx,
+                                );
+                            })),
+                    )
+                    .child(
                         at(516., 17.)
                             .id("boost-cancel-manage")
                             .w(px(166.))

@@ -671,7 +671,7 @@ impl Root {
             "overlay-quick-camera" => self.voice_camera_clicked(cx),
             "overlay-quick-go-live" => self.voice_screen_clicked(cx),
             "overlay-quick-call" if self.call.is_some() => self.leave_voice(cx),
-            // The soundboard and the voice channel picker are popouts that are not built.
+            "overlay-quick-call" => self.toggle_overlay_voice_switcher(cx),
             _ => {}
         }
     }
@@ -763,6 +763,383 @@ impl Root {
                     .child(section(2, third, cx)),
             )
             .into_any_element()
+    }
+}
+
+/// Overlay Quick Actions Voice Channel Switcher Popout state (module 594831).
+#[derive(Clone, Debug, Default)]
+pub(crate) struct OverlayVoiceSwitcher {
+    pub open: bool,
+    pub query: String,
+    pub recent_channel_ids: Vec<(Id, Id)>,
+}
+
+/// One selectable destination in the Overlay Voice Switcher (`594831`).
+#[derive(Clone, Debug)]
+struct VoiceSwitcherEntry {
+    guild_id: Id,
+    channel_id: Id,
+    channel_name: String,
+    guild_name: String,
+    active_count: usize,
+}
+
+impl Root {
+    /// Toggles the Overlay Quick Actions Voice Channel Switcher popout (`594831`).
+    pub(super) fn toggle_overlay_voice_switcher(&mut self, cx: &mut Context<Self>) {
+        self.overlay_voice_switcher.open = !self.overlay_voice_switcher.open;
+        cx.notify();
+    }
+
+    fn collect_voice_switcher_entries(&self) -> (Vec<VoiceSwitcherEntry>, Vec<VoiceSwitcherEntry>) {
+        let q = self.overlay_voice_switcher.query.trim().to_lowercase();
+        let mut active_now = Vec::new();
+        let mut recent = Vec::new();
+        let mut seen = std::collections::HashSet::new();
+
+        for guild in &self.stores.guilds {
+            let guild_name = if guild.name.is_empty() {
+                dc_intl::t("DmIUGK").to_owned()
+            } else {
+                guild.name.clone()
+            };
+            for ch in &guild.channels {
+                let is_voice = matches!(
+                    ch.kind,
+                    dc_state::ChannelKind::Voice | dc_state::ChannelKind::Other(13)
+                );
+                if !is_voice {
+                    continue;
+                }
+                if !q.is_empty()
+                    && !ch.name.to_lowercase().contains(&q)
+                    && !guild_name.to_lowercase().contains(&q)
+                {
+                    continue;
+                }
+                let active_count = self.stores.voice_members(guild.id, ch.id).len();
+                let entry = VoiceSwitcherEntry {
+                    guild_id: guild.id,
+                    channel_id: ch.id,
+                    channel_name: ch.name.clone(),
+                    guild_name: guild_name.clone(),
+                    active_count,
+                };
+                if active_count > 0 {
+                    active_now.push(entry.clone());
+                }
+                if seen.insert(ch.id) && recent.len() < 6 {
+                    recent.push(entry);
+                }
+            }
+        }
+        (recent, active_now)
+    }
+
+    /// Overlay Voice Channel Switcher Popout layer (`594831`: `UyA6ST`, `lnk2NQ`, `0lvb9O`,
+    /// `TxqPQR`, `3ET7Ay`, `nxSS03`, `qdXiQ1`, `Aq+8wB`, `DmIUGK`).
+    pub(super) fn overlay_voice_switcher_layer(
+        &self,
+        cx: &mut Context<Self>,
+    ) -> Option<AnyElement> {
+        if !self.overlay_voice_switcher.open {
+            return None;
+        }
+        let query = self.overlay_voice_switcher.query.clone();
+        let (recent, active_now) = self.collect_voice_switcher_entries();
+        let total = recent.len() + active_now.len();
+        let results_label = if query.trim().is_empty() {
+            None
+        } else if total > 20 {
+            Some(dc_intl::format(
+                "qdXiQ1",
+                &[("count", dc_intl::Arg::Num(20.))],
+            ))
+        } else {
+            Some(dc_intl::format(
+                "Aq+8wB",
+                &[("count", dc_intl::Arg::Num(total as f64))],
+            ))
+        };
+
+        let render_row = |idx: usize,
+                          prefix: &'static str,
+                          entry: VoiceSwitcherEntry,
+                          cx: &mut Context<Self>| {
+            let gid = entry.guild_id;
+            let cid = entry.channel_id;
+            div()
+                .id(format!("overlay-vs-{prefix}-{idx}"))
+                .cursor_pointer()
+                .px(px(10.))
+                .py(px(8.))
+                .rounded(px(6.))
+                .hover(|s| s.bg(gpui::hsla(0., 0., 1., 0.08)))
+                .flex()
+                .items_center()
+                .justify_between()
+                .gap(px(10.))
+                .on_click(cx.listener(move |this, _, _, cx| {
+                    this.overlay_voice_switcher.open = false;
+                    this.overlay_voice_switcher
+                        .recent_channel_ids
+                        .push((gid, cid));
+                    this.join_voice(gid, cid, cx);
+                }))
+                .child(
+                    div()
+                        .flex_1()
+                        .min_w_0()
+                        .flex()
+                        .items_center()
+                        .gap(px(8.))
+                        .child(
+                            svg()
+                                .path("icons/overlay_phone_call.svg")
+                                .size(px(16.))
+                                .flex_none()
+                                .text_color(onyx("--icon-subtle")),
+                        )
+                        .child(
+                            div()
+                                .flex_1()
+                                .min_w_0()
+                                .flex()
+                                .flex_col()
+                                .child(
+                                    div()
+                                        .text_size(px(13.))
+                                        .font_weight(FontWeight(600.))
+                                        .text_color(onyx("--text-strong"))
+                                        .truncate()
+                                        .child(entry.channel_name),
+                                )
+                                .child(
+                                    div()
+                                        .text_size(px(11.))
+                                        .text_color(onyx("--text-muted"))
+                                        .truncate()
+                                        .child(entry.guild_name),
+                                ),
+                        ),
+                )
+                .when(entry.active_count > 0, |row| {
+                    row.child(
+                        div()
+                            .flex_none()
+                            .px(px(6.))
+                            .py(px(2.))
+                            .rounded_full()
+                            .bg(gpui::rgba(0x23a55a33))
+                            .text_size(px(11.))
+                            .font_weight(FontWeight(600.))
+                            .text_color(onyx("--green-300"))
+                            .child(format!("{} live", entry.active_count)),
+                    )
+                })
+        };
+
+        let mut list = div().flex().flex_col().gap(px(10.));
+        if recent.is_empty() && active_now.is_empty() {
+            list = list.child(
+                div()
+                    .py(px(24.))
+                    .px(px(12.))
+                    .text_center()
+                    .text_size(px(13.))
+                    .line_height(px(18.))
+                    .text_color(onyx("--text-muted"))
+                    .child(if query.trim().is_empty() {
+                        dc_intl::t("3ET7Ay")
+                    } else {
+                        dc_intl::t("nxSS03")
+                    }),
+            );
+        } else {
+            if !active_now.is_empty() {
+                list = list.child(
+                    div()
+                        .flex()
+                        .flex_col()
+                        .gap(px(4.))
+                        .child(
+                            div()
+                                .px(px(6.))
+                                .text_size(px(11.))
+                                .font_weight(FontWeight(700.))
+                                .text_color(onyx("--text-muted"))
+                                .child(dc_intl::t("0lvb9O").to_uppercase()),
+                        )
+                        .children(
+                            active_now
+                                .into_iter()
+                                .enumerate()
+                                .map(|(i, e)| render_row(i, "active", e, cx)),
+                        ),
+                );
+            }
+            if !recent.is_empty() {
+                list = list.child(
+                    div()
+                        .flex()
+                        .flex_col()
+                        .gap(px(4.))
+                        .child(
+                            div()
+                                .px(px(6.))
+                                .text_size(px(11.))
+                                .font_weight(FontWeight(700.))
+                                .text_color(onyx("--text-muted"))
+                                .child(dc_intl::t("lnk2NQ").to_uppercase()),
+                        )
+                        .children(
+                            recent
+                                .into_iter()
+                                .enumerate()
+                                .map(|(i, e)| render_row(i, "recent", e, cx)),
+                        ),
+                );
+            }
+        }
+
+        Some(
+            gpui::deferred(
+                div()
+                    .id("overlay-voice-switcher-backdrop")
+                    .occlude()
+                    .absolute()
+                    .inset_0()
+                    .bg(gpui::rgba(0x00000080))
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        this.overlay_voice_switcher.open = false;
+                        cx.notify();
+                    }))
+                    .child(
+                        div()
+                            .id("overlay-voice-switcher-popout")
+                            .w(px(340.))
+                            .rounded(px(12.))
+                            .border_1()
+                            .border_color(onyx("--border-subtle"))
+                            .bg(onyx("--background-surface-high"))
+                            .overflow_hidden()
+                            .flex()
+                            .flex_col()
+                            .on_click(|_, _, cx| cx.stop_propagation())
+                            .child(
+                                div()
+                                    .p(px(12.))
+                                    .border_b_1()
+                                    .border_color(onyx("--border-subtle"))
+                                    .flex()
+                                    .flex_col()
+                                    .gap(px(6.))
+                                    .child(
+                                        div()
+                                            .flex()
+                                            .items_center()
+                                            .justify_between()
+                                            .gap(px(8.))
+                                            .child(
+                                                div()
+                                                    .flex_1()
+                                                    .min_w_0()
+                                                    .text_size(px(14.))
+                                                    .font_weight(FontWeight(700.))
+                                                    .text_color(onyx("--text-strong"))
+                                                    .child(dc_intl::t("TxqPQR")),
+                                            )
+                                            .child(
+                                                div()
+                                                    .id("overlay-vs-close")
+                                                    .flex_none()
+                                                    .cursor_pointer()
+                                                    .size(px(24.))
+                                                    .rounded(px(6.))
+                                                    .flex()
+                                                    .items_center()
+                                                    .justify_center()
+                                                    .child(super::icon(
+                                                        "modal_close",
+                                                        14.,
+                                                        "--icon-subtle",
+                                                    ))
+                                                    .on_click(cx.listener(|this, _, _, cx| {
+                                                        this.overlay_voice_switcher.open = false;
+                                                        cx.notify();
+                                                    })),
+                                            ),
+                                    )
+                                    .child(
+                                        div()
+                                            .h(px(34.))
+                                            .px(px(10.))
+                                            .rounded(px(6.))
+                                            .border_1()
+                                            .border_color(onyx("--border-subtle"))
+                                            .bg(onyx("--background-base-lowest"))
+                                            .flex()
+                                            .items_center()
+                                            .text_size(px(13.))
+                                            .text_color(if query.is_empty() {
+                                                onyx("--text-muted")
+                                            } else {
+                                                onyx("--text-strong")
+                                            })
+                                            .child(if query.is_empty() {
+                                                dc_intl::t("UyA6ST").to_owned()
+                                            } else {
+                                                query
+                                            }),
+                                    )
+                                    .children(results_label.map(|lbl| {
+                                        div()
+                                            .text_size(px(11.))
+                                            .text_color(onyx("--text-muted"))
+                                            .child(lbl)
+                                    })),
+                            )
+                            .child(div().p(px(10.)).max_h(px(340.)).child(list)),
+                    ),
+            )
+            .with_priority(95)
+            .into_any_element(),
+        )
+    }
+
+    /// Capture harness: `overlay-voice-switcher [open|empty|search <q>|close]` (module 594831).
+    #[cfg(feature = "capture")]
+    pub(crate) fn script_overlay_voice_switcher(
+        &mut self,
+        arg: &str,
+        cx: &mut Context<Self>,
+    ) -> String {
+        let trimmed = arg.trim();
+        if trimmed == "close" {
+            self.overlay_voice_switcher.open = false;
+            self.overlay_voice_switcher.query.clear();
+            cx.notify();
+            return "overlay-voice-switcher: closed".to_owned();
+        }
+        if let Some(q) = trimmed.strip_prefix("search ") {
+            self.overlay_voice_switcher.open = true;
+            self.overlay_voice_switcher.query = q.trim().to_owned();
+            cx.notify();
+            return format!("overlay-voice-switcher: search {q}");
+        }
+        if trimmed == "empty" {
+            self.overlay_voice_switcher.open = true;
+            self.overlay_voice_switcher.query = "zzzz_no_such_channel".to_owned();
+            cx.notify();
+            return "overlay-voice-switcher: empty".to_owned();
+        }
+        self.overlay_voice_switcher.open = true;
+        self.overlay_voice_switcher.query.clear();
+        cx.notify();
+        "overlay-voice-switcher: open".to_owned()
     }
 }
 

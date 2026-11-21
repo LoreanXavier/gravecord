@@ -172,6 +172,14 @@ impl Root {
                     .pt(px(16.))
                     .pl(px(16.))
                     .pr(px(14.))
+                    .flex()
+                    .flex_col()
+                    .gap(px(12.))
+                    .children(
+                        self.member_view.as_ref().and_then(|v| {
+                            self.guild_raid_alert_banner(v.guild, "member-safety", cx)
+                        }),
+                    )
                     .child(self.member_safety_card(cx)),
             )
             .into_any_element()

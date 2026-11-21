@@ -421,12 +421,28 @@ impl Root {
             .child(
                 div()
                     .id("subscription-switch")
-                    // Switch Plans (`dylp/7`) opens module 778705 with `subscription: t`, whose first step is
-                    // the plan select. Re-subscribe (`ea`) may open the resubscribe confirmation: not wired.
-                    .when(!canceled, |button| {
-                        button
-                            .cursor_pointer()
-                            .on_click(cx.listener(|this, _, _, cx| this.open_purchase(false, cx)))
+                    // Switch Plans (`dylp/7`) opens module 778705; Re-subscribe (`iIvF2z`) opens module 674809.
+                    .cursor_pointer()
+                    .on_click({
+                        let sub_id = sub.id.clone();
+                        let renewal = sub
+                            .current_period_end
+                            .as_deref()
+                            .and_then(medium_date)
+                            .unwrap_or_else(|| "next billing date".to_owned());
+                        cx.listener(move |this, _, _, cx| {
+                            if canceled {
+                                this.open_nitro_resubscribe_modal(
+                                    sub_id.clone(),
+                                    "$9.99".to_owned(),
+                                    renewal.clone(),
+                                    "month".to_owned(),
+                                    cx,
+                                );
+                            } else {
+                                this.open_purchase(false, cx);
+                            }
+                        })
                     })
                     .h(px(32.))
                     .px(px(16.))
@@ -439,7 +455,7 @@ impl Root {
                     .line_height(px(16.))
                     .font_weight(FontWeight(500.))
                     .child(if canceled {
-                        dc_intl::tr("Re-subscribe")
+                        dc_intl::t("iIvF2z")
                     } else {
                         dc_intl::tr("Switch Plans")
                     }),

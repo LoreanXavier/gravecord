@@ -313,6 +313,46 @@ pub(crate) struct Purchase {
     pub confetti: Option<GiftConfetti>,
     /// Post-purchase confirmation details (module 231308).
     pub confirm: ConfirmState,
+    /// Optional Nitro offer/trial badge rendered in the modal header (module 683166:
+    /// `IBYG5U` "free trial", `gtNqJQ` "2-WEEK TRIAL", `iiLbvu` "{percent}% discount").
+    pub offer_badge: Option<PurchaseOfferBadge>,
+    /// Optional gift review header override (`wKaVLC` "Review your gift", `vHqbJE` "Choose payment method").
+    pub header_step_label: Option<&'static str>,
+}
+
+/// Trial or discount pill rendered in the Nitro purchase modal header (module 683166).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[allow(dead_code)]
+pub(crate) enum PurchaseOfferBadge {
+    FreeTrial,
+    TwoWeekTrial,
+    DiscountPercent(u8),
+}
+
+impl PurchaseOfferBadge {
+    pub(crate) fn label(self) -> String {
+        match self {
+            Self::FreeTrial => dc_intl::t("IBYG5U").to_owned(),
+            Self::TwoWeekTrial => dc_intl::t("gtNqJQ").to_owned(),
+            Self::DiscountPercent(percent) => dc_intl::format(
+                "iiLbvu",
+                &[("percent", dc_intl::Arg::Num(f64::from(percent)))],
+            ),
+        }
+    }
+}
+
+/// Formats a Nitro plan interval price per module 683166 (`AbOLNu` / `rS8FA+`).
+#[allow(dead_code)]
+pub(crate) fn format_plan_price(price: &str, yearly: bool) -> String {
+    let key = if yearly { "rS8FA+" } else { "AbOLNu" };
+    dc_intl::format(
+        key,
+        &[(
+            "price",
+            dc_intl::Arg::Str(std::borrow::Cow::Borrowed(price)),
+        )],
+    )
 }
 
 /// The sound a gift carries: its id and name, and the emoji characters shown before the name (`emojiName`).
@@ -367,6 +407,8 @@ impl Root {
             sound: None,
             confetti: None,
             confirm: ConfirmState::default(),
+            offer_badge: None,
+            header_step_label: None,
         });
         cx.notify();
     }
@@ -440,6 +482,8 @@ impl Root {
             sound: None,
             confetti: None,
             confirm: ConfirmState::default(),
+            offer_badge: None,
+            header_step_label: None,
         });
         cx.notify();
     }
@@ -527,6 +571,13 @@ impl Root {
             } else {
                 114.
             };
+        let offer_badge = self.nitro.purchase.as_ref().and_then(|p| p.offer_badge);
+        let title_str = self
+            .nitro
+            .purchase
+            .as_ref()
+            .and_then(|p| p.header_step_label)
+            .unwrap_or(title);
         let header =
             div()
                 .relative()
@@ -548,15 +599,38 @@ impl Root {
                         .relative()
                         .pt(px(16.))
                         .flex()
+                        .items_center()
+                        .gap(px(8.))
                         .child(
                             div()
                                 .flex_1()
+                                .min_w_0()
                                 .h(px(24.))
-                                .text_size(px(20.))
-                                .line_height(px(24.))
-                                .font_weight(FontWeight(600.))
-                                .text_color(color("--text-strong"))
-                                .child(title),
+                                .flex()
+                                .items_center()
+                                .gap(px(8.))
+                                .child(
+                                    div()
+                                        .text_size(px(20.))
+                                        .line_height(px(24.))
+                                        .font_weight(FontWeight(600.))
+                                        .text_color(color("--text-strong"))
+                                        .child(title_str),
+                                )
+                                .children(offer_badge.map(|badge| {
+                                    div()
+                                        .flex_none()
+                                        .px(px(8.))
+                                        .h(px(20.))
+                                        .rounded_full()
+                                        .bg(color("--control-primary-background-default"))
+                                        .flex()
+                                        .items_center()
+                                        .text_size(px(11.))
+                                        .font_weight(FontWeight(700.))
+                                        .text_color(color("--white"))
+                                        .child(badge.label())
+                                })),
                         )
                         .child(
                             div()
@@ -1588,9 +1662,9 @@ impl Root {
             "nitro-gift-select",
             960.,
             if nitro {
-                "Gift Nitro"
+                dc_intl::t("7YWj6+")
             } else {
-                "Gift Nitro Basic"
+                dc_intl::t("rk4Uu8")
             },
             false,
             body.into_any_element(),
@@ -2211,9 +2285,78 @@ impl Root {
             sound: None,
             confetti: None,
             confirm,
+            offer_badge: None,
+            header_step_label: None,
         });
         cx.notify();
         format!("nitro-confirm: opened ({arg})")
+    }
+
+    /// Capture helper: `nitro-offer-header [trial|two-week|discount|gift-payment|gift-review|close]` (module 683166).
+    #[cfg(feature = "capture")]
+    pub(crate) fn script_nitro_offer_header(
+        &mut self,
+        arg: &str,
+        cx: &mut Context<Self>,
+    ) -> String {
+        let mut p = Purchase {
+            gift: false,
+            step: Step::Checkout,
+            sku: sku::TIER_2,
+            yearly: true,
+            scroll: ScrollHandle::new(),
+            recipient: false,
+            recipient_user: None,
+            message: None,
+            message_subscription: None,
+            sound: None,
+            confetti: None,
+            confirm: ConfirmState::default(),
+            offer_badge: None,
+            header_step_label: None,
+        };
+        match arg.trim() {
+            "" | "trial" => {
+                p.offer_badge = Some(PurchaseOfferBadge::FreeTrial);
+                self.nitro.purchase = Some(p);
+                cx.notify();
+                "nitro-offer-header: trial".to_owned()
+            }
+            "two-week" => {
+                p.offer_badge = Some(PurchaseOfferBadge::TwoWeekTrial);
+                self.nitro.purchase = Some(p);
+                cx.notify();
+                "nitro-offer-header: two-week".to_owned()
+            }
+            "discount" => {
+                p.offer_badge = Some(PurchaseOfferBadge::DiscountPercent(30));
+                self.nitro.purchase = Some(p);
+                cx.notify();
+                "nitro-offer-header: discount".to_owned()
+            }
+            "gift-payment" => {
+                p.gift = true;
+                p.step = Step::Payment;
+                p.header_step_label = Some(dc_intl::t("vHqbJE"));
+                self.nitro.purchase = Some(p);
+                cx.notify();
+                "nitro-offer-header: gift-payment".to_owned()
+            }
+            "gift-review" => {
+                p.gift = true;
+                p.step = Step::Checkout;
+                p.header_step_label = Some(dc_intl::t("wKaVLC"));
+                self.nitro.purchase = Some(p);
+                cx.notify();
+                "nitro-offer-header: gift-review".to_owned()
+            }
+            "close" => {
+                self.close_purchase();
+                cx.notify();
+                "nitro-offer-header: closed".to_owned()
+            }
+            other => format!("nitro-offer-header: unknown {other}"),
+        }
     }
 
     /// `POST /auth/handoff` for the billing page; the answer opens the browser (`checkout_handoff_ready`).

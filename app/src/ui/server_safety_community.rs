@@ -234,6 +234,11 @@ impl Root {
                 list = list.child(div().mx(px(16.)).h(px(1.)).bg(color("--border-subtle")));
             }
         }
+        let guild_id = self
+            .server_settings
+            .as_ref()
+            .map(|s| s.guild)
+            .or(self.guild);
         div()
             .flex()
             .flex_col()
@@ -245,6 +250,10 @@ impl Root {
                     .text_color(color("--text-strong"))
                     .child("Safety Setup"),
             )
+            .children(guild_id.and_then(|gid| {
+                self.guild_raid_alert_banner(gid, "safety-setup", cx)
+                    .map(|b| div().mt(px(16.)).child(b))
+            }))
             .child(list)
             .into_any_element()
     }
