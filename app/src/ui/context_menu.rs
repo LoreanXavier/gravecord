@@ -387,13 +387,17 @@ pub(super) enum Act {
     EditTags,
     /// "Copy Link" of a GIF picker result (`gif-picker`, module 400017).
     CopyGifLink,
+    /// "Reapply" of a rejected join-request guild (`join-request-guild-context`, module 97187 `rpFCLs`).
+    ReapplyApplication,
+    /// "Withdraw Application" / "Discard Application" of a join-request guild (module 97187 `mqtdmQ`/`OQFlFD`).
+    WithdrawApplication,
 }
 
 impl Act {
     /// Every row kind once (`Correction` with its first index). `ordinal` is an exhaustive match, so adding a variant
     /// without listing it here fails the build or the `act_list_is_complete` test.
     #[cfg(test)]
-    pub(super) const ALL: [Act; 170] = [
+    pub(super) const ALL: [Act; 172] = [
         Act::InventoryAbout,
         Act::InventoryHide,
         Act::ReportApp,
@@ -564,6 +568,8 @@ impl Act {
         Act::PlayOnSpotify,
         Act::EditTags,
         Act::CopyGifLink,
+        Act::ReapplyApplication,
+        Act::WithdrawApplication,
     ];
 
     #[cfg(test)]
@@ -739,6 +745,8 @@ impl Act {
             Act::PlayOnSpotify => 167,
             Act::EditTags => 168,
             Act::CopyGifLink => 169,
+            Act::ReapplyApplication => 170,
+            Act::WithdrawApplication => 171,
         }
     }
 }
@@ -881,6 +889,8 @@ pub(super) fn status(act: Act) -> Status {
         | Act::RemoveTimeout
         | Act::InviteToServer
         | Act::LeaveGuild
+        | Act::ReapplyApplication
+        | Act::WithdrawApplication
         | Act::Volume
         | Act::VoiceMute
         | Act::VoiceDeafen
@@ -2412,6 +2422,32 @@ pub(super) fn guild_items(facts: GuildFacts, level: &str) -> Vec<Entry> {
     tidy(out)
 }
 
+/// Join-request guild right-click menu (`join-request-guild-context`, module 97187):
+/// `rpFCLs` "Reapply" (when `REJECTED`), `OQFlFD` "Discard Application" (when `STARTED`) or
+/// `mqtdmQ` "Withdraw Application" otherwise, plus `94lLD7` "Copy Server ID" in developer mode.
+pub(super) fn join_request_guild_items(
+    application_status: Option<&str>,
+    developer: bool,
+) -> Vec<Entry> {
+    let _aria = dc_intl::t("HpQykc");
+    let mut out = Vec::new();
+    let mut actions = Vec::new();
+    if application_status == Some(dc_state::guild_join_requests::REJECTED) {
+        actions.push(Row::new(Act::ReapplyApplication, dc_intl::t("rpFCLs")));
+    }
+    let withdraw_label = if application_status == Some("STARTED") {
+        dc_intl::t("OQFlFD")
+    } else {
+        dc_intl::t("mqtdmQ")
+    };
+    actions.push(Row::new(Act::WithdrawApplication, withdraw_label).danger());
+    group(&mut out, actions);
+    if developer {
+        group(&mut out, vec![Row::new(Act::CopyId, dc_intl::t("94lLD7"))]);
+    }
+    tidy(out)
+}
+
 /// What a person's menu depends on.
 #[derive(Clone, Debug, Default)]
 pub(super) struct UserFacts {
@@ -3736,22 +3772,32 @@ impl Root {
                 items
             }
             Target::Guild(guild) => {
-                let Some(known) = self.stores.guild(guild) else {
-                    return;
-                };
-                let counts = self.guild_rail_counts(known);
-                let facts = GuildFacts {
-                    unread: counts.unread || counts.mentions > 0,
-                    can_invite: self.my_permission(guild, None, CREATE_INSTANT_INVITE)
-                        || known.vanity_url_code.is_some(),
-                    can_manage_channels: self.my_permission(guild, None, MANAGE_CHANNELS),
-                    can_manage_guild: self.my_permission(guild, None, permissions::MANAGE_GUILD),
-                    hide_muted: self.hide_muted(guild),
-                    owner: known.owner_id == self.stores.current_user.as_ref().map(|me| me.id),
-                    developer,
-                    security_actions: self.security_actions_item(guild),
-                };
-                guild_items(facts, self.guild_level_label(guild))
+                if let Some(req) = self.stores.join_requests.get_request(guild)
+                    && self.stores.guild(guild).is_none()
+                {
+                    join_request_guild_items(req.application_status.as_deref(), developer)
+                } else {
+                    let Some(known) = self.stores.guild(guild) else {
+                        return;
+                    };
+                    let counts = self.guild_rail_counts(known);
+                    let facts = GuildFacts {
+                        unread: counts.unread || counts.mentions > 0,
+                        can_invite: self.my_permission(guild, None, CREATE_INSTANT_INVITE)
+                            || known.vanity_url_code.is_some(),
+                        can_manage_channels: self.my_permission(guild, None, MANAGE_CHANNELS),
+                        can_manage_guild: self.my_permission(
+                            guild,
+                            None,
+                            permissions::MANAGE_GUILD,
+                        ),
+                        hide_muted: self.hide_muted(guild),
+                        owner: known.owner_id == self.stores.current_user.as_ref().map(|me| me.id),
+                        developer,
+                        security_actions: self.security_actions_item(guild),
+                    };
+                    guild_items(facts, self.guild_level_label(guild))
+                }
             }
             Target::Channel(id) | Target::Category(id) => {
                 let Some(guild) = self.guild_of_channel(id) else {
@@ -4971,6 +5017,39 @@ impl Root {
                 });
             }
             (Act::LeaveGuild, Target::Guild(guild)) => self.leave_guild = Some(guild),
+            // Module 97187 (`join-request-guild-context`): Reapply (`rpFCLs`) calls `resetGuildJoinRequest`.
+            (Act::ReapplyApplication, Target::Guild(guild)) => {
+                self.reset_join_request(guild);
+                cx.notify();
+            }
+            // Module 97187: Withdraw/Discard Application (`mqtdmQ`/`OQFlFD`) opens confirm dialog (`314116.A`).
+            (Act::WithdrawApplication, Target::Guild(guild)) => {
+                let started = self
+                    .stores
+                    .join_requests
+                    .get_request(guild)
+                    .and_then(|r| r.application_status.as_deref())
+                    == Some("STARTED");
+                let name = self
+                    .stores
+                    .guild(guild)
+                    .map(|g| g.name.clone())
+                    .unwrap_or_else(|| format!("Server {guild}"));
+                let subtitle = if started {
+                    dc_intl::t("fJwWVt").to_owned()
+                } else {
+                    dc_intl::t!("9ZezpN", name = &name).to_string()
+                };
+                self.chat_extra.alert = Some(super::chat_notices::Alert::show(
+                    "join-request-withdraw",
+                    dc_intl::t("y0CVes"),
+                    Some(subtitle),
+                    Some(dc_intl::t("oEAioF").to_owned()),
+                    Some(dc_intl::t("p89ACt").to_owned()),
+                    super::chat_notices::Then::WithdrawApplication { guild },
+                ));
+                cx.notify();
+            }
             (Act::SecurityActions, Target::Guild(guild) | Target::RaidAlert(guild)) => {
                 self.open_security_actions(guild, cx)
             }

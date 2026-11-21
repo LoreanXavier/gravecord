@@ -1382,7 +1382,113 @@ impl Root {
                     })
                     .collect()
             }
-            InboxTab::Scheduled => vec![self.scheduled_empty()],
+            InboxTab::Scheduled => {
+                let mut rows: Vec<_> = self
+                    .stores
+                    .scheduled_messages
+                    .get_scheduled_messages_for_inbox()
+                    .values()
+                    .collect();
+                if rows.is_empty() {
+                    vec![self.scheduled_empty()]
+                } else {
+                    rows.sort_by(|a, b| a.send_at_timestamp.cmp(&b.send_at_timestamp));
+                    rows.into_iter()
+                        .map(|item| {
+                            let id = item.scheduled_message_id;
+                            let text = item.create_args.content.clone();
+                            let when = item.send_at_timestamp.clone();
+                            div()
+                                .id(SharedString::from(format!("scheduled-row-{id}")))
+                                .rounded(px(8.))
+                                .border_1()
+                                .border_color(color("--border-subtle"))
+                                .bg(color("--background-surface-higher"))
+                                .p(px(12.))
+                                .flex()
+                                .flex_col()
+                                .gap(px(8.))
+                                .child(
+                                    div()
+                                        .flex()
+                                        .items_center()
+                                        .justify_between()
+                                        .gap(px(8.))
+                                        .child(
+                                            div()
+                                                .flex()
+                                                .items_center()
+                                                .gap(px(6.))
+                                                .child(icon("webhook_clock", 14., "--icon-subtle"))
+                                                .child(
+                                                    div()
+                                                        .text_size(px(12.))
+                                                        .font_weight(FontWeight(600.))
+                                                        .text_color(color("--text-muted"))
+                                                        .child(when),
+                                                ),
+                                        )
+                                        .child(
+                                            div()
+                                                .flex()
+                                                .items_center()
+                                                .gap(px(6.))
+                                                .child(
+                                                    div()
+                                                        .id(SharedString::from(format!(
+                                                            "scheduled-send-now-{id}"
+                                                        )))
+                                                        .px(px(8.))
+                                                        .py(px(4.))
+                                                        .rounded(px(6.))
+                                                        .bg(color(
+                                                            "--control-primary-background-default",
+                                                        ))
+                                                        .cursor_pointer()
+                                                        .text_size(px(12.))
+                                                        .font_weight(FontWeight(600.))
+                                                        .text_color(color("--white"))
+                                                        .on_click(cx.listener(move |this, _, _, cx| {
+                                                            this.send_now_scheduled_message(id, cx);
+                                                        }))
+                                                        .child("Send Now"),
+                                                )
+                                                .child(
+                                                    div()
+                                                        .id(SharedString::from(format!(
+                                                            "scheduled-cancel-{id}"
+                                                        )))
+                                                        .px(px(8.))
+                                                        .py(px(4.))
+                                                        .rounded(px(6.))
+                                                        .bg(color(
+                                                            "--control-secondary-background-default",
+                                                        ))
+                                                        .cursor_pointer()
+                                                        .text_size(px(12.))
+                                                        .font_weight(FontWeight(500.))
+                                                        .text_color(color(
+                                                            "--control-secondary-text-default",
+                                                        ))
+                                                        .on_click(cx.listener(move |this, _, _, cx| {
+                                                            this.cancel_scheduled_message(id, cx);
+                                                        }))
+                                                        .child(dc_intl::t("ETE/oC")),
+                                                ),
+                                        ),
+                                )
+                                .child(
+                                    div()
+                                        .text_size(px(14.))
+                                        .line_height(px(20.))
+                                        .text_color(color("--text-default"))
+                                        .child(text),
+                                )
+                                .into_any_element()
+                        })
+                        .collect()
+                }
+            }
             InboxTab::Unreads => {
                 let mut list = Vec::new();
                 if crate::storage::get(TUTORIAL_SEEN).is_none() {

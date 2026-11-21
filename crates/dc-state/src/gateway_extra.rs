@@ -110,6 +110,10 @@ impl Stores {
         if data.get("premium_type").is_none() {
             account.premium_type = before.premium_type;
         }
+        if data.get("age_verification_status").is_none() {
+            account.age_verification_status = before.age_verification_status;
+        }
+        account.age_gated_features = before.age_gated_features;
         self.mfa_enabled = account.mfa_enabled;
         self.account = account;
     }

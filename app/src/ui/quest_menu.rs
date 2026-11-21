@@ -475,6 +475,24 @@ impl Root {
             self.quests.bar.dismissed_ids.push(quest_id.to_owned());
         }
         self.quests.menus.menu = None;
+        // Module 321538 (`en`): offer the "Not interested in this Quest?" dismiss survey (`798899`).
+        let (entity_name, is_video) = self
+            .quests
+            .store
+            .quests
+            .iter()
+            .find(|q| q.id == quest_id)
+            .map(|q| {
+                let video = q.config.tasks.iter().any(|t| t.contains("VIDEO"));
+                let name = if q.config.game_title.is_empty() {
+                    q.config.quest_name.clone()
+                } else {
+                    q.config.game_title.clone()
+                };
+                (name, video)
+            })
+            .unwrap_or_else(|| (String::from("this Quest"), false));
+        self.open_quest_survey_modal(quest_id.to_owned(), entity_name, is_video, cx);
         cx.notify();
     }
 

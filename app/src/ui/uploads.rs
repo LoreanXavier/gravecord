@@ -478,6 +478,13 @@ impl Root {
                     .then(|| pending.blurred.clone())
                     .flatten();
                 let shown = cover.clone().unwrap_or_else(|| preview.clone());
+                let preview_for_lightbox = preview.clone();
+                let filename_for_lightbox = pending.name.clone();
+                let has_alt = pending
+                    .description
+                    .as_deref()
+                    .is_some_and(|d| !d.trim().is_empty());
+                let is_spoiler = pending.is_spoiler();
                 div()
                     .flex_1()
                     .flex()
@@ -487,14 +494,58 @@ impl Root {
                         div()
                             .id(SharedString::from(format!("upload-media-{index}")))
                             // Module 914905: "Open expanded image view for {filename}", or "... with description
-                            // {alt}" when the file has alt text.
+                            // {alt}" when the file has alt text. Clicking opens the plain local media viewer.
                             .aria_label(media_label(&pending.name, pending.description.as_deref()))
                             .w(px(width))
                             .h(px(height))
                             .rounded(px(8.))
                             .bg(color("--background-mod-subtle"))
                             .relative()
+                            .cursor_pointer()
+                            .on_click(cx.listener(move |this, _, _, cx| {
+                                this.open_local_picture(
+                                    format!("{index}-{}", filename_for_lightbox),
+                                    preview_for_lightbox.clone(),
+                                    filename_for_lightbox.clone(),
+                                    picture,
+                                    cx,
+                                );
+                            }))
                             .child(img(shown).w(px(width)).h(px(height)).rounded(px(8.)))
+                            // `QEW81z` "Alt" badge when alt description is set (`914905`).
+                            .when(has_alt && cover.is_none(), |this| {
+                                this.child(
+                                    div()
+                                        .absolute()
+                                        .bottom(px(6.))
+                                        .left(px(6.))
+                                        .px(px(6.))
+                                        .py(px(2.))
+                                        .rounded(px(4.))
+                                        .bg(hsla(0., 0., 0., 0.72))
+                                        .text_size(px(11.))
+                                        .font_weight(FontWeight(700.))
+                                        .text_color(color("--white"))
+                                        .child(dc_intl::t("QEW81z")),
+                                )
+                            })
+                            // `F+x38C` "Spoiler" badge when marked spoiler without blur cover.
+                            .when(is_spoiler && cover.is_none(), |this| {
+                                this.child(
+                                    div()
+                                        .absolute()
+                                        .top(px(6.))
+                                        .left(px(6.))
+                                        .px(px(6.))
+                                        .py(px(2.))
+                                        .rounded(px(4.))
+                                        .bg(hsla(0., 0., 0., 0.72))
+                                        .text_size(px(11.))
+                                        .font_weight(FontWeight(700.))
+                                        .text_color(color("--white"))
+                                        .child(dc_intl::t("F+x38C")),
+                                )
+                            })
                             // `spoilerWarning_0_7_Rr`: a 20px-radius pill (60% black, padding 8 by 12) centred on the cover.
                             .when(cover.is_some(), |this| {
                                 this.child(
@@ -516,7 +567,7 @@ impl Root {
                                                 .line_height(px(15.))
                                                 .font_weight(FontWeight(600.))
                                                 .text_color(rgb(0xe4e4e6))
-                                                .child("SPOILER"),
+                                                .child(dc_intl::t("F+x38C").to_uppercase()),
                                         ),
                                 )
                             }),
@@ -622,47 +673,75 @@ impl Root {
                         }))
                     }))
                     .child(
-                        action(
-                            format!("upload-spoiler-{index}"),
-                            // The eye becomes the slashed eye while the card is a spoiler.
-                            if pending.is_spoiler() {
-                                "eye_slash"
-                            } else {
-                                "upload_spoiler"
-                            },
-                            "--interactive-text-default",
-                        )
-                        .on_click(cx.listener(move |this, _, _, cx| {
-                            if let Some(pending) = this.pending_files.get_mut(index) {
-                                pending.name = toggle_spoiler(&pending.name);
-                            }
-                            cx.notify();
-                        })),
+                        self.with_tip(
+                            format!("upload-spoiler-tip-{index}"),
+                            super::tooltip::Tip::body(
+                                super::tooltip::Body::Text(dc_intl::t("cuurzA").into()),
+                                super::tooltip::Side::Top,
+                            ),
+                            action(
+                                format!("upload-spoiler-{index}"),
+                                // The eye becomes the slashed eye while the card is a spoiler.
+                                if pending.is_spoiler() {
+                                    "eye_slash"
+                                } else {
+                                    "upload_spoiler"
+                                },
+                                "--interactive-text-default",
+                            )
+                            .on_click(cx.listener(
+                                move |this, _, _, cx| {
+                                    if let Some(pending) = this.pending_files.get_mut(index) {
+                                        pending.name = toggle_spoiler(&pending.name);
+                                    }
+                                    cx.notify();
+                                },
+                            )),
+                            cx,
+                        ),
                     )
                     .child(
-                        action(
-                            format!("upload-modify-{index}"),
-                            "upload_modify",
-                            "--interactive-text-default",
-                        )
-                        .on_click(cx.listener(
-                            move |this, _, window, cx| {
-                                this.open_modify_attachment(index, window, cx)
-                            },
-                        )),
+                        self.with_tip(
+                            format!("upload-modify-tip-{index}"),
+                            super::tooltip::Tip::body(
+                                super::tooltip::Body::Text(dc_intl::t("Y8ujqr").into()),
+                                super::tooltip::Side::Top,
+                            ),
+                            action(
+                                format!("upload-modify-{index}"),
+                                "upload_modify",
+                                "--interactive-text-default",
+                            )
+                            .on_click(cx.listener(
+                                move |this, _, window, cx| {
+                                    this.open_modify_attachment(index, window, cx)
+                                },
+                            )),
+                            cx,
+                        ),
                     )
                     .child(
-                        action(
-                            format!("upload-remove-{index}"),
-                            "upload_remove",
-                            "--control-critical-secondary-text-default",
-                        )
-                        .on_click(cx.listener(move |this, _, _, cx| {
-                            if index < this.pending_files.len() {
-                                this.pending_files.remove(index);
-                            }
-                            cx.notify();
-                        })),
+                        self.with_tip(
+                            format!("upload-remove-tip-{index}"),
+                            super::tooltip::Tip::body(
+                                super::tooltip::Body::Text(dc_intl::t("vN7REz").into()),
+                                super::tooltip::Side::Top,
+                            ),
+                            action(
+                                format!("upload-remove-{index}"),
+                                "upload_remove",
+                                "--control-critical-secondary-text-default",
+                            )
+                            .on_click(cx.listener(
+                                move |this, _, _, cx| {
+                                    if index < this.pending_files.len() {
+                                        this.pending_files.remove(index);
+                                    }
+                                    cx.notify();
+                                },
+                            )),
+                            cx,
+                        ),
                     ),
             )
             .into_any_element()

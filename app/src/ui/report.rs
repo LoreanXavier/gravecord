@@ -125,17 +125,22 @@ impl Root {
         self.start_report(0, None, Some(Subject::Event { guild, event }), cx);
     }
 
-    /// Report App (module 928658 `r3`): the guild and channel shown when the page was opened.
+    /// Report App (module 928658 `r3` + 630891): the guild and channel shown when opened,
+    /// plus `GET /applications/{id}/public` so application metadata is available.
     pub(super) fn open_report_app(
         &mut self,
         app: Id,
         entrypoint: &'static str,
         cx: &mut Context<Self>,
     ) {
+        let _ = self.requests.send(Request::Fetch {
+            key: format!("report-app-meta:{app}"),
+            route: format!("/applications/{app}/public"),
+        });
         let subject = Subject::App {
             app,
             guild: self.guild,
-            channel: None,
+            channel: self.channel,
             entrypoint,
         };
         self.start_report(0, None, Some(subject), cx);
@@ -245,6 +250,16 @@ impl Root {
                 open.submitting = false;
                 let menu = open.menu.clone().unwrap_or_default();
                 if report["ok"] == true {
+                    // Module 630891: close the underlying Report App chooser once submitted.
+                    if matches!(
+                        self.chat_extra
+                            .alert
+                            .as_ref()
+                            .and_then(|a| a.content.as_ref()),
+                        Some(super::chat_notices::Content::ReportApp { .. })
+                    ) {
+                        self.chat_extra.alert = None;
+                    }
                     let success = menu["success_node_id"].as_u64().unwrap_or(0);
                     open.history.push(Step {
                         node: open.node,

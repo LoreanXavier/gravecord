@@ -27,8 +27,11 @@ const CREATE_KEY: &str = "scheduled-create";
 /// The key of the list request (`FETCH_SCHEDULED_MESSAGES`).
 pub(super) const FETCH_KEY: &str = "scheduled-fetch";
 /// The key prefix of a cancel (`SCHEDULED_MESSAGES_DELETE_*`); the message id follows.
-#[cfg(feature = "capture")]
 const DELETE_KEY: &str = "scheduled-delete:";
+/// The key prefix of Send Now (`POST /users/@me/scheduled-messages/{id}/send`, module 151282 + 859403).
+const SEND_NOW_KEY: &str = "scheduled-send:";
+/// The key prefix of Update (`PATCH /users/@me/scheduled-messages/{id}`, module 151282 + 859403).
+const UPDATE_KEY: &str = "scheduled-update:";
 
 /// The field whose popover is open.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -65,6 +68,8 @@ pub(super) struct State {
     pub modal: Option<Modal>,
     /// The "Schedule Message" row's submenu in the "+" menu is open.
     pub submenu: bool,
+    /// Non-Nitro scheduled-message limit upsell modal (module 853861 / 859403).
+    pub upsell_open: bool,
     pending: Option<Pending>,
 }
 
@@ -772,25 +777,247 @@ impl Root {
                     body["body"].as_array().map_or(0, Vec::len)
                 ));
             }
-            #[cfg(feature = "capture")]
             key if key.starts_with(DELETE_KEY) => {
                 let id = key[DELETE_KEY.len()..].parse::<Id>().unwrap_or_default();
                 if body["ok"].as_bool() == Some(true) {
                     self.stores.scheduled_messages.removal_success(id);
+                    // `Re` of module 859403: `JF/LWn` "Successfully canceled the message."
+                    self.show_toast(dc_intl::t("JF/LWn").to_owned(), ToastIcon::Clock, cx);
                 } else {
                     self.stores.scheduled_messages.removal_failure(id);
+                    let err = body["body"]["message"]
+                        .as_str()
+                        .unwrap_or("Something went wrong.");
+                    self.put_app_toast(dc_intl::t!("sUvyW3", error = err).to_string(), false, cx);
                 }
-                proof_log(&format!(
-                    "delete ok={} status={}",
-                    body["ok"], body["status"]
-                ));
-                // The proof ends with a list: nothing may be left.
-                self.fetch_scheduled_messages();
+                #[cfg(feature = "capture")]
+                {
+                    proof_log(&format!(
+                        "delete ok={} status={}",
+                        body["ok"], body["status"]
+                    ));
+                    // The proof ends with a list: nothing may be left.
+                    self.fetch_scheduled_messages();
+                }
+            }
+            key if key.starts_with(SEND_NOW_KEY) => {
+                let id = key[SEND_NOW_KEY.len()..].parse::<Id>().unwrap_or_default();
+                if body["ok"].as_bool() == Some(true) {
+                    self.stores.scheduled_messages.removal_success(id);
+                    // `Ki` of module 859403: `BHCm/d` "Message sent."
+                    self.show_toast(dc_intl::t("BHCm/d").to_owned(), ToastIcon::Clock, cx);
+                } else {
+                    self.stores.scheduled_messages.removal_failure(id);
+                    let err = body["body"]["message"]
+                        .as_str()
+                        .unwrap_or("Something went wrong.");
+                    self.put_app_toast(dc_intl::t!("uy++C+", error = err).to_string(), false, cx);
+                }
+            }
+            key if key.starts_with(UPDATE_KEY) => {
+                if body["ok"].as_bool() == Some(true) {
+                    if let Some(updated) =
+                        scheduled::ScheduledMessageSend::from_value(&body["body"])
+                    {
+                        self.stores.scheduled_messages.put(updated);
+                    }
+                    // `kb` of module 859403: `MXsMRk` "Scheduled message updated"
+                    self.show_toast(dc_intl::t("MXsMRk").to_owned(), ToastIcon::Clock, cx);
+                } else {
+                    let err = body["body"]["message"]
+                        .as_str()
+                        .unwrap_or("Something went wrong.");
+                    self.put_app_toast(dc_intl::t!("slM6In", error = err).to_string(), false, cx);
+                }
             }
             _ => return false,
         }
         cx.notify();
         true
+    }
+
+    /// Sends a scheduled message immediately (`POST /users/@me/scheduled-messages/{id}/send`, module 151282 + 859403).
+    pub(super) fn send_now_scheduled_message(&mut self, id: Id, cx: &mut Context<Self>) {
+        self.stores.scheduled_messages.removal_start(id);
+        let _ = self.requests.send(Request::Rest {
+            key: Some(format!("{SEND_NOW_KEY}{id}")),
+            method: reqwest::Method::POST,
+            route: format!("/users/@me/scheduled-messages/{id}/send"),
+            body: None,
+        });
+        cx.notify();
+    }
+
+    /// Cancels a scheduled message (`DELETE /users/@me/scheduled-messages/{id}`, module 151282 + 859403).
+    pub(super) fn cancel_scheduled_message(&mut self, id: Id, cx: &mut Context<Self>) {
+        self.stores.scheduled_messages.removal_start(id);
+        let _ = self.requests.send(Request::Rest {
+            key: Some(format!("{DELETE_KEY}{id}")),
+            method: reqwest::Method::DELETE,
+            route: format!("/users/@me/scheduled-messages/{id}"),
+            body: None,
+        });
+        cx.notify();
+    }
+
+    /// Updates a scheduled message (`PATCH /users/@me/scheduled-messages/{id}`, module 151282 + 859403).
+    #[allow(dead_code)]
+    pub(super) fn update_scheduled_message(
+        &mut self,
+        id: Id,
+        scheduled_timestamp: &str,
+        content: &str,
+        cx: &mut Context<Self>,
+    ) {
+        let _ = self.requests.send(Request::Rest {
+            key: Some(format!("{UPDATE_KEY}{id}")),
+            method: reqwest::Method::PATCH,
+            route: format!("/users/@me/scheduled-messages/{id}"),
+            body: Some(serde_json::json!({
+                "scheduled_timestamp": scheduled_timestamp,
+                "content": content,
+            })),
+        });
+        cx.notify();
+    }
+
+    /// Non-Nitro scheduled-message limit upsell modal (module 853861 / 859403 `vh`).
+    pub(super) fn schedule_upsell_modal_layer(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
+        if !self.schedule.upsell_open {
+            return None;
+        }
+        let title = dc_intl::t!("GNoaxo", premiumMax = 25).to_string();
+        let body = dc_intl::t!("YnsakI", premiumMax = 25).to_string();
+        Some(
+            deferred(
+                div()
+                    .id("schedule-upsell-backdrop")
+                    .occlude()
+                    .absolute()
+                    .top_0()
+                    .left_0()
+                    .size_full()
+                    .bg(gpui::rgba(0x000000b3))
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        this.schedule.upsell_open = false;
+                        cx.notify();
+                    }))
+                    .child(
+                        div()
+                            .id("schedule-upsell-modal")
+                            .w(px(440.))
+                            .rounded(px(12.))
+                            .bg(color("--background-surface-high"))
+                            .border_1()
+                            .border_color(color("--border-subtle"))
+                            .p(px(24.))
+                            .flex()
+                            .flex_col()
+                            .items_center()
+                            .gap(px(14.))
+                            .on_click(|_, _, cx| cx.stop_propagation())
+                            .child(
+                                div()
+                                    .flex()
+                                    .items_center()
+                                    .gap(px(8.))
+                                    .child(icon("nitro_wheel", 24., "--icon-strong"))
+                                    .child(
+                                        div()
+                                            .px(px(6.))
+                                            .py(px(2.))
+                                            .rounded(px(4.))
+                                            .bg(gpui::rgb(0x5865f2))
+                                            .text_size(px(10.))
+                                            .font_weight(FontWeight(700.))
+                                            .text_color(color("--white"))
+                                            .child("BETA"),
+                                    ),
+                            )
+                            .child(
+                                div()
+                                    .text_center()
+                                    .text_size(px(20.))
+                                    .font_weight(FontWeight(700.))
+                                    .text_color(color("--text-strong"))
+                                    .child(title),
+                            )
+                            .child(
+                                div()
+                                    .text_center()
+                                    .text_size(px(14.))
+                                    .line_height(px(20.))
+                                    .text_color(color("--text-muted"))
+                                    .child(body),
+                            )
+                            .child(
+                                div()
+                                    .w_full()
+                                    .mt(px(6.))
+                                    .flex()
+                                    .flex_col()
+                                    .gap(px(8.))
+                                    .child(
+                                        div()
+                                            .id("schedule-upsell-nitro")
+                                            .w_full()
+                                            .h(px(40.))
+                                            .rounded(px(8.))
+                                            .bg(color("--control-primary-background-default"))
+                                            .cursor_pointer()
+                                            .flex()
+                                            .items_center()
+                                            .justify_center()
+                                            .text_size(px(14.))
+                                            .font_weight(FontWeight(600.))
+                                            .text_color(color("--white"))
+                                            .on_click(cx.listener(|this, _, _, cx| {
+                                                this.schedule.upsell_open = false;
+                                                this.open_nitro(cx);
+                                            }))
+                                            .child(dc_intl::t("PcTCB7")),
+                                    )
+                                    .child(
+                                        div()
+                                            .id("schedule-upsell-ok")
+                                            .w_full()
+                                            .h(px(36.))
+                                            .rounded(px(8.))
+                                            .bg(color("--control-secondary-background-default"))
+                                            .cursor_pointer()
+                                            .flex()
+                                            .items_center()
+                                            .justify_center()
+                                            .text_size(px(14.))
+                                            .font_weight(FontWeight(500.))
+                                            .text_color(color("--control-secondary-text-default"))
+                                            .on_click(cx.listener(|this, _, _, cx| {
+                                                this.schedule.upsell_open = false;
+                                                cx.notify();
+                                            }))
+                                            .child(dc_intl::t("BddRzS")),
+                                    ),
+                            ),
+                    ),
+            )
+            .with_priority(6)
+            .into_any_element(),
+        )
+    }
+
+    /// Capture helper: `schedule-upsell [open|close]`.
+    #[cfg(feature = "capture")]
+    pub(crate) fn script_schedule_upsell(&mut self, mode: &str, cx: &mut Context<Self>) -> String {
+        self.schedule.upsell_open = mode.trim() != "close";
+        cx.notify();
+        if self.schedule.upsell_open {
+            "schedule-upsell: open".into()
+        } else {
+            "schedule-upsell: closed".into()
+        }
     }
 
     /// The answer to the create request (`SCHEDULED_MESSAGES_CREATE_SUCCESS` or `_FAILURE`).
@@ -825,20 +1052,22 @@ impl Root {
                     .update(cx, |composer, _| composer.set_text(&pending.content));
             }
         }
-        // `vh` of module 859403: over the limit with Nitro, "Oops! Limit reached." with Manage Messages. GAP: without
-        // Nitro the official client opens the upsell modal 853861, which is not built; the toast below stands in.
+        // `vh` of module 859403: over the limit with Nitro -> "Oops! Limit reached." alert;
+        // without Nitro (`upgradable`) -> upsell modal 853861 ("Get up to 25 scheduled messages").
         if body["body"]["code"].as_u64() == Some(scheduled::TOO_MANY_SCHEDULED_MESSAGES) {
             let (max, upgradable) = scheduled::limit(self.stores.account.premium_type == Some(2));
-            if !upgradable {
+            if upgradable {
+                self.schedule.upsell_open = true;
+            } else {
                 self.chat_extra.alert = Some(limit_alert(max));
-                cx.notify();
-                return;
             }
+            cx.notify();
+            return;
         }
         let error = body["body"]["message"]
             .as_str()
             .unwrap_or("Something went wrong. Please try again.");
-        self.put_app_toast(format!("Failed to schedule message. {error}"), false, cx);
+        self.put_app_toast(dc_intl::t!("PsJmUe", error = error).to_string(), false, cx);
     }
 
     /// Capture runs: with `GRAVECORD_SCHEDULE_DELETE_AFTER_CREATE` set, the message just scheduled is cancelled at once

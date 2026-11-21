@@ -2143,9 +2143,16 @@ pub struct Account {
     pub verified: bool,
     /// `premium_type`: 1 Classic, 2 Nitro, 3 Basic; none without a subscription.
     pub premium_type: Option<u64>,
+    /// `user.age_verification_status` (module 155718 `Tk` / 36149 `g`).
+    pub age_verification_status: Option<u64>,
+    /// `READY.age_gated_features` bitmask (module 687123 `t`, bit 128 = `STAGE_SPEAKING`).
+    pub age_gated_features: u64,
 }
 
 impl Account {
+    /// `687123.t.STAGE_SPEAKING` (bit 7 of `READY.age_gated_features`).
+    pub const AGE_GATE_STAGE_SPEAKING: u64 = 128;
+
     fn from_value(value: &Value) -> Self {
         Self {
             nsfw_allowed: value["nsfw_allowed"].as_bool().unwrap_or(false),
@@ -2154,7 +2161,31 @@ impl Account {
             mfa_enabled: value["mfa_enabled"].as_bool().unwrap_or(false),
             verified: value["verified"].as_bool().unwrap_or(false),
             premium_type: value["premium_type"].as_u64().filter(|kind| *kind > 0),
+            age_verification_status: value["age_verification_status"].as_u64(),
+            age_gated_features: 0,
         }
+    }
+
+    /// Module `36149.uE` (`VERIFIED_ADULT = 3`, `INFERRED_ADULT = 4`).
+    pub fn is_verified_or_inferred_adult(&self) -> bool {
+        matches!(self.age_verification_status, Some(3 | 4))
+    }
+
+    /// Module `36149.b8` (not `UNVERIFIED = 1` / `CLIENT_ONLY_PENDING = 5`).
+    pub fn has_completed_or_inferred_age_status(&self) -> bool {
+        matches!(self.age_verification_status, Some(2 | 3 | 4 | 6))
+    }
+
+    /// Module `418208.Vv`: true when `STAGE_SPEAKING` is age-gated and the user is not a confirmed adult.
+    pub fn stage_speaking_age_gated(&self) -> bool {
+        (self.age_gated_features & Self::AGE_GATE_STAGE_SPEAKING) != 0
+            && !self.is_verified_or_inferred_adult()
+    }
+
+    /// Module `418208.tp`: true when the Stage speaking age-gate coachmark should show.
+    pub fn stage_speaking_coachmark_due(&self) -> bool {
+        (self.age_gated_features & Self::AGE_GATE_STAGE_SPEAKING) != 0
+            && !self.has_completed_or_inferred_age_status()
     }
 }
 
@@ -3543,6 +3574,7 @@ impl Stores {
             experiments::GuildExperiments::from_ready(&data["guild_experiments"]);
         self.mfa_enabled = data["user"]["mfa_enabled"].as_bool().unwrap_or(false);
         self.account = Account::from_value(&data["user"]);
+        self.account.age_gated_features = data["age_gated_features"].as_u64().unwrap_or(0);
         self.theme = data["user_settings_proto"]
             .as_str()
             .and_then(settings::theme)

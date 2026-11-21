@@ -341,6 +341,9 @@ mod server_welcome;
 pub(crate) mod server_welcome_new;
 #[cfg(feature = "capture")]
 pub(crate) use server_landing::FORCE_LANDING;
+mod accept_invite;
+mod app_test_mode;
+mod changelog;
 mod claim_account;
 mod copy_combo;
 mod dm_call;
@@ -353,6 +356,7 @@ mod premium_uncancel;
 mod quest_menu;
 mod quest_promoted;
 mod quest_split_modal;
+mod quest_survey;
 mod server_members;
 mod server_onboarding;
 mod server_role_editor;
@@ -731,6 +735,18 @@ pub struct Root {
     nitro_mgmt_overlay: Option<settings::nitro_mgmt::NitroMgmtOverlay>,
     /// Shop Collection Detail, Vault, Related Drops & Seasonal Promos showcase overlay (modules 19576 + 367234).
     shop_collections_overlay: Option<shop::collections::ShopCollectionsOverlay>,
+    /// What's New changelog modal (module 837601, `changelog`).
+    changelog_modal: Option<changelog::ChangelogModal>,
+    /// Quest dismiss survey 2-slide modal (modules 321538 + 798899, `quest_survey`).
+    quest_survey_modal: Option<quest_survey::QuestSurveyModal>,
+    /// Application Test Mode modal (module 868511, `app_test_mode`).
+    app_test_mode_modal: Option<app_test_mode::AppTestModeModal>,
+    /// Persisted active Application Test Mode session (`app_test_mode`).
+    app_test_mode_active: app_test_mode::TestModeActive,
+    /// Accept Invite modal (modules 654000 + 700156 + 4274, `accept_invite`).
+    accept_invite_modal: Option<accept_invite::AcceptInviteModal>,
+    /// Game Stats Application Widget sync/connect/reconnect overlay (module 591410, `app_widget`).
+    app_widget_state_overlay: Option<app_widget::AppWidgetStateOverlay>,
     /// Suspended User Safety Hub full page + embedded standing/violations body (module 187686 + 37380).
     suspended_safety_hub: Option<suspended_safety_hub::SuspendedSafetyHub>,
     /// Send Nitro Trials Picker & confirmation modal (module 303682 + 810852, `nitro_trials_picker`).
@@ -1307,6 +1323,12 @@ impl Root {
             transfer_ownership_modal: None,
             nitro_mgmt_overlay: None,
             shop_collections_overlay: None,
+            changelog_modal: None,
+            quest_survey_modal: None,
+            app_test_mode_modal: None,
+            app_test_mode_active: Default::default(),
+            accept_invite_modal: None,
+            app_widget_state_overlay: None,
             suspended_safety_hub: None,
             nitro_trials_picker: None,
             user_activity_preview: None,
@@ -2346,6 +2368,24 @@ impl Root {
                     || key == settings::nitro_mgmt::REDEEM_OFFER_KEY
                 {
                     cx.notify();
+                    return;
+                }
+                if key == changelog::CONFIG_KEY || key.starts_with(changelog::ENTRY_KEY_PREFIX) {
+                    self.handle_changelog_response(&key, &body, cx);
+                    return;
+                }
+                if key == app_test_mode::TEST_MODE_KEY {
+                    self.handle_app_test_mode_response(&body, cx);
+                    return;
+                }
+                if key.starts_with(accept_invite::RESOLVE_KEY_PREFIX)
+                    || key.starts_with(accept_invite::ACCEPT_KEY_PREFIX)
+                {
+                    self.handle_accept_invite_response(&key, &body, cx);
+                    return;
+                }
+                if key.starts_with(app_widget::REFRESH_PREFIX) {
+                    self.handle_app_widget_refresh_response(&body, cx);
                     return;
                 }
                 if key == channel_link::UNLINK_LOBBY_KEY {
@@ -5322,7 +5362,13 @@ impl Root {
                         let help = self
                             .title_stop(bar_button("help", "help", false), "help", 6., cx)
                             .relative()
-                            .on_click(|_, _, cx| cx.open_url("https://support.discord.com"));
+                            .on_click(|_, _, cx| cx.open_url("https://support.discord.com"))
+                            .on_mouse_down(
+                                gpui::MouseButton::Right,
+                                cx.listener(|this, _, _, cx| {
+                                    this.open_changelog_modal(cx);
+                                }),
+                            );
                         // The bar's items sit 12 apart (`trailing_3zSH5d`); the update button, when up, follows.
                         self.with_tip(
                             "title-help",
@@ -11521,6 +11567,12 @@ impl Render for Root {
                         || this.transfer_ownership_modal.is_some()
                         || this.nitro_mgmt_overlay.is_some()
                         || this.shop_collections_overlay.is_some()
+                        || this.changelog_modal.is_some()
+                        || this.quest_survey_modal.is_some()
+                        || this.app_test_mode_modal.is_some()
+                        || this.accept_invite_modal.is_some()
+                        || this.schedule.upsell_open
+                        || this.app_widget_state_overlay.is_some()
                         || this.quests.split_modal.is_some()
                         || this.quests.enrollment_blocked_modal.is_some()
                         || this.quests.promoted_preview_quest.is_some()
@@ -11561,6 +11613,12 @@ impl Render for Root {
                     this.transfer_ownership_modal = None;
                     this.nitro_mgmt_overlay = None;
                     this.shop_collections_overlay = None;
+                    this.close_changelog_modal();
+                    this.quest_survey_modal = None;
+                    this.app_test_mode_modal = None;
+                    this.accept_invite_modal = None;
+                    this.schedule.upsell_open = false;
+                    this.app_widget_state_overlay = None;
                     this.quests.split_modal = None;
                     this.quests.enrollment_blocked_modal = None;
                     this.quests.promoted_preview_quest = None;
@@ -12764,6 +12822,12 @@ impl Render for Root {
             .children(self.transfer_ownership_modal_layer(cx))
             .children(self.nitro_mgmt_overlay_layer(cx))
             .children(self.shop_collections_overlay_layer(cx))
+            .children(self.changelog_modal_layer(cx))
+            .children(self.quest_survey_modal_layer(cx))
+            .children(self.app_test_mode_modal_layer(cx))
+            .children(self.accept_invite_modal_layer(cx))
+            .children(self.schedule_upsell_modal_layer(cx))
+            .children(self.app_widget_state_overlay_layer(cx))
             .children(self.quest_split_modal_layer(cx))
             .children(self.quest_promoted_overlay_layer(cx))
             .children(self.quest_disclosure_and_alert_layer(cx))

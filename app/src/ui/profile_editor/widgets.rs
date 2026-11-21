@@ -299,6 +299,8 @@ pub(in crate::ui) fn featured_app(id: &str) -> Option<(&'static str, String)> {
 pub(super) enum ModalTab {
     Interests,
     GameStats,
+    /// `ConjureCustomWidgetAddOption` tab (`414904` + `457565`: `eGAirq` "Create Your Own").
+    CreateYourOwn,
 }
 
 pub(super) struct ModalState {
@@ -794,6 +796,17 @@ impl Root {
             open.tag_select_open = false;
         }
         self.request_widget_art(&addable());
+        // Module 382483 (`Wq` / `i$`) + 414904: load live featured & developer application widget configs.
+        let _ = self.requests.send(crate::net::Request::Fetch {
+            key: "widget-configs:featured".to_owned(),
+            route: "/widget-configs/featured".to_owned(),
+        });
+        if self.developer_mode() {
+            let _ = self.requests.send(crate::net::Request::Fetch {
+                key: "widget-configs:developer".to_owned(),
+                route: "/widget-configs/developer".to_owned(),
+            });
+        }
         cx.notify();
     }
 
@@ -2112,20 +2125,115 @@ impl Root {
                             .into_any_element(),
                     );
                 }
+                // `ConjureCustomWidgetAddOption` (`414904` `N` + `457565`): "Custom card" (`5WHmVU`).
+                items.push(
+                    div()
+                        .id("modal-interest-conjure-custom")
+                        .aria_label(dc_intl::t!("yI85oV"))
+                        .w(px(236.))
+                        .min_h(px(96.))
+                        .p(px(14.))
+                        .rounded(px(12.))
+                        .bg(color("--background-surface-high"))
+                        .hover(|style| style.bg(color("--background-mod-normal")))
+                        .border_1()
+                        .border_color(color("--border-subtle"))
+                        .flex()
+                        .flex_col()
+                        .justify_between()
+                        .gap(px(8.))
+                        .cursor_pointer()
+                        .child(
+                            div()
+                                .flex()
+                                .items_center()
+                                .justify_between()
+                                .child(text(dc_intl::t!("5WHmVU"), 15., 20., 600., "--text-strong"))
+                                .child(icon("magic_wand", 18., "--icon-strong")),
+                        )
+                        .child(
+                            div()
+                                .text_size(px(12.))
+                                .line_height(px(16.))
+                                .text_color(color("--text-muted"))
+                                .child(dc_intl::t!("yI85oV")),
+                        )
+                        .on_click(cx.listener(|this, _, _, cx| {
+                            if let Some(open) = this
+                                .profile_editor
+                                .as_mut()
+                                .and_then(|e| e.widget_modal.as_mut())
+                            {
+                                open.tab = ModalTab::CreateYourOwn;
+                                cx.notify();
+                            }
+                        }))
+                        .into_any_element(),
+                );
                 items
             }
             ModalTab::GameStats => {
+                // Module 414904 + 116281 + 382483: merge live fetched featured/developer configs with
+                // static FEATURED fallback, filter already-added & query, sort alphabetically.
+                let mut entries: Vec<(String, String, Option<String>)> = Vec::new();
+                let mut seen = std::collections::HashSet::new();
+                for key in ["widget-configs:featured", "widget-configs:developer"] {
+                    if let Some(apps) = self
+                        .fetched
+                        .get(key)
+                        .and_then(|v| v["applications"].as_array())
+                    {
+                        for app in apps {
+                            let Some(id) = app["id"].as_str() else {
+                                continue;
+                            };
+                            let Some(name) = app["name"].as_str() else {
+                                continue;
+                            };
+                            if seen.insert(id.to_owned()) {
+                                let icon_url = app["icon"].as_str().map(|hash| {
+                                    format!("https://cdn.discordapp.com/app-icons/{id}/{hash}.png?size=64")
+                                });
+                                entries.push((id.to_owned(), name.to_owned(), icon_url));
+                            }
+                        }
+                    }
+                }
+                for app in FEATURED.iter() {
+                    if seen.insert(app.id.to_owned()) {
+                        entries.push((
+                            app.id.to_owned(),
+                            app.name.to_owned(),
+                            Some(format!("{CDN}{}", app.icon)),
+                        ));
+                    }
+                }
+                entries.sort_by_key(|a| a.1.to_lowercase());
+                let filtered: Vec<_> = entries
+                    .into_iter()
+                    .filter(|(id, name, _)| {
+                        (query.is_empty() || name.to_lowercase().contains(&query))
+                            && !board.iter().any(|w| {
+                                matches!(&w.data, WidgetData::Application { application_id } if application_id == id)
+                            })
+                    })
+                    .collect();
                 let mut items = Vec::new();
-                for (idx, app) in FEATURED.iter().enumerate() {
-                    if !query.is_empty() && !app.name.to_lowercase().contains(&query) {
-                        continue;
-                    }
-                    let widget = Widget::Application(*app);
-                    if widget.is_on_board(&board) {
-                        continue;
-                    }
-                    let app_icon = self.widget_image(&format!("{CDN}{}", app.icon));
-                    let data = widget.into_data();
+                let count_label = dc_intl::t!("r/EUap", count = filtered.len() as f64).to_string();
+                if !filtered.is_empty() {
+                    items.push(
+                        div()
+                            .w_full()
+                            .text_size(px(12.))
+                            .font_weight(FontWeight(600.))
+                            .text_color(color("--text-muted"))
+                            .child(count_label)
+                            .into_any_element(),
+                    );
+                }
+                for (idx, (id, name, icon_url)) in filtered.into_iter().enumerate() {
+                    let app_icon = icon_url.as_deref().and_then(|u| self.widget_image(u));
+                    let data = WidgetData::Application { application_id: id };
                     items.push(
                         div()
                             .id(gpui::SharedString::from(format!("modal-stat-{idx}")))
@@ -2158,7 +2266,13 @@ impl Root {
                                                     .overflow_hidden()
                                                     .child(img(image).size(px(20.)))
                                             }))
-                                            .child(text(app.name, 15., 20., 600., "--text-strong")),
+                                            .child(text(
+                                                gpui::SharedString::from(name),
+                                                15.,
+                                                20.,
+                                                600.,
+                                                "--text-strong",
+                                            )),
                                     )
                                     .child(icon("discover_link", 18., "--text-default")),
                             )
@@ -2171,6 +2285,115 @@ impl Root {
                 }
                 items
             }
+            ModalTab::CreateYourOwn => {
+                // Module 457565 (`ConjureCustomWidgetAddOption`): "Conjure a profile card".
+                let has_guild = !self.stores.guilds.is_empty();
+                let card = if !has_guild {
+                    div()
+                        .w_full()
+                        .p(px(20.))
+                        .rounded(px(12.))
+                        .bg(color("--background-surface-high"))
+                        .border_1()
+                        .border_color(color("--border-subtle"))
+                        .flex()
+                        .flex_col()
+                        .gap(px(10.))
+                        .child(text(dc_intl::t!("rCU6IG"), 16., 22., 700., "--text-strong"))
+                        .child(text(dc_intl::t!("UN2H+/"), 14., 20., 400., "--text-muted"))
+                        .child(
+                            div()
+                                .id("conjure-no-guild-close")
+                                .w(px(96.))
+                                .h(px(34.))
+                                .rounded(px(8.))
+                                .bg(color("--control-secondary-background-default"))
+                                .cursor_pointer()
+                                .flex()
+                                .items_center()
+                                .justify_center()
+                                .text_size(px(13.))
+                                .text_color(color("--control-secondary-text-default"))
+                                .on_click(cx.listener(|this, _, _, cx| {
+                                    if let Some(ed) = this.profile_editor.as_mut() {
+                                        ed.widget_modal = None;
+                                    }
+                                    cx.notify();
+                                }))
+                                .child(dc_intl::t!("cpT0Cq")),
+                        )
+                } else {
+                    div()
+                        .w_full()
+                        .p(px(18.))
+                        .rounded(px(12.))
+                        .bg(color("--background-surface-high"))
+                        .border_1()
+                        .border_color(color("--border-subtle"))
+                        .flex()
+                        .flex_col()
+                        .gap(px(12.))
+                        .child(
+                            div()
+                                .flex()
+                                .items_center()
+                                .gap(px(8.))
+                                .child(icon("magic_wand", 20., "--icon-strong"))
+                                .child(text(
+                                    dc_intl::t!("yI85oV"),
+                                    16.,
+                                    22.,
+                                    700.,
+                                    "--text-strong",
+                                )),
+                        )
+                        .child(text(
+                            dc_intl::t!("09BSx3"),
+                            14.,
+                            20.,
+                            600.,
+                            "--text-default",
+                        ))
+                        .child(text(dc_intl::t!("SKwzvJ"), 12., 18., 400., "--text-muted"))
+                        .child(
+                            div()
+                                .p(px(12.))
+                                .rounded(px(8.))
+                                .bg(color("--background-base-lowest"))
+                                .border_1()
+                                .border_color(color("--border-subtle"))
+                                .text_size(px(13.))
+                                .line_height(px(18.))
+                                .text_color(color("--text-muted"))
+                                .child(dc_intl::t!("K7zdCZ")),
+                        )
+                        .child(
+                            div().flex().justify_end().gap(px(8.)).child(
+                                div()
+                                    .id("conjure-custom-start")
+                                    .h(px(36.))
+                                    .px(px(16.))
+                                    .rounded(px(8.))
+                                    .bg(color("--control-primary-background-default"))
+                                    .cursor_pointer()
+                                    .flex()
+                                    .items_center()
+                                    .text_size(px(13.))
+                                    .font_weight(FontWeight(600.))
+                                    .text_color(color("--white"))
+                                    .on_click(cx.listener(|this, _, _, cx| {
+                                        this.put_app_toast(
+                                            dc_intl::t!("AuyDIq").to_string(),
+                                            false,
+                                            cx,
+                                        );
+                                    }))
+                                    .child(dc_intl::t!("MDZXiK")),
+                            ),
+                        )
+                };
+                vec![card.into_any_element()]
+            }
         };
 
         let empty_notice = cards.is_empty().then(|| {
@@ -2180,6 +2403,7 @@ impl Root {
                 let tab_name = match tab {
                     ModalTab::Interests => dc_intl::t!("NpchGq"),
                     ModalTab::GameStats => dc_intl::t!("EKR8Ps"),
+                    ModalTab::CreateYourOwn => dc_intl::t!("eGAirq"),
                 };
                 dc_intl::t!("mcdIFp", tabName = tab_name).into()
             };
@@ -2205,6 +2429,7 @@ impl Root {
                 [
                     (ModalTab::Interests, dc_intl::t!("NpchGq")),
                     (ModalTab::GameStats, dc_intl::t!("EKR8Ps")),
+                    (ModalTab::CreateYourOwn, dc_intl::t!("eGAirq")),
                 ]
                 .into_iter()
                 .map(|(target, label)| {

@@ -1319,8 +1319,7 @@ impl Root {
                                         .text_color(super::color("--icon-default")),
                                 )
                                 .on_click(cx.listener(move |this, _, window, cx| {
-                                    // GAP: the official keeps the chooser under the report until it is sent.
-                                    this.chat_extra.alert = None;
+                                    // Module 630891: keep the chooser beneath the report modal until submitted.
                                     if behaviour {
                                         this.open_report_app(app, "user_profile", cx);
                                     } else {

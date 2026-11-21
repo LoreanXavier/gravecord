@@ -961,7 +961,7 @@ impl Root {
                         .line_height(px(20.))
                         .font_weight(FontWeight(600.))
                         .text_color(color("--text-strong"))
-                        .child("Confirm you're an adult to speak on stage"),
+                        .child(dc_intl::t("zvubnM")),
                 )
                 .child(
                     div()
@@ -973,6 +973,7 @@ impl Root {
                         .h(px(32.))
                         .rounded(px(8.))
                         .bg(color("--background-brand"))
+                        .cursor_pointer()
                         .flex()
                         .items_center()
                         .justify_center()
@@ -980,7 +981,11 @@ impl Root {
                         .line_height(px(18.))
                         .font_weight(FontWeight(500.))
                         .text_color(color("--white"))
-                        .child("Confirm age"),
+                        .on_click(cx.listener(|this, _, _, cx| {
+                            this.stage_coach_closed = true;
+                            this.open_birthday_modal(super::birthday::Source::DeepLinkPrompt, cx);
+                        }))
+                        .child(dc_intl::t("KXVgjt")),
                 )
         });
         let view = div()
@@ -2126,11 +2131,10 @@ impl Root {
 impl Root {
     /// The audience's hand button of the Stage's controls (`eI` of module 717965, its state from module 361619). Its
     /// label: "Speaker abilities are only for confirmed adults" while the account must confirm its age (`Vv` of module
-    /// 418208, taken as true like the coachmark above: the account's age state is not read), else Cancel Request
+    /// 418208: READY `age_gated_features` bit 128 + `age_verification_status`), else Cancel Request
     /// (green) while the hand is up, Request to Speak, or Raise Hand Disabled (and disabled) when this member may not
-    /// ask (`REQUEST_TO_SPEAK`, module 370228). A click raises or lowers the hand (`J7` of module 849736:
-    /// `request_to_speak_timestamp` now or null). GAP: under the age gate the click opens age verification, which is
-    /// not built, so it does nothing here.
+    /// ask (`REQUEST_TO_SPEAK`, module 370228). Under the age gate, clicking opens the age confirmation dialog;
+    /// otherwise a click raises or lowers the hand (`J7` of module 849736: `request_to_speak_timestamp` now or null).
     fn stage_hand_button(
         &self,
         guild: Id,
@@ -2152,7 +2156,7 @@ impl Root {
             Some(channel),
             dc_state::permissions::REQUEST_TO_SPEAK,
         );
-        let age_gate = may_ask;
+        let age_gate = may_ask && self.stores.account.stage_speaking_age_gated();
         let label = hand_label(age_gate, raised, may_ask);
         let disabled = !may_ask && !raised;
         let in_stage = mine.is_some() && !age_gate;
@@ -2171,6 +2175,11 @@ impl Root {
                     .hover(|style| style.bg(color("--interactive-background-hover")))
             })
             .child(icon("stage_hand_raise", 20., "--white"))
+            .when(age_gate && !disabled, |this| {
+                this.on_click(cx.listener(|this, _, _, cx| {
+                    this.open_birthday_modal(super::birthday::Source::DeepLinkPrompt, cx);
+                }))
+            })
             .when(in_stage && !disabled, |this| {
                 this.on_click(cx.listener(move |this, _, _, cx| {
                     let now = chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true);

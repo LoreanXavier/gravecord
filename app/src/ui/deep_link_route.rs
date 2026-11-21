@@ -437,7 +437,10 @@ impl Root {
                 Outcome::Opened("add a server")
             }
             Route::BoostMarketing(_) => Outcome::NotBuilt("server boost page"),
-            Route::Invite(_) => Outcome::NotBuilt("invite modal"),
+            Route::Invite(code) => {
+                self.open_accept_invite_modal(&code, cx);
+                Outcome::Opened("invite modal")
+            }
             Route::Gift(_) => Outcome::NotBuilt("gift modal"),
             Route::Template(_) => Outcome::NotBuilt("server template modal"),
             Route::PickGuildSettings { .. } => Outcome::NotBuilt("server settings picker"),

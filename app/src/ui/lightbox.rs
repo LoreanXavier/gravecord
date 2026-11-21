@@ -401,6 +401,54 @@ impl Root {
         cx.notify();
     }
 
+    /// Module 914905 (`ChannelAttachmentUpload` with `shouldHideMediaOptions: true`): opens an
+    /// already-decoded local pending upload preview in the plain media viewer without requiring
+    /// a sent message or remote URL.
+    pub(super) fn open_local_picture(
+        &mut self,
+        key: String,
+        image: std::sync::Arc<gpui::Image>,
+        filename: String,
+        (width, height): (u32, u32),
+        cx: &mut Context<Self>,
+    ) {
+        let Some(message) = Message::from_value(&serde_json::json!({
+            "id": "0", "channel_id": "0", "content": "", "timestamp": "1970-01-01T00:00:00+00:00",
+            "author": {"id": "0", "username": ""},
+        })) else {
+            return;
+        };
+        let cache_key = format!("upload-preview:{key}");
+        self.images.insert(cache_key.clone(), image);
+        self.lightbox = Some(Lightbox {
+            message,
+            items: vec![Item {
+                key: cache_key,
+                animated: false,
+                url: String::new(),
+                proxy: String::new(),
+                width: width.max(1),
+                height: height.max(1),
+                filename,
+                is_video: false,
+                video_src: None,
+                gifv_src: None,
+                favorite: None,
+                details: None,
+            }],
+            index: 0,
+            zoomed: false,
+            offset: Point::default(),
+            drag: None,
+            saving: false,
+            more: false,
+            more_at: None,
+            details_open: false,
+            plain: true,
+        });
+        cx.notify();
+    }
+
     pub(super) fn close_lightbox(&mut self, cx: &mut Context<Self>) {
         self.lightbox = None;
         self.release_lightbox_videos(None, cx);

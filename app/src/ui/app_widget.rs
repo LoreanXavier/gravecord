@@ -864,6 +864,366 @@ impl Root {
     }
 }
 
+/// Key prefix for `POST /applications/{appId}/widget/refresh` (module 164163 / 591410).
+pub(super) const REFRESH_PREFIX: &str = "app-widget-refresh:";
+
+/// Sync / Connect / Reconnect footer state for an Application Game Stats Widget (module 591410).
+#[derive(Clone, Debug, PartialEq, Eq)]
+#[allow(dead_code)]
+pub enum AppWidgetStateKind {
+    Syncing,
+    Connect {
+        url: Option<String>,
+        suggested: bool,
+    },
+    Reconnect {
+        url: Option<String>,
+        suggested: bool,
+    },
+}
+
+/// Preview overlay state for `591410` Application Widget states.
+#[derive(Clone, Debug)]
+pub(super) struct AppWidgetStateOverlay {
+    pub app_id: String,
+    pub app_name: String,
+    pub state: AppWidgetStateKind,
+    pub refreshing: bool,
+}
+
+/// Maps HTTP status from `POST /applications/{appId}/widget/refresh` (`164163`) to (message, success).
+pub fn refresh_response_toast(status: u16) -> (&'static str, bool) {
+    match status {
+        200..=299 => (dc_intl::t("um/5Kc"), true),
+        429 => (dc_intl::t("T1n7hc"), false),
+        403 => (dc_intl::t("30UxZU"), false),
+        404 => (dc_intl::t("1UFWet"), false),
+        503 => (dc_intl::t("ypKX9A"), false),
+        _ => (dc_intl::t("BLKD4B"), false),
+    }
+}
+
+impl Root {
+    /// Sends `POST /applications/{appId}/widget/refresh` (module 164163 + 591410 `wzzjk9`).
+    pub(super) fn request_app_widget_refresh(
+        &mut self,
+        app_id: &str,
+        cx: &mut gpui::Context<Self>,
+    ) {
+        if let Some(ov) = self.app_widget_state_overlay.as_mut() {
+            ov.refreshing = true;
+        }
+        let _ = self.requests.send(crate::net::Request::Rest {
+            key: Some(format!("{REFRESH_PREFIX}{app_id}")),
+            method: reqwest::Method::POST,
+            route: format!("/applications/{app_id}/widget/refresh"),
+            body: None,
+        });
+        cx.notify();
+    }
+
+    /// Handles `POST /applications/{appId}/widget/refresh` responses (module 164163).
+    pub(super) fn handle_app_widget_refresh_response(
+        &mut self,
+        body: &Value,
+        cx: &mut gpui::Context<Self>,
+    ) {
+        if let Some(ov) = self.app_widget_state_overlay.as_mut() {
+            ov.refreshing = false;
+        }
+        let status = body["status"]
+            .as_u64()
+            .unwrap_or(if body["ok"] == true { 200 } else { 500 }) as u16;
+        let (msg, ok) = refresh_response_toast(status);
+        self.put_app_toast(msg.to_owned(), ok, cx);
+        cx.notify();
+    }
+
+    /// Renders a `591410` Game Stats Application Widget in Syncing, Connect, or Reconnect state,
+    /// including `ajHoOr` ("View Game Profile") and `wzzjk9` ("Refresh") manage actions.
+    pub(super) fn render_app_widget_state_card(
+        &self,
+        app_id: &str,
+        app_name: &str,
+        state: &AppWidgetStateKind,
+        refreshing: bool,
+        cx: &mut gpui::Context<Self>,
+    ) -> AnyElement {
+        let app_id_owned = app_id.to_owned();
+        let suggested = matches!(
+            state,
+            AppWidgetStateKind::Connect {
+                suggested: true,
+                ..
+            } | AppWidgetStateKind::Reconnect {
+                suggested: true,
+                ..
+            }
+        );
+        let body: AnyElement = match state {
+            AppWidgetStateKind::Syncing => div()
+                .p(px(14.))
+                .rounded(px(8.))
+                .bg(super::color("--background-base-lower"))
+                .border_1()
+                .border_color(super::color("--border-subtle"))
+                .flex()
+                .items_center()
+                .gap(px(10.))
+                .child(super::icon("webhook_clock", 18., "--icon-subtle"))
+                .child(
+                    div()
+                        .flex_1()
+                        .min_w_0()
+                        .text_size(px(13.))
+                        .line_height(px(18.))
+                        .text_color(super::color("--text-muted"))
+                        .child(dc_intl::t("z5K4Uv")),
+                )
+                .into_any_element(),
+            AppWidgetStateKind::Connect { url, .. } | AppWidgetStateKind::Reconnect { url, .. } => {
+                let is_reconnect = matches!(state, AppWidgetStateKind::Reconnect { .. });
+                let title = dc_intl::t(if is_reconnect { "9WarGY" } else { "UDPRLO" });
+                let subtitle = dc_intl::t(if is_reconnect { "qgxnKe" } else { "OW/2al" });
+                let cta = dc_intl::t(if is_reconnect { "vD60Pv" } else { "S0W8Z5" });
+                let link = url.clone();
+                div()
+                    .p(px(14.))
+                    .rounded(px(8.))
+                    .bg(super::color("--background-base-lower"))
+                    .border_1()
+                    .border_color(super::color("--border-subtle"))
+                    .flex()
+                    .flex_col()
+                    .gap(px(10.))
+                    .child(
+                        div()
+                            .flex()
+                            .flex_col()
+                            .gap(px(4.))
+                            .child(
+                                div()
+                                    .text_size(px(14.))
+                                    .font_weight(FontWeight(600.))
+                                    .text_color(super::color("--text-strong"))
+                                    .child(title),
+                            )
+                            .child(
+                                div()
+                                    .text_size(px(12.))
+                                    .line_height(px(16.))
+                                    .text_color(super::color("--text-muted"))
+                                    .child(subtitle),
+                            ),
+                    )
+                    .child(
+                        div()
+                            .id(gpui::SharedString::from(format!(
+                                "app-widget-link-{app_id}"
+                            )))
+                            .h(px(34.))
+                            .px(px(14.))
+                            .rounded(px(8.))
+                            .bg(super::color("--control-primary-background-default"))
+                            .cursor_pointer()
+                            .flex()
+                            .items_center()
+                            .justify_center()
+                            .text_size(px(13.))
+                            .font_weight(FontWeight(600.))
+                            .text_color(super::color("--white"))
+                            .on_click(cx.listener(move |this, _, _, cx| {
+                                if let Some(u) = link.as_deref() {
+                                    cx.open_url(u);
+                                } else {
+                                    this.open_settings_page("connections", cx);
+                                }
+                            }))
+                            .child(cta),
+                    )
+                    .into_any_element()
+            }
+        };
+
+        div()
+            .w(px(440.))
+            .rounded(px(12.))
+            .bg(super::color("--background-surface-high"))
+            .border_1()
+            .border_color(super::color("--border-subtle"))
+            .p(px(16.))
+            .flex()
+            .flex_col()
+            .gap(px(12.))
+            .when(suggested, |card| {
+                card.child(
+                    div()
+                        .text_size(px(11.))
+                        .font_weight(FontWeight(700.))
+                        .text_color(super::color("--text-muted"))
+                        .child(dc_intl::t("zMUr6Z")),
+                )
+            })
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .justify_between()
+                    .gap(px(8.))
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w_0()
+                            .overflow_hidden()
+                            .flex()
+                            .items_center()
+                            .gap(px(8.))
+                            .child(div().flex_none().child(super::icon(
+                                "bot_game_controller",
+                                18.,
+                                "--icon-strong",
+                            )))
+                            .child(
+                                div()
+                                    .flex_1()
+                                    .min_w_0()
+                                    .truncate()
+                                    .text_size(px(15.))
+                                    .font_weight(FontWeight(700.))
+                                    .text_color(super::color("--text-strong"))
+                                    .child(gpui::SharedString::from(app_name.to_owned())),
+                            ),
+                    )
+                    .child(
+                        div()
+                            .flex_none()
+                            .flex()
+                            .items_center()
+                            .gap(px(6.))
+                            .child(
+                                div()
+                                    .id(gpui::SharedString::from(format!(
+                                        "app-widget-profile-{app_id}"
+                                    )))
+                                    .px(px(8.))
+                                    .py(px(4.))
+                                    .rounded(px(6.))
+                                    .bg(super::color("--control-secondary-background-default"))
+                                    .cursor_pointer()
+                                    .flex()
+                                    .items_center()
+                                    .gap(px(4.))
+                                    .text_size(px(12.))
+                                    .text_color(super::color("--control-secondary-text-default"))
+                                    .child(super::icon("bot_game_controller", 14., "--icon-subtle"))
+                                    .child(dc_intl::t("ajHoOr")),
+                            )
+                            .child(
+                                div()
+                                    .id(gpui::SharedString::from(format!(
+                                        "app-widget-refresh-{app_id}"
+                                    )))
+                                    .px(px(8.))
+                                    .py(px(4.))
+                                    .rounded(px(6.))
+                                    .bg(super::color("--control-secondary-background-default"))
+                                    .when(!refreshing, |s| s.cursor_pointer())
+                                    .when(refreshing, |s| s.opacity(0.5))
+                                    .flex()
+                                    .items_center()
+                                    .gap(px(4.))
+                                    .text_size(px(12.))
+                                    .text_color(super::color("--control-secondary-text-default"))
+                                    .on_click(cx.listener(move |this, _, _, cx| {
+                                        if !refreshing {
+                                            this.request_app_widget_refresh(&app_id_owned, cx);
+                                        }
+                                    }))
+                                    .child(super::icon("clips_retry", 14., "--icon-subtle"))
+                                    .child(dc_intl::t("wzzjk9")),
+                            ),
+                    ),
+            )
+            .child(body)
+            .into_any_element()
+    }
+
+    /// Overlay layer for `591410` Game Stats Widget sync/connect/reconnect preview & live modal.
+    pub(super) fn app_widget_state_overlay_layer(
+        &self,
+        cx: &mut gpui::Context<Self>,
+    ) -> Option<AnyElement> {
+        let ov = self.app_widget_state_overlay.as_ref()?;
+        let card = self.render_app_widget_state_card(
+            &ov.app_id,
+            &ov.app_name,
+            &ov.state,
+            ov.refreshing,
+            cx,
+        );
+        Some(
+            gpui::deferred(
+                div()
+                    .id("app-widget-state-backdrop")
+                    .occlude()
+                    .absolute()
+                    .top_0()
+                    .left_0()
+                    .size_full()
+                    .bg(gpui::rgba(0x000000b3))
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        this.app_widget_state_overlay = None;
+                        cx.notify();
+                    }))
+                    .child(
+                        div()
+                            .id("app-widget-state-card-wrap")
+                            .on_click(|_, _, cx| cx.stop_propagation())
+                            .child(card),
+                    ),
+            )
+            .with_priority(6)
+            .into_any_element(),
+        )
+    }
+
+    /// Capture helper: `app-widget-state [syncing|connect|reconnect|close]`.
+    #[cfg(feature = "capture")]
+    pub(crate) fn script_app_widget_state(
+        &mut self,
+        mode: &str,
+        cx: &mut gpui::Context<Self>,
+    ) -> String {
+        let state = match mode.trim() {
+            "syncing" => AppWidgetStateKind::Syncing,
+            "reconnect" => AppWidgetStateKind::Reconnect {
+                url: None,
+                suggested: true,
+            },
+            "close" => {
+                self.app_widget_state_overlay = None;
+                cx.notify();
+                return "app-widget-state: closed".into();
+            }
+            _ => AppWidgetStateKind::Connect {
+                url: None,
+                suggested: true,
+            },
+        };
+        self.app_widget_state_overlay = Some(AppWidgetStateOverlay {
+            app_id: "1402418703554842694".into(),
+            app_name: "League of Legends".into(),
+            state,
+            refreshing: false,
+        });
+        cx.notify();
+        format!("app-widget-state: {}", mode.trim())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

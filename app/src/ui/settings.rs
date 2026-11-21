@@ -2349,17 +2349,82 @@ impl Root {
             Page::Backup => self.backup_page(cx),
             Page::Updates => self.updates_page(cx),
             Page::ReportBug => self.report_bug_page(cx),
-            page => pages::nodes(page)
-                .iter()
-                .map(|node| {
-                    div()
-                        .parity(node.key())
-                        .flex()
-                        .flex_col()
-                        .child(self.render_node(node, panel_width, window, cx))
-                        .into_any_element()
-                })
-                .collect(),
+            page => {
+                let mut els: Vec<AnyElement> = pages::nodes(page)
+                    .iter()
+                    .map(|node| {
+                        div()
+                            .parity(node.key())
+                            .flex()
+                            .flex_col()
+                            .child(self.render_node(node, panel_width, window, cx))
+                            .into_any_element()
+                    })
+                    .collect();
+                // Module 868511 + 158935: Application Test Mode row under Developer when Developer Mode is on.
+                if page == Page::Developer && self.developer_mode() {
+                    let active_id = self.app_test_mode_active.application_id.clone();
+                    els.push(
+                        div()
+                            .id("settings-app-test-mode-row")
+                            .mt(px(12.))
+                            .pt(px(16.))
+                            .border_t_1()
+                            .border_color(color("--border-subtle"))
+                            .flex()
+                            .items_center()
+                            .justify_between()
+                            .gap(px(16.))
+                            .child(
+                                div()
+                                    .flex_1()
+                                    .min_w_0()
+                                    .flex()
+                                    .flex_col()
+                                    .gap(px(4.))
+                                    .child(
+                                        div()
+                                            .text_size(px(16.))
+                                            .font_weight(FontWeight(500.))
+                                            .text_color(color("--text-strong"))
+                                            .child(dc_intl::t("erOqlh")),
+                                    )
+                                    .child(
+                                        div()
+                                            .text_size(px(14.))
+                                            .line_height(px(20.))
+                                            .text_color(color("--text-muted"))
+                                            .child(dc_intl::t("52hMnD")),
+                                    ),
+                            )
+                            .child(
+                                div()
+                                    .id("settings-app-test-mode-open")
+                                    .flex_none()
+                                    .h(px(34.))
+                                    .px(px(14.))
+                                    .rounded(px(8.))
+                                    .bg(color("--control-secondary-background-default"))
+                                    .cursor_pointer()
+                                    .flex()
+                                    .items_center()
+                                    .text_size(px(13.))
+                                    .font_weight(FontWeight(600.))
+                                    .text_color(color("--control-secondary-text-default"))
+                                    .on_click(cx.listener(|this, _, _, cx| {
+                                        this.open_app_test_mode_modal(cx);
+                                    }))
+                                    .child(if active_id.is_some() {
+                                        dc_intl::t("d6TR3I")
+                                    } else {
+                                        dc_intl::t("qwuK5I")
+                                    }),
+                            )
+                            .into_any_element(),
+                    );
+                }
+                els
+            }
         };
         if open.page == Page::Appearance {
             body.insert(0, self.icon_set_picker(cx));

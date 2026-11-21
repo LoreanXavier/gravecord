@@ -1801,6 +1801,42 @@ pub async fn run(
                 let line = root.update(cx, |root, cx| root.script_shop_collections(&arg, cx));
                 let _ = writeln!(output, "{line}");
             }
+            // `changelog [loaded|loading|out-of-date|failed|close]`: What's New changelog modal (837601).
+            ["changelog", rest @ ..] => {
+                let arg = rest.join(" ");
+                let line = root.update(cx, |root, cx| root.script_changelog(&arg, cx));
+                let _ = writeln!(output, "{line}");
+            }
+            // `quest-survey [open|video|submitted|close]`: Quest dismiss survey modal (321538 + 798899).
+            ["quest-survey", rest @ ..] => {
+                let arg = rest.join(" ");
+                let line = root.update(cx, |root, cx| root.script_quest_survey(&arg, cx));
+                let _ = writeln!(output, "{line}");
+            }
+            // `app-test-mode [open|proxy|active|error|close]`: Application Test Mode modal (868511).
+            ["app-test-mode", rest @ ..] => {
+                let arg = rest.join(" ");
+                let line = root.update(cx, |root, cx| root.script_app_test_mode(&arg, cx));
+                let _ = writeln!(output, "{line}");
+            }
+            // `accept-invite [loading|invalid|valid|limit|activity|close]`: Accept Invite modal (654000 + 700156).
+            ["accept-invite", rest @ ..] => {
+                let arg = rest.join(" ");
+                let line = root.update(cx, |root, cx| root.script_accept_invite(&arg, cx));
+                let _ = writeln!(output, "{line}");
+            }
+            // `schedule-upsell [open|close]`: Scheduled message non-Nitro limit upsell modal (859403 + 853861).
+            ["schedule-upsell", rest @ ..] => {
+                let arg = rest.join(" ");
+                let line = root.update(cx, |root, cx| root.script_schedule_upsell(&arg, cx));
+                let _ = writeln!(output, "{line}");
+            }
+            // `app-widget-state [syncing|connect|reconnect|close]`: Application Game Stats Widget sync/connect/reconnect states (591410).
+            ["app-widget-state", rest @ ..] => {
+                let arg = rest.join(" ");
+                let line = root.update(cx, |root, cx| root.script_app_widget_state(&arg, cx));
+                let _ = writeln!(output, "{line}");
+            }
             // `search last` / `search answer <total>`: the open search's request, and an answer to it;
             // `search page <n>`: the pager turns to page n.
             ["search", rest @ ..] => {
