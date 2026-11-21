@@ -30,6 +30,9 @@ pub(crate) enum Step {
     Purpose,
     Customize,
     Join,
+    /// `CHANNEL_PROMPT` slide of module 362311 ("Start a conversation", inside 109766 NUF).
+    #[cfg_attr(not(feature = "capture"), allow(dead_code))]
+    ChannelPrompt,
 }
 
 pub(crate) struct AddServer {
@@ -37,6 +40,8 @@ pub(crate) struct AddServer {
     pub template: usize,
     pub name: Entity<Editor>,
     pub invite: Entity<Editor>,
+    pub topic: Entity<Editor>,
+    pub created_guild_id: Option<dc_state::Id>,
     pub error: Option<&'static str>,
     /// The picked icon: its data URL (`icon` of the create body) and the decoded picture.
     pub icon: Option<(String, Arc<gpui::Image>)>,
@@ -430,6 +435,7 @@ impl Root {
         };
         let name = field("", &format!("{username}'s server"), cx);
         let invite = field("https://discord.gg/hTKzmak", "", cx);
+        let topic = field(dc_intl::t("xGOYA8"), "", cx);
         // GAP: module 109766's flow (`ea`) starts at the birthday step for an account without a date of birth, but
         // module 596339 opens that NUF modal only for an account with no servers outside the desktop app
         // (`!isPlatformEmbedded`), so the desktop rail never reaches it; only the harness (`birthday nuf`) shows it.
@@ -438,6 +444,8 @@ impl Root {
             template: 0,
             name,
             invite,
+            topic,
+            created_guild_id: None,
             error: None,
             icon: None,
             scroll: ScrollHandle::new(),
@@ -454,6 +462,7 @@ impl Root {
             let target = match step {
                 Step::Customize => Some(add.name.clone()),
                 Step::Join => Some(add.invite.clone()),
+                Step::ChannelPrompt => Some(add.topic.clone()),
                 _ => None,
             };
             match target {
@@ -508,6 +517,36 @@ impl Root {
                         }
                     }
                 }
+            }
+            Step::ChannelPrompt => {
+                let topic_raw = add.topic.read(cx).text().trim().to_owned();
+                if topic_raw.is_empty() {
+                    return;
+                }
+                let gid = add
+                    .created_guild_id
+                    .or(self.guild)
+                    .or_else(|| self.stores.guilds.first().map(|g| g.id))
+                    .unwrap_or(1);
+                let formatted_topic = dc_intl::format(
+                    "V4lepJ",
+                    &[(
+                        "topic",
+                        dc_intl::Arg::Str(std::borrow::Cow::Borrowed(&topic_raw)),
+                    )],
+                );
+                let _ = self.requests.send(Request::Rest {
+                    key: None,
+                    method: reqwest::Method::POST,
+                    route: format!("/guilds/{gid}/channels"),
+                    body: Some(json!({
+                        "type": 0,
+                        "name": topic_raw,
+                        "permission_overwrites": [],
+                        "topic": formatted_topic,
+                    })),
+                });
+                self.add_server = None;
             }
             _ => {}
         }
@@ -684,7 +723,8 @@ impl Root {
 
     pub(super) fn add_server_modal(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
         let add = self.add_server.as_ref()?;
-        let (name, invite) = (add.name.clone(), add.invite.clone());
+        let (name, invite, topic) = (add.name.clone(), add.invite.clone(), add.topic.clone());
+        let topic_nonempty = !topic.read(cx).text().trim().is_empty();
         let step = add.step;
         if step == Step::AgeGate {
             return Some(self.add_server_age_gate_layer(cx));
@@ -956,6 +996,40 @@ impl Root {
                     )
                     .into_any_element()
             }
+            Step::ChannelPrompt => div()
+                .flex_none()
+                .px(px(24.))
+                .pt(px(8.))
+                .pb(px(20.))
+                .flex()
+                .flex_col()
+                .gap(px(8.))
+                .child(
+                    div()
+                        .text_size(px(12.))
+                        .font_weight(FontWeight(700.))
+                        .text_color(color("--text-muted"))
+                        .child(dc_intl::t("bY20tU").to_uppercase()),
+                )
+                .child(
+                    div()
+                        .h(px(40.))
+                        .px(px(12.))
+                        .rounded(px(8.))
+                        .border_1()
+                        .border_color(color("--input-border-default"))
+                        .bg(color("--input-background-default"))
+                        .flex()
+                        .items_center()
+                        .child(topic),
+                )
+                .children(add.error.map(|err| {
+                    div()
+                        .text_size(px(12.))
+                        .text_color(color("--text-feedback-critical"))
+                        .child(err)
+                }))
+                .into_any_element(),
         };
         let header = match step {
             Step::Pick | Step::AgeGate => Self::add_header(
@@ -992,6 +1066,12 @@ impl Root {
                 "Join a Server",
                 Self::subtitle("Enter an invite below to join an existing server", 14., 18.),
                 0.,
+                cx,
+            ),
+            Step::ChannelPrompt => Self::add_header(
+                dc_intl::t("8VRa7d"),
+                Self::subtitle(dc_intl::t("+855Pm"), 15., 20.),
+                16.,
                 cx,
             ),
         };
@@ -1095,6 +1175,51 @@ impl Root {
                     cx,
                     |this, window, cx| this.add_server_submit(window, cx),
                 ))
+                .into_any_element(),
+            Step::ChannelPrompt => div()
+                .flex_none()
+                .px(px(24.))
+                .py(px(16.))
+                .border_t_1()
+                .border_color(color("--border-subtle"))
+                .bg(color("--background-base-lower"))
+                .flex()
+                .items_center()
+                .justify_between()
+                .child(
+                    div()
+                        .id("nuf-channel-prompt-skip")
+                        .cursor_pointer()
+                        .text_size(px(14.))
+                        .font_weight(FontWeight(500.))
+                        .text_color(color("--text-strong"))
+                        .child(dc_intl::t("5Wxrcd"))
+                        .on_click(cx.listener(|this, _, _, cx| {
+                            this.add_server = None;
+                            cx.notify();
+                        })),
+                )
+                .child(
+                    div()
+                        .id("nuf-channel-prompt-done")
+                        .when(topic_nonempty, |b| b.cursor_pointer())
+                        .when(!topic_nonempty, |b| b.opacity(0.5))
+                        .px(px(20.))
+                        .h(px(38.))
+                        .rounded(px(8.))
+                        .bg(color("--control-primary-background-default"))
+                        .flex()
+                        .items_center()
+                        .text_size(px(14.))
+                        .font_weight(FontWeight(600.))
+                        .text_color(color("--white"))
+                        .child(dc_intl::t("i4jeWR"))
+                        .on_click(cx.listener(move |this, _, window, cx| {
+                            if topic_nonempty {
+                                this.add_server_submit(window, cx);
+                            }
+                        })),
+                )
                 .into_any_element(),
         };
         let modal = div()
@@ -1342,6 +1467,37 @@ impl Root {
                 self.nuf_complete_guild = Some("Gravecord HQ".to_owned());
                 cx.notify();
                 "nuf-complete: open".to_owned()
+            }
+        }
+    }
+
+    /// Capture harness: `nuf-channel-prompt [open|filled|close]` (module 362311).
+    #[cfg(feature = "capture")]
+    pub(crate) fn script_nuf_channel_prompt(
+        &mut self,
+        arg: &str,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> String {
+        match arg.trim() {
+            "close" => {
+                self.add_server = None;
+                cx.notify();
+                "nuf-channel-prompt: closed".to_owned()
+            }
+            mode => {
+                self.open_add_server(window, cx);
+                if let Some(add) = self.add_server.as_mut() {
+                    add.step = Step::ChannelPrompt;
+                    add.created_guild_id = self
+                        .guild
+                        .or_else(|| self.stores.guilds.first().map(|g| g.id));
+                    if mode == "filled" {
+                        add.topic.update(cx, |ed, _| ed.set_text("gaming-nights"));
+                    }
+                }
+                cx.notify();
+                format!("nuf-channel-prompt: {mode}")
             }
         }
     }

@@ -862,12 +862,30 @@ impl Root {
                                             .into_any_element(),
                                     }),
                             )
-                            .child(Self::storefront_button(
-                                "storefront-subscribe",
-                                label,
-                                true,
-                                cx,
-                            ))
+                            .child({
+                                let is_guild_sub = (listing.sku_flags & GUILD_SUBSCRIPTION) != 0;
+                                let sku_id = listing.sku.clone();
+                                let app_id_click = app.to_owned();
+                                modal::content_button(
+                                    modal::button(
+                                        "storefront-subscribe",
+                                        label,
+                                        Tone::Primary,
+                                        move |this, _, cx| {
+                                            if is_guild_sub {
+                                                this.open_guild_sub_selection(
+                                                    &app_id_click,
+                                                    &sku_id,
+                                                    cx,
+                                                );
+                                            } else {
+                                                tracing::debug!("storefront purchase not started");
+                                            }
+                                        },
+                                    ),
+                                    cx,
+                                )
+                            })
                             .children(listing.description.clone().map(|description| {
                                 div()
                                     .w_full()
@@ -1045,6 +1063,503 @@ fn key_plans(app: &str, sku: &str) -> String {
 /// Whether a bot's profile application offers the Store button (`G` of module 658575: `storefront_available`).
 pub(super) fn storefront_available(application: &Value) -> bool {
     application["storefront_available"].as_bool() == Some(true)
+}
+
+/// REST key for eligible app-subscription guilds (`399143`).
+pub(crate) const ELIGIBLE_SUB_GUILDS_KEY: &str = "app-storefront:eligible-sub-guilds";
+
+#[derive(Clone, Debug)]
+pub(crate) struct EligibleSubGuild {
+    pub id: dc_state::Id,
+    pub name: String,
+    pub is_current: bool,
+}
+
+/// Server Selection modal for an application guild-subscription checkout (module 399143:
+/// `xgtI/K`, `rAXXxN`, `cpT0Cq`, `cY+Oob`, `5qyruI`, `RjtuAI`, `M2TbbK`).
+#[derive(Clone, Debug)]
+pub(crate) struct GuildSubscriptionSelectionModal {
+    pub app_id: String,
+    pub sku_id: String,
+    pub loading: bool,
+    pub guilds: Vec<EligibleSubGuild>,
+    pub selected_guild_id: Option<dc_state::Id>,
+    pub dropdown_open: bool,
+}
+
+/// `GET /users/@me/billing/eligible-application-subscription-guilds` (module 399143).
+pub(crate) fn eligible_sub_guilds_request(app_id: &str, sku_id: &str) -> Request {
+    Request::Rest {
+        key: Some(ELIGIBLE_SUB_GUILDS_KEY.to_owned()),
+        method: reqwest::Method::GET,
+        route: format!(
+            "/users/@me/billing/eligible-application-subscription-guilds?application_id={app_id}&sku_id={sku_id}"
+        ),
+        body: None,
+    }
+}
+
+impl Root {
+    /// Opens the Server Selection modal (`399143`) for a guild-scoped application subscription.
+    pub(super) fn open_guild_sub_selection(
+        &mut self,
+        app_id: &str,
+        sku_id: &str,
+        cx: &mut Context<Self>,
+    ) {
+        let current = self.guild;
+        let _ = self
+            .requests
+            .send(eligible_sub_guilds_request(app_id, sku_id));
+        let mut guilds: Vec<EligibleSubGuild> = self
+            .stores
+            .guilds
+            .iter()
+            .map(|g| EligibleSubGuild {
+                id: g.id,
+                name: g.name.clone(),
+                is_current: current == Some(g.id),
+            })
+            .collect();
+        guilds.sort_by_key(|g| !g.is_current);
+        let selected_guild_id = guilds.iter().find(|g| g.is_current).map(|g| g.id);
+        self.guild_sub_selection_modal = Some(GuildSubscriptionSelectionModal {
+            app_id: app_id.to_owned(),
+            sku_id: sku_id.to_owned(),
+            loading: false,
+            guilds,
+            selected_guild_id,
+            dropdown_open: false,
+        });
+        cx.notify();
+    }
+
+    /// Modal layer for Application Guild Subscription Server Selection (`399143`).
+    pub(super) fn guild_sub_selection_layer(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
+        let modal = self.guild_sub_selection_modal.as_ref()?;
+        let can_confirm = modal.selected_guild_id.is_some();
+        let selected_guild = modal
+            .selected_guild_id
+            .and_then(|sid| modal.guilds.iter().find(|g| g.id == sid));
+        let app_id = modal.app_id.clone();
+        let sku_id = modal.sku_id.clone();
+
+        Some(
+            deferred(
+                div()
+                    .id("app-guild-sub-select-backdrop")
+                    .occlude()
+                    .absolute()
+                    .inset_0()
+                    .bg(gpui::rgba(0x000000b3))
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .p(px(24.))
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        this.guild_sub_selection_modal = None;
+                        cx.notify();
+                    }))
+                    .child(
+                        div()
+                            .id("app-guild-sub-select-modal")
+                            .w(px(440.))
+                            .rounded(px(12.))
+                            .border_1()
+                            .border_color(color("--border-subtle"))
+                            .bg(color("--background-surface-high"))
+                            .overflow_hidden()
+                            .flex()
+                            .flex_col()
+                            .on_click(|_, _, cx| cx.stop_propagation())
+                            // Header
+                            .child(
+                                div()
+                                    .px(px(24.))
+                                    .pt(px(20.))
+                                    .pb(px(12.))
+                                    .flex()
+                                    .items_start()
+                                    .justify_between()
+                                    .gap(px(12.))
+                                    .child(
+                                        div()
+                                            .flex_1()
+                                            .min_w_0()
+                                            .flex()
+                                            .flex_col()
+                                            .gap(px(4.))
+                                            .child(
+                                                div()
+                                                    .text_size(px(20.))
+                                                    .line_height(px(24.))
+                                                    .font_weight(FontWeight(700.))
+                                                    .text_color(color("--text-strong"))
+                                                    .child(dc_intl::t("xgtI/K")),
+                                            )
+                                            .child(
+                                                div()
+                                                    .text_size(px(13.))
+                                                    .line_height(px(18.))
+                                                    .text_color(color("--text-muted"))
+                                                    .child(dc_intl::t("rAXXxN")),
+                                            ),
+                                    )
+                                    .child(
+                                        div()
+                                            .id("app-guild-sub-select-close")
+                                            .flex_none()
+                                            .size(px(30.))
+                                            .rounded(px(6.))
+                                            .cursor_pointer()
+                                            .flex()
+                                            .items_center()
+                                            .justify_center()
+                                            .child(icon("modal_close", 18., "--icon-subtle"))
+                                            .on_click(cx.listener(|this, _, _, cx| {
+                                                this.guild_sub_selection_modal = None;
+                                                cx.notify();
+                                            })),
+                                    ),
+                            )
+                            // Body
+                            .child(
+                                div()
+                                    .px(px(24.))
+                                    .pb(px(20.))
+                                    .flex()
+                                    .flex_col()
+                                    .gap(px(12.))
+                                    .child(if modal.loading {
+                                        div()
+                                            .h(px(44.))
+                                            .flex()
+                                            .items_center()
+                                            .justify_center()
+                                            .text_size(px(13.))
+                                            .text_color(color("--text-muted"))
+                                            .child("...")
+                                            .into_any_element()
+                                    } else if modal.guilds.is_empty() {
+                                        div()
+                                            .p(px(12.))
+                                            .rounded(px(8.))
+                                            .border_1()
+                                            .border_color(color("--status-warning"))
+                                            .bg(gpui::rgba(0xf0b2321f))
+                                            .flex()
+                                            .items_center()
+                                            .gap(px(10.))
+                                            .child(icon("circle_info", 18., "--status-warning"))
+                                            .child(
+                                                div()
+                                                    .flex_1()
+                                                    .min_w_0()
+                                                    .text_size(px(13.))
+                                                    .line_height(px(18.))
+                                                    .text_color(color("--text-strong"))
+                                                    .child(dc_intl::t("M2TbbK")),
+                                            )
+                                            .into_any_element()
+                                    } else {
+                                        div()
+                                            .flex()
+                                            .flex_col()
+                                            .gap(px(6.))
+                                            .child(
+                                                div()
+                                                    .text_size(px(12.))
+                                                    .font_weight(FontWeight(700.))
+                                                    .text_color(color("--text-muted"))
+                                                    .child(dc_intl::t("5qyruI").to_uppercase()),
+                                            )
+                                            .child(
+                                                div()
+                                                    .id("app-guild-sub-select-trigger")
+                                                    .cursor_pointer()
+                                                    .min_h(px(44.))
+                                                    .px(px(12.))
+                                                    .py(px(8.))
+                                                    .rounded(px(8.))
+                                                    .border_1()
+                                                    .border_color(color("--border-subtle"))
+                                                    .bg(color("--background-base-lowest"))
+                                                    .flex()
+                                                    .items_center()
+                                                    .justify_between()
+                                                    .gap(px(10.))
+                                                    .child(if let Some(g) = selected_guild {
+                                                        div()
+                                                            .flex()
+                                                            .items_center()
+                                                            .gap(px(10.))
+                                                            .child(
+                                                                div()
+                                                                    .size(px(24.))
+                                                                    .rounded(px(6.))
+                                                                    .bg(color("--brand-500"))
+                                                                    .flex()
+                                                                    .items_center()
+                                                                    .justify_center()
+                                                                    .text_size(px(11.))
+                                                                    .font_weight(FontWeight(700.))
+                                                                    .text_color(color("--white"))
+                                                                    .child(
+                                                                        g.name
+                                                                            .chars()
+                                                                            .next()
+                                                                            .unwrap_or('S')
+                                                                            .to_uppercase()
+                                                                            .to_string(),
+                                                                    ),
+                                                            )
+                                                            .child(
+                                                                div()
+                                                                    .flex()
+                                                                    .flex_col()
+                                                                    .child(
+                                                                        div()
+                                                                            .text_size(px(14.))
+                                                                            .text_color(color(
+                                                                                "--text-strong",
+                                                                            ))
+                                                                            .child(g.name.clone()),
+                                                                    )
+                                                                    .when(g.is_current, |col| {
+                                                                        col.child(
+                                                                            div()
+                                                                                .text_size(px(11.))
+                                                                                .text_color(color(
+                                                                                    "--text-muted",
+                                                                                ))
+                                                                                .child(dc_intl::t(
+                                                                                    "RjtuAI",
+                                                                                )),
+                                                                        )
+                                                                    }),
+                                                            )
+                                                            .into_any_element()
+                                                    } else {
+                                                        div()
+                                                            .text_size(px(14.))
+                                                            .text_color(color("--text-muted"))
+                                                            .child(dc_intl::t("5qyruI"))
+                                                            .into_any_element()
+                                                    })
+                                                    .child(icon(
+                                                        "shop_select_chevron",
+                                                        16.,
+                                                        "--icon-subtle",
+                                                    ))
+                                                    .on_click(cx.listener(|this, _, _, cx| {
+                                                        if let Some(m) = this
+                                                            .guild_sub_selection_modal
+                                                            .as_mut()
+                                                        {
+                                                            m.dropdown_open = !m.dropdown_open;
+                                                        }
+                                                        cx.notify();
+                                                    })),
+                                            )
+                                            .when(modal.dropdown_open, |col| {
+                                                col.child(
+                                                    div()
+                                                        .rounded(px(8.))
+                                                        .border_1()
+                                                        .border_color(color("--border-subtle"))
+                                                        .bg(color("--background-base-lower"))
+                                                        .p(px(4.))
+                                                        .flex()
+                                                        .flex_col()
+                                                        .gap(px(2.))
+                                                        .children(modal.guilds.iter().map(|g| {
+                                                            let gid = g.id;
+                                                            let active =
+                                                                modal.selected_guild_id == Some(gid);
+                                                            div()
+                                                                .id(("app-guild-sub-opt", gid))
+                                                                .cursor_pointer()
+                                                                .px(px(10.))
+                                                                .py(px(8.))
+                                                                .rounded(px(6.))
+                                                                .bg(if active {
+                                                                    color("--background-mod-subtle")
+                                                                } else {
+                                                                    gpui::rgba(0x00000000)
+                                                                })
+                                                                .hover(|s| {
+                                                                    s.bg(color(
+                                                                        "--background-mod-subtle",
+                                                                    ))
+                                                                })
+                                                                .flex()
+                                                                .flex_col()
+                                                                .child(
+                                                                    div()
+                                                                        .text_size(px(14.))
+                                                                        .text_color(color(
+                                                                            "--text-strong",
+                                                                        ))
+                                                                        .child(g.name.clone()),
+                                                                )
+                                                                .when(g.is_current, |r| {
+                                                                    r.child(
+                                                                        div()
+                                                                            .text_size(px(11.))
+                                                                            .text_color(color(
+                                                                                "--text-muted",
+                                                                            ))
+                                                                            .child(dc_intl::t(
+                                                                                "RjtuAI",
+                                                                            )),
+                                                                    )
+                                                                })
+                                                                .on_click(cx.listener(
+                                                                    move |this, _, _, cx| {
+                                                                        if let Some(m) = this
+                                                                            .guild_sub_selection_modal
+                                                                            .as_mut()
+                                                                        {
+                                                                            m.selected_guild_id =
+                                                                                Some(gid);
+                                                                            m.dropdown_open = false;
+                                                                        }
+                                                                        cx.notify();
+                                                                    },
+                                                                ))
+                                                        })),
+                                                )
+                                            })
+                                            .into_any_element()
+                                    }),
+                            )
+                            // Footer
+                            .child(
+                                div()
+                                    .px(px(24.))
+                                    .py(px(14.))
+                                    .border_t_1()
+                                    .border_color(color("--border-subtle"))
+                                    .bg(color("--background-base-lower"))
+                                    .flex()
+                                    .items_center()
+                                    .justify_end()
+                                    .gap(px(10.))
+                                    .child(
+                                        div()
+                                            .id("app-guild-sub-select-cancel")
+                                            .cursor_pointer()
+                                            .px(px(16.))
+                                            .h(px(36.))
+                                            .rounded(px(6.))
+                                            .bg(color("--control-secondary-background-default"))
+                                            .flex()
+                                            .items_center()
+                                            .text_size(px(14.))
+                                            .font_weight(FontWeight(500.))
+                                            .text_color(color("--text-strong"))
+                                            .child(dc_intl::t("cpT0Cq"))
+                                            .on_click(cx.listener(|this, _, _, cx| {
+                                                this.guild_sub_selection_modal = None;
+                                                cx.notify();
+                                            })),
+                                    )
+                                    .child(
+                                        div()
+                                            .id("app-guild-sub-select-confirm")
+                                            .when(can_confirm, |b| b.cursor_pointer())
+                                            .when(!can_confirm, |b| b.opacity(0.5))
+                                            .px(px(18.))
+                                            .h(px(36.))
+                                            .rounded(px(6.))
+                                            .bg(color("--control-primary-background-default"))
+                                            .flex()
+                                            .items_center()
+                                            .text_size(px(14.))
+                                            .font_weight(FontWeight(600.))
+                                            .text_color(color("--white"))
+                                            .child(dc_intl::t("cY+Oob"))
+                                            .on_click(cx.listener(move |this, _, _, cx| {
+                                                if !can_confirm {
+                                                    return;
+                                                }
+                                                tracing::debug!(
+                                                    %app_id,
+                                                    %sku_id,
+                                                    "guild subscription server selected"
+                                                );
+                                                this.guild_sub_selection_modal = None;
+                                                this.put_app_toast(
+                                                    dc_intl::t("cY+Oob").to_owned(),
+                                                    true,
+                                                    cx,
+                                                );
+                                            })),
+                                    ),
+                            ),
+                    ),
+            )
+            .with_priority(97)
+            .into_any_element(),
+        )
+    }
+
+    /// Capture harness: `app-guild-sub [open|empty|close]` (module 399143).
+    #[cfg(feature = "capture")]
+    pub(crate) fn script_app_guild_sub(&mut self, arg: &str, cx: &mut Context<Self>) -> String {
+        match arg.trim() {
+            "close" => {
+                self.guild_sub_selection_modal = None;
+                cx.notify();
+                "app-guild-sub: closed".to_owned()
+            }
+            "empty" => {
+                self.guild_sub_selection_modal = Some(GuildSubscriptionSelectionModal {
+                    app_id: "12345".to_owned(),
+                    sku_id: "67890".to_owned(),
+                    loading: false,
+                    guilds: Vec::new(),
+                    selected_guild_id: None,
+                    dropdown_open: false,
+                });
+                cx.notify();
+                "app-guild-sub: empty".to_owned()
+            }
+            _ => {
+                let current = self
+                    .guild
+                    .or_else(|| self.stores.guilds.first().map(|g| g.id));
+                let mut guilds: Vec<EligibleSubGuild> = self
+                    .stores
+                    .guilds
+                    .iter()
+                    .map(|g| EligibleSubGuild {
+                        id: g.id,
+                        name: g.name.clone(),
+                        is_current: current == Some(g.id),
+                    })
+                    .collect();
+                if guilds.is_empty() {
+                    guilds.push(EligibleSubGuild {
+                        id: 1,
+                        name: "gravecord fixture".to_owned(),
+                        is_current: true,
+                    });
+                }
+                let selected_guild_id = guilds.first().map(|g| g.id);
+                self.guild_sub_selection_modal = Some(GuildSubscriptionSelectionModal {
+                    app_id: "12345".to_owned(),
+                    sku_id: "67890".to_owned(),
+                    loading: false,
+                    guilds,
+                    selected_guild_id,
+                    dropdown_open: false,
+                });
+                cx.notify();
+                "app-guild-sub: open".to_owned()
+            }
+        }
+    }
 }
 
 #[cfg(test)]

@@ -550,6 +550,29 @@ impl Root {
                             .text_color(color("--text-default"))
                             .child("By making a channel private, only select members and roles will be able to view this channel."),
                     )
+                    .when(private, |box_div| {
+                        let guild_id = self.guild.unwrap_or(1);
+                        box_div.child(
+                            div()
+                                .id("channel-settings-add-members-roles")
+                                .mt(px(4.))
+                                .self_start()
+                                .cursor_pointer()
+                                .px(px(14.))
+                                .h(px(32.))
+                                .rounded(px(6.))
+                                .bg(color("--control-primary-background-default"))
+                                .flex()
+                                .items_center()
+                                .text_size(px(13.))
+                                .font_weight(FontWeight(600.))
+                                .text_color(color("--white"))
+                                .child(dc_intl::t("dMJ3Y6"))
+                                .on_click(cx.listener(move |this, _, _, cx| {
+                                    this.open_grant_channel_access(guild_id, id, false, cx);
+                                })),
+                        )
+                    })
                     .into_any_element(),
             ))
             .child(self.advanced_permissions(channel, cx))

@@ -37,6 +37,150 @@ const PAUSE_PENDING: u64 = 9;
 const NITRO_HELP_URL: &str = "https://support.discord.com/hc/en-us/articles/115000435108";
 const BLOCKED_PAYMENTS_URL: &str = "https://support.discord.com/hc/en-us/articles/4708041338391";
 
+/// Offer state for Nitro cancel discount/retention card (module 816252: `DC+nPC`, `tQvNll`,
+/// `h2g1Ia`, `gPzMHa`, `iDFk3v`, `Eq1RHL`, `2gem05`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum DiscountOfferState {
+    None,
+    Confirming,
+    Applied,
+}
+
+fn format_bold_runs(key: &str, args: &[(&str, Arg<'_>)]) -> gpui::StyledText {
+    let runs = dc_intl::format_runs(key, args);
+    let mut text = String::new();
+    let mut highlights = Vec::new();
+    for (chunk, hook) in runs {
+        let start = text.len();
+        text.push_str(&chunk);
+        if hook.as_deref() == Some("$b") && start < text.len() {
+            highlights.push((
+                start..text.len(),
+                gpui::HighlightStyle {
+                    font_weight: Some(FontWeight(700.)),
+                    color: Some(color("--text-strong").into()),
+                    ..gpui::HighlightStyle::default()
+                },
+            ));
+        }
+    }
+    gpui::StyledText::new(text).with_highlights(highlights)
+}
+
+/// Renders the Nitro cancel / retention discount offer card (`_` of module 816252, CSS `130428`:
+/// `.discountOfferContainer_L5ybxx` row with Nitro icon + heading + offer state copy).
+pub(super) fn render_discount_offer_card(
+    percent: u32,
+    num_months: u32,
+    discounted_price: &str,
+    full_price: &str,
+    billing_period: &str,
+    is_canceled: bool,
+    offer_state: DiscountOfferState,
+) -> AnyElement {
+    let heading = if is_canceled {
+        dc_intl::format(
+            "DC+nPC",
+            &[
+                ("numMonths", Arg::Num(f64::from(num_months))),
+                ("discountedPrice", Arg::Str(Cow::Borrowed(discounted_price))),
+            ],
+        )
+    } else {
+        dc_intl::format("tQvNll", &[("numMonths", Arg::Num(f64::from(num_months)))])
+    };
+    let body = match (offer_state, is_canceled) {
+        (DiscountOfferState::Applied, true) => format_bold_runs(
+            "h2g1Ia",
+            &[
+                ("numMonths", Arg::Num(f64::from(num_months))),
+                ("fullPrice", Arg::Str(Cow::Borrowed(full_price))),
+                ("billingPeriod", Arg::Str(Cow::Borrowed(billing_period))),
+            ],
+        ),
+        (DiscountOfferState::Applied, false) => format_bold_runs(
+            "gPzMHa",
+            &[
+                ("numMonths", Arg::Num(f64::from(num_months))),
+                ("discountedPrice", Arg::Str(Cow::Borrowed(discounted_price))),
+                ("regularPrice", Arg::Str(Cow::Borrowed(full_price))),
+            ],
+        ),
+        (DiscountOfferState::Confirming, true) => format_bold_runs(
+            "iDFk3v",
+            &[
+                ("numMonths", Arg::Num(f64::from(num_months))),
+                ("fullPrice", Arg::Str(Cow::Borrowed(full_price))),
+                ("billingPeriod", Arg::Str(Cow::Borrowed(billing_period))),
+            ],
+        ),
+        (DiscountOfferState::Confirming, false) => format_bold_runs(
+            "Eq1RHL",
+            &[
+                ("percent", Arg::Num(f64::from(percent))),
+                ("numMonths", Arg::Num(f64::from(num_months))),
+                ("price", Arg::Str(Cow::Borrowed(full_price))),
+            ],
+        ),
+        (DiscountOfferState::None, _) => format_bold_runs(
+            "2gem05",
+            &[
+                ("percent", Arg::Num(f64::from(percent))),
+                ("numMonths", Arg::Num(f64::from(num_months))),
+            ],
+        ),
+    };
+
+    div()
+        .p(px(14.))
+        .rounded(px(10.))
+        .border_1()
+        .border_color(color("--border-subtle"))
+        .bg(color("--background-base-lower"))
+        .flex()
+        .items_start()
+        .gap(px(16.))
+        .child(
+            div()
+                .flex_none()
+                .size(px(44.))
+                .rounded(px(8.))
+                .bg(linear_gradient(
+                    135.,
+                    linear_color_stop(rgba(0x8547c6ff), 0.),
+                    linear_color_stop(rgba(0xb845c1ff), 1.),
+                ))
+                .flex()
+                .items_center()
+                .justify_center()
+                .child(icon("nitro_wheel", 24., "--white")),
+        )
+        .child(
+            div()
+                .flex_1()
+                .min_w_0()
+                .flex()
+                .flex_col()
+                .gap(px(4.))
+                .child(
+                    div()
+                        .text_size(px(14.))
+                        .line_height(px(18.))
+                        .font_weight(FontWeight(600.))
+                        .text_color(color("--text-strong"))
+                        .child(heading),
+                )
+                .child(
+                    div()
+                        .text_size(px(13.))
+                        .line_height(px(18.))
+                        .text_color(color("--text-muted"))
+                        .child(body),
+                ),
+        )
+        .into_any_element()
+}
+
 /// Top alert banner kinds in module 488110 (`e1`, `e2`, `e3`, `e7`).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum SubscriptionAlert {
@@ -1519,7 +1663,22 @@ impl Root {
                 } else {
                     dc_intl::t("CKSuZJ").to_owned() // "Confirm discount"
                 };
-                let sub = dc_intl::format("q9Vxu4", &[("percent", Arg::Num(pct as f64))]);
+                let _sub = dc_intl::format("q9Vxu4", &[("percent", Arg::Num(pct as f64))]);
+                let offer_state = if is_applied {
+                    DiscountOfferState::Applied
+                } else {
+                    DiscountOfferState::Confirming
+                };
+                let canceled = self.premium_subscription().is_some_and(|s| s.status == 3);
+                let offer_card = render_discount_offer_card(
+                    pct,
+                    1,
+                    "$6.99",
+                    "$9.99",
+                    "month",
+                    canceled,
+                    offer_state,
+                );
                 let _welcome = (
                     dc_intl::t("2Otzti"),
                     dc_intl::t("zl7LZp"),
@@ -1527,7 +1686,7 @@ impl Root {
                 );
                 div()
                     .id("claim-discount-modal")
-                    .w(px(440.))
+                    .w(px(460.))
                     .rounded(px(12.))
                     .bg(color("--background-surface-high"))
                     .border_1()
@@ -1544,36 +1703,32 @@ impl Root {
                             .text_color(color("--text-strong"))
                             .child(title),
                     )
-                    .child(
-                        div()
-                            .text_size(px(14.))
-                            .line_height(px(20.))
-                            .text_color(color("--text-default"))
-                            .child(sub),
-                    )
+                    .child(offer_card)
                     .child(
                         div()
                             .flex()
                             .justify_end()
                             .gap(px(10.))
-                            .child(
-                                div()
-                                    .id("claim-discount-cancel")
-                                    .h(px(36.))
-                                    .px(px(14.))
-                                    .rounded(px(8.))
-                                    .bg(color("--control-secondary-background-default"))
-                                    .cursor_pointer()
-                                    .flex()
-                                    .items_center()
-                                    .text_size(px(14.))
-                                    .text_color(color("--control-secondary-text-default"))
-                                    .on_click(cx.listener(|this, _, _, cx| {
-                                        this.nitro_mgmt_overlay = None;
-                                        cx.notify();
-                                    }))
-                                    .child(dc_intl::t("zl7LZp")),
-                            )
+                            .when(!is_applied, |row| {
+                                row.child(
+                                    div()
+                                        .id("claim-discount-cancel")
+                                        .h(px(36.))
+                                        .px(px(14.))
+                                        .rounded(px(8.))
+                                        .bg(color("--control-secondary-background-default"))
+                                        .cursor_pointer()
+                                        .flex()
+                                        .items_center()
+                                        .text_size(px(14.))
+                                        .text_color(color("--control-secondary-text-default"))
+                                        .on_click(cx.listener(|this, _, _, cx| {
+                                            this.nitro_mgmt_overlay = None;
+                                            cx.notify();
+                                        }))
+                                        .child(dc_intl::t("zl7LZp")),
+                                )
+                            })
                             .child(
                                 div()
                                     .id("claim-discount-submit")
@@ -1880,6 +2035,24 @@ impl Root {
                 });
                 cx.notify();
                 "nitro-mgmt: plan-change".into()
+            }
+            "discount-confirm" => {
+                self.nitro_mgmt_overlay = Some(NitroMgmtOverlay::ClaimDiscount {
+                    percent: 30,
+                    offer_id: "offer_demo_30".into(),
+                    applied: false,
+                });
+                cx.notify();
+                "nitro-mgmt: discount-confirm".into()
+            }
+            "discount-applied" => {
+                self.nitro_mgmt_overlay = Some(NitroMgmtOverlay::ClaimDiscount {
+                    percent: 30,
+                    offer_id: "offer_demo_30".into(),
+                    applied: true,
+                });
+                cx.notify();
+                "nitro-mgmt: discount-applied".into()
             }
             "close" => {
                 self.nitro_mgmt_overlay = None;

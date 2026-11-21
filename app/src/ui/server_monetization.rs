@@ -884,6 +884,496 @@ impl Root {
     }
 }
 
+/// REST keys for Server Monetization Team Onboarding (`75834`).
+pub(crate) const TEAMS_FETCH_KEY: &str = "server-monetization:teams";
+pub(crate) const TEAM_ONBOARDING_SUBMIT_KEY: &str = "server-monetization:team-onboarding";
+const CREATOR_POLICY_URL: &str = "https://support.discord.com/hc/en-us/articles/10575066024983";
+const DEVELOPER_PORTAL_TEAMS_URL: &str = "https://discord.com/developers/teams";
+
+#[derive(Clone, Debug)]
+pub(crate) struct PayoutTeamOption {
+    pub id: String,
+    pub name: String,
+}
+
+/// Open Server Monetization Team Onboarding modal (module 75834: `QXf93A`, `GfObDE`, `geKm7t`,
+/// `inJKQv`, `Jyy4pV`, `U1Vz24`, `JddVgE`, `+ALa7+`).
+#[derive(Clone, Debug)]
+pub(crate) struct MonetizationTeamOnboardingModal {
+    pub guild_id: Id,
+    pub require_team_setup: bool,
+    pub teams: Vec<PayoutTeamOption>,
+    pub selected_team_id: Option<String>,
+    pub agreed: bool,
+    pub dropdown_open: bool,
+}
+
+/// `GET /teams?include_payout_account_status=true` (module 75834).
+pub(crate) fn fetch_payout_teams_request() -> Request {
+    Request::Rest {
+        key: Some(TEAMS_FETCH_KEY.to_owned()),
+        method: reqwest::Method::GET,
+        route: "/teams?include_payout_account_status=true".to_owned(),
+        body: None,
+    }
+}
+
+/// `POST /guilds/{guildId}/creator-monetization/ownership-transfer/onboarding` (module 75834).
+pub(crate) fn submit_team_onboarding_request(guild_id: Id, team_id: Option<&str>) -> Request {
+    Request::Rest {
+        key: Some(TEAM_ONBOARDING_SUBMIT_KEY.to_owned()),
+        method: reqwest::Method::POST,
+        route: format!("/guilds/{guild_id}/creator-monetization/ownership-transfer/onboarding"),
+        body: Some(json!({ "team_id": team_id })),
+    }
+}
+
+fn team_terms_agreement_styled() -> gpui::StyledText {
+    let runs = dc_intl::format_runs(
+        "+ALa7+",
+        &[
+            (
+                "fullTermsUrl",
+                dc_intl::Arg::Str(std::borrow::Cow::Borrowed(MONETIZATION_TERMS_URL)),
+            ),
+            (
+                "creatorRevenuePolicyUrl",
+                dc_intl::Arg::Str(std::borrow::Cow::Borrowed(CREATOR_POLICY_URL)),
+            ),
+        ],
+    );
+    let mut text = String::new();
+    let mut highlights = Vec::new();
+    for (chunk, hook) in runs {
+        let start = text.len();
+        text.push_str(&chunk);
+        if hook.as_deref() == Some("$link") && start < text.len() {
+            highlights.push((
+                start..text.len(),
+                gpui::HighlightStyle {
+                    color: Some(color("--text-link").into()),
+                    ..gpui::HighlightStyle::default()
+                },
+            ));
+        }
+    }
+    gpui::StyledText::new(text).with_highlights(highlights)
+}
+
+impl Root {
+    /// Opens the Server Monetization Team Onboarding modal (`75834`).
+    #[allow(dead_code)]
+    pub(super) fn open_monetization_team_onboarding(
+        &mut self,
+        guild_id: Id,
+        require_team_setup: bool,
+        cx: &mut Context<Self>,
+    ) {
+        if require_team_setup {
+            let _ = self.requests.send(fetch_payout_teams_request());
+        }
+        self.monetization_team_onboarding_modal = Some(MonetizationTeamOnboardingModal {
+            guild_id,
+            require_team_setup,
+            teams: Vec::new(),
+            selected_team_id: None,
+            agreed: false,
+            dropdown_open: false,
+        });
+        cx.notify();
+    }
+
+    /// Modal layer for Server Monetization Team Onboarding (`75834`).
+    pub(super) fn monetization_team_onboarding_layer(
+        &self,
+        cx: &mut Context<Self>,
+    ) -> Option<AnyElement> {
+        let modal = self.monetization_team_onboarding_modal.as_ref()?;
+        let needs_new_team = modal.require_team_setup && modal.teams.is_empty();
+        let title = if modal.require_team_setup {
+            dc_intl::t("inJKQv")
+        } else {
+            dc_intl::t("GfObDE")
+        };
+        let subtitle: Option<String> = if modal.require_team_setup {
+            if modal.teams.is_empty() {
+                let paras: Vec<String> = dc_intl::format_runs("Jyy4pV", &[])
+                    .into_iter()
+                    .map(|(chunk, _)| chunk.trim().to_owned())
+                    .filter(|s| !s.is_empty())
+                    .collect();
+                Some(paras.join("\n\n"))
+            } else {
+                Some(dc_intl::t("U1Vz24").to_owned())
+            }
+        } else {
+            None
+        };
+        let selected_label = modal
+            .selected_team_id
+            .as_deref()
+            .and_then(|sid| modal.teams.iter().find(|t| t.id == sid))
+            .map(|t| t.name.clone())
+            .unwrap_or_else(|| dc_intl::t("QXf93A").to_owned());
+        let submit_enabled = if needs_new_team {
+            true
+        } else if modal.require_team_setup {
+            modal.agreed && modal.selected_team_id.is_some()
+        } else {
+            modal.agreed
+        };
+        let guild_id = modal.guild_id;
+        let selected_team_id = modal.selected_team_id.clone();
+
+        Some(
+            gpui::deferred(
+                div()
+                    .id("monetization-team-onboarding-backdrop")
+                    .occlude()
+                    .absolute()
+                    .inset_0()
+                    .bg(rgba(0x000000b3))
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .p(px(24.))
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        this.monetization_team_onboarding_modal = None;
+                        cx.notify();
+                    }))
+                    .child(
+                        div()
+                            .id("monetization-team-onboarding-modal")
+                            .w(px(480.))
+                            .rounded(px(12.))
+                            .border_1()
+                            .border_color(color("--border-subtle"))
+                            .bg(color("--background-surface-high"))
+                            .overflow_hidden()
+                            .flex()
+                            .flex_col()
+                            .on_click(|_, _, cx| cx.stop_propagation())
+                            // Header
+                            .child(
+                                div()
+                                    .px(px(24.))
+                                    .pt(px(20.))
+                                    .pb(px(12.))
+                                    .flex()
+                                    .items_start()
+                                    .justify_between()
+                                    .gap(px(12.))
+                                    .child(
+                                        div()
+                                            .flex_1()
+                                            .min_w_0()
+                                            .text_size(px(20.))
+                                            .line_height(px(25.))
+                                            .font_weight(FontWeight(700.))
+                                            .text_color(color("--text-strong"))
+                                            .child(title),
+                                    )
+                                    .child(
+                                        div()
+                                            .id("monetization-team-onboarding-close")
+                                            .flex_none()
+                                            .size(px(30.))
+                                            .rounded(px(6.))
+                                            .cursor_pointer()
+                                            .flex()
+                                            .items_center()
+                                            .justify_center()
+                                            .child(icon("modal_close", 18., "--icon-subtle"))
+                                            .on_click(cx.listener(|this, _, _, cx| {
+                                                this.monetization_team_onboarding_modal = None;
+                                                cx.notify();
+                                            })),
+                                    ),
+                            )
+                            // Body
+                            .child(
+                                div()
+                                    .px(px(24.))
+                                    .pb(px(20.))
+                                    .flex()
+                                    .flex_col()
+                                    .gap(px(16.))
+                                    .children(subtitle.map(|sub| {
+                                        div()
+                                            .text_size(px(14.))
+                                            .line_height(px(20.))
+                                            .text_color(color("--text-default"))
+                                            .child(sub)
+                                    }))
+                                    .when(modal.require_team_setup && !modal.teams.is_empty(), |col| {
+                                        col.child(
+                                            div()
+                                                .flex()
+                                                .flex_col()
+                                                .gap(px(6.))
+                                                .child(
+                                                    div()
+                                                        .text_size(px(12.))
+                                                        .font_weight(FontWeight(700.))
+                                                        .text_color(color("--text-muted"))
+                                                        .child(dc_intl::t("QXf93A").to_uppercase()),
+                                                )
+                                                .child(
+                                                    div()
+                                                        .id("monetization-team-select")
+                                                        .cursor_pointer()
+                                                        .h(px(40.))
+                                                        .px(px(12.))
+                                                        .rounded(px(8.))
+                                                        .border_1()
+                                                        .border_color(color("--border-subtle"))
+                                                        .bg(color("--background-base-lowest"))
+                                                        .flex()
+                                                        .items_center()
+                                                        .justify_between()
+                                                        .child(
+                                                            div()
+                                                                .text_size(px(14.))
+                                                                .text_color(
+                                                                    if modal.selected_team_id.is_some()
+                                                                    {
+                                                                        color("--text-strong")
+                                                                    } else {
+                                                                        color("--text-muted")
+                                                                    },
+                                                                )
+                                                                .child(selected_label),
+                                                        )
+                                                        .child(icon(
+                                                            "shop_select_chevron",
+                                                            16.,
+                                                            "--icon-subtle",
+                                                        ))
+                                                        .on_click(cx.listener(|this, _, _, cx| {
+                                                            if let Some(m) = this
+                                                                .monetization_team_onboarding_modal
+                                                                .as_mut()
+                                                            {
+                                                                m.dropdown_open = !m.dropdown_open;
+                                                            }
+                                                            cx.notify();
+                                                        })),
+                                                )
+                                                .when(modal.dropdown_open, |sel| {
+                                                    sel.child(
+                                                        div()
+                                                            .rounded(px(8.))
+                                                            .border_1()
+                                                            .border_color(color("--border-subtle"))
+                                                            .bg(color("--background-base-lower"))
+                                                            .p(px(4.))
+                                                            .flex()
+                                                            .flex_col()
+                                                            .gap(px(2.))
+                                                            .children(modal.teams.iter().enumerate().map(
+                                                                |(idx, team)| {
+                                                                    let tid = team.id.clone();
+                                                                    let active = modal
+                                                                        .selected_team_id
+                                                                        .as_deref()
+                                                                        == Some(team.id.as_str());
+                                                                    div()
+                                                                        .id((
+                                                                            "monetization-team-opt",
+                                                                            idx,
+                                                                        ))
+                                                                        .cursor_pointer()
+                                                                        .px(px(10.))
+                                                                        .py(px(8.))
+                                                                        .rounded(px(6.))
+                                                                        .bg(if active {
+                                                                            color("--background-mod-subtle")
+                                                                        } else {
+                                                                            rgba(0x00000000)
+                                                                        })
+                                                                        .hover(|s| {
+                                                                            s.bg(color(
+                                                                                "--background-mod-subtle",
+                                                                            ))
+                                                                        })
+                                                                        .text_size(px(14.))
+                                                                        .text_color(color(
+                                                                            "--text-strong",
+                                                                        ))
+                                                                        .child(team.name.clone())
+                                                                        .on_click(cx.listener(
+                                                                            move |this, _, _, cx| {
+                                                                                if let Some(m) = this
+                                                                                    .monetization_team_onboarding_modal
+                                                                                    .as_mut()
+                                                                                {
+                                                                                    m.selected_team_id =
+                                                                                        Some(tid.clone());
+                                                                                    m.dropdown_open = false;
+                                                                                }
+                                                                                cx.notify();
+                                                                            },
+                                                                        ))
+                                                                },
+                                                            )),
+                                                    )
+                                                }),
+                                        )
+                                    })
+                                    .when(!needs_new_team, |col| {
+                                        col.child(
+                                            div()
+                                                .id("monetization-team-agree")
+                                                .cursor_pointer()
+                                                .flex()
+                                                .items_start()
+                                                .gap(px(10.))
+                                                .on_click(cx.listener(|this, _, _, cx| {
+                                                    if let Some(m) = this
+                                                        .monetization_team_onboarding_modal
+                                                        .as_mut()
+                                                    {
+                                                        m.agreed = !m.agreed;
+                                                    }
+                                                    cx.notify();
+                                                }))
+                                                .child(super::server_games::checkbox(modal.agreed))
+                                                .child(
+                                                    div()
+                                                        .flex_1()
+                                                        .min_w_0()
+                                                        .text_size(px(13.))
+                                                        .line_height(px(18.))
+                                                        .text_color(color("--text-default"))
+                                                        .child(team_terms_agreement_styled()),
+                                                ),
+                                        )
+                                    }),
+                            )
+                            // Footer
+                            .child(
+                                div()
+                                    .px(px(24.))
+                                    .py(px(14.))
+                                    .border_t_1()
+                                    .border_color(color("--border-subtle"))
+                                    .bg(color("--background-base-lower"))
+                                    .flex()
+                                    .items_center()
+                                    .justify_end()
+                                    .gap(px(10.))
+                                    .child(
+                                        div()
+                                            .id("monetization-team-onboarding-submit")
+                                            .when(submit_enabled, |b| b.cursor_pointer())
+                                            .when(!submit_enabled, |b| b.opacity(0.5))
+                                            .px(px(18.))
+                                            .h(px(38.))
+                                            .rounded(px(6.))
+                                            .bg(color("--control-primary-background-default"))
+                                            .flex()
+                                            .items_center()
+                                            .text_size(px(14.))
+                                            .font_weight(FontWeight(600.))
+                                            .text_color(color("--white"))
+                                            .child(if needs_new_team {
+                                                dc_intl::t("JddVgE")
+                                            } else {
+                                                dc_intl::t("geKm7t")
+                                            })
+                                            .on_click(cx.listener(move |this, _, _, cx| {
+                                                if !submit_enabled {
+                                                    return;
+                                                }
+                                                if needs_new_team {
+                                                    cx.open_url(DEVELOPER_PORTAL_TEAMS_URL);
+                                                } else {
+                                                    let _ = this.requests.send(
+                                                        submit_team_onboarding_request(
+                                                            guild_id,
+                                                            selected_team_id.as_deref(),
+                                                        ),
+                                                    );
+                                                    this.monetization_team_onboarding_modal = None;
+                                                    this.put_app_toast(
+                                                        dc_intl::t("geKm7t").to_owned(),
+                                                        true,
+                                                        cx,
+                                                    );
+                                                }
+                                                cx.notify();
+                                            })),
+                                    ),
+                            ),
+                    ),
+            )
+            .with_priority(96)
+            .into_any_element(),
+        )
+    }
+
+    /// Capture harness: `monetization-team [teams|empty|terms|close]` (module 75834).
+    #[cfg(feature = "capture")]
+    pub(crate) fn script_monetization_team(&mut self, arg: &str, cx: &mut Context<Self>) -> String {
+        let gid = self
+            .guild
+            .or_else(|| self.stores.guilds.first().map(|g| g.id))
+            .unwrap_or(1);
+        match arg.trim() {
+            "close" => {
+                self.monetization_team_onboarding_modal = None;
+                cx.notify();
+                "monetization-team: closed".to_owned()
+            }
+            "empty" => {
+                self.monetization_team_onboarding_modal = Some(MonetizationTeamOnboardingModal {
+                    guild_id: gid,
+                    require_team_setup: true,
+                    teams: Vec::new(),
+                    selected_team_id: None,
+                    agreed: false,
+                    dropdown_open: false,
+                });
+                cx.notify();
+                "monetization-team: empty".to_owned()
+            }
+            "terms" => {
+                self.monetization_team_onboarding_modal = Some(MonetizationTeamOnboardingModal {
+                    guild_id: gid,
+                    require_team_setup: false,
+                    teams: Vec::new(),
+                    selected_team_id: None,
+                    agreed: true,
+                    dropdown_open: false,
+                });
+                cx.notify();
+                "monetization-team: terms".to_owned()
+            }
+            _ => {
+                self.monetization_team_onboarding_modal = Some(MonetizationTeamOnboardingModal {
+                    guild_id: gid,
+                    require_team_setup: true,
+                    teams: vec![
+                        PayoutTeamOption {
+                            id: "team_1".to_owned(),
+                            name: "Gravecord Creators LLC".to_owned(),
+                        },
+                        PayoutTeamOption {
+                            id: "team_2".to_owned(),
+                            name: "Indie Guild Studio".to_owned(),
+                        },
+                    ],
+                    selected_team_id: Some("team_1".to_owned()),
+                    agreed: true,
+                    dropdown_open: false,
+                });
+                cx.notify();
+                "monetization-team: teams".to_owned()
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

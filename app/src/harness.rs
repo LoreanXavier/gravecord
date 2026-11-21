@@ -2018,6 +2018,54 @@ pub async fn run(
                 let line = root.update(cx, |root, cx| root.script_quest_bounty(&arg, cx));
                 let _ = writeln!(output, "{line}");
             }
+            // `activity-invite [spotify|stream|game|expired|close]`: Activity invite / listening party / stream request embeds (584283).
+            ["activity-invite", rest @ ..] => {
+                let arg = rest.join(" ");
+                let line = root.update(cx, |root, cx| root.script_activity_invite(&arg, cx));
+                let _ = writeln!(output, "{line}");
+            }
+            // `grant-access [text|stage|skip|close]`: Grant Channel Access modal (685374).
+            ["grant-access", rest @ ..] => {
+                let arg = rest.join(" ");
+                let line = root.update(cx, |root, cx| root.script_grant_channel_access(&arg, cx));
+                let _ = writeln!(output, "{line}");
+            }
+            // `sensitive-media [manage|restricted|age|close]`: Why we hide some media explainer (743461).
+            ["sensitive-media", rest @ ..] => {
+                let arg = rest.join(" ");
+                let line = root.update(cx, |root, cx| root.script_sensitive_media(&arg, cx));
+                let _ = writeln!(output, "{line}");
+            }
+            // `forum-post-perms [open|error|close]`: Who can create a post? forum modal (698325).
+            ["forum-post-perms", rest @ ..] => {
+                let arg = rest.join(" ");
+                let line = root.update(cx, |root, cx| root.script_forum_post_perms(&arg, cx));
+                let _ = writeln!(output, "{line}");
+            }
+            // `monetization-team [teams|empty|terms|close]`: Server monetization team onboarding (75834).
+            ["monetization-team", rest @ ..] => {
+                let arg = rest.join(" ");
+                let line = root.update(cx, |root, cx| root.script_monetization_team(&arg, cx));
+                let _ = writeln!(output, "{line}");
+            }
+            // `app-guild-sub [open|empty|close]`: App guild-subscription Server Selection modal (399143).
+            ["app-guild-sub", rest @ ..] => {
+                let arg = rest.join(" ");
+                let line = root.update(cx, |root, cx| root.script_app_guild_sub(&arg, cx));
+                let _ = writeln!(output, "{line}");
+            }
+            // `nuf-channel-prompt [open|filled|close]`: NUF CHANNEL_PROMPT slide (362311).
+            ["nuf-channel-prompt", rest @ ..] => {
+                let arg = rest.join(" ");
+                let line = cx.update(|cx| {
+                    window.update(cx, |_, window, cx| {
+                        root.update(cx, |root, cx| {
+                            root.script_nuf_channel_prompt(&arg, window, cx)
+                        })
+                    })
+                });
+                let _ = writeln!(output, "{line:?}");
+            }
             // `search last` / `search answer <total>`: the open search's request, and an answer to it;
             // `search page <n>`: the pager turns to page n.
             ["search", rest @ ..] => {

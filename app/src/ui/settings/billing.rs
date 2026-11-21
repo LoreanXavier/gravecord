@@ -545,6 +545,22 @@ impl Root {
                             .flex()
                             .flex_col()
                             .gap(px(8.))
+                            .when_some(
+                                self.fetched
+                                    .get("user-offer")
+                                    .and_then(|v| v["body"]["user_discount_offer"]["discount"]["amount"].as_u64()),
+                                |col, pct| {
+                                    col.child(super::nitro_mgmt::render_discount_offer_card(
+                                        (pct as u32).max(1),
+                                        1,
+                                        "$6.99",
+                                        "$9.99",
+                                        "month",
+                                        false,
+                                        super::nitro_mgmt::DiscountOfferState::None,
+                                    ))
+                                },
+                            )
                             .children(items),
                     )
                     .into_any_element(),

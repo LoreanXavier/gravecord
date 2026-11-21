@@ -102,6 +102,9 @@ fn parse_int(text: &str) -> Option<i64> {
 enum Step {
     /// The slots are being read; nothing is drawn.
     Loading,
+    /// `GUILD_SELECT` of module 770101 / 710802 ("Select a Server" / "Select a server to transfer to").
+    #[cfg_attr(not(feature = "capture"), allow(dead_code))]
+    GuildSelect,
     Quantity,
     Confirm,
     Success,
@@ -110,6 +113,12 @@ enum Step {
 pub(crate) struct BoostApply {
     guild: Id,
     step: Step,
+    /// `770101`: whether selecting a destination server for a boost transfer vs a fresh boost.
+    is_transfer: bool,
+    /// `770101`: search filter text in `Step::GuildSelect`.
+    select_query: String,
+    /// `770101`: override empty state when demonstrating `E3tB6+` (no servers joined).
+    force_empty_guilds: bool,
     /// The ids of the slots that can be used, in the order the account lists them.
     available: Vec<String>,
     /// How many of them go to this server.
@@ -246,6 +255,9 @@ impl Root {
         self.boost_apply = Some(BoostApply {
             guild,
             step: Step::Loading,
+            is_transfer: false,
+            select_query: String::new(),
+            force_empty_guilds: false,
             available: Vec::new(),
             count: 1,
             field: None,
@@ -562,9 +574,270 @@ impl Root {
         let open = self.boost_apply.as_ref()?;
         match open.step {
             Step::Loading => None,
+            Step::GuildSelect => Some(self.boost_apply_guild_select(open, cx)),
             Step::Quantity => Some(self.boost_apply_quantity(open, window, cx)),
             Step::Confirm | Step::Success => Some(self.boost_apply_graphic(open, cx)),
         }
+    }
+
+    /// Boost Slot Server Picker (`770101`: `cQYceV`, `IB13DV`, `vf3ZTa`, `E3tB6+`, `w3GLl9`,
+    /// `Uj0md3`, `dUgaF8`).
+    fn boost_apply_guild_select(&self, open: &BoostApply, cx: &mut Context<Self>) -> AnyElement {
+        let is_transfer = open.is_transfer;
+        let title = if is_transfer {
+            dc_intl::t("IB13DV")
+        } else {
+            dc_intl::t("cQYceV")
+        };
+        let cta_label = if is_transfer {
+            dc_intl::t("dUgaF8")
+        } else {
+            dc_intl::t("Uj0md3")
+        };
+        let q = open.select_query.trim().to_lowercase();
+        let all_guilds: Vec<(Id, String, u64)> = if open.force_empty_guilds {
+            Vec::new()
+        } else {
+            self.stores
+                .guilds
+                .iter()
+                .filter(|g| !g.features.iter().any(|f| f == "HUB"))
+                .map(|g| (g.id, g.name.clone(), g.premium_tier))
+                .collect()
+        };
+        let filtered: Vec<(Id, String, u64)> = all_guilds
+            .iter()
+            .filter(|(_, name, _)| q.is_empty() || name.to_lowercase().contains(&q))
+            .cloned()
+            .collect();
+
+        let body: AnyElement = if all_guilds.is_empty() {
+            div()
+                .px(px(20.))
+                .py(px(24.))
+                .flex()
+                .flex_col()
+                .items_center()
+                .gap(px(10.))
+                .child(icon("boost_gem", 32., "--brand-500"))
+                .child(
+                    div()
+                        .id("boost-select-explore-public")
+                        .cursor_pointer()
+                        .text_center()
+                        .text_size(px(14.))
+                        .line_height(px(20.))
+                        .text_color(color("--text-default"))
+                        .child(dc_intl::format("E3tB6+", &[]))
+                        .on_click(cx.listener(|this, _, _, cx| {
+                            this.boost_apply = None;
+                            this.discover.open = true;
+                            cx.notify();
+                        })),
+                )
+                .into_any_element()
+        } else if filtered.is_empty() {
+            div()
+                .px(px(20.))
+                .py(px(24.))
+                .text_center()
+                .text_size(px(14.))
+                .text_color(color("--text-muted"))
+                .child(dc_intl::t("w3GLl9"))
+                .into_any_element()
+        } else {
+            div()
+                .id("boost-select-guild-list")
+                .max_h(px(340.))
+                .overflow_y_scroll()
+                .px(px(16.))
+                .pb(px(16.))
+                .flex()
+                .flex_col()
+                .gap(px(4.))
+                .children(filtered.into_iter().map(|(gid, name, tier)| {
+                    div()
+                        .id(("boost-select-guild", gid))
+                        .cursor_pointer()
+                        .px(px(8.))
+                        .py(px(8.))
+                        .rounded(px(6.))
+                        .hover(|s| s.bg(color("--background-mod-subtle")))
+                        .flex()
+                        .items_center()
+                        .justify_between()
+                        .gap(px(10.))
+                        .child(
+                            div()
+                                .flex_1()
+                                .min_w_0()
+                                .flex()
+                                .items_center()
+                                .gap(px(12.))
+                                .child(
+                                    div()
+                                        .flex_none()
+                                        .size(px(32.))
+                                        .rounded(px(10.))
+                                        .bg(color("--brand-500"))
+                                        .flex()
+                                        .items_center()
+                                        .justify_center()
+                                        .text_size(px(13.))
+                                        .font_weight(FontWeight(700.))
+                                        .text_color(color("--white"))
+                                        .child(
+                                            name.chars()
+                                                .next()
+                                                .unwrap_or('S')
+                                                .to_uppercase()
+                                                .to_string(),
+                                        ),
+                                )
+                                .child(
+                                    div()
+                                        .flex_1()
+                                        .min_w_0()
+                                        .flex()
+                                        .items_baseline()
+                                        .gap(px(6.))
+                                        .child(
+                                            div()
+                                                .text_size(px(14.))
+                                                .font_weight(FontWeight(500.))
+                                                .text_color(color("--text-strong"))
+                                                .truncate()
+                                                .child(name),
+                                        )
+                                        .child(
+                                            div()
+                                                .flex_none()
+                                                .text_size(px(12.))
+                                                .text_color(color("--text-muted"))
+                                                .child(tier_label(tier)),
+                                        ),
+                                ),
+                        )
+                        .child(
+                            div()
+                                .flex_none()
+                                .px(px(16.))
+                                .py(px(6.))
+                                .rounded(px(4.))
+                                .bg(color("--brand-500"))
+                                .text_size(px(13.))
+                                .font_weight(FontWeight(500.))
+                                .text_color(color("--white"))
+                                .child(cta_label),
+                        )
+                        .on_click(cx.listener(move |this, _, _, cx| {
+                            if let Some(m) = this.boost_apply.as_mut() {
+                                m.guild = gid;
+                                m.step = Step::Confirm;
+                            }
+                            cx.notify();
+                        }))
+                }))
+                .into_any_element()
+        };
+
+        deferred(
+            div()
+                .id("boost-select-guild-backdrop")
+                .occlude()
+                .absolute()
+                .inset_0()
+                .bg(rgba(0x000000b3))
+                .flex()
+                .items_center()
+                .justify_center()
+                .p(px(24.))
+                .on_click(cx.listener(|this, _, _, cx| {
+                    this.close_boost_apply();
+                    cx.notify();
+                }))
+                .child(
+                    div()
+                        .id("boost-select-guild-modal")
+                        .w(px(480.))
+                        .rounded(px(12.))
+                        .border_1()
+                        .border_color(color("--border-subtle"))
+                        .bg(color("--background-surface-high"))
+                        .overflow_hidden()
+                        .flex()
+                        .flex_col()
+                        .on_click(|_, _, cx| cx.stop_propagation())
+                        .child(
+                            div()
+                                .px(px(20.))
+                                .pt(px(20.))
+                                .pb(px(12.))
+                                .flex()
+                                .items_center()
+                                .justify_between()
+                                .gap(px(12.))
+                                .child(
+                                    div()
+                                        .text_size(px(20.))
+                                        .font_weight(FontWeight(700.))
+                                        .text_color(color("--text-strong"))
+                                        .child(title),
+                                )
+                                .child(
+                                    div()
+                                        .id("boost-select-guild-close")
+                                        .size(px(30.))
+                                        .rounded(px(6.))
+                                        .cursor_pointer()
+                                        .flex()
+                                        .items_center()
+                                        .justify_center()
+                                        .child(icon("modal_close", 18., "--icon-subtle"))
+                                        .on_click(cx.listener(|this, _, _, cx| {
+                                            this.close_boost_apply();
+                                            cx.notify();
+                                        })),
+                                ),
+                        )
+                        .when(!all_guilds.is_empty(), |col| {
+                            col.child(
+                                div().px(px(20.)).pb(px(12.)).child(
+                                    div()
+                                        .h(px(38.))
+                                        .px(px(12.))
+                                        .rounded(px(8.))
+                                        .border_1()
+                                        .border_color(color("--border-subtle"))
+                                        .bg(color("--background-base-lowest"))
+                                        .flex()
+                                        .items_center()
+                                        .gap(px(8.))
+                                        .child(icon("search", 16., "--icon-subtle"))
+                                        .child(
+                                            div()
+                                                .flex_1()
+                                                .min_w_0()
+                                                .text_size(px(14.))
+                                                .text_color(if open.select_query.is_empty() {
+                                                    color("--text-muted")
+                                                } else {
+                                                    color("--text-strong")
+                                                })
+                                                .child(if open.select_query.is_empty() {
+                                                    dc_intl::t("vf3ZTa").to_owned()
+                                                } else {
+                                                    open.select_query.clone()
+                                                }),
+                                        ),
+                                ),
+                            )
+                        })
+                        .child(body),
+                ),
+        )
+        .with_priority(96)
+        .into_any_element()
     }
 
     fn boost_apply_quantity(
@@ -938,13 +1211,41 @@ impl Root {
                 cx.notify();
                 "boost-apply: success".to_owned()
             }
+            ["select-guild"] | ["transfer-guild"] | ["select-empty"] => {
+                let is_transfer = matches!(words, ["transfer-guild"]);
+                let force_empty = matches!(words, ["select-empty"]);
+                let gid = self
+                    .guild
+                    .or_else(|| self.stores.guilds.first().map(|g| g.id))
+                    .unwrap_or(1);
+                self.boost_apply = Some(BoostApply {
+                    guild: gid,
+                    step: Step::GuildSelect,
+                    is_transfer,
+                    select_query: String::new(),
+                    force_empty_guilds: force_empty,
+                    available: vec!["9000".to_owned()],
+                    count: 1,
+                    field: None,
+                    shown: Typed::Number(1),
+                    _field_events: None,
+                    sending: false,
+                    error: None,
+                    from_settings: true,
+                });
+                cx.notify();
+                format!("boost-apply: {}", words[0])
+            }
             [free] => {
                 let (Ok(free), Some(guild)) = (free.parse::<usize>(), self.guild) else {
-                    return "usage: boost-apply <free slots>|next|success|state".to_owned();
+                    return "usage: boost-apply <free slots>|next|success|select-guild|transfer-guild|select-empty|state".to_owned();
                 };
                 self.boost_apply = Some(BoostApply {
                     guild,
                     step: Step::Loading,
+                    is_transfer: false,
+                    select_query: String::new(),
+                    force_empty_guilds: false,
                     available: Vec::new(),
                     count: 1,
                     field: None,

@@ -342,6 +342,7 @@ pub(crate) mod server_welcome_new;
 #[cfg(feature = "capture")]
 pub(crate) use server_landing::FORCE_LANDING;
 mod accept_invite;
+mod activity_invite_embed;
 mod app_test_mode;
 mod boost_uncancel;
 mod changelog;
@@ -351,8 +352,10 @@ mod copy_combo;
 mod dm_call;
 mod dm_call_view;
 mod e2ee_verify;
+mod forum_post_perms;
 mod forum_tag_editor;
 mod game_leaderboard;
+mod grant_channel_access;
 mod guild_theme_nux;
 mod icymi;
 mod incoming_call;
@@ -374,6 +377,7 @@ mod quest_survey;
 mod raid_alerts;
 mod research_survey;
 mod role_icon_upload;
+mod sensitive_media_modal;
 mod server_members;
 mod server_onboarding;
 mod server_role_editor;
@@ -828,6 +832,21 @@ pub struct Root {
     quest_activity_header: Option<quest_activity_header::QuestActivityHeaderState>,
     /// Server Web Presence / Discoverable Content picker & review modal (module 284305).
     web_presence_modal: Option<web_presence::WebPresenceModal>,
+    /// Activity Invite / Listening Party / Request to Stream preview sheet (module 584283).
+    activity_invite_preview: Option<Vec<activity_invite_embed::ActivityInviteCard>>,
+    /// Grant Channel Access "Add members or roles" modal (module 685374).
+    grant_channel_access_modal: Option<grant_channel_access::GrantChannelAccessModal>,
+    /// "Why we hide some media" sensitive media explainer modal (module 743461).
+    sensitive_media_modal: Option<sensitive_media_modal::SensitiveMediaModal>,
+    /// "Who can create a post?" forum admin onboarding modal (module 698325).
+    forum_post_perms_modal: Option<forum_post_perms::ForumPostPermsModal>,
+    /// Server monetization team onboarding modal (module 75834).
+    monetization_team_onboarding_modal:
+        Option<server_monetization::MonetizationTeamOnboardingModal>,
+    /// App guild-subscription Server Selection modal (module 399143).
+    guild_sub_selection_modal: Option<app_storefront::GuildSubscriptionSelectionModal>,
+    /// Quest reward code claim instructions sub-modal (module 639852).
+    quest_code_instructions_modal: Option<quest_reward_modal::QuestCodeInstructionsModal>,
     /// Nitro Evolving Tenure Badge modal (module 384048).
     evolving_tenure_modal: Option<badge_modal::EvolvingTenureBadgeModal>,
     /// Quest Bar Bounty Card overlay (module 682908).
@@ -1445,6 +1464,13 @@ impl Root {
             role_icon_upload_modal: None,
             quest_activity_header: None,
             web_presence_modal: None,
+            activity_invite_preview: None,
+            grant_channel_access_modal: None,
+            sensitive_media_modal: None,
+            forum_post_perms_modal: None,
+            monetization_team_onboarding_modal: None,
+            guild_sub_selection_modal: None,
+            quest_code_instructions_modal: None,
             evolving_tenure_modal: None,
             quest_bar_bounty: None,
             suspended_safety_hub: None,
@@ -9084,6 +9110,7 @@ impl Root {
             self.message_stickers(message.id, &message.sticker_items, cx),
             self.message_components(message, cx),
             self.invite_cards(message, cx),
+            self.activity_invite_embed(message, cx),
             self.poll_card(message, cx),
             // `renderSafetySystemNotification` (module 679636): last of the accessories.
             self.safety_system_notice(message, cx),
@@ -11776,6 +11803,13 @@ impl Render for Root {
                         || this.role_icon_upload_modal.is_some()
                         || this.quest_activity_header.is_some()
                         || this.web_presence_modal.is_some()
+                        || this.activity_invite_preview.is_some()
+                        || this.grant_channel_access_modal.is_some()
+                        || this.sensitive_media_modal.is_some()
+                        || this.forum_post_perms_modal.is_some()
+                        || this.monetization_team_onboarding_modal.is_some()
+                        || this.guild_sub_selection_modal.is_some()
+                        || this.quest_code_instructions_modal.is_some()
                         || this.evolving_tenure_modal.is_some()
                         || this.quest_bar_bounty.is_some()
                         || this.quests.split_modal.is_some()
@@ -11854,6 +11888,13 @@ impl Render for Root {
                     this.role_icon_upload_modal = None;
                     this.quest_activity_header = None;
                     this.web_presence_modal = None;
+                    this.activity_invite_preview = None;
+                    this.grant_channel_access_modal = None;
+                    this.sensitive_media_modal = None;
+                    this.forum_post_perms_modal = None;
+                    this.monetization_team_onboarding_modal = None;
+                    this.guild_sub_selection_modal = None;
+                    this.quest_code_instructions_modal = None;
                     this.evolving_tenure_modal = None;
                     this.quest_bar_bounty = None;
                     this.quests.split_modal = None;
@@ -13091,6 +13132,12 @@ impl Render for Root {
             .children(self.role_icon_upload_layer(cx))
             .children(self.quest_activity_header_layer(cx))
             .children(self.web_presence_layer(cx))
+            .children(self.activity_invite_preview_layer(cx))
+            .children(self.grant_channel_access_layer(cx))
+            .children(self.sensitive_media_modal_layer(cx))
+            .children(self.forum_post_perms_layer(cx))
+            .children(self.monetization_team_onboarding_layer(cx))
+            .children(self.guild_sub_selection_layer(cx))
             .children(self.evolving_tenure_badge_layer(cx))
             .children(self.quest_bar_bounty_layer(cx))
             .children(self.quest_split_modal_layer(cx))

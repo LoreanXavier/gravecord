@@ -467,6 +467,37 @@ impl Root {
             .absolute()
             .right(px(4.))
             .bottom(px(bottom))
+            .flex()
+            .items_center()
+            .gap(px(4.))
+            .child(
+                div()
+                    .id(SharedString::from(format!(
+                        "obscure-sensitive-info-{attachment_id}"
+                    )))
+                    .occlude()
+                    .size(px(32.))
+                    .rounded(px(8.))
+                    .bg(color("--control-overlay-secondary-background-default"))
+                    .hover(|style| style.bg(color("--control-overlay-secondary-background-hover")))
+                    .cursor_pointer()
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .child(icon("circle_info", 18., "--white"))
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        this.tip = None;
+                        let cid = this.channel.unwrap_or(1);
+                        this.open_sensitive_media_modal(
+                            cid,
+                            attachment_id,
+                            vec![attachment_id],
+                            Vec::new(),
+                            cx,
+                        );
+                        cx.stop_propagation();
+                    })),
+            )
             .child(tipped)
             .into_any_element()
     }

@@ -2439,19 +2439,44 @@ impl Root {
                                     )
                                     .child(
                                         div()
-                                            .id("forum-guidelines-close")
-                                            .cursor_pointer()
-                                            .child(icon(
-                                                "x_small",
-                                                16.,
-                                                "--interactive-text-default",
-                                            ))
-                                            .on_click(cx.listener(move |this, _, _, cx| {
-                                                if let Some(v) = this.forums.get_mut(&id) {
-                                                    v.guidelines = false;
-                                                }
-                                                cx.notify();
-                                            })),
+                                            .flex()
+                                            .items_center()
+                                            .gap(px(8.))
+                                            .child({
+                                                let guild_id = self.guild.unwrap_or(1);
+                                                div()
+                                                    .id("forum-post-perms-trigger")
+                                                    .cursor_pointer()
+                                                    .px(px(10.))
+                                                    .h(px(24.))
+                                                    .rounded(px(6.))
+                                                    .bg(color("--control-secondary-background-default"))
+                                                    .flex()
+                                                    .items_center()
+                                                    .text_size(px(12.))
+                                                    .font_weight(FontWeight(500.))
+                                                    .text_color(color("--text-strong"))
+                                                    .child(dc_intl::t("TFGnmk"))
+                                                    .on_click(cx.listener(move |this, _, _, cx| {
+                                                        this.open_forum_post_perms(guild_id, id, cx);
+                                                    }))
+                                            })
+                                            .child(
+                                                div()
+                                                    .id("forum-guidelines-close")
+                                                    .cursor_pointer()
+                                                    .child(icon(
+                                                        "x_small",
+                                                        16.,
+                                                        "--interactive-text-default",
+                                                    ))
+                                                    .on_click(cx.listener(move |this, _, _, cx| {
+                                                        if let Some(v) = this.forums.get_mut(&id) {
+                                                            v.guidelines = false;
+                                                        }
+                                                        cx.notify();
+                                                    })),
+                                            ),
                                     ),
                             )
                             .child(
