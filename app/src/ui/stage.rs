@@ -227,14 +227,15 @@ fn stage_header(
                         .line_height(px(18.))
                         .text_color(color("--text-muted"))
                         .child(icon("mic", 16., "--text-muted"))
-                        .child(div().ml(px(4.)).child(if speaking == 0 {
-                            // `chmM9N` (strings module 818418): "=0" -> "{count} is speaking", other -> "{count} speaking".
-                            "0 is speaking".to_owned()
-                        } else {
-                            format!("{speaking} speaking")
-                        }))
+                        .child(div().ml(px(4.)).child(dc_intl::format(
+                            "chmM9N",
+                            &[("count", dc_intl::Arg::Num(speaking as f64))],
+                        )))
                         .child(div().ml(px(8.)).child(icon("members", 16., "--text-muted")))
-                        .child(div().ml(px(4.)).child(format!("{audience} in audience"))),
+                        .child(div().ml(px(4.)).child(dc_intl::format(
+                            "+v2pN2",
+                            &[("count", dc_intl::Arg::Num(audience as f64))],
+                        ))),
                 ),
         )
         .child(
@@ -566,6 +567,28 @@ impl Root {
             let raised = hands.contains(&person);
             let probe = format!("stage-audience-{person}");
             let click_probe = probe.clone();
+            let is_stage_mod = is_speaker
+                && self
+                    .stores
+                    .guild(guild)
+                    .is_some_and(|g| g.owner_id == Some(person));
+            let mod_badge = is_stage_mod.then(|| {
+                div()
+                    .id(gpui::SharedString::from(format!(
+                        "stage-mod-badge-{person}"
+                    )))
+                    .aria_label(dc_intl::t("GMZqSi"))
+                    .absolute()
+                    .top(px(6.))
+                    .right(px(6.))
+                    .size(px(20.))
+                    .rounded_full()
+                    .bg(color("--background-surface-high"))
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .child(icon("mod_chip_shield", 12., "--status-positive"))
+            });
             div()
                 .id(gpui::SharedString::from(if is_speaker {
                     format!("stage-speaker-{person}")
@@ -573,6 +596,7 @@ impl Root {
                     probe.clone()
                 }))
                 .relative()
+                .children(mod_badge)
                 .flex_none()
                 .w(px(102.))
                 .h(px(98.))
@@ -884,8 +908,26 @@ impl Root {
                     .bottom(px(13.))
                     .flex()
                     .gap(px(20.))
-                    .child(icon("voice_view_popout", 24., "--white"))
-                    .child(icon("voice_view_fullscreen", 24., "--white")),
+                    .child(
+                        div()
+                            .id("stage-popout-btn")
+                            .cursor_pointer()
+                            .child(icon("voice_view_popout", 24., "--white"))
+                            .on_click(cx.listener(|this, _, window, cx| {
+                                this.toggle_call_popout(window, cx);
+                            })),
+                    )
+                    .child(
+                        div()
+                            .id("stage-fullscreen-btn")
+                            .cursor_pointer()
+                            .child(icon("voice_view_fullscreen", 24., "--white"))
+                            .on_click(cx.listener(|this, _, window, cx| {
+                                this.vv.fullscreen = !this.vv.fullscreen;
+                                window.toggle_fullscreen();
+                                cx.notify();
+                            })),
+                    ),
             );
         // `popoverGradientWrapper` of stage-ann/stage-live-controls: 240 by 241 above the hand button (box (641, 404)),
         // 12px radius on #242429 under the blue header gradient (144.6 high), the graphic 144 by 81 32px down, the
@@ -1010,20 +1052,37 @@ impl Root {
                     .px(px(16.))
                     .flex()
                     .flex_col()
-                    .children((!speakers.is_empty()).then(|| {
+                    .children(self.call_popped_out().then(|| {
+                        // Module 482877 (`J5bXZU`): popped-out player notice.
+                        div()
+                            .my(px(24.))
+                            .p(px(20.))
+                            .rounded(px(8.))
+                            .bg(color("--background-surface-high"))
+                            .border_1()
+                            .border_color(color("--border-subtle"))
+                            .text_center()
+                            .text_size(px(15.))
+                            .font_weight(FontWeight(600.))
+                            .text_color(color("--text-strong"))
+                            .child(dc_intl::t("J5bXZU"))
+                    }))
+                    .children((!self.call_popped_out() && !speakers.is_empty()).then(|| {
                         section(
-                            format!("Speakers \u{2013} {}", speakers.len()),
+                            format!("{} \u{2013} {}", dc_intl::t("CduOkx"), speakers.len()),
                             &speakers,
                             "members",
                             true,
                         )
                     }))
-                    .child(section(
-                        format!("Audience \u{2013} {}", audience.len()),
-                        &audience,
-                        "members",
-                        false,
-                    )),
+                    .children((!self.call_popped_out()).then(|| {
+                        section(
+                            format!("{} \u{2013} {}", dc_intl::t("3foUu5"), audience.len()),
+                            &audience,
+                            "members",
+                            false,
+                        )
+                    })),
             )
             .children(coach)
             // `caret_uDaE_S`: 22 by 14 under the box, centred on the hand button (750, 644).

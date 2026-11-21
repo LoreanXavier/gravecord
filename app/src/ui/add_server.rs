@@ -1143,20 +1143,89 @@ impl Root {
         )
     }
 
-    /// The birthday step of module 109766 in this dialog's shell (no close button on that step: `O !== AGE_GATE`).
-    /// GAP: the official step is a slide of the 680px NUF modal (`modal_3h-1-Q`), forced to the light theme, with
-    /// the step illustration in its sidebar (`es`); only the 440 by 464 slide (`container_3h-1-Q`) is drawn here, in
-    /// the current theme. No DOM capture of it exists.
+    /// The 680x464 NUF modal shell of module 109766 (`modal_3h-1-Q`: 240x464 blue-gradient
+    /// sidebar illustration `sidebar_MOgwqs` + 440x464 right slide `container_3h-1-Q`).
     fn add_server_age_gate_layer(&self, cx: &mut Context<Self>) -> AnyElement {
+        let sidebar = div()
+            .flex_none()
+            .w(px(240.))
+            .h(px(464.))
+            .bg(gpui::linear_gradient(
+                180.,
+                gpui::linear_color_stop(rgba(0x7796f7ff), 0.),
+                gpui::linear_color_stop(rgba(0x3461dfff), 1.),
+            ))
+            .p(px(20.))
+            .flex()
+            .flex_col()
+            .justify_between()
+            .child(
+                div()
+                    .flex()
+                    .flex_col()
+                    .gap(px(6.))
+                    .child(
+                        div()
+                            .text_size(px(18.))
+                            .line_height(px(24.))
+                            .font_weight(FontWeight(700.))
+                            .text_color(color("--white"))
+                            .child(dc_intl::t("n7i7sv")),
+                    )
+                    .child(
+                        div()
+                            .text_size(px(13.))
+                            .line_height(px(18.))
+                            .text_color(rgba(0xffffffd9))
+                            .child(dc_intl::t("xv5g7B")),
+                    ),
+            )
+            .child(
+                div()
+                    .rounded(px(10.))
+                    .bg(rgba(0xffffff1a))
+                    .p(px(12.))
+                    .flex()
+                    .flex_col()
+                    .gap(px(4.))
+                    .child(
+                        div()
+                            .text_size(px(12.))
+                            .font_weight(FontWeight(600.))
+                            .text_color(color("--white"))
+                            .child(dc_intl::t("N+Mi/U")),
+                    )
+                    .child(
+                        div()
+                            .id("nuf-sidebar-join-link")
+                            .cursor_pointer()
+                            .text_size(px(12.))
+                            .font_weight(FontWeight(600.))
+                            .text_color(color("--white"))
+                            .child(dc_intl::t("yRjK4p"))
+                            .on_click(cx.listener(|this, _, window, cx| {
+                                if let Some(s) = this.add_server.as_mut() {
+                                    s.step = Step::Join;
+                                }
+                                let _ = window;
+                                cx.notify();
+                            })),
+                    ),
+            );
         let modal = div()
             .parity_with_border("add-server-age-gate", 1.)
             .id("add-server-age-gate")
             .occlude()
+            .w(px(680.))
+            .h(px(464.))
             .rounded(px(12.))
             .border_1()
             .border_color(color("--border-subtle"))
             .bg(color("--background-base-low"))
             .overflow_hidden()
+            .flex()
+            .flex_row()
+            .child(sidebar)
             .child(self.birthday_nuf_content(cx));
         let pose = crate::ui::motion::legacy_modal_pose("add-server", "add-server-layer", false);
         deferred(
@@ -1177,6 +1246,104 @@ impl Root {
         )
         .with_priority(1)
         .into_any_element()
+    }
+
+    /// NUF server-ready celebration slide (`$` of module 109766: `Deps41`, `xv5g7B`, `6X9YKG`,
+    /// purple gradient `#4e1bf5 -> #6668eb`, 680x464).
+    pub(super) fn nuf_complete_layer(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
+        let guild_name = self.nuf_complete_guild.as_ref()?;
+        Some(
+            deferred(
+                div()
+                    .id("nuf-complete-backdrop")
+                    .occlude()
+                    .absolute()
+                    .inset_0()
+                    .bg(rgba(0x000000b8))
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        this.nuf_complete_guild = None;
+                        cx.notify();
+                    }))
+                    .child(
+                        div()
+                            .id("nuf-complete-modal")
+                            .w(px(680.))
+                            .h(px(464.))
+                            .rounded(px(12.))
+                            .overflow_hidden()
+                            .bg(gpui::linear_gradient(
+                                135.,
+                                gpui::linear_color_stop(rgba(0x4e1bf5ff), 0.),
+                                gpui::linear_color_stop(rgba(0x6668ebff), 1.),
+                            ))
+                            .flex()
+                            .flex_col()
+                            .items_center()
+                            .justify_center()
+                            .gap(px(14.))
+                            .p(px(32.))
+                            .on_click(|_, _, cx| cx.stop_propagation())
+                            .child(icon("circle_check", 48., "--white"))
+                            .child(
+                                div()
+                                    .text_size(px(28.))
+                                    .line_height(px(34.))
+                                    .font_weight(FontWeight(800.))
+                                    .text_color(color("--white"))
+                                    .child(dc_intl::t("Deps41")),
+                            )
+                            .child(
+                                div()
+                                    .text_size(px(15.))
+                                    .line_height(px(22.))
+                                    .text_color(rgba(0xffffffe6))
+                                    .child(format!("{} — {}", dc_intl::t("xv5g7B"), guild_name)),
+                            )
+                            .child(
+                                div()
+                                    .id("nuf-complete-take-me")
+                                    .mt(px(8.))
+                                    .cursor_pointer()
+                                    .px(px(24.))
+                                    .h(px(44.))
+                                    .rounded(px(8.))
+                                    .bg(color("--white"))
+                                    .flex()
+                                    .items_center()
+                                    .text_size(px(15.))
+                                    .font_weight(FontWeight(700.))
+                                    .text_color(rgba(0x4e1bf5ff))
+                                    .child(dc_intl::t("6X9YKG"))
+                                    .on_click(cx.listener(|this, _, _, cx| {
+                                        this.nuf_complete_guild = None;
+                                        cx.notify();
+                                    })),
+                            ),
+                    ),
+            )
+            .with_priority(96)
+            .into_any_element(),
+        )
+    }
+
+    /// Capture harness: `nuf-complete [open|close]` (module 109766 completion celebration).
+    #[cfg(feature = "capture")]
+    pub(crate) fn script_nuf_complete(&mut self, arg: &str, cx: &mut Context<Self>) -> String {
+        match arg.trim() {
+            "close" => {
+                self.nuf_complete_guild = None;
+                cx.notify();
+                "nuf-complete: closed".to_owned()
+            }
+            _ => {
+                self.nuf_complete_guild = Some("Gravecord HQ".to_owned());
+                cx.notify();
+                "nuf-complete: open".to_owned()
+            }
+        }
     }
 }
 

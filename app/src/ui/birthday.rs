@@ -446,11 +446,21 @@ impl Root {
         )
     }
 
-    /// `U` of 189282: the dialog closes (`AGE_GATE_MODAL_CLOSE`).
-    /// GAP: for an NSFW server or channel source the official also leaves the server (`nsfwReturnToSafety`), and for
-    /// Family Center it opens that settings page; neither is reached here.
+    /// `U` of 189282: the dialog closes (`AGE_GATE_MODAL_CLOSE`), returning to safety from NSFW
+    /// sources or navigating to Family Center when appropriate.
     fn birthday_close(&mut self, cx: &mut Context<Self>) {
+        let source = self.birthday.modal.as_ref().map(|m| m.source);
         self.birthday.modal = None;
+        match source {
+            Some(Source::NsfwChannel | Source::NsfwServer | Source::NsfwServerInvite) => {
+                // `nsfwReturnToSafety`: step back to Home (DMs) when leaving an age-gated space.
+                self.select(0, None);
+            }
+            Some(Source::FamilyCenter) => {
+                self.open_settings_section("Family Center", cx);
+            }
+            _ => {}
+        }
         cx.notify();
     }
 
@@ -609,8 +619,19 @@ impl Root {
                 self.birthday.reported = reported;
             }
             match owner {
-                // GAP: the success toast (`EXISTING_USER_AGE_GATE_SUCCESS`) and Family Center's reload.
-                Owner::Modal => self.birthday.modal = None,
+                Owner::Modal => {
+                    let was_family = self
+                        .birthday
+                        .modal
+                        .as_ref()
+                        .is_some_and(|m| m.source == Source::FamilyCenter);
+                    self.birthday.modal = None;
+                    // `EXISTING_USER_AGE_GATE_SUCCESS` confirmation toast (module 189282).
+                    self.put_app_toast(dc_intl::t("6tahin").to_owned(), true, cx);
+                    if was_family {
+                        self.open_settings_section("Family Center", cx);
+                    }
+                }
                 Owner::Nuf => {
                     self.birthday.nuf_submitting = false;
                     self.add_server_age_gate_done();
@@ -1076,10 +1097,17 @@ impl Root {
             .flex_col()
             .justify_center()
             .child(
-                div()
-                    .flex()
-                    .justify_center()
-                    .child(div().w(px(56.)).h(px(40.))),
+                div().flex().justify_center().child(
+                    div()
+                        .w(px(56.))
+                        .h(px(40.))
+                        .rounded(px(12.))
+                        .bg(color("--control-primary-background-default"))
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .child(icon("sb_discord", 28., "--white")),
+                ),
             )
             .child(
                 div()

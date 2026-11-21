@@ -82,12 +82,15 @@ impl Root {
         cx: &mut Context<Self>,
     ) -> Option<AnyElement> {
         let guild = self.guild?;
-        if self.stage_requests_open
-            || !self.my_permission(guild, Some(channel), permissions::MUTE_MEMBERS)
-        {
+        if !self.my_permission(guild, Some(channel), permissions::MUTE_MEMBERS) {
             return None;
         }
-        let badge = (hands > 0).then(|| {
+        let tip_label = if self.stage_requests_open {
+            dc_intl::t("gKGz7A")
+        } else {
+            dc_intl::t("ImQ4dW")
+        };
+        let badge = (!self.stage_requests_open && hands > 0).then(|| {
             div()
                 .absolute()
                 .left(px(16.))
@@ -124,14 +127,16 @@ impl Root {
             ))
             .children(badge)
             .on_click(cx.listener(|this, _, _, cx| {
-                this.stage_requests_open = true;
-                this.request_stage_requests_art();
+                this.stage_requests_open = !this.stage_requests_open;
+                if this.stage_requests_open {
+                    this.request_stage_requests_art();
+                }
                 cx.notify();
             }));
         Some(
             self.with_tip(
                 "stage-requests-toggle-tip",
-                super::tooltip::Tip::text(dc_intl::t("ImQ4dW"), super::tooltip::Side::Bottom),
+                super::tooltip::Tip::text(tip_label, super::tooltip::Side::Bottom),
                 button,
                 cx,
             )

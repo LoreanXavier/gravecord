@@ -443,7 +443,18 @@ impl Root {
             }
             Route::Gift(_) => Outcome::NotBuilt("gift modal"),
             Route::Template(_) => Outcome::NotBuilt("server template modal"),
-            Route::PickGuildSettings { .. } => Outcome::NotBuilt("server settings picker"),
+            Route::PickGuildSettings { section } => {
+                let feature = if matches!(
+                    section.as_deref(),
+                    Some("role-subscriptions" | "subscriptions")
+                ) {
+                    super::pick_guild_settings::PickGuildFeature::ServerSubscriptionsOnboarding
+                } else {
+                    super::pick_guild_settings::PickGuildFeature::Default
+                };
+                self.open_pick_guild_settings(section, feature, cx);
+                Outcome::Opened("server settings picker")
+            }
             Route::Library => {
                 self.open_library(super::library::Tab::Games, cx);
                 Outcome::Opened("library")

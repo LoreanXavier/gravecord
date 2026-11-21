@@ -152,12 +152,11 @@ pub(super) fn is_old(guild: Id, now_ms: i64) -> bool {
     created_ms(guild) < now_ms - NEW_FOR_MS
 }
 
-/// `m` of module 95701 as far as server channels go: text, announcement, store, directory, forum and media.
-/// GAP: GUILD_APP channels are selectable too; the store has no kind for them.
+/// `m` of module 95701 as far as server channels go: text, announcement, store, directory, forum, media and guild app.
 fn selectable(kind: &ChannelKind) -> bool {
     matches!(
         kind,
-        ChannelKind::Text | ChannelKind::Other(5 | 6 | 14 | 15 | 16)
+        ChannelKind::Text | ChannelKind::Other(5 | 6 | 14 | 15 | 16 | 20)
     )
 }
 
@@ -311,11 +310,14 @@ impl Root {
                     link = start..text.len();
                 }
             }
-            // GAP: the anchor's underline on hover.
             let styled = gpui::StyledText::new(text).with_highlights([(
                 link.clone(),
                 gpui::HighlightStyle {
                     color: Some(color("--text-link").into()),
+                    underline: Some(gpui::UnderlineStyle {
+                        thickness: px(1.),
+                        ..Default::default()
+                    }),
                     ..Default::default()
                 },
             )]);

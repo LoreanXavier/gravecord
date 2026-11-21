@@ -346,17 +346,21 @@ mod app_test_mode;
 mod boost_uncancel;
 mod changelog;
 mod claim_account;
+mod conjure_menu;
 mod copy_combo;
 mod dm_call;
 mod dm_call_view;
 mod forum_tag_editor;
 mod game_leaderboard;
+mod guild_theme_nux;
 mod icymi;
 mod incoming_call;
 mod member_safety;
 mod member_window;
 mod nitro_resubscribe;
 mod nitro_trials_picker;
+mod orb_wallet;
+mod pick_guild_settings;
 mod premium_uncancel;
 mod quest_call_and_sheet;
 mod quest_menu;
@@ -365,6 +369,7 @@ mod quest_reward_modal;
 mod quest_split_modal;
 mod quest_survey;
 mod raid_alerts;
+mod research_survey;
 mod server_members;
 mod server_onboarding;
 mod server_role_editor;
@@ -794,6 +799,18 @@ pub struct Root {
     overlay_stream_zoom: HashMap<Id, u32>,
     /// Overlay Stream Video widget fit-to-container flags per owner (module 663912).
     overlay_stream_fit: std::collections::HashSet<Id>,
+    /// Guild Settings Picker / Creator Onboarding modal (module 623509).
+    pick_guild_settings_modal: Option<pick_guild_settings::PickGuildSettingsModal>,
+    /// Orb Wallet Popout & Active Challenges panel (module 150849).
+    orb_wallet: orb_wallet::OrbWalletState,
+    /// Discord Research Survey modal (module 215978).
+    research_survey_modal: Option<research_survey::ResearchSurveyModal>,
+    /// Guild Theme NUX modal (module 166998).
+    guild_theme_nux_modal: Option<guild_theme_nux::GuildThemeNuxModal>,
+    /// Conjure Project Actions Menu & confirmation modal (module 753329).
+    conjure_actions: Option<conjure_menu::ConjureActionsState>,
+    /// NUF server-ready celebration modal guild name (module 109766).
+    nuf_complete_guild: Option<String>,
     /// Suspended User Safety Hub full page + embedded standing/violations body (module 187686 + 37380).
     suspended_safety_hub: Option<suspended_safety_hub::SuspendedSafetyHub>,
     /// Send Nitro Trials Picker & confirmation modal (module 303682 + 810852, `nitro_trials_picker`).
@@ -1395,6 +1412,12 @@ impl Root {
             overlay_voice_switcher: Default::default(),
             overlay_stream_zoom: HashMap::new(),
             overlay_stream_fit: std::collections::HashSet::new(),
+            pick_guild_settings_modal: None,
+            orb_wallet: Default::default(),
+            research_survey_modal: None,
+            guild_theme_nux_modal: None,
+            conjure_actions: None,
+            nuf_complete_guild: None,
             suspended_safety_hub: None,
             nitro_trials_picker: None,
             user_activity_preview: None,
@@ -2488,6 +2511,19 @@ impl Root {
                 }
                 if key == server_monetization::ACCEPT_TERMS_KEY {
                     self.handle_monetization_terms_response(&body, cx);
+                    return;
+                }
+                if key == orb_wallet::TOTAL_REDEEMED_KEY
+                    || key == orb_wallet::ACHIEVEMENTS_LIST_KEY
+                    || key.starts_with(orb_wallet::ACHIEVEMENTS_CLAIM_PREFIX)
+                {
+                    self.handle_orb_wallet_response(&key, &body, cx);
+                    return;
+                }
+                if key == research_survey::SURVEY_FETCH_KEY
+                    || key == research_survey::SURVEY_SUBMIT_KEY
+                {
+                    self.handle_research_survey_response(&key, &body, cx);
                     return;
                 }
                 if key == channel_link::UNLINK_LOBBY_KEY {
@@ -11690,6 +11726,12 @@ impl Render for Root {
                         || this.server_subscriptions_page.is_some()
                         || this.monetization_terms_modal.is_some()
                         || this.overlay_voice_switcher.open
+                        || this.pick_guild_settings_modal.is_some()
+                        || this.orb_wallet.open
+                        || this.research_survey_modal.is_some()
+                        || this.guild_theme_nux_modal.is_some()
+                        || this.conjure_actions.is_some()
+                        || this.nuf_complete_guild.is_some()
                         || this.quests.split_modal.is_some()
                         || this.quests.enrollment_blocked_modal.is_some()
                         || this.quests.promoted_preview_quest.is_some()
@@ -11755,6 +11797,12 @@ impl Render for Root {
                     this.server_subscriptions_page = None;
                     this.monetization_terms_modal = None;
                     this.overlay_voice_switcher.open = false;
+                    this.pick_guild_settings_modal = None;
+                    this.orb_wallet.open = false;
+                    this.research_survey_modal = None;
+                    this.guild_theme_nux_modal = None;
+                    this.conjure_actions = None;
+                    this.nuf_complete_guild = None;
                     this.quests.split_modal = None;
                     this.quests.enrollment_blocked_modal = None;
                     this.quests.promoted_preview_quest = None;
@@ -12979,6 +13027,12 @@ impl Render for Root {
             .children(self.monetization_terms_layer(cx))
             .children(self.overlay_voice_switcher_layer(cx))
             .children(self.overlay_stream_menu_layer(cx))
+            .children(self.pick_guild_settings_layer(cx))
+            .children(self.orb_wallet_layer(cx))
+            .children(self.research_survey_layer(cx))
+            .children(self.guild_theme_nux_layer(cx))
+            .children(self.conjure_actions_layer(cx))
+            .children(self.nuf_complete_layer(cx))
             .children(self.quest_split_modal_layer(cx))
             .children(self.quest_promoted_overlay_layer(cx))
             .children(self.quest_disclosure_and_alert_layer(cx))

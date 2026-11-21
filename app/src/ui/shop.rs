@@ -53,6 +53,7 @@ pub(super) enum Menu {
     Browse,
     GameShops,
     More,
+    #[allow(dead_code)]
     Balance,
 }
 
@@ -1131,12 +1132,8 @@ impl Root {
             .cursor_pointer()
             .hover(|pill| pill.bg(color("--background-mod-strong")))
             .on_click(cx.listener(|this, _, _, cx| {
-                this.shop.menu_open = if this.shop.menu_open == Some(Menu::Balance) {
-                    None
-                } else {
-                    Some(Menu::Balance)
-                };
-                cx.notify();
+                this.shop.menu_open = None;
+                this.toggle_orb_wallet(cx);
             }))
             .child(icon("shop_orb_18", 20., "--text-default"))
             .child(text(16., 20., 600., "--text-default").child(amount.to_string()))

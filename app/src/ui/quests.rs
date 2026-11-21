@@ -1696,6 +1696,9 @@ impl Root {
                     .bg(color("--background-mod-subtle"))
                     .hover(|style| style.bg(color("--background-mod-normal")))
                     .cursor_pointer()
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        this.toggle_orb_wallet(cx);
+                    }))
                     .flex()
                     .items_center()
                     .child(

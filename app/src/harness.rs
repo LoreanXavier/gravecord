@@ -1933,6 +1933,42 @@ pub async fn run(
                 let line = root.update(cx, |root, cx| root.script_overlay_stream_menu(&arg, cx));
                 let _ = writeln!(output, "{line}");
             }
+            // `pick-guild-settings [default|onboarding|template|close]`: Guild Settings Picker / Creator Onboarding (623509).
+            ["pick-guild-settings", rest @ ..] => {
+                let arg = rest.join(" ");
+                let line = root.update(cx, |root, cx| root.script_pick_guild_settings(&arg, cx));
+                let _ = writeln!(output, "{line}");
+            }
+            // `orb-wallet [active|cleared|error|unclaimed|close]`: Orb Wallet Popout & Active Challenges (150849).
+            ["orb-wallet", rest @ ..] => {
+                let arg = rest.join(" ");
+                let line = root.update(cx, |root, cx| root.script_orb_wallet(&arg, cx));
+                let _ = writeln!(output, "{line}");
+            }
+            // `research-survey [active|exit|done|loading|close]`: Discord Research Survey modal (215978).
+            ["research-survey", rest @ ..] => {
+                let arg = rest.join(" ");
+                let line = root.update(cx, |root, cx| root.script_research_survey(&arg, cx));
+                let _ = writeln!(output, "{line}");
+            }
+            // `guild-theme-nux [guild|personal|error|close]`: Guild Theme NUX modal (166998).
+            ["guild-theme-nux", rest @ ..] => {
+                let arg = rest.join(" ");
+                let line = root.update(cx, |root, cx| root.script_guild_theme_nux(&arg, cx));
+                let _ = writeln!(output, "{line}");
+            }
+            // `conjure-menu [menu|delete|unpublish|remove|close]`: Conjure Project Actions Menu (753329).
+            ["conjure-menu", rest @ ..] => {
+                let arg = rest.join(" ");
+                let line = root.update(cx, |root, cx| root.script_conjure_menu(&arg, cx));
+                let _ = writeln!(output, "{line}");
+            }
+            // `nuf-complete [open|close]`: NUF server-ready celebration slide (109766).
+            ["nuf-complete", rest @ ..] => {
+                let arg = rest.join(" ");
+                let line = root.update(cx, |root, cx| root.script_nuf_complete(&arg, cx));
+                let _ = writeln!(output, "{line}");
+            }
             // `search last` / `search answer <total>`: the open search's request, and an answer to it;
             // `search page <n>`: the pager turns to page n.
             ["search", rest @ ..] => {

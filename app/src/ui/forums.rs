@@ -541,42 +541,48 @@ impl Root {
                                     .map(|tag| {
                                         let tag_id = tag.id;
                                         div()
-                                            .id(SharedString::from(format!(
-                                                "forum-create-tag-{tag_id}"
-                                            )))
-                                            .px(px(12.))
-                                            .h(px(32.))
-                                            .rounded_full()
-                                            .cursor_pointer()
-                                            .bg(color(if form.tags.contains(&tag_id) {
-                                                "--brand-500"
-                                            } else {
-                                                "--background-mod-subtle"
-                                            }))
-                                            .text_color(color("--text-default"))
-                                            .text_size(px(14.))
-                                            .line_height(px(32.))
-                                            .child(tag.name.clone())
-                                            .on_mouse_up(
-                                                gpui::MouseButton::Right,
-                                                cx.listener(move |this, event: &gpui::MouseUpEvent, _, cx| {
-                                                    let _ = this.open_forum_tag_menu(tag_id, event.position, cx);
-                                                }),
-                                            )
-                                            .on_click(cx.listener(move |this, _, _, cx| {
-                                                if let Some(form) = this
-                                                    .forums
-                                                    .get_mut(&id)
-                                                    .and_then(|v| v.new_post.as_mut())
-                                                {
-                                                    if form.tags.contains(&tag_id) {
-                                                        form.tags.remove(&tag_id);
-                                                    } else if form.tags.len() < 5 {
-                                                        form.tags.insert(tag_id);
-                                                    }
+                                        .id(SharedString::from(format!(
+                                            "forum-create-tag-{tag_id}"
+                                        )))
+                                        .px(px(12.))
+                                        .h(px(32.))
+                                        .rounded_full()
+                                        .cursor_pointer()
+                                        .bg(color(if form.tags.contains(&tag_id) {
+                                            "--brand-500"
+                                        } else {
+                                            "--background-mod-subtle"
+                                        }))
+                                        .text_color(color("--text-default"))
+                                        .text_size(px(14.))
+                                        .line_height(px(32.))
+                                        .child(tag.name.clone())
+                                        .on_mouse_up(
+                                            gpui::MouseButton::Right,
+                                            cx.listener(
+                                                move |this, event: &gpui::MouseUpEvent, _, cx| {
+                                                    let _ = this.open_forum_tag_menu(
+                                                        tag_id,
+                                                        event.position,
+                                                        cx,
+                                                    );
+                                                },
+                                            ),
+                                        )
+                                        .on_click(cx.listener(move |this, _, _, cx| {
+                                            if let Some(form) = this
+                                                .forums
+                                                .get_mut(&id)
+                                                .and_then(|v| v.new_post.as_mut())
+                                            {
+                                                if form.tags.contains(&tag_id) {
+                                                    form.tags.remove(&tag_id);
+                                                } else if form.tags.len() < 5 {
+                                                    form.tags.insert(tag_id);
                                                 }
-                                                cx.notify();
-                                            }))
+                                            }
+                                            cx.notify();
+                                        }))
                                     }),
                             ),
                     )
@@ -1065,10 +1071,34 @@ impl Root {
         } else {
             super::threads::short_ago(elapsed)
         };
-        let thumbnail = message
-            .and_then(|m| m.attachments.iter().find(|a| a.is_image()))
-            .and_then(|a| self.images.get(&format!("forum-thumbnail:{}", a.id)))
-            .cloned();
+        let first_hidden = message
+            .is_some_and(|m| self.is_blocked(m.author.id) || self.stores.is_ignored(m.author.id));
+        let first_att = (!first_hidden)
+            .then(|| {
+                message.and_then(|m| {
+                    m.attachments.iter().find(|a| {
+                        a.is_image()
+                            || a.content_type
+                                .as_deref()
+                                .is_some_and(|t| t.starts_with("video/"))
+                    })
+                })
+            })
+            .flatten();
+        let thumbnail_obscured = first_att.is_some_and(|a| a.filename.starts_with("SPOILER_"));
+        let thumbnail_video = first_att.is_some_and(|a| {
+            a.content_type
+                .as_deref()
+                .is_some_and(|t| t.starts_with("video/"))
+        });
+        let thumbnail = (!first_hidden)
+            .then(|| {
+                message
+                    .and_then(|m| m.attachments.iter().find(|a| a.is_image()))
+                    .and_then(|a| self.images.get(&format!("forum-thumbnail:{}", a.id)))
+                    .cloned()
+            })
+            .flatten();
         // The footer's reaction button (`.reaction_UNkajC.updateReactionButton`): the most reacted emoji of the first
         // message with its count, 28px high, read only here.
         let chip = message.and_then(top_reaction).map(|reaction| {
@@ -1186,15 +1216,23 @@ impl Root {
                                 .children(tags.iter().map(|tag| {
                                     let tag_id = tag.id;
                                     div()
-                                        .id(SharedString::from(format!("forum-post-{id}-tag-{tag_id}")))
+                                        .id(SharedString::from(format!(
+                                            "forum-post-{id}-tag-{tag_id}"
+                                        )))
                                         // A tag's menu takes the press in developer mode; otherwise the post's does.
                                         .on_mouse_up(
                                             gpui::MouseButton::Right,
-                                            cx.listener(move |this, event: &gpui::MouseUpEvent, _, cx| {
-                                                if this.open_forum_tag_menu(tag_id, event.position, cx) {
-                                                    cx.stop_propagation();
-                                                }
-                                            }),
+                                            cx.listener(
+                                                move |this, event: &gpui::MouseUpEvent, _, cx| {
+                                                    if this.open_forum_tag_menu(
+                                                        tag_id,
+                                                        event.position,
+                                                        cx,
+                                                    ) {
+                                                        cx.stop_propagation();
+                                                    }
+                                                },
+                                            ),
                                         )
                                         .rounded_full()
                                         .border_1()
@@ -1259,96 +1297,115 @@ impl Root {
                             .overflow_hidden()
                             .text_size(px(14.))
                             .line_height(px(18.))
-                            .children(message.map(|m| {
-                                // Module 173404: a first message by someone blocked or ignored is not shown; the
-                                // line says so instead (`body-sm/medium`, `--text-muted`, `blockedMessage_SOY5H6`
-                                // italic).
-                                let hidden = if self.is_blocked(m.author.id) {
-                                    Some(dc_intl::tr("Post contains a blocked message"))
-                                } else if self.stores.is_ignored(m.author.id) {
-                                    Some(dc_intl::tr("Post contains an ignored message"))
-                                } else {
-                                    None
-                                };
-                                if let Some(hidden) = hidden {
-                                    return div()
-                                        .w_full()
-                                        .min_w(px(0.))
-                                        .overflow_hidden()
-                                        .whitespace_nowrap()
-                                        .text_ellipsis()
-                                        .italic()
-                                        .font_weight(FontWeight(500.))
-                                        .text_color(color("--text-muted"))
-                                        .child(hidden.to_owned())
-                                        .into_any_element();
-                                }
-                                let name = self.guild_display_name(&m.author);
-                                let author_color = self.guild_author_color(
-                                    m.author.id,
-                                    if unread {
-                                        "--text-strong"
+                            .child(match message {
+                                Some(m) => {
+                                    // Module 173404: a first message by someone blocked or ignored is not shown; the
+                                    // line says so instead (`body-sm/medium`, `--text-muted`, `blockedMessage_SOY5H6`
+                                    // italic).
+                                    let hidden = if self.is_blocked(m.author.id) {
+                                        Some(dc_intl::t("Lkp2fB"))
+                                    } else if self.stores.is_ignored(m.author.id) {
+                                        Some(dc_intl::t("yWK7ZM"))
                                     } else {
-                                        "--text-muted"
-                                    },
-                                );
-                                // A name with a display name style keeps its font.
-                                let name_element = match self.name_styles(&m.author, self.guild) {
-                                    Some(styles) => super::name_styles::name(
-                                        format!("post-preview-{}", m.id),
-                                        name,
-                                        Some(&styles),
-                                        super::name_styles::Display::Font,
-                                    )
-                                    .into_any_element(),
-                                    None => match self.role_gradient_of(&m.author) {
-                                        Some(colors) => div()
-                                            .child(super::role_gradient::name(name, colors))
-                                            .into_any_element(),
-                                        None => div().child(name).into_any_element(),
-                                    },
-                                };
-                                let (text, runs) = self.post_preview_text(&m.content);
-                                div()
-                                    .flex()
-                                    .items_center()
-                                    .w_full()
-                                    .min_w(px(0.))
-                                    .child(
+                                        None
+                                    };
+                                    if let Some(hidden) = hidden {
                                         div()
-                                            .flex()
-                                            .flex_none()
-                                            .font_weight(FontWeight(600.))
-                                            .child(
-                                                div().text_color(author_color).child(name_element),
-                                            )
-                                            .child(
-                                                div()
-                                                    .text_color(color("--text-default"))
-                                                    .child(":"),
-                                            ),
-                                    )
-                                    .child(
-                                        div()
-                                            .flex_1()
+                                            .w_full()
                                             .min_w(px(0.))
-                                            .ml(px(4.))
-                                            .h(px(18.))
                                             .overflow_hidden()
                                             .whitespace_nowrap()
                                             .text_ellipsis()
+                                            .italic()
                                             .font_weight(FontWeight(500.))
-                                            .text_color(color(if unread {
-                                                "--text-default"
+                                            .text_color(color("--text-muted"))
+                                            .child(hidden.to_owned())
+                                            .into_any_element()
+                                    } else {
+                                        let name = self.guild_display_name(&m.author);
+                                        let author_color = self.guild_author_color(
+                                            m.author.id,
+                                            if unread {
+                                                "--text-strong"
                                             } else {
                                                 "--text-muted"
-                                            }))
+                                            },
+                                        );
+                                        // A name with a display name style keeps its font.
+                                        let name_element = match self
+                                            .name_styles(&m.author, self.guild)
+                                        {
+                                            Some(styles) => super::name_styles::name(
+                                                format!("post-preview-{}", m.id),
+                                                name,
+                                                Some(&styles),
+                                                super::name_styles::Display::Font,
+                                            )
+                                            .into_any_element(),
+                                            None => match self.role_gradient_of(&m.author) {
+                                                Some(colors) => div()
+                                                    .child(super::role_gradient::name(name, colors))
+                                                    .into_any_element(),
+                                                None => div().child(name).into_any_element(),
+                                            },
+                                        };
+                                        let (text, runs) = self.post_preview_text(&m.content);
+                                        div()
+                                            .flex()
+                                            .items_center()
+                                            .w_full()
+                                            .min_w(px(0.))
                                             .child(
-                                                gpui::StyledText::new(text).with_highlights(runs),
-                                            ),
-                                    )
-                                    .into_any_element()
-                            })),
+                                                div()
+                                                    .flex()
+                                                    .flex_none()
+                                                    .font_weight(FontWeight(600.))
+                                                    .child(
+                                                        div()
+                                                            .text_color(author_color)
+                                                            .child(name_element),
+                                                    )
+                                                    .child(
+                                                        div()
+                                                            .text_color(color("--text-default"))
+                                                            .child(":"),
+                                                    ),
+                                            )
+                                            .child(
+                                                div()
+                                                    .flex_1()
+                                                    .min_w(px(0.))
+                                                    .ml(px(4.))
+                                                    .h(px(18.))
+                                                    .overflow_hidden()
+                                                    .whitespace_nowrap()
+                                                    .text_ellipsis()
+                                                    .font_weight(FontWeight(500.))
+                                                    .text_color(color(if unread {
+                                                        "--text-default"
+                                                    } else {
+                                                        "--text-muted"
+                                                    }))
+                                                    .child(
+                                                        gpui::StyledText::new(text)
+                                                            .with_highlights(runs),
+                                                    ),
+                                            )
+                                            .into_any_element()
+                                    }
+                                }
+                                None => div()
+                                    .w_full()
+                                    .min_w(px(0.))
+                                    .overflow_hidden()
+                                    .whitespace_nowrap()
+                                    .text_ellipsis()
+                                    .italic()
+                                    .font_weight(FontWeight(500.))
+                                    .text_color(color("--text-muted"))
+                                    .child(dc_intl::t("mE3KJN"))
+                                    .into_any_element(),
+                            }),
                     )
                     .child(
                         div()
@@ -1386,7 +1443,18 @@ impl Root {
                                                 .ml(px(4.))
                                                 .font_weight(FontWeight(600.))
                                                 .text_color(color("--text-brand"))
-                                                .child(format!("({count} New)")),
+                                                .child(format!(
+                                                    "({})",
+                                                    dc_intl::format(
+                                                        "z3PEth",
+                                                        &[(
+                                                            "count",
+                                                            dc_intl::Arg::Str(
+                                                                std::borrow::Cow::Owned(count)
+                                                            ),
+                                                        )],
+                                                    )
+                                                )),
                                         )
                                     }),
                             )
@@ -1397,15 +1465,75 @@ impl Root {
                                     .text_color(color("--border-subtle"))
                                     .child("\u{2022}"),
                             )
-                            .child(ago),
+                            .child({
+                                let posted_tip = dc_intl::format(
+                                    "13euCd",
+                                    &[(
+                                        "timestamp",
+                                        dc_intl::Arg::Str(std::borrow::Cow::Borrowed(&ago)),
+                                    )],
+                                );
+                                self.with_tip(
+                                    format!("forum-posted-{id}"),
+                                    super::tooltip::Tip::body(
+                                        super::tooltip::Body::Text(posted_tip.into()),
+                                        super::tooltip::Side::Top,
+                                    ),
+                                    div().id(format!("forum-ago-{id}")).child(ago.clone()),
+                                    cx,
+                                )
+                            }),
                     ),
             )
-            .children(thumbnail.map(|picture| {
-                img(picture)
-                    .size(px(72.))
-                    .rounded(px(8.))
-                    .object_fit(gpui::ObjectFit::Cover)
-            }))
+            .children(if thumbnail_obscured {
+                Some(
+                    div()
+                        .id(format!("forum-obscured-{id}"))
+                        .aria_label(dc_intl::t("hqwnc2"))
+                        .size(px(72.))
+                        .rounded(px(8.))
+                        .bg(color("--background-base-lowest"))
+                        .border_1()
+                        .border_color(color("--border-subtle"))
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .text_size(px(10.))
+                        .font_weight(FontWeight(700.))
+                        .text_color(color("--text-muted"))
+                        .child("SPOILER")
+                        .into_any_element(),
+                )
+            } else if let Some(picture) = thumbnail {
+                Some(
+                    img(picture)
+                        .size(px(72.))
+                        .rounded(px(8.))
+                        .object_fit(gpui::ObjectFit::Cover)
+                        .into_any_element(),
+                )
+            } else if thumbnail_video {
+                Some(
+                    div()
+                        .id(format!("forum-video-{id}"))
+                        .aria_label(dc_intl::t("FlNoSV"))
+                        .size(px(72.))
+                        .rounded(px(8.))
+                        .bg(color("--background-base-lowest"))
+                        .border_1()
+                        .border_color(color("--border-subtle"))
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .text_size(px(11.))
+                        .font_weight(FontWeight(600.))
+                        .text_color(color("--text-muted"))
+                        .child(dc_intl::t("FlNoSV"))
+                        .into_any_element(),
+                )
+            } else {
+                None
+            })
             .into_any_element()
     }
 
@@ -1427,10 +1555,16 @@ impl Root {
         } else {
             super::threads::short_ago(elapsed)
         };
-        let thumbnail = message
-            .and_then(|m| m.attachments.iter().find(|a| a.is_image()))
-            .and_then(|a| self.images.get(&format!("forum-thumbnail:{}", a.id)))
-            .cloned();
+        let first_hidden = message
+            .is_some_and(|m| self.is_blocked(m.author.id) || self.stores.is_ignored(m.author.id));
+        let thumbnail = (!first_hidden)
+            .then(|| {
+                message
+                    .and_then(|m| m.attachments.iter().find(|a| a.is_image()))
+                    .and_then(|a| self.images.get(&format!("forum-thumbnail:{}", a.id)))
+                    .cloned()
+            })
+            .flatten();
         let height = gallery_height(width, channel.is_media());
         div()
             .id(SharedString::from(format!("forum-gallery-post-{id}")))
@@ -2759,41 +2893,47 @@ impl Root {
                                     .map(|tag| {
                                         let tag_id = tag.id;
                                         div()
-                                            .id(SharedString::from(format!(
-                                                "forum-popout-tag-{tag_id}"
-                                            )))
-                                            // `.tag_r0937z` on `.pill_snX-u4`: 1px border, `body-sm/semibold`.
-                                            .h(px(32.))
-                                            .px(px(12.))
-                                            .border_1()
-                                            .border_color(color("--border-subtle"))
-                                            .rounded_full()
-                                            .cursor_pointer()
-                                            .bg(color(if view.tags.contains(&tag_id) {
-                                                "--brand-500"
-                                            } else {
-                                                "--background-mod-subtle"
-                                            }))
-                                            .text_size(px(14.))
-                                            .line_height(px(30.))
-                                            .font_weight(FontWeight(600.))
-                                            .text_color(color("--text-default"))
-                                            .child(tag.name.clone())
-                                            .on_mouse_up(
-                                                gpui::MouseButton::Right,
-                                                cx.listener(move |this, event: &gpui::MouseUpEvent, _, cx| {
-                                                    let _ = this.open_forum_tag_menu(tag_id, event.position, cx);
-                                                }),
-                                            )
-                                            .on_click(cx.listener(move |this, _, _, cx| {
-                                                if let Some(v) = this.forums.get_mut(&id)
-                                                    && !v.tags.remove(&tag_id)
-                                                {
-                                                    v.tags.insert(tag_id);
-                                                }
-                                                this.reload_forum(id);
-                                                cx.notify();
-                                            }))
+                                        .id(SharedString::from(format!(
+                                            "forum-popout-tag-{tag_id}"
+                                        )))
+                                        // `.tag_r0937z` on `.pill_snX-u4`: 1px border, `body-sm/semibold`.
+                                        .h(px(32.))
+                                        .px(px(12.))
+                                        .border_1()
+                                        .border_color(color("--border-subtle"))
+                                        .rounded_full()
+                                        .cursor_pointer()
+                                        .bg(color(if view.tags.contains(&tag_id) {
+                                            "--brand-500"
+                                        } else {
+                                            "--background-mod-subtle"
+                                        }))
+                                        .text_size(px(14.))
+                                        .line_height(px(30.))
+                                        .font_weight(FontWeight(600.))
+                                        .text_color(color("--text-default"))
+                                        .child(tag.name.clone())
+                                        .on_mouse_up(
+                                            gpui::MouseButton::Right,
+                                            cx.listener(
+                                                move |this, event: &gpui::MouseUpEvent, _, cx| {
+                                                    let _ = this.open_forum_tag_menu(
+                                                        tag_id,
+                                                        event.position,
+                                                        cx,
+                                                    );
+                                                },
+                                            ),
+                                        )
+                                        .on_click(cx.listener(move |this, _, _, cx| {
+                                            if let Some(v) = this.forums.get_mut(&id)
+                                                && !v.tags.remove(&tag_id)
+                                            {
+                                                v.tags.insert(tag_id);
+                                            }
+                                            this.reload_forum(id);
+                                            cx.notify();
+                                        }))
                                     }),
                             ),
                     )
