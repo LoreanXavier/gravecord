@@ -13,13 +13,49 @@
 //! theme. The card is `overlay_P1YEjQ card_Bu4Al8`: 12px padding, `--radius-md`, `--user-profile-overlay-background`,
 //! a 1px `--border-muted` edge only on a light theme; its "..." sits 16px from the top-right corner.
 
-use super::Root;
 use super::dm_profile::Palette;
+use super::{Root, color, icon};
+use crate::net::Request;
+use dc_state::Id;
 use dc_state::content_inventory::Entry;
 use gpui::{
-    AnyElement, Context, FontWeight, Hsla, IntoElement, SharedString, div, img, prelude::*, px, svg,
+    AnyElement, Context, FontWeight, Hsla, IntoElement, SharedString, deferred, div, img,
+    prelude::*, px, rgba, svg,
 };
 use serde_json::Value;
+
+/// REST response key prefix for `DELETE /content-inventory/users/@me/outbox/entries/id/{id}/history`
+/// (module 839785 / 86070.FO).
+pub(super) const CLEAR_HISTORY_PREFIX: &str = "clear-activity-history:";
+
+/// `754495.W(entry)` (used by 839785 & context menu): title key for Clear Activity History modal.
+pub(super) fn clear_history_title_key(content_type: Option<u64>) -> &'static str {
+    match content_type {
+        Some(PLAYED_GAME | TOP_GAME) => "4f8iut",
+        Some(WATCHED_MEDIA) => "yX2hNy",
+        Some(LISTENED_SESSION | 4) => "oSs8eg",
+        _ => "bK9GT1",
+    }
+}
+
+/// Modal state for Clear Activity History confirmation (`839785.js`).
+#[derive(Clone, Debug)]
+pub(super) struct ClearActivityHistoryModal {
+    pub user_id: Id,
+    pub entry: Value,
+    pub busy: bool,
+    pub error: Option<String>,
+}
+
+/// Builds `DELETE /content-inventory/users/@me/outbox/entries/id/{entry_id}/history` (module 839785).
+pub(super) fn delete_activity_history_request(entry_id: &str) -> Request {
+    Request::Rest {
+        key: Some(format!("{CLEAR_HISTORY_PREFIX}{entry_id}")),
+        method: reqwest::Method::DELETE,
+        route: format!("/content-inventory/users/@me/outbox/entries/id/{entry_id}/history"),
+        body: None,
+    }
+}
 
 /// `ContentInventoryEntryType` (module 681154).
 pub(super) const PLAYED_GAME: u64 = 1;
@@ -492,7 +528,417 @@ impl Root {
             && entry["extra"]["application_id"]
                 .as_str()
                 .is_some_and(|app| self.game_profile_available(app));
-        super::context_menu::recent_activity_items(own, spotify, game, profile)
+        let mut items = super::context_menu::recent_activity_items(own, spotify, game, profile);
+        // Module 754495 / 839785: "Clear {Game|Watch|Listening|Activity} History" danger action on own recent entries.
+        if own && has_card(entry) {
+            let label = dc_intl::t(clear_history_title_key(entry["content_type"].as_u64()));
+            if !items.is_empty() {
+                items.push(super::context_menu::Entry::Separator);
+            }
+            items.push(super::context_menu::Entry::Row(
+                super::context_menu::Row::new(
+                    super::context_menu::Act::DeleteActivityHistory,
+                    label,
+                )
+                .danger(),
+            ));
+        }
+        items
+    }
+
+    /// Opens the Clear Activity History confirmation modal (module 839785).
+    pub(super) fn open_clear_activity_history(
+        &mut self,
+        user_id: Id,
+        entry: Value,
+        cx: &mut Context<Self>,
+    ) {
+        self.clear_activity_history_modal = Some(ClearActivityHistoryModal {
+            user_id,
+            entry,
+            busy: false,
+            error: None,
+        });
+        cx.notify();
+    }
+
+    /// Handles `DELETE /content-inventory/users/@me/outbox/entries/id/{id}/history` responses (module 839785).
+    pub(super) fn handle_clear_activity_history_response(
+        &mut self,
+        key: &str,
+        body: &Value,
+        cx: &mut Context<Self>,
+    ) {
+        let entry_id = key.strip_prefix(CLEAR_HISTORY_PREFIX).unwrap_or_default();
+        let Some(modal) = self.clear_activity_history_modal.as_mut() else {
+            return;
+        };
+        modal.busy = false;
+        if body.get("code").is_some() {
+            modal.error = Some(
+                body["message"]
+                    .as_str()
+                    .filter(|s| !s.is_empty())
+                    .unwrap_or_else(|| dc_intl::t("FMbL3s"))
+                    .to_owned(),
+            );
+            cx.notify();
+            return;
+        }
+        let user_id = modal.user_id;
+        self.clear_activity_history_modal = None;
+        if let Some(outbox) = self.fetched.get_mut(&format!("outbox:{user_id}"))
+            && let Some(entries) = outbox["body"]["entries"].as_array_mut()
+        {
+            entries.retain(|e| e["id"].as_str() != Some(entry_id));
+        }
+        cx.notify();
+    }
+
+    /// Capture helper for module 839785 (`clear-activity-history game|watch|listening|error|close`).
+    #[cfg(feature = "capture")]
+    pub(crate) fn script_clear_activity_history(
+        &mut self,
+        arg: &str,
+        cx: &mut Context<Self>,
+    ) -> String {
+        let mode = arg.trim();
+        if mode == "close" {
+            self.clear_activity_history_modal = None;
+            cx.notify();
+            return "clear-activity-history: closed".to_owned();
+        }
+        let me = self.stores.current_user.as_ref().map_or(1, |u| u.id);
+        let entry = match mode {
+            "watch" => serde_json::json!({
+                "id": "entry-watch-1",
+                "content_type": WATCHED_MEDIA,
+                "extra": {
+                    "media_title": "Arcane",
+                    "media_subtitle": "Season 2, Episode 7",
+                    "media_type": 2
+                }
+            }),
+            "listening" => serde_json::json!({
+                "id": "entry-listen-1",
+                "content_type": LISTENED_SESSION,
+                "extra": {
+                    "entries": [{
+                        "media": {
+                            "title": "Synthwave Dreams",
+                            "artists": [{ "name": "Midnight Runner" }],
+                            "provider": 1
+                        }
+                    }]
+                }
+            }),
+            _ => serde_json::json!({
+                "id": "entry-game-1",
+                "content_type": PLAYED_GAME,
+                "extra": {
+                    "game_name": "Elden Ring",
+                    "application_id": "942848528467386419"
+                }
+            }),
+        };
+        self.clear_activity_history_modal = Some(ClearActivityHistoryModal {
+            user_id: me,
+            entry,
+            busy: false,
+            error: (mode == "error").then(|| dc_intl::t("FMbL3s").to_owned()),
+        });
+        cx.notify();
+        format!("clear-activity-history: {mode}")
+    }
+
+    /// Renders the Clear Activity History confirmation modal (module 839785, `size="sm"` 400px).
+    pub(super) fn clear_activity_history_layer(
+        &self,
+        cx: &mut Context<Self>,
+    ) -> Option<AnyElement> {
+        let modal = self.clear_activity_history_modal.as_ref()?;
+        let content_type = modal.entry["content_type"].as_u64();
+        let title = dc_intl::t(clear_history_title_key(content_type));
+        let entry_id = modal.entry["id"].as_str().unwrap_or("0").to_owned();
+        let busy = modal.busy;
+        let error = modal.error.clone();
+        let is_game = matches!(content_type, Some(PLAYED_GAME | TOP_GAME))
+            && !matches!(
+                modal.entry["extra"]["platform"].as_str(),
+                Some("xbox" | "playstation")
+            );
+        // Subtitle `KV72oe` with `settingsHook` = "settings".
+        let subtitle_runs = dc_intl::format_runs("KV72oe", &[("settingsHook", "settings".into())]);
+        let mut sub_text = String::new();
+        let mut sub_hl = Vec::new();
+        for (chunk, hook) in subtitle_runs {
+            let start = sub_text.len();
+            sub_text.push_str(&chunk);
+            if hook.as_deref() == Some("settingsHook") && start < sub_text.len() {
+                sub_hl.push((
+                    start..sub_text.len(),
+                    gpui::HighlightStyle {
+                        color: Some(color("--text-link").into()),
+                        font_weight: Some(FontWeight(500.)),
+                        ..gpui::HighlightStyle::default()
+                    },
+                ));
+            }
+        }
+        let preview_title = modal.entry["extra"]["game_name"]
+            .as_str()
+            .or_else(|| modal.entry["extra"]["media_title"].as_str())
+            .or_else(|| modal.entry["extra"]["entries"][0]["media"]["title"].as_str())
+            .unwrap_or("Activity")
+            .to_owned();
+        let preview_sub = modal.entry["extra"]["media_subtitle"]
+            .as_str()
+            .or_else(|| modal.entry["extra"]["entries"][0]["media"]["artists"][0]["name"].as_str())
+            .unwrap_or(match content_type {
+                Some(PLAYED_GAME | TOP_GAME) => "Played recently",
+                Some(WATCHED_MEDIA) => "Watched recently",
+                Some(LISTENED_SESSION | 4) => "Listened recently",
+                _ => "Recent activity",
+            })
+            .to_owned();
+        let preview_icon = match content_type {
+            Some(WATCHED_MEDIA) => "activity_tv",
+            Some(LISTENED_SESSION | 4) => "activity_music",
+            _ => "activity_game",
+        };
+        let confirm_label = if error.is_some() {
+            dc_intl::t("5911Lb")
+        } else {
+            dc_intl::t("VkKicb")
+        };
+
+        let card = div()
+            .id("clear-activity-history-modal")
+            .occlude()
+            .on_mouse_down(gpui::MouseButton::Left, |_, _, cx| cx.stop_propagation())
+            .w(px(400.))
+            .rounded(px(12.))
+            .border_1()
+            .border_color(color("--border-subtle"))
+            .bg(color("--background-base-low"))
+            .flex()
+            .flex_col()
+            .child(
+                div()
+                    .px(px(24.))
+                    .pt(px(20.))
+                    .pb(px(12.))
+                    .flex()
+                    .flex_col()
+                    .gap(px(8.))
+                    .child(
+                        div()
+                            .flex()
+                            .items_center()
+                            .justify_between()
+                            .child(
+                                div()
+                                    .text_size(px(18.))
+                                    .line_height(px(22.))
+                                    .font_weight(FontWeight(700.))
+                                    .text_color(color("--text-strong"))
+                                    .child(title),
+                            )
+                            .child(
+                                div()
+                                    .id("clear-activity-history-close")
+                                    .size(px(28.))
+                                    .rounded(px(6.))
+                                    .hover(|s| s.bg(color("--background-mod-subtle")))
+                                    .cursor_pointer()
+                                    .flex()
+                                    .items_center()
+                                    .justify_center()
+                                    .on_click(cx.listener(|this, _, _, cx| {
+                                        this.clear_activity_history_modal = None;
+                                        cx.notify();
+                                    }))
+                                    .child(icon("close", 16., "--interactive-text-default")),
+                            ),
+                    )
+                    .child(
+                        div()
+                            .id("clear-activity-history-settings-link")
+                            .cursor_pointer()
+                            .text_size(px(14.))
+                            .line_height(px(20.))
+                            .text_color(color("--text-muted"))
+                            .child(gpui::StyledText::new(sub_text).with_highlights(sub_hl))
+                            .on_click(cx.listener(move |this, _, _, cx| {
+                                this.clear_activity_history_modal = None;
+                                this.close_full_profile(cx);
+                                if is_game {
+                                    this.open_settings_page("activity_privacy", cx);
+                                } else {
+                                    this.open_settings_category(
+                                        dc_intl::tr("Connected Apps"),
+                                        dc_intl::tr("Connections"),
+                                        cx,
+                                    );
+                                }
+                            })),
+                    ),
+            )
+            .child(
+                div()
+                    .px(px(24.))
+                    .pb(px(18.))
+                    .flex()
+                    .flex_col()
+                    .gap(px(8.))
+                    .children(error.map(|msg| {
+                        // `.error_Zi5jmx` (module 535355): red-400/10% bg, 1px red-400 border, 8px pad.
+                        div()
+                            .p(px(8.))
+                            .rounded(px(4.))
+                            .border_1()
+                            .border_color(color("--status-danger"))
+                            .bg(rgba(0xda373c1a))
+                            .flex()
+                            .items_center()
+                            .gap(px(8.))
+                            .child(icon("circle_x_small", 16., "--status-danger"))
+                            .child(
+                                div()
+                                    .text_size(px(13.))
+                                    .font_weight(FontWeight(500.))
+                                    .text_color(color("--text-feedback-critical"))
+                                    .child(msg),
+                            )
+                    }))
+                    .child(
+                        // `.card_Zi5jmx`: non-interactive activity card preview.
+                        div()
+                            .mt(px(8.))
+                            .p(px(12.))
+                            .rounded(px(8.))
+                            .bg(color("--background-mod-muted"))
+                            .flex()
+                            .items_center()
+                            .gap(px(12.))
+                            .child(
+                                div()
+                                    .size(px(44.))
+                                    .rounded(px(8.))
+                                    .bg(color("--background-surface-higher"))
+                                    .flex()
+                                    .items_center()
+                                    .justify_center()
+                                    .child(icon(preview_icon, 22., "--text-strong")),
+                            )
+                            .child(
+                                div()
+                                    .flex_1()
+                                    .min_w_0()
+                                    .flex()
+                                    .flex_col()
+                                    .gap(px(2.))
+                                    .child(
+                                        div()
+                                            .text_size(px(15.))
+                                            .font_weight(FontWeight(600.))
+                                            .text_color(color("--text-strong"))
+                                            .child(preview_title),
+                                    )
+                                    .child(
+                                        div()
+                                            .text_size(px(13.))
+                                            .text_color(color("--text-muted"))
+                                            .child(preview_sub),
+                                    ),
+                            ),
+                    ),
+            )
+            .child(
+                div()
+                    .px(px(24.))
+                    .py(px(14.))
+                    .border_t_1()
+                    .border_color(color("--border-subtle"))
+                    .bg(color("--background-base-lower"))
+                    .rounded_b(px(12.))
+                    .flex()
+                    .items_center()
+                    .justify_end()
+                    .gap(px(8.))
+                    .child(
+                        div()
+                            .id("clear-activity-history-cancel")
+                            .h(px(36.))
+                            .px(px(16.))
+                            .rounded(px(8.))
+                            .hover(|s| s.bg(color("--background-mod-subtle")))
+                            .cursor_pointer()
+                            .flex()
+                            .items_center()
+                            .text_size(px(14.))
+                            .font_weight(FontWeight(500.))
+                            .text_color(color("--text-default"))
+                            .child(dc_intl::t("ETE/oC"))
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                this.clear_activity_history_modal = None;
+                                cx.notify();
+                            })),
+                    )
+                    .child(
+                        div()
+                            .id("clear-activity-history-confirm")
+                            .h(px(36.))
+                            .px(px(16.))
+                            .rounded(px(8.))
+                            .bg(color("--status-danger"))
+                            .when(!busy, |d| d.cursor_pointer().hover(|s| s.opacity(0.9)))
+                            .when(busy, |d| d.opacity(0.5))
+                            .flex()
+                            .items_center()
+                            .text_size(px(14.))
+                            .font_weight(FontWeight(600.))
+                            .text_color(color("--white"))
+                            .child(confirm_label)
+                            .on_click(cx.listener(move |this, _, _, cx| {
+                                if let Some(m) = this.clear_activity_history_modal.as_mut() {
+                                    if m.busy {
+                                        return;
+                                    }
+                                    m.busy = true;
+                                    m.error = None;
+                                }
+                                let _ = this
+                                    .requests
+                                    .send(delete_activity_history_request(&entry_id));
+                                cx.notify();
+                            })),
+                    ),
+            );
+
+        Some(
+            deferred(
+                div()
+                    .id("clear-activity-history-backdrop")
+                    .occlude()
+                    .absolute()
+                    .inset_0()
+                    .bg(rgba(0x000000b3))
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .on_mouse_down(
+                        gpui::MouseButton::Left,
+                        cx.listener(|this, _, _, cx| {
+                            this.clear_activity_history_modal = None;
+                            cx.notify();
+                        }),
+                    )
+                    .child(card),
+            )
+            .with_priority(96)
+            .into_any_element(),
+        )
     }
 
     /// The card's "..." (285909 `H`): its menu beside the button, nothing when the menu has no rows or the author is a
@@ -939,8 +1385,6 @@ impl Root {
     }
 }
 
-use dc_state::Id;
-
 impl Root {
     /// The Activity tab of module 927071 (`sc`), for the full profile and for the editor's own profile: Current
     /// activity and Recent activity, or the empty state (`sa` on your own profile, `sr` on someone else's).
@@ -1314,5 +1758,33 @@ mod tests {
             Some("S2E7")
         );
         assert_eq!(season_episode("Special"), None);
+    }
+
+    #[test]
+    fn clear_activity_history_839785_titles_and_delete_route() {
+        assert_eq!(
+            dc_intl::t(clear_history_title_key(Some(PLAYED_GAME))),
+            "Clear Game History"
+        );
+        assert_eq!(
+            dc_intl::t(clear_history_title_key(Some(WATCHED_MEDIA))),
+            "Clear Watch History"
+        );
+        assert_eq!(
+            dc_intl::t(clear_history_title_key(Some(LISTENED_SESSION))),
+            "Clear Listening History"
+        );
+        assert_eq!(
+            dc_intl::t(clear_history_title_key(None)),
+            "Clear Activity History"
+        );
+        let Request::Rest { method, route, .. } = delete_activity_history_request("ent-42") else {
+            panic!("expected rest");
+        };
+        assert_eq!(method, reqwest::Method::DELETE);
+        assert_eq!(
+            route,
+            "/content-inventory/users/@me/outbox/entries/id/ent-42/history"
+        );
     }
 }

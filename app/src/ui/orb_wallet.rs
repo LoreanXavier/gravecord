@@ -59,6 +59,8 @@ pub(crate) struct OrbWalletState {
     pub primary_card_dismissed: bool,
     pub unclaimed_account: bool,
     pub challenges: Vec<OrbChallenge>,
+    /// Module 717983 `"{orbAmount} Orbs, delivered"` modal: `Some((orb_amount, is_gifting))`.
+    pub delivered_modal: Option<(u64, bool)>,
 }
 
 /// `GET /users/@me/virtual-currency/total-redeemed` (module 150849 / 786953).
@@ -186,8 +188,186 @@ impl Root {
         }
     }
 
-    /// Modal/popout layer for the 340px Orb Wallet & Active Challenges panel (`150849`).
+    /// Modal/popout layer for the 340px Orb Wallet (`150849`) & `"{orbAmount} Orbs, delivered"` modal (`717983`).
     pub(super) fn orb_wallet_layer(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
+        if let Some((orb_amount, is_gifting)) = self.orb_wallet.delivered_modal {
+            // Module 717983 (`NitroOrbsBonusDefaultModal` / `NitroOrbsBonusGiftingModal`:
+            // `O2/Bj8`, `qiZPb6`, `AnlV9W`, `OhOWfI`, `PDTjLN`; `480px`, `nitro-pink` gradient header).
+            let title = dc_intl::format("O2/Bj8", &[("orbAmount", Arg::Num(orb_amount as f64))]);
+            let subtitle = dc_intl::format("qiZPb6", &[("orbAmount", Arg::Num(orb_amount as f64))]);
+            let card = div()
+                .id("nitro-orbs-delivered-modal")
+                .w(px(480.))
+                .rounded(px(16.))
+                .overflow_hidden()
+                .border_1()
+                .border_color(color("--border-subtle"))
+                .bg(color("--background-surface-high"))
+                .flex()
+                .flex_col()
+                .on_click(|_, _, cx| cx.stop_propagation())
+                .child(
+                    div()
+                        .relative()
+                        .w_full()
+                        .h(px(180.))
+                        .bg(linear_gradient(
+                            135.,
+                            linear_color_stop(rgba(0xb845c1ff), 0.),
+                            linear_color_stop(rgba(0x5865f2ff), 1.),
+                        ))
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .child(
+                            div()
+                                .size(px(88.))
+                                .rounded_full()
+                                .bg(rgba(0xffffff22))
+                                .border_2()
+                                .border_color(rgba(0xffffff55))
+                                .flex()
+                                .items_center()
+                                .justify_center()
+                                .child(icon("shop_orb_18", 48., "--white")),
+                        )
+                        .child(
+                            div()
+                                .id("nitro-orbs-delivered-close")
+                                .absolute()
+                                .top(px(12.))
+                                .right(px(12.))
+                                .size(px(30.))
+                                .rounded_full()
+                                .bg(rgba(0x00000044))
+                                .hover(|s| s.bg(rgba(0x00000066)))
+                                .cursor_pointer()
+                                .flex()
+                                .items_center()
+                                .justify_center()
+                                .child(icon("modal_close", 16., "--white"))
+                                .on_click(cx.listener(|this, _, _, cx| {
+                                    this.orb_wallet.delivered_modal = None;
+                                    cx.notify();
+                                })),
+                        ),
+                )
+                .child(
+                    div()
+                        .p(px(28.))
+                        .flex()
+                        .flex_col()
+                        .items_center()
+                        .gap(px(10.))
+                        .child(
+                            div()
+                                .text_center()
+                                .text_size(px(22.))
+                                .line_height(px(28.))
+                                .font_weight(FontWeight(700.))
+                                .text_color(color("--text-strong"))
+                                .child(title),
+                        )
+                        .child(
+                            div()
+                                .text_center()
+                                .text_size(px(14.))
+                                .line_height(px(20.))
+                                .text_color(color("--text-muted"))
+                                .child(subtitle),
+                        )
+                        .child(
+                            div()
+                                .mt(px(16.))
+                                .w_full()
+                                .flex()
+                                .items_center()
+                                .gap(px(10.))
+                                .child(
+                                    div()
+                                        .id("nitro-orbs-delivered-secondary")
+                                        .flex_1()
+                                        .h(px(40.))
+                                        .rounded(px(8.))
+                                        .bg(color("--control-secondary-background-default"))
+                                        .hover(|s| {
+                                            s.bg(color("--control-secondary-background-hover"))
+                                        })
+                                        .cursor_pointer()
+                                        .flex()
+                                        .items_center()
+                                        .justify_center()
+                                        .text_size(px(14.))
+                                        .font_weight(FontWeight(600.))
+                                        .text_color(color("--text-strong"))
+                                        .child(if is_gifting {
+                                            dc_intl::t("OhOWfI")
+                                        } else {
+                                            dc_intl::t("AnlV9W")
+                                        })
+                                        .on_click(cx.listener(move |this, _, _, cx| {
+                                            this.orb_wallet.delivered_modal = None;
+                                            if is_gifting {
+                                                this.quests_open_orbs_shop(cx);
+                                            } else {
+                                                this.open_nitro(cx);
+                                            }
+                                            cx.notify();
+                                        })),
+                                )
+                                .child(
+                                    div()
+                                        .id("nitro-orbs-delivered-primary")
+                                        .flex_1()
+                                        .h(px(40.))
+                                        .rounded(px(8.))
+                                        .bg(color("--control-primary-background-default"))
+                                        .hover(|s| {
+                                            s.bg(color("--control-primary-background-hover"))
+                                        })
+                                        .cursor_pointer()
+                                        .flex()
+                                        .items_center()
+                                        .justify_center()
+                                        .text_size(px(14.))
+                                        .font_weight(FontWeight(600.))
+                                        .text_color(color("--white"))
+                                        .child(if is_gifting {
+                                            dc_intl::t("PDTjLN")
+                                        } else {
+                                            dc_intl::t("OhOWfI")
+                                        })
+                                        .on_click(cx.listener(move |this, _, _, cx| {
+                                            this.orb_wallet.delivered_modal = None;
+                                            if !is_gifting {
+                                                this.quests_open_orbs_shop(cx);
+                                            }
+                                            cx.notify();
+                                        })),
+                                ),
+                        ),
+                );
+            return Some(
+                deferred(
+                    div()
+                        .id("nitro-orbs-delivered-backdrop")
+                        .occlude()
+                        .absolute()
+                        .inset_0()
+                        .bg(rgba(0x000000b8))
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .on_click(cx.listener(|this, _, _, cx| {
+                            this.orb_wallet.delivered_modal = None;
+                            cx.notify();
+                        }))
+                        .child(card),
+                )
+                .with_priority(98)
+                .into_any_element(),
+            );
+        }
         if !self.orb_wallet.open {
             return None;
         }
@@ -888,6 +1068,12 @@ impl Root {
                 cx.notify();
                 "orb-wallet: closed".to_owned()
             }
+            "delivered" | "delivered-gift" => {
+                self.orb_wallet.open = false;
+                self.orb_wallet.delivered_modal = Some((1200, arg.trim() == "delivered-gift"));
+                cx.notify();
+                format!("orb-wallet: {}", arg.trim())
+            }
             "cleared" => {
                 self.orb_wallet = OrbWalletState {
                     open: true,
@@ -901,6 +1087,7 @@ impl Root {
                     primary_card_dismissed: false,
                     unclaimed_account: false,
                     challenges: Vec::new(),
+                    delivered_modal: None,
                 };
                 cx.notify();
                 "orb-wallet: cleared".to_owned()
@@ -918,6 +1105,7 @@ impl Root {
                     primary_card_dismissed: false,
                     unclaimed_account: false,
                     challenges: Vec::new(),
+                    delivered_modal: None,
                 };
                 cx.notify();
                 "orb-wallet: error".to_owned()
@@ -940,6 +1128,7 @@ impl Root {
                         orb_amount: 300,
                         status: ChallengeStatus::InProgress,
                     }],
+                    delivered_modal: None,
                 };
                 cx.notify();
                 "orb-wallet: unclaimed".to_owned()
@@ -970,6 +1159,7 @@ impl Root {
                             status: ChallengeStatus::InProgress,
                         },
                     ],
+                    delivered_modal: None,
                 };
                 cx.notify();
                 "orb-wallet: active".to_owned()

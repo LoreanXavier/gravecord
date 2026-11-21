@@ -20,8 +20,17 @@ pub(super) const VERIFY_CHANGE_KEY: &str = "verify-email:change";
 
 #[derive(Clone, Debug)]
 pub(super) enum VerifyResendAlert {
-    Sent { email: String },
-    Error { message: String },
+    Sent {
+        email: String,
+    },
+    Error {
+        message: String,
+    },
+    /// Module 661925 ("Verify your email first" pre-checkout gate: `UZLrY1`, `0LgOKH`,
+    /// `ydw5nX` Add Email / `Vm8akB` Change Email + `lm1UKt` Resend Verification Email).
+    PurchaseGate {
+        has_email: bool,
+    },
 }
 
 #[derive(Clone, Debug)]
@@ -176,16 +185,200 @@ impl Root {
         }
     }
 
-    /// Renders module `9124` Verify by Email modal and module `940856` Resend Result / Error modal.
+    /// Opens the "Verify your email first" pre-checkout modal (module `661925`: `UZLrY1`, `0LgOKH`,
+    /// `ydw5nX` Add Email / `Vm8akB` Change Email + `lm1UKt` Resend Verification Email).
+    #[allow(dead_code)]
+    pub(super) fn open_verify_email_before_purchase(&mut self, cx: &mut Context<Self>) {
+        let email = self.stores.account.email.clone().unwrap_or_default();
+        let has_email = !email.is_empty();
+        self.verify_email_modal = Some(VerifyEmailModal {
+            email,
+            password: String::new(),
+            change_mode: false,
+            can_change: true,
+            resent: false,
+            busy: false,
+            email_error: None,
+            password_error: None,
+            resend_alert: Some(VerifyResendAlert::PurchaseGate { has_email }),
+        });
+        cx.notify();
+    }
+
+    /// Renders module `9124` Verify by Email modal, module `940856` Resend Result / Error modal,
+    /// and module `661925` "Verify your email first" pre-checkout gate.
     pub(super) fn verify_email_modal_layer(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
         let modal = self.verify_email_modal.as_ref()?;
         if let Some(alert) = modal.resend_alert.as_ref() {
+            if let VerifyResendAlert::PurchaseGate { has_email } = *alert {
+                let card = div()
+                    .id("verify-purchase-gate-modal")
+                    .w(px(480.))
+                    .rounded(px(12.))
+                    .bg(color("--background-surface-high"))
+                    .border_1()
+                    .border_color(color("--border-subtle"))
+                    .overflow_hidden()
+                    .flex()
+                    .flex_col()
+                    .on_click(|_, _, cx| cx.stop_propagation())
+                    .child(
+                        div()
+                            .px(px(24.))
+                            .pt(px(20.))
+                            .pb(px(10.))
+                            .flex()
+                            .items_center()
+                            .justify_between()
+                            .child(
+                                div()
+                                    .text_size(px(20.))
+                                    .font_weight(FontWeight(700.))
+                                    .text_color(color("--text-strong"))
+                                    .child(dc_intl::t("UZLrY1")),
+                            )
+                            .child(
+                                div()
+                                    .id("verify-purchase-gate-close")
+                                    .size(px(28.))
+                                    .cursor_pointer()
+                                    .flex()
+                                    .items_center()
+                                    .justify_center()
+                                    .child(icon("modal_close", 16., "--interactive-icon-default"))
+                                    .on_click(cx.listener(|this, _, _, cx| {
+                                        this.verify_email_modal = None;
+                                        cx.notify();
+                                    })),
+                            ),
+                    )
+                    .child(
+                        div()
+                            .px(px(24.))
+                            .py(px(12.))
+                            .flex()
+                            .flex_col()
+                            .items_center()
+                            .gap(px(16.))
+                            .child(
+                                div()
+                                    .w(px(162.))
+                                    .h(px(100.))
+                                    .rounded(px(12.))
+                                    .bg(rgba(0x5865f222))
+                                    .border_1()
+                                    .border_color(color("--border-subtle"))
+                                    .flex()
+                                    .items_center()
+                                    .justify_center()
+                                    .child(icon("message_requests_envelope", 42., "--brand-500")),
+                            )
+                            .child(
+                                div()
+                                    .text_center()
+                                    .text_size(px(14.))
+                                    .line_height(px(20.))
+                                    .text_color(color("--text-default"))
+                                    .child(dc_intl::t("0LgOKH")),
+                            ),
+                    )
+                    .child(
+                        div()
+                            .px(px(24.))
+                            .py(px(14.))
+                            .bg(color("--background-base-lower"))
+                            .border_t_1()
+                            .border_color(color("--border-subtle"))
+                            .flex()
+                            .items_center()
+                            .justify_end()
+                            .gap(px(10.))
+                            .when(has_email, |ftr| {
+                                ftr.child(
+                                    div()
+                                        .id("verify-purchase-gate-change")
+                                        .cursor_pointer()
+                                        .px(px(14.))
+                                        .h(px(36.))
+                                        .rounded(px(6.))
+                                        .bg(color("--control-secondary-background-default"))
+                                        .hover(|s| {
+                                            s.bg(color("--control-secondary-background-hover"))
+                                        })
+                                        .flex()
+                                        .items_center()
+                                        .text_size(px(14.))
+                                        .font_weight(FontWeight(500.))
+                                        .text_color(color("--text-strong"))
+                                        .child(dc_intl::t("Vm8akB"))
+                                        .on_click(cx.listener(|this, _, _, cx| {
+                                            if let Some(m) = this.verify_email_modal.as_mut() {
+                                                m.resend_alert = None;
+                                                m.change_mode = true;
+                                            }
+                                            cx.notify();
+                                        })),
+                                )
+                            })
+                            .child(
+                                div()
+                                    .id("verify-purchase-gate-primary")
+                                    .cursor_pointer()
+                                    .px(px(18.))
+                                    .h(px(36.))
+                                    .rounded(px(6.))
+                                    .bg(color("--control-primary-background-default"))
+                                    .hover(|s| s.bg(color("--control-primary-background-hover")))
+                                    .flex()
+                                    .items_center()
+                                    .text_size(px(14.))
+                                    .font_weight(FontWeight(600.))
+                                    .text_color(color("--white"))
+                                    .child(if has_email {
+                                        dc_intl::t("lm1UKt")
+                                    } else {
+                                        dc_intl::t("ydw5nX")
+                                    })
+                                    .on_click(cx.listener(move |this, _, _, cx| {
+                                        if has_email {
+                                            this.verify_email_modal = None;
+                                            this.trigger_verify_resend(cx);
+                                        } else if let Some(m) = this.verify_email_modal.as_mut() {
+                                            m.resend_alert = None;
+                                            m.change_mode = true;
+                                        }
+                                        cx.notify();
+                                    })),
+                            ),
+                    );
+                return Some(
+                    gpui::deferred(
+                        div()
+                            .id("verify-purchase-gate-backdrop")
+                            .occlude()
+                            .absolute()
+                            .inset_0()
+                            .bg(rgba(0x000000b8))
+                            .flex()
+                            .items_center()
+                            .justify_center()
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                this.verify_email_modal = None;
+                                cx.notify();
+                            }))
+                            .child(card),
+                    )
+                    .with_priority(98)
+                    .into_any_element(),
+                );
+            }
             let (title, body_text) = match alert {
                 VerifyResendAlert::Sent { email } => (
                     dc_intl::t("LykQYk"),
                     dc_intl::format("azKEPy", &[("email", Arg::Str(Cow::Borrowed(email)))]),
                 ),
                 VerifyResendAlert::Error { message } => (dc_intl::t("VbTh0E"), message.clone()),
+                VerifyResendAlert::PurchaseGate { .. } => unreachable!(),
             };
             let is_err = matches!(alert, VerifyResendAlert::Error { .. });
             let card = div()
@@ -616,6 +809,24 @@ impl Root {
             resend_alert,
         };
         match mode.trim() {
+            "purchase-gate" => {
+                self.verify_email_modal = Some(base(
+                    false,
+                    false,
+                    Some(VerifyResendAlert::PurchaseGate { has_email: true }),
+                ));
+                cx.notify();
+                "verify-email: purchase-gate".into()
+            }
+            "purchase-gate-no-email" => {
+                self.verify_email_modal = Some(base(
+                    false,
+                    false,
+                    Some(VerifyResendAlert::PurchaseGate { has_email: false }),
+                ));
+                cx.notify();
+                "verify-email: purchase-gate-no-email".into()
+            }
             "resend-sent" => {
                 self.verify_email_modal = Some(base(
                     false,

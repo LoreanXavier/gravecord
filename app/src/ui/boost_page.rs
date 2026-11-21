@@ -12,12 +12,130 @@
 
 use super::discover::{gutter_scrollbar, text};
 use super::{Root, color, icon};
+use crate::net::Request;
 use crate::parity::Parity;
+use dc_state::Id;
 use gpui::{
-    AnyElement, Context, FontWeight, IntoElement, ObjectFit, RenderImage, ScrollHandle, div, img,
-    prelude::*, px, rgba,
+    AnyElement, Context, FontWeight, IntoElement, ObjectFit, RenderImage, ScrollHandle,
+    SharedString, deferred, div, img, linear_color_stop, linear_gradient, prelude::*, px, rgb,
+    rgba,
 };
 use std::sync::Arc;
+
+/// Guild powerup SKU IDs (`512750` / `945942.js`).
+pub(super) const SKU_SERVER_TAG: &str = "1351706802684952639";
+pub(super) const SKU_ROLE_STYLES: &str = "1354906318279807056";
+pub(super) const SKU_VANITY_URL: &str = "1387197800336330924";
+pub(super) const SKU_GUILD_THEME: &str = "1493634428604252161";
+
+const VANITY_HELP_URL: &str = "https://support.discord.com/hc/en-us/articles/115001542132";
+
+/// Open state of `GuildPowerupPerkModal` (module 945942, Layouts A & B + `933337` deactivate confirm).
+#[derive(Clone, Debug)]
+pub(super) struct PowerupPerkModal {
+    pub guild_id: Id,
+    pub sku_id: &'static str,
+    pub title: String,
+    pub description: String,
+    pub cost: u32,
+    pub is_active: bool,
+    pub level_activated: bool,
+    pub cooldown_days: u32,
+    pub can_manage: bool,
+    pub error: Option<String>,
+    pub confirm_disable: bool,
+    pub selected_tag_badge: usize,
+    pub selected_gradient: usize,
+    pub vanity_code: String,
+}
+
+impl PowerupPerkModal {
+    pub(super) fn for_sku(guild_id: Id, sku_id: &'static str, can_manage: bool) -> Self {
+        match sku_id {
+            SKU_GUILD_THEME => Self {
+                guild_id,
+                sku_id,
+                title: "Server Theme".to_owned(),
+                description: "Give your server a custom gradient theme visible to all members."
+                    .to_owned(),
+                cost: 3,
+                is_active: false,
+                level_activated: false,
+                cooldown_days: 0,
+                can_manage,
+                error: None,
+                confirm_disable: false,
+                selected_tag_badge: 0,
+                selected_gradient: 0,
+                vanity_code: String::new(),
+            },
+            SKU_SERVER_TAG => Self {
+                guild_id,
+                sku_id,
+                title: "Server Tag".to_owned(),
+                description: "Let your members represent your server everywhere on Discord."
+                    .to_owned(),
+                cost: 3,
+                is_active: false,
+                level_activated: false,
+                cooldown_days: 7,
+                can_manage,
+                error: None,
+                confirm_disable: false,
+                selected_tag_badge: 0,
+                selected_gradient: 0,
+                vanity_code: String::new(),
+            },
+            SKU_VANITY_URL => Self {
+                guild_id,
+                sku_id,
+                title: "Custom Invite Link".to_owned(),
+                description: "Create a memorable custom invite link for your server.".to_owned(),
+                cost: 14,
+                is_active: false,
+                level_activated: false,
+                cooldown_days: 0,
+                can_manage,
+                error: None,
+                confirm_disable: false,
+                selected_tag_badge: 0,
+                selected_gradient: 0,
+                vanity_code: "my-server".to_owned(),
+            },
+            _ => Self {
+                guild_id,
+                sku_id: SKU_ROLE_STYLES,
+                title: "Enhanced Role Styles".to_owned(),
+                description: "Make certain roles stand out with animated, vibrant gradients."
+                    .to_owned(),
+                cost: 3,
+                is_active: false,
+                level_activated: false,
+                cooldown_days: 0,
+                can_manage,
+                error: None,
+                confirm_disable: false,
+                selected_tag_badge: 0,
+                selected_gradient: 0,
+                vanity_code: String::new(),
+            },
+        }
+    }
+}
+
+/// Builds `POST` or `DELETE /guilds/{guildId}/skus/{skuId}` (`GUILD_POWERUP_TOGGLE`, module 945942 / 533993).
+pub(super) fn toggle_guild_powerup_request(guild_id: Id, sku_id: &str, enable: bool) -> Request {
+    Request::Rest {
+        key: Some(format!("guild-powerup-toggle:{guild_id}:{sku_id}")),
+        method: if enable {
+            reqwest::Method::POST
+        } else {
+            reqwest::Method::DELETE
+        },
+        route: format!("/guilds/{guild_id}/skus/{sku_id}"),
+        body: enable.then(|| serde_json::json!({})),
+    }
+}
 
 /// The page's open state: where it is scrolled and which FAQ row is open.
 pub(super) struct BoostPage {
@@ -796,21 +914,25 @@ impl Root {
                 div().parity("boost-perks").flex().gap(px(24.)).children(
                     [
                         (
+                            "boost-perk-roles",
+                            SKU_ROLE_STYLES,
                             "boost:roles",
                             "Enhanced Role Styles",
                             "Make certain roles stand out with animated, vibrant gradients.",
                         ),
                         (
+                            "boost-perk-tag",
+                            SKU_SERVER_TAG,
                             "boost:tag",
                             "Server Tag",
                             "Let your members represent your server everywhere on Discord.",
                         ),
                     ]
-                    .map(|(art, title, body)| {
-                        // `.card_RL7BaR` (module 658937, `196063.css`): the radial glow over `hsla(240,4%,61%,.08)` with a
-                        // 40px backdrop blur, 1px border, radius 16, then the 250x140 illustration, the text and the cost
-                        // badge, 24px apart.
+                    .map(|(id, sku_id, art, title, body)| {
+                        // `.card_RL7BaR` (module 658937, `196063.css`): clicking opens `GuildPowerupPerkModal` (945942).
                         div()
+                            .id(id)
+                            .cursor_pointer()
                             .relative()
                             .w(px(588.))
                             .h(px(318.))
@@ -820,11 +942,23 @@ impl Root {
                             .border_1()
                             .border_color(gpui::hsla(240. / 360., 0.04, 0.61, 0.12))
                             .bg(gpui::hsla(240. / 360., 0.04, 0.61, 0.08))
+                            .hover(|s| s.border_color(gpui::hsla(240. / 360., 0.04, 0.75, 0.28)))
                             .p(px(24.))
                             .flex()
                             .flex_col()
                             .items_center()
                             .gap(px(24.))
+                            .on_click(cx.listener(move |this, _, _, cx| {
+                                let guild_id = this.guild.unwrap_or(1);
+                                let can_manage = this.my_permission(
+                                    guild_id,
+                                    None,
+                                    dc_state::permissions::MANAGE_GUILD,
+                                );
+                                this.powerup_perk_modal =
+                                    Some(PowerupPerkModal::for_sku(guild_id, sku_id, can_manage));
+                                cx.notify();
+                            }))
                             .child(
                                 img(page.card_glow.clone())
                                     .absolute()
@@ -1456,6 +1590,1021 @@ impl Root {
 fn offers_gift(premium: dc_state::premium::PremiumType) -> bool {
     use dc_state::premium::{Feature, PremiumType};
     premium.has(Feature::FreeBoosts) || premium == PremiumType::Nitro
+}
+
+impl Root {
+    /// Capture helper for `GuildPowerupPerkModal` (module 945942: `powerup-perk theme|roles|tag|vanity|disable-confirm|close`).
+    #[cfg(feature = "capture")]
+    pub(crate) fn script_powerup_perk(&mut self, arg: &str, cx: &mut Context<Self>) -> String {
+        let mode = arg.trim();
+        if mode == "close" {
+            self.powerup_perk_modal = None;
+            cx.notify();
+            return "powerup-perk: closed".to_owned();
+        }
+        let guild_id = self
+            .guild
+            .or_else(|| self.stores.guilds.first().map(|g| g.id))
+            .unwrap_or(1);
+        let mut modal = match mode {
+            "theme" => PowerupPerkModal::for_sku(guild_id, SKU_GUILD_THEME, true),
+            "tag" => PowerupPerkModal::for_sku(guild_id, SKU_SERVER_TAG, true),
+            "vanity" => PowerupPerkModal::for_sku(guild_id, SKU_VANITY_URL, true),
+            "disable-confirm" => {
+                let mut m = PowerupPerkModal::for_sku(guild_id, SKU_SERVER_TAG, true);
+                m.is_active = true;
+                m.confirm_disable = true;
+                m
+            }
+            _ => PowerupPerkModal::for_sku(guild_id, SKU_ROLE_STYLES, true),
+        };
+        if mode == "tag-active" {
+            modal = PowerupPerkModal::for_sku(guild_id, SKU_SERVER_TAG, true);
+            modal.is_active = true;
+        }
+        self.powerup_perk_modal = Some(modal);
+        cx.notify();
+        format!("powerup-perk: {mode}")
+    }
+
+    /// Renders `GuildPowerupPerkModal` (module 945942): Layout A (Guild Theme `480px`), Layout B
+    /// (Standard Perk `850px` split modal w/ interactive Server Tag / Role Gradient / Vanity URL
+    /// demos), and `933337` Deactivate Confirm dialog.
+    pub(super) fn powerup_perk_overlay(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
+        let modal = self.powerup_perk_modal.as_ref()?;
+        let guild_id = modal.guild_id;
+        let sku_id = modal.sku_id;
+        let cost = modal.cost;
+        let is_active = modal.is_active;
+        let level_activated = modal.level_activated;
+        let can_manage = modal.can_manage;
+        let cost_label = dc_intl::format(
+            "gDsyB9",
+            &[("numSubscriptions", dc_intl::Arg::Num(f64::from(cost)))],
+        );
+
+        // `933337` / `179413`: Deactivate Perk Confirmation modal (`size="sm"` 400px).
+        if modal.confirm_disable {
+            let warning_copy = if sku_id == SKU_VANITY_URL {
+                dc_intl::t("M4XL5n").to_owned()
+            } else {
+                dc_intl::format("cavtEo", &[("perk", modal.title.as_str().into())])
+            };
+            let confirm_card = div()
+                .id("powerup-disable-confirm")
+                .occlude()
+                .on_mouse_down(gpui::MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                .w(px(400.))
+                .rounded(px(12.))
+                .border_1()
+                .border_color(color("--border-subtle"))
+                .bg(color("--background-base-low"))
+                .flex()
+                .flex_col()
+                .child(
+                    div()
+                        .px(px(24.))
+                        .pt(px(20.))
+                        .pb(px(12.))
+                        .flex()
+                        .items_center()
+                        .justify_between()
+                        .child(text(18., 22., 700., "--text-strong").child(dc_intl::t("TZsu1U")))
+                        .child(
+                            div()
+                                .id("powerup-disable-close")
+                                .size(px(28.))
+                                .rounded(px(6.))
+                                .hover(|s| s.bg(color("--background-mod-subtle")))
+                                .cursor_pointer()
+                                .flex()
+                                .items_center()
+                                .justify_center()
+                                .on_click(cx.listener(|this, _, _, cx| {
+                                    if let Some(m) = this.powerup_perk_modal.as_mut() {
+                                        m.confirm_disable = false;
+                                    }
+                                    cx.notify();
+                                }))
+                                .child(icon("close", 16., "--interactive-text-default")),
+                        ),
+                )
+                .child(
+                    div()
+                        .px(px(24.))
+                        .pb(px(18.))
+                        .flex()
+                        .flex_col()
+                        .gap(px(12.))
+                        .child(
+                            div()
+                                .p(px(12.))
+                                .rounded(px(8.))
+                                .border_1()
+                                .border_color(color("--status-warning"))
+                                .bg(rgba(0xf0b2321a))
+                                .flex()
+                                .flex_col()
+                                .gap(px(4.))
+                                .child(
+                                    text(13., 18., 700., "--status-warning")
+                                        .child(dc_intl::t("OVt5CC")),
+                                )
+                                .child(text(13., 18., 400., "--text-default").child(warning_copy)),
+                        )
+                        .child(text(13., 18., 500., "--text-muted").child(dc_intl::format(
+                            "5HQUzD",
+                            &[("boostCount", dc_intl::Arg::Num(f64::from(cost)))],
+                        ))),
+                )
+                .child(
+                    div()
+                        .px(px(24.))
+                        .py(px(14.))
+                        .border_t_1()
+                        .border_color(color("--border-subtle"))
+                        .bg(color("--background-base-lower"))
+                        .rounded_b(px(12.))
+                        .flex()
+                        .items_center()
+                        .justify_end()
+                        .gap(px(8.))
+                        .child(
+                            div()
+                                .id("powerup-disable-cancel")
+                                .h(px(36.))
+                                .px(px(16.))
+                                .rounded(px(8.))
+                                .hover(|s| s.bg(color("--background-mod-subtle")))
+                                .cursor_pointer()
+                                .flex()
+                                .items_center()
+                                .text_size(px(14.))
+                                .font_weight(FontWeight(500.))
+                                .text_color(color("--text-default"))
+                                .child(dc_intl::t("ETE/oC"))
+                                .on_click(cx.listener(|this, _, _, cx| {
+                                    if let Some(m) = this.powerup_perk_modal.as_mut() {
+                                        m.confirm_disable = false;
+                                    }
+                                    cx.notify();
+                                })),
+                        )
+                        .child(
+                            div()
+                                .id("powerup-disable-submit")
+                                .h(px(36.))
+                                .px(px(16.))
+                                .rounded(px(8.))
+                                .bg(color("--status-danger"))
+                                .hover(|s| s.opacity(0.9))
+                                .cursor_pointer()
+                                .flex()
+                                .items_center()
+                                .text_size(px(14.))
+                                .font_weight(FontWeight(600.))
+                                .text_color(color("--white"))
+                                .child(dc_intl::t("PYPdl4"))
+                                .on_click(cx.listener(move |this, _, _, cx| {
+                                    let _ = this.requests.send(toggle_guild_powerup_request(
+                                        guild_id, sku_id, false,
+                                    ));
+                                    this.powerup_perk_modal = None;
+                                    cx.notify();
+                                })),
+                        ),
+                );
+            return Some(
+                deferred(
+                    div()
+                        .id("powerup-disable-backdrop")
+                        .occlude()
+                        .absolute()
+                        .inset_0()
+                        .bg(rgba(0x000000b8))
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .on_mouse_down(
+                            gpui::MouseButton::Left,
+                            cx.listener(|this, _, _, cx| {
+                                this.powerup_perk_modal = None;
+                                cx.notify();
+                            }),
+                        )
+                        .child(confirm_card),
+                )
+                .with_priority(97)
+                .into_any_element(),
+            );
+        }
+
+        // Layout A — Guild Theme (`SKU_GUILD_THEME`, `modalGuildTheme_s4Cv6K`, 480px vertical).
+        if sku_id == SKU_GUILD_THEME {
+            let card = div()
+                .id("powerup-perk-guild-theme")
+                .occlude()
+                .on_mouse_down(gpui::MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                .relative()
+                .w(px(480.))
+                .rounded(px(12.))
+                .overflow_hidden()
+                .border_1()
+                .border_color(color("--border-subtle"))
+                .bg(color("--background-base-low"))
+                .flex()
+                .flex_col()
+                .child(
+                    div()
+                        .w_full()
+                        .h(px(176.))
+                        .bg(linear_gradient(
+                            135.,
+                            linear_color_stop(rgb(0x5865f2), 0.),
+                            linear_color_stop(rgb(0xeb459e), 1.),
+                        ))
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .child(
+                            div()
+                                .w(px(240.))
+                                .h(px(116.))
+                                .rounded(px(12.))
+                                .border_1()
+                                .border_color(rgba(0xffffff33))
+                                .bg(rgba(0x1e1f22cc))
+                                .p(px(14.))
+                                .flex()
+                                .flex_col()
+                                .justify_between()
+                                .child(
+                                    div()
+                                        .flex()
+                                        .items_center()
+                                        .gap(px(8.))
+                                        .child(icon(
+                                            "boost_gem",
+                                            20.,
+                                            "--guild-boosting-pink-refresh",
+                                        ))
+                                        .child(
+                                            text(14., 18., 700., "--white").child("Server Theme"),
+                                        ),
+                                )
+                                .child(
+                                    div()
+                                        .flex()
+                                        .gap(px(8.))
+                                        .child(
+                                            div()
+                                                .h(px(12.))
+                                                .flex_1()
+                                                .rounded(px(6.))
+                                                .bg(rgba(0xffffff33)),
+                                        )
+                                        .child(
+                                            div()
+                                                .h(px(12.))
+                                                .w(px(56.))
+                                                .rounded(px(6.))
+                                                .bg(rgba(0xeb459e88)),
+                                        ),
+                                ),
+                        ),
+                )
+                .child(
+                    div()
+                        .id("powerup-theme-close")
+                        .absolute()
+                        .top(px(10.))
+                        .right(px(10.))
+                        .size(px(28.))
+                        .rounded(px(6.))
+                        .bg(rgba(0x00000044))
+                        .hover(|s| s.bg(rgba(0x00000066)))
+                        .cursor_pointer()
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .on_click(cx.listener(|this, _, _, cx| {
+                            this.powerup_perk_modal = None;
+                            cx.notify();
+                        }))
+                        .child(icon("close", 16., "--white")),
+                )
+                .child(
+                    div()
+                        .px(px(40.))
+                        .pt(px(24.))
+                        .pb(px(16.))
+                        .flex()
+                        .flex_col()
+                        .items_center()
+                        .gap(px(10.))
+                        .text_center()
+                        .child(text(22., 28., 700., "--text-strong").child(modal.title.clone()))
+                        .child(
+                            div()
+                                .flex()
+                                .items_center()
+                                .gap(px(6.))
+                                .child(icon("boost_gem", 18., "--guild-boosting-pink-refresh"))
+                                .child(text(15., 20., 600., "--text-muted").child(cost_label)),
+                        )
+                        .child(
+                            text(14., 20., 400., "--text-default").child(modal.description.clone()),
+                        )
+                        .children(modal.error.as_ref().map(|e| {
+                            text(13., 18., 600., "--text-feedback-critical").child(e.clone())
+                        })),
+                )
+                .when(can_manage, |col| {
+                    col.child(
+                        div()
+                            .px(px(32.))
+                            .pt(px(12.))
+                            .pb(px(28.))
+                            .flex()
+                            .items_center()
+                            .gap(px(10.))
+                            .when(!is_active, |row| {
+                                row.child(
+                                    div()
+                                        .id("powerup-theme-try")
+                                        .flex_1()
+                                        .h(px(40.))
+                                        .rounded(px(8.))
+                                        .border_1()
+                                        .border_color(color("--border-subtle"))
+                                        .bg(color("--control-secondary-background-default"))
+                                        .hover(|s| {
+                                            s.bg(color("--control-secondary-background-hover"))
+                                        })
+                                        .cursor_pointer()
+                                        .flex()
+                                        .items_center()
+                                        .justify_center()
+                                        .gap(px(6.))
+                                        .text_size(px(14.))
+                                        .font_weight(FontWeight(600.))
+                                        .text_color(color("--text-strong"))
+                                        .child(dc_intl::t("uw9zI7"))
+                                        .on_click(cx.listener(move |this, _, _, cx| {
+                                            this.powerup_perk_modal = None;
+                                            this.open_guild_theme_nux(guild_id, cx);
+                                        })),
+                                )
+                            })
+                            .child(
+                                div()
+                                    .id("powerup-theme-toggle")
+                                    .flex_1()
+                                    .h(px(40.))
+                                    .rounded(px(8.))
+                                    .bg(if is_active {
+                                        color("--control-secondary-background-default")
+                                    } else {
+                                        color("--control-primary-background-default")
+                                    })
+                                    .hover(move |s| {
+                                        s.bg(if is_active {
+                                            color("--control-secondary-background-hover")
+                                        } else {
+                                            color("--control-primary-background-hover")
+                                        })
+                                    })
+                                    .cursor_pointer()
+                                    .flex()
+                                    .items_center()
+                                    .justify_center()
+                                    .gap(px(6.))
+                                    .text_size(px(14.))
+                                    .font_weight(FontWeight(600.))
+                                    .text_color(if is_active {
+                                        color("--text-strong")
+                                    } else {
+                                        color("--white")
+                                    })
+                                    .when(!is_active, |b| {
+                                        b.child(icon("boost_gem", 16., "--white"))
+                                    })
+                                    .child(if is_active {
+                                        dc_intl::t("R9GHya")
+                                    } else {
+                                        dc_intl::t("JFfins")
+                                    })
+                                    .on_click(cx.listener(move |this, _, _, cx| {
+                                        if is_active {
+                                            if let Some(m) = this.powerup_perk_modal.as_mut() {
+                                                m.confirm_disable = true;
+                                            }
+                                        } else {
+                                            let _ =
+                                                this.requests.send(toggle_guild_powerup_request(
+                                                    guild_id, sku_id, true,
+                                                ));
+                                            if let Some(m) = this.powerup_perk_modal.as_mut() {
+                                                m.is_active = true;
+                                            }
+                                        }
+                                        cx.notify();
+                                    })),
+                            ),
+                    )
+                });
+            return Some(
+                deferred(
+                    div()
+                        .id("powerup-theme-backdrop")
+                        .occlude()
+                        .absolute()
+                        .inset_0()
+                        .bg(rgba(0x000000b8))
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .on_mouse_down(
+                            gpui::MouseButton::Left,
+                            cx.listener(|this, _, _, cx| {
+                                this.powerup_perk_modal = None;
+                                cx.notify();
+                            }),
+                        )
+                        .child(card),
+                )
+                .with_priority(97)
+                .into_any_element(),
+            );
+        }
+
+        // Layout B — Standard Perks (`850px` horizontal split modal with interactive right demo pane).
+        let right_demo: AnyElement = match sku_id {
+            SKU_SERVER_TAG => {
+                const TAG_BADGES: [(&str, u32); 4] = [
+                    ("⚡", 0xf0b232),
+                    ("🔥", 0xda373c),
+                    ("✦", 0x5865f2),
+                    ("❄", 0x00a8fc),
+                ];
+                let sel = modal.selected_tag_badge.min(TAG_BADGES.len() - 1);
+                let (glyph, tint) = TAG_BADGES[sel];
+                div()
+                    .w(px(460.))
+                    .h_full()
+                    .bg(color("--background-base-lowest"))
+                    .p(px(28.))
+                    .flex()
+                    .flex_col()
+                    .items_center()
+                    .justify_center()
+                    .gap(px(20.))
+                    .child(
+                        div()
+                            .w(px(360.))
+                            .p(px(16.))
+                            .rounded(px(12.))
+                            .bg(color("--background-base-lower"))
+                            .border_1()
+                            .border_color(color("--border-subtle"))
+                            .flex()
+                            .items_start()
+                            .gap(px(12.))
+                            .child(
+                                div()
+                                    .size(px(40.))
+                                    .rounded_full()
+                                    .bg(rgb(0x5865f2))
+                                    .flex()
+                                    .items_center()
+                                    .justify_center()
+                                    .text_size(px(16.))
+                                    .font_weight(FontWeight(700.))
+                                    .text_color(color("--white"))
+                                    .child("R"),
+                            )
+                            .child(
+                                div()
+                                    .flex_1()
+                                    .flex()
+                                    .flex_col()
+                                    .gap(px(4.))
+                                    .child(
+                                        div()
+                                            .flex()
+                                            .items_center()
+                                            .gap(px(6.))
+                                            .child(
+                                                text(15., 20., 600., "--brand-400").child("Roka"),
+                                            )
+                                            .child(
+                                                div()
+                                                    .px(px(6.))
+                                                    .py(px(1.))
+                                                    .rounded(px(4.))
+                                                    .bg(color("--background-surface-higher"))
+                                                    .border_1()
+                                                    .border_color(color("--border-subtle"))
+                                                    .flex()
+                                                    .items_center()
+                                                    .gap(px(4.))
+                                                    .child(
+                                                        div()
+                                                            .text_size(px(11.))
+                                                            .text_color(rgb(tint))
+                                                            .child(glyph),
+                                                    )
+                                                    .child(
+                                                        text(11., 14., 700., "--text-strong")
+                                                            .child("GGEZ"),
+                                                    ),
+                                            ),
+                                    )
+                                    .child(
+                                        text(14., 20., 400., "--text-default")
+                                            .child(dc_intl::t("6OSasb")),
+                                    ),
+                            ),
+                    )
+                    .child(div().flex().items_center().gap(px(10.)).children(
+                        TAG_BADGES.iter().enumerate().map(|(i, &(g, col))| {
+                            let active = i == sel;
+                            div()
+                                .id(SharedString::from(format!("powerup-tag-badge-{i}")))
+                                .size(px(40.))
+                                .rounded(px(10.))
+                                .bg(color("--background-base-lower"))
+                                .border_2()
+                                .border_color(if active {
+                                    color("--brand-500")
+                                } else {
+                                    color("--border-subtle")
+                                })
+                                .cursor_pointer()
+                                .flex()
+                                .items_center()
+                                .justify_center()
+                                .text_size(px(18.))
+                                .text_color(rgb(col))
+                                .child(g)
+                                .on_click(cx.listener(move |this, _, _, cx| {
+                                    if let Some(m) = this.powerup_perk_modal.as_mut() {
+                                        m.selected_tag_badge = i;
+                                    }
+                                    cx.notify();
+                                }))
+                        }),
+                    ))
+                    .into_any_element()
+            }
+            SKU_VANITY_URL => {
+                let code = if modal.vanity_code.is_empty() {
+                    "my-server"
+                } else {
+                    modal.vanity_code.as_str()
+                };
+                div()
+                    .relative()
+                    .w(px(460.))
+                    .h_full()
+                    .bg(color("--background-base-lowest"))
+                    .p(px(28.))
+                    .flex()
+                    .flex_col()
+                    .items_center()
+                    .justify_center()
+                    .gap(px(16.))
+                    .child(
+                        div()
+                            .w(px(381.))
+                            .p(px(16.))
+                            .rounded(px(12.))
+                            .bg(color("--background-base-lower"))
+                            .border_1()
+                            .border_color(color("--border-subtle"))
+                            .flex()
+                            .flex_col()
+                            .gap(px(10.))
+                            .child(
+                                div()
+                                    .flex()
+                                    .items_center()
+                                    .gap(px(8.))
+                                    .child(
+                                        div()
+                                            .size(px(24.))
+                                            .rounded_full()
+                                            .bg(rgb(0x5865f2))
+                                            .flex()
+                                            .items_center()
+                                            .justify_center()
+                                            .child(icon("sb_discord", 14., "--white")),
+                                    )
+                                    .child(
+                                        div()
+                                            .flex()
+                                            .items_center()
+                                            .text_size(px(14.))
+                                            .font_weight(FontWeight(600.))
+                                            .child(
+                                                div()
+                                                    .opacity(0.5)
+                                                    .text_color(color("--text-link"))
+                                                    .child("discord.gg/"),
+                                            )
+                                            .child(
+                                                div()
+                                                    .max_w(px(180.))
+                                                    .overflow_hidden()
+                                                    .text_ellipsis()
+                                                    .text_color(color("--text-link"))
+                                                    .child(code.to_owned()),
+                                            ),
+                                    ),
+                            )
+                            .child(
+                                div()
+                                    .w(px(292.))
+                                    .h(px(64.))
+                                    .rounded(px(8.))
+                                    .bg(color("--background-surface-higher"))
+                                    .p(px(10.))
+                                    .flex()
+                                    .items_center()
+                                    .gap(px(10.))
+                                    .child(
+                                        div()
+                                            .size(px(40.))
+                                            .rounded(px(10.))
+                                            .bg(color("--background-mod-subtle")),
+                                    )
+                                    .child(
+                                        div()
+                                            .flex_1()
+                                            .flex()
+                                            .flex_col()
+                                            .gap(px(6.))
+                                            .child(
+                                                div()
+                                                    .h(px(10.))
+                                                    .w(px(120.))
+                                                    .rounded(px(4.))
+                                                    .bg(color("--background-mod-strong")),
+                                            )
+                                            .child(
+                                                div()
+                                                    .h(px(8.))
+                                                    .w(px(84.))
+                                                    .rounded(px(4.))
+                                                    .bg(color("--background-mod-subtle")),
+                                            ),
+                                    ),
+                            ),
+                    )
+                    .child(
+                        div()
+                            .px(px(16.))
+                            .text_center()
+                            .text_size(px(12.))
+                            .line_height(px(16.))
+                            .text_color(color("--text-muted"))
+                            .child(dc_intl::t("u5iNbz")),
+                    )
+                    .into_any_element()
+            }
+            _ => {
+                const GRADIENTS: [(u32, u32); 5] = [
+                    (0xff6b9d, 0xc084fc),
+                    (0x38bdf8, 0x818cf8),
+                    (0x34d399, 0x22d3ee),
+                    (0xfbbf24, 0xf97316),
+                    (0xf43f5e, 0xfb7185),
+                ];
+                let sel = modal.selected_gradient.min(GRADIENTS.len() - 1);
+                let (c1, c2) = GRADIENTS[sel];
+                div()
+                    .w(px(460.))
+                    .h_full()
+                    .bg(color("--background-base-lowest"))
+                    .p(px(28.))
+                    .flex()
+                    .flex_col()
+                    .items_center()
+                    .justify_center()
+                    .gap(px(20.))
+                    .child(
+                        div()
+                            .w(px(360.))
+                            .p(px(16.))
+                            .rounded(px(12.))
+                            .bg(color("--background-base-lower"))
+                            .border_1()
+                            .border_color(color("--border-subtle"))
+                            .flex()
+                            .items_start()
+                            .gap(px(12.))
+                            .child(
+                                div()
+                                    .size(px(40.))
+                                    .rounded_full()
+                                    .bg(linear_gradient(
+                                        135.,
+                                        linear_color_stop(rgb(c1), 0.),
+                                        linear_color_stop(rgb(c2), 1.),
+                                    ))
+                                    .flex()
+                                    .items_center()
+                                    .justify_center()
+                                    .text_size(px(16.))
+                                    .font_weight(FontWeight(700.))
+                                    .text_color(color("--white"))
+                                    .child("C"),
+                            )
+                            .child(
+                                div()
+                                    .flex_1()
+                                    .flex()
+                                    .flex_col()
+                                    .gap(px(4.))
+                                    .child(
+                                        div()
+                                            .flex()
+                                            .items_center()
+                                            .gap(px(8.))
+                                            .child(
+                                                div()
+                                                    .text_size(px(15.))
+                                                    .font_weight(FontWeight(700.))
+                                                    .text_color(rgb(c1))
+                                                    .child("Cherry"),
+                                            )
+                                            .child(div().h(px(10.)).w(px(36.)).rounded_full().bg(
+                                                linear_gradient(
+                                                    90.,
+                                                    linear_color_stop(rgb(c1), 0.),
+                                                    linear_color_stop(rgb(c2), 1.),
+                                                ),
+                                            )),
+                                    )
+                                    .child(
+                                        text(14., 20., 400., "--text-default")
+                                            .child(dc_intl::t("6OSasb")),
+                                    ),
+                            ),
+                    )
+                    .child(div().flex().items_center().gap(px(10.)).children(
+                        GRADIENTS.iter().enumerate().map(|(i, &(a, b))| {
+                            let active = i == sel;
+                            div()
+                                .id(SharedString::from(format!("powerup-grad-{i}")))
+                                .size(px(32.))
+                                .rounded_full()
+                                .bg(linear_gradient(
+                                    135.,
+                                    linear_color_stop(rgb(a), 0.),
+                                    linear_color_stop(rgb(b), 1.),
+                                ))
+                                .border_2()
+                                .border_color(if active {
+                                    color("--white")
+                                } else {
+                                    rgba(0x00000000)
+                                })
+                                .cursor_pointer()
+                                .on_click(cx.listener(move |this, _, _, cx| {
+                                    if let Some(m) = this.powerup_perk_modal.as_mut() {
+                                        m.selected_gradient = i;
+                                    }
+                                    cx.notify();
+                                }))
+                        }),
+                    ))
+                    .into_any_element()
+            }
+        };
+
+        let left_col = div()
+            .flex_1()
+            .min_w_0()
+            .p(px(28.))
+            .flex()
+            .flex_col()
+            .justify_between()
+            .child(
+                div()
+                    .flex()
+                    .flex_col()
+                    .gap(px(10.))
+                    .child(
+                        div()
+                            .flex()
+                            .items_center()
+                            .gap(px(6.))
+                            .child(icon("boost_gem", 18., "--guild-boosting-pink-refresh"))
+                            .child(text(13., 18., 600., "--text-muted").child(cost_label)),
+                    )
+                    .child(text(22., 28., 700., "--text-strong").child(modal.title.clone()))
+                    .child(text(14., 20., 400., "--text-default").child(modal.description.clone()))
+                    .when(modal.cooldown_days > 0, |col| {
+                        col.child(
+                            div()
+                                .mt(px(4.))
+                                .flex()
+                                .items_start()
+                                .gap(px(6.))
+                                .child(icon("circle_info", 14., "--text-muted"))
+                                .child(text(12., 16., 500., "--text-muted").child(
+                                    dc_intl::format(
+                                        "GMhQcE",
+                                        &[(
+                                            "cooldownDays",
+                                            dc_intl::Arg::Num(f64::from(modal.cooldown_days)),
+                                        )],
+                                    ),
+                                )),
+                        )
+                    })
+                    .when(sku_id == SKU_VANITY_URL, |col| {
+                        col.child(
+                            text(12., 16., 400., "--text-muted")
+                                .child(dc_intl::format("NAFGkH", &[("level", "Level 3".into())])),
+                        )
+                        .child(
+                            div()
+                                .id("powerup-vanity-learn-more")
+                                .cursor_pointer()
+                                .text_size(px(13.))
+                                .font_weight(FontWeight(500.))
+                                .text_color(color("--text-link"))
+                                .child("Learn More")
+                                .on_click(|_, _, cx| cx.open_url(VANITY_HELP_URL)),
+                        )
+                    })
+                    .children(modal.error.as_ref().map(|e| {
+                        text(13., 18., 600., "--text-feedback-critical").child(e.clone())
+                    })),
+            )
+            .when(can_manage, |col| {
+                let enable_text = format!("{} · {cost}", dc_intl::t("JFfins"));
+                let disable_text = format!("{} · {cost}", dc_intl::t("TZsu1U"));
+                let _alt_enable = dc_intl::format(
+                    "ad2Mfj",
+                    &[("boostCount", dc_intl::Arg::Num(f64::from(cost)))],
+                );
+                let _alt_disable = dc_intl::format(
+                    "uzQpQd",
+                    &[("boostCount", dc_intl::Arg::Num(f64::from(cost)))],
+                );
+                let _cant_disable = (dc_intl::t("9oYuvb"), dc_intl::t("WRRYUT"));
+                col.child(
+                    div()
+                        .mt(px(20.))
+                        .flex()
+                        .items_center()
+                        .gap(px(8.))
+                        .child(
+                            div()
+                                .id("powerup-perk-toggle")
+                                .flex_1()
+                                .h(px(40.))
+                                .px(px(14.))
+                                .rounded(px(8.))
+                                .bg(if is_active {
+                                    color("--control-secondary-background-default")
+                                } else {
+                                    color("--control-primary-background-default")
+                                })
+                                .when(!level_activated, |b| {
+                                    b.cursor_pointer().hover(move |s| {
+                                        s.bg(if is_active {
+                                            color("--control-secondary-background-hover")
+                                        } else {
+                                            color("--control-primary-background-hover")
+                                        })
+                                    })
+                                })
+                                .when(level_activated, |b| b.opacity(0.5))
+                                .flex()
+                                .items_center()
+                                .justify_center()
+                                .gap(px(6.))
+                                .text_size(px(14.))
+                                .font_weight(FontWeight(600.))
+                                .text_color(if is_active {
+                                    color("--text-strong")
+                                } else {
+                                    color("--white")
+                                })
+                                .child(icon(
+                                    "boost_gem",
+                                    16.,
+                                    if is_active { "--text-muted" } else { "--white" },
+                                ))
+                                .child(if is_active { disable_text } else { enable_text })
+                                .on_click(cx.listener(move |this, _, _, cx| {
+                                    if level_activated {
+                                        return;
+                                    }
+                                    if is_active {
+                                        if let Some(m) = this.powerup_perk_modal.as_mut() {
+                                            m.confirm_disable = true;
+                                        }
+                                    } else {
+                                        let _ = this.requests.send(toggle_guild_powerup_request(
+                                            guild_id, sku_id, true,
+                                        ));
+                                        if let Some(m) = this.powerup_perk_modal.as_mut() {
+                                            m.is_active = true;
+                                        }
+                                    }
+                                    cx.notify();
+                                })),
+                        )
+                        .when(is_active, |row| {
+                            row.child(
+                                div()
+                                    .id("powerup-perk-configure")
+                                    .h(px(40.))
+                                    .px(px(16.))
+                                    .rounded(px(8.))
+                                    .bg(color("--control-primary-background-default"))
+                                    .hover(|s| s.bg(color("--control-primary-background-hover")))
+                                    .cursor_pointer()
+                                    .flex()
+                                    .items_center()
+                                    .justify_center()
+                                    .text_size(px(14.))
+                                    .font_weight(FontWeight(600.))
+                                    .text_color(color("--white"))
+                                    .child(dc_intl::t("g5Ds69"))
+                                    .on_click(cx.listener(move |this, _, _, cx| {
+                                        this.powerup_perk_modal = None;
+                                        this.open_server_settings(guild_id, cx);
+                                    })),
+                            )
+                        }),
+                )
+            });
+
+        let split_card = div()
+            .id("powerup-perk-split-modal")
+            .occlude()
+            .on_mouse_down(gpui::MouseButton::Left, |_, _, cx| cx.stop_propagation())
+            .relative()
+            .w(px(850.))
+            .h(px(520.))
+            .rounded(px(12.))
+            .overflow_hidden()
+            .border_1()
+            .border_color(color("--border-subtle"))
+            .bg(color("--background-base-low"))
+            .flex()
+            .child(left_col)
+            .child(right_demo)
+            .child(
+                div()
+                    .id("powerup-split-close")
+                    .absolute()
+                    .top(px(14.))
+                    .right(px(14.))
+                    .size(px(28.))
+                    .rounded(px(6.))
+                    .hover(|s| s.bg(color("--background-mod-subtle")))
+                    .cursor_pointer()
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        this.powerup_perk_modal = None;
+                        cx.notify();
+                    }))
+                    .child(icon("close", 16., "--interactive-text-default")),
+            );
+
+        Some(
+            deferred(
+                div()
+                    .id("powerup-perk-backdrop")
+                    .occlude()
+                    .absolute()
+                    .inset_0()
+                    .bg(rgba(0x000000b8))
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .on_mouse_down(
+                        gpui::MouseButton::Left,
+                        cx.listener(|this, _, _, cx| {
+                            this.powerup_perk_modal = None;
+                            cx.notify();
+                        }),
+                    )
+                    .child(split_card),
+            )
+            .with_priority(97)
+            .into_any_element(),
+        )
+    }
 }
 
 #[cfg(test)]

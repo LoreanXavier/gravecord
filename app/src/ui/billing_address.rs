@@ -7,8 +7,13 @@
 
 use super::discover::text;
 use super::{Root, color, icon};
+use crate::net::Request;
 use gpui::{AnyElement, Context, IntoElement, SharedString, deferred, div, prelude::*, px, rgba};
+use serde_json::{Value, json};
 use std::collections::BTreeMap;
+
+/// REST response key for `POST /users/@me/billing/invoice` (module 206049).
+pub(super) const BILLING_INVOICE_KEY: &str = "billing-invoice-pdf";
 
 /// Canadian provinces & territories (`s` of module 718718).
 pub const CA_PROVINCES: &[(&str, &str)] = &[
@@ -291,7 +296,44 @@ pub fn validate_billing_address(
     errors
 }
 
-/// Open modal state for the standalone Billing Address dialog (module 718718).
+/// Download Extended Purchase Receipt modal state (module 206049).
+#[derive(Clone, Debug)]
+pub struct ExtendedReceiptState {
+    pub payment_id: String,
+    pub override_enabled: bool,
+    pub loading: bool,
+    pub error: Option<String>,
+}
+
+/// Builds `POST /users/@me/billing/invoice` (`BILLING_INVOICE_PDF`, module 206049).
+pub fn billing_invoice_request(
+    payment_id: &str,
+    override_address: Option<&BillingAddressValues>,
+) -> Request {
+    let billing_address_override = override_address.map(|a| {
+        json!({
+            "name": a.name,
+            "line_1": a.line1,
+            "line_2": a.line2,
+            "city": a.city,
+            "state": a.state,
+            "postal_code": a.postal_code,
+            "country": a.country,
+        })
+    });
+    Request::Rest {
+        key: Some(BILLING_INVOICE_KEY.to_owned()),
+        method: reqwest::Method::POST,
+        route: "/users/@me/billing/invoice".to_owned(),
+        body: Some(json!({
+            "payment_id": payment_id,
+            "billing_address_override": billing_address_override,
+        })),
+    }
+}
+
+/// Open modal state for the standalone Billing Address dialog (module 718718) and
+/// Download Extended Purchase Receipt modal (module 206049).
 #[derive(Clone, Debug)]
 pub struct BillingAddressModal {
     pub values: BillingAddressValues,
@@ -300,9 +342,37 @@ pub struct BillingAddressModal {
     pub show_errors: bool,
     pub country_open: bool,
     pub state_open: bool,
+    pub receipt: Option<ExtendedReceiptState>,
 }
 
 impl BillingAddressModal {
+    /// Opens the Download Extended Purchase Receipt modal (module 206049) for `payment_id`.
+    pub fn extended_receipt(payment_id: String, country: &str) -> Self {
+        let country = if country.is_empty() { "US" } else { country };
+        let layout = if country == "US" {
+            BillingLayout::SettingsUs
+        } else {
+            BillingLayout::SettingsInternational
+        };
+        Self {
+            values: BillingAddressValues {
+                country: country.to_owned(),
+                ..Default::default()
+            },
+            layout,
+            mode: BillingMode::Create,
+            show_errors: false,
+            country_open: false,
+            state_open: false,
+            receipt: Some(ExtendedReceiptState {
+                payment_id,
+                override_enabled: false,
+                loading: false,
+                error: None,
+            }),
+        }
+    }
+
     pub fn demo(country: &str, with_errors: bool) -> Self {
         let layout = if country == "US" {
             BillingLayout::ModalUsWithName
@@ -357,6 +427,7 @@ impl BillingAddressModal {
             show_errors: with_errors,
             country_open: false,
             state_open: false,
+            receipt: None,
         }
     }
 
@@ -386,9 +457,57 @@ impl BillingAddressModal {
 }
 
 impl Root {
+    /// Handles `POST /users/@me/billing/invoice` responses (module 206049).
+    pub(super) fn handle_billing_invoice_response(&mut self, body: &Value, cx: &mut Context<Self>) {
+        let Some(modal) = self.billing_address_modal.as_mut() else {
+            return;
+        };
+        let Some(receipt) = modal.receipt.as_mut() else {
+            return;
+        };
+        receipt.loading = false;
+        if body.get("code").is_some() || body.is_null() {
+            let msg = body["message"]
+                .as_str()
+                .filter(|s| !s.is_empty())
+                .map(ToOwned::to_owned)
+                .unwrap_or_else(|| dc_intl::t("4eT6rr").to_owned());
+            receipt.error = Some(msg);
+            cx.notify();
+            return;
+        }
+        let payment_id = receipt.payment_id.clone();
+        self.billing_address_modal = None;
+        self.put_app_toast(format!("receipt_{payment_id}.pdf"), true, cx);
+        cx.notify();
+    }
+
     #[cfg(feature = "capture")]
     pub(crate) fn script_billing_address(&mut self, arg: &str, cx: &mut Context<Self>) -> String {
         let trimmed = arg.trim();
+        if matches!(trimmed, "receipt" | "receipt-override" | "receipt-error") {
+            let mut modal =
+                BillingAddressModal::extended_receipt("1398412004921088".to_owned(), "US");
+            if let Some(r) = modal.receipt.as_mut() {
+                if trimmed == "receipt-override" {
+                    r.override_enabled = true;
+                    modal.values = BillingAddressValues {
+                        name: "Alex Mercer".to_owned(),
+                        country: "US".to_owned(),
+                        line1: "444 De Haro St".to_owned(),
+                        line2: "Suite 200".to_owned(),
+                        city: "San Francisco".to_owned(),
+                        state: "CA".to_owned(),
+                        postal_code: "94107".to_owned(),
+                    };
+                } else if trimmed == "receipt-error" {
+                    r.error = Some(dc_intl::t("4eT6rr").to_owned());
+                }
+            }
+            self.billing_address_modal = Some(modal);
+            cx.notify();
+            return format!("billing-address: {trimmed}");
+        }
         let (country, with_errors, layout_override) = match trimmed {
             "ca" => ("CA", false, None),
             "errors" => ("US", true, None),
@@ -585,6 +704,208 @@ impl Root {
             })
             .collect();
 
+        // Module 206049: Download Extended Purchase Receipt modal (`189213` `size="md"` 480px).
+        if let Some(receipt) = modal.receipt.as_ref() {
+            let override_enabled = receipt.override_enabled;
+            let loading = receipt.loading;
+            let error_msg = receipt.error.clone();
+            let address_valid =
+                validate_billing_address(&modal.values, BillingMode::Create).is_empty();
+            let can_download = !loading && (!override_enabled || address_valid);
+
+            let card = div()
+                .id("billing-extended-receipt-modal")
+                .occlude()
+                .on_mouse_down(gpui::MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                .w(px(480.))
+                .rounded(px(12.))
+                .border_1()
+                .border_color(color("--border-subtle"))
+                .bg(color("--background-base-low"))
+                .flex()
+                .flex_col()
+                .child(
+                    div()
+                        .px(px(24.))
+                        .pt(px(20.))
+                        .pb(px(12.))
+                        .flex()
+                        .items_center()
+                        .justify_between()
+                        .child(text(18., 22., 700., "--text-strong").child(dc_intl::t("onRIxS")))
+                        .child(
+                            div()
+                                .id("billing-receipt-close")
+                                .size(px(28.))
+                                .rounded(px(6.))
+                                .hover(|s| s.bg(color("--background-mod-subtle")))
+                                .cursor_pointer()
+                                .flex()
+                                .items_center()
+                                .justify_center()
+                                .on_click(cx.listener(|this, _, _, cx| {
+                                    this.billing_address_modal = None;
+                                    cx.notify();
+                                }))
+                                .child(icon("close", 16., "--interactive-text-default")),
+                        ),
+                )
+                .child(
+                    div()
+                        .px(px(24.))
+                        .pb(px(18.))
+                        .flex()
+                        .flex_col()
+                        .gap(px(14.))
+                        .child(
+                            div()
+                                .id("billing-receipt-override-toggle")
+                                .cursor_pointer()
+                                .flex()
+                                .items_start()
+                                .justify_between()
+                                .gap(px(12.))
+                                .on_click(cx.listener(|this, _, _, cx| {
+                                    if let Some(m) = this.billing_address_modal.as_mut()
+                                        && let Some(r) = m.receipt.as_mut()
+                                    {
+                                        r.override_enabled = !r.override_enabled;
+                                        r.error = None;
+                                    }
+                                    cx.notify();
+                                }))
+                                .child(
+                                    div()
+                                        .flex_1()
+                                        .min_w_0()
+                                        .flex()
+                                        .flex_col()
+                                        .gap(px(4.))
+                                        .child(
+                                            text(14., 18., 600., "--text-strong")
+                                                .child(dc_intl::t("aJg+oS")),
+                                        )
+                                        .child(
+                                            text(13., 18., 400., "--text-muted")
+                                                .child(dc_intl::t("2p1XJW")),
+                                        ),
+                                )
+                                .child(
+                                    div()
+                                        .flex_none()
+                                        .mt(px(2.))
+                                        .w(px(40.))
+                                        .h(px(24.))
+                                        .rounded_full()
+                                        .p(px(3.))
+                                        .bg(if override_enabled {
+                                            color("--control-primary-background-default")
+                                        } else {
+                                            color("--background-mod-strong")
+                                        })
+                                        .flex()
+                                        .items_center()
+                                        .when(override_enabled, |d| d.justify_end())
+                                        .child(
+                                            div().size(px(18.)).rounded_full().bg(color("--white")),
+                                        ),
+                                ),
+                        )
+                        .when(override_enabled, |body| {
+                            body.child(div().flex().flex_col().gap(px(12.)).children(form_rows))
+                        })
+                        .children(error_msg.map(|msg| {
+                            div()
+                                .p(px(10.))
+                                .rounded(px(8.))
+                                .border_1()
+                                .border_color(color("--status-danger"))
+                                .bg(rgba(0xda373c1a))
+                                .flex()
+                                .items_center()
+                                .gap(px(8.))
+                                .child(icon("circle_x_small", 16., "--status-danger"))
+                                .child(text(13., 18., 500., "--text-feedback-critical").child(msg))
+                        })),
+                )
+                .child(
+                    div()
+                        .px(px(24.))
+                        .py(px(14.))
+                        .border_t_1()
+                        .border_color(color("--border-subtle"))
+                        .bg(color("--background-base-lower"))
+                        .rounded_b(px(12.))
+                        .flex()
+                        .items_center()
+                        .justify_end()
+                        .child(
+                            div()
+                                .id("billing-receipt-download")
+                                .h(px(38.))
+                                .px(px(18.))
+                                .rounded(px(8.))
+                                .bg(color("--control-primary-background-default"))
+                                .when(can_download, |d| {
+                                    d.cursor_pointer().hover(|s| {
+                                        s.bg(color("--control-primary-background-hover"))
+                                    })
+                                })
+                                .when(!can_download, |d| d.opacity(0.5))
+                                .flex()
+                                .items_center()
+                                .on_click(cx.listener(move |this, _, _, cx| {
+                                    if !can_download {
+                                        if let Some(m) = this.billing_address_modal.as_mut() {
+                                            m.show_errors = true;
+                                        }
+                                        cx.notify();
+                                        return;
+                                    }
+                                    let req = this.billing_address_modal.as_mut().and_then(|m| {
+                                        let r = m.receipt.as_mut()?;
+                                        r.loading = true;
+                                        r.error = None;
+                                        let addr = r.override_enabled.then_some(&m.values);
+                                        Some(billing_invoice_request(&r.payment_id, addr))
+                                    });
+                                    if let Some(req) = req {
+                                        let _ = this.requests.send(req);
+                                    }
+                                    cx.notify();
+                                }))
+                                .child(
+                                    text(14., 18., 600., "--control-primary-text-default")
+                                        .child(dc_intl::t("uqZjLi")),
+                                ),
+                        ),
+                );
+
+            return Some(
+                deferred(
+                    div()
+                        .id("billing-receipt-backdrop")
+                        .occlude()
+                        .absolute()
+                        .inset_0()
+                        .bg(rgba(0x000000b3))
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .on_mouse_down(
+                            gpui::MouseButton::Left,
+                            cx.listener(|this, _, _, cx| {
+                                this.billing_address_modal = None;
+                                cx.notify();
+                            }),
+                        )
+                        .child(card),
+                )
+                .with_priority(3)
+                .into_any_element(),
+            );
+        }
+
         let card = div()
             .id("billing-address-modal")
             .occlude()
@@ -752,5 +1073,33 @@ mod tests {
             ..Default::default()
         };
         assert!(validate_billing_address(&ie, BillingMode::Create).is_empty());
+    }
+
+    #[test]
+    fn extended_receipt_request_encodes_optional_billing_override() {
+        let Request::Rest { route, body, .. } = billing_invoice_request("pay-99", None) else {
+            panic!("expected rest");
+        };
+        assert_eq!(route, "/users/@me/billing/invoice");
+        let b = body.unwrap();
+        assert_eq!(b["payment_id"], "pay-99");
+        assert!(b["billing_address_override"].is_null());
+
+        let vals = BillingAddressValues {
+            name: "Alex".to_owned(),
+            country: "US".to_owned(),
+            line1: "1 Main St".to_owned(),
+            line2: String::new(),
+            city: "SF".to_owned(),
+            state: "CA".to_owned(),
+            postal_code: "94107".to_owned(),
+        };
+        let Request::Rest { body, .. } = billing_invoice_request("pay-99", Some(&vals)) else {
+            panic!("expected rest");
+        };
+        let ov = &body.unwrap()["billing_address_override"];
+        assert_eq!(ov["line_1"], "1 Main St");
+        assert_eq!(ov["postal_code"], "94107");
+        assert_eq!(ov["country"], "US");
     }
 }

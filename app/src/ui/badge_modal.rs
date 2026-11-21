@@ -428,6 +428,13 @@ impl Root {
                         let tip = Tip::body(self.badge_tip(user, &id, &description), Side::Top)
                             .after(300);
                         let username = name.clone();
+                        let badge_num = catalog_id(&id);
+                        let is_own = self
+                            .stores
+                            .current_user
+                            .as_ref()
+                            .is_some_and(|me| me.id == user);
+                        let badge_label = description.clone();
                         let target = div()
                             .id(SharedString::from(format!("{place}-badge-{user}-{index}")))
                             .size(px(20.))
@@ -437,11 +444,26 @@ impl Root {
                                 this.open_badge_modal(
                                     Some(user),
                                     username.clone(),
-                                    catalog_id(&id),
+                                    badge_num,
                                     false,
                                     cx,
                                 );
-                            }));
+                            }))
+                            .when(is_own, |el| {
+                                el.on_mouse_down(
+                                    gpui::MouseButton::Right,
+                                    cx.listener(move |this, ev: &gpui::MouseDownEvent, _, cx| {
+                                        cx.stop_propagation();
+                                        let bid = badge_num.unwrap_or(index as u64 + 1);
+                                        this.open_badge_customization_menu(
+                                            bid,
+                                            badge_label.clone(),
+                                            ev.position,
+                                            cx,
+                                        );
+                                    }),
+                                )
+                            });
                         Some(
                             self.with_tip(
                                 format!("{place}-badge-tip-{user}-{index}"),

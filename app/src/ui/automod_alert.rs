@@ -151,6 +151,48 @@ pub(super) fn false_alarm_request(guild: Id, message: Id, reason: &str) -> crate
     }
 }
 
+/// `kZ` of module 233444 (used by `485304.js`): whether an AutoMod alert message has already been
+/// marked completed (`alert_actions_execution.actions` contains `"1"`, `SET_COMPLETED = 1`).
+pub(super) fn alert_is_completed(message: &Message) -> bool {
+    let Some(raw) = message.embeds.first().and_then(|embed| {
+        embed
+            .fields
+            .iter()
+            .find(|f| f.name == "alert_actions_execution")
+            .map(|f| f.value.as_str())
+    }) else {
+        return false;
+    };
+    let Ok(parsed) = serde_json::from_str::<serde_json::Value>(raw) else {
+        return false;
+    };
+    parsed
+        .get("actions")
+        .and_then(serde_json::Value::as_object)
+        .is_some_and(|map| map.contains_key("1"))
+}
+
+/// `E5` of module 179832 (used by `485304.js`): `POST /guilds/{guildId}/auto-moderation/alert-action`
+/// with `alert_action_type = 1` (`SET_COMPLETED`) or `2` (`UNSET_COMPLETED`).
+pub(super) fn alert_action_request(
+    guild: Id,
+    channel: Id,
+    message: Id,
+    currently_completed: bool,
+) -> crate::net::Request {
+    let action_type: u8 = if currently_completed { 2 } else { 1 };
+    crate::net::Request::Rest {
+        key: Some(format!("automod-alert-action:{message}")),
+        method: reqwest::Method::POST,
+        route: format!("/guilds/{guild}/auto-moderation/alert-action"),
+        body: Some(serde_json::json!({
+            "message_id": message.to_string(),
+            "channel_id": channel.to_string(),
+            "alert_action_type": action_type,
+        })),
+    }
+}
+
 /// `fromNow` of moment (its `en` relative time words and default thresholds: 45 s, 45 min, 22 h, 26 d, 11 months).
 fn from_now(at: chrono::DateTime<chrono::Utc>, now: chrono::DateTime<chrono::Utc>) -> String {
     let seconds = (now - at).num_seconds().max(0);
@@ -363,11 +405,34 @@ impl Root {
                     .children(content),
             )
             .children(footer);
+        let alert_msg_id = message.id;
+        let alert_channel = message.channel_id;
+        let alert_guild = self.guild.unwrap_or(0);
+        let alert_author = message.author.id;
         div()
             .relative()
             .pl(px(72.))
             .pr(px(48.))
             .py(px(2.))
+            .on_mouse_down(
+                gpui::MouseButton::Right,
+                cx.listener(move |this, ev: &gpui::MouseDownEvent, _, cx| {
+                    if alert_guild != 0 {
+                        cx.stop_propagation();
+                        this.open_context_menu(
+                            super::context_menu::Target::ModerationUser {
+                                user: alert_author,
+                                guild: alert_guild,
+                                channel: Some(alert_channel),
+                                alert_id: Some(alert_msg_id),
+                                show_transfer_ownership: true,
+                            },
+                            ev.position,
+                            cx,
+                        );
+                    }
+                }),
+            )
             .child(
                 div()
                     .id(SharedString::from(hover_key.clone()))
@@ -481,5 +546,45 @@ mod tests {
             dc_intl::t(RESOLUTIONS[0].1),
             "Increased activity from normal members. No action needed."
         );
+    }
+
+    #[test]
+    fn automod_alert_completed_and_action_request_follow_485304() {
+        let base = Message::from_value(&serde_json::json!({
+            "id": "1",
+            "channel_id": "2",
+            "author": { "id": "3", "username": "automod" },
+            "timestamp": "2026-11-21T00:00:00.000Z",
+            "content": "",
+            "embeds": []
+        }))
+        .unwrap();
+        assert!(!alert_is_completed(&base));
+        let done = Message::from_value(&serde_json::json!({
+            "id": "1",
+            "channel_id": "2",
+            "author": { "id": "3", "username": "automod" },
+            "timestamp": "2026-11-21T00:00:00.000Z",
+            "content": "",
+            "embeds": [{
+                "type": "auto_moderation_notification",
+                "fields": [{
+                    "name": "alert_actions_execution",
+                    "value": "{\"actions\":{\"1\":{\"completed_at\":\"2026-11-21T00:00:00Z\"}}}"
+                }]
+            }]
+        }))
+        .unwrap();
+        assert!(alert_is_completed(&done));
+        let crate::net::Request::Rest { route, body, .. } = alert_action_request(10, 20, 30, true)
+        else {
+            panic!("expected REST request");
+        };
+        assert_eq!(route, "/guilds/10/auto-moderation/alert-action");
+        assert_eq!(body.unwrap()["alert_action_type"], 2);
+        let crate::net::Request::Rest { body, .. } = alert_action_request(10, 20, 30, false) else {
+            panic!("expected REST request");
+        };
+        assert_eq!(body.unwrap()["alert_action_type"], 1);
     }
 }

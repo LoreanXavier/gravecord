@@ -401,7 +401,39 @@ pub(crate) enum ReviewPlanKind {
     Boost,
 }
 
-/// Review step state driving module 809029's exact CTA label priority & expressive trial button.
+/// Payment restriction warning kind in `335056` (`Tdb5qb` / `6d44F5`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[allow(dead_code)]
+pub(crate) enum PaymentRestriction {
+    SelectPaymentMethod,
+    AddNewPaymentMethod,
+}
+
+/// REST request builder for `POST /users/@me/billing/subscriptions/{id}/preview` (module 335056).
+#[allow(dead_code)]
+pub(crate) fn subscription_preview_request(
+    subscription_id: &str,
+    plan_id: u64,
+    payment_source_id: Option<&str>,
+    currency: &str,
+    renewal: bool,
+    apply_entitlements: bool,
+) -> crate::net::Request {
+    crate::net::Request::Rest {
+        key: Some(format!("nitro-sub-preview:{subscription_id}")),
+        method: reqwest::Method::POST,
+        route: format!("/users/@me/billing/subscriptions/{subscription_id}/preview"),
+        body: Some(serde_json::json!({
+            "items": [{ "plan_id": plan_id.to_string(), "quantity": 1 }],
+            "payment_source_id": payment_source_id,
+            "currency": currency,
+            "renewal": renewal,
+            "apply_entitlements": apply_entitlements,
+        })),
+    }
+}
+
+/// Review step state driving module 809029's CTA priority and module 335056's order summary.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub(crate) struct ReviewContext {
     pub is_recurring_gift: bool,
@@ -414,9 +446,25 @@ pub(crate) struct ReviewContext {
     pub is_trial_eligible: bool,
     pub show_back: bool,
     pub plan_kind: ReviewPlanKind,
+    /// Module 335056: existing open invoice forces immediate billing.
+    pub has_open_invoice: bool,
+    /// Module 335056: optional payment gateway restriction warning (`Tdb5qb` / `6d44F5`).
+    pub payment_restriction: Option<PaymentRestriction>,
+    /// Module 335056: non-USD currency appends trailing `*` to total (`24659.U5`).
+    pub non_usd_currency: bool,
 }
 
 impl ReviewContext {
+    /// Module 335056 (`isInvoiceBilledImmediately`): true for open invoices, past due, paused
+    /// resume, immediate upgrades, or new subscriptions; false for deferred downgrades.
+    pub(crate) fn is_billed_immediately(&self) -> bool {
+        self.has_open_invoice
+            || self.is_past_due
+            || self.is_paused_resume
+            || self.is_upgrade
+            || !self.has_active_sub
+    }
+
     /// Exact CTA label decision tree of module 809029 (`YScQSF`, `ouo4FK`, `LvcUx4`, `cRCCJ3`,
     /// `zpi5pg`, `IJI7yk`, `VPuTc5`, and `722178.ff`).
     pub(crate) fn cta_label(&self) -> String {
@@ -608,6 +656,12 @@ pub(super) const HANDOFF_KEY: &str = "nitro:handoff";
 impl Root {
     /// "Subscribe" and "Gift Nitro": Select Plan, or Send a Gift.
     pub(super) fn open_purchase(&mut self, gift: bool, cx: &mut Context<Self>) {
+        // Module 661925: pre-checkout gate when account email is unverified.
+        #[cfg(not(feature = "capture"))]
+        if !self.stores.account.verified {
+            self.open_verify_email_before_purchase(cx);
+            return;
+        }
         self.request_nitro();
         let recipient = gift && self.current_dm().is_some_and(|dm| dm.kind == 1);
         let recipient_user = self
@@ -2780,19 +2834,31 @@ impl Root {
                 cx.notify();
                 "nitro-offer-header: progress-basic".to_owned()
             }
-            mode @ ("review-upgrade" | "review-past-due" | "review-trial" | "review-gift") => {
+            mode @ ("review-upgrade" | "review-downgrade" | "review-paused" | "review-past-due"
+            | "review-trial" | "review-gift") => {
                 p.step = Step::Review;
                 p.review = ReviewContext {
                     is_recurring_gift: false,
                     is_gift: mode == "review-gift",
                     is_past_due: mode == "review-past-due",
                     is_prepaid: false,
-                    has_active_sub: mode == "review-upgrade",
-                    is_paused_resume: false,
+                    has_active_sub: matches!(
+                        mode,
+                        "review-upgrade" | "review-downgrade" | "review-paused" | "review-past-due"
+                    ),
+                    is_paused_resume: mode == "review-paused",
                     is_upgrade: mode == "review-upgrade",
                     is_trial_eligible: mode == "review-trial",
-                    show_back: true,
-                    plan_kind: ReviewPlanKind::NitroYearly,
+                    show_back: mode != "review-past-due",
+                    plan_kind: if mode == "review-downgrade" {
+                        ReviewPlanKind::BasicMonthly
+                    } else {
+                        ReviewPlanKind::NitroYearly
+                    },
+                    has_open_invoice: mode == "review-past-due",
+                    payment_restriction: (mode == "review-downgrade")
+                        .then_some(PaymentRestriction::SelectPaymentMethod),
+                    non_usd_currency: mode == "review-downgrade",
                 };
                 if mode == "review-trial" {
                     p.offer_badge = Some(PurchaseOfferBadge::FreeTrial);
@@ -2971,6 +3037,74 @@ impl Root {
             ReviewPlanKind::NitroGroup => dc_intl::t("aFBQ3d"),
             _ => dc_intl::t("lG6a5x"),
         };
+        let billed_now = review.is_billed_immediately();
+        let total_label = if billed_now {
+            dc_intl::t("R0cZsM")
+        } else {
+            dc_intl::t("11g67A")
+        };
+        let raw_amount = if review.is_trial_eligible {
+            "$0.00"
+        } else if matches!(
+            review.plan_kind,
+            ReviewPlanKind::BasicMonthly | ReviewPlanKind::BasicYearly
+        ) {
+            "$2.99"
+        } else {
+            "$9.99"
+        };
+        let formatted_total = if review.non_usd_currency {
+            format!("{raw_amount}*")
+        } else {
+            raw_amount.to_owned()
+        };
+        // Module 335056: plain switch notice (`spIYou` paused resume, `+y0Tjy` deferred downgrade).
+        let switch_notice: Option<gpui::StyledText> = if review.is_past_due {
+            None
+        } else if review.is_paused_resume {
+            Some(gpui::StyledText::new(dc_intl::t("spIYou").to_owned()))
+        } else if review.has_active_sub && !review.is_upgrade {
+            let runs = dc_intl::format_runs(
+                "+y0Tjy",
+                &[(
+                    "renewalDate",
+                    dc_intl::Arg::Str(std::borrow::Cow::Borrowed("Dec 2, 2026")),
+                )],
+            );
+            let mut text = String::new();
+            let mut hl = Vec::new();
+            for (chunk, hook) in runs {
+                let start = text.len();
+                text.push_str(&chunk);
+                if hook.as_deref() == Some("$b") && start < text.len() {
+                    hl.push((
+                        start..text.len(),
+                        gpui::HighlightStyle {
+                            font_weight: Some(FontWeight(700.)),
+                            color: Some(color("--text-strong").into()),
+                            ..gpui::HighlightStyle::default()
+                        },
+                    ));
+                }
+            }
+            Some(gpui::StyledText::new(text).with_highlights(hl))
+        } else {
+            None
+        };
+        let restriction_msg = review.payment_restriction.map(|r| match r {
+            PaymentRestriction::SelectPaymentMethod => dc_intl::t("Tdb5qb"),
+            PaymentRestriction::AddNewPaymentMethod => dc_intl::t("6d44F5"),
+        });
+        let payment_label = self
+            .nitro
+            .sources
+            .as_ref()
+            .and_then(|s| s.as_array())
+            .and_then(|arr| arr.first())
+            .and_then(|src| src["last_4"].as_str())
+            .map(|last4| format!("Visa •••• {last4}"))
+            .unwrap_or_else(|| "Visa •••• 4242".to_owned());
+
         let body = div()
             .px(px(24.))
             .pt(px(16.))
@@ -2979,6 +3113,15 @@ impl Root {
             .flex_col()
             .gap(px(12.))
             .child(Self::nitro_heading(plan_summary, 24., 24., true))
+            .when_some(switch_notice, |col, notice| {
+                col.child(
+                    div()
+                        .text_size(px(13.))
+                        .line_height(px(18.))
+                        .text_color(color("--text-muted"))
+                        .child(notice),
+                )
+            })
             .when(review.is_past_due, |col| {
                 col.child(
                     div()
@@ -2993,33 +3136,114 @@ impl Root {
                         .child(dc_intl::t("yrk+N6")),
                 )
             })
+            .when_some(restriction_msg, |col, msg| {
+                col.child(
+                    div()
+                        .p(px(12.))
+                        .rounded(px(8.))
+                        .bg(rgba(0xf0b2321a))
+                        .border_1()
+                        .border_color(color("--status-warning"))
+                        .text_size(px(13.))
+                        .line_height(px(18.))
+                        .text_color(color("--text-default"))
+                        .child(msg),
+                )
+            })
             .child(
+                // Module 335056: payment method selector (`paymentMethodContainer_v15Jql`, `mmDvV+`, `hjsn+s`).
                 div()
+                    .mt(px(4.))
+                    .flex()
+                    .flex_col()
+                    .gap(px(6.))
+                    .child(
+                        div()
+                            .text_size(px(12.))
+                            .font_weight(FontWeight(700.))
+                            .text_color(color("--text-muted"))
+                            .child(dc_intl::t("mmDvV+")),
+                    )
+                    .child(
+                        div()
+                            .px(px(12.))
+                            .py(px(10.))
+                            .rounded(px(8.))
+                            .bg(color("--background-mod-subtle"))
+                            .flex()
+                            .items_center()
+                            .justify_between()
+                            .child(
+                                div()
+                                    .text_size(px(14.))
+                                    .font_weight(FontWeight(500.))
+                                    .text_color(color("--text-strong"))
+                                    .child(payment_label),
+                            )
+                            .when(review.is_past_due, |row| {
+                                row.child(
+                                    div()
+                                        .px(px(8.))
+                                        .py(px(2.))
+                                        .rounded(px(4.))
+                                        .bg(color("--background-surface-higher"))
+                                        .text_size(px(11.))
+                                        .font_weight(FontWeight(600.))
+                                        .text_color(color("--text-muted"))
+                                        .child(dc_intl::t("hjsn+s")),
+                                )
+                            }),
+                    ),
+            )
+            .child(
+                // Module 335056: order summary box (`invoiceSummaryContainer_v15Jql`, `eoXh7B`, `R0cZsM`/`11g67A`).
+                div()
+                    .mt(px(4.))
                     .p(px(14.))
                     .rounded(px(8.))
                     .bg(color("--background-base-lower"))
                     .border_1()
                     .border_color(color("--border-subtle"))
                     .flex()
-                    .items_center()
-                    .justify_between()
+                    .flex_col()
+                    .gap(px(10.))
                     .child(
                         div()
-                            .text_size(px(14.))
-                            .font_weight(FontWeight(600.))
-                            .text_color(color("--text-strong"))
+                            .text_size(px(12.))
+                            .font_weight(FontWeight(700.))
+                            .text_color(color("--text-muted"))
                             .child(dc_intl::t("eoXh7B")),
                     )
                     .child(
                         div()
-                            .text_size(px(14.))
-                            .font_weight(FontWeight(700.))
-                            .text_color(color("--text-strong"))
-                            .child(if review.is_trial_eligible {
-                                "$0.00"
-                            } else {
-                                "$9.99"
-                            }),
+                            .flex()
+                            .items_center()
+                            .justify_between()
+                            .text_size(px(13.))
+                            .text_color(color("--text-default"))
+                            .child(plan_summary)
+                            .child(raw_amount),
+                    )
+                    .child(div().h(px(1.)).bg(color("--border-subtle")))
+                    .child(
+                        div()
+                            .flex()
+                            .items_center()
+                            .justify_between()
+                            .child(
+                                div()
+                                    .text_size(px(14.))
+                                    .font_weight(FontWeight(600.))
+                                    .text_color(color("--text-strong"))
+                                    .child(total_label),
+                            )
+                            .child(
+                                div()
+                                    .text_size(px(16.))
+                                    .font_weight(FontWeight(700.))
+                                    .text_color(color("--text-strong"))
+                                    .child(formatted_total),
+                            ),
                     ),
             );
         let primary_btn = div()

@@ -88,10 +88,24 @@ pub fn guild_pincode_request(guild_id: Id, resend: bool) -> Request {
     }
 }
 
-/// Returns whether the Transfer Ownership menu item should be offered (`485304.js`).
+/// Returns whether the Transfer Ownership menu item should be offered (`485304.js`, `260509.ok`).
 #[allow(dead_code)]
 pub fn can_transfer_ownership(guild_owner_id: Option<Id>, me_id: Id, target: &User) -> bool {
-    guild_owner_id == Some(me_id) && target.id != me_id && !target.bot
+    can_transfer_ownership_with_mfa(guild_owner_id, 0, me_id, true, target)
+}
+
+/// Exact `260509.ok(guild, currentUser)` check: requires elevated MFA if `guild_mfa_level == 1`.
+pub fn can_transfer_ownership_with_mfa(
+    guild_owner_id: Option<Id>,
+    guild_mfa_level: u64,
+    me_id: Id,
+    me_mfa_enabled: bool,
+    target: &User,
+) -> bool {
+    (me_mfa_enabled || guild_mfa_level != 1)
+        && guild_owner_id == Some(me_id)
+        && target.id != me_id
+        && !target.bot
 }
 
 fn format_plain(key: &str, args: &[(&str, Arg<'_>)]) -> String {

@@ -389,6 +389,10 @@ pub struct Pending {
     pub primary_guild_id: Option<Option<Id>>,
     /// Saveable Board widgets (`PUT /users/@me/widgets`): `None` untouched, `Some(list)` changed.
     pub widgets: Option<Vec<UserWidget>>,
+    /// Badge customization display order (`PATCH /users/@me/badges/settings`, module 842810 / 927071).
+    pub badge_display_order: Option<Vec<u64>>,
+    /// Badge customization hidden badge IDs (`PATCH /users/@me/badges/settings`, module 842810 / 927071).
+    pub badge_hidden_badges: Option<Vec<u64>>,
 }
 
 /// The collectible sku ids the profile already carries, so a change of one kind keeps the other
@@ -557,7 +561,27 @@ impl Pending {
         })
     }
 
-    /// Every request a Save sends, in the order the bundle sends them: account or member, profile, clan, widgets.
+    /// `PATCH /users/@me/badges/settings` (`USER_BADGE_SETTINGS`, module 842810 / 927071).
+    pub fn badge_settings_write(&self) -> Option<Write> {
+        let mut body = serde_json::Map::new();
+        if let Some(order) = self.badge_display_order.as_ref() {
+            body.insert("display_order".to_owned(), json!(order));
+        }
+        if let Some(hidden) = self.badge_hidden_badges.as_ref() {
+            body.insert("hidden_badges".to_owned(), json!(hidden));
+        }
+        if body.is_empty() {
+            return None;
+        }
+        Some(Write {
+            method: Method::PATCH,
+            route: "/users/@me/badges/settings".to_owned(),
+            body: Value::Object(body),
+        })
+    }
+
+    /// Every request a Save sends, in the order the bundle sends them: account or member, profile, clan, widgets,
+    /// badge settings.
     pub fn writes(&self, equipped: &Equipped) -> Vec<Write> {
         [
             self.account_write(),
@@ -565,6 +589,7 @@ impl Pending {
             self.profile_write(equipped),
             self.clan_write(),
             self.widgets_write(),
+            self.badge_settings_write(),
         ]
         .into_iter()
         .flatten()

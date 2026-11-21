@@ -90,7 +90,7 @@ pub(super) struct Saved {
 pub(super) struct Open {
     /// `None` edits the main profile; `Some` a server profile.
     guild: Option<Id>,
-    pending: Pending,
+    pub(in crate::ui) pending: Pending,
     saved: Saved,
     mode: Mode,
     tab: Tab,

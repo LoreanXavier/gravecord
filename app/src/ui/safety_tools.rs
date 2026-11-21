@@ -29,8 +29,6 @@ const SAFETY_ALERTS_ARTICLE: &str = "https://support.discord.com/hc/en-us/articl
 const CRISIS_TEXT_LINE_URL: &str = "https://www.crisistextline.org/";
 const NO_FILTR_URL: &str = "https://nofiltr.org/resources-hub/";
 const THROUGHLINE_URL: &str = "https://discord.findahelpline.com/";
-/// Lofi beats video for "Vibe with Wumpus" (module 674272).
-const VIBE_WITH_WUMPUS_URL: &str = "https://discord.com/safety";
 
 /// Slides of `SafetyToolsModal` (`G` of module 556127).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -38,6 +36,10 @@ pub(crate) enum Slide {
     Actions,
     SafetyTips,
     AboutSafetyAlerts,
+    /// Module 999235: Vibing Wumpus breathing/safety modal (`L4ifkZ`, `GkCsLr`, `8eKkaf`, `RscU7I`, `ZcgDJX`).
+    VibingWumpus {
+        paused: bool,
+    },
 }
 
 /// Regional support helpline variant (`426190 N`/`z` in module 556127).
@@ -169,7 +171,11 @@ impl Root {
             .first()
             .and_then(|ch| self.stores.dm_recipient(ch).map(|u| (ch.id, u.id)))
             .unwrap_or((1, 2));
-        let slide = if arg.contains("tips") {
+        let slide = if arg.contains("vibe-paused") {
+            Slide::VibingWumpus { paused: true }
+        } else if arg.contains("vibe") {
+            Slide::VibingWumpus { paused: false }
+        } else if arg.contains("tips") {
             Slide::SafetyTips
         } else if arg.contains("about") {
             Slide::AboutSafetyAlerts
@@ -335,6 +341,188 @@ impl Root {
     /// Renders `SafetyToolsModal` (module 556127).
     pub(super) fn safety_tools_layer(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
         let modal = self.safety_tools.as_ref()?;
+        // Module 999235 / 674272: Vibing Wumpus breathing safety modal (`L4ifkZ`, `GkCsLr`, `8eKkaf`, `RscU7I`, `ZcgDJX`).
+        if let Slide::VibingWumpus { paused } = modal.slide {
+            // Module 999235: Vibing Wumpus breathing modal (`L4ifkZ`, `GkCsLr`, `8eKkaf`,
+            // `RscU7I` Play / `ZcgDJX` Pause; `480px`, `blue` gradient header).
+            let card = div()
+                .id("vibing-wumpus-modal")
+                .w(px(480.))
+                .rounded(px(16.))
+                .overflow_hidden()
+                .border_1()
+                .border_color(color("--border-subtle"))
+                .bg(color("--background-surface-high"))
+                .shadow_xl()
+                .flex()
+                .flex_col()
+                .on_click(|_, _, cx| cx.stop_propagation())
+                .child(
+                    div()
+                        .relative()
+                        .w_full()
+                        .h(px(200.))
+                        .bg(linear_gradient(
+                            135.,
+                            linear_color_stop(rgba(0x3a64e8ff), 0.),
+                            linear_color_stop(rgba(0x1b2654ff), 1.),
+                        ))
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .child(
+                            div()
+                                .size(px(124.))
+                                .rounded_full()
+                                .bg(rgba(0xffffff18))
+                                .border_2()
+                                .border_color(if paused {
+                                    rgba(0xffffff33)
+                                } else {
+                                    rgba(0x94b8ffff)
+                                })
+                                .flex()
+                                .items_center()
+                                .justify_center()
+                                .child(
+                                    div()
+                                        .size(px(76.))
+                                        .rounded_full()
+                                        .bg(rgba(0x5865f266))
+                                        .flex()
+                                        .items_center()
+                                        .justify_center()
+                                        .child(icon("home_friends", 36., "--white")),
+                                ),
+                        )
+                        .child(
+                            div()
+                                .id("vibing-wumpus-close")
+                                .absolute()
+                                .top(px(12.))
+                                .right(px(12.))
+                                .size(px(30.))
+                                .rounded_full()
+                                .bg(rgba(0x00000044))
+                                .hover(|s| s.bg(rgba(0x00000066)))
+                                .cursor_pointer()
+                                .flex()
+                                .items_center()
+                                .justify_center()
+                                .child(icon("modal_close", 16., "--white"))
+                                .on_click(cx.listener(|this, _, _, cx| {
+                                    this.close_safety_tools(cx);
+                                })),
+                        ),
+                )
+                .child(
+                    div()
+                        .p(px(28.))
+                        .flex()
+                        .flex_col()
+                        .items_center()
+                        .gap(px(10.))
+                        .child(
+                            div()
+                                .text_center()
+                                .text_size(px(22.))
+                                .line_height(px(28.))
+                                .font_weight(FontWeight(700.))
+                                .text_color(color("--text-strong"))
+                                .child(dc_intl::t("L4ifkZ")),
+                        )
+                        .child(
+                            div()
+                                .text_center()
+                                .text_size(px(14.))
+                                .line_height(px(20.))
+                                .text_color(color("--text-muted"))
+                                .child(dc_intl::t("GkCsLr")),
+                        )
+                        .child(
+                            div()
+                                .mt(px(16.))
+                                .w_full()
+                                .flex()
+                                .items_center()
+                                .gap(px(10.))
+                                .child(
+                                    div()
+                                        .id("vibing-wumpus-back")
+                                        .flex_1()
+                                        .h(px(40.))
+                                        .rounded(px(8.))
+                                        .bg(color("--control-secondary-background-default"))
+                                        .hover(|s| {
+                                            s.bg(color("--control-secondary-background-hover"))
+                                        })
+                                        .cursor_pointer()
+                                        .flex()
+                                        .items_center()
+                                        .justify_center()
+                                        .text_size(px(14.))
+                                        .font_weight(FontWeight(600.))
+                                        .text_color(color("--text-strong"))
+                                        .child(dc_intl::t("8eKkaf"))
+                                        .on_click(cx.listener(|this, _, _, cx| {
+                                            this.close_safety_tools(cx);
+                                        })),
+                                )
+                                .child(
+                                    div()
+                                        .id("vibing-wumpus-toggle")
+                                        .flex_1()
+                                        .h(px(40.))
+                                        .rounded(px(8.))
+                                        .bg(color("--control-primary-background-default"))
+                                        .hover(|s| {
+                                            s.bg(color("--control-primary-background-hover"))
+                                        })
+                                        .cursor_pointer()
+                                        .flex()
+                                        .items_center()
+                                        .justify_center()
+                                        .gap(px(6.))
+                                        .text_size(px(14.))
+                                        .font_weight(FontWeight(600.))
+                                        .text_color(color("--white"))
+                                        .when(paused, |b| {
+                                            b.child(icon("clips_play", 14., "--white"))
+                                        })
+                                        .child(if paused {
+                                            dc_intl::t("RscU7I")
+                                        } else {
+                                            dc_intl::t("ZcgDJX")
+                                        })
+                                        .on_click(cx.listener(move |this, _, _, cx| {
+                                            if let Some(m) = this.safety_tools.as_mut() {
+                                                m.slide = Slide::VibingWumpus { paused: !paused };
+                                            }
+                                            cx.notify();
+                                        })),
+                                ),
+                        ),
+                );
+            return Some(
+                gpui::deferred(
+                    div()
+                        .id("vibing-wumpus-backdrop")
+                        .occlude()
+                        .absolute()
+                        .inset_0()
+                        .bg(rgba(0x000000b8))
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .on_click(cx.listener(|this, _, _, cx| {
+                            this.close_safety_tools(cx);
+                        }))
+                        .child(card),
+                )
+                .with_priority(98)
+                .into_any_element(),
+            );
+        }
         let channel_id = modal.channel_id;
         let other_user_id = modal.other_user_id;
         let slide = modal.slide;
@@ -345,6 +533,7 @@ impl Root {
             Slide::Actions => dc_intl::t("MAhAp6"),
             Slide::SafetyTips => dc_intl::t("EtNxi6"),
             Slide::AboutSafetyAlerts => dc_intl::t("qI14KM"),
+            Slide::VibingWumpus { .. } => dc_intl::t("L4ifkZ"),
         };
 
         let body: AnyElement = match slide {
@@ -433,8 +622,15 @@ impl Root {
                         false,
                         false,
                         |this, _, cx| {
-                            cx.open_url(VIBE_WITH_WUMPUS_URL);
-                            this.close_safety_tools(cx);
+                            let reduced = super::motion::decide_reduced(
+                                this.pref_on("sync_reduced_motion", true),
+                                this.pref_on("reduced_motion", false),
+                                super::motion::cached_system_preference(),
+                            );
+                            if let Some(m) = this.safety_tools.as_mut() {
+                                m.slide = Slide::VibingWumpus { paused: reduced };
+                            }
+                            cx.notify();
                         },
                         cx,
                     ))
@@ -757,6 +953,7 @@ impl Root {
                     )
                     .into_any_element()
             }
+            Slide::VibingWumpus { .. } => unreachable!(),
         };
 
         let show_back = matches!(slide, Slide::SafetyTips | Slide::AboutSafetyAlerts);

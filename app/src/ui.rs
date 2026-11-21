@@ -705,8 +705,12 @@ pub struct Root {
     monetization_modal: Option<server_monetization::MonetizationModal>,
     /// Application command permissions editor modal (module 365200, `command_permissions`).
     command_permissions: Option<command_permissions::CommandPermissionsModal>,
-    /// Billing address form modal (module 718718, `billing_address`).
+    /// Billing address form modal (module 718718, `billing_address`) and extended receipt (206049).
     billing_address_modal: Option<billing_address::BillingAddressModal>,
+    /// Clear Activity History confirmation modal (module 839785, `full_profile_recent`).
+    clear_activity_history_modal: Option<full_profile_recent::ClearActivityHistoryModal>,
+    /// Guild Powerup Perk modal (module 945942, `boost_page`).
+    powerup_perk_modal: Option<boost_page::PowerupPerkModal>,
     /// Nitro offer countdown & feature upsell modal (module 811611, `nitro_upsell`).
     nitro_upsell_modal: Option<nitro_upsell::NitroUpsellModal>,
     /// Gift Ready post-purchase delivery modal (module 998035, `gift_ready`).
@@ -1418,6 +1422,8 @@ impl Root {
             monetization_modal: None,
             command_permissions: None,
             billing_address_modal: None,
+            clear_activity_history_modal: None,
+            powerup_perk_modal: None,
             nitro_upsell_modal: None,
             gift_ready_modal: None,
             boost_cancel_modal: None,
@@ -2525,6 +2531,14 @@ impl Root {
                 }
                 if key == claim_account::CLAIM_KEY {
                     self.handle_claim_account_response(&body, cx);
+                    return;
+                }
+                if key == billing_address::BILLING_INVOICE_KEY {
+                    self.handle_billing_invoice_response(&body, cx);
+                    return;
+                }
+                if key.starts_with(full_profile_recent::CLEAR_HISTORY_PREFIX) {
+                    self.handle_clear_activity_history_response(&key, &body, cx);
                     return;
                 }
                 if key == transfer_ownership::TRANSFER_KEY
@@ -11792,6 +11806,9 @@ impl Render for Root {
                 }
                 if keys.key == "escape"
                     && (this.billing_address_modal.is_some()
+                        || this.clear_activity_history_modal.is_some()
+                        || this.powerup_perk_modal.is_some()
+                        || this.orb_wallet.delivered_modal.is_some()
                         || this.nitro_upsell_modal.is_some()
                         || this.gift_ready_modal.is_some()
                         || this.boost_cancel_modal.is_some()
@@ -11882,6 +11899,9 @@ impl Render for Root {
                         || this.library.hide_confirm.is_some())
                 {
                     this.billing_address_modal = None;
+                    this.clear_activity_history_modal = None;
+                    this.powerup_perk_modal = None;
+                    this.orb_wallet.delivered_modal = None;
                     this.nitro_upsell_modal = None;
                     this.gift_ready_modal = None;
                     this.boost_cancel_modal = None;
@@ -13277,6 +13297,8 @@ impl Render for Root {
             .children(monetization_layer)
             .children(command_permissions_layer)
             .children(self.billing_address_overlay(cx))
+            .children(self.clear_activity_history_layer(cx))
+            .children(self.powerup_perk_overlay(cx))
             .children(self.nitro_upsell_overlay(cx))
             .children(self.gift_ready_overlay(cx))
             .children(self.modify_attachment_modal(cx))

@@ -247,7 +247,7 @@ impl Root {
             "nitro_setting" => self.nitro_settings_body(cx),
             "subscriptions_settings" => self.subscriptions_body(cx),
             "billing_payment_methods" => self.payment_methods_body(cx),
-            "billing_transaction_history" => self.transactions_body(),
+            "billing_transaction_history" => self.transactions_body(cx),
             _ => return self.gift_inventory_custom(key, cx),
         })
     }
@@ -1031,9 +1031,97 @@ impl Root {
             .into_any_element()
     }
 
-    fn transactions_body(&self) -> AnyElement {
-        if !empty(self.nitro.payments.as_ref()) {
-            return div().h(px(48.)).into_any_element();
+    fn transactions_body(&self, cx: &mut gpui::Context<Self>) -> AnyElement {
+        if let Some(payments) = self
+            .nitro
+            .payments
+            .as_ref()
+            .and_then(serde_json::Value::as_array)
+            && !payments.is_empty()
+        {
+            let rows = payments
+                .iter()
+                .enumerate()
+                .map(|(idx, payment)| {
+                    let payment_id = payment["id"].as_str().unwrap_or_default().to_owned();
+                    let date = payment["created_at"]
+                        .as_str()
+                        .and_then(medium_date)
+                        .unwrap_or_default();
+                    let desc = payment["description"]
+                        .as_str()
+                        .unwrap_or("Discord Purchase")
+                        .to_owned();
+                    let amount = payment["amount"].as_i64().unwrap_or(0);
+                    let currency = payment["currency"].as_str().unwrap_or("usd");
+                    let price = format!("${:.2} {}", amount as f64 / 100., currency.to_uppercase());
+                    let country = payment["payment_source"]["billing_address"]["country"]
+                        .as_str()
+                        .unwrap_or("US")
+                        .to_owned();
+                    div()
+                        .flex()
+                        .flex_col()
+                        .when(idx > 0, |d| {
+                            d.child(div().h(px(1.)).bg(color("--border-subtle")))
+                        })
+                        .child(
+                            div()
+                                .py(px(12.))
+                                .flex()
+                                .items_center()
+                                .justify_between()
+                                .gap(px(12.))
+                                .child(
+                                    div()
+                                        .flex()
+                                        .flex_col()
+                                        .gap(px(2.))
+                                        .child(
+                                            div()
+                                                .text_size(px(14.))
+                                                .font_weight(FontWeight(600.))
+                                                .text_color(color("--text-strong"))
+                                                .child(desc),
+                                        )
+                                        .child(
+                                            div()
+                                                .text_size(px(12.))
+                                                .text_color(color("--text-muted"))
+                                                .child(format!("{date} · {price}")),
+                                        ),
+                                )
+                                .child(
+                                    div()
+                                        .id(SharedString::from(format!("billing-receipt-{idx}")))
+                                        .h(px(32.))
+                                        .px(px(12.))
+                                        .rounded(px(8.))
+                                        .border_1()
+                                        .border_color(color("--border-subtle"))
+                                        .bg(color("--control-secondary-background-default"))
+                                        .hover(|s| s.bg(color("--control-secondary-background-hover")))
+                                        .cursor_pointer()
+                                        .flex()
+                                        .items_center()
+                                        .text_size(px(13.))
+                                        .font_weight(FontWeight(500.))
+                                        .text_color(color("--text-strong"))
+                                        .child(dc_intl::t("uqZjLi"))
+                                        .on_click(cx.listener(move |this, _, _, cx| {
+                                            this.billing_address_modal = Some(
+                                                crate::ui::billing_address::BillingAddressModal::extended_receipt(
+                                                    payment_id.clone(),
+                                                    &country,
+                                                ),
+                                            );
+                                            cx.notify();
+                                        })),
+                                ),
+                        )
+                })
+                .collect::<Vec<_>>();
+            return div().flex().flex_col().children(rows).into_any_element();
         }
         div()
             .h(px(48.))

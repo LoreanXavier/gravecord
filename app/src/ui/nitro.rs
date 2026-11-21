@@ -419,6 +419,213 @@ const COMPARE: [(&str, &[(&str, Cell3, Cell3)]); 3] = [
     ),
 ];
 
+/// Nitro Trial / Discount Terms Lines (module 222719: `2CGBri`, `z2oQtA`, `3ZiutU`, `9vyovu`,
+/// `sJTwHQ`).
+#[derive(Clone, Debug, PartialEq, Eq)]
+#[allow(dead_code)]
+pub(super) enum NitroTermsKind {
+    /// Active free trial matching card (`2CGBri`).
+    ActiveTrial { remaining_days: i64, price: String },
+    /// Active yearly Tier 2 churn discount (`z2oQtA`).
+    ActiveYearlyDiscount {
+        percent: u32,
+        regular_price: String,
+        renewal_date: String,
+    },
+    /// Active monthly churn discount (`3ZiutU`).
+    ActiveMonthlyDiscount {
+        percent: u32,
+        regular_price: String,
+        num_months: u32,
+    },
+    /// Unredeemed trial offer (`9vyovu`).
+    EligibleTrial {
+        plan_name: String,
+        duration: String,
+        price: String,
+    },
+    /// Unredeemed discount offer (`sJTwHQ`).
+    EligibleDiscount {
+        num_months: u32,
+        discounted_price: String,
+        regular_price: String,
+    },
+}
+
+/// Formats a `222719` terms line with `$b` bold spans rendered as `--text-strong`.
+pub(super) fn format_nitro_terms(kind: &NitroTermsKind) -> gpui::StyledText {
+    use dc_intl::Arg;
+    use std::borrow::Cow;
+    let runs = match kind {
+        NitroTermsKind::ActiveTrial {
+            remaining_days,
+            price,
+        } => dc_intl::format_runs(
+            "2CGBri",
+            &[
+                ("remainingTime", Arg::Num((*remaining_days).max(0) as f64)),
+                ("price", Arg::Str(Cow::Borrowed(price))),
+            ],
+        ),
+        NitroTermsKind::ActiveYearlyDiscount {
+            percent,
+            regular_price,
+            renewal_date,
+        } => dc_intl::format_runs(
+            "z2oQtA",
+            &[
+                ("percent", Arg::Num(f64::from(*percent))),
+                ("regularPrice", Arg::Str(Cow::Borrowed(regular_price))),
+                ("renewalDate", Arg::Str(Cow::Borrowed(renewal_date))),
+            ],
+        ),
+        NitroTermsKind::ActiveMonthlyDiscount {
+            percent,
+            regular_price,
+            num_months,
+        } => dc_intl::format_runs(
+            "3ZiutU",
+            &[
+                ("percent", Arg::Num(f64::from(*percent))),
+                ("regularPrice", Arg::Str(Cow::Borrowed(regular_price))),
+                ("numMonths", Arg::Num(f64::from(*num_months))),
+            ],
+        ),
+        NitroTermsKind::EligibleTrial {
+            plan_name,
+            duration,
+            price,
+        } => dc_intl::format_runs(
+            "9vyovu",
+            &[
+                ("planName", Arg::Str(Cow::Borrowed(plan_name))),
+                ("duration", Arg::Str(Cow::Borrowed(duration))),
+                ("price", Arg::Str(Cow::Borrowed(price))),
+            ],
+        ),
+        NitroTermsKind::EligibleDiscount {
+            num_months,
+            discounted_price,
+            regular_price,
+        } => dc_intl::format_runs(
+            "sJTwHQ",
+            &[
+                ("numMonths", Arg::Num(f64::from(*num_months))),
+                ("discountedPrice", Arg::Str(Cow::Borrowed(discounted_price))),
+                ("regularPrice", Arg::Str(Cow::Borrowed(regular_price))),
+            ],
+        ),
+    };
+    let mut text = String::new();
+    let mut highlights = Vec::new();
+    for (chunk, hook) in runs {
+        let start = text.len();
+        text.push_str(&chunk);
+        if hook.as_deref() == Some("$b") && start < text.len() {
+            highlights.push((
+                start..text.len(),
+                gpui::HighlightStyle {
+                    font_weight: Some(FontWeight(700.)),
+                    color: Some(color("--text-strong").into()),
+                    ..gpui::HighlightStyle::default()
+                },
+            ));
+        }
+    }
+    gpui::StyledText::new(text).with_highlights(highlights)
+}
+
+impl Root {
+    /// Resolves the `222719` trial/discount terms line for a plan card (`sku::TIER_0` or `sku::TIER_2`).
+    pub(super) fn plan_card_terms(&self, sku_id: u64) -> Option<NitroTermsKind> {
+        let month_price = self.plan_price(sku_id, false).map(|p| p.display())?;
+        let regular_price = format!("{month_price}/month");
+        if let Some(sub) = self.premium_subscription()
+            && sub
+                .premium_item()
+                .and_then(|item| premium::plan_sku(item.plan_id))
+                == Some(sku_id)
+        {
+            if sub.trial_id.is_some() || sub.trial_ends_at.is_some() {
+                let remaining_days = sub
+                    .trial_ends_at
+                    .as_deref()
+                    .and_then(|iso| chrono::DateTime::parse_from_rfc3339(iso).ok())
+                    .map(|end| {
+                        (end.with_timezone(&chrono::Utc) - chrono::Utc::now())
+                            .num_days()
+                            .max(0)
+                    })
+                    .unwrap_or(0);
+                return Some(NitroTermsKind::ActiveTrial {
+                    remaining_days,
+                    price: regular_price,
+                });
+            }
+            if let Some(offer) = self.fetched.get("user-offer")
+                && let Some(pct) = offer["discount"]["amount"].as_u64()
+            {
+                let is_yearly_t2 = sub
+                    .premium_item()
+                    .is_some_and(|i| i.plan_id == premium::plan_id::YEAR_TIER_2);
+                if is_yearly_t2 {
+                    let renewal_date = sub
+                        .current_period_end
+                        .as_deref()
+                        .and_then(|s| s.get(..10))
+                        .unwrap_or("Dec 2, 2026")
+                        .to_owned();
+                    return Some(NitroTermsKind::ActiveYearlyDiscount {
+                        percent: pct as u32,
+                        regular_price,
+                        renewal_date,
+                    });
+                }
+                let num_months = offer["discount"]["user_usage_limit"]
+                    .as_u64()
+                    .unwrap_or(1)
+                    .max(1) as u32;
+                return Some(NitroTermsKind::ActiveMonthlyDiscount {
+                    percent: pct as u32,
+                    regular_price,
+                    num_months,
+                });
+            }
+        }
+        if sku_id == sku::TIER_2
+            && let Some(offer) = self.fetched.get("user-offer")
+        {
+            if let Some(pct) = offer["discount"]["amount"].as_u64() {
+                let num_months = offer["discount"]["user_usage_limit"]
+                    .as_u64()
+                    .unwrap_or(1)
+                    .max(1) as u32;
+                let base_cents = self
+                    .plan_price(sku_id, false)
+                    .map(|p| p.amount)
+                    .unwrap_or(999);
+                let disc_cents =
+                    base_cents.saturating_mul((100u64.saturating_sub(pct)) as i64) / 100;
+                let discounted_price = format!("${:.2}", disc_cents as f64 / 100.);
+                return Some(NitroTermsKind::EligibleDiscount {
+                    num_months,
+                    discounted_price,
+                    regular_price,
+                });
+            }
+            if offer.get("subscription_trial").is_some() || offer.get("user_trial_offer").is_some()
+            {
+                return Some(NitroTermsKind::EligibleTrial {
+                    plan_name: "Nitro".to_owned(),
+                    duration: "1 month".to_owned(),
+                    price: regular_price,
+                });
+            }
+        }
+        None
+    }
+}
+
 impl Root {
     /// Pre-requests shared Nitro assets after startup so opening the Nitro tab renders immediately.
     pub(super) fn warm_nitro_art(&mut self) {
@@ -1065,8 +1272,19 @@ impl Root {
         } else {
             &BASIC_FEATURES
         };
+        let terms_line = self.plan_card_terms(sku).map(|terms| {
+            // Module 222719 (`.trialHeader_Q2LuyA`): margin-bottom 18px, max-width 60%.
+            div()
+                .mt(px(8.))
+                .max_w(px(230.))
+                .text_size(px(13.))
+                .line_height(px(18.))
+                .font_weight(FontWeight(500.))
+                .text_color(color("--text-default"))
+                .child(format_nitro_terms(&terms))
+        });
         let list = div()
-            .mt(px(37.))
+            .mt(px(if terms_line.is_some() { 18. } else { 37. }))
             .flex()
             .flex_col()
             .gap(px(12.))
@@ -1172,6 +1390,7 @@ impl Root {
                         34.,
                         true,
                     ))
+                    .children(terms_line)
                     .child(list),
             )
             .child(
@@ -2045,5 +2264,36 @@ mod tests {
         assert!(orbs.description.contains("2x"));
         let sp = bento_card_copy(BentoKind::ServerProfiles, e);
         assert_eq!(sp.title, "Elevate your per-server profile");
+    }
+
+    #[test]
+    fn nitro_terms_222719_keys_resolve_all_variants() {
+        for key in ["2CGBri", "z2oQtA", "3ZiutU", "9vyovu", "sJTwHQ"] {
+            assert!(dc_intl::has_key(key), "missing key {key}");
+        }
+        let _ = format_nitro_terms(&NitroTermsKind::ActiveTrial {
+            remaining_days: 5,
+            price: "$9.99/month".to_owned(),
+        });
+        let _ = format_nitro_terms(&NitroTermsKind::ActiveYearlyDiscount {
+            percent: 20,
+            regular_price: "$99.99/year".to_owned(),
+            renewal_date: "Dec 2, 2026".to_owned(),
+        });
+        let _ = format_nitro_terms(&NitroTermsKind::ActiveMonthlyDiscount {
+            percent: 30,
+            regular_price: "$9.99/month".to_owned(),
+            num_months: 3,
+        });
+        let _ = format_nitro_terms(&NitroTermsKind::EligibleTrial {
+            plan_name: "Nitro".to_owned(),
+            duration: "1 month".to_owned(),
+            price: "$9.99/month".to_owned(),
+        });
+        let _ = format_nitro_terms(&NitroTermsKind::EligibleDiscount {
+            num_months: 2,
+            discounted_price: "$6.99".to_owned(),
+            regular_price: "$9.99/month".to_owned(),
+        });
     }
 }

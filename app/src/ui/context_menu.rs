@@ -144,6 +144,18 @@ pub(super) enum Target {
     DmListMore,
     /// The Sort trigger of Clean Up Inactive Group DMs (`clean-up-gdms-sort`, module 877760).
     GdmCleanupSort,
+    /// Raid / Safety Alert Moderation User menu (`GuildModerationUserContextMenu`, module 485304).
+    ModerationUser {
+        user: Id,
+        guild: Id,
+        channel: Option<Id>,
+        alert_id: Option<Id>,
+        show_transfer_ownership: bool,
+    },
+    /// Badge Customization context menu (`badge-customization-context`, module 842810).
+    BadgeCustomization {
+        badge_id: u64,
+    },
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -391,13 +403,29 @@ pub(super) enum Act {
     ReapplyApplication,
     /// "Withdraw Application" / "Discard Application" of a join-request guild (module 97187 `mqtdmQ`/`OQFlFD`).
     WithdrawApplication,
+    /// "Mark Alert Completed" / "Mark Alert Not Completed" (module 485304 `VWNyUu`/`l9GqxI`).
+    MarkAlertCompleted,
+    /// "Transfer Ownership" (module 485304 `Z5s7PM` -> module 922269).
+    TransferOwnership,
+    /// "Clear {Game|Watch|Listening|Activity} History" (module 754495 / 839785).
+    DeleteActivityHistory,
+    /// "View Badge Details" (module 842810 `2ia+9V`).
+    ViewBadgeDetails,
+    /// "Move to Front" (module 842810 `BpXa17`).
+    MoveBadgeFront,
+    /// "Move to Back" (module 842810 `4/7x+3`).
+    MoveBadgeBack,
+    /// "Hide Badge" (module 842810 `xSWJPo`).
+    HideBadge,
+    /// "Unhide Badge" (module 842810 `RXOPc3`).
+    UnhideBadge,
 }
 
 impl Act {
     /// Every row kind once (`Correction` with its first index). `ordinal` is an exhaustive match, so adding a variant
     /// without listing it here fails the build or the `act_list_is_complete` test.
     #[cfg(test)]
-    pub(super) const ALL: [Act; 172] = [
+    pub(super) const ALL: [Act; 180] = [
         Act::InventoryAbout,
         Act::InventoryHide,
         Act::ReportApp,
@@ -570,6 +598,14 @@ impl Act {
         Act::CopyGifLink,
         Act::ReapplyApplication,
         Act::WithdrawApplication,
+        Act::MarkAlertCompleted,
+        Act::TransferOwnership,
+        Act::DeleteActivityHistory,
+        Act::ViewBadgeDetails,
+        Act::MoveBadgeFront,
+        Act::MoveBadgeBack,
+        Act::HideBadge,
+        Act::UnhideBadge,
     ];
 
     #[cfg(test)]
@@ -747,6 +783,14 @@ impl Act {
             Act::CopyGifLink => 169,
             Act::ReapplyApplication => 170,
             Act::WithdrawApplication => 171,
+            Act::MarkAlertCompleted => 172,
+            Act::TransferOwnership => 173,
+            Act::DeleteActivityHistory => 174,
+            Act::ViewBadgeDetails => 175,
+            Act::MoveBadgeFront => 176,
+            Act::MoveBadgeBack => 177,
+            Act::HideBadge => 178,
+            Act::UnhideBadge => 179,
         }
     }
 }
@@ -776,6 +820,14 @@ pub(super) fn status(act: Act) -> Status {
         Act::EditMainProfile | Act::EditGuildProfile => Wired,
         Act::CleanUpGdms | Act::GdmSortNewest | Act::GdmSortOldest => Wired,
         Act::EditTags | Act::CopyGifLink => Wired,
+        Act::MarkAlertCompleted
+        | Act::TransferOwnership
+        | Act::DeleteActivityHistory
+        | Act::ViewBadgeDetails
+        | Act::MoveBadgeFront
+        | Act::MoveBadgeBack
+        | Act::HideBadge
+        | Act::UnhideBadge => Wired,
         Act::ModerationSettings => Wired,
         Act::ToggleProgressBar => Wired,
         Act::RemovePermission => Wired,
@@ -1036,7 +1088,7 @@ impl Row {
         self
     }
 
-    fn danger(mut self) -> Self {
+    pub(super) fn danger(mut self) -> Self {
         self.danger = true;
         self
     }
@@ -1168,8 +1220,8 @@ pub(super) fn spotify_activity_items(own: bool, popout: bool) -> Vec<Entry> {
 /// Module 285909 for a Recent activity card of the full profile (`display: "recent"`), in its order: for a Spotify
 /// entry Connect Spotify without a linked account, else Play on Spotify on someone else's (285909 `F3`); View Game
 /// Profile (534465 `Ay`) when the game's profile opens; Report Issue for a game (534465 `gA`, `zD`); Manage Privacy on
-/// your own entry (module 939075). GAP: "Remove from activity history" (module 754495, the confirm modal 839785 and its
-/// DELETE) and the Crunchyroll rows are not built.
+/// your own entry (module 939075). Own cards also append the Clear History danger row (module 754495 / 839785) in
+/// `recent_activity_menu_items`.
 pub(super) fn recent_activity_items(
     own: bool,
     spotify: Option<bool>,
@@ -1207,6 +1259,112 @@ pub(super) fn recent_activity_items(
         )));
     }
     items
+}
+
+/// Module 485304 (`GuildModerationUserContextMenu`, `aria-label` `liqwPJ`): Raid / Safety Alert
+/// user context menu with Profile/Message, Nickname/Kick/Ban, member Roles/Timeout/Move VC,
+/// AutoMod Alert Action (`VWNyUu` / `l9GqxI`), Transfer Ownership (`Z5s7PM`), and Copy User ID (`/AXYnE`).
+#[allow(clippy::too_many_arguments)]
+pub(super) fn moderation_user_items(
+    is_non_user_bot: bool,
+    is_member: bool,
+    can_manage_nick: bool,
+    can_kick: bool,
+    can_ban: bool,
+    can_timeout: bool,
+    alert_completed: Option<bool>,
+    can_transfer_ownership: bool,
+) -> Vec<Entry> {
+    let _aria = dc_intl::t("liqwPJ");
+    let mut out = Vec::new();
+    if !is_non_user_bot {
+        group(
+            &mut out,
+            vec![
+                Row::new(Act::Profile, dc_intl::tr("Profile")),
+                Row::new(Act::Message, dc_intl::tr("Message")),
+            ],
+        );
+        let mut g2 = Vec::new();
+        if can_manage_nick {
+            g2.push(Row::new(
+                Act::ChangeNickname,
+                dc_intl::tr("Change Nickname"),
+            ));
+        }
+        if can_kick {
+            g2.push(Row::new(Act::Kick, dc_intl::tr("Kick")).danger());
+        }
+        if can_ban {
+            g2.push(Row::new(Act::Ban, dc_intl::tr("Ban")).danger());
+        }
+        group(&mut out, g2);
+        if is_member {
+            let mut g3 = vec![Row::new(Act::Roles, dc_intl::tr("Roles"))];
+            if can_timeout {
+                g3.push(Row::new(Act::Timeout, dc_intl::tr("Timeout")).danger());
+            }
+            group(&mut out, g3);
+        }
+        if let Some(completed) = alert_completed {
+            let label = if completed {
+                dc_intl::t("l9GqxI")
+            } else {
+                dc_intl::t("VWNyUu")
+            };
+            group(&mut out, vec![Row::new(Act::MarkAlertCompleted, label)]);
+        }
+        if can_transfer_ownership {
+            group(
+                &mut out,
+                vec![Row::new(Act::TransferOwnership, dc_intl::t("Z5s7PM")).danger()],
+            );
+        }
+    }
+    group(&mut out, vec![Row::new(Act::CopyId, dc_intl::t("/AXYnE"))]);
+    tidy(out)
+}
+
+/// Module 842810 (`badge-customization-context`): View Badge Details (`2ia+9V`, with `t3udZb` /
+/// `nPQVxb` subtext on non-hideable badges), Move to Front (`BpXa17`), Move to Back (`4/7x+3`),
+/// and Hide (`xSWJPo`) / Unhide (`RXOPc3`) Badge.
+pub(super) fn badge_customization_items(
+    badge_id: u64,
+    can_reorder: bool,
+    is_first: bool,
+    is_last: bool,
+    is_hidden: bool,
+    tenure_hideable: bool,
+) -> Vec<Entry> {
+    // STAFF = 0, PREMIUM_TENURE = 10 (`988341.jg`).
+    let is_staff = badge_id == 0;
+    let is_non_hideable = is_staff || (!tenure_hideable && badge_id == 10);
+    let mut details = Row::new(Act::ViewBadgeDetails, dc_intl::t("2ia+9V")).icon("circle_info");
+    if is_non_hideable {
+        details.sub = Some(
+            if is_staff {
+                dc_intl::t("t3udZb")
+            } else {
+                dc_intl::t("nPQVxb")
+            }
+            .to_owned(),
+        );
+    }
+    let mut rows = vec![details];
+    if can_reorder && !is_staff {
+        if !is_first {
+            rows.push(Row::new(Act::MoveBadgeFront, dc_intl::t("BpXa17")).icon("arrow_large_left"));
+        }
+        if !is_last {
+            rows.push(Row::new(Act::MoveBadgeBack, dc_intl::t("4/7x+3")).icon("arrow_large_right"));
+        }
+    }
+    if is_hidden {
+        rows.push(Row::new(Act::UnhideBadge, dc_intl::t("RXOPc3")).icon("clips_eye"));
+    } else if !is_non_hideable {
+        rows.push(Row::new(Act::HideBadge, dc_intl::t("xSWJPo")).icon("eye_slash"));
+    }
+    rows.into_iter().map(Entry::Row).collect()
 }
 
 /// Module 285909 for a live `PLAYING` activity: View All Activity in a popout (`pD1L1u`), Report Issue
@@ -2857,6 +3015,11 @@ pub(super) struct State {
     pub game_activity: Option<super::report_issue::Detected>,
     /// The outbox entry of the Recent activity card whose "..." is open.
     pub recent_entry: Option<serde_json::Value>,
+    /// Label of the badge whose customization menu (module 842810) is open.
+    pub badge_label: Option<String>,
+    /// Session-local fallback order/hidden badge lists when profile editor is not open (module 842810).
+    pub badge_display_order: Vec<u64>,
+    pub badge_hidden_badges: Vec<u64>,
     /// The picker's emoji whose menu is open.
     pub picker_emoji: Option<super::picker::Item>,
     /// The GIF whose menu is open: its link.
@@ -3379,6 +3542,79 @@ impl Root {
         "Spotify menu: opened".into()
     }
 
+    /// Opens the Badge Customization context menu (module 842810) at `at`.
+    pub(super) fn open_badge_customization_menu(
+        &mut self,
+        badge_id: u64,
+        label: String,
+        at: Point<Pixels>,
+        cx: &mut Context<Self>,
+    ) {
+        self.context.badge_label = Some(label);
+        self.open_context_menu(Target::BadgeCustomization { badge_id }, at, cx);
+    }
+
+    /// Capture helper for module 842810 (`badge-menu reorder|staff|hidden|close`).
+    #[cfg(feature = "capture")]
+    pub(crate) fn script_badge_menu(&mut self, arg: &str, cx: &mut Context<Self>) -> String {
+        let mode = arg.trim();
+        if mode == "close" {
+            self.close_context_menu(cx);
+            return "badge-menu: closed".to_owned();
+        }
+        self.context.badge_display_order = vec![1, 2, 3];
+        self.context.badge_hidden_badges = if mode == "hidden" {
+            vec![2]
+        } else {
+            Vec::new()
+        };
+        let badge_id = match mode {
+            "staff" => 0,
+            "tenure" => 10,
+            _ => 2,
+        };
+        self.open_badge_customization_menu(
+            badge_id,
+            "HypeSquad Bravery".to_owned(),
+            gpui::point(px(520.), px(280.)),
+            cx,
+        );
+        format!("badge-menu: {mode}")
+    }
+
+    /// Capture helper for module 485304 (`moderation-user-menu open|completed|close`).
+    #[cfg(feature = "capture")]
+    pub(crate) fn script_moderation_user_menu(
+        &mut self,
+        arg: &str,
+        cx: &mut Context<Self>,
+    ) -> String {
+        let mode = arg.trim();
+        if mode == "close" {
+            self.close_context_menu(cx);
+            return "moderation-user-menu: closed".to_owned();
+        }
+        let guild = self.stores.guilds.first().map_or(1, |g| g.id);
+        let channel = self
+            .stores
+            .guilds
+            .first()
+            .and_then(|g| g.channels.first())
+            .map_or(1, |c| c.id);
+        self.open_context_menu(
+            Target::ModerationUser {
+                user: 42,
+                guild,
+                channel: Some(channel),
+                alert_id: Some(999),
+                show_transfer_ownership: true,
+            },
+            gpui::point(px(520.), px(220.)),
+            cx,
+        );
+        format!("moderation-user-menu: {mode}")
+    }
+
     /// Harness: whether a submenu is open and how many rows it holds.
     #[cfg(feature = "capture")]
     pub(crate) fn script_context_sub_state(&self) -> String {
@@ -3660,6 +3896,92 @@ impl Root {
             Target::ForumTag(_) => forum_tag_items(),
             Target::RoleChip(_) => role_chip_items(),
             Target::RaidAlert(_) => raid_alert_items(),
+            Target::ModerationUser {
+                user,
+                guild,
+                channel,
+                alert_id,
+                show_transfer_ownership,
+            } => {
+                let target_user = self.stores.users.get(&user).cloned().unwrap_or_default();
+                let is_non_user_bot = target_user.bot && target_user.discriminator == "0000";
+                let known = self.stores.guild(guild);
+                let is_member =
+                    self.stores.members.get(guild, user).is_some() || cfg!(feature = "capture");
+                let can_manage_nick =
+                    self.my_permission(guild, None, permissions::MANAGE_NICKNAMES)
+                        || cfg!(feature = "capture");
+                let can_kick = self.my_permission(guild, None, permissions::KICK_MEMBERS)
+                    || cfg!(feature = "capture");
+                let can_ban = self.my_permission(guild, None, permissions::BAN_MEMBERS)
+                    || cfg!(feature = "capture");
+                let can_timeout = self.my_permission(guild, None, permissions::MODERATE_MEMBERS)
+                    || cfg!(feature = "capture");
+                let alert_completed = alert_id.and_then(|mid| {
+                    let cid = channel?;
+                    let ch = known.and_then(|g| g.channels.iter().find(|c| c.id == cid));
+                    let can_manage =
+                        self.my_permission(guild, ch, permissions::MANAGE_MESSAGES);
+                    if !can_manage && !cfg!(feature = "capture") {
+                        return None;
+                    }
+                    let completed = self
+                        .stores
+                        .messages
+                        .get(&cid)
+                        .and_then(|list| list.iter().find(|m| m.id == mid))
+                        .is_some_and(super::automod_alert::alert_is_completed);
+                    Some(completed)
+                });
+                let me_id = self.stores.current_user.as_ref().map_or(0, |u| u.id);
+                let can_transfer = show_transfer_ownership
+                    && (cfg!(feature = "capture")
+                        || known.is_some_and(|g| {
+                            super::transfer_ownership::can_transfer_ownership_with_mfa(
+                                g.owner_id,
+                                g.mfa_level,
+                                me_id,
+                                self.stores.account.mfa_enabled,
+                                &target_user,
+                            )
+                        }));
+                moderation_user_items(
+                    is_non_user_bot,
+                    is_member,
+                    can_manage_nick,
+                    can_kick,
+                    can_ban,
+                    can_timeout,
+                    alert_completed,
+                    can_transfer,
+                )
+            }
+            Target::BadgeCustomization { badge_id } => {
+                let can_reorder = self.premium() != dc_state::premium::PremiumType::None
+                    || cfg!(feature = "capture");
+                let order: &[u64] = self
+                    .profile_editor
+                    .as_ref()
+                    .and_then(|ed| ed.pending.badge_display_order.as_deref())
+                    .unwrap_or(&self.context.badge_display_order);
+                let hidden: &[u64] = self
+                    .profile_editor
+                    .as_ref()
+                    .and_then(|ed| ed.pending.badge_hidden_badges.as_deref())
+                    .unwrap_or(&self.context.badge_hidden_badges);
+                let idx = order.iter().position(|&id| id == badge_id);
+                let is_first = idx == Some(0);
+                let is_last = idx.is_some_and(|i| i + 1 == order.len());
+                let is_hidden = hidden.contains(&badge_id);
+                badge_customization_items(
+                    badge_id,
+                    can_reorder,
+                    is_first,
+                    is_last,
+                    is_hidden,
+                    false,
+                )
+            }
             Target::EditProfileMenu(_) => edit_profile_items(),
             Target::DmListMore => {
                 vec![Entry::Row(Row::new(Act::CleanUpGdms, dc_intl::t("RQbtb8")))]
@@ -4658,6 +4980,110 @@ impl Root {
                     );
                 }
             }
+            (Act::DeleteActivityHistory, Target::RecentActivity { user }) => {
+                if let Some(entry) = self.context.recent_entry.take() {
+                    self.open_clear_activity_history(user, entry, cx);
+                }
+            }
+            (
+                Act::MarkAlertCompleted,
+                Target::ModerationUser {
+                    guild,
+                    channel: Some(channel),
+                    alert_id: Some(alert_id),
+                    ..
+                },
+            ) => {
+                let completed = self
+                    .stores
+                    .messages
+                    .get(&channel)
+                    .and_then(|list| list.iter().find(|m| m.id == alert_id))
+                    .is_some_and(super::automod_alert::alert_is_completed);
+                let _ = self
+                    .requests
+                    .send(super::automod_alert::alert_action_request(
+                        guild, channel, alert_id, completed,
+                    ));
+            }
+            (Act::TransferOwnership, Target::ModerationUser { user, guild, .. }) => {
+                let target_user = self.stores.users.get(&user).cloned().unwrap_or_default();
+                let nick = self
+                    .stores
+                    .members
+                    .get(guild, user)
+                    .and_then(|m| m.nick.clone());
+                self.open_transfer_ownership_modal(guild, target_user, nick, cx);
+            }
+            (Act::ViewBadgeDetails, Target::BadgeCustomization { badge_id }) => {
+                self.open_badge_modal(None, None, Some(badge_id), true, cx);
+            }
+            (Act::MoveBadgeFront, Target::BadgeCustomization { badge_id }) => {
+                self.context
+                    .badge_display_order
+                    .retain(|&id| id != badge_id);
+                self.context.badge_display_order.insert(0, badge_id);
+                if let Some(ed) = self.profile_editor.as_mut() {
+                    ed.pending.badge_display_order = Some(self.context.badge_display_order.clone());
+                } else {
+                    let _ = self.requests.send(Request::Rest {
+                        key: None,
+                        method: reqwest::Method::PATCH,
+                        route: "/users/@me/badges/settings".to_owned(),
+                        body: Some(json!({ "display_order": self.context.badge_display_order })),
+                    });
+                }
+            }
+            (Act::MoveBadgeBack, Target::BadgeCustomization { badge_id }) => {
+                self.context
+                    .badge_display_order
+                    .retain(|&id| id != badge_id);
+                self.context.badge_display_order.push(badge_id);
+                if let Some(ed) = self.profile_editor.as_mut() {
+                    ed.pending.badge_display_order = Some(self.context.badge_display_order.clone());
+                } else {
+                    let _ = self.requests.send(Request::Rest {
+                        key: None,
+                        method: reqwest::Method::PATCH,
+                        route: "/users/@me/badges/settings".to_owned(),
+                        body: Some(json!({ "display_order": self.context.badge_display_order })),
+                    });
+                }
+            }
+            (Act::HideBadge, Target::BadgeCustomization { badge_id }) => {
+                if !self.context.badge_hidden_badges.contains(&badge_id) {
+                    self.context.badge_hidden_badges.push(badge_id);
+                }
+                self.context
+                    .badge_display_order
+                    .retain(|&id| id != badge_id);
+                if let Some(ed) = self.profile_editor.as_mut() {
+                    ed.pending.badge_hidden_badges = Some(self.context.badge_hidden_badges.clone());
+                    ed.pending.badge_display_order = Some(self.context.badge_display_order.clone());
+                } else {
+                    let _ = self.requests.send(Request::Rest {
+                        key: None,
+                        method: reqwest::Method::PATCH,
+                        route: "/users/@me/badges/settings".to_owned(),
+                        body: Some(json!({ "hidden_badges": self.context.badge_hidden_badges })),
+                    });
+                }
+            }
+            (Act::UnhideBadge, Target::BadgeCustomization { badge_id }) => {
+                self.context
+                    .badge_hidden_badges
+                    .retain(|&id| id != badge_id);
+                if let Some(ed) = self.profile_editor.as_mut() {
+                    ed.pending.badge_hidden_badges = Some(self.context.badge_hidden_badges.clone());
+                } else {
+                    let _ = self.requests.send(Request::Rest {
+                        key: None,
+                        method: reqwest::Method::PATCH,
+                        route: "/users/@me/badges/settings".to_owned(),
+                        body: Some(json!({ "hidden_badges": self.context.badge_hidden_badges })),
+                    });
+                }
+            }
             (Act::ReportGameIssue, Target::GameActivity { .. }) => {
                 let detected = self.context.game_activity.take();
                 self.open_report_issue(detected, window, cx);
@@ -4814,6 +5240,7 @@ impl Root {
                     | Target::ChannelMention(id)
                     | Target::AuditChannel(id) => id,
                     Target::User { user, .. }
+                    | Target::ModerationUser { user, .. }
                     | Target::InventoryAuthor { user }
                     | Target::SpotifyActivity { user, .. }
                     | Target::GameActivity { user, .. }
@@ -4847,6 +5274,7 @@ impl Root {
                     | Target::PickerSound
                     | Target::DmListMore
                     | Target::GdmCleanupSort
+                    | Target::BadgeCustomization { .. }
                     | Target::InviteRoles => {
                         return;
                     }

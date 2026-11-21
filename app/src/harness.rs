@@ -1939,10 +1939,34 @@ pub async fn run(
                 let line = root.update(cx, |root, cx| root.script_pick_guild_settings(&arg, cx));
                 let _ = writeln!(output, "{line}");
             }
-            // `orb-wallet [active|cleared|error|unclaimed|close]`: Orb Wallet Popout & Active Challenges (150849).
+            // `orb-wallet [active|cleared|error|unclaimed|delivered|delivered-gift|close]`: Orb Wallet Popout (150849) & Orbs Delivered modal (717983).
             ["orb-wallet", rest @ ..] => {
                 let arg = rest.join(" ");
                 let line = root.update(cx, |root, cx| root.script_orb_wallet(&arg, cx));
+                let _ = writeln!(output, "{line}");
+            }
+            // `clear-activity-history [game|watch|listening|error|close]`: Clear Activity History modal (839785).
+            ["clear-activity-history", rest @ ..] => {
+                let arg = rest.join(" ");
+                let line = root.update(cx, |root, cx| root.script_clear_activity_history(&arg, cx));
+                let _ = writeln!(output, "{line}");
+            }
+            // `badge-menu [reorder|staff|tenure|hidden|close]`: Badge Customization menu (842810).
+            ["badge-menu", rest @ ..] => {
+                let arg = rest.join(" ");
+                let line = root.update(cx, |root, cx| root.script_badge_menu(&arg, cx));
+                let _ = writeln!(output, "{line}");
+            }
+            // `moderation-user-menu [open|completed|close]`: Raid / Safety Alert User menu (485304).
+            ["moderation-user-menu", rest @ ..] => {
+                let arg = rest.join(" ");
+                let line = root.update(cx, |root, cx| root.script_moderation_user_menu(&arg, cx));
+                let _ = writeln!(output, "{line}");
+            }
+            // `powerup-perk [theme|roles|tag|tag-active|vanity|disable-confirm|close]`: GuildPowerupPerkModal (945942).
+            ["powerup-perk", rest @ ..] => {
+                let arg = rest.join(" ");
+                let line = root.update(cx, |root, cx| root.script_powerup_perk(&arg, cx));
                 let _ = writeln!(output, "{line}");
             }
             // `research-survey [active|exit|done|loading|close]`: Discord Research Survey modal (215978).

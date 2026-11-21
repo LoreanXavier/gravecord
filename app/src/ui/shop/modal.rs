@@ -60,9 +60,13 @@ impl Root {
         cx.notify();
     }
 
-    /// "Buy for ..." and the gift button: opens the checkout summary. An unverified account would get the verify modal
-    /// first in the official client; that check needs the account's flags, so here the summary opens directly.
+    /// "Buy for ..." and the gift button: opens the checkout summary (module 661925 gates unverified accounts).
     pub(super) fn shop_buy(&mut self, sku: &str, gift: bool, cx: &mut Context<Self>) {
+        #[cfg(not(feature = "capture"))]
+        if !self.stores.account.verified {
+            self.open_verify_email_before_purchase(cx);
+            return;
+        }
         if !gift && self.shop_claimable(sku) {
             self.shop_send_keyed("shop:claim", data::claim_premium(sku));
             cx.notify();
