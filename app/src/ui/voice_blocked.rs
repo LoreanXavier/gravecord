@@ -407,30 +407,73 @@ impl Root {
             .into_any_element()
     }
 
-    /// `I` of module 90386: one person's 32px avatar, or for more the first two side by side (module 954376).
+    /// `I` of module 90386: one person's 32px avatar (or `<UserIcon />` when unknown), or for more than one person
+    /// module 954376's stacked overlapping pair inside a 32x32 box with a 2px cutout ring.
     fn warning_faces(&self, users: &[Id]) -> AnyElement {
-        let face = |user: Id| {
-            let picture = self
-                .stores
+        let face_image = |user: Id| {
+            self.stores
                 .users
                 .get(&user)
-                .and_then(|known| self.images.get(&avatar_source(known).0).cloned());
-            div()
-                .flex_none()
-                .size(px(32.))
-                .rounded_full()
-                .overflow_hidden()
-                .bg(color("--background-mod-strong"))
-                .children(picture.map(|picture| img(picture).size(px(32.)).rounded_full()))
+                .and_then(|known| self.images.get(&avatar_source(known).0).cloned())
         };
         match users {
-            [one] => face(*one).into_any_element(),
-            // GAP: module 954376's stacked pair (its overlap and cut-out) is drawn as two faces 4px apart.
-            _ => div()
-                .flex()
-                .gap(px(4.))
-                .children(users.iter().take(2).map(|user| face(*user)))
-                .into_any_element(),
+            [one] => {
+                let known = self.stores.users.contains_key(one);
+                let picture = face_image(*one);
+                div()
+                    .flex_none()
+                    .size(px(32.))
+                    .rounded_full()
+                    .overflow_hidden()
+                    .bg(color("--background-mod-strong"))
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .when_some(picture, |this, picture| {
+                        this.child(img(picture).size(px(32.)).rounded_full())
+                    })
+                    .when(!known, |this| {
+                        this.child(icon("dm_profile", 20., "--icon-default"))
+                    })
+                    .into_any_element()
+            }
+            _ => {
+                let first = users.first().copied().and_then(face_image);
+                let second = users.get(1).copied().and_then(face_image);
+                div()
+                    .relative()
+                    .flex_none()
+                    .size(px(32.))
+                    .child(
+                        div()
+                            .absolute()
+                            .left_0()
+                            .top_0()
+                            .size(px(20.))
+                            .rounded_full()
+                            .overflow_hidden()
+                            .bg(color("--background-mod-strong"))
+                            .children(
+                                first.map(|picture| img(picture).size(px(20.)).rounded_full()),
+                            ),
+                    )
+                    .child(
+                        div()
+                            .absolute()
+                            .right_0()
+                            .bottom_0()
+                            .size(px(22.))
+                            .rounded_full()
+                            .border_2()
+                            .border_color(color("--background-surface-high"))
+                            .overflow_hidden()
+                            .bg(color("--background-mod-strong"))
+                            .children(
+                                second.map(|picture| img(picture).size(px(18.)).rounded_full()),
+                            ),
+                    )
+                    .into_any_element()
+            }
         }
     }
 

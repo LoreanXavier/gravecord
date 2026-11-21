@@ -156,6 +156,11 @@ pub(super) enum Target {
     BadgeCustomization {
         badge_id: u64,
     },
+    /// Game Shop storefront card context menu (`social-layer-storefront-card-context`, module 10680); SKU in
+    /// `State::game_shop_sku`.
+    GameShopSku,
+    /// Overlay DM / Group DM context menu (`overlay-user-context` module 92016 / `overlay-gdm-context` module 320442).
+    OverlayDm(Id),
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -419,13 +424,21 @@ pub(super) enum Act {
     HideBadge,
     /// "Unhide Badge" (module 842810 `RXOPc3`).
     UnhideBadge,
+    /// "Close overlay chat" (module 297460 / 92016 `ERApc4`).
+    OverlayCloseChat,
+    /// "Open Overlay Chat" (module 297460 / 92016 `KWrMk5`).
+    OverlayOpenChat,
+    /// "Favorite User" / "Unfavorite User" (module 708653 `As` / 92016 `w1MU8Y` / `Xr8XHk`).
+    OverlayFavoriteUser,
+    /// "Add to Favorites" / "Remove from Favorites" in overlay GDM menu (module 708653 `Ay` / 320442 `4wcdE/` / `Bou7lT`).
+    OverlayFavoriteChannel,
 }
 
 impl Act {
     /// Every row kind once (`Correction` with its first index). `ordinal` is an exhaustive match, so adding a variant
     /// without listing it here fails the build or the `act_list_is_complete` test.
     #[cfg(test)]
-    pub(super) const ALL: [Act; 180] = [
+    pub(super) const ALL: [Act; 184] = [
         Act::InventoryAbout,
         Act::InventoryHide,
         Act::ReportApp,
@@ -606,6 +619,10 @@ impl Act {
         Act::MoveBadgeBack,
         Act::HideBadge,
         Act::UnhideBadge,
+        Act::OverlayCloseChat,
+        Act::OverlayOpenChat,
+        Act::OverlayFavoriteUser,
+        Act::OverlayFavoriteChannel,
     ];
 
     #[cfg(test)]
@@ -791,6 +808,10 @@ impl Act {
             Act::MoveBadgeBack => 177,
             Act::HideBadge => 178,
             Act::UnhideBadge => 179,
+            Act::OverlayCloseChat => 180,
+            Act::OverlayOpenChat => 181,
+            Act::OverlayFavoriteUser => 182,
+            Act::OverlayFavoriteChannel => 183,
         }
     }
 }
@@ -827,7 +848,11 @@ pub(super) fn status(act: Act) -> Status {
         | Act::MoveBadgeFront
         | Act::MoveBadgeBack
         | Act::HideBadge
-        | Act::UnhideBadge => Wired,
+        | Act::UnhideBadge
+        | Act::OverlayCloseChat
+        | Act::OverlayOpenChat
+        | Act::OverlayFavoriteUser
+        | Act::OverlayFavoriteChannel => Wired,
         Act::ModerationSettings => Wired,
         Act::ToggleProgressBar => Wired,
         Act::RemovePermission => Wired,
@@ -2727,6 +2752,140 @@ pub(super) fn group_items(unread: bool, owner: bool, developer: bool) -> Vec<Ent
     tidy(out)
 }
 
+/// Game Shop card context menu (`social-layer-storefront-card-context`, module 10680 + 50268): Copy SKU ID (`7axpVs`)
+/// in developer mode only.
+pub(super) fn game_shop_sku_items(developer: bool) -> Vec<Entry> {
+    if !developer {
+        return Vec::new();
+    }
+    vec![Entry::Row(
+        Row::new(Act::CopyId, dc_intl::t("7axpVs")).icon("menu_id"),
+    )]
+}
+
+/// Overlay Group DM context menu (`overlay-gdm-context`, module 320442 + 297460 + 708653): Mark As Read, Close/Open
+/// overlay chat, Add/Remove overlay Favorites, Invites (owner), Edit Group, Mute Conversation, Leave Group.
+pub(super) fn overlay_group_dm_items(
+    unread: bool,
+    owner: bool,
+    chat_open: bool,
+    overlay_favorite: bool,
+) -> Vec<Entry> {
+    let mut out = Vec::new();
+    let chat_row = if chat_open {
+        Row::new(Act::OverlayCloseChat, dc_intl::t("ERApc4"))
+    } else {
+        Row::new(Act::OverlayOpenChat, dc_intl::t("KWrMk5"))
+    };
+    let fav_row = if overlay_favorite {
+        Row::new(Act::OverlayFavoriteChannel, dc_intl::t("Bou7lT")).danger()
+    } else {
+        Row::new(Act::OverlayFavoriteChannel, dc_intl::t("4wcdE/"))
+    };
+    group(
+        &mut out,
+        vec![
+            Row::new(Act::MarkRead, dc_intl::tr("Mark As Read")).disabled(!unread),
+            chat_row,
+            fav_row,
+        ],
+    );
+    let mut manage = Vec::new();
+    if owner {
+        manage.push(Row::new(Act::Invites, dc_intl::t("ngRFjZ")));
+    }
+    manage.push(Row::new(Act::EditGroup, dc_intl::t("5Q9+/L")));
+    group(&mut out, manage);
+    group(
+        &mut out,
+        vec![Row::new(Act::Mute, dc_intl::tr("Mute Conversation")).caret()],
+    );
+    group(
+        &mut out,
+        vec![Row::new(Act::LeaveGroup, dc_intl::tr("Leave Group")).danger()],
+    );
+    tidy(out)
+}
+
+/// Overlay 1:1 DM user context menu (`overlay-user-context`, module 92016 with `showModalItems: false`,
+/// `showMediaItems: false`, `showChannelCallItems: false`, `__OVERLAY__: true`). Omits modal-opening rows (Profile,
+/// Add Note, Friend Nickname, Invite to Server, Ignore, Block) and Copy ID (`50268`), adds overlay chat toggle
+/// (`297460`) and overlay favorite user toggle (`708653`).
+pub(super) fn overlay_dm_user_items(
+    facts: &UserFacts,
+    chat_open: bool,
+    overlay_favorite: bool,
+) -> Vec<Entry> {
+    let mut out = Vec::new();
+    // Group 1: Close/Open overlay chat, Mark As Read, Call, Ring / Stop Ringing.
+    let mut g1 = vec![if chat_open {
+        Row::new(Act::OverlayCloseChat, dc_intl::t("ERApc4"))
+    } else {
+        Row::new(Act::OverlayOpenChat, dc_intl::t("KWrMk5"))
+    }];
+    if let Some(unread) = facts.dm {
+        g1.push(Row::new(Act::MarkRead, dc_intl::tr("Mark As Read")).disabled(!unread));
+    }
+    if !facts.me && !facts.bot {
+        if !facts.hide_call {
+            g1.push(Row::new(Act::Call, dc_intl::tr("Start a Call")).disabled(facts.blocked));
+        }
+        match facts.ring {
+            Some(false) => g1.push(Row::new(Act::RingUser, dc_intl::t!("RDheZm"))),
+            Some(true) => g1.push(Row::new(Act::StopRinging, dc_intl::t!("ygslb0"))),
+            None => {}
+        }
+    }
+    group(&mut out, g1);
+    // Group 2: Stage invite if applicable.
+    if !facts.stage_acts.is_empty() {
+        let stage_rows: Vec<Row> = facts
+            .stage_acts
+            .iter()
+            .filter_map(|act| match act {
+                Act::StageInvite => {
+                    Some(Row::new(Act::StageInvite, dc_intl::tr("Invite to Speak")))
+                }
+                _ => None,
+            })
+            .collect();
+        group(&mut out, stage_rows);
+    }
+    // Group 3: Favorite/Unfavorite User (module 708653 `As`, when friend) + Close DM (Profile/Note/Nickname hidden).
+    let mut g3 = Vec::new();
+    if !facts.me && !facts.bot && facts.friend {
+        g3.push(if overlay_favorite {
+            Row::new(Act::OverlayFavoriteUser, dc_intl::t("Xr8XHk")).danger()
+        } else {
+            Row::new(Act::OverlayFavoriteUser, dc_intl::t("w1MU8Y"))
+        });
+    }
+    g3.push(Row::new(Act::CloseDm, dc_intl::tr("Close DM")));
+    group(&mut out, g3);
+    // Group 6: Apps + Add/Remove Friend (Invite to Server, Ignore, Block hidden when `showModalItems: false`).
+    let mut g6 = vec![Row::new(Act::Apps, dc_intl::tr("Apps")).caret()];
+    if !facts.me && !facts.bot {
+        g6.push(if facts.friend {
+            Row::new(Act::RemoveFriend, dc_intl::tr("Remove Friend"))
+        } else {
+            Row::new(Act::AddFriend, dc_intl::tr("Add Friend")).disabled(facts.blocked)
+        });
+    }
+    group(&mut out, g6);
+    // Group 7: Mute user (`byjuJm`).
+    group(
+        &mut out,
+        vec![
+            Row::new(
+                Act::Mute,
+                dc_intl::t!("byjuJm", name = format!("@{}", facts.name)),
+            )
+            .caret(),
+        ],
+    );
+    tidy(out)
+}
+
 pub(super) fn user_items(facts: &UserFacts) -> Vec<Entry> {
     let mut out: Vec<Entry> = Vec::new();
     if let Some(unread) = facts.dm {
@@ -3035,6 +3194,8 @@ pub(super) struct State {
     /// The next channel menu is the channel header's (module 834881 from module 289287); `true` when it was opened
     /// on the topic (`includeTopic` of module 565265).
     pub title_menu: Option<bool>,
+    /// The SKU ID of the Game Shop card whose context menu is open (module 10680).
+    pub game_shop_sku: Option<String>,
 }
 
 const MUTE_FOR: [(i64, &str); 6] = [
@@ -3486,7 +3647,33 @@ impl Root {
                 };
                 Target::Dm(channel)
             }
-            _ => return "usage: context-user | context-dm".to_owned(),
+            "overlay-dm" => {
+                let Some(channel) = self
+                    .stores
+                    .private_channels
+                    .iter()
+                    .find(|dm| dm.kind == 1)
+                    .or_else(|| self.stores.private_channels.first())
+                    .map(|dm| dm.id)
+                else {
+                    return "no direct message".to_owned();
+                };
+                Target::OverlayDm(channel)
+            }
+            "game-shop-sku" => {
+                self.context.game_shop_sku = Some("1346069614634864772".to_owned());
+                let items = game_shop_sku_items(true);
+                self.context.open = Some(Open {
+                    target: Target::GameShopSku,
+                    at: gpui::point(px(520.), px(220.)),
+                    items,
+                    sub: None,
+                    nested: None,
+                });
+                cx.notify();
+                return "menu open for GameShopSku".to_owned();
+            }
+            _ => return "usage: context-user | context-dm | context-overlay-dm | context-game-shop-sku".to_owned(),
         };
         let at = if matches!(target, Target::User { .. }) {
             gpui::point(px(984.), px(88.))
@@ -3660,7 +3847,7 @@ impl Root {
                 }
                 None => (false, None),
             },
-            Target::Dm(id) => {
+            Target::Dm(id) | Target::OverlayDm(id) => {
                 let entry = self.stores.guild_settings.channel(0, id);
                 (entry.muted, entry.mute_end)
             }
@@ -3711,7 +3898,7 @@ impl Root {
                     .find(|(mute, _)| row.label == dc_intl::tr(mute))
                     .map(|(_, unmute)| dc_intl::tr(unmute).to_owned());
                     let dm_name = match target {
-                        Target::Dm(id) => self
+                        Target::Dm(id) | Target::OverlayDm(id) => self
                             .stores
                             .private_channels
                             .iter()
@@ -3920,8 +4107,7 @@ impl Root {
                 let alert_completed = alert_id.and_then(|mid| {
                     let cid = channel?;
                     let ch = known.and_then(|g| g.channels.iter().find(|c| c.id == cid));
-                    let can_manage =
-                        self.my_permission(guild, ch, permissions::MANAGE_MESSAGES);
+                    let can_manage = self.my_permission(guild, ch, permissions::MANAGE_MESSAGES);
                     if !can_manage && !cfg!(feature = "capture") {
                         return None;
                     }
@@ -4287,6 +4473,66 @@ impl Root {
                             .map_or(0, |index| index as u64),
                     ),
                 )
+            }
+            Target::GameShopSku => {
+                let items = game_shop_sku_items(developer);
+                if items.is_empty() {
+                    return;
+                }
+                items
+            }
+            Target::OverlayDm(channel) => {
+                let Some(dm) = self
+                    .stores
+                    .private_channels
+                    .iter()
+                    .find(|known| known.id == channel)
+                else {
+                    return;
+                };
+                let chat_open = self.overlay.text_chat.is_tracked(channel)
+                    || self.overlay.text_chat.selected() == Some(channel);
+                if dm.kind == 3 {
+                    overlay_group_dm_items(
+                        self.has_unread_or_mentions(channel),
+                        dm.owner_id.is_some()
+                            && dm.owner_id == self.stores.current_user.as_ref().map(|me| me.id),
+                        chat_open,
+                        self.overlay.favorite_channels.contains(&channel),
+                    )
+                } else {
+                    let Some(user) = self.stores.dm_recipient(dm).cloned() else {
+                        return;
+                    };
+                    let facts = UserFacts {
+                        name: self.private_channel_name(dm),
+                        me: self
+                            .stores
+                            .current_user
+                            .as_ref()
+                            .is_some_and(|me| me.id == user.id),
+                        bot: user.bot,
+                        in_guild: false,
+                        friend: self.stores.relationships.get(&user.id) == Some(&1),
+                        nickname: self.nickname_for(user.id).is_some(),
+                        blocked: self.stores.relationships.get(&user.id) == Some(&2),
+                        ignored: self.stores.is_ignored(user.id),
+                        developer: false,
+                        dm: Some(self.has_unread_or_mentions(channel)),
+                        hide_call: user.bot
+                            || self.vv.popout_render
+                            || self.call.as_ref().is_some_and(|call| {
+                                call.connected && call.channel == channel && dm.kind == 1
+                            }),
+                        ring: self.ring_row_for_channel(channel),
+                        ..UserFacts::default()
+                    };
+                    overlay_dm_user_items(
+                        &facts,
+                        chat_open,
+                        self.overlay.favorite_users.contains(&user.id),
+                    )
+                }
             }
             Target::Dm(channel) => {
                 let Some(dm) = self
@@ -5150,9 +5396,31 @@ impl Root {
             }
             (
                 Act::MarkRead,
-                Target::Channel(channel) | Target::Thread(channel) | Target::Dm(channel),
+                Target::Channel(channel)
+                | Target::Thread(channel)
+                | Target::Dm(channel)
+                | Target::OverlayDm(channel),
             ) => {
                 self.mark_channel_read(channel);
+            }
+            (Act::OverlayCloseChat, Target::OverlayDm(channel)) => {
+                let voice = self.call.as_ref().map(|call| call.channel);
+                self.overlay.text_chat.remove(channel, voice);
+            }
+            (Act::OverlayOpenChat, Target::OverlayDm(channel)) => {
+                self.overlay_chat_select(channel, cx);
+            }
+            (Act::OverlayFavoriteUser, Target::OverlayDm(channel)) => {
+                if let Some(user) = self.dm_user(channel)
+                    && !self.overlay.favorite_users.remove(&user)
+                {
+                    self.overlay.favorite_users.insert(user);
+                }
+            }
+            (Act::OverlayFavoriteChannel, Target::OverlayDm(channel)) => {
+                if !self.overlay.favorite_channels.remove(&channel) {
+                    self.overlay.favorite_channels.insert(channel);
+                }
             }
             (Act::Invite, Target::Guild(guild)) => {
                 self.select(guild, None);
@@ -5230,6 +5498,11 @@ impl Root {
                     "https://discord.com/channels/{guild}/{channel}"
                 )));
             }
+            (Act::CopyId, Target::GameShopSku) => {
+                if let Some(sku) = self.context.game_shop_sku.clone() {
+                    cx.write_to_clipboard(ClipboardItem::new_string(sku));
+                }
+            }
             (Act::CopyId, target) => {
                 let id = match target {
                     Target::Guild(id)
@@ -5237,6 +5510,7 @@ impl Root {
                     | Target::Category(id)
                     | Target::Thread(id)
                     | Target::Dm(id)
+                    | Target::OverlayDm(id)
                     | Target::ChannelMention(id)
                     | Target::AuditChannel(id) => id,
                     Target::User { user, .. }
@@ -5275,6 +5549,7 @@ impl Root {
                     | Target::DmListMore
                     | Target::GdmCleanupSort
                     | Target::BadgeCustomization { .. }
+                    | Target::GameShopSku
                     | Target::InviteRoles => {
                         return;
                     }
@@ -5570,7 +5845,7 @@ impl Root {
             }
             // "Start a Call" of the DM row's menu (`dm-row-context.json`): a voice call that rings.
             // Both ask "Ready to start a call?" first (module 502054, `runVoiceCallAction` of module 949674).
-            (Act::Call, Target::Dm(channel)) => {
+            (Act::Call, Target::Dm(channel) | Target::OverlayDm(channel)) => {
                 self.start_call_or_ask(super::voice_alerts::CallTarget::Dm(channel), cx)
             }
             // "Start a Call" of a person's menu: their DM opens and the voice call rings there.
@@ -5578,7 +5853,10 @@ impl Root {
                 self.start_call_or_ask(super::voice_alerts::CallTarget::User(user), cx)
             }
             // 313998: `ring(channel, [user], "user_context_menu")` and `stopRinging(channel, [user])`.
-            (Act::RingUser | Act::StopRinging, Target::Dm(channel)) => {
+            (
+                Act::RingUser | Act::StopRinging,
+                Target::Dm(channel) | Target::OverlayDm(channel),
+            ) => {
                 self.toggle_ring_channel(channel, cx);
             }
             (Act::RingUser | Act::StopRinging, Target::User { user, guild }) => {
@@ -5716,7 +5994,7 @@ impl Root {
             }
             (Act::Message, Target::User { user, .. }) => self.open_dm_with(user, cx),
             (Act::AddFriend, Target::User { user, .. }) => self.set_relationship(user, Some(4), cx),
-            (Act::AddFriend, Target::Dm(channel)) => {
+            (Act::AddFriend, Target::Dm(channel) | Target::OverlayDm(channel)) => {
                 if let Some(user) = self.dm_user(channel) {
                     self.set_relationship(user, Some(4), cx);
                 }
@@ -5732,7 +6010,7 @@ impl Root {
                     self.open_friend_nickname(user, window, cx);
                 }
             }
-            (Act::RemoveFriend, Target::Dm(channel)) => {
+            (Act::RemoveFriend, Target::Dm(channel) | Target::OverlayDm(channel)) => {
                 if let Some(user) = self.dm_user(channel) {
                     self.confirm_remove_friend = Some(super::friends::RemoveFriend::Menu(user));
                 }
@@ -5750,14 +6028,20 @@ impl Root {
                     self.toggle_block(user, cx);
                 }
             }
-            (Act::CloseDm, Target::Dm(channel)) => self.close_dm(channel, cx),
-            (Act::EditGroup, Target::Dm(channel)) => self.open_group_edit(channel, window, cx),
+            (Act::CloseDm, Target::Dm(channel) | Target::OverlayDm(channel)) => {
+                self.close_dm(channel, cx)
+            }
+            (Act::EditGroup, Target::Dm(channel) | Target::OverlayDm(channel)) => {
+                self.open_group_edit(channel, window, cx)
+            }
             // The group's invite list is not built; the nearest thing is the picker that adds people.
-            (Act::Invites, Target::Dm(channel)) => {
+            (Act::Invites, Target::Dm(channel) | Target::OverlayDm(channel)) => {
                 self.select_home(Some(channel));
                 self.open_add_to_dm(window, cx);
             }
-            (Act::LeaveGroup, Target::Dm(channel)) => self.open_group_leave(channel, false, cx),
+            (Act::LeaveGroup, Target::Dm(channel) | Target::OverlayDm(channel)) => {
+                self.open_group_leave(channel, false, cx)
+            }
             (Act::VoiceMute | Act::VoiceDeafen, Target::User { user, .. })
                 if self
                     .stores
@@ -5875,7 +6159,8 @@ impl Root {
                 | Target::Channel(_)
                 | Target::Category(_)
                 | Target::Thread(_)
-                | Target::Dm(_),
+                | Target::Dm(_)
+                | Target::OverlayDm(_),
             ) => match target {
                 Target::Guild(guild) => {
                     self.patch_guild_setting(guild, "muted", json!(false));
@@ -5896,7 +6181,7 @@ impl Root {
                         );
                     }
                 }
-                Target::Dm(id) => {
+                Target::Dm(id) | Target::OverlayDm(id) => {
                     self.patch_channel_override(
                         0,
                         id,
@@ -6673,7 +6958,7 @@ impl Root {
                             );
                         }
                     }
-                    Target::Dm(id) => {
+                    Target::Dm(id) | Target::OverlayDm(id) => {
                         self.patch_channel_override(
                             0,
                             id,
@@ -7209,7 +7494,7 @@ impl Root {
         let is_check = row.check.is_some();
         let is_radio = row.radio;
         let label = gpui::StyledText::new(row.label.clone()).with_highlights(
-            (act == Act::Mute && matches!(target, Target::Dm(_)))
+            (act == Act::Mute && matches!(target, Target::Dm(_) | Target::OverlayDm(_)))
                 .then(|| row.label.find('@'))
                 .flatten()
                 .map(|start| {
@@ -8653,5 +8938,41 @@ mod tests {
             labels(&text_area_items(&menu)),
             ["Spellcheck", "Languages", "-", "Paste"]
         );
+    }
+
+    #[test]
+    fn game_shop_sku_menu_shows_copy_sku_id_only_in_developer_mode() {
+        assert!(game_shop_sku_items(false).is_empty());
+        assert_eq!(labels(&game_shop_sku_items(true)), ["Copy SKU ID"]);
+    }
+
+    #[test]
+    fn overlay_dm_user_menu_hides_modal_items_and_adds_overlay_actions() {
+        let facts = UserFacts {
+            name: "alice".to_owned(),
+            friend: true,
+            dm: Some(true),
+            developer: true,
+            ..UserFacts::default()
+        };
+        let open_rows = labels(&overlay_dm_user_items(&facts, true, false));
+        assert!(open_rows.contains(&"Close overlay chat".to_owned()));
+        assert!(open_rows.contains(&"Favorite User".to_owned()));
+        assert!(open_rows.contains(&"Close DM".to_owned()));
+        assert!(!open_rows.contains(&"Profile".to_owned()));
+        assert!(!open_rows.contains(&"Add Note".to_owned()));
+        assert!(!open_rows.contains(&"Block".to_owned()));
+        assert!(!open_rows.contains(&"Ignore".to_owned()));
+        assert!(!open_rows.contains(&"Copy User ID".to_owned()));
+
+        let closed_fav = labels(&overlay_dm_user_items(&facts, false, true));
+        assert!(closed_fav.contains(&"Open Overlay Chat".to_owned()));
+        assert!(closed_fav.contains(&"Unfavorite User".to_owned()));
+
+        let gdm = labels(&overlay_group_dm_items(true, true, true, false));
+        assert!(gdm.contains(&"Close overlay chat".to_owned()));
+        assert!(gdm.contains(&"Add to Favorites".to_owned()));
+        assert!(gdm.contains(&"Invites".to_owned()));
+        assert!(gdm.contains(&"Edit Group".to_owned()));
     }
 }

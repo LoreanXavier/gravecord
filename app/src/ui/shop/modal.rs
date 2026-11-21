@@ -94,7 +94,7 @@ impl Root {
     /// The heart (module 124557): optimistic toggle guarded by `wishlist_busy`, announces
     /// `3T2jbf` ("Added to your Wishlist") + opens `38884` NUX modal on first add, or
     /// `DSXOiP` ("Removed from your Wishlist"), and reverts with `F8FvUy` on error.
-    pub(super) fn shop_toggle_wishlist(&mut self, sku: &str, cx: &mut Context<Self>) {
+    pub(in crate::ui) fn shop_toggle_wishlist(&mut self, sku: &str, cx: &mut Context<Self>) {
         if self.shop.wishlist_busy {
             return;
         }

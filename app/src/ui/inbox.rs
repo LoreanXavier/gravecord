@@ -1398,6 +1398,7 @@ impl Root {
                             let id = item.scheduled_message_id;
                             let text = item.create_args.content.clone();
                             let when = item.send_at_timestamp.clone();
+                            let when_edit = when.clone();
                             div()
                                 .id(SharedString::from(format!("scheduled-row-{id}")))
                                 .rounded(px(8.))
@@ -1451,7 +1452,57 @@ impl Root {
                                                         .on_click(cx.listener(move |this, _, _, cx| {
                                                             this.send_now_scheduled_message(id, cx);
                                                         }))
-                                                        .child("Send Now"),
+                                                        .child(dc_intl::t("JLba51")),
+                                                )
+                                                .child(
+                                                    // Module 713024 `s1` -> module 970244 `CI` -> module 23395 Edit schedule time.
+                                                    self.with_tip(
+                                                        format!("scheduled-edit-time-tip-{id}"),
+                                                        super::tooltip::Tip::text(
+                                                            dc_intl::t("SBcdAN"),
+                                                            super::tooltip::Side::Top,
+                                                        ),
+                                                        div()
+                                                            .id(SharedString::from(format!(
+                                                                "scheduled-edit-time-{id}"
+                                                            )))
+                                                            .px(px(8.))
+                                                            .py(px(4.))
+                                                            .rounded(px(6.))
+                                                            .bg(color(
+                                                                "--control-secondary-background-default",
+                                                            ))
+                                                            .hover(|s| {
+                                                                s.bg(color(
+                                                                    "--control-secondary-background-hover",
+                                                                ))
+                                                            })
+                                                            .cursor_pointer()
+                                                            .flex()
+                                                            .items_center()
+                                                            .gap(px(4.))
+                                                            .text_size(px(12.))
+                                                            .font_weight(FontWeight(500.))
+                                                            .text_color(color(
+                                                                "--control-secondary-text-default",
+                                                            ))
+                                                            .child(icon(
+                                                                "webhook_clock",
+                                                                14.,
+                                                                "--control-secondary-text-default",
+                                                            ))
+                                                            .on_click(cx.listener(
+                                                                move |this, _, window, cx| {
+                                                                    this.open_update_scheduled_modal(
+                                                                        id,
+                                                                        &when_edit,
+                                                                        window,
+                                                                        cx,
+                                                                    );
+                                                                },
+                                                            )),
+                                                        cx,
+                                                    ),
                                                 )
                                                 .child(
                                                     div()

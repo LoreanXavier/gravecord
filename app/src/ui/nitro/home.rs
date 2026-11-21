@@ -1302,21 +1302,7 @@ impl Root {
                     .flex()
                     .items_center()
                     .gap(px(8.))
-                    .child(
-                        // The wishlist heart (module 521440): adding Nitro to the wishlist is the Shop's write.
-                        div()
-                            .id("nitro-home-wishlist")
-                            .size(px(32.))
-                            .rounded(px(8.))
-                            .bg(color("--control-overlay-secondary-background-default"))
-                            .hover(|style| {
-                                style.bg(color("--control-overlay-secondary-background-hover"))
-                            })
-                            .flex()
-                            .items_center()
-                            .justify_center()
-                            .child(icon("golive_heart", 16., "--text-strong")),
-                    )
+                    .child(self.nitro_wishlist_button("nitro-home-wishlist", true, cx))
                     .child(
                         div()
                             .id("nitro-home-bar-gift")
@@ -1339,7 +1325,7 @@ impl Root {
                             .font_weight(FontWeight(500.))
                             .text_color(color("--white"))
                             .child(icon("gift", 16., "--white"))
-                            .child(dc_intl::tr("Gift Nitro"))
+                            .child(dc_intl::t("Ve9Ge6"))
                             .on_click(cx.listener(|this, _, _, cx| this.open_purchase(true, cx))),
                     ),
             )
@@ -1371,7 +1357,7 @@ impl Root {
         .size_full();
         let page_color = color("--background-base-lower");
         if !self.subscriber_home_ready() {
-            // `loading_IRnLy8 treatmentLoading_IRnLy8`: the bar over a spinner in a 520px box.
+            // `loading_IRnLy8 treatmentLoading_IRnLy8` (module 886268): NitroHeaderBar (module 107834) over a spinner.
             return div()
                 .relative()
                 .flex_1()
@@ -1379,7 +1365,10 @@ impl Root {
                 .h_full()
                 .overflow_hidden()
                 .bg(page_color)
+                .flex()
+                .flex_col()
                 .child(probe)
+                .child(self.nitro_header_bar(cx))
                 .child(
                     div()
                         .h(px(520.))
@@ -1389,7 +1378,6 @@ impl Root {
                         .justify_center()
                         .child(crate::ui::login::wandering_cubes()),
                 )
-                .child(self.nitro_subscriber_bar(cx))
                 .into_any_element();
         }
         let container = self.home_width(window);

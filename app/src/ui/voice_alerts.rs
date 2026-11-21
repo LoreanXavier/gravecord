@@ -93,10 +93,11 @@ pub(super) enum VoiceAlert {
         target: CallTarget,
         dont_ask: bool,
     },
-    /// "Reload Activity" (module 47294) before the call pops out (or back in) while an Activity runs, with its
-    /// "Don't show again" box.
+    /// "Reload Activity" (module 47294) before the call pops out (or back in / closes via module 140539) while an
+    /// Activity runs, with its "Don't show again" box (`usesPopoutContext` when `in_popout` is true).
     ReloadActivity {
         dont_show: bool,
+        in_popout: bool,
     },
 }
 
@@ -660,8 +661,14 @@ impl Root {
             VoiceAlert::CallConfirm { target, dont_ask } => {
                 return Some(self.call_confirm_modal(*target, *dont_ask, cx));
             }
-            VoiceAlert::ReloadActivity { dont_show, .. } => {
-                return Some(self.reload_activity_modal(*dont_show, cx));
+            VoiceAlert::ReloadActivity {
+                dont_show,
+                in_popout,
+            } => {
+                if *in_popout {
+                    return None;
+                }
+                return Some(self.reload_activity_modal(*dont_show, false, cx));
             }
             _ => {}
         }
@@ -941,9 +948,27 @@ impl Root {
     /// Module 502054 on the alert of module 732159 (`variant: "active"`): Cancel and Start Call, "Don't ask again" in
     /// the action bar (the checkbox of module 568385, `labelType: "secondary"`: `body-md/normal`, `text-subtle`, 12px
     /// after the box).
+    /// Module 47294 with `usesPopoutContext: true` (opened by module 140539 `onBeforeUnload`): rendered inside the
+    /// popped-out call window itself rather than the main window.
+    pub(super) fn popout_voice_alert_modal(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
+        if let Some(VoiceAlert::ReloadActivity {
+            dont_show,
+            in_popout: true,
+        }) = self.voice_alert.as_ref()
+        {
+            return Some(self.reload_activity_modal(*dont_show, true, cx));
+        }
+        None
+    }
+
     /// Module 47294 on the dialog of module 189213 (`size: "md"`): "Reload Activity", its subtitle, Cancel and Reload,
     /// and "Don't show again" in the action bar.
-    fn reload_activity_modal(&self, dont_show: bool, cx: &mut Context<Self>) -> AnyElement {
+    fn reload_activity_modal(
+        &self,
+        dont_show: bool,
+        in_popout: bool,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
         let checkbox = div()
             .id("reload-activity-dont-show")
             .flex()
@@ -984,9 +1009,13 @@ impl Root {
                     "reload-activity-reload",
                     dc_intl::t("makWn9"),
                     modal::Tone::Primary,
-                    |this, window, cx| {
+                    move |this, window, cx| {
                         this.voice_alert = None;
-                        this.toggle_call_popout_now(window, cx);
+                        if in_popout {
+                            this.close_call_popout(cx);
+                        } else {
+                            this.toggle_call_popout_now(window, cx);
+                        }
                     },
                 ),
             ],
@@ -1145,7 +1174,10 @@ impl Root {
     pub(crate) fn script_voice_alert(&mut self, name: &str) -> String {
         match name {
             "reload-activity" => {
-                self.voice_alert = Some(VoiceAlert::ReloadActivity { dont_show: false });
+                self.voice_alert = Some(VoiceAlert::ReloadActivity {
+                    dont_show: false,
+                    in_popout: false,
+                });
                 "voice alert: reload activity".to_owned()
             }
             "end-event" => match self.event_left_by_leaving() {

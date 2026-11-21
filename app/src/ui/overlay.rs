@@ -329,6 +329,10 @@ pub(super) struct Overlay {
     pub(super) wheel: Option<super::overlay_wheel::Wheel>,
     /// A harness run: the sound the wheel would have played.
     pub(super) wheel_played: Option<String>,
+    /// Overlay-specific Favorites (`OverlayFavoritesStore`, modules 406595 / 708653): separate from the app's
+    /// Favorites server (`FRIENDS` tab user IDs and `MESSAGES` tab channel IDs).
+    pub(super) favorite_users: std::collections::HashSet<Id>,
+    pub(super) favorite_channels: std::collections::HashSet<Id>,
 }
 
 impl Default for Overlay {
@@ -380,6 +384,8 @@ impl Default for Overlay {
             wheel_played: None,
             crashed: None,
             crash_timer: false,
+            favorite_users: std::collections::HashSet::new(),
+            favorite_channels: std::collections::HashSet::new(),
         }
     }
 }

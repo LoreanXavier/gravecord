@@ -21,12 +21,37 @@ const UNDER_MINIMUM_AGE: u64 = 20024;
 const AGE_GROUP_UNVERIFIED: u64 = 20086;
 /// The user experiment module 42376 reads (`invite_accept_error`).
 const AGE_ERRORS_EXPERIMENT: &str = "2026-09-invite-accept-age-group-errors";
+/// The user experiment module 484051 reads (`NsfwServerWarning`) for the pre-join gate (module 963055 `qC`).
+const NSFW_SERVER_WARNING_EXPERIMENT: &str = "2026-08-tiny-bronco";
 
 /// `M$` of module 506775: the age group the Age-Restricted Server dialog speaks to.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum AgeGroup {
+    Adult,
     Teen,
     Unverified,
+}
+
+/// `36149` (`yM` / `uE`): derive the account's age group for the pre-join gate (module 656 `g` fallback).
+/// `VERIFIED_TEEN = 2`, `INFERRED_TEEN = 5`; `VERIFIED_ADULT = 3`, `INFERRED_ADULT = 4`.
+pub(super) fn account_age_group(status: Option<u64>) -> AgeGroup {
+    match status {
+        Some(2 | 5) => AgeGroup::Teen,
+        Some(3 | 4) => AgeGroup::Adult,
+        _ => AgeGroup::Unverified,
+    }
+}
+
+/// `qC` of module 963055: show module 656 before joining when the invite is for an EXPLICIT (1) or AGE_RESTRICTED (3)
+/// guild, the user is not a member, the region enables age-gated features (module 454409), and `"2026-08-tiny-bronco"`
+/// variation 1 is active (module 484051).
+pub(super) fn pre_join_age_gate_shown(
+    nsfw_level: u64,
+    joined: bool,
+    age_gated_features: u64,
+    tiny_bronco: bool,
+) -> bool {
+    !joined && matches!(nsfw_level, 1 | 3) && age_gated_features != 0 && tiny_bronco
 }
 
 /// `M` of module 656: an accept refused with `UNDER_MINIMUM_AGE` speaks to a teen, `AGE_GROUP_UNVERIFIED` to an
@@ -41,12 +66,16 @@ pub(super) fn age_gate_for(code: Option<u64>, experiment: bool) -> Option<AgeGro
 }
 
 /// The Age-Restricted Server dialog (module 656 `g` on the dialog of module 189213): the group's line of module
-/// 112417 `K` as its subtitle. A teen gets Confirm Age (`secondary`) before Go Back; an unverified account Go Back
-/// (`secondary`) before Confirm Age. Confirm Age does not join (`joins: false`).
-pub(super) fn age_restricted_alert(group: AgeGroup) -> super::chat_notices::Alert {
+/// 112417 `K` as its subtitle. An adult gets Go Back (`secondary`) before Continue (`primary`, joins); a teen gets
+/// Confirm Age (`secondary`) before Go Back (`primary`); an unverified account Go Back (`secondary`) before Confirm Age.
+pub(super) fn age_restricted_alert(
+    group: AgeGroup,
+    on_confirm: Option<(String, Id)>,
+) -> super::chat_notices::Alert {
     use super::chat_notices::{Alert, AlertButton, Then};
     use super::modal::Tone;
     let subtitle = match group {
+        AgeGroup::Adult => dc_intl::t("fp3xf5"),
         AgeGroup::Teen => dc_intl::t("dqC1w2"),
         AgeGroup::Unverified => dc_intl::t("qiLic6"),
     };
@@ -57,6 +86,15 @@ pub(super) fn age_restricted_alert(group: AgeGroup) -> super::chat_notices::Aler
         label: dc_intl::t("FDSSia").to_owned(),
         tone,
         then: Then::Close,
+    };
+    let cont = AlertButton {
+        id: "age-restricted-continue",
+        label: dc_intl::t("wVq7uo").to_owned(),
+        tone: Tone::Primary,
+        then: on_confirm.map_or(Then::Close, |(code, guild)| Then::AcceptInvite {
+            code,
+            guild,
+        }),
     };
     let back = |tone| AlertButton {
         id: "age-restricted-back",
@@ -70,6 +108,7 @@ pub(super) fn age_restricted_alert(group: AgeGroup) -> super::chat_notices::Aler
         subtitle: Some(vec![(subtitle.to_owned(), false)]),
         content: None,
         buttons: match group {
+            AgeGroup::Adult => vec![back(Tone::Secondary), cont],
             AgeGroup::Teen => vec![confirm(Tone::Secondary), back(Tone::Primary)],
             AgeGroup::Unverified => vec![back(Tone::Secondary), confirm(Tone::Primary)],
         },
@@ -77,6 +116,29 @@ pub(super) fn age_restricted_alert(group: AgeGroup) -> super::chat_notices::Aler
 }
 
 impl Root {
+    /// Sends `POST /invites/{code}` and marks `guild` as pending join (`acceptInvite`).
+    pub(super) fn accept_invite_code(&mut self, code: &str, guild: Id) {
+        let _ = self.requests.send(Request::Rest {
+            key: Some(format!("{ACCEPT_KEY}{code}")),
+            method: reqwest::Method::POST,
+            route: format!("/invites/{code}"),
+            body: Some(serde_json::json!({})),
+        });
+        self.pending_join = Some(guild);
+    }
+
+    fn pre_join_age_gate(&self, nsfw_level: u64, joined: bool) -> bool {
+        pre_join_age_gate_shown(
+            nsfw_level,
+            joined,
+            self.stores.account.age_gated_features,
+            self.stores
+                .experiments
+                .variant(NSFW_SERVER_WARNING_EXPERIMENT)
+                == Some(1),
+        )
+    }
+
     /// The answer of an invite card's Join: a refusal for the account's age group opens module 656's dialog.
     pub(super) fn invite_accept_answered(
         &mut self,
@@ -91,16 +153,22 @@ impl Root {
             self.pending_join = None;
             let experiment = self.stores.experiments.variant(AGE_ERRORS_EXPERIMENT) == Some(1);
             if let Some(group) = age_gate_for(report["body"]["code"].as_u64(), experiment) {
-                self.chat_extra.alert = Some(age_restricted_alert(group));
+                self.chat_extra.alert = Some(age_restricted_alert(group, None));
             }
             cx.notify();
         }
         true
     }
 
-    /// Capture only: `invite-error <code>` answers a Join as Discord refuses it.
+    /// Capture only: `invite-error <code>` answers a Join as Discord refuses it, or `adult` opens the pre-join adult
+    /// confirmation variant of module 656.
     #[cfg(feature = "capture")]
     pub(crate) fn script_invite_error(&mut self, code: &str, cx: &mut Context<Self>) -> String {
+        if code.trim().eq_ignore_ascii_case("adult") {
+            self.chat_extra.alert = Some(age_restricted_alert(AgeGroup::Adult, None));
+            cx.notify();
+            return "alert Some(\"age-restricted-server\")".to_owned();
+        }
         let report = serde_json::json!({"ok": false, "status": 403, "body": {"code": code.parse::<u64>().unwrap_or(0)}});
         // Through the same path a real answer takes.
         self.apply_update(
@@ -727,6 +795,12 @@ impl Root {
             .on_click(cx.listener(move |this, _, _, cx| {
                 if joined {
                     this.select(id, None);
+                } else if this.pre_join_age_gate(nsfw_level, joined) {
+                    // `qC` of module 963055: an age-restricted server warns before joining (module 656 `DO`); adults
+                    // can continue into the guild cap check and `POST /invites/{code}`.
+                    let group = account_age_group(this.stores.account.age_verification_status);
+                    this.chat_extra.alert =
+                        Some(age_restricted_alert(group, Some((code_owned.clone(), id))));
                 } else if this.birthday_invite_gate(nsfw_level, joined) {
                     // `N` of module 963055: an age-restricted server asks an account without a date of birth for one
                     // (module 189282, `NSFW_SERVER_INVITE_EMBED`); nothing is joined.
@@ -736,13 +810,7 @@ impl Root {
                     this.open_guild_cap_upsell(cx);
                 } else {
                     // `acceptInvite`: POST /invites/{code}, then the server opens when it arrives.
-                    let _ = this.requests.send(Request::Rest {
-                        key: Some(format!("{ACCEPT_KEY}{code_owned}")),
-                        method: reqwest::Method::POST,
-                        route: format!("/invites/{code_owned}"),
-                        body: Some(serde_json::json!({})),
-                    });
-                    this.pending_join = Some(id);
+                    this.accept_invite_code(&code_owned, id);
                 }
                 cx.notify();
             }))
@@ -974,7 +1042,8 @@ impl Root {
 #[cfg(test)]
 mod tests {
     use super::{
-        AgeGroup, age_gate_for, age_restricted_alert, brighten, invite_codes, invite_roles,
+        AgeGroup, account_age_group, age_gate_for, age_restricted_alert, brighten, invite_codes,
+        invite_roles, pre_join_age_gate_shown,
     };
 
     /// Module 897288 sorts the granted roles by `d6`: position high to low, then id.
@@ -1002,11 +1071,26 @@ mod tests {
         assert_eq!(age_gate_for(Some(20024), false), None);
         assert_eq!(age_gate_for(Some(50013), true), None);
         assert_eq!(age_gate_for(None, true), None);
-        let teen = age_restricted_alert(AgeGroup::Teen);
+        let teen = age_restricted_alert(AgeGroup::Teen, None);
         assert_eq!(teen.title, "Age-Restricted Server");
         assert_eq!(teen.buttons[0].label, "Confirm Age");
-        let unverified = age_restricted_alert(AgeGroup::Unverified);
+        let unverified = age_restricted_alert(AgeGroup::Unverified, None);
         assert_eq!(unverified.buttons[0].label, "Go Back");
+        let adult = age_restricted_alert(AgeGroup::Adult, Some(("abc".to_owned(), 42)));
+        assert_eq!(adult.buttons[0].label, "Go Back");
+        assert_eq!(adult.buttons[1].label, "Continue");
+        assert_eq!(account_age_group(Some(2)), AgeGroup::Teen);
+        assert_eq!(account_age_group(Some(5)), AgeGroup::Teen);
+        assert_eq!(account_age_group(Some(3)), AgeGroup::Adult);
+        assert_eq!(account_age_group(Some(4)), AgeGroup::Adult);
+        assert_eq!(account_age_group(Some(1)), AgeGroup::Unverified);
+        assert_eq!(account_age_group(None), AgeGroup::Unverified);
+        assert!(pre_join_age_gate_shown(3, false, 1, true));
+        assert!(pre_join_age_gate_shown(1, false, 1, true));
+        assert!(!pre_join_age_gate_shown(3, true, 1, true));
+        assert!(!pre_join_age_gate_shown(0, false, 1, true));
+        assert!(!pre_join_age_gate_shown(3, false, 0, true));
+        assert!(!pre_join_age_gate_shown(3, false, 1, false));
     }
 
     #[test]

@@ -280,8 +280,8 @@ impl Root {
             .into_any_element()
     }
 
-    /// The rail's context menu, drawn in the overlay window: the app's own menu of the DM, group or channel
-    /// (`overlay-user-context` 92016, `overlay-channel-context` 769192 and 813407 open there in the official client).
+    /// The rail's context menu, drawn in the overlay window: `overlay-user-context` (module 92016) /
+    /// `overlay-gdm-context` (module 320442) for private channels, and `overlay-channel-context` for guild channels.
     pub(super) fn overlay_rail_menu(
         &mut self,
         channel: Id,
@@ -294,7 +294,7 @@ impl Root {
             .iter()
             .any(|known| known.id == channel);
         let target = if private {
-            super::context_menu::Target::Dm(channel)
+            super::context_menu::Target::OverlayDm(channel)
         } else {
             super::context_menu::Target::Channel(channel)
         };

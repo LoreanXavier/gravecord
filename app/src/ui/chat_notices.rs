@@ -140,6 +140,11 @@ pub(super) enum Then {
         guilds: Vec<Id>,
         activity: Option<u64>,
     },
+    /// Continue of the Age-Restricted Server pre-join dialog (module 656 `DO` / module 963055 `qC`).
+    AcceptInvite {
+        code: String,
+        guild: Id,
+    },
 }
 
 /// The id of module 73028's confirm, drawn over the Edit Group modal it guards.
@@ -999,6 +1004,13 @@ impl Root {
             Then::DiscardGroupEdit => self.group_edit = None,
             Then::DeauthorizeApp { application, token } => {
                 self.deauthorize_app(&application, &token, cx);
+            }
+            Then::AcceptInvite { code, guild } => {
+                if self.at_guild_cap() {
+                    self.open_guild_cap_upsell(cx);
+                } else {
+                    self.accept_invite_code(&code, guild);
+                }
             }
         }
     }

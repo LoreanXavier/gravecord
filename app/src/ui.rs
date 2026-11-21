@@ -13292,7 +13292,7 @@ impl Render for Root {
             .children(self.activity_dialog_layer(cx))
             .children(self.update_dialog_layer(cx))
             .children(self.oauth_layer(window, cx))
-            .children(self.activity_pip_layer(window))
+            .children(self.activity_pip_layer(window, cx))
             .children(self.video_pip_layer(window, cx))
             .children(self.notify_menu(window, cx))
             .children(self.notify_mute_submenu(window, cx))

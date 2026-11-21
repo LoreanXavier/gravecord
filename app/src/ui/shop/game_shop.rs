@@ -970,9 +970,23 @@ impl Root {
                         },
                     )),
             )
+            .on_mouse_down(
+                gpui::MouseButton::Right,
+                cx.listener(move |this, event: &gpui::MouseDownEvent, _, cx| {
+                    // Module 10680 (`SocialLayerStorefrontCard` `onContextMenu` in 869099): Copy SKU ID in dev mode.
+                    if this.developer_mode() {
+                        cx.stop_propagation();
+                        this.context.game_shop_sku = Some(id.clone());
+                        this.open_context_menu(
+                            super::super::context_menu::Target::GameShopSku,
+                            event.position,
+                            cx,
+                        );
+                    }
+                }),
+            )
             .on_click(cx.listener(move |_, _, _, _| {
                 // A card opens the sku modal of module 317560, which is not built (BLOCKED.md).
-                let _ = &id;
             }))
             .into_any_element()
     }

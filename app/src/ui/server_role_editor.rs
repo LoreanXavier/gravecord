@@ -438,8 +438,6 @@ impl Root {
         };
         let anchor = self.tip_anchors.borrow().get(&key).copied()?;
         // GAP: the popout's 8px offset and its clamp to the window are not measured (no capture of it open).
-        // GAP: the colour applies while dragging; the official one (`eagerUpdate` off) applies on release.
-        // GAP: the away layer does not occlude, so pressing the open button again may close and reopen it.
         let left = (f32::from(anchor.right()) + 8.)
             .min(self.viewport.0 - 264.)
             .max(8.);
@@ -449,6 +447,7 @@ impl Root {
             gpui::deferred(
                 div()
                     .id("server-role-colour-away")
+                    .occlude()
                     .absolute()
                     .inset_0()
                     .on_click(cx.listener(|this, _, _, cx| {
@@ -1637,8 +1636,12 @@ impl Root {
     ) -> AnyElement {
         self.want_image(PREVIEW_AVATAR.to_owned(), PREVIEW_AVATAR.to_owned(), cx);
         let avatar = self.images.get(PREVIEW_AVATAR).cloned();
-        // GAP: the "new" badge on the title (`GUILD_SETTINGS_ROLE_STYLES_NEW_BADGE`), the role icon after the name
-        // and the clipped timestamp of the preview message are not drawn.
+        let role_emoji = self
+            .stores
+            .guild(guild)
+            .and_then(|g| g.role_icons.get(&role))
+            .and_then(|r| r.unicode_emoji.clone())
+            .filter(|e| !e.is_empty());
         let cards = RoleStyle::ALL.map(|style| {
             let disabled = !enhanced && style != RoleStyle::Solid;
             let chosen = style == selected;
@@ -1651,6 +1654,7 @@ impl Root {
             } else {
                 super::role_gradient::name(dc_intl::t("cqpybK"), preview).into_any_element()
             };
+            let badge_emoji = role_emoji.clone();
             div()
                 .id(SharedString::from(format!("server-role-style-{style:?}")))
                 .flex_none()
@@ -1699,12 +1703,30 @@ impl Root {
                                 .absolute()
                                 .left(px(60.5))
                                 .top(px(10.))
-                                .w(px(200.))
-                                .text_size(px(16.))
-                                .line_height(px(22.))
-                                .font_weight(FontWeight(500.))
+                                .w(px(220.))
+                                .flex()
+                                .items_center()
+                                .gap(px(4.))
                                 .whitespace_nowrap()
-                                .child(name),
+                                .child(
+                                    div()
+                                        .text_size(px(16.))
+                                        .line_height(px(22.))
+                                        .font_weight(FontWeight(500.))
+                                        .child(name),
+                                )
+                                .when_some(badge_emoji, |row, emoji| {
+                                    row.child(div().text_size(px(14.)).child(emoji))
+                                })
+                                .child(
+                                    div()
+                                        .ml(px(2.))
+                                        .text_size(px(12.))
+                                        .line_height(px(22.))
+                                        .font_weight(FontWeight(500.))
+                                        .text_color(color("--text-muted"))
+                                        .child("12:00 PM"),
+                                ),
                         )
                         .child(
                             div()
@@ -1834,16 +1856,38 @@ impl Root {
                                 .font_weight(FontWeight(500.))
                                 .child(dc_intl::t("+7XY31")),
                         )
-                        .on_click(cx.listener(|this, _, _, cx| {
+                        .on_click(cx.listener(move |this, _, _, cx| {
                             this.server_settings = None;
-                            cx.notify();
+                            this.select(guild, None);
+                            this.open_boost_page(cx);
                         })),
                 )
         });
         div()
             .flex()
             .flex_col()
-            .child(Self::field_title(dc_intl::t("9wVJRB"), false))
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap(px(6.))
+                    .child(Self::field_title(dc_intl::t("9wVJRB"), false))
+                    .child(
+                        div()
+                            .mb(px(8.))
+                            .px(px(6.))
+                            .h(px(16.))
+                            .rounded(px(8.))
+                            .bg(color("--brand-500"))
+                            .flex()
+                            .items_center()
+                            .text_size(px(10.))
+                            .line_height(px(12.))
+                            .font_weight(FontWeight(700.))
+                            .text_color(color("--white"))
+                            .child(dc_intl::t("y2b7CA").to_uppercase()),
+                    ),
+            )
             .child(div().pb(px(8.)).flex().gap(px(8.)).children(cards))
             .children(upsell)
             .into_any_element()
@@ -1868,7 +1912,7 @@ impl Root {
             // `n`: a colour darker than 0.1 has the white ring and a white dropper, a near-white one black.
             let dark = darkness(value) > 0.1;
             let ring = if dark { rgb(0xffffff) } else { rgb(0x000000) };
-            let label = dc_intl::t(if index == 0 { "apbXbH" } else { "JaVq1b" });
+            let label = gradient_stop_label(index, pair.len());
             let circle = div()
                 .id(SharedString::from(format!(
                     "server-role-gradient-stop-{index}"
@@ -1916,7 +1960,7 @@ impl Root {
                 }));
             self.with_tip(
                 format!("server-role-colour-stop-{index}"),
-                Tip::text(label, Side::Bottom),
+                Tip::body(super::tooltip::Body::Text(label.into()), Side::Bottom),
                 circle,
                 cx,
             )
@@ -2776,6 +2820,15 @@ impl Root {
     }
 }
 
+/// Module 48736 `f`: stop tooltip label (`apbXbH` / `JaVq1b` for 2 stops, `XdByBm` for >2 stops).
+pub(super) fn gradient_stop_label(index: usize, count: usize) -> String {
+    if count <= 2 {
+        dc_intl::t(if index == 0 { "apbXbH" } else { "JaVq1b" }).to_owned()
+    } else {
+        dc_intl::format("XdByBm", &[("number", (index + 1).to_string().into())])
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2900,5 +2953,8 @@ mod tests {
         assert_eq!(custom_color(NO_COLOR), None);
         assert_eq!(custom_color(SWATCHES[3]), None);
         assert_eq!(custom_color(0x123456), Some(0x123456));
+        assert_eq!(gradient_stop_label(0, 2), "Custom Gradient Start Color");
+        assert_eq!(gradient_stop_label(1, 2), "Custom Gradient End Color");
+        assert_eq!(gradient_stop_label(2, 3), "Custom Gradient Color 3");
     }
 }

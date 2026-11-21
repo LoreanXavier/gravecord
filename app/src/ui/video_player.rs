@@ -1952,6 +1952,735 @@ impl Root {
     }
 }
 
+/// Module 40705 (`discord-web-video-player`) playback speed snap stops (`playbackSpeedPopout_hFq1lM`).
+pub(super) const DVP_SPEED_STOPS: [f32; 7] = [0.5, 0.75, 1.0, 1.25, 1.5, 1.75, 2.0];
+
+/// Size presets for module 40705 (`530567.X4`: SM, MD, LG).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[allow(dead_code)]
+pub(super) enum DvpSize {
+    Sm,
+    Md,
+    Lg,
+}
+
+impl DvpSize {
+    fn bar_height(self) -> f32 {
+        match self {
+            Self::Sm => 40.0,
+            Self::Md => 64.0,
+            Self::Lg => 72.0,
+        }
+    }
+
+    fn pad_x(self) -> f32 {
+        match self {
+            Self::Sm => 12.0,
+            Self::Md | Self::Lg => 20.0,
+        }
+    }
+
+    fn gap(self) -> f32 {
+        match self {
+            Self::Sm => 12.0,
+            Self::Md | Self::Lg => 16.0,
+        }
+    }
+
+    fn volume_slider_width(self) -> f32 {
+        match self {
+            Self::Sm => 48.0,
+            Self::Md | Self::Lg => 100.0,
+        }
+    }
+}
+
+/// Interactive control bar state for module 40705 (`discord-web-video-player`, callers `91982` / `955368`).
+#[derive(Clone, Debug)]
+pub(crate) struct DvpControlState {
+    pub playing: bool,
+    pub ended: bool,
+    pub current_secs: u32,
+    pub max_watched_secs: u32,
+    pub duration_secs: u32,
+    pub volume: f32,
+    pub muted: bool,
+    pub show_remaining: bool,
+    pub transcript_open: bool,
+    pub captions_enabled: bool,
+    pub speed_open: bool,
+    pub playback_rate: f32,
+    pub fullscreen: bool,
+}
+
+impl Default for DvpControlState {
+    fn default() -> Self {
+        Self {
+            playing: true,
+            ended: false,
+            current_secs: 0,
+            max_watched_secs: 0,
+            duration_secs: 0,
+            volume: 1.0,
+            muted: false,
+            show_remaining: false,
+            transcript_open: false,
+            captions_enabled: false,
+            speed_open: false,
+            playback_rate: 1.0,
+            fullscreen: false,
+        }
+    }
+}
+
+impl DvpControlState {
+    pub(crate) fn for_video(watch_secs: u32, duration_secs: u32, ended: bool) -> Self {
+        Self {
+            playing: !ended,
+            ended,
+            current_secs: watch_secs.min(duration_secs),
+            max_watched_secs: watch_secs.min(duration_secs),
+            duration_secs,
+            ..Self::default()
+        }
+    }
+
+    /// Module 40705 `seekForwardEnabled`: cannot skip past already-watched sections (`current + 1 < max_watched`).
+    pub(crate) fn seek_forward_enabled(&self) -> bool {
+        !self.ended && self.current_secs.saturating_add(1) < self.max_watched_secs
+    }
+
+    pub(crate) fn seek_back_10(&mut self) {
+        self.current_secs = self.current_secs.saturating_sub(10);
+        if self.ended && self.current_secs < self.duration_secs {
+            self.ended = false;
+        }
+    }
+
+    pub(crate) fn seek_forward_10(&mut self) {
+        if !self.seek_forward_enabled() {
+            return;
+        }
+        let ceiling = self.max_watched_secs.min(self.duration_secs);
+        self.current_secs = self.current_secs.saturating_add(10).min(ceiling);
+    }
+
+    pub(crate) fn toggle_play(&mut self) {
+        if self.ended {
+            self.ended = false;
+            self.current_secs = 0;
+            self.playing = true;
+        } else {
+            self.playing = !self.playing;
+        }
+    }
+
+    pub(crate) fn adjust_volume(&mut self, delta: f32) {
+        self.volume = (self.volume + delta).clamp(0.0, 1.0);
+        if self.volume > 0.0 {
+            self.muted = false;
+        }
+    }
+
+    /// Module 40705 `O` (`discord-web-video-player-duration`): elapsed `m:ss` or remaining `-m:ss`, optionally
+    /// followed by ` / m:ss` unless `compact` is true; placeholder `"-:--"` when duration is unknown.
+    pub(crate) fn duration_text(&self, compact: bool) -> String {
+        if self.duration_secs == 0 {
+            return "-:--".to_owned();
+        }
+        let fmt = |secs: u32| format!("{}:{:02}", secs / 60, secs % 60);
+        let cur = self.current_secs.min(self.duration_secs);
+        let lead = if self.show_remaining {
+            format!("-{}", fmt(self.duration_secs.saturating_sub(cur)))
+        } else {
+            fmt(cur)
+        };
+        if compact {
+            lead
+        } else {
+            format!("{lead} / {}", fmt(self.duration_secs))
+        }
+    }
+
+    /// Keyboard shortcuts of module 876230 (`TJ`) / module 40705: `k`/`Space`, `j`/`left`, `l`/`right`, `c`, `f`,
+    /// `m`, `up`/`down` (±10% volume).
+    pub(crate) fn handle_shortcut(&mut self, key: &str) -> bool {
+        match key {
+            "k" | "space" | " " => self.toggle_play(),
+            "j" | "left" => self.seek_back_10(),
+            "l" | "right" => self.seek_forward_10(),
+            "c" => self.captions_enabled = !self.captions_enabled,
+            "f" => self.fullscreen = !self.fullscreen,
+            "m" => self.muted = !self.muted,
+            "up" => self.adjust_volume(0.10),
+            "down" => self.adjust_volume(-0.10),
+            _ => return false,
+        }
+        true
+    }
+}
+
+/// Callback updating the host's `DvpControlState` (e.g. `VideoQuestModal.dvp`).
+pub(super) type DvpMutator =
+    std::rc::Rc<dyn Fn(&mut Root, Box<dyn FnOnce(&mut DvpControlState)>, &mut Context<Root>)>;
+
+impl Root {
+    /// Newer `discord-web-video-player` 3-group control bar (module 40705 `er`, size presets `530567.X4`).
+    #[allow(clippy::too_many_arguments)]
+    pub(super) fn render_dvp_control_bar(
+        &self,
+        id_prefix: &'static str,
+        state: &DvpControlState,
+        size: DvpSize,
+        hide_transcript: bool,
+        hide_captions: bool,
+        hide_speed: bool,
+        download_url: Option<String>,
+        on_mutate: DvpMutator,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let seek_fwd = state.seek_forward_enabled();
+        let play_icon = if state.ended {
+            "media_replay"
+        } else if state.playing {
+            "clips_pause"
+        } else {
+            "clips_play"
+        };
+        let play_tip = dc_intl::t(if state.ended {
+            "hsvh0i"
+        } else if state.playing {
+            "ZcgDJX"
+        } else {
+            "RscU7I"
+        });
+        let m_play = on_mutate.clone();
+        let play_btn = self.with_tip(
+            format!("{id_prefix}-play-tip"),
+            Tip::text(play_tip, Side::Top),
+            div()
+                .id(gpui::SharedString::from(format!("{id_prefix}-play")))
+                .size(px(28.))
+                .rounded(px(6.))
+                .flex()
+                .items_center()
+                .justify_center()
+                .cursor_pointer()
+                .hover(|s| s.bg(rgba(0xffffff1a)))
+                .child(icon(play_icon, 18., "--white"))
+                .on_click(cx.listener(move |this, _, _, cx| {
+                    cx.stop_propagation();
+                    m_play(this, Box::new(DvpControlState::toggle_play), cx);
+                })),
+            cx,
+        );
+        let m_back = on_mutate.clone();
+        let rewind_btn = self.with_tip(
+            format!("{id_prefix}-rewind-tip"),
+            Tip::text(dc_intl::t("dRVF+Z"), Side::Top),
+            div()
+                .id(gpui::SharedString::from(format!("{id_prefix}-rewind")))
+                .size(px(28.))
+                .rounded(px(6.))
+                .flex()
+                .items_center()
+                .justify_center()
+                .cursor_pointer()
+                .hover(|s| s.bg(rgba(0xffffff1a)))
+                .child(icon("clips_skip_back", 18., "--white"))
+                .on_click(cx.listener(move |this, _, _, cx| {
+                    cx.stop_propagation();
+                    m_back(this, Box::new(DvpControlState::seek_back_10), cx);
+                })),
+            cx,
+        );
+        let m_fwd = on_mutate.clone();
+        let fwd_tip = dc_intl::t(if seek_fwd { "yV2FLL" } else { "YWbiPw" });
+        let skip_btn = self.with_tip(
+            format!("{id_prefix}-fwd-tip"),
+            Tip::text(fwd_tip, Side::Top),
+            div()
+                .id(gpui::SharedString::from(format!("{id_prefix}-fwd")))
+                .size(px(28.))
+                .rounded(px(6.))
+                .flex()
+                .items_center()
+                .justify_center()
+                .when(seek_fwd, |s| {
+                    s.cursor_pointer().hover(|h| h.bg(rgba(0xffffff1a)))
+                })
+                .when(!seek_fwd, |s| s.opacity(0.4))
+                .child(icon("clips_skip_forward", 18., "--white"))
+                .on_click(cx.listener(move |this, _, _, cx| {
+                    cx.stop_propagation();
+                    if seek_fwd {
+                        m_fwd(this, Box::new(DvpControlState::seek_forward_10), cx);
+                    }
+                })),
+            cx,
+        );
+
+        let vol_effective = if state.muted { 0.0 } else { state.volume };
+        let vol_icon = if vol_effective <= 0.0 {
+            "clips_voice_off"
+        } else {
+            "clips_voice_on"
+        };
+        let vol_tip = dc_intl::t(if vol_effective <= 0.0 {
+            "YqAjXy"
+        } else {
+            "w4m945"
+        });
+        let m_mute = on_mutate.clone();
+        let mute_btn = self.with_tip(
+            format!("{id_prefix}-mute-tip"),
+            Tip::text(vol_tip, Side::Top),
+            div()
+                .id(gpui::SharedString::from(format!("{id_prefix}-mute")))
+                .size(px(28.))
+                .rounded(px(6.))
+                .flex()
+                .items_center()
+                .justify_center()
+                .cursor_pointer()
+                .hover(|s| s.bg(rgba(0xffffff1a)))
+                .child(icon(vol_icon, 18., "--white"))
+                .on_click(cx.listener(move |this, _, _, cx| {
+                    cx.stop_propagation();
+                    m_mute(
+                        this,
+                        Box::new(|s| {
+                            s.muted = !s.muted;
+                            if !s.muted && s.volume <= 0.0 {
+                                s.volume = 0.5;
+                            }
+                        }),
+                        cx,
+                    );
+                })),
+            cx,
+        );
+
+        let slider_w = size.volume_slider_width();
+        let slider_bounds = std::rc::Rc::new(std::cell::Cell::new(Bounds::default()));
+        let sb_write = slider_bounds.clone();
+        let sb_read = slider_bounds.clone();
+        let m_vol = on_mutate.clone();
+        let vol_slider = self.with_tip(
+            format!("{id_prefix}-vol-tip"),
+            Tip::text(dc_intl::t("XiLvuG"), Side::Top),
+            div()
+                .id(gpui::SharedString::from(format!("{id_prefix}-vol-slider")))
+                .relative()
+                .w(px(slider_w))
+                .h(px(20.))
+                .flex()
+                .items_center()
+                .cursor_pointer()
+                .child(
+                    canvas(move |b, _, _| sb_write.set(b), |_, _, _, _| {})
+                        .absolute()
+                        .size_full(),
+                )
+                .child(
+                    div()
+                        .w_full()
+                        .h(px(4.))
+                        .rounded_full()
+                        .bg(rgba(0xffffff33))
+                        .overflow_hidden()
+                        .child(
+                            div()
+                                .h_full()
+                                .w(gpui::relative(vol_effective.clamp(0.0, 1.0)))
+                                .bg(color("--white")),
+                        ),
+                )
+                .on_mouse_down(
+                    MouseButton::Left,
+                    cx.listener(move |this, event: &MouseDownEvent, _, cx| {
+                        cx.stop_propagation();
+                        let area = sb_read.get();
+                        if area.size.width > px(0.) {
+                            let frac = ((event.position.x - area.origin.x) / area.size.width)
+                                .clamp(0.0, 1.0);
+                            m_vol(
+                                this,
+                                Box::new(move |s| {
+                                    s.volume = frac;
+                                    s.muted = frac <= 0.001;
+                                }),
+                                cx,
+                            );
+                        }
+                    }),
+                ),
+            cx,
+        );
+
+        let m_time = on_mutate.clone();
+        let duration_btn = div()
+            .id(gpui::SharedString::from(format!("{id_prefix}-duration")))
+            .px(px(6.))
+            .py(px(2.))
+            .rounded(px(4.))
+            .cursor_pointer()
+            .hover(|s| s.bg(rgba(0xffffff14)))
+            .text_size(px(12.))
+            .line_height(px(16.))
+            .font_weight(FontWeight(600.))
+            .text_color(color("--white"))
+            .child(state.duration_text(false))
+            .on_click(cx.listener(move |this, _, _, cx| {
+                cx.stop_propagation();
+                m_time(this, Box::new(|s| s.show_remaining = !s.show_remaining), cx);
+            }));
+
+        let transcript_active = state.transcript_open && !state.ended;
+        let transcript_disabled = state.ended;
+        let m_tr = on_mutate.clone();
+        let transcript_btn = (!hide_transcript).then(|| {
+            self.with_tip(
+                format!("{id_prefix}-transcript-tip"),
+                Tip::text(dc_intl::t("6EjGUv"), Side::Top),
+                div()
+                    .id(gpui::SharedString::from(format!("{id_prefix}-transcript")))
+                    .size(px(28.))
+                    .rounded(px(6.))
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .when(transcript_active, |s| s.bg(color("--brand-500")))
+                    .when(!transcript_disabled, |s| {
+                        s.cursor_pointer().hover(|h| h.bg(rgba(0xffffff1a)))
+                    })
+                    .when(transcript_disabled, |s| s.opacity(0.4))
+                    .child(icon("discover_doc", 16., "--white"))
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        cx.stop_propagation();
+                        if !transcript_disabled {
+                            m_tr(
+                                this,
+                                Box::new(|s| s.transcript_open = !s.transcript_open),
+                                cx,
+                            );
+                        }
+                    })),
+                cx,
+            )
+            .into_any_element()
+        });
+
+        let cc_on = state.captions_enabled;
+        let m_cc = on_mutate.clone();
+        let captions_btn = (!hide_captions).then(|| {
+            self.with_tip(
+                format!("{id_prefix}-cc-tip"),
+                Tip::text(dc_intl::t("0DbPcL"), Side::Top),
+                div()
+                    .id(gpui::SharedString::from(format!("{id_prefix}-cc")))
+                    .h(px(28.))
+                    .px(px(6.))
+                    .rounded(px(6.))
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .cursor_pointer()
+                    .when(cc_on, |s| s.bg(color("--brand-500")))
+                    .when(!cc_on, |s| s.hover(|h| h.bg(rgba(0xffffff1a))))
+                    .child(
+                        div()
+                            .px(px(3.))
+                            .rounded(px(3.))
+                            .border_1()
+                            .border_color(color("--white"))
+                            .text_size(px(10.))
+                            .line_height(px(12.))
+                            .font_weight(FontWeight(700.))
+                            .text_color(color("--white"))
+                            .child("CC"),
+                    )
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        cx.stop_propagation();
+                        m_cc(
+                            this,
+                            Box::new(|s| s.captions_enabled = !s.captions_enabled),
+                            cx,
+                        );
+                    })),
+                cx,
+            )
+            .into_any_element()
+        });
+
+        let download_btn = download_url.map(|url| {
+            self.with_tip(
+                format!("{id_prefix}-dl-tip"),
+                Tip::text(dc_intl::t("1WjMbC"), Side::Top),
+                div()
+                    .id(gpui::SharedString::from(format!("{id_prefix}-dl")))
+                    .size(px(28.))
+                    .rounded(px(6.))
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .cursor_pointer()
+                    .hover(|s| s.bg(rgba(0xffffff1a)))
+                    .child(icon("lb_download", 18., "--white"))
+                    .on_click(cx.listener(move |_, _, _, cx| {
+                        cx.stop_propagation();
+                        cx.open_url(&url);
+                    })),
+                cx,
+            )
+            .into_any_element()
+        });
+
+        let rate = state.playback_rate;
+        let speed_open = state.speed_open;
+        let m_speed_toggle = on_mutate.clone();
+        let speed_popout = speed_open.then(|| {
+            let mut pills = Vec::new();
+            for stop in DVP_SPEED_STOPS {
+                let selected = (stop - rate).abs() < 0.01;
+                let m_stop = on_mutate.clone();
+                let label = if (stop - 1.0).abs() < 0.01 {
+                    "1x".to_owned()
+                } else {
+                    format!("{stop}x")
+                };
+                pills.push(
+                    div()
+                        .id(gpui::SharedString::from(format!(
+                            "{id_prefix}-spd-{}",
+                            (stop * 100.0).round() as u32
+                        )))
+                        .flex_1()
+                        .h(px(26.))
+                        .rounded(px(6.))
+                        .cursor_pointer()
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .text_size(px(11.))
+                        .font_weight(FontWeight(600.))
+                        .bg(if selected {
+                            color("--brand-500")
+                        } else {
+                            color("--background-surface-higher")
+                        })
+                        .text_color(color("--white"))
+                        .child(label)
+                        .on_click(cx.listener(move |this, _, _, cx| {
+                            cx.stop_propagation();
+                            m_stop(
+                                this,
+                                Box::new(move |s| {
+                                    s.playback_rate = stop;
+                                    s.speed_open = false;
+                                }),
+                                cx,
+                            );
+                        })),
+                );
+            }
+            div()
+                .id(gpui::SharedString::from(format!(
+                    "{id_prefix}-speed-popout"
+                )))
+                .occlude()
+                .absolute()
+                .right(px(0.))
+                .bottom(px(58.))
+                .w(px(260.))
+                .px(px(16.))
+                .pt(px(14.))
+                .pb(px(12.))
+                .rounded(px(8.))
+                .border_1()
+                .border_color(color("--border-subtle"))
+                .bg(color("--background-base-lowest"))
+                .flex()
+                .flex_col()
+                .gap(px(10.))
+                .child(
+                    div()
+                        .text_size(px(13.))
+                        .line_height(px(16.))
+                        .font_weight(FontWeight(600.))
+                        .text_color(color("--text-strong"))
+                        .child(dc_intl::t("ZwPhbB")),
+                )
+                .child(div().flex().gap(px(4.)).children(pills))
+        });
+        let speed_btn = (!hide_speed).then(|| {
+            let badge = ((rate - 1.0).abs() > 0.01).then(|| {
+                div()
+                    .absolute()
+                    .right(px(-2.))
+                    .bottom(px(-2.))
+                    .px(px(3.))
+                    .rounded(px(4.))
+                    .bg(color("--brand-500"))
+                    .text_size(px(9.))
+                    .line_height(px(11.))
+                    .font_weight(FontWeight(700.))
+                    .text_color(color("--white"))
+                    .child(format!("{rate}x"))
+            });
+            div()
+                .relative()
+                .child(
+                    self.with_tip(
+                        format!("{id_prefix}-speed-tip"),
+                        Tip::text(dc_intl::t("ZwPhbB"), Side::Top),
+                        div()
+                            .id(gpui::SharedString::from(format!("{id_prefix}-speed")))
+                            .relative()
+                            .size(px(28.))
+                            .rounded(px(6.))
+                            .flex()
+                            .items_center()
+                            .justify_center()
+                            .cursor_pointer()
+                            .when(speed_open, |s| s.bg(rgba(0xffffff22)))
+                            .hover(|s| s.bg(rgba(0xffffff1a)))
+                            .child(icon("emoji_error_speedometer", 18., "--white"))
+                            .children(badge)
+                            .on_click(cx.listener(move |this, _, _, cx| {
+                                cx.stop_propagation();
+                                m_speed_toggle(
+                                    this,
+                                    Box::new(|s| s.speed_open = !s.speed_open),
+                                    cx,
+                                );
+                            })),
+                        cx,
+                    ),
+                )
+                .children(speed_popout)
+                .into_any_element()
+        });
+
+        let fs_icon = if state.fullscreen {
+            "fullscreen_exit"
+        } else {
+            "voice_view_fullscreen"
+        };
+        let m_fs = on_mutate;
+        let fs_btn = self.with_tip(
+            format!("{id_prefix}-fs-tip"),
+            Tip::text(dc_intl::t("z9Cnzv"), Side::Top),
+            div()
+                .id(gpui::SharedString::from(format!("{id_prefix}-fs")))
+                .size(px(28.))
+                .rounded(px(6.))
+                .flex()
+                .items_center()
+                .justify_center()
+                .cursor_pointer()
+                .hover(|s| s.bg(rgba(0xffffff1a)))
+                .child(icon(fs_icon, 18., "--white"))
+                .on_click(cx.listener(move |this, _, _, cx| {
+                    cx.stop_propagation();
+                    m_fs(this, Box::new(|s| s.fullscreen = !s.fullscreen), cx);
+                })),
+            cx,
+        );
+
+        let gap = size.gap();
+        div()
+            .id(gpui::SharedString::from(format!("{id_prefix}-bar")))
+            .relative()
+            .w_full()
+            .h(px(size.bar_height()))
+            .px(px(size.pad_x()))
+            .flex()
+            .items_center()
+            .justify_between()
+            .gap(px(gap))
+            .child(
+                // Start group: Play/Pause/Replay + Rewind 10s + Skip 10s
+                div()
+                    .flex()
+                    .items_center()
+                    .gap(px(8.))
+                    .child(play_btn)
+                    .child(rewind_btn)
+                    .child(skip_btn),
+            )
+            .child(
+                // Mid group: Volume + Duration
+                div()
+                    .flex_1()
+                    .flex()
+                    .items_center()
+                    .gap(px(8.))
+                    .child(mute_btn)
+                    .child(vol_slider)
+                    .child(duration_btn),
+            )
+            .child(
+                // End group: Transcript, Captions, Download, Speed, Fullscreen
+                div()
+                    .flex()
+                    .items_center()
+                    .gap(px(6.))
+                    .children(transcript_btn)
+                    .children(captions_btn)
+                    .children(download_btn)
+                    .children(speed_btn)
+                    .child(fs_btn),
+            )
+            .into_any_element()
+    }
+}
+
+#[cfg(test)]
+mod dvp_tests {
+    use super::*;
+
+    #[test]
+    fn dvp_control_bar_duration_seek_guard_and_shortcuts_match_40705() {
+        let mut st = DvpControlState::for_video(15, 60, false);
+        assert_eq!(st.duration_text(false), "0:15 / 1:00");
+        assert_eq!(st.duration_text(true), "0:15");
+        st.show_remaining = true;
+        assert_eq!(st.duration_text(false), "-0:45 / 1:00");
+        assert_eq!(DvpControlState::default().duration_text(false), "-:--");
+
+        // At max watched: cannot seek forward (`YWbiPw`).
+        assert!(!st.seek_forward_enabled());
+        assert!(st.handle_shortcut("j"));
+        assert_eq!(st.current_secs, 5);
+        assert!(st.seek_forward_enabled());
+        assert!(st.handle_shortcut("l"));
+        assert_eq!(st.current_secs, 15);
+        assert!(!st.seek_forward_enabled());
+
+        assert!(st.handle_shortcut("k"));
+        assert!(!st.playing);
+        assert!(st.handle_shortcut("c"));
+        assert!(st.captions_enabled);
+        assert!(st.handle_shortcut("f"));
+        assert!(st.fullscreen);
+        assert!(st.handle_shortcut("m"));
+        assert!(st.muted);
+        assert!(st.handle_shortcut("up"));
+        assert!(!st.muted);
+        assert!(!st.handle_shortcut("x"));
+
+        // Verify all 40705 i18n keys resolve cleanly.
+        assert_eq!(dc_intl::t("dRVF+Z"), "Rewind 10 seconds");
+        assert_eq!(dc_intl::t("yV2FLL"), "Skip ahead 10 seconds");
+        assert_eq!(dc_intl::t("YWbiPw"), "Can't skip unwatched sections yet");
+        assert_eq!(dc_intl::t("ZwPhbB"), "Playback speed");
+        assert_eq!(dc_intl::t("6EjGUv"), "Toggle transcript");
+        assert_eq!(dc_intl::t("0DbPcL"), "Toggle captions");
+        assert_eq!(dc_intl::t("z9Cnzv"), "Toggle full screen");
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

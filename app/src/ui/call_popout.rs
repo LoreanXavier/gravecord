@@ -19,27 +19,64 @@ pub(crate) struct Popout {
     root: WeakEntity<Root>,
 }
 
+/// `onBeforeUnload` of module 140539: intercept closing the popped-out call window while an embedded Activity of this
+/// session runs in the call's channel, unless `disableEmbeddedActivityPopOutAlert` is set.
+pub(super) fn should_confirm_popout_close(
+    running_channel: Option<&str>,
+    call_channel: Option<dc_state::Id>,
+    alert_disabled: bool,
+) -> bool {
+    if alert_disabled {
+        return false;
+    }
+    match (running_channel, call_channel) {
+        (Some(activity_ch), Some(call_ch)) => {
+            activity_ch.parse::<dc_state::Id>().ok() == Some(call_ch)
+        }
+        _ => false,
+    }
+}
+
 impl Render for Popout {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let area = window.viewport_size();
         let (width, height) = (f32::from(area.width), f32::from(area.height));
         let id = window.window_handle().window_id();
-        let (body, tips) = self
+        let (body, modal, tips) = self
             .root
             .upgrade()
             .map(|root| {
                 root.update(cx, |root, cx| {
                     let body = root.call_popout_body(width, height, cx);
-                    (body, root.tip_layer_in(Some(id)))
+                    let modal = root.popout_voice_alert_modal(cx);
+                    (body, modal, root.tip_layer_in(Some(id)))
                 })
             })
             .unwrap_or_default();
+        let root_esc = self.root.clone();
         div()
             .id("call-popout")
             .relative()
             .size_full()
             .bg(rgb(0x000000))
+            .on_key_down(move |event: &gpui::KeyDownEvent, _, cx| {
+                if event.keystroke.key == "escape" {
+                    let _ = root_esc.update(cx, |root, cx| {
+                        if matches!(
+                            root.voice_alert,
+                            Some(super::voice_alerts::VoiceAlert::ReloadActivity {
+                                in_popout: true,
+                                ..
+                            })
+                        ) {
+                            root.voice_alert = None;
+                            cx.notify();
+                        }
+                    });
+                }
+            })
             .children(body)
+            .children(modal)
             .children(tips)
     }
 }
@@ -56,8 +93,10 @@ impl Root {
         if self.activities.running.is_some()
             && !super::voice_alerts::activity_popout_alert_disabled()
         {
-            self.voice_alert =
-                Some(super::voice_alerts::VoiceAlert::ReloadActivity { dont_show: false });
+            self.voice_alert = Some(super::voice_alerts::VoiceAlert::ReloadActivity {
+                dont_show: false,
+                in_popout: self.vv.popout.is_some(),
+            });
             cx.notify();
             return;
         }
@@ -98,17 +137,38 @@ impl Root {
                 move |window, cx| {
                     crate::notifications::observe_window(window);
                     let closed = view.clone();
-                    // GAP: module 140539's `onBeforeUnload` asks Reload Activity inside this window before it closes
-                    // while an Activity of this session runs in its channel; the window closes without asking.
+                    // Module 140539 `onBeforeUnload`: while an Activity of this session runs in the call's channel,
+                    // block immediate close and open module 47294 (`usesPopoutContext: true`) inside this window.
                     window.on_window_should_close(cx, move |window, cx| {
                         let id = window.window_handle().window_id();
-                        let _ = closed.update(cx, |root, cx| {
-                            root.drop_tips_of(id);
-                            root.vv.popout_on_top = false;
-                            root.vv.popout = None;
-                            cx.notify();
-                        });
-                        true
+                        closed
+                            .update(cx, |root, cx| {
+                                let running_channel = root
+                                    .activities
+                                    .running
+                                    .as_ref()
+                                    .and_then(|running| running.instance.channel_id.as_deref());
+                                let call_channel = root.call.as_ref().map(|call| call.channel);
+                                if should_confirm_popout_close(
+                                    running_channel,
+                                    call_channel,
+                                    super::voice_alerts::activity_popout_alert_disabled(),
+                                ) {
+                                    root.voice_alert =
+                                        Some(super::voice_alerts::VoiceAlert::ReloadActivity {
+                                            dont_show: false,
+                                            in_popout: true,
+                                        });
+                                    cx.notify();
+                                    return false;
+                                }
+                                root.drop_tips_of(id);
+                                root.vv.popout_on_top = false;
+                                root.vv.popout = None;
+                                cx.notify();
+                                true
+                            })
+                            .unwrap_or(true)
                     });
                     cx.new(|cx| {
                         if let Some(entity) = view.upgrade() {
@@ -293,5 +353,19 @@ impl Root {
     /// The popped-out call window, for the harness's `popout click` and `popout shot`.
     pub(crate) fn call_popout_window(&self) -> Option<gpui::AnyWindowHandle> {
         self.vv.popout.map(Into::into)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::should_confirm_popout_close;
+
+    #[test]
+    fn popout_close_confirms_only_for_active_activity_in_same_channel_when_enabled() {
+        assert!(should_confirm_popout_close(Some("123"), Some(123), false));
+        assert!(!should_confirm_popout_close(Some("123"), Some(123), true));
+        assert!(!should_confirm_popout_close(Some("123"), Some(456), false));
+        assert!(!should_confirm_popout_close(None, Some(123), false));
+        assert!(!should_confirm_popout_close(Some("123"), None, false));
     }
 }

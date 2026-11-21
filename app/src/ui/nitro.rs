@@ -1650,9 +1650,142 @@ impl Root {
             .into_any_element()
     }
 
+    /// `521440.l` (`NitroWishlistButton`): toggles `682901.pe.TIER_2` (`521847234246082599`) in the user's wishlist
+    /// with tooltips `cjmnm6` ("Add Nitro to Wishlist") / `yr9TTf` ("Remove from Wishlist").
+    pub(super) fn nitro_wishlist_button(
+        &self,
+        id: &'static str,
+        overlay_surface: bool,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        const NITRO_TIER_2_SKU: &str = "521847234246082599";
+        let wished = self.shop.wishlist.contains(NITRO_TIER_2_SKU);
+        let tip = dc_intl::t(if wished { "yr9TTf" } else { "cjmnm6" });
+        let btn = div()
+            .id(id)
+            .size(px(32.))
+            .rounded(px(8.))
+            .when(overlay_surface, |this| {
+                this.bg(color("--control-overlay-secondary-background-default"))
+                    .hover(|s| s.bg(color("--control-overlay-secondary-background-hover")))
+            })
+            .when(!overlay_surface, |this| {
+                this.border_1()
+                    .border_color(color("--control-secondary-border-default"))
+                    .bg(color("--control-secondary-background-default"))
+                    .hover(|s| s.bg(color("--control-secondary-background-hover")))
+            })
+            .cursor_pointer()
+            .flex()
+            .items_center()
+            .justify_center()
+            .child(icon(
+                if wished { "heart" } else { "golive_heart" },
+                16.,
+                if wished {
+                    "--text-feedback-critical"
+                } else {
+                    "--text-strong"
+                },
+            ))
+            .on_click(cx.listener(|this, _, _, cx| {
+                this.shop_toggle_wishlist(NITRO_TIER_2_SKU, cx);
+            }));
+        self.with_tip(
+            format!("{id}-tip"),
+            super::tooltip::Tip::text(tip, super::tooltip::Side::Bottom),
+            btn,
+            cx,
+        )
+        .into_any_element()
+    }
+
+    /// Module 107834 (`NitroHeaderBar` on `HeaderBar` 742589): 48px solid navigation header with Nitro wheel +
+    /// `"Nitro"` (`Ipxkog`) on the left, and `headerToolbar_8iSxT3` (wishlist button 521440 + Gift Nitro 65470) on
+    /// the right. Rendered during loading/unauthenticated states in `204504` and `886268`.
+    pub(super) fn nitro_header_bar(&self, cx: &mut Context<Self>) -> AnyElement {
+        div()
+            .id("nitro-header-bar")
+            .flex_none()
+            .w_full()
+            .h(px(48.))
+            .px(px(16.))
+            .bg(color("--background-base-lower"))
+            .border_b_1()
+            .border_color(color("--border-subtle"))
+            .flex()
+            .items_center()
+            .justify_between()
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap(px(8.))
+                    .child(icon("nitro_wheel", 24., "--icon-strong"))
+                    .child(
+                        div()
+                            .text_size(px(16.))
+                            .line_height(px(20.))
+                            .font_weight(FontWeight(600.))
+                            .text_color(color("--text-strong"))
+                            .child(dc_intl::t("Ipxkog")),
+                    ),
+            )
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap(px(8.))
+                    .child(self.nitro_wishlist_button("nitro-header-wishlist", false, cx))
+                    .child(
+                        div()
+                            .id("nitro-header-gift")
+                            .h(px(32.))
+                            .px(px(12.))
+                            .rounded(px(8.))
+                            .border_1()
+                            .border_color(color("--control-secondary-border-default"))
+                            .bg(color("--control-secondary-background-default"))
+                            .hover(|s| s.bg(color("--control-secondary-background-hover")))
+                            .cursor_pointer()
+                            .flex()
+                            .items_center()
+                            .gap(px(4.))
+                            .text_size(px(14.))
+                            .line_height(px(18.))
+                            .font_weight(FontWeight(500.))
+                            .text_color(color("--control-secondary-text-default"))
+                            .child(icon("gift", 16., "--control-secondary-text-default"))
+                            .child(dc_intl::t("Ve9Ge6"))
+                            .on_click(cx.listener(|this, _, _, cx| this.open_purchase(true, cx))),
+                    ),
+            )
+            .into_any_element()
+    }
+
     /// The page, filling the content column.
     pub(super) fn nitro_page(&mut self, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
         self.request_nitro();
+        if self.stores.current_user.is_none() {
+            // Module 204504: NitroHeaderBar (107834) over loading cubes before currentUser is ready.
+            return div()
+                .flex_1()
+                .min_w(px(0.))
+                .h_full()
+                .bg(color("--background-base-lower"))
+                .flex()
+                .flex_col()
+                .child(self.nitro_header_bar(cx))
+                .child(
+                    div()
+                        .flex_1()
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .child(super::login::wandering_cubes()),
+                )
+                .into_any_element();
+        }
         // `L.YE` of module 886268: exactly Nitro gets the subscriber home (`sQ`), every other account the marketing one.
         if self.premium() == PremiumType::Nitro {
             return self.nitro_subscriber_home(window, cx);
@@ -1728,17 +1861,7 @@ impl Root {
                 div()
                     .flex()
                     .gap(px(8.))
-                    .child(
-                        div()
-                            .id("nitro-wishlist")
-                            .size(px(32.))
-                            .rounded(px(8.))
-                            .bg(rgba(0x0000008f))
-                            .flex()
-                            .items_center()
-                            .justify_center()
-                            .child(icon("golive_heart", 16., "--text-strong")),
-                    )
+                    .child(self.nitro_wishlist_button("nitro-wishlist", true, cx))
                     .child(
                         div()
                             .id("nitro-nav-gift")
@@ -1755,7 +1878,7 @@ impl Root {
                             .font_weight(FontWeight(500.))
                             .text_color(color("--white"))
                             .child(icon("gift", 16., "--white"))
-                            .child("Gift Nitro")
+                            .child(dc_intl::t("Ve9Ge6"))
                             .on_click(cx.listener(|this, _, _, cx| this.open_purchase(true, cx))),
                     ),
             );

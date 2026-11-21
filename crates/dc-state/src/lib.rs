@@ -3616,7 +3616,10 @@ impl Stores {
             experiments::GuildExperiments::from_ready(&data["guild_experiments"]);
         self.mfa_enabled = data["user"]["mfa_enabled"].as_bool().unwrap_or(false);
         self.account = Account::from_value(&data["user"]);
-        self.account.age_gated_features = data["age_gated_features"].as_u64().unwrap_or(0);
+        self.account.age_gated_features = data["regional_feature_config"]["age_gated_features"]
+            .as_u64()
+            .or_else(|| data["age_gated_features"].as_u64())
+            .unwrap_or(0);
         self.theme = data["user_settings_proto"]
             .as_str()
             .and_then(settings::theme)

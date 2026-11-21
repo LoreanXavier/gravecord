@@ -181,6 +181,36 @@ struct Resize {
     width: f32,
 }
 
+/// Which PiP window is selected when both Video and Activity PiP exist (`PictureInPictureStore`, module 31728 `mf` / 6155).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(super) enum PipWindowKind {
+    #[default]
+    Video,
+    Activity,
+}
+
+/// Target entry in the PiP window switcher menu (module 6155 `C`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum PipSwitchTarget<'a> {
+    Activity(Option<&'a str>),
+    GoLive,
+    Stream(&'a str),
+}
+
+/// Label formatter for module 6155 `C` (`a9+V+V`, `8raC1P`, `ng/Kwl`, `sqmFRg`).
+pub(super) fn pip_switch_label(target: PipSwitchTarget<'_>) -> String {
+    match target {
+        PipSwitchTarget::Activity(Some(name)) if !name.is_empty() => {
+            dc_intl::format("a9+V+V", &[("activityName", name.into())])
+        }
+        PipSwitchTarget::Activity(_) => dc_intl::t("8raC1P").to_owned(),
+        PipSwitchTarget::GoLive => dc_intl::t("ng/Kwl").to_owned(),
+        PipSwitchTarget::Stream(username) => {
+            dc_intl::format("sqmFRg", &[("username", username.into())])
+        }
+    }
+}
+
 /// The window's state between frames.
 #[derive(Default)]
 pub(super) struct VideoPip {
@@ -188,6 +218,8 @@ pub(super) struct VideoPip {
     moved: Option<Instant>,
     /// The switcher menu of module 6155 is open.
     switcher: bool,
+    /// Selected PiP window kind when both Video and Activity PiP exist (`PictureInPictureStore`).
+    pub(super) selected: PipWindowKind,
     /// An idle check is waiting.
     idle_check: bool,
     /// `openPosition` and `pipWidths[VIDEO]`, read from storage the first time.
@@ -259,9 +291,16 @@ impl Root {
         Some((call.guild, call.channel, streams, cameras))
     }
 
-    /// Whether the window is up (for the activity window, which gives way to it, and the harness).
+    /// Whether an embedded Activity PiP window is active alongside video.
+    pub(super) fn activity_pip_available(&self) -> bool {
+        self.activities.pip && self.activities.running.is_some()
+    }
+
+    /// Whether the window is up (for the activity window, which gives way to it unless switched, and the harness).
     pub(super) fn video_pip_shown(&self) -> bool {
         self.video_pip_sources().is_some()
+            && !(self.activity_pip_available()
+                && self.video_pip.selected == PipWindowKind::Activity)
     }
 
     fn video_pip_idle(&self) -> bool {
@@ -280,11 +319,13 @@ impl Root {
                     cx.background_executor().timer(IDLE).await;
                     let again = this
                         .update(cx, |this, cx| {
-                            cx.notify();
                             let waiting = !this.video_pip_idle();
                             if !waiting {
                                 this.video_pip.idle_check = false;
+                                // Module 6155 `C`: closes the switcher menu when idle becomes true.
+                                this.video_pip.switcher = false;
                             }
+                            cx.notify();
                             waiting
                         })
                         .unwrap_or(false);
@@ -459,11 +500,121 @@ impl Root {
         .into_any_element()
     }
 
+    /// Switcher header button + dropdown over the Activity PiP window when a Video PiP source is also available
+    /// (module 6155 `A` / `C` + `31728.mf`).
+    pub(super) fn activity_pip_switcher_overlay(
+        &self,
+        cx: &mut Context<Self>,
+    ) -> Option<AnyElement> {
+        let (_, _, streams, _) = self.video_pip_sources()?;
+        let me = self.stores.current_user.as_ref().map_or(0, |me| me.id);
+        let others: Vec<Id> = streams
+            .iter()
+            .copied()
+            .filter(|owner| *owner != me)
+            .collect();
+        let menu = self.video_pip.switcher.then(|| {
+            let mut rows: Vec<AnyElement> = others
+                .iter()
+                .copied()
+                .map(|owner| {
+                    let name = self.user_of(owner).display_name().to_owned();
+                    div()
+                        .id(SharedString::from(format!("activity-pip-switch-{owner}")))
+                        .min_h(px(32.))
+                        .px(px(8.))
+                        .py(px(6.))
+                        .rounded(px(4.))
+                        .cursor_pointer()
+                        .text_size(px(14.))
+                        .line_height(px(18.))
+                        .font_weight(FontWeight(500.))
+                        .text_color(color("--text-strong"))
+                        .hover(|style| style.bg(color("--interactive-background-hover")))
+                        .child(pip_switch_label(PipSwitchTarget::Stream(&name)))
+                        .on_click(cx.listener(move |this, _, _, cx| {
+                            this.video_pip.selected = PipWindowKind::Video;
+                            this.vv.focus.tile = Some((owner, TileKind::Stream));
+                            this.video_pip.switcher = false;
+                            cx.notify();
+                        }))
+                        .into_any_element()
+                })
+                .collect();
+            if rows.is_empty() {
+                rows.push(
+                    div()
+                        .id("activity-pip-switch-golive")
+                        .min_h(px(32.))
+                        .px(px(8.))
+                        .py(px(6.))
+                        .rounded(px(4.))
+                        .cursor_pointer()
+                        .text_size(px(14.))
+                        .line_height(px(18.))
+                        .font_weight(FontWeight(500.))
+                        .text_color(color("--text-strong"))
+                        .hover(|style| style.bg(color("--interactive-background-hover")))
+                        .child(pip_switch_label(PipSwitchTarget::GoLive))
+                        .on_click(cx.listener(|this, _, _, cx| {
+                            this.video_pip.selected = PipWindowKind::Video;
+                            this.video_pip.switcher = false;
+                            cx.notify();
+                        }))
+                        .into_any_element(),
+                );
+            }
+            div()
+                .id("activity-pip-switch-menu")
+                .occlude()
+                .absolute()
+                .right(px(8.))
+                .top(px(36.))
+                .w(px(188.))
+                .p(px(8.))
+                .rounded(px(8.))
+                .border_1()
+                .border_color(color("--border-subtle"))
+                .bg(color("--background-surface-higher"))
+                .children(rows)
+        });
+        Some(
+            div()
+                .absolute()
+                .inset_0()
+                .child(
+                    div()
+                        .id("activity-pip-switcher")
+                        .absolute()
+                        .top(px(8.))
+                        .right(px(8.))
+                        .size(px(28.))
+                        .rounded(px(6.))
+                        .bg(gpui::rgba(0x00000080))
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .cursor_pointer()
+                        .child(icon("more_dots", 20., "--white"))
+                        .on_click(cx.listener(|this, _, _, cx| {
+                            cx.stop_propagation();
+                            this.video_pip.switcher = !this.video_pip.switcher;
+                            cx.notify();
+                        })),
+                )
+                .children(menu)
+                .into_any_element(),
+        )
+    }
+
     pub(super) fn video_pip_layer(
         &self,
         window: &Window,
         cx: &mut Context<Self>,
     ) -> Option<AnyElement> {
+        if self.activity_pip_available() && self.video_pip.selected == PipWindowKind::Activity {
+            return None;
+        }
         let (guild, channel, streams, cameras) = self.video_pip_sources()?;
         let me = self.stores.current_user.as_ref().map_or(0, |me| me.id);
         let on_screen = speaker(
@@ -523,13 +674,15 @@ impl Root {
                 .children(avatar.map(|avatar| img(avatar).size(px(80.)).rounded_full()))
                 .into_any_element(),
         };
-        // Module 6155: shown with two or more streams of others in the channel and a single window.
+        // Module 6155: shown with two or more streams of others in the channel, or when both Video and Activity PiP
+        // windows exist simultaneously.
+        let activity_available = self.activity_pip_available();
         let others: Vec<Id> = streams
             .iter()
             .copied()
             .filter(|owner| *owner != me)
             .collect();
-        let switcher = (others.len() > 1).then(|| {
+        let switcher = (others.len() > 1 || activity_available).then(|| {
             div()
                 .id("video-pip-switcher")
                 .flex_none()
@@ -688,7 +841,7 @@ impl Root {
                     .child(div().flex().items_center().children(right)),
             );
         let menu = self.video_pip.switcher.then(|| {
-            let rows: Vec<AnyElement> = others
+            let mut rows: Vec<AnyElement> = others
                 .iter()
                 .copied()
                 .filter(|owner| on_screen != OnScreen::Stream(*owner))
@@ -706,9 +859,10 @@ impl Root {
                         .font_weight(FontWeight(500.))
                         .text_color(color("--text-strong"))
                         .hover(|style| style.bg(color("--interactive-background-hover")))
-                        .child(dc_intl::format("sqmFRg", &[("username", name.into())]))
+                        .child(pip_switch_label(PipSwitchTarget::Stream(&name)))
                         .on_click(cx.listener(move |this, _, _, cx| {
                             // `selectParticipant`: the stream goes on screen.
+                            this.video_pip.selected = PipWindowKind::Video;
                             this.vv.focus.tile = Some((owner, TileKind::Stream));
                             this.video_pip.switcher = false;
                             cx.notify();
@@ -716,6 +870,39 @@ impl Root {
                         .into_any_element()
                 })
                 .collect();
+            if activity_available {
+                let app_name = self.activities.running.as_ref().and_then(|running| {
+                    if !running.name.is_empty() {
+                        Some(running.name.as_str())
+                    } else {
+                        self.activities
+                            .names
+                            .get(&running.application_id)
+                            .map(String::as_str)
+                    }
+                });
+                rows.push(
+                    div()
+                        .id("video-pip-switch-activity")
+                        .min_h(px(32.))
+                        .px(px(8.))
+                        .py(px(6.))
+                        .rounded(px(4.))
+                        .cursor_pointer()
+                        .text_size(px(14.))
+                        .line_height(px(18.))
+                        .font_weight(FontWeight(500.))
+                        .text_color(color("--text-strong"))
+                        .hover(|style| style.bg(color("--interactive-background-hover")))
+                        .child(pip_switch_label(PipSwitchTarget::Activity(app_name)))
+                        .on_click(cx.listener(|this, _, _, cx| {
+                            this.video_pip.selected = PipWindowKind::Activity;
+                            this.video_pip.switcher = false;
+                            cx.notify();
+                        }))
+                        .into_any_element(),
+                );
+            }
             div()
                 .id("video-pip-switch-menu")
                 .occlude()
@@ -968,5 +1155,29 @@ mod tests {
             Some(Corner::TopRight)
         );
         assert_eq!(Corner::from_wire("x"), None);
+    }
+
+    #[test]
+    fn pip_switch_labels_cover_all_four_module_6155_branches() {
+        assert_eq!(
+            pip_switch_label(PipSwitchTarget::Activity(Some("Watch Together"))),
+            "Switch to Watch Together"
+        );
+        assert_eq!(
+            pip_switch_label(PipSwitchTarget::Activity(Some(""))),
+            "Switch to Activity"
+        );
+        assert_eq!(
+            pip_switch_label(PipSwitchTarget::Activity(None)),
+            "Switch to Activity"
+        );
+        assert_eq!(
+            pip_switch_label(PipSwitchTarget::GoLive),
+            "Switch to Go Live"
+        );
+        assert_eq!(
+            pip_switch_label(PipSwitchTarget::Stream("Lorean")),
+            "Switch to Lorean's Stream"
+        );
     }
 }

@@ -441,14 +441,12 @@ pub async fn run(
                     root.update(cx, |root, cx| root.script_spotify_context(who, surface, cx));
                 let _ = writeln!(output, "{note}");
             }
-            ["context-user"] | ["context-dm"] | ["context-self"] => {
-                let kind = if step.ends_with("dm") {
-                    "dm"
-                } else if step.ends_with("self") {
-                    "self"
-                } else {
-                    "user"
-                };
+            ["context-user"]
+            | ["context-dm"]
+            | ["context-self"]
+            | ["context-overlay-dm"]
+            | ["context-game-shop-sku"] => {
+                let kind = step.strip_prefix("context-").unwrap_or("user");
                 let note =
                     cx.update(|cx| root.update(cx, |root, cx| root.script_context(kind, cx)));
                 let _ = writeln!(output, "{note}");

@@ -105,6 +105,8 @@ pub(crate) struct VideoQuestModal {
     pub bounty_orbs: Option<u64>,
     pub paused_away: bool,
     pub claim_error: bool,
+    /// Module 40705 `discord-web-video-player` control bar state.
+    pub dvp: super::video_player::DvpControlState,
 }
 
 pub(super) struct State {
@@ -2535,6 +2537,7 @@ impl Root {
             bounty_orbs: None,
             paused_away: false,
             claim_error: false,
+            dvp: super::video_player::DvpControlState::for_video(0, 30, false),
         });
         cx.notify();
     }
@@ -2951,6 +2954,10 @@ impl Root {
                                     v.watch_secs = v.duration_secs;
                                     v.paused_away = false;
                                     v.ended = true;
+                                    v.dvp.current_secs = v.duration_secs;
+                                    v.dvp.max_watched_secs = v.duration_secs;
+                                    v.dvp.ended = true;
+                                    v.dvp.playing = false;
                                 }
                                 cx.notify();
                             })),
@@ -3020,8 +3027,102 @@ impl Root {
                                         .w(gpui::relative(pct))
                                         .bg(color("--control-primary-background-default")),
                                 ),
-                        ),
+                        )
+                        .child({
+                            // Module 40705 `discord-web-video-player` 3-group control bar
+                            let on_mutate: super::video_player::DvpMutator =
+                                std::rc::Rc::new(|this, apply, cx| {
+                                    if let Some(v) = this.quests.video_modal.as_mut() {
+                                        apply(&mut v.dvp);
+                                        v.watch_secs = v.dvp.current_secs;
+                                        v.ended = v.dvp.ended;
+                                    }
+                                    cx.notify();
+                                });
+                            self.render_dvp_control_bar(
+                                "quest-dvp",
+                                &modal.dvp,
+                                super::video_player::DvpSize::Md,
+                                false,
+                                false,
+                                false,
+                                None,
+                                on_mutate,
+                                cx,
+                            )
+                        }),
                 )
+                .when(modal.dvp.transcript_open && !modal.ended, |col| {
+                    // Module 40705 `transcriptCont_hFq1lM`: 363px panel (`VZkd/n` "Transcript" + `6/dkHh` close)
+                    col.child(
+                        div()
+                            .id("quest-dvp-transcript-drawer")
+                            .occlude()
+                            .absolute()
+                            .right(px(16.))
+                            .bottom(px(108.))
+                            .w(px(363.))
+                            .p(px(14.))
+                            .rounded(px(16.))
+                            .border_1()
+                            .border_color(color("--border-subtle"))
+                            .bg(color("--background-base-lowest"))
+                            .flex()
+                            .flex_col()
+                            .gap(px(8.))
+                            .child(
+                                div()
+                                    .flex()
+                                    .items_center()
+                                    .justify_between()
+                                    .child(
+                                        div()
+                                            .text_size(px(14.))
+                                            .font_weight(gpui::FontWeight(600.))
+                                            .text_color(color("--text-strong"))
+                                            .child(dc_intl::t("VZkd/n")),
+                                    )
+                                    .child(
+                                        self.with_tip(
+                                            "quest-dvp-transcript-close-tip".to_owned(),
+                                            super::tooltip::Tip::text(
+                                                dc_intl::t("6/dkHh"),
+                                                super::tooltip::Side::Top,
+                                            ),
+                                            div()
+                                                .id("quest-dvp-transcript-close")
+                                                .size(px(24.))
+                                                .rounded(px(6.))
+                                                .flex()
+                                                .items_center()
+                                                .justify_center()
+                                                .cursor_pointer()
+                                                .hover(|s| {
+                                                    s.bg(color("--interactive-background-hover"))
+                                                })
+                                                .child(icon("close", 14., "--icon-default"))
+                                                .on_click(cx.listener(|this, _, _, cx| {
+                                                    cx.stop_propagation();
+                                                    if let Some(v) =
+                                                        this.quests.video_modal.as_mut()
+                                                    {
+                                                        v.dvp.transcript_open = false;
+                                                    }
+                                                    cx.notify();
+                                                })),
+                                            cx,
+                                        ),
+                                    ),
+                            )
+                            .child(
+                                div()
+                                    .text_size(px(13.))
+                                    .line_height(px(18.))
+                                    .text_color(color("--text-default"))
+                                    .child(modal.title.clone()),
+                            ),
+                    )
+                })
                 .into_any_element()
         };
 
@@ -3121,6 +3222,16 @@ impl Root {
             .overflow_hidden()
             .flex()
             .flex_col()
+            .on_key_down(cx.listener(|this, event: &gpui::KeyDownEvent, _, cx| {
+                if let Some(v) = this.quests.video_modal.as_mut()
+                    && v.dvp.handle_shortcut(event.keystroke.key.as_str())
+                {
+                    v.watch_secs = v.dvp.current_secs;
+                    v.ended = v.dvp.ended;
+                    cx.stop_propagation();
+                    cx.notify();
+                }
+            }))
             .on_click(cx.listener(|_, _, _, cx| cx.stop_propagation()))
             .child(
                 div()
@@ -3182,6 +3293,21 @@ impl Root {
                     bounty_orbs: is_bounty.then_some(50),
                     paused_away: mode == "bounty",
                     claim_error: mode == "bounty-error",
+                    dvp: {
+                        let mut d = super::video_player::DvpControlState::for_video(
+                            if earned { 30 } else { 12 },
+                            30,
+                            mode == "end",
+                        );
+                        if mode == "speed" {
+                            d.speed_open = true;
+                            d.playback_rate = 1.5;
+                        }
+                        if mode == "transcript" {
+                            d.transcript_open = true;
+                        }
+                        d
+                    },
                 });
                 cx.notify();
                 format!("video-quest: {mode}")

@@ -223,8 +223,13 @@ impl Root {
 
     /// What shows in the picture-in-picture window until the page paints over it: the application's cover on the
     /// card's own ground. Drawn above the consent scrim, like the window.
-    pub(super) fn activity_pip_layer(&self, window: &Window) -> Option<AnyElement> {
-        // The video window takes the place first (`pipVideoWindow ?? pipActivityWindow`, module 197808).
+    pub(super) fn activity_pip_layer(
+        &self,
+        window: &Window,
+        cx: &mut Context<Self>,
+    ) -> Option<AnyElement> {
+        // The video window takes the place first (`pipVideoWindow ?? pipActivityWindow`, module 197808), unless the
+        // user switched to Activity via module 6155 (`PictureInPictureStore`).
         if !self.activities.pip || self.video_pip_shown() {
             return None;
         }
@@ -234,6 +239,7 @@ impl Root {
             .images
             .get(&format!("shelf-banner:{}", running.application_id))
             .cloned();
+        let switcher = self.activity_pip_switcher_overlay(cx);
         Some(
             deferred(
                 div()
@@ -250,7 +256,8 @@ impl Root {
                     .children(
                         cover
                             .map(|cover| img(cover).size_full().object_fit(gpui::ObjectFit::Cover)),
-                    ),
+                    )
+                    .children(switcher),
             )
             .with_priority(2)
             .into_any_element(),

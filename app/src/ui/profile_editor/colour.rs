@@ -9,8 +9,8 @@ use crate::parity::Parity;
 use crate::ui::{Root, color};
 use gpui::{
     AnyElement, Bounds, Context, Entity, IntoElement, MouseButton, MouseDownEvent, MouseMoveEvent,
-    Pixels, Subscription, canvas, div, hsla, linear_color_stop, linear_gradient, prelude::*, px,
-    rgba, svg,
+    MouseUpEvent, Pixels, Subscription, canvas, div, hsla, linear_color_stop, linear_gradient,
+    prelude::*, px, rgba, svg,
 };
 use std::cell::Cell;
 use std::rc::Rc;
@@ -40,6 +40,9 @@ pub(super) const SUGGESTED: [u32; 5] = [0x5c64f4, 0xd2d5fc, 0x5cf4a0, 0xf4ec5c, 
 
 pub(in crate::ui) struct State {
     pub target: Target,
+    /// Module 508274 `VN` `eagerUpdate`: false for server role colours (module 48736), which update the local preview
+    /// while dragging and commit to the role draft on mouse release (`onChangeComplete`) or hex input.
+    pub eager: bool,
     pub hue: f32,
     pub saturation: f32,
     pub value: f32,
@@ -106,6 +109,7 @@ impl State {
         let (hue, saturation, value) = to_hsv(initial);
         Self {
             target,
+            eager: !target.is_role(),
             hue,
             saturation,
             value,
@@ -133,15 +137,19 @@ fn hue_bar(cx: &mut Context<Root>, slider: Rc<Cell<Bounds<Pixels>>>, hue: f32) -
         ))
     });
     let bounds = slider.clone();
-    let set = move |position: gpui::Point<Pixels>, this: &mut Root, cx: &mut Context<Root>| {
+    let set = move |position: gpui::Point<Pixels>,
+                    commit: bool,
+                    this: &mut Root,
+                    cx: &mut Context<Root>| {
         let area = bounds.get();
         if area.size.width <= px(0.) {
             return;
         }
         let ratio = ((position.x - area.origin.x) / area.size.width).clamp(0., 1.);
-        this.profile_editor_set_hue(ratio * 360., cx);
+        this.profile_editor_set_hue(ratio * 360., commit, cx);
     };
     let set_move = set.clone();
+    let set_up = set.clone();
     div()
         .id("colour-hue")
         .relative()
@@ -168,13 +176,21 @@ fn hue_bar(cx: &mut Context<Root>, slider: Rc<Cell<Bounds<Pixels>>>, hue: f32) -
         )
         .on_mouse_down(
             MouseButton::Left,
-            cx.listener(move |this, event: &MouseDownEvent, _, cx| set(event.position, this, cx)),
+            cx.listener(move |this, event: &MouseDownEvent, _, cx| {
+                set(event.position, false, this, cx)
+            }),
         )
         .on_mouse_move(cx.listener(move |this, event: &MouseMoveEvent, _, cx| {
             if event.pressed_button == Some(MouseButton::Left) {
-                set_move(event.position, this, cx);
+                set_move(event.position, false, this, cx);
             }
         }))
+        .on_mouse_up(
+            MouseButton::Left,
+            cx.listener(move |this, event: &MouseUpEvent, _, cx| {
+                set_up(event.position, true, this, cx)
+            }),
+        )
         .into_any_element()
 }
 
@@ -194,16 +210,20 @@ impl Root {
         let slider = state.slider.clone();
         let rgb = state.rgb();
         let area = boxed.clone();
-        let pick = move |position: gpui::Point<Pixels>, this: &mut Root, cx: &mut Context<Root>| {
+        let pick = move |position: gpui::Point<Pixels>,
+                         commit: bool,
+                         this: &mut Root,
+                         cx: &mut Context<Root>| {
             let rect = area.get();
             if rect.size.width <= px(0.) || rect.size.height <= px(0.) {
                 return;
             }
             let s = ((position.x - rect.origin.x) / rect.size.width).clamp(0., 1.);
             let v = 1. - ((position.y - rect.origin.y) / rect.size.height).clamp(0., 1.);
-            this.profile_editor_set_saturation(s, v, cx);
+            this.profile_editor_set_saturation(s, v, commit, cx);
         };
         let pick_move = pick.clone();
+        let pick_up = pick.clone();
         let saturation_box = div()
             .id("colour-box")
             .relative()
@@ -239,14 +259,20 @@ impl Root {
             .on_mouse_down(
                 MouseButton::Left,
                 cx.listener(move |this, event: &MouseDownEvent, _, cx| {
-                    pick(event.position, this, cx)
+                    pick(event.position, false, this, cx)
                 }),
             )
             .on_mouse_move(cx.listener(move |this, event: &MouseMoveEvent, _, cx| {
                 if event.pressed_button == Some(MouseButton::Left) {
-                    pick_move(event.position, this, cx);
+                    pick_move(event.position, false, this, cx);
                 }
-            }));
+            }))
+            .on_mouse_up(
+                MouseButton::Left,
+                cx.listener(move |this, event: &MouseUpEvent, _, cx| {
+                    pick_up(event.position, true, this, cx)
+                }),
+            );
         let mut swatches = Vec::new();
         for (index, value) in SUGGESTED.iter().copied().enumerate() {
             swatches.push(
@@ -322,23 +348,34 @@ impl Root {
         )
     }
 
-    pub(super) fn profile_editor_set_hue(&mut self, hue: f32, cx: &mut Context<Self>) {
+    pub(super) fn profile_editor_set_hue(
+        &mut self,
+        hue: f32,
+        commit: bool,
+        cx: &mut Context<Self>,
+    ) {
         let Some(state) = self.profile_editor_colour_state() else {
             return;
         };
         state.hue = hue;
         let rgb = state.rgb();
-        self.profile_editor_colour_applied(rgb, cx);
+        self.profile_editor_colour_applied(rgb, commit, cx);
     }
 
-    pub(super) fn profile_editor_set_saturation(&mut self, s: f32, v: f32, cx: &mut Context<Self>) {
+    pub(super) fn profile_editor_set_saturation(
+        &mut self,
+        s: f32,
+        v: f32,
+        commit: bool,
+        cx: &mut Context<Self>,
+    ) {
         let Some(state) = self.profile_editor_colour_state() else {
             return;
         };
         state.saturation = s;
         state.value = v;
         let rgb = state.rgb();
-        self.profile_editor_colour_applied(rgb, cx);
+        self.profile_editor_colour_applied(rgb, commit, cx);
     }
 
     /// A colour chosen by hex or a swatch. `sync` writes it back into the hex field (a typed value is already
@@ -363,7 +400,7 @@ impl Root {
             let hex = state.hex.clone();
             hex.update(cx, |editor, _| editor.set_text(&format!("{rgb:06x}")));
         }
-        self.profile_editor_colour_applied(rgb, cx);
+        self.profile_editor_colour_applied(rgb, true, cx);
     }
 
     /// The popout being shown: the banner's, the name style's, or else the role editor's.
@@ -410,8 +447,8 @@ impl Root {
     }
 
     /// The colour changed: the banner colour is a pending change, a style colour edits the style being built, a
-    /// role colour edits the role's draft.
-    fn profile_editor_colour_applied(&mut self, rgb: u32, cx: &mut Context<Self>) {
+    /// role colour edits the role's draft on release (when `eager` is false) or immediately (when `commit` or `eager`).
+    fn profile_editor_colour_applied(&mut self, rgb: u32, commit: bool, cx: &mut Context<Self>) {
         let profile_picking = self.profile_editor.as_ref().is_some_and(|open| {
             open.banner_color.is_some()
                 || open
@@ -430,11 +467,14 @@ impl Root {
             };
             let hex = state.hex.clone();
             let target = state.target;
+            let should_apply = state.eager || commit;
             let shown = hex.read(cx).text().to_owned();
             if shown.len() != 6 || u32::from_str_radix(&shown, 16).ok() != Some(rgb) {
                 hex.update(cx, |editor, _| editor.set_text(&format!("{rgb:06x}")));
             }
-            self.role_colour_picked(target, rgb, cx);
+            if should_apply {
+                self.role_colour_picked(target, rgb, cx);
+            }
             cx.notify();
             return;
         }

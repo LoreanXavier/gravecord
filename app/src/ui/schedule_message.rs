@@ -40,9 +40,20 @@ enum Field {
     Time,
 }
 
-/// The open modal (`896455`).
+/// Extracts the local creation `NaiveDateTime` from a Discord snowflake ID (`853297.a`, epoch `2015-01-01`).
+fn snowflake_created_local(id: Id) -> Option<NaiveDateTime> {
+    let ms = ((id >> 22) as i64).checked_add(1_420_070_400_000)?;
+    chrono::DateTime::from_timestamp_millis(ms)
+        .map(|dt| dt.with_timezone(&chrono::Local).naive_local())
+}
+
+/// The open modal (`896455` create schedule, or `23395` update scheduled message when `editing_id.is_some()`).
 pub(super) struct Modal {
     channel: Id,
+    /// When editing an existing scheduled message's timestamp (module 23395 `SCHEDULED_MESSAGE_EDIT_MODAL_KEY`).
+    pub(super) editing_id: Option<Id>,
+    /// True while the `PATCH /users/@me/scheduled-messages/{id}` update request is in flight.
+    submitting: bool,
     /// The picked date and time, local.
     value: NaiveDateTime,
     open: Option<Field>,
@@ -233,6 +244,56 @@ impl Root {
         self.schedule.submenu = false;
         self.schedule.modal = Some(Modal {
             channel,
+            editing_id: None,
+            submitting: false,
+            value,
+            open: None,
+            month: value.date().with_day(1).unwrap_or(value.date()),
+            time,
+            list_scroll: ScrollHandle::new(),
+            typed: false,
+            _events: events,
+        });
+        window.focus(&self.focus, cx);
+        cx.notify();
+    }
+
+    /// Module 23395 (`SCHEDULED_MESSAGE_EDIT_MODAL_KEY`): opens Update Scheduled Message pre-filled with the
+    /// scheduled message's current send timestamp (`sendAtTimestamp.substring(0, 200)`).
+    pub(super) fn open_update_scheduled_modal(
+        &mut self,
+        id: Id,
+        send_at_timestamp: &str,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let truncated: String = send_at_timestamp.chars().take(200).collect();
+        let value =
+            scheduled::to_local(&truncated).unwrap_or_else(|| scheduled::default_time(now()));
+        let time = cx.new(|cx| {
+            let mut style = editor_style();
+            style.line_height = 20.;
+            style.placeholder = hsla("--input-placeholder-text-default");
+            let mut editor = Editor::new(style, cx);
+            editor.set_single_line(true);
+            editor.set_keeps_text(true);
+            editor.set_max_utf16(20);
+            editor.set_reports_all_edits(true);
+            editor
+        });
+        let events = cx.subscribe(&time, |this, editor, event: &EditorEvent, cx| {
+            match event {
+                EditorEvent::Edited => this.schedule_time_typed(&editor, cx),
+                EditorEvent::Submit(_) => this.close_schedule_popover(cx),
+                EditorEvent::Cancel => this.schedule_escape(cx),
+            }
+            cx.notify();
+        });
+        self.schedule.submenu = false;
+        self.schedule.modal = Some(Modal {
+            channel: 0,
+            editing_id: Some(id),
+            submitting: false,
             value,
             open: None,
             month: value.date().with_day(1).unwrap_or(value.date()),
@@ -340,13 +401,27 @@ impl Root {
         cx.notify();
     }
 
-    /// Set Schedule: the draft takes the picked time and the modal closes.
+    /// Set Schedule (module 896455) or Update (module 23395): validates against `time_error` (with the 30-day
+    /// snowflake cap when editing an existing scheduled message).
     fn set_schedule(&mut self, cx: &mut Context<Self>) {
         let Some(modal) = self.schedule.modal.as_ref() else {
             return;
         };
-        let (channel, value) = (modal.channel, modal.value);
-        if scheduled::time_error(value, now(), None).is_some() {
+        if modal.submitting {
+            return;
+        }
+        let (channel, editing_id, value) = (modal.channel, modal.editing_id, modal.value);
+        if scheduled::time_error(value, now(), editing_id.and_then(snowflake_created_local))
+            .is_some()
+        {
+            return;
+        }
+        if let Some(id) = editing_id {
+            if let Some(modal) = self.schedule.modal.as_mut() {
+                modal.submitting = true;
+            }
+            let iso = times::iso_utc(value);
+            self.update_scheduled_message(id, Some(&iso), None, cx);
             return;
         }
         self.change_schedule(channel, value, cx);
@@ -458,12 +533,17 @@ impl Root {
             return Vec::new();
         };
         let current = now();
-        let error = scheduled::time_error(modal.value, current, None);
+        let is_update = modal.editing_id.is_some();
+        let error = scheduled::time_error(
+            modal.value,
+            current,
+            modal.editing_id.and_then(snowflake_created_local),
+        );
         let time_open = modal.open == Some(Field::Time);
         let date_field = div()
             .flex_1()
             .min_w(px(0.))
-            .child(field_label("Date", true))
+            .child(field_label(dc_intl::t("pSZKvM"), true))
             .child(
                 field_box("schedule-date", false)
                     .parity_with_border("schedule-date-field", 1.)
@@ -490,7 +570,7 @@ impl Root {
         let time_field = div()
             .flex_1()
             .min_w(px(0.))
-            .child(field_label("Time", true))
+            .child(field_label(dc_intl::t("GOmEb8"), true))
             .child(
                 field_box("schedule-time", time_open)
                     .parity_with_border("schedule-time-field", 1.)
@@ -529,9 +609,17 @@ impl Root {
             .child(time_field)
             .into_any_element();
         let set = modal::button(
-            "schedule-set",
-            "Set Schedule",
-            if error.is_some() {
+            if is_update {
+                "schedule-update"
+            } else {
+                "schedule-set"
+            },
+            if is_update {
+                dc_intl::t("VZANAD")
+            } else {
+                "Set Schedule"
+            },
+            if error.is_some() || modal.submitting {
                 Tone::PrimaryDisabled
             } else {
                 Tone::Primary
@@ -539,14 +627,22 @@ impl Root {
             |this, _, cx| this.set_schedule(cx),
         );
         let spec = modal::Spec {
-            id: "schedule-message",
-            title: "Schedule Message".into(),
+            id: if is_update {
+                "update-scheduled-message"
+            } else {
+                "schedule-message"
+            },
+            title: if is_update {
+                dc_intl::t("jbdHj3").into()
+            } else {
+                "Schedule Message".into()
+            },
             subtitle: None,
             body: Some(body),
             buttons: vec![
                 modal::button(
                     "schedule-cancel",
-                    "Cancel",
+                    dc_intl::t("ETE/oC"),
                     Tone::Secondary,
                     |this, _, _| {
                         this.schedule.modal = None;
@@ -588,7 +684,8 @@ impl Root {
                     modal.month,
                     modal.value.date(),
                     scheduled::earliest(current).date(),
-                    scheduled::latest(current, None).date(),
+                    scheduled::latest(current, modal.editing_id.and_then(snowflake_created_local))
+                        .date(),
                     |this, date, _, _| {
                         if let Some(modal) = this.schedule.modal.as_mut() {
                             modal.value = date.and_time(modal.value.time());
@@ -821,9 +918,21 @@ impl Root {
                     {
                         self.stores.scheduled_messages.put(updated);
                     }
+                    if self
+                        .schedule
+                        .modal
+                        .as_ref()
+                        .and_then(|modal| modal.editing_id)
+                        .is_some()
+                    {
+                        self.schedule.modal = None;
+                    }
                     // `kb` of module 859403: `MXsMRk` "Scheduled message updated"
                     self.show_toast(dc_intl::t("MXsMRk").to_owned(), ToastIcon::Clock, cx);
                 } else {
+                    if let Some(modal) = self.schedule.modal.as_mut() {
+                        modal.submitting = false;
+                    }
                     let err = body["body"]["message"]
                         .as_str()
                         .unwrap_or("Something went wrong.");
@@ -860,23 +969,20 @@ impl Root {
         cx.notify();
     }
 
-    /// Updates a scheduled message (`PATCH /users/@me/scheduled-messages/{id}`, module 151282 + 859403).
-    #[allow(dead_code)]
+    /// Updates a scheduled message (`PATCH /users/@me/scheduled-messages/{id}`, module 151282 `Eg` + module 23395).
+    /// Omits `content` when only updating `scheduled_timestamp` (module 23395) so message text is not clobbered.
     pub(super) fn update_scheduled_message(
         &mut self,
         id: Id,
-        scheduled_timestamp: &str,
-        content: &str,
+        scheduled_timestamp: Option<&str>,
+        content: Option<&str>,
         cx: &mut Context<Self>,
     ) {
         let _ = self.requests.send(Request::Rest {
             key: Some(format!("{UPDATE_KEY}{id}")),
             method: reqwest::Method::PATCH,
             route: format!("/users/@me/scheduled-messages/{id}"),
-            body: Some(serde_json::json!({
-                "scheduled_timestamp": scheduled_timestamp,
-                "content": content,
-            })),
+            body: Some(update_scheduled_payload(scheduled_timestamp, content)),
         });
         cx.notify();
     }
@@ -1114,6 +1220,22 @@ fn proof_log(line: &str) {
     }
 }
 
+/// Builds the `PATCH /users/@me/scheduled-messages/{id}` JSON body (module 151282 `Eg` / module 23395): omits
+/// absent fields so editing only the timestamp never clobbers `content`.
+pub(super) fn update_scheduled_payload(
+    scheduled_timestamp: Option<&str>,
+    content: Option<&str>,
+) -> serde_json::Value {
+    let mut map = serde_json::Map::new();
+    if let Some(ts) = scheduled_timestamp {
+        map.insert("scheduled_timestamp".to_owned(), serde_json::json!(ts));
+    }
+    if let Some(body) = content {
+        map.insert("content".to_owned(), serde_json::json!(body));
+    }
+    serde_json::Value::Object(map)
+}
+
 #[cfg(test)]
 mod limit_tests {
     /// `vh` of module 859403: with Nitro the limit alert names the limit, Okay and Manage Messages.
@@ -1131,5 +1253,23 @@ mod limit_tests {
             alert.buttons[1].then,
             super::super::chat_notices::Then::ScheduledInbox
         ));
+    }
+
+    #[test]
+    fn update_scheduled_payload_omits_absent_fields_and_keys_match_23395() {
+        let ts_only = super::update_scheduled_payload(Some("2026-11-22T12:00:00Z"), None);
+        assert_eq!(
+            ts_only,
+            serde_json::json!({"scheduled_timestamp": "2026-11-22T12:00:00Z"})
+        );
+        let both = super::update_scheduled_payload(Some("2026-11-22T12:00:00Z"), Some("hello"));
+        assert_eq!(
+            both,
+            serde_json::json!({"scheduled_timestamp": "2026-11-22T12:00:00Z", "content": "hello"})
+        );
+        assert_eq!(dc_intl::t("jbdHj3"), "Update Scheduled Message");
+        assert_eq!(dc_intl::t("VZANAD"), "Update");
+        assert_eq!(dc_intl::t("SBcdAN"), "Edit schedule time");
+        assert_eq!(dc_intl::t("JLba51"), "Send now");
     }
 }
