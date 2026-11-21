@@ -20,6 +20,19 @@ pub(crate) struct ServerShopProduct {
     pub price: String,
     pub is_bundle: bool,
     pub description: String,
+    /// Downloadable attachments `(id, filename, size_bytes)` (module 733230 / 59375).
+    pub attachments: Vec<(String, String, u64)>,
+    /// Optional included server role `(name, rgb_color)` (module 733230 / 411342).
+    pub role: Option<(String, u32)>,
+    /// Whether the viewer already owns this product listing.
+    pub has_entitlement: bool,
+}
+
+/// Server Product Info Modal state (`GUILD_PRODUCT_LISTING_INFO_MODAL`, module 733230).
+#[derive(Clone, Debug)]
+pub(crate) struct ServerProductInfoModal {
+    pub product: ServerShopProduct,
+    pub contents_expanded: bool,
 }
 
 #[derive(Clone, Debug)]
@@ -31,10 +44,17 @@ pub(crate) struct ServerShopModal {
     pub is_creator_preview: bool,
     pub is_tab_layout: bool,
     pub promo_dismissed: bool,
+    /// Active Product Info detail dialog (module 733230).
+    pub detail: Option<ServerProductInfoModal>,
 }
 
 impl Root {
     pub(crate) fn close_server_shop(&mut self) -> bool {
+        if let Some(m) = self.server_shop_modal.as_mut()
+            && m.detail.take().is_some()
+        {
+            return true;
+        }
         self.server_shop_modal.take().is_some()
     }
 
@@ -43,6 +63,14 @@ impl Root {
         cx: &mut Context<Self>,
     ) -> Option<AnyElement> {
         let modal = self.server_shop_modal.as_ref()?;
+        if let Some(detail) = modal.detail.as_ref() {
+            return Some(self.server_product_info_dialog(
+                &modal.guild_name,
+                modal.is_creator_preview,
+                detail,
+                cx,
+            ));
+        }
         let tab = modal.tab;
         let welcome_header = self.server_shop_welcome_header(modal, cx);
 
@@ -230,6 +258,7 @@ impl Root {
                         )
                         .child(div().flex().gap(px(12.)).children(
                             modal.products.iter().enumerate().map(|(i, prod)| {
+                                let clicked = prod.clone();
                                 div()
                                     .id(SharedString::from(format!(
                                         "srv-shop-prod-{i}-{}",
@@ -240,10 +269,21 @@ impl Root {
                                     .rounded(px(10.))
                                     .border_1()
                                     .border_color(color("--border-subtle"))
+                                    .hover(|s| s.border_color(color("--border-normal")))
                                     .bg(color("--background-base-lower"))
+                                    .cursor_pointer()
                                     .flex()
                                     .flex_col()
                                     .gap(px(8.))
+                                    .on_click(cx.listener(move |this, _, _, cx| {
+                                        if let Some(m) = this.server_shop_modal.as_mut() {
+                                            m.detail = Some(ServerProductInfoModal {
+                                                product: clicked.clone(),
+                                                contents_expanded: false,
+                                            });
+                                        }
+                                        cx.notify();
+                                    }))
                                     .when(prod.is_bundle, |card| {
                                         card.child(
                                             div()
@@ -441,27 +481,428 @@ impl Root {
         )
     }
 
+    /// Renders `GUILD_PRODUCT_LISTING_INFO_MODAL` (module 733230 + 571654 + 411342 + 731423 + 179499):
+    /// subtitle `xImSei` (`"{productType} offered by {personName}"`), cover hero, expandable
+    /// `ESEKua`/`DKNxgB` ("View/Collapse Product Contents") showing `DWYJua` Downloadable attachments
+    /// and `o9xphc` Role pill (with lock icon when unentitled), `TNnDJs` "Product Details" description,
+    /// and action bar with price + Purchase/Purchased/Download Now/Access Files button.
+    fn server_product_info_dialog(
+        &self,
+        guild_name: &str,
+        is_creator_preview: bool,
+        detail: &ServerProductInfoModal,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let product = &detail.product;
+        let has_att = !product.attachments.is_empty();
+        let has_role = product.role.is_some();
+        let product_type = match (has_att, has_role) {
+            (true, true) => dc_intl::t("ih4QMU"),
+            (true, false) => dc_intl::t("DWYJua"),
+            _ => dc_intl::t("o9xphc"),
+        };
+        let subtitle = dc_intl::format(
+            "xImSei",
+            &[
+                ("productType", product_type.into()),
+                ("personName", guild_name.into()),
+            ],
+        );
+        let role_pill = product.role.as_ref().map(|(rname, rcol)| {
+            let dot_rgba = ((*rcol) << 8) | 0xff;
+            let _sr_prefix = dc_intl::t("RnyseL");
+            div()
+                .self_start()
+                .px(px(10.))
+                .py(px(5.))
+                .rounded(px(6.))
+                .bg(color("--background-mod-subtle"))
+                .border_1()
+                .border_color(color("--border-subtle"))
+                .flex()
+                .items_center()
+                .gap(px(6.))
+                .child(div().size(px(10.)).rounded_full().bg(rgba(dot_rgba)))
+                .child(
+                    div()
+                        .text_size(px(13.))
+                        .font_weight(FontWeight(500.))
+                        .text_color(color("--text-strong"))
+                        .child(rname.clone()),
+                )
+                .when(!product.has_entitlement, |pill| {
+                    pill.child(icon("access_lock", 12., "--text-muted"))
+                })
+                .into_any_element()
+        });
+
+        let contents_section: Option<AnyElement> = if has_att {
+            let expanded = detail.contents_expanded;
+            let toggle_label = if expanded {
+                dc_intl::t("DKNxgB")
+            } else {
+                dc_intl::t("ESEKua")
+            };
+            let att_rows: Vec<AnyElement> = product
+                .attachments
+                .iter()
+                .map(|(aid, fname, bytes)| {
+                    let mb = (*bytes as f64) / (1024. * 1024.);
+                    div()
+                        .id(SharedString::from(format!("srv-prod-att-{aid}")))
+                        .flex()
+                        .items_center()
+                        .gap(px(8.))
+                        .text_size(px(13.))
+                        .text_color(color("--text-default"))
+                        .child(icon("plugin_cloud_download", 14., "--text-muted"))
+                        .child(fname.clone())
+                        .child(
+                            div()
+                                .text_color(color("--text-muted"))
+                                .child(format!("• {mb:.2} MB")),
+                        )
+                        .into_any_element()
+                })
+                .collect();
+            Some(
+                div()
+                    .p(px(12.))
+                    .rounded(px(8.))
+                    .bg(color("--background-base-lower"))
+                    .border_1()
+                    .border_color(color("--border-subtle"))
+                    .flex()
+                    .flex_col()
+                    .gap(px(10.))
+                    .child(
+                        div()
+                            .id("srv-prod-contents-toggle")
+                            .cursor_pointer()
+                            .flex()
+                            .items_center()
+                            .justify_between()
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                if let Some(d) = this
+                                    .server_shop_modal
+                                    .as_mut()
+                                    .and_then(|m| m.detail.as_mut())
+                                {
+                                    d.contents_expanded = !d.contents_expanded;
+                                }
+                                cx.notify();
+                            }))
+                            .child(
+                                div()
+                                    .text_size(px(14.))
+                                    .font_weight(FontWeight(600.))
+                                    .text_color(color("--text-strong"))
+                                    .child(toggle_label),
+                            )
+                            .child(icon("shop_select_chevron", 14., "--text-muted")),
+                    )
+                    .when(expanded, |box_col| {
+                        box_col
+                            .child(
+                                div()
+                                    .flex()
+                                    .flex_col()
+                                    .gap(px(6.))
+                                    .child(
+                                        div()
+                                            .text_size(px(11.))
+                                            .font_weight(FontWeight(700.))
+                                            .text_color(color("--text-muted"))
+                                            .child(dc_intl::t("DWYJua").to_uppercase()),
+                                    )
+                                    .children(att_rows),
+                            )
+                            .when_some(role_pill, |col, pill| {
+                                col.child(div().w_full().h(px(1.)).bg(color("--border-subtle")))
+                                    .child(
+                                        div()
+                                            .flex()
+                                            .flex_col()
+                                            .gap(px(6.))
+                                            .child(
+                                                div()
+                                                    .text_size(px(11.))
+                                                    .font_weight(FontWeight(700.))
+                                                    .text_color(color("--text-muted"))
+                                                    .child(dc_intl::t("o9xphc").to_uppercase()),
+                                            )
+                                            .child(pill),
+                                    )
+                            })
+                    })
+                    .into_any_element(),
+            )
+        } else {
+            role_pill
+        };
+
+        let (cta_label, cta_icon, cta_primary, cta_disabled) = if is_creator_preview {
+            (dc_intl::t("xUi3BL"), None, true, true)
+        } else if !product.has_entitlement {
+            (dc_intl::t("xUi3BL"), None, true, false)
+        } else if product.attachments.len() == 1 {
+            (
+                dc_intl::t("t9bE9b"),
+                Some("plugin_cloud_download"),
+                true,
+                false,
+            )
+        } else if product.attachments.len() > 1 {
+            (dc_intl::t("UyuiUE"), Some("shop_arrow_right"), true, false)
+        } else {
+            (dc_intl::t("RcTOGF"), None, false, true)
+        };
+
+        let dialog = div()
+            .id("server-product-info-modal")
+            .occlude()
+            .w(px(480.))
+            .rounded(px(12.))
+            .bg(color("--modal-background"))
+            .border_1()
+            .border_color(color("--border-subtle"))
+            .overflow_hidden()
+            .flex()
+            .flex_col()
+            .on_click(cx.listener(|_, _, _, cx| cx.stop_propagation()))
+            // Header
+            .child(
+                div()
+                    .px(px(20.))
+                    .pt(px(18.))
+                    .pb(px(12.))
+                    .flex()
+                    .items_start()
+                    .justify_between()
+                    .gap(px(12.))
+                    .child(
+                        div()
+                            .flex()
+                            .flex_col()
+                            .gap(px(2.))
+                            .child(
+                                div()
+                                    .text_size(px(20.))
+                                    .line_height(px(24.))
+                                    .font_weight(FontWeight(700.))
+                                    .text_color(color("--text-strong"))
+                                    .child(product.name.clone()),
+                            )
+                            .child(
+                                div()
+                                    .text_size(px(13.))
+                                    .line_height(px(18.))
+                                    .text_color(color("--text-muted"))
+                                    .child(subtitle),
+                            ),
+                    )
+                    .child(
+                        div()
+                            .id("srv-prod-info-close")
+                            .size(px(28.))
+                            .rounded(px(6.))
+                            .cursor_pointer()
+                            .hover(|s| s.bg(color("--background-mod-subtle")))
+                            .flex()
+                            .items_center()
+                            .justify_center()
+                            .child(icon("modal_close", 16., "--interactive-icon-default"))
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                if let Some(m) = this.server_shop_modal.as_mut() {
+                                    m.detail = None;
+                                }
+                                cx.notify();
+                            })),
+                    ),
+            )
+            // Body
+            .child(
+                div()
+                    .px(px(20.))
+                    .pb(px(16.))
+                    .flex()
+                    .flex_col()
+                    .gap(px(14.))
+                    // Cover visual placeholder
+                    .child(
+                        div()
+                            .w_full()
+                            .h(px(148.))
+                            .rounded(px(8.))
+                            .bg(color("--background-base-lower"))
+                            .border_1()
+                            .border_color(color("--border-subtle"))
+                            .flex()
+                            .items_center()
+                            .justify_center()
+                            .child(icon(
+                                "storefront_store",
+                                40.,
+                                "--control-primary-background-default",
+                            )),
+                    )
+                    .children(contents_section)
+                    .child(div().w_full().h(px(1.)).bg(color("--border-subtle")))
+                    .child(
+                        div()
+                            .flex()
+                            .flex_col()
+                            .gap(px(6.))
+                            .child(
+                                div()
+                                    .text_size(px(16.))
+                                    .font_weight(FontWeight(600.))
+                                    .text_color(color("--text-strong"))
+                                    .child(dc_intl::t("TNnDJs")),
+                            )
+                            .child(
+                                div()
+                                    .text_size(px(14.))
+                                    .line_height(px(20.))
+                                    .text_color(color("--text-muted"))
+                                    .child(product.description.clone()),
+                            ),
+                    ),
+            )
+            // Action bar
+            .child(
+                div()
+                    .px(px(20.))
+                    .py(px(14.))
+                    .bg(color("--modal-footer-background"))
+                    .border_t_1()
+                    .border_color(color("--border-subtle"))
+                    .flex()
+                    .items_center()
+                    .justify_between()
+                    .child(
+                        div()
+                            .text_size(px(20.))
+                            .font_weight(FontWeight(700.))
+                            .text_color(color("--text-strong"))
+                            .child(product.price.clone()),
+                    )
+                    .child(
+                        div()
+                            .id("srv-prod-info-cta")
+                            .h(px(38.))
+                            .px(px(18.))
+                            .rounded(px(8.))
+                            .bg(if cta_primary {
+                                color("--control-primary-background-default")
+                            } else {
+                                color("--control-secondary-background-default")
+                            })
+                            .when(cta_disabled, |btn| btn.opacity(0.55))
+                            .when(!cta_disabled, |btn| {
+                                btn.cursor_pointer().hover(|s| {
+                                    s.bg(if cta_primary {
+                                        color("--control-primary-background-hover")
+                                    } else {
+                                        color("--control-secondary-background-hover")
+                                    })
+                                })
+                            })
+                            .flex()
+                            .items_center()
+                            .gap(px(6.))
+                            .text_size(px(14.))
+                            .font_weight(FontWeight(600.))
+                            .text_color(if cta_primary {
+                                color("--white")
+                            } else {
+                                color("--text-strong")
+                            })
+                            .children(cta_icon.map(|g| icon(g, 15., "--white")))
+                            .child(cta_label)
+                            .when(!cta_disabled, |btn| {
+                                btn.on_click(cx.listener(|this, _, _, cx| {
+                                    if let Some(m) = this.server_shop_modal.as_mut() {
+                                        m.detail = None;
+                                    }
+                                    cx.notify();
+                                }))
+                            }),
+                    ),
+            );
+
+        deferred(
+            div()
+                .id("server-product-info-backdrop")
+                .occlude()
+                .absolute()
+                .inset_0()
+                .bg(rgba(0x000000b3))
+                .flex()
+                .items_center()
+                .justify_center()
+                .on_click(cx.listener(|this, _, _, cx| {
+                    if let Some(m) = this.server_shop_modal.as_mut() {
+                        m.detail = None;
+                    }
+                    cx.notify();
+                }))
+                .child(dialog),
+        )
+        .with_priority(3)
+        .into_any_element()
+    }
+
     #[cfg(feature = "capture")]
     pub(crate) fn script_server_shop(&mut self, arg: &str, cx: &mut Context<Self>) -> String {
+        let sample_bundle = ServerShopProduct {
+            id: "p1".to_owned(),
+            name: "Starter Wallpaper Pack".to_owned(),
+            price: "$3.99".to_owned(),
+            is_bundle: true,
+            description: "4K wallpapers plus an exclusive Patron role badge.".to_owned(),
+            attachments: vec![
+                (
+                    "a1".to_owned(),
+                    "desktop_4k_pack.zip".to_owned(),
+                    14_800_000,
+                ),
+                (
+                    "a2".to_owned(),
+                    "mobile_wallpapers.zip".to_owned(),
+                    6_250_000,
+                ),
+            ],
+            role: Some(("Shop Patron".to_owned(), 0x5865f2)),
+            has_entitlement: arg == "product-owned",
+        };
         let products = if arg == "empty" {
             Vec::new()
         } else {
             vec![
-                ServerShopProduct {
-                    id: "p1".to_owned(),
-                    name: "Starter Wallpaper Pack".to_owned(),
-                    price: "$3.99".to_owned(),
-                    is_bundle: true,
-                    description: "4K wallpapers plus an exclusive Patron role badge.".to_owned(),
-                },
+                sample_bundle.clone(),
                 ServerShopProduct {
                     id: "p2".to_owned(),
                     name: "VIP Color Role".to_owned(),
                     price: "$2.99".to_owned(),
                     is_bundle: false,
                     description: "Stand out in the member list with custom flair.".to_owned(),
+                    attachments: Vec::new(),
+                    role: Some(("VIP Color".to_owned(), 0xeb459e)),
+                    has_entitlement: false,
                 },
             ]
+        };
+        let detail = match arg {
+            "product-info" => Some(ServerProductInfoModal {
+                product: sample_bundle,
+                contents_expanded: false,
+            }),
+            "product-info-expanded" | "product-owned" => Some(ServerProductInfoModal {
+                product: sample_bundle,
+                contents_expanded: true,
+            }),
+            _ => None,
         };
         self.server_shop_modal = Some(ServerShopModal {
             guild_name: "gravecord fixture".to_owned(),
@@ -471,9 +912,10 @@ impl Root {
                 ServerShopTab::Products
             },
             products,
-            is_creator_preview: arg != "member",
+            is_creator_preview: arg != "member" && detail.is_none(),
             is_tab_layout: arg != "page",
             promo_dismissed: false,
+            detail,
         });
         cx.notify();
         format!("server-shop: {arg}")

@@ -148,6 +148,13 @@ pub struct Product {
     pub button_colors: Vec<u32>,
 }
 
+/// Discount source shown beside a Shop price line (`993408.D0`, module 219103).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DiscountSource {
+    Nitro,
+    ThirdParty,
+}
+
 /// One product as the storefront and `/collectibles-products` return it (`fromServer` of module 623373):
 /// `{sku_id, name, summary, type, premium_type, category_sku_id, prices{<type>:{country_prices:{prices:[{amount,
 /// currency, exponent}]}}}, preview_assets{fg_static, bg_static, fg_video}, items[{type, sku_id, asset, label}],
@@ -286,6 +293,37 @@ impl Product {
         let kind = if nitro { PRICE_NITRO } else { PRICE_DEFAULT };
         let list = &self.prices.iter().find(|(entry, _)| entry == kind)?.1;
         list.iter().find(|price| price.currency != ORB)
+    }
+
+    /// Minimum discount percentage displayed on a Shop price line (`>= 5` in module 219103).
+    pub const MIN_DISCOUNT_PERCENT: i64 = 5;
+
+    /// Non-bundle fiat discount source and percentage (`993408.D0`, module 219103): compares default
+    /// fiat price against Nitro (`PRICE_NITRO`) or third-party (e.g. Xbox Game Pass) discounted price.
+    pub fn fiat_discount(&self, nitro: bool) -> Option<(DiscountSource, i64)> {
+        let base = self.price(PRICE_DEFAULT, None)?.amount;
+        if base <= 0 {
+            return None;
+        }
+        if nitro
+            && let Some(discounted) = self.price(PRICE_NITRO, None)
+            && discounted.amount < base
+        {
+            let pct = ((base - discounted.amount) as f64 / base as f64 * 100.).round() as i64;
+            if pct >= Self::MIN_DISCOUNT_PERCENT {
+                return Some((DiscountSource::Nitro, pct));
+            }
+        }
+        // Third-party discount bucket (e.g. Xbox Game Pass `THIRDPARTY_CROISSANT`, key `"12"`).
+        if let Some(discounted) = self.price("12", None)
+            && discounted.amount < base
+        {
+            let pct = ((base - discounted.amount) as f64 / base as f64 * 100.).round() as i64;
+            if pct >= Self::MIN_DISCOUNT_PERCENT {
+                return Some((DiscountSource::ThirdParty, pct));
+            }
+        }
+        None
     }
 
     /// `fT` of module 993408: what a bundle's parts cost at their default prices and the share the bundle saves.

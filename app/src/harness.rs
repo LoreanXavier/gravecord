@@ -2920,6 +2920,10 @@ pub async fn run(
                     let _ = writeln!(output, "gif fixture added in memory");
                 }
             }
+            ["video-quest", mode] => {
+                let msg = root.update(cx, |root, cx| root.script_video_quest(mode, cx));
+                let _ = writeln!(output, "{msg}");
+            }
             ["rail-overflow"] => {
                 let msg = root.update(cx, |root, cx| root.script_rail_overflow(cx));
                 let _ = writeln!(output, "{msg}");

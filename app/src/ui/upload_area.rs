@@ -1,17 +1,14 @@
 //! The drop area shown while files are dragged over the window (module 738876 around the UploadArea of module 65593):
 //! the window darkened to `--opacity-black-80`, a 310 by 170 brand card with a dashed inner frame, the document, image
-//! and code art fanned out above "Upload to **#channel**" (or "Insta Upload Mode!" while Shift is held) and "You can add
-//! comments before uploading. / Hold shift to upload directly.". A drop with Shift held sends the files at once, as
-//! `requireConfirm: false` does (module 518960); otherwise they wait in the composer.
-//!
-//! Geometry is `design/dom/audio-attachment/card-hover-darker-cozy.json`, which holds the area in its final state: the
-//! art is drawn there (the end of the 0.8s fan-out, as reduced motion shows it). GAP: the fan-out and bounce
-//! animations, the text fade-in, the sparkles of `u` and the middle art's drop shadow are not drawn.
+//! and code art fanned out above "Upload to **#channel**" (or "Insta Upload Mode!" while Shift is held, or "Upload to
+//! post" / "Upload to thread" for FirstThreadMessage drafts), sparkle accents (`u` of 65593), center art drop shadow,
+//! and "You can add comments before uploading. / Hold shift to upload directly.". A drop with Shift held sends the
+//! files at once, as `requireConfirm: false` does (module 518960); otherwise they wait in the composer.
 
 use super::{Root, color};
 use gpui::{
-    AnyElement, Context, FontWeight, Image, ImageFormat, IntoElement, ParentElement, Styled,
-    Window, div, img, prelude::*, px,
+    AnyElement, BoxShadow, Context, FontWeight, Image, ImageFormat, IntoElement, ParentElement,
+    Styled, Window, div, hsla, img, point, prelude::*, px,
 };
 use std::sync::Arc;
 
@@ -24,6 +21,25 @@ const ART: [(&str, f32, (f32, f32)); 3] = [
     ("5dea307a4037ec4e", 0., (50., -21.)),
 ];
 
+/// Seven sparkle accents (`u` of module 65593, CSS 138267) around the fanned upload art: `(x, y, size, opacity)`.
+const SPARKLES: [(f32, f32, f32, f32); 7] = [
+    (-44., -54., 6., 0.85),
+    (138., -48., 7., 0.85),
+    (-62., -12., 4., 0.65),
+    (156., -8., 5., 0.7),
+    (18., -76., 5., 0.75),
+    (86., -74., 4., 0.65),
+    (128., -78., 6., 0.8),
+];
+
+/// Draft target mode for module 738876 title and description selection.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum UploadTitleKind {
+    Normal,
+    FirstThreadPost,
+    FirstThread,
+}
+
 /// A canvas around each turned 72 by 96 drawing large enough for its turned bounds (151.6 by 162.6 in the capture).
 const CANVAS: (f32, f32) = (160., 170.);
 
@@ -31,16 +47,42 @@ fn art_key(asset: &str) -> String {
     format!("text:upload-area-{asset}")
 }
 
-/// The title: `dYP2Fc` with the channel as module 47167 `m1(channel, ..., true)` names it, or `h76ulG` with Shift.
-pub(super) fn title(destination: &str, shift: bool) -> (String, Option<String>) {
-    if shift {
-        (dc_intl::t("h76ulG").to_owned(), None)
-    } else {
-        (
-            dc_intl::t("9uKafS").to_owned() + " ",
-            Some(destination.to_owned()),
-        )
+/// The title (`dYP2Fc`, `RBBLhL`, `gUx4eu`, `h76ulG`) and description (`lpgkzq`, `usQh4J`) of module 738876.
+pub(super) fn title_for_kind(
+    kind: UploadTitleKind,
+    destination: &str,
+    shift: bool,
+) -> (String, Option<String>, &'static str) {
+    match kind {
+        UploadTitleKind::FirstThreadPost => (dc_intl::t("RBBLhL").to_owned(), None, "lpgkzq"),
+        UploadTitleKind::FirstThread => (dc_intl::t("gUx4eu").to_owned(), None, "lpgkzq"),
+        UploadTitleKind::Normal if shift => (dc_intl::t("h76ulG").to_owned(), None, "usQh4J"),
+        UploadTitleKind::Normal => {
+            // `dYP2Fc`: `"Upload to **{destination}**"` (extracts prefix before bold destination hook).
+            let runs = dc_intl::format_runs("dYP2Fc", &[("destination", destination.into())]);
+            let mut prefix = String::new();
+            let mut bold_dest: Option<String> = None;
+            for (text, hook) in runs {
+                if hook.as_deref() == Some("$b") {
+                    bold_dest = Some(text);
+                } else if bold_dest.is_none() {
+                    prefix.push_str(&text);
+                }
+            }
+            (
+                prefix,
+                bold_dest.or_else(|| Some(destination.to_owned())),
+                "usQh4J",
+            )
+        }
     }
+}
+
+/// The title: `dYP2Fc` with the channel as module 47167 `m1(channel, ..., true)` names it, or `h76ulG` with Shift.
+#[cfg(test)]
+pub(super) fn title(destination: &str, shift: bool) -> (String, Option<String>) {
+    let (prefix, dest, _) = title_for_kind(UploadTitleKind::Normal, destination, shift);
+    (prefix, dest)
 }
 
 impl Root {
@@ -66,13 +108,16 @@ impl Root {
         }
     }
 
-    /// `R` of module 738876: no layer (settings) is open, and the channel is a DM or a server channel the account may
-    /// attach files in.
+    /// `I` and `R` of module 738876: no layer (settings) is open, no active slash command is open,
+    /// the channel is not behind an unaccepted NSFW/age gate (`F` of 323073), and the channel is a DM
+    /// or a server channel the account may attach files in.
     pub(super) fn upload_area_allowed(&self) -> bool {
         if self.settings.is_some()
             || self.server_settings.is_some()
             || self.channel_settings.is_some()
             || self.profile_editor.is_some()
+            || self.slash.pending.is_some()
+            || self.spoiler_gating_channel().is_some()
         {
             return false;
         }
@@ -98,6 +143,21 @@ impl Root {
         place.is_some_and(|place| {
             self.my_permission(guild, Some(&place), dc_state::permissions::ATTACH_FILES)
         })
+    }
+
+    fn upload_title_kind(&self) -> UploadTitleKind {
+        if self.new_thread.is_some() {
+            if self
+                .current_channel()
+                .is_some_and(|ch| matches!(ch.kind, dc_state::ChannelKind::Other(15 | 16)))
+            {
+                UploadTitleKind::FirstThreadPost
+            } else {
+                UploadTitleKind::FirstThread
+            }
+        } else {
+            UploadTitleKind::Normal
+        }
     }
 
     /// Asks for the three drawings the first time a drag is seen.
@@ -135,23 +195,51 @@ impl Root {
         if !cx.has_active_drag() || !self.upload_area_allowed() {
             return None;
         }
-        let (text, destination) = title(&self.upload_destination(), window.modifiers().shift);
+        let (text, destination, desc_key) = title_for_kind(
+            self.upload_title_kind(),
+            &self.upload_destination(),
+            window.modifiers().shift,
+        );
         let icons = div()
             .relative()
             .w(px(100.))
             .h(px(60.))
             .flex_none()
-            .children(ART.iter().filter_map(|(asset, degrees, (x, y))| {
-                let image = self.upload_art(asset, *degrees)?;
-                Some(
-                    img(image)
-                        .absolute()
-                        .left(px(x - CANVAS.0 / 2.))
-                        .top(px(y - CANVAS.1 / 2.))
-                        .w(px(CANVAS.0))
-                        .h(px(CANVAS.1)),
-                )
-            }));
+            // `u` of module 65593 (CSS 138267): sparkle accents framing the fanned document art.
+            .children(SPARKLES.iter().map(|&(sx, sy, size, alpha)| {
+                div()
+                    .absolute()
+                    .left(px(sx))
+                    .top(px(sy))
+                    .size(px(size))
+                    .rounded_full()
+                    .bg(hsla(0., 0., 1., alpha))
+            }))
+            .children(
+                ART.iter()
+                    .enumerate()
+                    .filter_map(|(idx, (asset, degrees, (x, y)))| {
+                        let image = self.upload_art(asset, *degrees)?;
+                        let mut el = div()
+                            .absolute()
+                            .left(px(x - CANVAS.0 / 2.))
+                            .top(px(y - CANVAS.1 / 2.))
+                            .w(px(CANVAS.0))
+                            .h(px(CANVAS.1))
+                            .child(img(image).w(px(CANVAS.0)).h(px(CANVAS.1)));
+                        // Center art (`wrapTwo`) carries a soft drop shadow in CSS 138267.
+                        if idx == 2 {
+                            el = el.shadow(vec![BoxShadow {
+                                color: hsla(0., 0., 0., 0.28),
+                                offset: point(px(0.), px(6.)),
+                                blur_radius: px(16.),
+                                spread_radius: px(-8.),
+                                inset: false,
+                            }]);
+                        }
+                        Some(el)
+                    }),
+            );
         let card = div()
             .relative()
             .w(px(310.))
@@ -205,7 +293,7 @@ impl Root {
                             .text_size(px(12.))
                             .line_height(px(16.))
                             .children(
-                                dc_intl::t("usQh4J")
+                                dc_intl::t(desc_key)
                                     .split('\n')
                                     .map(|line| div().child(line.to_owned())),
                             ),

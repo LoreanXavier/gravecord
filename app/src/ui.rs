@@ -11842,6 +11842,8 @@ impl Render for Root {
                         || this.shop_product_embed_preview.is_some()
                         || this.evolving_tenure_modal.is_some()
                         || this.quest_bar_bounty.is_some()
+                        || this.quests.activity_panel_card.is_some()
+                        || this.quests.video_modal.is_some()
                         || this.quests.split_modal.is_some()
                         || this.quests.enrollment_blocked_modal.is_some()
                         || this.quests.promoted_preview_quest.is_some()
@@ -11930,6 +11932,8 @@ impl Render for Root {
                     this.shop_product_embed_preview = None;
                     this.evolving_tenure_modal = None;
                     this.quest_bar_bounty = None;
+                    this.quests.activity_panel_card = None;
+                    this.quests.video_modal = None;
                     this.quests.split_modal = None;
                     this.quests.enrollment_blocked_modal = None;
                     this.quests.promoted_preview_quest = None;
@@ -13176,6 +13180,8 @@ impl Render for Root {
             .children(self.shop_product_embed_layer(cx))
             .children(self.evolving_tenure_badge_layer(cx))
             .children(self.quest_bar_bounty_layer(cx))
+            .children(self.activity_panel_quest_card_layer(cx))
+            .children(self.video_quest_modal_layer(cx))
             .children(self.quest_split_modal_layer(cx))
             .children(self.quest_promoted_overlay_layer(cx))
             .children(self.quest_disclosure_and_alert_layer(cx))

@@ -75,6 +75,22 @@ impl PlatformWarning {
     }
 }
 
+/// Activity Panel Quest Card state (module 834615: `0IUT4Y`, `nLXlh+`, `l7E81v`, `cfY4PE`,
+/// `8QLQB+`, `R0RpRX`, `OXD41D`).
+#[derive(Clone, Debug)]
+pub(crate) struct ActivityPanelQuestCard {
+    pub quest_id: String,
+    pub game_name: String,
+    pub orb_amount: Option<u64>,
+    pub reward_with_article: String,
+    pub instructions: String,
+    pub cta_link: Option<String>,
+    pub enrolled: bool,
+    pub completed: bool,
+    pub enrolling: bool,
+    pub enroll_error: bool,
+}
+
 /// Interactive state for the bottom-left Quest Bar (module 66246).
 #[derive(Clone, Debug, Default)]
 pub struct QuestBarState {
@@ -942,10 +958,41 @@ impl Root {
             CtaAction::ViewConnection => {
                 self.open_quest_split_modal(quest_id.to_owned(), true, true, cx);
             }
-            CtaAction::OpenGameLink
-            | CtaAction::WatchVideo
-            | CtaAction::WatchOnMobile
-            | CtaAction::LaunchActivity => {
+            CtaAction::WatchVideo => {
+                let (title, subtitle, cta_label) = self
+                    .quests
+                    .store
+                    .quests
+                    .iter()
+                    .find(|q| q.id == quest_id)
+                    .map(|q| {
+                        (
+                            q.config.quest_name.clone(),
+                            q.config.game_title.clone(),
+                            if q.config.cta_button_label.is_empty() {
+                                dc_intl::t("l7E81v").to_owned()
+                            } else {
+                                q.config.cta_button_label.clone()
+                            },
+                        )
+                    })
+                    .unwrap_or_else(|| {
+                        (
+                            "Quest Video".to_owned(),
+                            String::new(),
+                            dc_intl::t("l7E81v").to_owned(),
+                        )
+                    });
+                self.open_video_quest_modal(
+                    quest_id.to_owned(),
+                    title,
+                    subtitle,
+                    cta_label,
+                    cta_link.to_owned(),
+                    cx,
+                );
+            }
+            CtaAction::OpenGameLink | CtaAction::WatchOnMobile | CtaAction::LaunchActivity => {
                 if !cta_link.is_empty() {
                     cx.open_url(cta_link);
                 } else {
@@ -1399,14 +1446,253 @@ impl Root {
         )
     }
 
-    /// Capture harness: `quest-bounty [card|menu|close]` (module 682908).
+    /// Renders the Quests Activity Panel Card (module 834615): game tile (`8QLQB+`), `0IUT4Y`
+    /// (`Claim {rewardWithArticleHook}` with 14px Orbs icon + `nLXlh+` when Orbs reward),
+    /// task instructions, optional external CTA button, full-width primary CTA (`l7E81v` Accept Quest
+    /// / `cfY4PE` Claim Reward), and enroll error alert (`R0RpRX` / `OXD41D`).
+    pub(in crate::ui) fn activity_panel_quest_card_layer(
+        &self,
+        cx: &mut Context<Self>,
+    ) -> Option<AnyElement> {
+        let card = self.quests.activity_panel_card.as_ref()?;
+        let _tile_aria = dc_intl::format(
+            "8QLQB+",
+            &[("gameName", Arg::Str(card.game_name.as_str().into()))],
+        );
+        let reward_label = if let Some(orbs) = card.orb_amount {
+            dc_intl::format("nLXlh+", &[("orbAmount", Arg::Num(orbs as f64))])
+        } else {
+            card.reward_with_article.clone()
+        };
+        let claim_runs = dc_intl::format_runs(
+            "0IUT4Y",
+            &[(
+                "rewardWithArticleHook",
+                Arg::Str(reward_label.as_str().into()),
+            )],
+        );
+        let mut prefix = String::new();
+        let mut hook_text = reward_label.clone();
+        for (txt, hook) in claim_runs {
+            if hook.as_deref() == Some("rewardWithArticleHook") {
+                hook_text = txt;
+            } else if prefix.is_empty() {
+                prefix.push_str(&txt);
+            }
+        }
+        let primary_label = if card.completed {
+            dc_intl::t("cfY4PE")
+        } else {
+            dc_intl::t("l7E81v")
+        };
+        let qid = card.quest_id.clone();
+        let completed = card.completed;
+        let enrolled = card.enrolled;
+        let cta_link = card.cta_link.clone();
+
+        let body = div()
+            .id("activity-panel-quest-card")
+            .occlude()
+            .w(px(300.))
+            .p(px(12.))
+            .rounded(px(10.))
+            .bg(color("--background-surface-high"))
+            .border_1()
+            .border_color(color("--border-subtle"))
+            .shadow(vec![gpui::BoxShadow {
+                color: gpui::hsla(0., 0., 0., 0.36),
+                offset: gpui::point(px(0.), px(8.)),
+                blur_radius: px(20.),
+                spread_radius: px(0.),
+                inset: false,
+            }])
+            .flex()
+            .flex_col()
+            .gap(px(10.))
+            // Header row (`div.wx`)
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap(px(10.))
+                    .child(
+                        div()
+                            .id("activity-quest-tile")
+                            .flex_none()
+                            .size(px(44.))
+                            .rounded(px(8.))
+                            .bg(color("--control-primary-background-default"))
+                            .flex()
+                            .items_center()
+                            .justify_center()
+                            .child(icon("bot_game_controller", 22., "--white")),
+                    )
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w_0()
+                            .flex()
+                            .flex_col()
+                            .gap(px(2.))
+                            .child(
+                                div()
+                                    .flex()
+                                    .items_center()
+                                    .gap(px(4.))
+                                    .text_size(px(13.))
+                                    .line_height(px(17.))
+                                    .font_weight(FontWeight(600.))
+                                    .text_color(color("--text-strong"))
+                                    .child(prefix)
+                                    .when(card.orb_amount.is_some(), |row| {
+                                        row.child(icon("shop_orb_18", 14., "--text-strong"))
+                                    })
+                                    .child(hook_text),
+                            )
+                            .child(
+                                div()
+                                    .text_size(px(12.))
+                                    .line_height(px(16.))
+                                    .text_color(color("--text-muted"))
+                                    .child(card.instructions.clone()),
+                            ),
+                    ),
+            )
+            // Enroll error notice (`R0RpRX` / `OXD41D`)
+            .when(card.enroll_error, |col| {
+                col.child(
+                    div()
+                        .p(px(8.))
+                        .rounded(px(6.))
+                        .bg(rgba(0xf23f421a))
+                        .border_1()
+                        .border_color(color("--status-danger"))
+                        .flex()
+                        .flex_col()
+                        .gap(px(2.))
+                        .child(
+                            div()
+                                .text_size(px(12.))
+                                .font_weight(FontWeight(600.))
+                                .text_color(color("--text-feedback-critical"))
+                                .child(dc_intl::t("R0RpRX")),
+                        )
+                        .child(
+                            div()
+                                .text_size(px(11.))
+                                .line_height(px(15.))
+                                .text_color(color("--text-default"))
+                                .child(dc_intl::t("OXD41D")),
+                        ),
+                )
+            })
+            // Actions row (`div.uz`)
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap(px(6.))
+                    .when_some(cta_link, |row, link| {
+                        row.child(
+                            div()
+                                .id("activity-quest-ext-cta")
+                                .flex_none()
+                                .size(px(32.))
+                                .rounded(px(8.))
+                                .bg(color("--control-secondary-background-default"))
+                                .hover(|s| s.bg(color("--control-secondary-background-hover")))
+                                .cursor_pointer()
+                                .flex()
+                                .items_center()
+                                .justify_center()
+                                .child(icon("link_external_small", 14., "--text-strong"))
+                                .on_click(cx.listener(move |_, _, _, cx| {
+                                    cx.stop_propagation();
+                                    cx.open_url(&link);
+                                })),
+                        )
+                    })
+                    .child(
+                        div()
+                            .id("activity-quest-primary-cta")
+                            .flex_1()
+                            .h(px(32.))
+                            .rounded(px(8.))
+                            .bg(color("--control-primary-background-default"))
+                            .when(card.enrolling, |btn| btn.opacity(0.6))
+                            .when(!card.enrolling, |btn| {
+                                btn.cursor_pointer()
+                                    .hover(|s| s.bg(color("--control-primary-background-hover")))
+                            })
+                            .flex()
+                            .items_center()
+                            .justify_center()
+                            .text_size(px(13.))
+                            .font_weight(FontWeight(600.))
+                            .text_color(color("--white"))
+                            .child(primary_label)
+                            .when(!card.enrolling, |btn| {
+                                btn.on_click(cx.listener(move |this, _, _, cx| {
+                                    cx.stop_propagation();
+                                    if completed {
+                                        this.open_quest_reward_modal(&qid, cx);
+                                    } else if !enrolled {
+                                        this.send_quest_enroll(
+                                            &qid,
+                                            super::quest_menu::QuestSurface::QuestHome,
+                                            cx,
+                                        );
+                                        if let Some(c) = this.quests.activity_panel_card.as_mut() {
+                                            c.enrolled = true;
+                                        }
+                                    }
+                                    cx.notify();
+                                }))
+                            }),
+                    ),
+            );
+
+        Some(
+            gpui::deferred(
+                div()
+                    .id("activity-panel-quest-card-wrap")
+                    .absolute()
+                    .left(px(80.))
+                    .bottom(px(74.))
+                    .child(body),
+            )
+            .with_priority(95)
+            .into_any_element(),
+        )
+    }
+
+    /// Capture harness: `quest-bounty [card|menu|activity-panel|activity-panel-claim|activity-panel-error|close]`.
     #[cfg(feature = "capture")]
     pub(crate) fn script_quest_bounty(&mut self, arg: &str, cx: &mut Context<Self>) -> String {
         match arg.trim() {
             "close" => {
                 self.quest_bar_bounty = None;
+                self.quests.activity_panel_card = None;
                 cx.notify();
                 "quest-bounty: closed".to_owned()
+            }
+            "activity-panel" | "activity-panel-claim" | "activity-panel-error" => {
+                self.quest_bar_bounty = None;
+                self.quests.activity_panel_card = Some(ActivityPanelQuestCard {
+                    quest_id: "q_834615".to_owned(),
+                    game_name: "Starfall Odyssey".to_owned(),
+                    orb_amount: Some(500),
+                    reward_with_article: "500 Orbs".to_owned(),
+                    instructions: "Play Starfall Odyssey for 15 minutes to earn your reward."
+                        .to_owned(),
+                    cta_link: Some("https://discord.com/quests".to_owned()),
+                    enrolled: arg.trim() != "activity-panel",
+                    completed: arg.trim() == "activity-panel-claim",
+                    enrolling: false,
+                    enroll_error: arg.trim() == "activity-panel-error",
+                });
+                cx.notify();
+                format!("quest-bounty: {}", arg.trim())
             }
             "menu" => {
                 self.quest_bar_bounty = Some(QuestBarBountyState {

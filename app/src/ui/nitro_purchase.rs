@@ -34,6 +34,9 @@ pub(crate) enum Step {
     GiftSelect,
     Checkout,
     Payment,
+    /// In-app checkout REVIEW step & footer (module 809029: `YScQSF`, `ouo4FK`, `LvcUx4`,
+    /// `cRCCJ3`, `zpi5pg`, `IJI7yk`, `VPuTc5`, `722178.ff` plan labels, expressive trial CTA).
+    Review,
     /// Purchase token email verification step (module 615456 `AWAITING_PURCHASE_TOKEN_AUTH`).
     AwaitingEmailAuth,
     /// Purchase predicate error view (module 615456 `p8+qtU`).
@@ -327,6 +330,84 @@ pub(crate) struct Purchase {
     pub email_resent: bool,
     /// Optional fractional Nitro credit / trial ending fine print banner (module 781949).
     pub fractional_banner: Option<FractionalBannerState>,
+    /// Checkout REVIEW step context & footer CTA selector (module 809029).
+    pub review: ReviewContext,
+}
+
+/// Plan identity for module 722178 `ff` / module 809029 primary review CTA text.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[allow(dead_code)]
+pub(crate) enum ReviewPlanKind {
+    BasicMonthly,
+    BasicYearly,
+    ClassicMonthly,
+    ClassicYearly,
+    #[default]
+    NitroMonthly,
+    NitroYearly,
+    NitroMultiMonth(u32),
+    NitroGroup,
+    Boost,
+}
+
+/// Review step state driving module 809029's exact CTA label priority & expressive trial button.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) struct ReviewContext {
+    pub is_recurring_gift: bool,
+    pub is_gift: bool,
+    pub is_past_due: bool,
+    pub is_prepaid: bool,
+    pub has_active_sub: bool,
+    pub is_paused_resume: bool,
+    pub is_upgrade: bool,
+    pub is_trial_eligible: bool,
+    pub show_back: bool,
+    pub plan_kind: ReviewPlanKind,
+}
+
+impl ReviewContext {
+    /// Exact CTA label decision tree of module 809029 (`YScQSF`, `ouo4FK`, `LvcUx4`, `cRCCJ3`,
+    /// `zpi5pg`, `IJI7yk`, `VPuTc5`, and `722178.ff`).
+    pub(crate) fn cta_label(&self) -> String {
+        if self.is_recurring_gift {
+            return dc_intl::t("YScQSF").to_owned();
+        }
+        if self.is_gift {
+            return dc_intl::t("ouo4FK").to_owned();
+        }
+        if self.is_past_due {
+            return dc_intl::t("LvcUx4").to_owned();
+        }
+        if self.is_prepaid {
+            return dc_intl::t("cRCCJ3").to_owned();
+        }
+        if self.has_active_sub {
+            return if self.is_paused_resume {
+                dc_intl::t("zpi5pg").to_owned()
+            } else if self.is_upgrade {
+                dc_intl::t("IJI7yk").to_owned()
+            } else {
+                dc_intl::t("VPuTc5").to_owned()
+            };
+        }
+        match self.plan_kind {
+            ReviewPlanKind::BasicMonthly => dc_intl::t("/G3aKw").to_owned(),
+            ReviewPlanKind::BasicYearly => dc_intl::t("2eQpsL").to_owned(),
+            ReviewPlanKind::ClassicMonthly => dc_intl::t("gueLg5").to_owned(),
+            ReviewPlanKind::ClassicYearly => dc_intl::t("MhH/vW").to_owned(),
+            ReviewPlanKind::NitroMonthly => dc_intl::t("LQVQIq").to_owned(),
+            ReviewPlanKind::NitroYearly => dc_intl::t("0nfg1x").to_owned(),
+            ReviewPlanKind::NitroMultiMonth(months) => dc_intl::format(
+                "BCD4fT",
+                &[("intervalCount", dc_intl::Arg::Num(f64::from(months)))],
+            ),
+            ReviewPlanKind::NitroGroup => dc_intl::format(
+                "LwdrNi",
+                &[("premiumGroupProductName", dc_intl::t("aFBQ3d").into())],
+            ),
+            ReviewPlanKind::Boost => dc_intl::t("eUEeCt").to_owned(),
+        }
+    }
 }
 
 /// Variant of the fractional Nitro credit / trial ending banner (module 781949 `uA`).
@@ -510,6 +591,7 @@ impl Root {
             header_step_label: None,
             email_resent: false,
             fractional_banner: None,
+            review: ReviewContext::default(),
         });
         cx.notify();
     }
@@ -587,6 +669,7 @@ impl Root {
             header_step_label: None,
             email_resent: false,
             fractional_banner: None,
+            review: ReviewContext::default(),
         });
         cx.notify();
     }
@@ -805,6 +888,7 @@ impl Root {
             (Step::GiftSelect, _) => self.gift_select_modal(window, cx),
             (Step::Checkout, _) => self.checkout_modal(window, cx),
             (Step::Payment, _) => self.payment_modal(window, cx),
+            (Step::Review, _) => self.review_modal(window, cx),
             (Step::AwaitingEmailAuth, _) => self.awaiting_email_auth_modal(window, cx),
             (Step::PredicateError, _) => self.predicate_error_modal(window, cx),
             (Step::Confirm, _) => self.confirm_modal(window, cx),
@@ -2460,6 +2544,7 @@ impl Root {
             header_step_label: None,
             email_resent: false,
             fractional_banner: None,
+            review: ReviewContext::default(),
         });
         cx.notify();
         format!("nitro-confirm: opened ({arg})")
@@ -2489,6 +2574,7 @@ impl Root {
             header_step_label: None,
             email_resent: false,
             fractional_banner: None,
+            review: ReviewContext::default(),
         };
         match arg.trim() {
             "" | "trial" => {
@@ -2496,6 +2582,27 @@ impl Root {
                 self.nitro.purchase = Some(p);
                 cx.notify();
                 "nitro-offer-header: trial".to_owned()
+            }
+            mode @ ("review-upgrade" | "review-past-due" | "review-trial" | "review-gift") => {
+                p.step = Step::Review;
+                p.review = ReviewContext {
+                    is_recurring_gift: false,
+                    is_gift: mode == "review-gift",
+                    is_past_due: mode == "review-past-due",
+                    is_prepaid: false,
+                    has_active_sub: mode == "review-upgrade",
+                    is_paused_resume: false,
+                    is_upgrade: mode == "review-upgrade",
+                    is_trial_eligible: mode == "review-trial",
+                    show_back: true,
+                    plan_kind: ReviewPlanKind::NitroYearly,
+                };
+                if mode == "review-trial" {
+                    p.offer_badge = Some(PurchaseOfferBadge::FreeTrial);
+                }
+                self.nitro.purchase = Some(p);
+                cx.notify();
+                format!("nitro-offer-header: {mode}")
             }
             "trial-fine-print" => {
                 p.offer_badge = Some(PurchaseOfferBadge::FreeTrial);
@@ -2569,6 +2676,142 @@ impl Root {
             }
             other => format!("nitro-offer-header: unknown {other}"),
         }
+    }
+
+    /// In-app Nitro Checkout REVIEW step & footer (module 809029: `YScQSF`, `ouo4FK`, `LvcUx4`,
+    /// `cRCCJ3`, `zpi5pg`, `IJI7yk`, `VPuTc5`, `722178.ff` plan labels, expressive `NitroWheelIcon`
+    /// trial CTA, and conditional Back routing). Actual billing submission continues safely via
+    /// browser handoff (`start_checkout_handoff`).
+    fn review_modal(&self, window: &Window, cx: &mut Context<Self>) -> AnyElement {
+        let purchase = self.nitro.purchase.as_ref();
+        let review = purchase.map(|p| p.review).unwrap_or_default();
+        let cta_text = review.cta_label();
+        let expressive = review.is_trial_eligible;
+        let is_gift = review.is_gift || review.is_recurring_gift;
+        let heading_label = if review.is_past_due {
+            dc_intl::t("LvcUx4")
+        } else if is_gift {
+            dc_intl::t("wKaVLC")
+        } else {
+            "Review"
+        };
+        let back_target = if is_gift {
+            Step::GiftSelect
+        } else {
+            Step::Checkout
+        };
+        let plan_summary = match review.plan_kind {
+            ReviewPlanKind::BasicMonthly | ReviewPlanKind::BasicYearly => dc_intl::t("t9uG/o"),
+            ReviewPlanKind::NitroGroup => dc_intl::t("aFBQ3d"),
+            _ => dc_intl::t("lG6a5x"),
+        };
+        let body = div()
+            .px(px(24.))
+            .pt(px(16.))
+            .pb(px(16.))
+            .flex()
+            .flex_col()
+            .gap(px(12.))
+            .child(Self::nitro_heading(plan_summary, 24., 24., true))
+            .when(review.is_past_due, |col| {
+                col.child(
+                    div()
+                        .p(px(12.))
+                        .rounded(px(8.))
+                        .bg(rgba(0xf0b2321a))
+                        .border_1()
+                        .border_color(color("--status-warning"))
+                        .text_size(px(13.))
+                        .line_height(px(18.))
+                        .text_color(color("--text-default"))
+                        .child(dc_intl::t("yrk+N6")),
+                )
+            })
+            .child(
+                div()
+                    .p(px(14.))
+                    .rounded(px(8.))
+                    .bg(color("--background-base-lower"))
+                    .border_1()
+                    .border_color(color("--border-subtle"))
+                    .flex()
+                    .items_center()
+                    .justify_between()
+                    .child(
+                        div()
+                            .text_size(px(14.))
+                            .font_weight(FontWeight(600.))
+                            .text_color(color("--text-strong"))
+                            .child(dc_intl::t("eoXh7B")),
+                    )
+                    .child(
+                        div()
+                            .text_size(px(14.))
+                            .font_weight(FontWeight(700.))
+                            .text_color(color("--text-strong"))
+                            .child(if review.is_trial_eligible {
+                                "$0.00"
+                            } else {
+                                "$9.99"
+                            }),
+                    ),
+            );
+        let primary_btn = div()
+            .id("purchase-review-submit")
+            .h(px(40.))
+            .px(px(18.))
+            .rounded(px(8.))
+            .bg(if expressive {
+                rgba(0x9b59f6ff)
+            } else {
+                color("--control-primary-background-default")
+            })
+            .hover(move |s| {
+                s.bg(if expressive {
+                    rgba(0x8847e8ff)
+                } else {
+                    color("--control-primary-background-hover")
+                })
+            })
+            .cursor_pointer()
+            .flex()
+            .items_center()
+            .justify_center()
+            .gap(px(6.))
+            .text_size(px(14.))
+            .font_weight(FontWeight(600.))
+            .text_color(color("--white"))
+            .when(expressive, |b| b.child(icon("nitro_wheel", 16., "--white")))
+            .child(cta_text)
+            .on_click(cx.listener(|this, _, _, cx| {
+                this.start_checkout_handoff();
+                cx.notify();
+            }));
+        let footer = div()
+            .h(px(64.))
+            .px(px(24.))
+            .pt(px(12.))
+            .pb(px(12.))
+            .flex()
+            .items_center()
+            .justify_between()
+            .child(if review.show_back {
+                self.back_link(cx, back_target).into_any_element()
+            } else {
+                div().into_any_element()
+            })
+            .child(primary_btn)
+            .into_any_element();
+        self.purchase_shell(
+            "nitro-purchase-review",
+            480.,
+            heading_label,
+            true,
+            body.into_any_element(),
+            Some(footer),
+            window,
+            cx,
+        )
     }
 
     /// Purchase Email Verification Step (module 615456 `AWAITING_PURCHASE_TOKEN_AUTH`:
@@ -2723,6 +2966,7 @@ impl Root {
             header_step_label: None,
             email_resent: false,
             fractional_banner: None,
+            review: ReviewContext::default(),
         };
         match arg.trim() {
             "close" => {
@@ -2922,5 +3166,33 @@ mod tests {
         };
         assert_eq!(confirm_button_label(&deeplink), "Return to app");
         assert!(confirm_paragraphs(ConfirmPlan::NitroMonth, &deeplink)[0].contains("close"));
+    }
+
+    #[test]
+    fn review_footer_cta_matches_module_809029_priority() {
+        let mut r = super::ReviewContext::default();
+        assert_eq!(r.cta_label(), "Get Nitro Monthly");
+        r.plan_kind = super::ReviewPlanKind::NitroYearly;
+        assert_eq!(r.cta_label(), "Get Nitro Yearly");
+        r.plan_kind = super::ReviewPlanKind::BasicMonthly;
+        assert_eq!(r.cta_label(), "Get Nitro Basic Monthly");
+        r.plan_kind = super::ReviewPlanKind::Boost;
+        assert_eq!(r.cta_label(), "Purchase");
+
+        r.has_active_sub = true;
+        assert_eq!(r.cta_label(), "Change Plan");
+        r.is_upgrade = true;
+        assert_eq!(r.cta_label(), "Upgrade");
+        r.is_paused_resume = true;
+        assert_eq!(r.cta_label(), "Resume Subscription");
+
+        r.is_prepaid = true;
+        assert_eq!(r.cta_label(), "Get Nitro");
+        r.is_past_due = true;
+        assert_eq!(r.cta_label(), "Restore Subscription");
+        r.is_gift = true;
+        assert_eq!(r.cta_label(), "Buy Gift");
+        r.is_recurring_gift = true;
+        assert_eq!(r.cta_label(), "Subscribe");
     }
 }

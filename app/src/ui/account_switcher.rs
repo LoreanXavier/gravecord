@@ -314,21 +314,35 @@ impl Root {
             .into_any_element()
     }
 
-    /// Manage Accounts: a card per account, "Active account" under the signed in one, a "..." menu with Log out, and
-    /// Add an account in the footer (more than five accounts cannot be held).
+    /// Manage Accounts (module 970573): a card per account with 1px separators, `seV8yt` ("Active account")
+    /// under the signed in one, `tYX2ps` ("Please log in again.") + `DSN+hw` ("Log in") secondary button when
+    /// `status == 0` (invalid token), `"Switch"` secondary button for valid inactive accounts, a `"..."` menu
+    /// (`PdRCRg` "More Options" / `41qiDU` "Manage account") with `lSLMaU` ("Log out"), and Add an account in footer.
     pub(super) fn manage_accounts_modal(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
         if !self.account_switcher.manage {
             return None;
         }
         let me = self.stores.current_user.as_ref().map(|user| user.id);
-        let cards: Vec<AnyElement> = self
-            .account_switcher
-            .accounts
-            .users
-            .iter()
-            .map(|account| {
-                let id = account.id;
-                let active = me == Some(id);
+        let hide_private = self.streamer_hides_personal();
+        let mut cards: Vec<AnyElement> = Vec::new();
+        for (idx, account) in self.account_switcher.accounts.users.iter().enumerate() {
+            if idx > 0 {
+                cards.push(
+                    div()
+                        .w_full()
+                        .h(px(1.))
+                        .bg(color("--border-subtle"))
+                        .into_any_element(),
+                );
+            }
+            let id = account.id;
+            let active = me == Some(id);
+            let invalid = !active && account.status == 0;
+            let legacy_discrim = (!hide_private
+                && !account.discriminator.is_empty()
+                && account.discriminator != "0")
+                .then(|| format!("#{}", account.discriminator));
+            cards.push(
                 div()
                     .id(SharedString::from(format!("manage-account-{id}")))
                     .h(px(64.))
@@ -336,26 +350,35 @@ impl Root {
                     .px(px(16.))
                     .flex()
                     .items_center()
-                    .when(!active, |this| {
-                        this.cursor_pointer().on_click(
-                            cx.listener(move |this, _, _, cx| this.switch_account(id, cx)),
-                        )
-                    })
+                    .gap(px(8.))
                     .child(self.account_avatar(account, 40.))
                     .child(
                         div()
-                            .ml(px(8.))
                             .flex_1()
                             .min_w(px(0.))
                             .flex()
                             .flex_col()
                             .child(
                                 div()
-                                    .text_size(px(16.))
-                                    .line_height(px(20.))
-                                    .font_weight(FontWeight(600.))
-                                    .text_color(color("--text-strong"))
-                                    .child(account.username.clone()),
+                                    .flex()
+                                    .items_baseline()
+                                    .gap(px(2.))
+                                    .child(
+                                        div()
+                                            .text_size(px(16.))
+                                            .line_height(px(20.))
+                                            .font_weight(FontWeight(600.))
+                                            .text_color(color("--text-strong"))
+                                            .truncate()
+                                            .child(account.username.clone()),
+                                    )
+                                    .children(legacy_discrim.map(|disc| {
+                                        div()
+                                            .text_size(px(14.))
+                                            .line_height(px(18.))
+                                            .text_color(color("--text-default"))
+                                            .child(disc)
+                                    })),
                             )
                             .when(active, |this| {
                                 this.child(
@@ -364,34 +387,88 @@ impl Root {
                                         .line_height(px(18.))
                                         .font_weight(FontWeight(600.))
                                         .text_color(color("--text-feedback-positive"))
-                                        .child("Active account"),
+                                        .child(dc_intl::t("seV8yt")),
+                                )
+                            })
+                            .when(invalid, |this| {
+                                this.child(
+                                    div()
+                                        .text_size(px(14.))
+                                        .line_height(px(18.))
+                                        .font_weight(FontWeight(600.))
+                                        .text_color(color("--text-feedback-critical"))
+                                        .child(dc_intl::t("tYX2ps")),
                                 )
                             }),
                     )
+                    .when(!active, |row| {
+                        row.child(
+                            div()
+                                .id(SharedString::from(format!("manage-account-action-{id}")))
+                                .h(px(32.))
+                                .px(px(12.))
+                                .rounded(px(8.))
+                                .bg(color("--control-secondary-background-default"))
+                                .hover(|s| s.bg(color("--control-secondary-background-hover")))
+                                .border_1()
+                                .border_color(color("--control-secondary-border-default"))
+                                .cursor_pointer()
+                                .flex()
+                                .items_center()
+                                .justify_center()
+                                .text_size(px(14.))
+                                .line_height(px(18.))
+                                .font_weight(FontWeight(500.))
+                                .text_color(color("--text-strong"))
+                                .child(if invalid {
+                                    dc_intl::t("DSN+hw")
+                                } else {
+                                    dc_intl::tr("Switch")
+                                })
+                                .on_click(cx.listener(move |this, _, _, cx| {
+                                    if invalid {
+                                        this.account_switcher.manage = false;
+                                        this.account_switcher.add =
+                                            Some(AddAccount { reveal: false });
+                                        cx.notify();
+                                    } else {
+                                        this.switch_account(id, cx);
+                                    }
+                                })),
+                        )
+                    })
                     .child(
-                        div()
-                            .id(SharedString::from(format!("manage-more-{id}")))
-                            .size(px(40.))
-                            .flex_none()
-                            .rounded(px(8.))
-                            .flex()
-                            .items_center()
-                            .justify_center()
-                            .cursor_pointer()
-                            .hover(|style| style.bg(color("--interactive-background-hover")))
-                            .child(icon("more_horizontal", 20., "--icon-default"))
-                            .on_mouse_down(
-                                gpui::MouseButton::Left,
-                                cx.listener(move |this, event: &MouseDownEvent, _, cx| {
-                                    this.account_switcher.more = Some((id, event.position));
-                                    cx.stop_propagation();
-                                    cx.notify();
-                                }),
+                        self.with_tip(
+                            format!("manage-more-tip-{id}"),
+                            super::tooltip::Tip::text(
+                                dc_intl::t("PdRCRg"),
+                                super::tooltip::Side::Top,
                             ),
+                            div()
+                                .id(SharedString::from(format!("manage-more-{id}")))
+                                .size(px(40.))
+                                .flex_none()
+                                .rounded(px(8.))
+                                .flex()
+                                .items_center()
+                                .justify_center()
+                                .cursor_pointer()
+                                .hover(|style| style.bg(color("--interactive-background-hover")))
+                                .child(icon("more_horizontal", 20., "--icon-default"))
+                                .on_mouse_down(
+                                    gpui::MouseButton::Left,
+                                    cx.listener(move |this, event: &MouseDownEvent, _, cx| {
+                                        this.account_switcher.more = Some((id, event.position));
+                                        cx.stop_propagation();
+                                        cx.notify();
+                                    }),
+                                ),
+                            cx,
+                        ),
                     )
-                    .into_any_element()
-            })
-            .collect();
+                    .into_any_element(),
+            );
+        }
         let list = div()
             .flex()
             .flex_col()
@@ -577,10 +654,12 @@ impl Root {
         ))
     }
 
-    /// The "..." menu of a card: Log out. The active account goes through the Log Out confirmation; another one is
+    /// The "..." menu of a card (`manage-multi-account`, module 970573, `41qiDU` "Manage account"):
+    /// `lSLMaU` ("Log out"). The active account goes through the Log Out confirmation; another one is
     /// signed out of this device (its stored token is forgotten).
     pub(super) fn account_more_menu(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
         let (id, at) = self.account_switcher.more?;
+        let _aria_label = dc_intl::t("41qiDU");
         let frame = div()
             .id("account-more-menu")
             .occlude()
@@ -616,7 +695,7 @@ impl Root {
                             .bg(color("--background-feedback-mod-critical"))
                             .rounded(px(4.))
                     })
-                    .child("Log out")
+                    .child(dc_intl::t("lSLMaU"))
                     .on_click(cx.listener(move |this, _, _, cx| {
                         this.account_switcher.more = None;
                         if this.stores.current_user.as_ref().map(|user| user.id) == Some(id) {
@@ -689,6 +768,30 @@ impl Root {
                     "accounts: {} listed",
                     self.account_switcher.accounts.users.len()
                 )
+            }
+            ["expired", id, name] => {
+                let Ok(id) = id.parse::<u64>() else {
+                    return "usage: accounts expired <id> <name>".into();
+                };
+                let user = User {
+                    id,
+                    username: (*name).to_owned(),
+                    discriminator: "0".into(),
+                    ..User::default()
+                };
+                self.account_switcher.accounts.seen(&user);
+                if let Some(acc) = self
+                    .account_switcher
+                    .accounts
+                    .users
+                    .iter_mut()
+                    .find(|a| a.id == id)
+                {
+                    acc.status = 0;
+                }
+                self.account_switcher.manage = true;
+                cx.notify();
+                format!("accounts: expired {name} added & manage open")
             }
             ["manage"] => {
                 self.account_switcher.manage = true;

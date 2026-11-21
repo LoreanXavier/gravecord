@@ -508,13 +508,23 @@ impl Root {
             div().px(px(16.)).pb(px(12.)).child(
                 div()
                     .id("profile-edit-profile")
+                    .relative()
                     .cursor_pointer()
-                    // Module 822775: in a server the button opens the Profile Actions popout instead.
+                    // Module 822775: in a server the button anchors the Profile Actions popout (`AXIHpV`,
+                    // `PKQB/H`/`VYHWKJ`, `HmFaFB`/`+EERMk`) to the button bounds.
+                    .child(self.anchor_probe("profile-edit-profile"))
                     .on_click(cx.listener(|this, event: &gpui::ClickEvent, _, cx| {
                         if let Some(guild) = this.guild {
+                            let at = this
+                                .tip_anchors
+                                .borrow()
+                                .get("profile-edit-profile")
+                                .copied()
+                                .map(|bounds| gpui::point(bounds.left(), bounds.bottom() + px(8.)))
+                                .unwrap_or_else(|| event.position());
                             this.open_context_menu(
                                 super::context_menu::Target::EditProfileMenu(guild),
-                                event.position(),
+                                at,
                                 cx,
                             );
                             return;
@@ -536,7 +546,7 @@ impl Root {
                     .font_weight(FontWeight(500.))
                     .text_color(gpui::white())
                     .child(icon("msg_edit", 16., "--white"))
-                    .child("Edit Profile"),
+                    .child(dc_intl::t("s5vZlQ")),
             )
         });
         let card = div()

@@ -85,6 +85,21 @@ pub(super) enum Menu {
     Filters,
 }
 
+/// Video Quest Player modal state (module 767868: persistent share overlay `WmfZHZ`/`RDE0Sc`/`+5kSoW`,
+/// desktop unsupported fallback `rStN/7` & web `E1du/q`, and end screen `mxaHfx`).
+#[derive(Clone, Debug)]
+pub(crate) struct VideoQuestModal {
+    pub quest_id: String,
+    pub title: String,
+    pub subtitle: String,
+    pub cta_label: String,
+    pub cta_link: String,
+    pub ended: bool,
+    pub unsupported_fallback: bool,
+    pub watch_secs: u32,
+    pub duration_secs: u32,
+}
+
 pub(super) struct State {
     pub open: bool,
     pub tab: Tab,
@@ -115,6 +130,10 @@ pub(super) struct State {
     pub enrollment_blocked_modal: Option<EnrollmentBlockedModal>,
     /// Capture-only promoted card preview quest id (module 107543).
     pub promoted_preview_quest: Option<String>,
+    /// Activity Panel Quest Card (module 834615).
+    pub activity_panel_card: Option<super::quest_bar::ActivityPanelQuestCard>,
+    /// In-app Video Quest Player modal & end screen (module 767868).
+    pub video_modal: Option<VideoQuestModal>,
 }
 
 impl Default for State {
@@ -139,6 +158,8 @@ impl Default for State {
             split_modal: None,
             enrollment_blocked_modal: None,
             promoted_preview_quest: None,
+            activity_panel_card: None,
+            video_modal: None,
         }
     }
 }
@@ -621,8 +642,16 @@ impl Root {
                                         )
                                     }),
                             )
-                            // Video play button (`utilButtonWrapper_CXA5dw`, 24x24 circle)
+                            // Video play button (`utilButtonWrapper_CXA5dw`, 24x24 circle -> opens module 767868 player)
                             .when(is_video, |row| {
+                                let v_qid = quest.id.clone();
+                                let v_title = quest.config.quest_name.clone();
+                                let v_sub = quest.config.game_title.clone();
+                                let v_cta = if quest.config.cta_button_label.is_empty() {
+                                    dc_intl::t("l7E81v").to_owned()
+                                } else {
+                                    quest.config.cta_button_label.clone()
+                                };
                                 row.child(
                                     div()
                                         .id(SharedString::from(format!(
@@ -638,10 +667,16 @@ impl Root {
                                         .flex()
                                         .items_center()
                                         .justify_center()
-                                        .on_click(cx.listener(move |_, _, _, cx| {
-                                            if !play_link.is_empty() {
-                                                cx.open_url(&play_link);
-                                            }
+                                        .on_click(cx.listener(move |this, _, _, cx| {
+                                            cx.stop_propagation();
+                                            this.open_video_quest_modal(
+                                                v_qid.clone(),
+                                                v_title.clone(),
+                                                v_sub.clone(),
+                                                v_cta.clone(),
+                                                play_link.clone(),
+                                                cx,
+                                            );
                                         }))
                                         .child(icon("clips_play", 12., "--text-overlay-light"))
                                         .when(false, |el| {
@@ -2467,6 +2502,331 @@ impl Root {
 /// A quest asset's address (`N` of module 760914): a path as it is, a bare name under the quest's folder.
 pub(super) fn quest_asset_url(quest: &str, asset: &str) -> String {
     quest_asset(quest, asset)
+}
+
+impl Root {
+    /// Opens the in-app Video Quest Player modal (module 767868).
+    pub(super) fn open_video_quest_modal(
+        &mut self,
+        quest_id: String,
+        title: String,
+        subtitle: String,
+        cta_label: String,
+        cta_link: String,
+        cx: &mut Context<Self>,
+    ) {
+        self.quests.video_modal = Some(VideoQuestModal {
+            quest_id,
+            title,
+            subtitle,
+            cta_label,
+            cta_link,
+            ended: false,
+            unsupported_fallback: false,
+            watch_secs: 0,
+            duration_secs: 30,
+        });
+        cx.notify();
+    }
+
+    /// Reports video quest watch progress (`POST /quests/{questId}/video-progress`, module 343559.uI / 767868).
+    fn report_video_quest_progress(&self, quest_id: &str, timestamp: u32) {
+        let _ = self.requests.send(Request::Rest {
+            key: Some(format!("quests:video-progress:{quest_id}")),
+            method: reqwest::Method::POST,
+            route: format!("/quests/{quest_id}/video-progress"),
+            body: Some(serde_json::json!({ "timestamp": timestamp })),
+        });
+    }
+
+    /// Renders the Video Quest Player modal, persistent top-right share overlay (`WmfZHZ`/`RDE0Sc`/`+5kSoW`),
+    /// unsupported fallback (`rStN/7` desktop / `E1du/q` web), and end screen (`mxaHfx`, module 767868).
+    pub(in crate::ui) fn video_quest_modal_layer(
+        &self,
+        cx: &mut Context<Self>,
+    ) -> Option<AnyElement> {
+        let modal = self.quests.video_modal.as_ref()?;
+        let _share_aria = dc_intl::t("RDE0Sc");
+        let _web_unsupported = dc_intl::t("E1du/q");
+        let share_url = format!("https://discord.com/quests/{}", modal.quest_id);
+        let qid_progress = modal.quest_id.clone();
+        let duration = modal.duration_secs.max(1);
+        let pct = ((modal.watch_secs as f32) / (duration as f32)).clamp(0., 1.);
+        let cta_link = modal.cta_link.clone();
+        let end_subtitle = if modal.subtitle.is_empty() {
+            dc_intl::t("mxaHfx").to_owned()
+        } else {
+            modal.subtitle.clone()
+        };
+
+        // Persistent top-right overlay (`ts` of module 767868): Copy Quest Link + Close.
+        let top_overlay = div()
+            .absolute()
+            .top(px(14.))
+            .right(px(14.))
+            .flex()
+            .items_center()
+            .gap(px(8.))
+            .child(
+                self.with_tip(
+                    "video-quest-share-tip",
+                    super::tooltip::Tip::text(dc_intl::t("WmfZHZ"), super::tooltip::Side::Bottom),
+                    div()
+                        .id("video-quest-share-btn")
+                        .size(px(34.))
+                        .rounded_full()
+                        .bg(rgba(0x111214cc))
+                        .hover(|s| s.bg(rgba(0x111214ee)))
+                        .border_1()
+                        .border_color(rgba(0xffffff26))
+                        .cursor_pointer()
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .child(icon("clips_link", 16., "--white"))
+                        .on_click(cx.listener(move |this, _, _, cx| {
+                            cx.stop_propagation();
+                            cx.write_to_clipboard(gpui::ClipboardItem::new_string(
+                                share_url.clone(),
+                            ));
+                            this.put_app_toast(dc_intl::t("+5kSoW").to_owned(), true, cx);
+                            cx.notify();
+                        })),
+                    cx,
+                ),
+            )
+            .child(
+                div()
+                    .id("video-quest-close-btn")
+                    .size(px(34.))
+                    .rounded_full()
+                    .bg(rgba(0x111214cc))
+                    .hover(|s| s.bg(rgba(0x111214ee)))
+                    .border_1()
+                    .border_color(rgba(0xffffff26))
+                    .cursor_pointer()
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .child(icon("modal_close", 16., "--white"))
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        this.quests.video_modal = None;
+                        cx.notify();
+                    })),
+            );
+
+        let viewport_body: AnyElement = if modal.unsupported_fallback {
+            div()
+                .flex_1()
+                .px(px(40.))
+                .flex()
+                .flex_col()
+                .items_center()
+                .justify_center()
+                .gap(px(12.))
+                .child(icon("circle_info", 36., "--text-muted"))
+                .child(
+                    div()
+                        .max_w(px(420.))
+                        .text_center()
+                        .text_size(px(15.))
+                        .line_height(px(22.))
+                        .text_color(color("--text-default"))
+                        .child(dc_intl::t("rStN/7")),
+                )
+                .into_any_element()
+        } else if modal.ended {
+            // End Screen (`w` of module 767868, CSS 831056): dark scrim, centered clickable CTA card,
+            // vertical 2x40 divider (`#747783` @ 30%), and ArrowLargeRightIcon.
+            div()
+                .flex_1()
+                .bg(rgba(0x0b0c10dd))
+                .flex()
+                .items_center()
+                .justify_center()
+                .p(px(28.))
+                .child(
+                    div()
+                        .id("video-quest-end-card")
+                        .px(px(24.))
+                        .py(px(18.))
+                        .rounded(px(12.))
+                        .bg(rgba(0x1e1f22ee))
+                        .border_1()
+                        .border_color(rgba(0xffffff22))
+                        .hover(|s| s.bg(rgba(0x2b2d31ff)))
+                        .cursor_pointer()
+                        .flex()
+                        .items_center()
+                        .gap(px(18.))
+                        .on_click(cx.listener(move |this, _, _, cx| {
+                            cx.stop_propagation();
+                            if !cta_link.is_empty() {
+                                cx.open_url(&cta_link);
+                            }
+                            this.quests.video_modal = None;
+                            cx.notify();
+                        }))
+                        .child(
+                            div()
+                                .flex()
+                                .flex_col()
+                                .gap(px(4.))
+                                .child(
+                                    div()
+                                        .text_size(px(16.))
+                                        .line_height(px(20.))
+                                        .font_weight(gpui::FontWeight(600.))
+                                        .text_color(color("--white"))
+                                        .child(modal.cta_label.clone()),
+                                )
+                                .child(
+                                    div()
+                                        .text_size(px(13.))
+                                        .line_height(px(18.))
+                                        .font_weight(gpui::FontWeight(500.))
+                                        .text_color(color("--text-muted"))
+                                        .child(end_subtitle),
+                                ),
+                        )
+                        // Vertical 2x40 divider (`#747783` @ 0.30 opacity)
+                        .child(div().flex_none().w(px(2.)).h(px(40.)).bg(rgba(0x7477834d)))
+                        .child(icon("shop_arrow_right", 22., "--white")),
+                )
+                .into_any_element()
+        } else {
+            // Active video quest player canvas + progress bar + Complete/End preview trigger.
+            div()
+                .flex_1()
+                .flex()
+                .flex_col()
+                .justify_between()
+                .p(px(24.))
+                .child(
+                    div()
+                        .flex()
+                        .flex_col()
+                        .gap(px(4.))
+                        .child(
+                            div()
+                                .text_size(px(18.))
+                                .font_weight(gpui::FontWeight(700.))
+                                .text_color(color("--white"))
+                                .child(modal.title.clone()),
+                        )
+                        .child(
+                            div()
+                                .text_size(px(13.))
+                                .text_color(color("--text-muted"))
+                                .child(format!("{}s / {}s", modal.watch_secs, duration)),
+                        ),
+                )
+                .child(
+                    div().flex_1().flex().items_center().justify_center().child(
+                        div()
+                            .id("video-quest-play-trigger")
+                            .size(px(64.))
+                            .rounded_full()
+                            .bg(rgba(0x5865f2ee))
+                            .hover(|s| s.bg(rgba(0x4752c4ff)))
+                            .cursor_pointer()
+                            .flex()
+                            .items_center()
+                            .justify_center()
+                            .child(icon("clips_play", 24., "--white"))
+                            .on_click(cx.listener(move |this, _, _, cx| {
+                                cx.stop_propagation();
+                                this.report_video_quest_progress(&qid_progress, duration + 1);
+                                if let Some(v) = this.quests.video_modal.as_mut() {
+                                    v.watch_secs = v.duration_secs;
+                                    v.ended = true;
+                                }
+                                cx.notify();
+                            })),
+                    ),
+                )
+                .child(
+                    div()
+                        .w_full()
+                        .h(px(6.))
+                        .rounded_full()
+                        .bg(rgba(0xffffff26))
+                        .overflow_hidden()
+                        .child(
+                            div()
+                                .h_full()
+                                .w(gpui::relative(pct))
+                                .bg(color("--control-primary-background-default")),
+                        ),
+                )
+                .into_any_element()
+        };
+
+        let dialog = div()
+            .id("video-quest-modal")
+            .occlude()
+            .relative()
+            .w(px(720.))
+            .h(px(405.))
+            .rounded(px(12.))
+            .bg(rgba(0x111214ff))
+            .border_1()
+            .border_color(color("--border-subtle"))
+            .overflow_hidden()
+            .flex()
+            .flex_col()
+            .on_click(cx.listener(|_, _, _, cx| cx.stop_propagation()))
+            .child(viewport_body)
+            .child(top_overlay);
+
+        Some(
+            deferred(
+                div()
+                    .id("video-quest-backdrop")
+                    .occlude()
+                    .absolute()
+                    .inset_0()
+                    .bg(rgba(0x000000c8))
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        this.quests.video_modal = None;
+                        cx.notify();
+                    }))
+                    .child(dialog),
+            )
+            .with_priority(3)
+            .into_any_element(),
+        )
+    }
+
+    /// Capture harness: `video-quest [playing|end|unsupported|close]` (module 767868).
+    #[cfg(feature = "capture")]
+    pub(crate) fn script_video_quest(&mut self, arg: &str, cx: &mut Context<Self>) -> String {
+        match arg.trim() {
+            "close" => {
+                self.quests.video_modal = None;
+                cx.notify();
+                "video-quest: closed".to_owned()
+            }
+            mode => {
+                self.quests.video_modal = Some(VideoQuestModal {
+                    quest_id: "q_767868".to_owned(),
+                    title: "Starfall Odyssey Launch Trailer".to_owned(),
+                    subtitle: String::new(),
+                    cta_label: "Explore Starfall Odyssey".to_owned(),
+                    cta_link: "https://discord.com/quests".to_owned(),
+                    ended: mode == "end",
+                    unsupported_fallback: mode == "unsupported",
+                    watch_secs: if mode == "end" { 30 } else { 12 },
+                    duration_secs: 30,
+                });
+                cx.notify();
+                format!("video-quest: {mode}")
+            }
+        }
+    }
 }
 
 fn quest_asset(quest: &str, asset: &str) -> String {

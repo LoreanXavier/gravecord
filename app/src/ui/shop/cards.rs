@@ -17,6 +17,35 @@ pub(super) fn item_static(id: &str) -> String {
     format!("https://cdn.discordapp.com/media/v1/collectibles-shop/{id}/static")
 }
 
+/// Screen-reader price label for a Shop price line (module 219103: `niC6DK`, `6C36MF`, `ckguyq`, `a/Y8PK`).
+pub(super) fn shop_price_aria_label(
+    price_text: &str,
+    is_orb: bool,
+    discount_pct: Option<i64>,
+) -> String {
+    match (
+        is_orb,
+        discount_pct.filter(|&p| p >= data::Product::MIN_DISCOUNT_PERCENT),
+    ) {
+        (true, Some(pct)) => dc_intl::format(
+            "ckguyq",
+            &[
+                ("orbAmount", price_text.into()),
+                ("discountPercentage", pct.into()),
+            ],
+        ),
+        (true, None) => dc_intl::format("a/Y8PK", &[("orbAmount", price_text.into())]),
+        (false, Some(pct)) => dc_intl::format(
+            "niC6DK",
+            &[
+                ("price", price_text.into()),
+                ("discountPercentage", pct.into()),
+            ],
+        ),
+        (false, None) => dc_intl::format("6C36MF", &[("price", price_text.into())]),
+    }
+}
+
 impl Root {
     pub(super) fn shop_product(&self, sku: &str) -> Option<Product> {
         self.shop.products.get(sku).cloned()
@@ -525,7 +554,10 @@ impl Root {
         };
         let nitro = self.shop_has_nitro();
         let orbs_only = product.orbs_exclusive();
-        let discount = product.bundle_discount(nitro);
+        let bundle_discount = product
+            .bundle_discount(nitro)
+            .filter(|&(_, pct)| pct >= data::Product::MIN_DISCOUNT_PERCENT);
+        let fiat_discount = product.fiat_discount(nitro);
         let price = product
             .fiat_price(nitro)
             .or_else(|| product.price(data::PRICE_DEFAULT, Some(data::ORB)))
@@ -574,6 +606,39 @@ impl Root {
         let price = if price_note.is_some() { None } else { price };
         let price_row = price.as_ref().map(|price| {
             let is_orb = price.currency == data::ORB;
+            let shown_pct = bundle_discount.map(|(_, pct)| pct).or_else(|| {
+                (!is_orb)
+                    .then_some(fiat_discount.map(|(_, pct)| pct))
+                    .flatten()
+            });
+            let discount_source = (!is_orb)
+                .then(|| {
+                    fiat_discount.map(|(src, _)| src).or_else(|| {
+                        (nitro && bundle_discount.is_some()).then_some(data::DiscountSource::Nitro)
+                    })
+                })
+                .flatten();
+            // Module 219103: Orbs icon or Nitro/Xbox Game Pass discount icon with tooltip + `(-{pct}%)` when >= 5%.
+            let _aria = shop_price_aria_label(&price.text(), is_orb, shown_pct);
+            let discount_badge = discount_source.map(|src| {
+                let (glyph, tip_key, _aria_key) = match src {
+                    data::DiscountSource::Nitro => ("nitro_wheel", "MPFyJ5", "X3Ekj8"),
+                    data::DiscountSource::ThirdParty => ("storefront_badge", "DePOcS", "DePOcS"),
+                };
+                self.with_tip(
+                    format!("shop-disc-{sku}"),
+                    super::super::tooltip::Tip::text(
+                        dc_intl::t(tip_key),
+                        super::super::tooltip::Side::Top,
+                    ),
+                    div().flex_none().flex().items_center().child(icon(
+                        glyph,
+                        16.,
+                        "--text-default",
+                    )),
+                    cx,
+                )
+            });
             div()
                 .flex()
                 .items_center()
@@ -581,8 +646,9 @@ impl Root {
                 .when(is_orb, |row| {
                     row.child(icon("shop_orb_18", 18., "--text-default"))
                 })
+                .children(discount_badge)
                 .child(text(14., 20., 600., "--text-default").child(price.text()))
-                .when_some(discount, |row, (_, percent)| {
+                .when_some(shown_pct, |row, percent| {
                     row.child(
                         text(14., 20., 600., "--text-feedback-positive")
                             .child(format!("(-{percent}%)")),

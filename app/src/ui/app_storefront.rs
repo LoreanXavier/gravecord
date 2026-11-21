@@ -49,11 +49,34 @@ const MAX_BENEFITS: usize = 5;
 /// The card width of `productSection_OnNQXM`'s grid columns.
 const CARD: f32 = 287.;
 
+/// Active card detail overlay inside the App Storefront (`168393` SubscriptionDetailsModal /
+/// `963179` ItemDetailsModal, opened by clicking a card in module 55709).
+#[derive(Clone, Debug, PartialEq)]
+pub(super) enum StorefrontDetail {
+    Subscription(Listing),
+    Item(Sku),
+}
+
+/// Subscription card availability & ownership state (`185438` + `376374.rc` + `55709`).
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum SubCardState {
+    Available,
+    UpcomingPlan {
+        starts_at: String,
+    },
+    Subscribed {
+        until: Option<String>,
+        is_guild: bool,
+    },
+    Unavailable,
+}
+
 /// The open modal: the application and the server it was opened in.
 #[derive(Clone, Debug, PartialEq)]
 pub(super) struct Open {
     pub app: String,
     pub guild: Option<u64>,
+    pub detail: Option<StorefrontDetail>,
 }
 
 /// A benefit of a subscription listing (`{id, name, description, icon}`).
@@ -305,7 +328,11 @@ impl Root {
         }
         self.profile = None;
         self.full_profile = None;
-        self.app_storefront = Some(Open { app, guild });
+        self.app_storefront = Some(Open {
+            app,
+            guild,
+            detail: None,
+        });
         cx.notify();
     }
 
@@ -367,6 +394,43 @@ impl Root {
             .unwrap_or_default()
     }
 
+    /// `185438.A`: determines whether the viewer has an active, upcoming, or guild entitlement for a subscription SKU.
+    fn storefront_sub_state(&self, app: &str, sku: &str, has_plan: bool) -> SubCardState {
+        let ent = self
+            .fetched
+            .get(&key("entitlements", app))
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+            .find(|e| e["sku_id"].as_str() == Some(sku));
+        if let Some(ent) = ent {
+            if let Some(starts) = ent["upcoming_starts_at"].as_str()
+                && !starts.is_empty()
+            {
+                return SubCardState::UpcomingPlan {
+                    starts_at: starts.to_owned(),
+                };
+            }
+            let is_guild = ent["guild_id"]
+                .as_str()
+                .and_then(|s| s.parse::<u64>().ok())
+                .is_some_and(|gid| {
+                    self.guild == Some(gid)
+                        || self.app_storefront.as_ref().and_then(|o| o.guild) == Some(gid)
+                });
+            let until = ent["ends_at"]
+                .as_str()
+                .filter(|s| !s.is_empty())
+                .map(str::to_owned);
+            return SubCardState::Subscribed { until, is_guild };
+        }
+        if !has_plan {
+            SubCardState::Unavailable
+        } else {
+            SubCardState::Available
+        }
+    }
+
     /// `G.L` of module 56754: the account holds an entitlement to the SKU.
     fn storefront_owned(&self, app: &str, sku: &str) -> bool {
         self.fetched
@@ -410,6 +474,9 @@ impl Root {
         cx: &mut Context<Self>,
     ) -> Option<AnyElement> {
         let open = self.app_storefront.clone()?;
+        if let Some(detail) = open.detail.clone() {
+            return Some(self.storefront_detail_modal(&open.app, &detail, cx));
+        }
         let app_id = open.app.clone();
         let application = self.fetched.get(&key("app", &app_id)).cloned();
         // `null == k` (the application not here yet): nothing is drawn.
@@ -622,8 +689,11 @@ impl Root {
             .map(|icon| format!("https://cdn.discordapp.com/app-icons/{app}/{icon}.png?size=100"))
             .and_then(|url| self.images.get(&url).cloned());
         // `background_qZsksx`: the banner (else the icon) under `hsl(primary-730 / 0.8)`, blurred 4px.
-        // GAP: the 4px blur is not drawn.
         let backdrop = banner.clone().or_else(|| app_icon.clone());
+        let quoted_subtitle = application["storefront_subtitle"]
+            .as_str()
+            .filter(|s| !s.is_empty())
+            .map(|s| format!("\u{201C}{s}\u{201D}"));
         let header = div()
             .relative()
             .w_full()
@@ -641,12 +711,13 @@ impl Root {
                     .absolute()
                     .inset_0()
                     .child(img(art).size_full().object_fit(ObjectFit::Cover))
-                    .child(div().absolute().inset_0().bg(gpui::hsla(
-                        228. / 360.,
-                        0.067,
-                        0.143,
-                        0.8,
-                    )))
+                    .child(
+                        div()
+                            .absolute()
+                            .inset_0()
+                            .backdrop_blur(px(4.))
+                            .bg(gpui::hsla(228. / 360., 0.067, 0.143, 0.8)),
+                    )
             }))
             .child(
                 div()
@@ -666,11 +737,24 @@ impl Root {
                     }))
                     .child(
                         div()
-                            .text_size(px(24.))
-                            .line_height(px(32.))
-                            .font_weight(FontWeight(600.))
-                            .text_color(color("--text-strong"))
-                            .child(name.to_owned()),
+                            .flex()
+                            .flex_col()
+                            .gap(px(4.))
+                            .child(
+                                div()
+                                    .text_size(px(24.))
+                                    .line_height(px(32.))
+                                    .font_weight(FontWeight(600.))
+                                    .text_color(color("--text-strong"))
+                                    .child(name.to_owned()),
+                            )
+                            .children(quoted_subtitle.map(|sub| {
+                                div()
+                                    .text_size(px(14.))
+                                    .line_height(px(18.))
+                                    .text_color(color("--text-default"))
+                                    .child(sub)
+                            })),
                     ),
             )
             .children(banner.map(|art| {
@@ -770,14 +854,49 @@ impl Root {
             .as_ref()
             .and_then(|id| self.storefront_image(asset(app, id, 256)));
         let plan = self.storefront_plans(app, &listing.sku).first().cloned();
-        let label = match &plan {
-            Some(plan) => dc_intl::format("i4T8vz", &[("rate", plan_rate(plan).as_str().into())]),
-            None => dc_intl::t("uuzaAK").to_owned(),
+        let state = self.storefront_sub_state(app, &listing.sku, plan.is_some());
+        let rate_str = plan.as_ref().map(plan_rate);
+        let (label, enabled) = match (&state, rate_str.as_deref()) {
+            (SubCardState::Subscribed { .. }, Some(rate)) => {
+                (dc_intl::format("Hs3Y+I", &[("rate", rate.into())]), false)
+            }
+            (SubCardState::Subscribed { .. }, None) => (dc_intl::t("6cfuDj").to_owned(), false),
+            (SubCardState::UpcomingPlan { .. }, Some(rate)) => {
+                (dc_intl::format("k1ew5N", &[("rate", rate.into())]), false)
+            }
+            (SubCardState::UpcomingPlan { .. }, None) => (dc_intl::t("k1ew5N").to_owned(), false),
+            (SubCardState::Unavailable, _) => (dc_intl::t("DLAKbi").to_owned(), false),
+            (SubCardState::Available, Some(rate)) => {
+                (dc_intl::format("i4T8vz", &[("rate", rate.into())]), true)
+            }
+            (SubCardState::Available, None) => (dc_intl::t("uuzaAK").to_owned(), true),
+        };
+        let sub_subtitle: Option<(bool, String)> = match &state {
+            SubCardState::Subscribed {
+                until: Some(date), ..
+            } => Some((
+                false,
+                dc_intl::format("EV2lZz", &[("date", date.as_str().into())]),
+            )),
+            SubCardState::Subscribed { is_guild: true, .. } => {
+                Some((true, dc_intl::t("l8ufqL").to_owned()))
+            }
+            SubCardState::UpcomingPlan { starts_at } => Some((
+                false,
+                dc_intl::format("2w6+NN", &[("date", starts_at.as_str().into())]),
+            )),
+            _ => None,
+        };
+        // Module 55709: cards with a subscription status subtitle show at most 4 benefits instead of 5.
+        let max_benefits = if sub_subtitle.is_some() {
+            MAX_BENEFITS.saturating_sub(1)
+        } else {
+            MAX_BENEFITS
         };
         let benefits: Vec<AnyElement> = listing
             .benefits
             .iter()
-            .take(MAX_BENEFITS)
+            .take(max_benefits)
             .map(|benefit| {
                 let art = benefit
                     .asset
@@ -809,7 +928,8 @@ impl Root {
                     .into_any_element()
             })
             .collect();
-        let more = listing.benefits.len().saturating_sub(MAX_BENEFITS);
+        let more = listing.benefits.len().saturating_sub(max_benefits);
+        let detail_listing = listing.clone();
         div()
             .id(SharedString::from(format!(
                 "storefront-subscription-{index}"
@@ -824,6 +944,12 @@ impl Root {
             .flex()
             .flex_col()
             .cursor_pointer()
+            .on_click(cx.listener(move |this, _, _, cx| {
+                if let Some(open) = this.app_storefront.as_mut() {
+                    open.detail = Some(StorefrontDetail::Subscription(detail_listing.clone()));
+                }
+                cx.notify();
+            }))
             .child(
                 div()
                     .p(px(16.))
@@ -866,12 +992,20 @@ impl Root {
                                 let is_guild_sub = (listing.sku_flags & GUILD_SUBSCRIPTION) != 0;
                                 let sku_id = listing.sku.clone();
                                 let app_id_click = app.to_owned();
+                                let tone = if enabled {
+                                    Tone::Primary
+                                } else {
+                                    Tone::PrimaryDisabled
+                                };
                                 modal::content_button(
                                     modal::button(
                                         "storefront-subscribe",
                                         label,
-                                        Tone::Primary,
+                                        tone,
                                         move |this, _, cx| {
+                                            if !enabled {
+                                                return;
+                                            }
                                             if is_guild_sub {
                                                 this.open_guild_sub_selection(
                                                     &app_id_click,
@@ -886,6 +1020,21 @@ impl Root {
                                     cx,
                                 )
                             })
+                            .children(sub_subtitle.map(|(with_guild, text)| {
+                                div()
+                                    .flex()
+                                    .items_center()
+                                    .justify_center()
+                                    .gap(px(4.))
+                                    .text_size(px(12.))
+                                    .line_height(px(16.))
+                                    .font_weight(FontWeight(500.))
+                                    .text_color(color("--text-muted"))
+                                    .when(with_guild, |row| {
+                                        row.child(icon("storefront_store", 14., "--text-muted"))
+                                    })
+                                    .child(text)
+                            }))
                             .children(listing.description.clone().map(|description| {
                                 div()
                                     .w_full()
@@ -979,6 +1128,7 @@ impl Root {
                 cx,
             )
         };
+        let detail_sku = sku.clone();
         Some(
             div()
                 .id(SharedString::from(format!("storefront-item-{index}")))
@@ -990,6 +1140,12 @@ impl Root {
                 .bg(color("--card-background-default"))
                 .overflow_hidden()
                 .cursor_pointer()
+                .on_click(cx.listener(move |this, _, _, cx| {
+                    if let Some(open) = this.app_storefront.as_mut() {
+                        open.detail = Some(StorefrontDetail::Item(detail_sku.clone()));
+                    }
+                    cx.notify();
+                }))
                 .child(
                     // `cardHeaderImg_aMqvA2`: 187px on `--brand-400`, the picture covering it.
                     div()
@@ -1053,6 +1209,254 @@ impl Root {
                 )
                 .into_any_element(),
         )
+    }
+
+    /// Card details modal (modules 168393 `SubscriptionDetailsModal` & 963179 `ItemDetailsModal`,
+    /// opened by clicking any card in module 55709).
+    fn storefront_detail_modal(
+        &mut self,
+        app: &str,
+        detail: &StorefrontDetail,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let (title, badge, description, extra_body, cta): (
+            String,
+            Option<String>,
+            Option<String>,
+            Option<AnyElement>,
+            AnyElement,
+        ) = match detail {
+            StorefrontDetail::Subscription(listing) => {
+                let is_guild = (listing.sku_flags & GUILD_SUBSCRIPTION) != 0;
+                let tag = if is_guild {
+                    dc_intl::t("XIhSoj").to_owned()
+                } else {
+                    dc_intl::t("dxfZph").to_owned()
+                };
+                let plan = self.storefront_plans(app, &listing.sku).first().cloned();
+                let state = self.storefront_sub_state(app, &listing.sku, plan.is_some());
+                let rate_str = plan.as_ref().map(plan_rate);
+                let (label, enabled) = match (&state, rate_str.as_deref()) {
+                    (SubCardState::Subscribed { .. }, Some(rate)) => {
+                        (dc_intl::format("Hs3Y+I", &[("rate", rate.into())]), false)
+                    }
+                    (SubCardState::UpcomingPlan { .. }, Some(rate)) => {
+                        (dc_intl::format("k1ew5N", &[("rate", rate.into())]), false)
+                    }
+                    (SubCardState::Unavailable, _) => (dc_intl::t("DLAKbi").to_owned(), false),
+                    (SubCardState::Available, Some(rate)) => {
+                        (dc_intl::format("i4T8vz", &[("rate", rate.into())]), true)
+                    }
+                    _ => (dc_intl::t("uuzaAK").to_owned(), true),
+                };
+                let benefits: Vec<AnyElement> = listing
+                    .benefits
+                    .iter()
+                    .map(|b| {
+                        div()
+                            .flex()
+                            .items_center()
+                            .gap(px(8.))
+                            .text_size(px(14.))
+                            .text_color(color("--text-default"))
+                            .child(icon(
+                                "circle_check",
+                                16.,
+                                "--control-primary-background-default",
+                            ))
+                            .child(b.name.clone())
+                            .into_any_element()
+                    })
+                    .collect();
+                let body = (!benefits.is_empty()).then(|| {
+                    div()
+                        .flex()
+                        .flex_col()
+                        .gap(px(8.))
+                        .children(benefits)
+                        .into_any_element()
+                });
+                let sku_id = listing.sku.clone();
+                let app_click = app.to_owned();
+                let cta = modal::content_button(
+                    modal::button(
+                        "storefront-detail-sub-cta",
+                        label,
+                        if enabled {
+                            Tone::Primary
+                        } else {
+                            Tone::PrimaryDisabled
+                        },
+                        move |this, _, cx| {
+                            if !enabled {
+                                return;
+                            }
+                            if let Some(open) = this.app_storefront.as_mut() {
+                                open.detail = None;
+                            }
+                            if is_guild {
+                                this.open_guild_sub_selection(&app_click, &sku_id, cx);
+                            }
+                            cx.notify();
+                        },
+                    ),
+                    cx,
+                );
+                (
+                    listing.summary.clone(),
+                    Some(tag),
+                    listing.description.clone(),
+                    body,
+                    cta,
+                )
+            }
+            StorefrontDetail::Item(sku) => {
+                let durable = sku.kind == DURABLE;
+                let owned = durable && self.storefront_owned(app, &sku.id);
+                let avail = durable.then(|| {
+                    if owned {
+                        dc_intl::t("bm82mm").to_owned()
+                    } else {
+                        dc_intl::t("6gprwf").to_owned()
+                    }
+                });
+                let cta = if owned {
+                    Self::storefront_button(
+                        "storefront-detail-acquired",
+                        dc_intl::t("6cfuDj").to_owned(),
+                        false,
+                        cx,
+                    )
+                } else if let Some((amount, currency)) = &sku.price {
+                    Self::storefront_button(
+                        "storefront-detail-buy",
+                        dc_intl::format(
+                            "Xp5WTn",
+                            &[("price", money(*amount, currency).as_str().into())],
+                        ),
+                        true,
+                        cx,
+                    )
+                } else {
+                    Self::storefront_button(
+                        "storefront-detail-unavail",
+                        dc_intl::t("DLAKbi").to_owned(),
+                        false,
+                        cx,
+                    )
+                };
+                (sku.name.clone(), avail, sku.description.clone(), None, cta)
+            }
+        };
+        let dialog = div()
+            .id("storefront-detail-modal")
+            .occlude()
+            .w(px(480.))
+            .rounded(px(12.))
+            .bg(color("--modal-background"))
+            .border_1()
+            .border_color(color("--border-subtle"))
+            .overflow_hidden()
+            .flex()
+            .flex_col()
+            .on_click(cx.listener(|_, _, _, cx| cx.stop_propagation()))
+            .child(
+                div()
+                    .px(px(20.))
+                    .pt(px(18.))
+                    .pb(px(12.))
+                    .flex()
+                    .items_start()
+                    .justify_between()
+                    .gap(px(12.))
+                    .child(
+                        div()
+                            .flex()
+                            .flex_col()
+                            .gap(px(4.))
+                            .child(
+                                div()
+                                    .text_size(px(20.))
+                                    .line_height(px(24.))
+                                    .font_weight(FontWeight(700.))
+                                    .text_color(color("--text-strong"))
+                                    .child(title),
+                            )
+                            .children(badge.map(|b| {
+                                div()
+                                    .text_size(px(12.))
+                                    .font_weight(FontWeight(600.))
+                                    .text_color(color("--text-muted"))
+                                    .child(b)
+                            })),
+                    )
+                    .child(
+                        div()
+                            .id("storefront-detail-close")
+                            .size(px(28.))
+                            .rounded(px(6.))
+                            .cursor_pointer()
+                            .hover(|s| s.bg(color("--background-mod-subtle")))
+                            .flex()
+                            .items_center()
+                            .justify_center()
+                            .child(icon("modal_close", 16., "--interactive-icon-default"))
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                if let Some(open) = this.app_storefront.as_mut() {
+                                    open.detail = None;
+                                }
+                                cx.notify();
+                            })),
+                    ),
+            )
+            .child(
+                div()
+                    .px(px(20.))
+                    .pb(px(16.))
+                    .flex()
+                    .flex_col()
+                    .gap(px(12.))
+                    .children(description.map(|d| {
+                        div()
+                            .text_size(px(14.))
+                            .line_height(px(20.))
+                            .text_color(color("--text-default"))
+                            .child(d)
+                    }))
+                    .children(extra_body),
+            )
+            .child(
+                div()
+                    .px(px(20.))
+                    .py(px(14.))
+                    .bg(color("--modal-footer-background"))
+                    .border_t_1()
+                    .border_color(color("--border-subtle"))
+                    .flex()
+                    .items_center()
+                    .justify_end()
+                    .child(cta),
+            );
+        deferred(
+            div()
+                .id("storefront-detail-backdrop")
+                .occlude()
+                .absolute()
+                .inset_0()
+                .bg(gpui::rgba(0x000000b3))
+                .flex()
+                .items_center()
+                .justify_center()
+                .on_click(cx.listener(|this, _, _, cx| {
+                    if let Some(open) = this.app_storefront.as_mut() {
+                        open.detail = None;
+                    }
+                    cx.notify();
+                }))
+                .child(dialog),
+        )
+        .with_priority(3)
+        .into_any_element()
     }
 }
 

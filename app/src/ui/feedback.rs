@@ -67,6 +67,9 @@ pub(super) enum Kind {
     /// "How is blocking users on Discord?" (module 307750), from the block feedback notice. It is not one of the
     /// manager's types: no gate, no stored state, no "Don't show again" and no help request line.
     Block,
+    /// "How is ignoring users on Discord?" (module 976627), from the ignore-user feedback notice.
+    /// Same v1 flow as `Block`, except all 4 problem options (`14594.jZ`) require freeform follow-up.
+    Ignore,
 }
 
 impl Kind {
@@ -77,8 +80,9 @@ impl Kind {
             Kind::Report => 4,
             Kind::VideoBackground => 2,
             Kind::Activity { .. } => 3,
-            // Not stored: the block survey has no `inAppFeedbackSettings` entry.
+            // Not stored: the block/ignore surveys have no `inAppFeedbackSettings` entry.
             Kind::Block => u64::MAX,
+            Kind::Ignore => u64::MAX - 1,
         }
     }
 
@@ -92,6 +96,7 @@ impl Kind {
             Kind::Voice => 3,
             Kind::Report => 4,
             Kind::Block => 5,
+            Kind::Ignore => 6,
         }
     }
 
@@ -101,7 +106,7 @@ impl Kind {
             Kind::Voice | Kind::Stream { .. } | Kind::VideoBackground => (0.2, DAY_MS),
             Kind::Report => (0.5, 2 * DAY_MS),
             Kind::Activity { .. } => (0.5, 0),
-            Kind::Block => (1.0, 0),
+            Kind::Block | Kind::Ignore => (1.0, 0),
         }
     }
 
@@ -113,7 +118,7 @@ impl Kind {
                 &[0, 1, 2, 3]
             }
             Kind::Report => &[4],
-            Kind::Block => &[],
+            Kind::Block | Kind::Ignore => &[],
         }
     }
 
@@ -122,7 +127,11 @@ impl Kind {
     fn v1(self) -> bool {
         matches!(
             self,
-            Kind::Report | Kind::VideoBackground | Kind::Activity { .. } | Kind::Block
+            Kind::Report
+                | Kind::VideoBackground
+                | Kind::Activity { .. }
+                | Kind::Block
+                | Kind::Ignore
         )
     }
 }
@@ -270,6 +279,37 @@ fn categories(kind: Kind, rng: &mut impl rand::Rng) -> Vec<Category> {
             problems,
         }];
     }
+    if kind == Kind::Ignore {
+        // Module 976627 + `jZ` of module 14594: all 4 problems require freeform follow-up,
+        // shuffled with `something_else` pinned last.
+        let mut problems = vec![
+            Problem {
+                value: "confusion",
+                label: dc_intl::t("IumZmj"),
+                freeform: true,
+            },
+            Problem {
+                value: "does_not_achieve_wants",
+                label: dc_intl::t("mXkYyW"),
+                freeform: true,
+            },
+            Problem {
+                value: "hard_to_access",
+                label: dc_intl::t("eg1hVP"),
+                freeform: true,
+            },
+        ];
+        problems.shuffle(rng);
+        problems.push(Problem {
+            value: "something_else",
+            label: dc_intl::t("WAYoTx"),
+            freeform: true,
+        });
+        return vec![Category {
+            label: "",
+            problems,
+        }];
+    }
     let mut tree = match kind {
         Kind::Voice => vec![
             Category {
@@ -400,7 +440,7 @@ fn categories(kind: Kind, rng: &mut impl rand::Rng) -> Vec<Category> {
                 ),
             ],
         }],
-        Kind::VideoBackground | Kind::Activity { .. } | Kind::Block => Vec::new(),
+        Kind::VideoBackground | Kind::Activity { .. } | Kind::Block | Kind::Ignore => Vec::new(),
     };
     tree.shuffle(rng);
     for category in &mut tree {
@@ -483,8 +523,8 @@ pub(super) enum After {
 /// `onSubmit`: nothing without a face and a problem; else Upload Logs for a bad or neutral face when `roll` (a
 /// number in 0..1) is under 0.01 (module 878234, call and stream only), else the thanks.
 pub(super) fn after_submit(kind: Kind, picks: &Picks, roll: f64) -> After {
-    // Module 307750 thanks every rated survey (`a || mM(...)`), a problem or not.
-    if kind == Kind::Block {
+    // Modules 307750 & 976627 thank every rated survey (`a || mM(...)`), a problem or not.
+    if matches!(kind, Kind::Block | Kind::Ignore) {
         return if picks.rating.is_some() {
             After::Thanks
         } else {
@@ -678,7 +718,7 @@ impl Root {
         // GAP: the call survey's "People couldn't hear me at all" while muted for 98% of the call opens module
         // 813923 (the mute tutorial question), which is not built; the analytics events of the surveys are not sent.
         let thanks = match form.kind {
-            Kind::Voice | Kind::Report | Kind::Block => "d9+vQ8",
+            Kind::Voice | Kind::Report | Kind::Block | Kind::Ignore => "d9+vQ8",
             Kind::VideoBackground => "aHB11f",
             Kind::Stream { .. } => "mMTVnv",
             Kind::Activity { .. } => "zuHR+y",
@@ -748,6 +788,7 @@ impl Root {
                 self.open_feedback(Kind::Activity { ads }, cx);
             }
             ["block"] => self.open_feedback(Kind::Block, cx),
+            ["ignore"] => self.open_feedback(Kind::Ignore, cx),
             // The call's camera ran with a background (what VideoState does with a background set).
             ["used-background"] => {
                 if let Some(call) = self.call.as_mut() {
@@ -1022,8 +1063,22 @@ impl Root {
         let open = cx.listener(|this, _: &usize, _, cx| {
             this.follow_link(HELP_REQUEST_URL, "", cx);
         });
+        let label_key = if form.kind == Kind::Ignore {
+            let selected = form
+                .picks
+                .problem
+                .and_then(|idx| form.tree.first()?.problems.get(idx))
+                .map(|p| p.value);
+            if selected == Some("something_else") {
+                "h95hcn"
+            } else {
+                "wRGel3"
+            }
+        } else {
+            "h95hcn"
+        };
         Self::feedback_labelled(
-            dc_intl::t("h95hcn").to_owned(),
+            dc_intl::t(label_key).to_owned(),
             div()
                 .flex()
                 .flex_col()
@@ -1043,8 +1098,8 @@ impl Root {
                         .line_height(px(20.))
                         .child(form.text.clone()),
                 )
-                // `hideHelpDeskLink` of the block survey.
-                .when(form.kind != Kind::Block, |this| {
+                // `hideHelpDeskLink` of the block & ignore surveys (modules 307750, 976627).
+                .when(!matches!(form.kind, Kind::Block | Kind::Ignore), |this| {
                     this.child(
                         div()
                             .text_size(px(12.))
@@ -1082,6 +1137,7 @@ impl Root {
                 "9hk2KF",
             ),
             Kind::Block => (dc_intl::t("+2qQAX").to_owned(), "+0RsvT"),
+            Kind::Ignore => (dc_intl::t("Ib6bic").to_owned(), "uW0/nV"),
         };
         // `headerContainer`: the 24/32 title and the 16/20 body under it, centred, 16px 24px in and nothing under.
         let header = div()
@@ -1158,6 +1214,7 @@ impl Root {
                             Kind::VideoBackground => "UNFF85",
                             Kind::Activity { .. } => "g1q5fr",
                             Kind::Block => "TXomWW",
+                            Kind::Ignore => "avs5Vg",
                             _ => "FJmoxF",
                         })
                         .to_owned(),
@@ -1183,95 +1240,96 @@ impl Root {
         };
         // The footer (`footer__KoJTP footer_C-o8GY`): 16px 24px, `space-between`. The faces carry "Don't show again";
         // the later steps Back and, at the text box, Submit (612479 has no Back/Submit before its text box).
-        let footer: Option<AnyElement> = if step == Step::Rating && form.kind == Kind::Block {
-            // `hideDontShowAgainCheckbox`.
-            None
-        } else if step == Step::Rating {
-            let checked = form.dont_show;
-            Some(
-                div()
-                    .id("feedback-dont-show")
-                    .flex()
-                    .items_center()
-                    .gap(px(12.))
-                    .cursor_pointer()
-                    .child(super::server_games::checkbox(checked))
-                    .child(
-                        div()
-                            .text_size(px(16.))
-                            .line_height(px(20.))
-                            .text_color(color("--text-muted"))
-                            .child(dc_intl::t("5E9SB9")),
-                    )
-                    .on_click(cx.listener(|this, _, _, cx| {
-                        if let Some(form) = this.feedback.form.as_mut() {
-                            form.dont_show = !form.dont_show;
-                        }
-                        cx.notify();
-                    }))
-                    .into_any_element(),
-            )
-        } else if !v1 || step == Step::Freeform {
-            let back = super::modal::small_footer_button(
-                super::modal::button(
-                    "feedback-back",
-                    dc_intl::t("13/7kX"),
-                    super::modal::Tone::Secondary,
-                    |this, _, cx| {
-                        if let Some(form) = this.feedback.form.as_mut() {
-                            let single = form.single();
-                            if form.kind.v1() {
-                                // 612479: back from the text box to the problems, the text cleared.
-                                form.picks.problem = None;
-                            } else {
-                                form.picks.back(single);
+        let footer: Option<AnyElement> =
+            if step == Step::Rating && matches!(form.kind, Kind::Block | Kind::Ignore) {
+                // `hideDontShowAgainCheckbox`.
+                None
+            } else if step == Step::Rating {
+                let checked = form.dont_show;
+                Some(
+                    div()
+                        .id("feedback-dont-show")
+                        .flex()
+                        .items_center()
+                        .gap(px(12.))
+                        .cursor_pointer()
+                        .child(super::server_games::checkbox(checked))
+                        .child(
+                            div()
+                                .text_size(px(16.))
+                                .line_height(px(20.))
+                                .text_color(color("--text-muted"))
+                                .child(dc_intl::t("5E9SB9")),
+                        )
+                        .on_click(cx.listener(|this, _, _, cx| {
+                            if let Some(form) = this.feedback.form.as_mut() {
+                                form.dont_show = !form.dont_show;
                             }
-                            // Both clear the text on the way back from the box (`J("")`, `en("")`).
-                            form.text.update(cx, |editor, cx| {
-                                editor.set_text("");
-                                cx.notify();
-                            });
-                        }
-                    },
-                ),
-                cx,
-            );
-            let submit = (step == Step::Freeform).then(|| {
-                super::modal::small_footer_button(
+                            cx.notify();
+                        }))
+                        .into_any_element(),
+                )
+            } else if !v1 || step == Step::Freeform {
+                let back = super::modal::small_footer_button(
                     super::modal::button(
-                        "feedback-submit",
-                        dc_intl::t("geKm7t"),
-                        super::modal::Tone::Primary,
-                        |this, _, cx| this.close_feedback(cx),
+                        "feedback-back",
+                        dc_intl::t("13/7kX"),
+                        super::modal::Tone::Secondary,
+                        |this, _, cx| {
+                            if let Some(form) = this.feedback.form.as_mut() {
+                                let single = form.single();
+                                if form.kind.v1() {
+                                    // 612479: back from the text box to the problems, the text cleared.
+                                    form.picks.problem = None;
+                                } else {
+                                    form.picks.back(single);
+                                }
+                                // Both clear the text on the way back from the box (`J("")`, `en("")`).
+                                form.text.update(cx, |editor, cx| {
+                                    editor.set_text("");
+                                    cx.notify();
+                                });
+                            }
+                        },
                     ),
                     cx,
+                );
+                let submit = (step == Step::Freeform).then(|| {
+                    super::modal::small_footer_button(
+                        super::modal::button(
+                            "feedback-submit",
+                            dc_intl::t("geKm7t"),
+                            super::modal::Tone::Primary,
+                            |this, _, cx| this.close_feedback(cx),
+                        ),
+                        cx,
+                    )
+                });
+                Some(
+                    div()
+                        .w_full()
+                        .flex()
+                        .justify_between()
+                        .map(|this| {
+                            if v1 {
+                                // `horizontal-reverse`: Submit, then Back.
+                                this.child(
+                                    div()
+                                        .flex()
+                                        .flex_row_reverse()
+                                        .gap(px(8.))
+                                        .child(back)
+                                        .children(submit),
+                                )
+                            } else {
+                                this.child(back).children(submit)
+                            }
+                        })
+                        .into_any_element(),
                 )
-            });
-            Some(
-                div()
-                    .w_full()
-                    .flex()
-                    .justify_between()
-                    .map(|this| {
-                        if v1 {
-                            // `horizontal-reverse`: Submit, then Back.
-                            this.child(
-                                div()
-                                    .flex()
-                                    .flex_row_reverse()
-                                    .gap(px(8.))
-                                    .child(back)
-                                    .children(submit),
-                            )
-                        } else {
-                            this.child(back).children(submit)
-                        }
-                    })
-                    .into_any_element(),
-            )
-        } else {
-            None
-        };
+            } else {
+                None
+            };
         let pose =
             super::motion::legacy_modal_pose("feedback-modal", "feedback-modal-layer", false);
         let panel = div()
