@@ -25,6 +25,8 @@ const INVITES_HELP: &str = "https://support.discord.com/hc/en-us/articles/208866
 
 /// `IS_GUEST_INVITE` flag bit (module 821418 / 137811).
 pub(super) const IS_GUEST_INVITE: u64 = 1;
+/// `IS_APPLICATION_BYPASS` flag bit (module 821418 / 312556).
+pub(super) const IS_APPLICATION_BYPASS: u64 = 8;
 
 pub(crate) struct Invite {
     pub channel: Id,
@@ -1213,7 +1215,7 @@ impl Root {
                     .line_height(px(20.))
                     .text_color(color("--text-default"))
                     .child(if self.streamer_hides_invites() && !shown_link.is_empty() {
-                        crate::ui::settings::HIDDEN_INVITE_LINK.to_owned()
+                        dc_intl::t("6HzNgZ").to_owned()
                     } else {
                         shown_link
                     }),
@@ -1385,7 +1387,88 @@ impl Root {
                                 .child(dc_intl::t("MLkj7N")),
                         )
                         .child(copy_bar)
-                        .child(
+                        .children({
+                            // Module 312556 (`isApplicationBypassToggleEnabled`): Bypass Join Applications switch.
+                            let bypass_enabled = self.current_guild().is_some_and(|g| {
+                                g.features
+                                    .iter()
+                                    .any(|f| f == "MEMBER_VERIFICATION_GATE_ENABLED")
+                                    && g.features
+                                        .iter()
+                                        .any(|f| f == "MEMBER_VERIFICATION_MANUAL_APPROVAL")
+                            });
+                            let bypass_on = (invite.flags & IS_APPLICATION_BYPASS) != 0;
+                            bypass_enabled.then(|| {
+                                div()
+                                    .id("invite-bypass-applications")
+                                    .mt(px(14.))
+                                    .cursor_pointer()
+                                    .flex()
+                                    .items_start()
+                                    .justify_between()
+                                    .gap(px(12.))
+                                    .on_click(cx.listener(|this, _, _, cx| {
+                                        if let Some(inv) = this.invite.as_mut() {
+                                            inv.flags ^= IS_APPLICATION_BYPASS;
+                                            this.generate_invite(cx);
+                                        }
+                                        cx.notify();
+                                    }))
+                                    .child(
+                                        div()
+                                            .flex_1()
+                                            .min_w_0()
+                                            .flex()
+                                            .flex_col()
+                                            .gap(px(2.))
+                                            .child(
+                                                div()
+                                                    .text_size(px(14.))
+                                                    .font_weight(FontWeight(600.))
+                                                    .text_color(color("--text-strong"))
+                                                    .child(dc_intl::t("1i1bUl")),
+                                            )
+                                            .child(
+                                                div()
+                                                    .text_size(px(12.))
+                                                    .line_height(px(16.))
+                                                    .text_color(color("--text-muted"))
+                                                    .child(dc_intl::t("jvd/LF")),
+                                            ),
+                                    )
+                                    .child(
+                                        div()
+                                            .flex_none()
+                                            .w(px(36.))
+                                            .h(px(20.))
+                                            .rounded_full()
+                                            .p(px(2.))
+                                            .bg(if bypass_on {
+                                                color("--control-primary-background-default")
+                                            } else {
+                                                color("--background-base-lowest")
+                                            })
+                                            .flex()
+                                            .items_center()
+                                            .when(bypass_on, |d| d.justify_end())
+                                            .child(
+                                                div()
+                                                    .size(px(16.))
+                                                    .rounded_full()
+                                                    .bg(color("--white")),
+                                            ),
+                                    )
+                            })
+                        })
+                        .child(if self.invite_shows_vanity() {
+                            div()
+                                .mt(px(16.))
+                                .text_size(px(12.))
+                                .line_height(px(16.))
+                                .text_color(color("--text-muted"))
+                                .child(dc_intl::t("0M2U95"))
+                                .into_any_element()
+                        } else {
                             div()
                                 .mt(px(16.))
                                 .flex()
@@ -1408,8 +1491,9 @@ impl Root {
                                             cx.notify();
                                         }))
                                         .child(dc_intl::t("VNe8P/")),
-                                ),
-                        )
+                                )
+                                .into_any_element()
+                        })
                         .children(
                             invite
                                 .error

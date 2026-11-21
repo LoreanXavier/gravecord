@@ -20,8 +20,8 @@ use super::{Root, color, icon};
 use dc_intl::Arg;
 use dc_state::quests::{ActivePlatformScreen, Quest, QuestPlatform};
 use gpui::{
-    AnyElement, Context, IntoElement, div, img, linear_color_stop, linear_gradient, prelude::*, px,
-    rgba,
+    AnyElement, Context, FontWeight, IntoElement, div, img, linear_color_stop, linear_gradient,
+    prelude::*, px, rgba,
 };
 
 /// Platform eligibility warning card variant (`tp` of module 66246, `aC` of module 61387).
@@ -993,7 +993,7 @@ impl Root {
             }
             CtaAction::CheckForLaunches | CtaAction::CheckConnection => {
                 self.quests.store.clear_error_hints(quest_id);
-                cx.notify();
+                self.open_quest_connection_helper(quest_id, true, cx);
             }
             CtaAction::OpenPlatformMenu => {
                 if self.quests.open_platform_menu.as_deref() == Some(quest_id) {
@@ -1132,6 +1132,308 @@ pub(super) fn progress_badge(size: f32, pct_int: u64, completed: bool) -> AnyEle
                 }),
         )
         .into_any_element()
+}
+
+/// Active Quest Bar Bounty Card state (module 682908: `ogxXGq`, `GcsZKJ`, `NN79E9`, `o6FLcF`,
+/// `DEoVWZ`, `kfks9Y`, `UMclVN`, `1uzE2S`).
+#[derive(Clone, Debug)]
+pub(crate) struct QuestBarBountyState {
+    pub id: String,
+    pub product_name: String,
+    pub cta_label: String,
+    pub cta_url: String,
+    pub video_duration_seconds: u32,
+    pub menu_open: bool,
+}
+
+impl Root {
+    /// Overlay layer for Quest Bar Bounty Card & popout menu (`682908`).
+    pub(super) fn quest_bar_bounty_layer(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
+        let bounty = self.quest_bar_bounty.as_ref()?;
+        let bounty_id = bounty.id.clone();
+        let cta_url = bounty.cta_url.clone();
+        let watch_label = if bounty.video_duration_seconds > 0 {
+            format!(
+                "{} ({}s)",
+                dc_intl::t("kfks9Y"),
+                bounty.video_duration_seconds
+            )
+        } else {
+            dc_intl::t("kfks9Y").to_owned()
+        };
+
+        let menu = bounty.menu_open.then(|| {
+            div()
+                .id("quest-bar-bounty-menu")
+                .aria_label(dc_intl::t("ogxXGq"))
+                .w(px(220.))
+                .rounded(px(8.))
+                .border_1()
+                .border_color(color("--border-subtle"))
+                .bg(color("--background-surface-high"))
+                .p(px(6.))
+                .flex()
+                .flex_col()
+                .gap(px(2.))
+                .on_click(|_, _, cx| cx.stop_propagation())
+                .child(
+                    div()
+                        .id("bounty-open-link")
+                        .cursor_pointer()
+                        .hover(|s| s.bg(color("--background-mod-subtle")))
+                        .px(px(10.))
+                        .py(px(7.))
+                        .rounded(px(6.))
+                        .text_size(px(13.))
+                        .font_weight(FontWeight(500.))
+                        .text_color(color("--text-default"))
+                        .child(bounty.cta_label.clone())
+                        .on_click(cx.listener(move |this, _, _, cx| {
+                            if !cta_url.is_empty() {
+                                cx.open_url(&cta_url);
+                            }
+                            this.quest_bar_bounty = None;
+                            cx.notify();
+                        })),
+                )
+                .child(div().my(px(3.)).h(px(1.)).bg(color("--border-subtle")))
+                .child(
+                    div()
+                        .id("bounty-why-seeing")
+                        .cursor_pointer()
+                        .hover(|s| s.bg(color("--background-mod-subtle")))
+                        .px(px(10.))
+                        .py(px(7.))
+                        .rounded(px(6.))
+                        .text_size(px(13.))
+                        .font_weight(FontWeight(500.))
+                        .text_color(color("--text-default"))
+                        .child(dc_intl::t("GcsZKJ"))
+                        .on_click(cx.listener(|this, _, _, cx| {
+                            this.quest_bar_bounty = None;
+                            this.put_app_toast(dc_intl::t("GcsZKJ").to_owned(), true, cx);
+                        })),
+                )
+                .child(
+                    div()
+                        .id("bounty-hide-this")
+                        .cursor_pointer()
+                        .hover(|s| s.bg(color("--background-mod-subtle")))
+                        .px(px(10.))
+                        .py(px(7.))
+                        .rounded(px(6.))
+                        .text_size(px(13.))
+                        .font_weight(FontWeight(500.))
+                        .text_color(color("--text-feedback-critical"))
+                        .child(dc_intl::t("NN79E9"))
+                        .on_click(cx.listener(move |this, _, _, cx| {
+                            let _ = this.requests.send(crate::net::Request::Rest {
+                                key: Some("quests:bounty-dismiss".to_owned()),
+                                method: reqwest::Method::POST,
+                                route: format!("/quests/creatives/{bounty_id}/dismiss"),
+                                body: Some(serde_json::json!({ "ad_creative_type": "BOUNTY" })),
+                            });
+                            this.quest_bar_bounty = None;
+                            cx.notify();
+                        })),
+                )
+        });
+
+        Some(
+            gpui::deferred(
+                div()
+                    .id("quest-bar-bounty-backdrop")
+                    .occlude()
+                    .absolute()
+                    .inset_0()
+                    .bg(rgba(0x00000080))
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .gap(px(12.))
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        this.quest_bar_bounty = None;
+                        cx.notify();
+                    }))
+                    .child(
+                        div()
+                            .id("quest-bar-bounty-card")
+                            .w(px(280.))
+                            .rounded(px(12.))
+                            .border_1()
+                            .border_color(color("--border-subtle"))
+                            .bg(gpui::linear_gradient(
+                                180.,
+                                gpui::linear_color_stop(rgba(0x2d3266ff), 0.),
+                                gpui::linear_color_stop(rgba(0x16171aff), 1.),
+                            ))
+                            .p(px(14.))
+                            .flex()
+                            .flex_col()
+                            .gap(px(12.))
+                            .on_click(|_, _, cx| cx.stop_propagation())
+                            // Header: product icon + Promoted + Actions button
+                            .child(
+                                div()
+                                    .flex()
+                                    .items_center()
+                                    .justify_between()
+                                    .gap(px(8.))
+                                    .child(
+                                        div()
+                                            .flex()
+                                            .items_center()
+                                            .gap(px(8.))
+                                            .child(
+                                                div()
+                                                    .size(px(28.))
+                                                    .rounded(px(6.))
+                                                    .bg(rgba(0x5865f244))
+                                                    .flex()
+                                                    .items_center()
+                                                    .justify_center()
+                                                    .child(icon("home_quests", 16., "--white")),
+                                            )
+                                            .child(
+                                                div()
+                                                    .text_size(px(11.))
+                                                    .font_weight(FontWeight(600.))
+                                                    .text_color(rgba(0xffffffcc))
+                                                    .child(dc_intl::t("o6FLcF")),
+                                            ),
+                                    )
+                                    .child(
+                                        div()
+                                            .id("bounty-more-btn")
+                                            .aria_label(dc_intl::t("DEoVWZ"))
+                                            .cursor_pointer()
+                                            .size(px(26.))
+                                            .rounded(px(6.))
+                                            .bg(rgba(0xffffff1a))
+                                            .flex()
+                                            .items_center()
+                                            .justify_center()
+                                            .text_size(px(14.))
+                                            .font_weight(FontWeight(700.))
+                                            .text_color(color("--white"))
+                                            .child("•••")
+                                            .on_click(cx.listener(|this, _, _, cx| {
+                                                if let Some(b) = this.quest_bar_bounty.as_mut() {
+                                                    b.menu_open = !b.menu_open;
+                                                }
+                                                cx.notify();
+                                            })),
+                                    ),
+                            )
+                            // Reward tile + copy
+                            .child(
+                                div()
+                                    .flex()
+                                    .items_center()
+                                    .gap(px(12.))
+                                    .child(
+                                        div()
+                                            .id("bounty-reward-tile")
+                                            .aria_label(dc_intl::t("UMclVN"))
+                                            .flex_none()
+                                            .size(px(56.))
+                                            .rounded(px(10.))
+                                            .border_1()
+                                            .border_color(rgba(0xffffff28))
+                                            .bg(rgba(0x5865f233))
+                                            .flex()
+                                            .items_center()
+                                            .justify_center()
+                                            .child(icon("shop_orb_18", 28., "--white")),
+                                    )
+                                    .child(
+                                        div()
+                                            .flex_1()
+                                            .min_w_0()
+                                            .flex()
+                                            .flex_col()
+                                            .gap(px(4.))
+                                            .child(
+                                                div()
+                                                    .text_size(px(14.))
+                                                    .font_weight(FontWeight(700.))
+                                                    .text_color(color("--white"))
+                                                    .truncate()
+                                                    .child(bounty.product_name.clone()),
+                                            )
+                                            .child(
+                                                div()
+                                                    .text_size(px(12.))
+                                                    .line_height(px(16.))
+                                                    .text_color(rgba(0xffffffcc))
+                                                    .child(dc_intl::t("1uzE2S")),
+                                            ),
+                                    ),
+                            )
+                            // Watch CTA
+                            .child(
+                                div()
+                                    .id("bounty-watch-cta")
+                                    .cursor_pointer()
+                                    .w_full()
+                                    .h(px(36.))
+                                    .rounded(px(6.))
+                                    .bg(color("--control-primary-background-default"))
+                                    .flex()
+                                    .items_center()
+                                    .justify_center()
+                                    .text_size(px(13.))
+                                    .font_weight(FontWeight(600.))
+                                    .text_color(color("--white"))
+                                    .child(watch_label)
+                                    .on_click(cx.listener(|this, _, _, cx| {
+                                        this.quest_bar_bounty = None;
+                                        this.open_quests(cx);
+                                    })),
+                            ),
+                    )
+                    .children(menu),
+            )
+            .with_priority(95)
+            .into_any_element(),
+        )
+    }
+
+    /// Capture harness: `quest-bounty [card|menu|close]` (module 682908).
+    #[cfg(feature = "capture")]
+    pub(crate) fn script_quest_bounty(&mut self, arg: &str, cx: &mut Context<Self>) -> String {
+        match arg.trim() {
+            "close" => {
+                self.quest_bar_bounty = None;
+                cx.notify();
+                "quest-bounty: closed".to_owned()
+            }
+            "menu" => {
+                self.quest_bar_bounty = Some(QuestBarBountyState {
+                    id: "bounty_682908".to_owned(),
+                    product_name: "Starfall Odyssey".to_owned(),
+                    cta_label: "Visit Starfall Odyssey".to_owned(),
+                    cta_url: "https://discord.com/quests".to_owned(),
+                    video_duration_seconds: 30,
+                    menu_open: true,
+                });
+                cx.notify();
+                "quest-bounty: menu".to_owned()
+            }
+            _ => {
+                self.quest_bar_bounty = Some(QuestBarBountyState {
+                    id: "bounty_682908".to_owned(),
+                    product_name: "Starfall Odyssey".to_owned(),
+                    cta_label: "Visit Starfall Odyssey".to_owned(),
+                    cta_url: "https://discord.com/quests".to_owned(),
+                    video_duration_seconds: 30,
+                    menu_open: false,
+                });
+                cx.notify();
+                "quest-bounty: card".to_owned()
+            }
+        }
+    }
 }
 
 #[cfg(test)]

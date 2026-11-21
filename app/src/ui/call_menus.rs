@@ -1463,13 +1463,7 @@ impl Root {
                     self.overlay_stream_fit.insert(owner);
                 }
             }
-            Run::OverlayPrivacyCode(owner) => {
-                self.put_app_toast(
-                    format!("Stream privacy code verified for user {owner}."),
-                    true,
-                    cx,
-                );
-            }
+            Run::OverlayPrivacyCode(owner) => self.open_e2ee_verify_modal(owner, cx),
             Run::Missing => {}
         }
         cx.notify();

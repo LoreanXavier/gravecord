@@ -44,6 +44,7 @@ impl Root {
     ) -> Option<AnyElement> {
         let modal = self.server_shop_modal.as_ref()?;
         let tab = modal.tab;
+        let welcome_header = self.server_shop_welcome_header(modal, cx);
 
         let tab_btn = |id: &'static str,
                        title_key: &'static str,
@@ -386,10 +387,12 @@ impl Root {
             )
             .child(
                 div()
-                    .p(px(20.))
+                    .px(px(20.))
+                    .py(px(14.))
                     .flex()
                     .flex_col()
-                    .gap(px(16.))
+                    .gap(px(12.))
+                    .child(welcome_header)
                     .child(
                         div()
                             .flex()
@@ -854,6 +857,156 @@ impl Root {
         });
         cx.notify();
         format!("server-shop-success: {}", mode.trim())
+    }
+
+    /// Server Shop Welcome Header (module 43136: `J4cw1q`, `LvXy/H`, `XyqKh8`, `NY/FIW`,
+    /// `rtgp7q`, `NZeik9`, `7JwrlH`).
+    pub(super) fn server_shop_welcome_header(
+        &self,
+        modal: &ServerShopModal,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let username = self
+            .stores
+            .current_user
+            .as_ref()
+            .map(|u| {
+                u.global_name
+                    .as_deref()
+                    .filter(|s| !s.is_empty())
+                    .unwrap_or(&u.username)
+                    .to_owned()
+            })
+            .unwrap_or_else(|| "friend".to_owned());
+        let title = if modal.is_creator_preview {
+            dc_intl::t("rtgp7q").to_owned()
+        } else {
+            dc_intl::format(
+                "NZeik9",
+                &[(
+                    "guildName",
+                    dc_intl::Arg::Str(std::borrow::Cow::Borrowed(&modal.guild_name)),
+                )],
+            )
+        };
+        let greeting = dc_intl::format(
+            "7JwrlH",
+            &[(
+                "username",
+                dc_intl::Arg::Str(std::borrow::Cow::Borrowed(&username)),
+            )],
+        );
+        let desc = if modal.is_creator_preview {
+            match modal.tab {
+                ServerShopTab::Products => dc_intl::t("LvXy/H"),
+                ServerShopTab::Subscriptions => dc_intl::t("XyqKh8"),
+            }
+        } else {
+            dc_intl::t("NY/FIW")
+        };
+
+        div()
+            .id("server-shop-welcome-header")
+            .w_full()
+            .rounded(px(12.))
+            .border_1()
+            .border_color(color("--border-subtle"))
+            .bg(color("--background-base-lower"))
+            .p(px(12.))
+            .flex()
+            .items_center()
+            .justify_between()
+            .gap(px(20.))
+            .child(
+                div()
+                    .flex_1()
+                    .min_w_0()
+                    .flex()
+                    .items_start()
+                    .gap(px(14.))
+                    .child(
+                        div()
+                            .flex_none()
+                            .size(px(52.))
+                            .rounded(px(14.))
+                            .bg(rgba(0x5865f233))
+                            .flex()
+                            .items_center()
+                            .justify_center()
+                            .child(icon("storefront_store", 26., "--white")),
+                    )
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w_0()
+                            .flex()
+                            .flex_col()
+                            .gap(px(4.))
+                            .child(
+                                div()
+                                    .text_size(px(18.))
+                                    .line_height(px(22.))
+                                    .font_weight(FontWeight(700.))
+                                    .text_color(color("--text-strong"))
+                                    .truncate()
+                                    .child(title),
+                            )
+                            .child(
+                                div()
+                                    .text_size(px(13.))
+                                    .font_weight(FontWeight(600.))
+                                    .text_color(color("--text-link"))
+                                    .child(greeting),
+                            )
+                            .child(
+                                div()
+                                    .text_size(px(13.))
+                                    .line_height(px(18.))
+                                    .text_color(color("--text-default"))
+                                    .child(desc),
+                            )
+                            .child(
+                                div()
+                                    .id("server-shop-show-more")
+                                    .mt(px(2.))
+                                    .cursor_pointer()
+                                    .flex()
+                                    .items_center()
+                                    .gap(px(4.))
+                                    .text_size(px(12.))
+                                    .font_weight(FontWeight(600.))
+                                    .text_color(color("--text-strong"))
+                                    .child(dc_intl::t("J4cw1q"))
+                                    .child(icon("shop_arrow_right", 12., "--text-strong"))
+                                    .on_click(cx.listener(|this, _, _, cx| {
+                                        this.put_app_toast(
+                                            dc_intl::t("NY/FIW").to_owned(),
+                                            true,
+                                            cx,
+                                        );
+                                    })),
+                            ),
+                    ),
+            )
+            .child(
+                div()
+                    .flex_none()
+                    .w(px(180.))
+                    .h(px(88.))
+                    .rounded(px(10.))
+                    .bg(gpui::linear_gradient(
+                        135.,
+                        gpui::linear_color_stop(rgba(0x5865f255), 0.),
+                        gpui::linear_color_stop(rgba(0xeb459e44), 1.),
+                    ))
+                    .border_1()
+                    .border_color(color("--border-subtle"))
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .child(icon("storefront_badge", 34., "--white")),
+            )
+            .into_any_element()
     }
 }
 

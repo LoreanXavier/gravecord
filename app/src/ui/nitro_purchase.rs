@@ -27,12 +27,17 @@ use gpui::{
 };
 
 #[derive(Clone, Copy, PartialEq, Eq)]
+#[allow(dead_code)]
 pub(crate) enum Step {
     Plans,
     /// "Gift Nitro": the recipient, the message and the period of a gift.
     GiftSelect,
     Checkout,
     Payment,
+    /// Purchase token email verification step (module 615456 `AWAITING_PURCHASE_TOKEN_AUTH`).
+    AwaitingEmailAuth,
+    /// Purchase predicate error view (module 615456 `p8+qtU`).
+    PredicateError,
     /// Post-purchase confirmation (module 231308 `G`, `B`, `b`; CSS 13792, 896554).
     Confirm,
 }
@@ -318,6 +323,8 @@ pub(crate) struct Purchase {
     pub offer_badge: Option<PurchaseOfferBadge>,
     /// Optional gift review header override (`wKaVLC` "Review your gift", `vHqbJE` "Choose payment method").
     pub header_step_label: Option<&'static str>,
+    /// Whether the purchase verification email was resent (module 615456 `StGVvC` / `Ex7sk9`).
+    pub email_resent: bool,
 }
 
 /// Trial or discount pill rendered in the Nitro purchase modal header (module 683166).
@@ -409,6 +416,7 @@ impl Root {
             confirm: ConfirmState::default(),
             offer_badge: None,
             header_step_label: None,
+            email_resent: false,
         });
         cx.notify();
     }
@@ -484,6 +492,7 @@ impl Root {
             confirm: ConfirmState::default(),
             offer_badge: None,
             header_step_label: None,
+            email_resent: false,
         });
         cx.notify();
     }
@@ -702,6 +711,8 @@ impl Root {
             (Step::GiftSelect, _) => self.gift_select_modal(window, cx),
             (Step::Checkout, _) => self.checkout_modal(window, cx),
             (Step::Payment, _) => self.payment_modal(window, cx),
+            (Step::AwaitingEmailAuth, _) => self.awaiting_email_auth_modal(window, cx),
+            (Step::PredicateError, _) => self.predicate_error_modal(window, cx),
             (Step::Confirm, _) => self.confirm_modal(window, cx),
         })
     }
@@ -2287,6 +2298,7 @@ impl Root {
             confirm,
             offer_badge: None,
             header_step_label: None,
+            email_resent: false,
         });
         cx.notify();
         format!("nitro-confirm: opened ({arg})")
@@ -2314,6 +2326,7 @@ impl Root {
             confirm: ConfirmState::default(),
             offer_badge: None,
             header_step_label: None,
+            email_resent: false,
         };
         match arg.trim() {
             "" | "trial" => {
@@ -2356,6 +2369,184 @@ impl Root {
                 "nitro-offer-header: closed".to_owned()
             }
             other => format!("nitro-offer-header: unknown {other}"),
+        }
+    }
+
+    /// Purchase Email Verification Step (module 615456 `AWAITING_PURCHASE_TOKEN_AUTH`:
+    /// `Q03WWV`, `BxPxhI`, `Y3fdOp`, `Paa4v4`, `StGVvC`, `Ex7sk9`, `g8vPzy`).
+    fn awaiting_email_auth_modal(&self, window: &Window, cx: &mut Context<Self>) -> AnyElement {
+        let resent = self.nitro.purchase.as_ref().is_some_and(|p| p.email_resent);
+        let body = div()
+            .px(px(24.))
+            .py(px(24.))
+            .flex()
+            .flex_col()
+            .items_center()
+            .gap(px(10.))
+            .child(
+                div()
+                    .text_center()
+                    .text_size(px(15.))
+                    .line_height(px(20.))
+                    .font_weight(FontWeight(600.))
+                    .text_color(color("--text-strong"))
+                    .child(dc_intl::t("BxPxhI")),
+            )
+            .child(
+                div()
+                    .text_center()
+                    .text_size(px(14.))
+                    .line_height(px(20.))
+                    .text_color(color("--text-default"))
+                    .child(dc_intl::t("Y3fdOp")),
+            )
+            .child(
+                div()
+                    .mt(px(4.))
+                    .flex()
+                    .items_center()
+                    .gap(px(6.))
+                    .text_size(px(13.))
+                    .text_color(color("--text-muted"))
+                    .child(dc_intl::t("Paa4v4"))
+                    .child(if resent {
+                        div()
+                            .font_weight(FontWeight(600.))
+                            .text_color(color("--status-positive"))
+                            .child(dc_intl::t("StGVvC"))
+                            .into_any_element()
+                    } else {
+                        div()
+                            .id("purchase-email-resend")
+                            .cursor_pointer()
+                            .font_weight(FontWeight(600.))
+                            .text_color(color("--text-link"))
+                            .child(dc_intl::t("Ex7sk9"))
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                if let Some(p) = this.nitro.purchase.as_mut() {
+                                    p.email_resent = true;
+                                }
+                                let _ = this.requests.send(crate::net::Request::Rest {
+                                    key: Some("store:resend-payment-verification".to_owned()),
+                                    method: reqwest::Method::POST,
+                                    route: "/store/email/resend-payment-verification".to_owned(),
+                                    body: Some(serde_json::json!({})),
+                                });
+                                cx.notify();
+                            }))
+                            .into_any_element()
+                    }),
+            );
+        let footer = div()
+            .px(px(24.))
+            .py(px(16.))
+            .flex()
+            .justify_end()
+            .child(
+                div()
+                    .id("purchase-email-continue")
+                    .px(px(20.))
+                    .h(px(38.))
+                    .rounded(px(6.))
+                    .bg(color("--control-primary-background-default"))
+                    .opacity(0.5)
+                    .flex()
+                    .items_center()
+                    .text_size(px(14.))
+                    .font_weight(FontWeight(600.))
+                    .text_color(color("--white"))
+                    .child(dc_intl::t("g8vPzy")),
+            )
+            .into_any_element();
+        self.purchase_shell(
+            "nitro-purchase-email-auth",
+            480.,
+            dc_intl::t("Q03WWV"),
+            true,
+            body.into_any_element(),
+            Some(footer),
+            window,
+            cx,
+        )
+    }
+
+    /// Checkout Predicate Error step (module 615456 `p8+qtU`).
+    fn predicate_error_modal(&self, window: &Window, cx: &mut Context<Self>) -> AnyElement {
+        let body = div()
+            .px(px(24.))
+            .py(px(24.))
+            .flex()
+            .flex_col()
+            .items_center()
+            .gap(px(12.))
+            .child(icon("circle_info", 32., "--status-danger"))
+            .child(
+                div()
+                    .text_center()
+                    .text_size(px(14.))
+                    .line_height(px(20.))
+                    .text_color(color("--text-default"))
+                    .child(dc_intl::t("5mlOCW")),
+            );
+        self.purchase_shell(
+            "nitro-purchase-predicate-error",
+            460.,
+            dc_intl::t("p8+qtU"),
+            false,
+            body.into_any_element(),
+            None,
+            window,
+            cx,
+        )
+    }
+
+    /// Capture helper: `purchase-email-auth [pending|resent|error|close]` (module 615456).
+    #[cfg(feature = "capture")]
+    pub(crate) fn script_purchase_email_auth(
+        &mut self,
+        arg: &str,
+        cx: &mut Context<Self>,
+    ) -> String {
+        let mut p = Purchase {
+            gift: false,
+            step: Step::AwaitingEmailAuth,
+            sku: sku::TIER_2,
+            yearly: true,
+            scroll: ScrollHandle::new(),
+            recipient: false,
+            recipient_user: None,
+            message: None,
+            message_subscription: None,
+            sound: None,
+            confetti: None,
+            confirm: ConfirmState::default(),
+            offer_badge: None,
+            header_step_label: None,
+            email_resent: false,
+        };
+        match arg.trim() {
+            "close" => {
+                self.close_purchase();
+                cx.notify();
+                "purchase-email-auth: closed".to_owned()
+            }
+            "resent" => {
+                p.email_resent = true;
+                self.nitro.purchase = Some(p);
+                cx.notify();
+                "purchase-email-auth: resent".to_owned()
+            }
+            "error" => {
+                p.step = Step::PredicateError;
+                self.nitro.purchase = Some(p);
+                cx.notify();
+                "purchase-email-auth: error".to_owned()
+            }
+            _ => {
+                self.nitro.purchase = Some(p);
+                cx.notify();
+                "purchase-email-auth: pending".to_owned()
+            }
         }
     }
 

@@ -350,6 +350,7 @@ mod conjure_menu;
 mod copy_combo;
 mod dm_call;
 mod dm_call_view;
+mod e2ee_verify;
 mod forum_tag_editor;
 mod game_leaderboard;
 mod guild_theme_nux;
@@ -362,7 +363,9 @@ mod nitro_trials_picker;
 mod orb_wallet;
 mod pick_guild_settings;
 mod premium_uncancel;
+mod quest_activity_header;
 mod quest_call_and_sheet;
+mod quest_connection_helper;
 mod quest_menu;
 mod quest_promoted;
 mod quest_reward_modal;
@@ -370,6 +373,7 @@ mod quest_split_modal;
 mod quest_survey;
 mod raid_alerts;
 mod research_survey;
+mod role_icon_upload;
 mod server_members;
 mod server_onboarding;
 mod server_role_editor;
@@ -420,6 +424,7 @@ mod voice_sounds;
 mod voice_user_popout;
 mod voice_video;
 mod voice_view;
+mod web_presence;
 
 use motion::Transitions as _;
 use tooltip::{Body, Side, Tip};
@@ -811,6 +816,22 @@ pub struct Root {
     conjure_actions: Option<conjure_menu::ConjureActionsState>,
     /// NUF server-ready celebration modal guild name (module 109766).
     nuf_complete_guild: Option<String>,
+    /// E2EE User Verification modal (module 730713).
+    e2ee_verify_modal: Option<e2ee_verify::E2eeVerifyModal>,
+    /// Locally verified E2EE user IDs (module 730713).
+    e2ee_verified_users: std::collections::HashSet<Id>,
+    /// Quest Connection Helper modal (module 988436).
+    quest_connection_helper: Option<quest_connection_helper::QuestConnectionHelperModal>,
+    /// Custom Role Icon Upload / Expression Picker modal (module 126061).
+    role_icon_upload_modal: Option<role_icon_upload::RoleIconUploadModal>,
+    /// Quest Activity Header & Mission Quest coachmark (module 131862).
+    quest_activity_header: Option<quest_activity_header::QuestActivityHeaderState>,
+    /// Server Web Presence / Discoverable Content picker & review modal (module 284305).
+    web_presence_modal: Option<web_presence::WebPresenceModal>,
+    /// Nitro Evolving Tenure Badge modal (module 384048).
+    evolving_tenure_modal: Option<badge_modal::EvolvingTenureBadgeModal>,
+    /// Quest Bar Bounty Card overlay (module 682908).
+    quest_bar_bounty: Option<quest_bar::QuestBarBountyState>,
     /// Suspended User Safety Hub full page + embedded standing/violations body (module 187686 + 37380).
     suspended_safety_hub: Option<suspended_safety_hub::SuspendedSafetyHub>,
     /// Send Nitro Trials Picker & confirmation modal (module 303682 + 810852, `nitro_trials_picker`).
@@ -1418,6 +1439,14 @@ impl Root {
             guild_theme_nux_modal: None,
             conjure_actions: None,
             nuf_complete_guild: None,
+            e2ee_verify_modal: None,
+            e2ee_verified_users: std::collections::HashSet::new(),
+            quest_connection_helper: None,
+            role_icon_upload_modal: None,
+            quest_activity_header: None,
+            web_presence_modal: None,
+            evolving_tenure_modal: None,
+            quest_bar_bounty: None,
             suspended_safety_hub: None,
             nitro_trials_picker: None,
             user_activity_preview: None,
@@ -2524,6 +2553,16 @@ impl Root {
                     || key == research_survey::SURVEY_SUBMIT_KEY
                 {
                     self.handle_research_survey_response(&key, &body, cx);
+                    return;
+                }
+                if key == quest_connection_helper::CONSOLE_START_KEY {
+                    self.handle_quest_console_start_response(&body, cx);
+                    return;
+                }
+                if key == web_presence::DISCOVERABLE_GET_KEY
+                    || key == web_presence::DISCOVERABLE_PATCH_KEY
+                {
+                    self.handle_web_presence_response(&key, &body, cx);
                     return;
                 }
                 if key == channel_link::UNLINK_LOBBY_KEY {
@@ -11732,6 +11771,13 @@ impl Render for Root {
                         || this.guild_theme_nux_modal.is_some()
                         || this.conjure_actions.is_some()
                         || this.nuf_complete_guild.is_some()
+                        || this.e2ee_verify_modal.is_some()
+                        || this.quest_connection_helper.is_some()
+                        || this.role_icon_upload_modal.is_some()
+                        || this.quest_activity_header.is_some()
+                        || this.web_presence_modal.is_some()
+                        || this.evolving_tenure_modal.is_some()
+                        || this.quest_bar_bounty.is_some()
                         || this.quests.split_modal.is_some()
                         || this.quests.enrollment_blocked_modal.is_some()
                         || this.quests.promoted_preview_quest.is_some()
@@ -11803,6 +11849,13 @@ impl Render for Root {
                     this.guild_theme_nux_modal = None;
                     this.conjure_actions = None;
                     this.nuf_complete_guild = None;
+                    this.e2ee_verify_modal = None;
+                    this.quest_connection_helper = None;
+                    this.role_icon_upload_modal = None;
+                    this.quest_activity_header = None;
+                    this.web_presence_modal = None;
+                    this.evolving_tenure_modal = None;
+                    this.quest_bar_bounty = None;
                     this.quests.split_modal = None;
                     this.quests.enrollment_blocked_modal = None;
                     this.quests.promoted_preview_quest = None;
@@ -13033,6 +13086,13 @@ impl Render for Root {
             .children(self.guild_theme_nux_layer(cx))
             .children(self.conjure_actions_layer(cx))
             .children(self.nuf_complete_layer(cx))
+            .children(self.e2ee_verify_layer(cx))
+            .children(self.quest_connection_helper_layer(cx))
+            .children(self.role_icon_upload_layer(cx))
+            .children(self.quest_activity_header_layer(cx))
+            .children(self.web_presence_layer(cx))
+            .children(self.evolving_tenure_badge_layer(cx))
+            .children(self.quest_bar_bounty_layer(cx))
             .children(self.quest_split_modal_layer(cx))
             .children(self.quest_promoted_overlay_layer(cx))
             .children(self.quest_disclosure_and_alert_layer(cx))

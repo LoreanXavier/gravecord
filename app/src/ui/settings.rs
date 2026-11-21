@@ -10,7 +10,6 @@ pub(in crate::ui) use account_dialogs::FORM_KEY as ACCOUNT_FORM_KEY;
 pub(in crate::ui) use account_dialogs::USERNAME_KEY as ACCOUNT_USERNAME_KEY;
 pub(in crate::ui) use account_panels::LOGOUT_KEY as SESSIONS_LOGOUT_KEY;
 pub(in crate::ui) use mfa::{CREDENTIALS_KEY as MFA_CREDENTIALS_KEY, MFA_KEY};
-pub(in crate::ui) use streamer::HIDDEN_LINK as HIDDEN_INVITE_LINK;
 mod actions;
 mod appearance;
 mod billing;

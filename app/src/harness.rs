@@ -1969,6 +1969,55 @@ pub async fn run(
                 let line = root.update(cx, |root, cx| root.script_nuf_complete(&arg, cx));
                 let _ = writeln!(output, "{line}");
             }
+            // `e2ee-verify [new|verified|devices|close]`: E2EE User Verification modal (730713).
+            ["e2ee-verify", rest @ ..] => {
+                let arg = rest.join(" ");
+                let line = root.update(cx, |root, cx| root.script_e2ee_verify(&arg, cx));
+                let _ = writeln!(output, "{line}");
+            }
+            // `quest-conn-helper [detected|error|close]`: Quest Connection Helper modal (988436).
+            ["quest-conn-helper", rest @ ..] => {
+                let arg = rest.join(" ");
+                let line =
+                    root.update(cx, |root, cx| root.script_quest_connection_helper(&arg, cx));
+                let _ = writeln!(output, "{line}");
+            }
+            // `role-icon-upload [upload|error|emoji|close]`: Custom Role Icon Upload / Expression Picker modal (126061).
+            ["role-icon-upload", rest @ ..] => {
+                let arg = rest.join(" ");
+                let line = root.update(cx, |root, cx| root.script_role_icon_upload(&arg, cx));
+                let _ = writeln!(output, "{line}");
+            }
+            // `quest-activity-header [coachmark|popout|unenrolled|close]`: Quest Activity Header & Coachmark (131862).
+            ["quest-activity-header", rest @ ..] => {
+                let arg = rest.join(" ");
+                let line = root.update(cx, |root, cx| root.script_quest_activity_header(&arg, cx));
+                let _ = writeln!(output, "{line}");
+            }
+            // `web-presence [overview|picker|review|close]`: Server Web Presence / Discoverable Content picker (284305).
+            ["web-presence", rest @ ..] => {
+                let arg = rest.join(" ");
+                let line = root.update(cx, |root, cx| root.script_web_presence(&arg, cx));
+                let _ = writeln!(output, "{line}");
+            }
+            // `evolving-tenure [subscriber|upsell|other|close]`: Nitro Evolving Tenure Badge modal (384048).
+            ["evolving-tenure", rest @ ..] => {
+                let arg = rest.join(" ");
+                let line = root.update(cx, |root, cx| root.script_evolving_tenure(&arg, cx));
+                let _ = writeln!(output, "{line}");
+            }
+            // `purchase-email-auth [pending|resent|error|close]`: Checkout Email Verification & Predicate Error (615456).
+            ["purchase-email-auth", rest @ ..] => {
+                let arg = rest.join(" ");
+                let line = root.update(cx, |root, cx| root.script_purchase_email_auth(&arg, cx));
+                let _ = writeln!(output, "{line}");
+            }
+            // `quest-bounty [card|menu|close]`: Quest Bar Bounty Card & popout menu (682908).
+            ["quest-bounty", rest @ ..] => {
+                let arg = rest.join(" ");
+                let line = root.update(cx, |root, cx| root.script_quest_bounty(&arg, cx));
+                let _ = writeln!(output, "{line}");
+            }
             // `search last` / `search answer <total>`: the open search's request, and an answer to it;
             // `search page <n>`: the pager turns to page n.
             ["search", rest @ ..] => {

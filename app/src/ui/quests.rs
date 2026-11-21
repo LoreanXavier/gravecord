@@ -1558,6 +1558,7 @@ impl Root {
                                             }
                                             super::quest_copy::PlatformMenuTarget::CheckConnection => {
                                                 this.quests.store.clear_error_hints(&q);
+                                                this.open_quest_connection_helper(&q, true, cx);
                                             }
                                         }
                                         cx.notify();

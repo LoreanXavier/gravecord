@@ -7,8 +7,6 @@
 use super::Root;
 use crate::notifications;
 
-pub(in crate::ui) const HIDDEN_LINK: &str = "Hidden; Use copy button";
-
 /// `RUNNING_STREAMER_TOOLS_CHANGE`: the new `enabled`, or None when the user turned the automatic rule off.
 pub(in crate::ui) fn auto_toggle(auto: bool, tools_running: usize) -> Option<bool> {
     auto.then_some(tools_running > 0)

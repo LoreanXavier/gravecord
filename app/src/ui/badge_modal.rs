@@ -1416,6 +1416,335 @@ impl Root {
     }
 }
 
+/// Nitro Evolving Tenure Badge Modal state (module 384048).
+#[derive(Clone, Debug)]
+pub(crate) struct EvolvingTenureBadgeModal {
+    pub is_tier2_subscriber: bool,
+    pub viewing_other_user: bool,
+    pub earned_tier_index: Option<usize>,
+    pub subscriber_since: Option<String>,
+    pub days_to_next_tier: Option<u32>,
+}
+
+/// The 8 evolving Nitro tenure tiers (`682901.VD` + `384048`): Bronze -> Opal.
+const TENURE_TIERS: &[(&str, &str, u32, bool)] = &[
+    ("LR1C0a", "erUSmA", 1, false),
+    ("rI1/3H", "erUSmA", 3, false),
+    ("VkhVKS", "erUSmA", 6, false),
+    ("gzUfNS", "qOdyDe", 1, true),
+    ("fuwTPm", "qOdyDe", 2, true),
+    ("qNhNk4", "qOdyDe", 3, true),
+    ("wvX+eD", "qOdyDe", 5, true),
+    ("/menIw", "qOdyDe", 6, true),
+];
+
+impl Root {
+    /// Nitro Evolving Tenure Badge Modal layer (`384048`: `Og62j7`, `IdAP91`, `hvVgAZ`, `RtGeFS`,
+    /// `ffatnT`, `JST6jl`, `Hu4jfi`, `PPL1Il`).
+    pub(super) fn evolving_tenure_badge_layer(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
+        let modal = self.evolving_tenure_modal.as_ref()?;
+        let is_sub = modal.is_tier2_subscriber;
+        let viewing_other = modal.viewing_other_user;
+        let next_idx = modal.earned_tier_index.map(|i| i + 1);
+
+        let header = if is_sub {
+            dc_intl::t("Og62j7")
+        } else {
+            dc_intl::t("RtGeFS")
+        };
+
+        let subheader: AnyElement = if is_sub {
+            div()
+                .text_center()
+                .text_size(px(14.))
+                .line_height(px(20.))
+                .text_color(rgba(0xffffffcc))
+                .child(dc_intl::t("IdAP91"))
+                .into_any_element()
+        } else {
+            let text = dc_intl::format("ffatnT", &[]);
+            div()
+                .id("evolving-tenure-learn-more")
+                .cursor_pointer()
+                .text_center()
+                .text_size(px(14.))
+                .line_height(px(20.))
+                .text_color(rgba(0xffffffcc))
+                .child(text)
+                .on_click(cx.listener(|this, _, _, cx| {
+                    this.evolving_tenure_modal = None;
+                    this.open_nitro(cx);
+                }))
+                .into_any_element()
+        };
+
+        let cards =
+            TENURE_TIERS
+                .iter()
+                .enumerate()
+                .map(|(idx, &(name_key, unit_key, num, is_years))| {
+                    let is_earned = modal.earned_tier_index == Some(idx);
+                    let is_next = !viewing_other && next_idx == Some(idx);
+                    let duration = if is_years {
+                        dc_intl::format(unit_key, &[("years", dc_intl::Arg::Num(f64::from(num)))])
+                    } else {
+                        dc_intl::format(unit_key, &[("months", dc_intl::Arg::Num(f64::from(num)))])
+                    };
+                    let extra = if is_earned {
+                        modal.subscriber_since.as_ref().map(|d| {
+                            dc_intl::format(
+                                "Hu4jfi",
+                                &[("date", dc_intl::Arg::Str(std::borrow::Cow::Borrowed(d)))],
+                            )
+                        })
+                    } else if is_next {
+                        modal.days_to_next_tier.map(|days| {
+                            dc_intl::format(
+                                "PPL1Il",
+                                &[("days", dc_intl::Arg::Num(f64::from(days)))],
+                            )
+                        })
+                    } else {
+                        None
+                    };
+
+                    div()
+                        .w(px(140.))
+                        .p(px(12.))
+                        .rounded(px(10.))
+                        .border_1()
+                        .border_color(if is_earned {
+                            rgba(0xeb459eff)
+                        } else if is_next {
+                            rgba(0x5865f2cc)
+                        } else {
+                            rgba(0xffffff1a)
+                        })
+                        .bg(if is_earned || is_next {
+                            rgba(0xffffff1c)
+                        } else {
+                            rgba(0xffffff0a)
+                        })
+                        .flex()
+                        .flex_col()
+                        .items_center()
+                        .gap(px(4.))
+                        .child(
+                            div()
+                                .size(px(44.))
+                                .rounded_full()
+                                .bg(if is_earned {
+                                    rgba(0xeb459e44)
+                                } else {
+                                    rgba(0x5865f233)
+                                })
+                                .flex()
+                                .items_center()
+                                .justify_center()
+                                .child(icon("nitro_wheel", 24., "--white")),
+                        )
+                        .child(
+                            div()
+                                .text_size(px(14.))
+                                .font_weight(FontWeight(700.))
+                                .text_color(color("--white"))
+                                .child(dc_intl::t(name_key)),
+                        )
+                        .child(
+                            div()
+                                .text_size(px(12.))
+                                .text_color(rgba(0xffffffb3))
+                                .child(duration),
+                        )
+                        .children(extra.map(|e| {
+                            div()
+                                .text_center()
+                                .text_size(px(11.))
+                                .font_weight(FontWeight(600.))
+                                .text_color(rgba(0xf47fffff))
+                                .child(e)
+                        }))
+                });
+
+        let footer_cta = if !is_sub {
+            Some(
+                div()
+                    .id("evolving-tenure-get-nitro")
+                    .cursor_pointer()
+                    .px(px(28.))
+                    .h(px(40.))
+                    .rounded(px(8.))
+                    .bg(gpui::linear_gradient(
+                        90.,
+                        gpui::linear_color_stop(rgba(0x8e54e9ff), 0.),
+                        gpui::linear_color_stop(rgba(0xeb459eff), 1.),
+                    ))
+                    .flex()
+                    .items_center()
+                    .text_size(px(14.))
+                    .font_weight(FontWeight(700.))
+                    .text_color(color("--white"))
+                    .child(dc_intl::t("JST6jl"))
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        this.evolving_tenure_modal = None;
+                        this.open_purchase(false, cx);
+                    })),
+            )
+        } else if viewing_other {
+            Some(
+                div()
+                    .id("evolving-tenure-learn-btn")
+                    .cursor_pointer()
+                    .px(px(24.))
+                    .h(px(38.))
+                    .rounded(px(8.))
+                    .bg(gpui::linear_gradient(
+                        90.,
+                        gpui::linear_color_stop(rgba(0x5865f2ff), 0.),
+                        gpui::linear_color_stop(rgba(0xeb459eff), 1.),
+                    ))
+                    .flex()
+                    .items_center()
+                    .text_size(px(14.))
+                    .font_weight(FontWeight(600.))
+                    .text_color(color("--white"))
+                    .child(dc_intl::t("hvVgAZ"))
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        this.evolving_tenure_modal = None;
+                        this.open_nitro(cx);
+                    })),
+            )
+        } else {
+            None
+        };
+
+        Some(
+            gpui::deferred(
+                div()
+                    .id("evolving-tenure-backdrop")
+                    .occlude()
+                    .absolute()
+                    .inset_0()
+                    .bg(rgba(0x000000b8))
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .p(px(24.))
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        this.evolving_tenure_modal = None;
+                        cx.notify();
+                    }))
+                    .child(
+                        div()
+                            .id("evolving-tenure-modal")
+                            .relative()
+                            .w(px(660.))
+                            .rounded(px(14.))
+                            .border_1()
+                            .border_color(rgba(0xffffff22))
+                            .bg(gpui::linear_gradient(
+                                205.,
+                                gpui::linear_color_stop(rgba(0x251045ff), 0.),
+                                gpui::linear_color_stop(rgba(0x1a1530ff), 1.),
+                            ))
+                            .p(px(28.))
+                            .flex()
+                            .flex_col()
+                            .items_center()
+                            .gap(px(16.))
+                            .on_click(|_, _, cx| cx.stop_propagation())
+                            .child(
+                                div()
+                                    .id("evolving-tenure-close")
+                                    .absolute()
+                                    .top(px(14.))
+                                    .right(px(14.))
+                                    .size(px(32.))
+                                    .rounded(px(6.))
+                                    .cursor_pointer()
+                                    .flex()
+                                    .items_center()
+                                    .justify_center()
+                                    .child(icon("modal_close", 18., "--white"))
+                                    .on_click(cx.listener(|this, _, _, cx| {
+                                        this.evolving_tenure_modal = None;
+                                        cx.notify();
+                                    })),
+                            )
+                            .child(
+                                div()
+                                    .max_w(px(540.))
+                                    .text_center()
+                                    .text_size(px(24.))
+                                    .line_height(px(30.))
+                                    .font_weight(FontWeight(800.))
+                                    .text_color(color("--white"))
+                                    .child(header),
+                            )
+                            .child(subheader)
+                            .child(
+                                div()
+                                    .w_full()
+                                    .flex()
+                                    .flex_wrap()
+                                    .justify_center()
+                                    .gap(px(12.))
+                                    .children(cards),
+                            )
+                            .children(footer_cta),
+                    ),
+            )
+            .with_priority(96)
+            .into_any_element(),
+        )
+    }
+
+    /// Capture harness: `evolving-tenure [subscriber|upsell|other|close]` (module 384048).
+    #[cfg(feature = "capture")]
+    pub(crate) fn script_evolving_tenure(&mut self, arg: &str, cx: &mut Context<Self>) -> String {
+        match arg.trim() {
+            "close" => {
+                self.evolving_tenure_modal = None;
+                cx.notify();
+                "evolving-tenure: closed".to_owned()
+            }
+            "upsell" => {
+                self.evolving_tenure_modal = Some(EvolvingTenureBadgeModal {
+                    is_tier2_subscriber: false,
+                    viewing_other_user: false,
+                    earned_tier_index: None,
+                    subscriber_since: None,
+                    days_to_next_tier: None,
+                });
+                cx.notify();
+                "evolving-tenure: upsell".to_owned()
+            }
+            "other" => {
+                self.evolving_tenure_modal = Some(EvolvingTenureBadgeModal {
+                    is_tier2_subscriber: true,
+                    viewing_other_user: true,
+                    earned_tier_index: Some(3),
+                    subscriber_since: Some("Nov 5, 2024".to_owned()),
+                    days_to_next_tier: None,
+                });
+                cx.notify();
+                "evolving-tenure: other".to_owned()
+            }
+            _ => {
+                self.evolving_tenure_modal = Some(EvolvingTenureBadgeModal {
+                    is_tier2_subscriber: true,
+                    viewing_other_user: false,
+                    earned_tier_index: Some(2),
+                    subscriber_since: Some("May 10, 2025".to_owned()),
+                    days_to_next_tier: Some(42),
+                });
+                cx.notify();
+                "evolving-tenure: subscriber".to_owned()
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
