@@ -570,22 +570,15 @@ impl Root {
                 .cursor_pointer()
                 .child(icon(name, 16., tint))
         };
-        let heart = {
-            let sku = sku.clone();
-            round(
-                "shop-modal-heart",
-                "shop_heart_16",
-                if wished {
-                    "--text-feedback-critical"
-                } else {
-                    "--text-strong"
-                },
-            )
-            .on_click(cx.listener(move |this, _, _, cx| {
-                cx.stop_propagation();
-                this.shop_toggle_wishlist(&sku, cx);
-            }))
-        };
+        let heart = self.shop_item_wishlist_button(
+            SharedString::from("shop-modal-heart"),
+            sku.clone(),
+            wished,
+            false,
+            None,
+            true,
+            cx,
+        );
         // The share button copies the item's link and says so in a toast (module 760429: `Link Copied!`). The official
         // button opens the forward picker with this copy as one of its actions; that picker is in BLOCKED.md.
         let share_sku = sku.clone();

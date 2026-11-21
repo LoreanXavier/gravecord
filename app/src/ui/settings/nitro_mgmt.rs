@@ -255,6 +255,22 @@ pub(in crate::ui) enum NitroMgmtOverlay {
         offer_id: String,
         applied: bool,
     },
+    /// `621031` Change Subscription Payment Method selector + currency picker (with `PATCH /preview` & `{id}`).
+    ChangePaymentMethod {
+        subscription_id: String,
+        sources: Vec<(String, String)>,
+        selected_source: Option<String>,
+        currencies: Vec<String>,
+        selected_currency: String,
+        external_url: Option<String>,
+        fetch_error: bool,
+    },
+    /// `760941` Confirm Price Change modal opened by `621031` when preview price/currency changes.
+    ConfirmPriceChange {
+        subscription_id: String,
+        payment_source_id: String,
+        new_currency_and_price: String,
+    },
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -1946,6 +1962,397 @@ impl Root {
                     .child(content)
                     .into_any_element()
             }
+            NitroMgmtOverlay::ChangePaymentMethod {
+                subscription_id,
+                sources,
+                selected_source,
+                currencies,
+                selected_currency,
+                external_url,
+                fetch_error,
+            } => {
+                let sub_id = subscription_id.clone();
+                let body: AnyElement = if let Some(url) = external_url.clone() {
+                    div()
+                        .id("change-pm-external")
+                        .w_full()
+                        .h(px(38.))
+                        .rounded(px(8.))
+                        .bg(color("--control-secondary-background-default"))
+                        .hover(|s| s.bg(color("--control-secondary-background-hover")))
+                        .cursor_pointer()
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .text_size(px(14.))
+                        .font_weight(FontWeight(600.))
+                        .text_color(color("--text-strong"))
+                        .child(dc_intl::t("SgX7Ra"))
+                        .on_click(cx.listener(move |_, _, _, cx| cx.open_url(&url)))
+                        .into_any_element()
+                } else if *fetch_error {
+                    div()
+                        .flex()
+                        .flex_col()
+                        .gap(px(10.))
+                        .child(
+                            div()
+                                .p(px(12.))
+                                .rounded(px(8.))
+                                .bg(rgba(0xf23f421a))
+                                .border_1()
+                                .border_color(color("--status-danger"))
+                                .text_size(px(13.))
+                                .line_height(px(18.))
+                                .text_color(color("--text-default"))
+                                .child(dc_intl::t("5mlOCW")),
+                        )
+                        .child(
+                            div()
+                                .id("change-pm-retry")
+                                .self_start()
+                                .h(px(34.))
+                                .px(px(14.))
+                                .rounded(px(8.))
+                                .bg(color("--control-secondary-background-default"))
+                                .hover(|s| s.bg(color("--control-secondary-background-hover")))
+                                .cursor_pointer()
+                                .flex()
+                                .items_center()
+                                .text_size(px(13.))
+                                .font_weight(FontWeight(600.))
+                                .text_color(color("--text-strong"))
+                                .child(dc_intl::t("5911Lb"))
+                                .on_click(cx.listener(|this, _, _, cx| {
+                                    if let Some(NitroMgmtOverlay::ChangePaymentMethod {
+                                        fetch_error,
+                                        ..
+                                    }) = this.nitro_mgmt_overlay.as_mut()
+                                    {
+                                        *fetch_error = false;
+                                    }
+                                    cx.notify();
+                                })),
+                        )
+                        .into_any_element()
+                } else if sources.is_empty() {
+                    div()
+                        .id("change-pm-add-empty")
+                        .w_full()
+                        .h(px(38.))
+                        .rounded(px(8.))
+                        .bg(color("--control-primary-background-default"))
+                        .hover(|s| s.bg(color("--control-primary-background-hover")))
+                        .cursor_pointer()
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .text_size(px(14.))
+                        .font_weight(FontWeight(600.))
+                        .text_color(color("--white"))
+                        .child(dc_intl::t("CpOiEO"))
+                        .on_click(cx.listener(|this, _, _, cx| {
+                            this.nitro_mgmt_overlay = None;
+                            this.open_settings_section("Billing", cx);
+                        }))
+                        .into_any_element()
+                } else {
+                    let selected_id = selected_source.clone();
+                    let cur_currency = selected_currency.clone();
+                    let sub_for_src = sub_id.clone();
+                    div()
+                        .flex()
+                        .flex_col()
+                        .gap(px(12.))
+                        .when(selected_id.is_none(), |col| {
+                            col.child(
+                                div()
+                                    .text_size(px(13.))
+                                    .font_weight(FontWeight(500.))
+                                    .text_color(color("--text-muted"))
+                                    .child(dc_intl::t("iA5vA1")),
+                            )
+                        })
+                        .children(sources.iter().map(|(sid, label)| {
+                            let active = selected_id.as_deref() == Some(sid.as_str());
+                            let sid_click = sid.clone();
+                            let sub_c = sub_for_src.clone();
+                            div()
+                                .id(SharedString::from(format!("change-pm-src-{sid}")))
+                                .p(px(12.))
+                                .rounded(px(8.))
+                                .bg(if active {
+                                    color("--background-mod-subtle")
+                                } else {
+                                    color("--background-base-lower")
+                                })
+                                .border_1()
+                                .border_color(if active {
+                                    color("--control-primary-background-default")
+                                } else {
+                                    color("--border-subtle")
+                                })
+                                .cursor_pointer()
+                                .flex()
+                                .items_center()
+                                .justify_between()
+                                .child(
+                                    div()
+                                        .text_size(px(14.))
+                                        .font_weight(FontWeight(500.))
+                                        .text_color(color("--text-strong"))
+                                        .child(label.clone()),
+                                )
+                                .when(active, |row| {
+                                    row.child(icon(
+                                        "circle_check",
+                                        16.,
+                                        "--control-primary-background-default",
+                                    ))
+                                })
+                                .on_click(cx.listener(move |this, _, _, cx| {
+                                    let _ = this.requests.send(crate::net::Request::Rest {
+                                        key: Some(format!("billing:sub-preview:{sub_c}")),
+                                        method: reqwest::Method::PATCH,
+                                        route: format!(
+                                            "/users/@me/billing/subscriptions/{sub_c}/preview"
+                                        ),
+                                        body: Some(serde_json::json!({
+                                            "payment_source_id": sid_click,
+                                            "renewal": true,
+                                            "apply_entitlements": false,
+                                        })),
+                                    });
+                                    if let Some(NitroMgmtOverlay::ChangePaymentMethod {
+                                        selected_source,
+                                        ..
+                                    }) = this.nitro_mgmt_overlay.as_mut()
+                                    {
+                                        *selected_source = Some(sid_click.clone());
+                                    }
+                                    cx.notify();
+                                }))
+                        }))
+                        .when(currencies.len() > 1 && selected_id.is_some(), |col| {
+                            col.child(
+                                div()
+                                    .pt(px(4.))
+                                    .flex()
+                                    .flex_col()
+                                    .gap(px(6.))
+                                    .child(
+                                        div()
+                                            .text_size(px(12.))
+                                            .font_weight(FontWeight(700.))
+                                            .text_color(color("--text-muted"))
+                                            .child(dc_intl::t("0YjaXf")),
+                                    )
+                                    .child(div().flex().gap(px(8.)).children(
+                                        currencies.iter().map(|cur| {
+                                            let active = *cur == cur_currency;
+                                            let cur_click = cur.clone();
+                                            div()
+                                                .id(SharedString::from(format!(
+                                                    "change-pm-cur-{cur}"
+                                                )))
+                                                .px(px(12.))
+                                                .py(px(6.))
+                                                .rounded(px(6.))
+                                                .bg(if active {
+                                                    color("--control-primary-background-default")
+                                                } else {
+                                                    color("--control-secondary-background-default")
+                                                })
+                                                .cursor_pointer()
+                                                .text_size(px(13.))
+                                                .font_weight(FontWeight(600.))
+                                                .text_color(if active {
+                                                    color("--white")
+                                                } else {
+                                                    color("--text-strong")
+                                                })
+                                                .child(cur.clone())
+                                                .on_click(cx.listener(move |this, _, _, cx| {
+                                                    if let Some(
+                                                        NitroMgmtOverlay::ChangePaymentMethod {
+                                                            selected_currency,
+                                                            ..
+                                                        },
+                                                    ) = this.nitro_mgmt_overlay.as_mut()
+                                                    {
+                                                        *selected_currency = cur_click.clone();
+                                                    }
+                                                    cx.notify();
+                                                }))
+                                        }),
+                                    )),
+                            )
+                        })
+                        .into_any_element()
+                };
+                div()
+                    .id("change-payment-method-modal")
+                    .occlude()
+                    .w(px(460.))
+                    .p(px(20.))
+                    .rounded(px(12.))
+                    .bg(color("--modal-background"))
+                    .border_1()
+                    .border_color(color("--border-subtle"))
+                    .flex()
+                    .flex_col()
+                    .gap(px(14.))
+                    .on_click(cx.listener(|_, _, _, cx| cx.stop_propagation()))
+                    .child(
+                        div()
+                            .flex()
+                            .items_center()
+                            .justify_between()
+                            .child(
+                                div()
+                                    .text_size(px(18.))
+                                    .font_weight(FontWeight(700.))
+                                    .text_color(color("--text-strong"))
+                                    .child(dc_intl::t("SgX7Ra")),
+                            )
+                            .child(
+                                div()
+                                    .id("change-pm-close")
+                                    .size(px(28.))
+                                    .rounded(px(6.))
+                                    .cursor_pointer()
+                                    .hover(|s| s.bg(color("--background-mod-subtle")))
+                                    .flex()
+                                    .items_center()
+                                    .justify_center()
+                                    .child(icon("modal_close", 16., "--icon-subtle"))
+                                    .on_click(cx.listener(|this, _, _, cx| {
+                                        this.nitro_mgmt_overlay = None;
+                                        cx.notify();
+                                    })),
+                            ),
+                    )
+                    .child(body)
+                    .into_any_element()
+            }
+            NitroMgmtOverlay::ConfirmPriceChange {
+                subscription_id,
+                payment_source_id,
+                new_currency_and_price,
+            } => {
+                const LOCALIZED_PRICING_HELP: &str =
+                    "https://support.discord.com/hc/en-us/articles/4407269525911";
+                let sub_id = subscription_id.clone();
+                let src_id = payment_source_id.clone();
+                let body_text = format_plain(
+                    "oZBduD",
+                    &[
+                        (
+                            "newCurrencyAndPrice",
+                            Arg::Str(Cow::Borrowed(new_currency_and_price)),
+                        ),
+                        (
+                            "helpCenterLink",
+                            Arg::Str(Cow::Borrowed(LOCALIZED_PRICING_HELP)),
+                        ),
+                    ],
+                );
+                div()
+                    .id("confirm-price-change-modal")
+                    .occlude()
+                    .w(px(440.))
+                    .rounded(px(12.))
+                    .bg(color("--modal-background"))
+                    .border_1()
+                    .border_color(color("--border-subtle"))
+                    .overflow_hidden()
+                    .flex()
+                    .flex_col()
+                    .on_click(cx.listener(|_, _, _, cx| cx.stop_propagation()))
+                    .child(
+                        div()
+                            .p(px(20.))
+                            .flex()
+                            .flex_col()
+                            .gap(px(10.))
+                            .child(
+                                div()
+                                    .text_size(px(18.))
+                                    .font_weight(FontWeight(700.))
+                                    .text_color(color("--text-strong"))
+                                    .child(dc_intl::t("eZFTbu")),
+                            )
+                            .child(
+                                div()
+                                    .text_size(px(14.))
+                                    .line_height(px(20.))
+                                    .text_color(color("--text-default"))
+                                    .child(body_text),
+                            ),
+                    )
+                    .child(
+                        div()
+                            .px(px(20.))
+                            .py(px(14.))
+                            .bg(color("--modal-footer-background"))
+                            .border_t_1()
+                            .border_color(color("--border-subtle"))
+                            .flex()
+                            .justify_end()
+                            .gap(px(8.))
+                            .child(
+                                div()
+                                    .id("confirm-price-no")
+                                    .h(px(36.))
+                                    .px(px(16.))
+                                    .rounded(px(8.))
+                                    .bg(color("--control-secondary-background-default"))
+                                    .hover(|s| s.bg(color("--control-secondary-background-hover")))
+                                    .cursor_pointer()
+                                    .flex()
+                                    .items_center()
+                                    .text_size(px(14.))
+                                    .font_weight(FontWeight(500.))
+                                    .text_color(color("--text-strong"))
+                                    .child(dc_intl::t("gm1Vej"))
+                                    .on_click(cx.listener(|this, _, _, cx| {
+                                        this.nitro_mgmt_overlay = None;
+                                        cx.notify();
+                                    })),
+                            )
+                            .child(
+                                div()
+                                    .id("confirm-price-yes")
+                                    .h(px(36.))
+                                    .px(px(18.))
+                                    .rounded(px(8.))
+                                    .bg(color("--control-primary-background-default"))
+                                    .hover(|s| s.bg(color("--control-primary-background-hover")))
+                                    .cursor_pointer()
+                                    .flex()
+                                    .items_center()
+                                    .text_size(px(14.))
+                                    .font_weight(FontWeight(600.))
+                                    .text_color(color("--white"))
+                                    .child(dc_intl::t("p89ACt"))
+                                    .on_click(cx.listener(move |this, _, _, cx| {
+                                        let _ = this.requests.send(crate::net::Request::Rest {
+                                            key: Some(format!("billing:sub-patch:{sub_id}")),
+                                            method: reqwest::Method::PATCH,
+                                            route: format!(
+                                                "/users/@me/billing/subscriptions/{sub_id}"
+                                            ),
+                                            body: Some(serde_json::json!({
+                                                "payment_source_id": src_id,
+                                            })),
+                                        });
+                                        this.nitro_mgmt_overlay = None;
+                                        cx.notify();
+                                    })),
+                            ),
+                    )
+                    .into_any_element()
+            }
         };
 
         Some(
@@ -2035,6 +2442,44 @@ impl Root {
                 });
                 cx.notify();
                 "nitro-mgmt: plan-change".into()
+            }
+            "change-payment" => {
+                self.nitro_mgmt_overlay = Some(NitroMgmtOverlay::ChangePaymentMethod {
+                    subscription_id: "100".into(),
+                    sources: vec![
+                        ("ps_1".into(), "Visa ending in 4242".into()),
+                        ("ps_2".into(), "PayPal (demo@example.com)".into()),
+                    ],
+                    selected_source: Some("ps_1".into()),
+                    currencies: vec!["USD".into(), "EUR".into(), "TRY".into()],
+                    selected_currency: "USD".into(),
+                    external_url: None,
+                    fetch_error: false,
+                });
+                cx.notify();
+                "nitro-mgmt: change-payment".into()
+            }
+            "change-payment-error" => {
+                self.nitro_mgmt_overlay = Some(NitroMgmtOverlay::ChangePaymentMethod {
+                    subscription_id: "100".into(),
+                    sources: Vec::new(),
+                    selected_source: None,
+                    currencies: Vec::new(),
+                    selected_currency: "USD".into(),
+                    external_url: None,
+                    fetch_error: true,
+                });
+                cx.notify();
+                "nitro-mgmt: change-payment-error".into()
+            }
+            "confirm-price-change" => {
+                self.nitro_mgmt_overlay = Some(NitroMgmtOverlay::ConfirmPriceChange {
+                    subscription_id: "100".into(),
+                    payment_source_id: "ps_2".into(),
+                    new_currency_and_price: "€9.99 / Month".into(),
+                });
+                cx.notify();
+                "nitro-mgmt: confirm-price-change".into()
             }
             "discount-confirm" => {
                 self.nitro_mgmt_overlay = Some(NitroMgmtOverlay::ClaimDiscount {

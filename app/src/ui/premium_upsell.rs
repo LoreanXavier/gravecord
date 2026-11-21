@@ -65,6 +65,14 @@ pub(super) fn animated_upload_blocked(
     }
 }
 
+/// Sticker Pack Nitro Upsell Modal state (module 397313: `TBsJfQ`, `uAfKTe`, `sWnv5M`,
+/// `pqHIf7`, `cpT0Cq`, `Gd/XHF`, opened from sticker picker when clicking a Nitro sticker).
+#[derive(Clone, Debug)]
+pub(crate) struct StickerNitroUpsell {
+    pub monthly_price: String,
+    pub offer_badge: Option<String>,
+}
+
 /// "Reimagine your profile with Nitro" (module 536015): its picture.
 pub(super) const TRY_IT_OUT_GRAPHIC: Graphic = Graphic {
     url: "https://cdn.discordapp.com/assets/content/47cc9b4a38d020f9f0bf747920f0a9b0d02109a9eb9a15510e7a08b7fb106350.svg",
@@ -349,6 +357,251 @@ impl Root {
             },
             cx,
         ))
+    }
+
+    /// Opens the Sticker Pack Nitro Upsell modal (module 397313).
+    pub(super) fn open_sticker_nitro_upsell(
+        &mut self,
+        offer_badge: Option<String>,
+        cx: &mut Context<Self>,
+    ) {
+        self.sticker_upsell = Some(StickerNitroUpsell {
+            monthly_price: "$9.99".to_owned(),
+            offer_badge,
+        });
+        cx.notify();
+    }
+
+    /// Renders the Sticker Pack Nitro Upsell modal (module 397313: `TBsJfQ`, `uAfKTe`, `sWnv5M`,
+    /// `pqHIf7`, `cpT0Cq`, `Gd/XHF`).
+    pub(in crate::ui) fn sticker_nitro_upsell_layer(
+        &self,
+        cx: &mut Context<Self>,
+    ) -> Option<AnyElement> {
+        let state = self.sticker_upsell.as_ref()?;
+        let intro_text: String = dc_intl::format_runs(
+            "TBsJfQ",
+            &[("monthlyPrice", state.monthly_price.as_str().into())],
+        )
+        .into_iter()
+        .map(|(s, _)| s)
+        .collect();
+        let boost_perk = dc_intl::format(
+            "sWnv5M",
+            &[
+                ("numGuildSubscriptions", dc_intl::Arg::Num(2.)),
+                ("discountPercent", "30%".into()),
+            ],
+        );
+        let perk_row = |glyph: &'static str, text: String| {
+            div()
+                .flex()
+                .items_center()
+                .gap(px(12.))
+                .child(
+                    div()
+                        .flex_none()
+                        .size(px(32.))
+                        .rounded(px(8.))
+                        .bg(color("--background-mod-subtle"))
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .child(icon(glyph, 18., "--text-strong")),
+                )
+                .child(
+                    div()
+                        .flex_1()
+                        .min_w_0()
+                        .text_size(px(14.))
+                        .line_height(px(19.))
+                        .font_weight(FontWeight(500.))
+                        .text_color(color("--interactive-text-active"))
+                        .child(text),
+                )
+        };
+        let cta_label = if state.offer_badge.is_some() {
+            dc_intl::t("Gd/XHF")
+        } else {
+            dc_intl::tr("Get Nitro")
+        };
+        let dialog = div()
+            .id("sticker-pack-premium-upsell-modal")
+            .occlude()
+            .w(px(440.))
+            .rounded(px(12.))
+            .bg(color("--modal-background"))
+            .border_1()
+            .border_color(color("--border-subtle"))
+            .overflow_hidden()
+            .flex()
+            .flex_col()
+            .on_click(cx.listener(|_, _, _, cx| cx.stop_propagation()))
+            // Gradient hero banner
+            .child(
+                div()
+                    .relative()
+                    .h(px(136.))
+                    .px(px(24.))
+                    .bg(gpui::linear_gradient(
+                        135.,
+                        gpui::linear_color_stop(rgba(0x5865f2ff), 0.),
+                        gpui::linear_color_stop(rgba(0xb845c1ff), 1.),
+                    ))
+                    .flex()
+                    .flex_col()
+                    .items_center()
+                    .justify_center()
+                    .gap(px(8.))
+                    .children(state.offer_badge.clone().map(|badge| {
+                        div()
+                            .px(px(10.))
+                            .py(px(3.))
+                            .rounded_full()
+                            .bg(rgba(0x111214aa))
+                            .text_size(px(11.))
+                            .font_weight(FontWeight(700.))
+                            .text_color(color("--white"))
+                            .child(badge)
+                    }))
+                    .child(icon("nitro_wheel", 42., "--white"))
+                    .child(
+                        div()
+                            .id("sticker-upsell-close")
+                            .absolute()
+                            .top(px(12.))
+                            .right(px(12.))
+                            .size(px(28.))
+                            .rounded_full()
+                            .bg(rgba(0x00000044))
+                            .hover(|s| s.bg(rgba(0x00000066)))
+                            .cursor_pointer()
+                            .flex()
+                            .items_center()
+                            .justify_center()
+                            .child(icon("modal_close", 16., "--white"))
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                this.sticker_upsell = None;
+                                cx.notify();
+                            })),
+                    ),
+            )
+            // Body & 3 perks
+            .child(
+                div()
+                    .p(px(20.))
+                    .flex()
+                    .flex_col()
+                    .gap(px(14.))
+                    .child(
+                        div()
+                            .text_size(px(14.))
+                            .line_height(px(20.))
+                            .text_color(color("--text-default"))
+                            .child(intro_text),
+                    )
+                    .child(perk_row(
+                        "menu_add_reaction",
+                        dc_intl::t("uAfKTe").to_owned(),
+                    ))
+                    .child(perk_row("boost_gem", boost_perk))
+                    .child(perk_row("nitro_wheel", dc_intl::t("pqHIf7").to_owned())),
+            )
+            // Footer
+            .child(
+                div()
+                    .px(px(20.))
+                    .py(px(14.))
+                    .bg(color("--modal-footer-background"))
+                    .border_t_1()
+                    .border_color(color("--border-subtle"))
+                    .flex()
+                    .items_center()
+                    .justify_end()
+                    .gap(px(8.))
+                    .child(
+                        div()
+                            .id("sticker-upsell-cancel")
+                            .h(px(36.))
+                            .px(px(16.))
+                            .rounded(px(8.))
+                            .bg(color("--control-secondary-background-default"))
+                            .hover(|s| s.bg(color("--control-secondary-background-hover")))
+                            .cursor_pointer()
+                            .flex()
+                            .items_center()
+                            .text_size(px(14.))
+                            .font_weight(FontWeight(500.))
+                            .text_color(color("--text-strong"))
+                            .child(dc_intl::t("cpT0Cq"))
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                this.sticker_upsell = None;
+                                cx.notify();
+                            })),
+                    )
+                    .child(
+                        div()
+                            .id("sticker-upsell-subscribe")
+                            .h(px(36.))
+                            .px(px(16.))
+                            .rounded(px(8.))
+                            .bg(color("--status-positive"))
+                            .hover(|s| s.opacity(0.9))
+                            .cursor_pointer()
+                            .flex()
+                            .items_center()
+                            .gap(px(6.))
+                            .text_size(px(14.))
+                            .font_weight(FontWeight(600.))
+                            .text_color(color("--white"))
+                            .child(icon("nitro_wheel", 16., "--white"))
+                            .child(cta_label)
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                this.sticker_upsell = None;
+                                this.open_purchase(false, cx);
+                                cx.notify();
+                            })),
+                    ),
+            );
+        Some(
+            deferred(
+                div()
+                    .id("sticker-upsell-backdrop")
+                    .occlude()
+                    .absolute()
+                    .inset_0()
+                    .bg(rgba(0x000000b3))
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        this.sticker_upsell = None;
+                        cx.notify();
+                    }))
+                    .child(dialog),
+            )
+            .with_priority(3)
+            .into_any_element(),
+        )
+    }
+
+    #[cfg(feature = "capture")]
+    pub(crate) fn script_sticker_upsell(&mut self, arg: &str, cx: &mut Context<Self>) -> String {
+        match arg.trim() {
+            "close" => {
+                self.sticker_upsell = None;
+                cx.notify();
+                "sticker-upsell: closed".to_owned()
+            }
+            "trial" => {
+                self.open_sticker_nitro_upsell(Some("1 Month Free".to_owned()), cx);
+                "sticker-upsell: trial".to_owned()
+            }
+            _ => {
+                self.open_sticker_nitro_upsell(None, cx);
+                "sticker-upsell: default".to_owned()
+            }
+        }
     }
 }
 

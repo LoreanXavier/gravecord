@@ -332,6 +332,57 @@ pub(crate) struct Purchase {
     pub fractional_banner: Option<FractionalBannerState>,
     /// Checkout REVIEW step context & footer CTA selector (module 809029).
     pub review: ReviewContext,
+    /// Optional checkout payment error rendered in `PaymentErrorBlock` (module 901930).
+    pub payment_error: Option<CheckoutPaymentError>,
+    /// Show brand-refresh progress breadcrumb header (module 332030: `TfxqUO`, `lG6a5x`/`t9uG/o`/`aFBQ3d` + BETA).
+    pub show_progress_header: bool,
+    /// Whether this checkout is for Nitro Squad / Premium Group (`aFBQ3d` + BETA pill in module 332030).
+    pub is_premium_group: bool,
+}
+
+/// Billing error rendered by `PaymentErrorBlock` (module 901930: `iWvwQS`, `ypuSd8`, `mXMmWE`,
+/// `mC1Fjz`, `mv/fF2`, `KXodvL`, `D1BwNC`).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct CheckoutPaymentError {
+    pub code: u32,
+    pub message: String,
+    pub multi_currency: bool,
+    pub guardian_count: usize,
+}
+
+impl CheckoutPaymentError {
+    /// Billing address helpdesk URL (`MVz.BILLING` + `bNI.INVALID_BILLING_ADDRESS`, module 901930).
+    pub(crate) const BILLING_HELP_URL: &'static str = "https://support.discord.com/hc/en-us/articles/360012668071#docs-internal-guid-1731ba7c-7fff-87a1-c976-f62cc1cd2618";
+
+    /// Resolves the localized display message + optional action kind (`guardian` or `helpdesk`) per module 901930.
+    pub(crate) fn resolved_message(&self) -> (String, Option<&'static str>) {
+        match self.code {
+            100054 if self.multi_currency => {
+                (format!("{} {}", self.message, dc_intl::t("iWvwQS")), None)
+            }
+            50097 => (dc_intl::t("ypuSd8").to_owned(), None),
+            100060 => (dc_intl::t("mXMmWE").to_owned(), None),
+            100051 => (dc_intl::t("mC1Fjz").to_owned(), None),
+            100150 | 100151 => {
+                let text: String = dc_intl::format_runs("mv/fF2", &[])
+                    .into_iter()
+                    .map(|(s, _)| s)
+                    .collect();
+                (text, (self.guardian_count > 0).then_some("guardian"))
+            }
+            100010 => {
+                let text: String = dc_intl::format_runs(
+                    "KXodvL",
+                    &[("helpdeskArticle", Self::BILLING_HELP_URL.into())],
+                )
+                .into_iter()
+                .map(|(s, _)| s)
+                .collect();
+                (text, Some("helpdesk"))
+            }
+            _ => (self.message.clone(), None),
+        }
+    }
 }
 
 /// Plan identity for module 722178 `ff` / module 809029 primary review CTA text.
@@ -592,6 +643,9 @@ impl Root {
             email_resent: false,
             fractional_banner: None,
             review: ReviewContext::default(),
+            payment_error: None,
+            show_progress_header: false,
+            is_premium_group: false,
         });
         cx.notify();
     }
@@ -670,6 +724,9 @@ impl Root {
             email_resent: false,
             fractional_banner: None,
             review: ReviewContext::default(),
+            payment_error: None,
+            show_progress_header: false,
+            is_premium_group: false,
         });
         cx.notify();
     }
@@ -757,83 +814,170 @@ impl Root {
             } else {
                 114.
             };
-        let offer_badge = self.nitro.purchase.as_ref().and_then(|p| p.offer_badge);
-        let title_str = self
-            .nitro
-            .purchase
-            .as_ref()
+        let purchase_ref = self.nitro.purchase.as_ref();
+        let offer_badge = purchase_ref.and_then(|p| p.offer_badge);
+        let title_str = purchase_ref
             .and_then(|p| p.header_step_label)
             .unwrap_or(title);
-        let header =
+        let show_progress = purchase_ref.is_some_and(|p| p.show_progress_header);
+        let is_group = purchase_ref.is_some_and(|p| p.is_premium_group);
+        let is_tier0 = purchase_ref.is_some_and(|p| p.sku == sku::TIER_0);
+        let current_step = purchase_ref.map(|p| p.step);
+        let wordmark_label = if is_group {
+            dc_intl::t("aFBQ3d")
+        } else if is_tier0 {
+            dc_intl::t("t9uG/o")
+        } else {
+            dc_intl::t("lG6a5x")
+        };
+        let header_grad_top = if is_tier0 {
+            oklab(0.46, -0.11, 0.08, 0.55)
+        } else {
+            oklab(0.45, 0.17, -0.09, 0.55)
+        };
+        let breadcrumbs = show_progress.then(|| {
+            // Module 332030: `<nav aria-label="Payment progress">` (`TfxqUO`) step trail.
+            let _nav_aria = dc_intl::t("TfxqUO");
+            let active_idx: usize = match current_step {
+                Some(Step::Plans) => 0,
+                Some(Step::Checkout | Step::GiftSelect) => 1,
+                Some(Step::Payment | Step::AwaitingEmailAuth) => 2,
+                _ => 3,
+            };
+            let steps: Vec<(usize, &str)> = if is_group {
+                vec![(1, "Checkout"), (2, "Payment"), (3, "Review")]
+            } else {
+                vec![(0, "Plan"), (1, "Checkout"), (2, "Payment"), (3, "Review")]
+            };
+            let mut trail: Vec<AnyElement> = Vec::new();
+            for (pos, (step_idx, label)) in steps.into_iter().enumerate() {
+                if pos > 0 {
+                    trail.push(
+                        div()
+                            .text_size(px(12.))
+                            .text_color(color("--text-muted"))
+                            .child("›")
+                            .into_any_element(),
+                    );
+                }
+                let is_active = step_idx == active_idx;
+                trail.push(
+                    div()
+                        .text_size(px(12.))
+                        .line_height(px(16.))
+                        .font_weight(FontWeight(if is_active { 600. } else { 500. }))
+                        .text_color(color(if is_active {
+                            "--text-strong"
+                        } else {
+                            "--text-muted"
+                        }))
+                        .child(label)
+                        .into_any_element(),
+                );
+            }
             div()
-                .relative()
-                .flex_none()
-                .h(px(48.))
-                .px(px(24.))
-                .child(div().absolute().top_0().left_0().right_0().h(px(48.)).when(
-                    gradient,
-                    |this| {
+                .mt(px(6.))
+                .pb(px(10.))
+                .flex()
+                .items_center()
+                .gap(px(6.))
+                .children(trail)
+        });
+        let header = div()
+            .relative()
+            .flex_none()
+            .min_h(px(48.))
+            .px(px(24.))
+            .child(
+                div()
+                    .absolute()
+                    .top_0()
+                    .left_0()
+                    .right_0()
+                    .h(px(if show_progress { 78. } else { 48. }))
+                    .when(gradient, |this| {
                         this.bg(linear_gradient(
                             180.,
-                            linear_color_stop(oklab(0.45, 0.17, -0.09, 0.55), 0.),
+                            linear_color_stop(header_grad_top, 0.),
                             linear_color_stop(oklab(0.263, 0.0025, -0.0089, 0.), 1.),
                         ))
-                    },
-                ))
-                .child(
-                    div()
-                        .relative()
-                        .pt(px(16.))
-                        .flex()
-                        .items_center()
-                        .gap(px(8.))
-                        .child(
-                            div()
-                                .flex_1()
-                                .min_w_0()
-                                .h(px(24.))
-                                .flex()
-                                .items_center()
-                                .gap(px(8.))
-                                .child(
-                                    div()
-                                        .text_size(px(20.))
-                                        .line_height(px(24.))
-                                        .font_weight(FontWeight(600.))
-                                        .text_color(color("--text-strong"))
-                                        .child(title_str),
-                                )
-                                .children(offer_badge.map(|badge| {
+                    }),
+            )
+            .child(
+                div()
+                    .relative()
+                    .pt(px(16.))
+                    .flex()
+                    .items_center()
+                    .gap(px(8.))
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w_0()
+                            .h(px(24.))
+                            .flex()
+                            .items_center()
+                            .gap(px(8.))
+                            .child(
+                                div()
+                                    .text_size(px(20.))
+                                    .line_height(px(24.))
+                                    .font_weight(FontWeight(600.))
+                                    .text_color(color("--text-strong"))
+                                    .child(if show_progress {
+                                        wordmark_label
+                                    } else {
+                                        title_str
+                                    }),
+                            )
+                            .when(show_progress && is_group, |row| {
+                                row.child(
                                     div()
                                         .flex_none()
-                                        .px(px(8.))
-                                        .h(px(20.))
+                                        .px(px(6.))
+                                        .h(px(18.))
                                         .rounded_full()
-                                        .bg(color("--control-primary-background-default"))
+                                        .bg(rgba(0x9b59f6ff))
                                         .flex()
                                         .items_center()
-                                        .text_size(px(11.))
+                                        .text_size(px(10.))
                                         .font_weight(FontWeight(700.))
                                         .text_color(color("--white"))
-                                        .child(badge.label())
-                                })),
-                        )
-                        .child(
-                            div()
-                                .id(format!("{id}-close"))
-                                .absolute()
-                                .top(px(0.))
-                                .right(px(-16.))
-                                .size(px(40.))
-                                .rounded(px(8.))
-                                .cursor_pointer()
-                                .flex()
-                                .items_center()
-                                .justify_center()
-                                .child(icon("modal_close", 20., "--control-icon-only-icon-default"))
-                                .on_click(close),
-                        ),
-                );
+                                        .child("BETA"),
+                                )
+                            })
+                            .children(offer_badge.map(|badge| {
+                                div()
+                                    .flex_none()
+                                    .px(px(8.))
+                                    .h(px(20.))
+                                    .rounded_full()
+                                    .bg(color("--control-primary-background-default"))
+                                    .flex()
+                                    .items_center()
+                                    .text_size(px(11.))
+                                    .font_weight(FontWeight(700.))
+                                    .text_color(color("--white"))
+                                    .child(badge.label())
+                            })),
+                    )
+                    .child(
+                        div()
+                            .id(format!("{id}-close"))
+                            .absolute()
+                            .top(px(0.))
+                            .right(px(-16.))
+                            .size(px(40.))
+                            .rounded(px(8.))
+                            .cursor_pointer()
+                            .flex()
+                            .items_center()
+                            .justify_center()
+                            .child(icon("modal_close", 20., "--control-icon-only-icon-default"))
+                            .on_click(close),
+                    ),
+            )
+            .children(breadcrumbs);
         let modal = div()
             .parity_with_border(id, 1.)
             .id(id)
@@ -2268,6 +2412,7 @@ impl Root {
                     .into_any_element(),
             })
         });
+        let error_block = self.payment_error_block(cx);
         let body = div()
             .px(px(24.))
             .pt(px(16.))
@@ -2275,6 +2420,7 @@ impl Root {
             .flex()
             .flex_col()
             .child(Self::nitro_heading(name, 24., 24., true))
+            .children(error_block)
             .children(fractional)
             .child(rows)
             .child(totals);
@@ -2545,6 +2691,9 @@ impl Root {
             email_resent: false,
             fractional_banner: None,
             review: ReviewContext::default(),
+            payment_error: None,
+            show_progress_header: false,
+            is_premium_group: false,
         });
         cx.notify();
         format!("nitro-confirm: opened ({arg})")
@@ -2575,6 +2724,9 @@ impl Root {
             email_resent: false,
             fractional_banner: None,
             review: ReviewContext::default(),
+            payment_error: None,
+            show_progress_header: false,
+            is_premium_group: false,
         };
         match arg.trim() {
             "" | "trial" => {
@@ -2582,6 +2734,51 @@ impl Root {
                 self.nitro.purchase = Some(p);
                 cx.notify();
                 "nitro-offer-header: trial".to_owned()
+            }
+            "payment-error-card" => {
+                p.payment_error = Some(CheckoutPaymentError {
+                    code: 100054,
+                    message: "Your card was declined.".to_owned(),
+                    multi_currency: true,
+                    guardian_count: 0,
+                });
+                self.nitro.purchase = Some(p);
+                cx.notify();
+                "nitro-offer-header: payment-error-card".to_owned()
+            }
+            "payment-error-guardian" => {
+                p.payment_error = Some(CheckoutPaymentError {
+                    code: 100150,
+                    message: String::new(),
+                    multi_currency: false,
+                    guardian_count: 1,
+                });
+                self.nitro.purchase = Some(p);
+                cx.notify();
+                "nitro-offer-header: payment-error-guardian".to_owned()
+            }
+            "progress-squad" => {
+                p.step = Step::Review;
+                p.show_progress_header = true;
+                p.is_premium_group = true;
+                p.offer_badge = Some(PurchaseOfferBadge::TwoWeekTrial);
+                p.review = ReviewContext {
+                    plan_kind: ReviewPlanKind::NitroGroup,
+                    show_back: true,
+                    ..ReviewContext::default()
+                };
+                self.nitro.purchase = Some(p);
+                cx.notify();
+                "nitro-offer-header: progress-squad".to_owned()
+            }
+            "progress-basic" => {
+                p.step = Step::Checkout;
+                p.sku = sku::TIER_0;
+                p.show_progress_header = true;
+                p.offer_badge = Some(PurchaseOfferBadge::DiscountPercent(25));
+                self.nitro.purchase = Some(p);
+                cx.notify();
+                "nitro-offer-header: progress-basic".to_owned()
             }
             mode @ ("review-upgrade" | "review-past-due" | "review-trial" | "review-gift") => {
                 p.step = Step::Review;
@@ -2676,6 +2873,75 @@ impl Root {
             }
             other => format!("nitro-offer-header: unknown {other}"),
         }
+    }
+
+    /// Renders Checkout `PaymentErrorBlock` (module 901930: `iWvwQS`, `ypuSd8`, `mXMmWE`, `mC1Fjz`,
+    /// `mv/fF2`, `KXodvL`, `D1BwNC` toast on guardian DM failure).
+    fn payment_error_block(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
+        let err = self.nitro.purchase.as_ref()?.payment_error.as_ref()?;
+        let (msg, action_kind) = err.resolved_message();
+        let guardian_count = err.guardian_count;
+        Some(
+            div()
+                .mt(px(12.))
+                .p(px(12.))
+                .rounded(px(8.))
+                .bg(rgba(0xf23f421a))
+                .border_1()
+                .border_color(color("--status-danger"))
+                .flex()
+                .items_start()
+                .gap(px(10.))
+                .child(icon("circle_info", 16., "--status-danger"))
+                .child(
+                    div()
+                        .flex_1()
+                        .min_w_0()
+                        .flex()
+                        .flex_col()
+                        .gap(px(6.))
+                        .child(
+                            div()
+                                .text_size(px(13.))
+                                .line_height(px(18.))
+                                .text_color(color("--text-default"))
+                                .child(msg),
+                        )
+                        .when_some(action_kind, |col, kind| {
+                            col.child(
+                                div()
+                                    .id("checkout-payment-error-action")
+                                    .self_start()
+                                    .cursor_pointer()
+                                    .text_size(px(13.))
+                                    .font_weight(FontWeight(600.))
+                                    .text_color(color("--text-link"))
+                                    .hover(|s| s.underline())
+                                    .child(if kind == "guardian" {
+                                        "Ask your guardian"
+                                    } else {
+                                        "Learn More"
+                                    })
+                                    .on_click(cx.listener(move |this, _, _, cx| {
+                                        if kind == "guardian" {
+                                            let toast = dc_intl::format(
+                                                "D1BwNC",
+                                                &[(
+                                                    "count",
+                                                    dc_intl::Arg::Num(guardian_count.max(1) as f64),
+                                                )],
+                                            );
+                                            this.put_app_toast(toast, false, cx);
+                                        } else {
+                                            cx.open_url(CheckoutPaymentError::BILLING_HELP_URL);
+                                        }
+                                        cx.notify();
+                                    })),
+                            )
+                        }),
+                )
+                .into_any_element(),
+        )
     }
 
     /// In-app Nitro Checkout REVIEW step & footer (module 809029: `YScQSF`, `ouo4FK`, `LvcUx4`,
@@ -2967,6 +3233,9 @@ impl Root {
             email_resent: false,
             fractional_banner: None,
             review: ReviewContext::default(),
+            payment_error: None,
+            show_progress_header: false,
+            is_premium_group: false,
         };
         match arg.trim() {
             "close" => {

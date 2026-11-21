@@ -77,11 +77,20 @@ impl SupportProvider {
 /// The three tips of module 327337 `RU`.
 pub(crate) const SAFETY_TIP_KEYS: [&str; 3] = ["bCWw8l", "mzSucz", "ZkmC7s"];
 
+/// Feedback vote for Safety Tips ("Was this helpful?", module 198916: `L84yVm`, `2GrOCN`, `COp9BO`, `gd/Yqs`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum SafetyFeedback {
+    Upvote,
+    Downvote,
+}
+
 pub(crate) struct SafetyToolsModal {
     pub channel_id: Id,
     pub other_user_id: Id,
     pub slide: Slide,
     pub submitting_false_positive: bool,
+    /// Optional thumbs-up/down feedback vote on `Slide::SafetyTips` (module 198916).
+    pub feedback: Option<SafetyFeedback>,
     focus: FocusHandle,
 }
 
@@ -102,6 +111,7 @@ impl Root {
             other_user_id,
             slide: Slide::Actions,
             submitting_false_positive: false,
+            feedback: None,
             focus: cx.focus_handle(),
         });
         cx.notify();
@@ -511,31 +521,154 @@ impl Root {
                     );
                 }
 
+                let voted = modal.feedback;
+                let _tips_title = dc_intl::t("lyt43P");
+                let _up_aria = dc_intl::t("2GrOCN");
+                let _down_aria = dc_intl::t("COp9BO");
+                let vote_btn = |id: &'static str, kind: SafetyFeedback, label: &'static str| {
+                    let active = voted == Some(kind);
+                    div()
+                        .id(id)
+                        .h(px(30.))
+                        .px(px(12.))
+                        .rounded(px(6.))
+                        .bg(if active {
+                            color("--control-primary-background-default")
+                        } else {
+                            color("--control-secondary-background-default")
+                        })
+                        .hover(|s| {
+                            s.bg(if active {
+                                color("--control-primary-background-hover")
+                            } else {
+                                color("--control-secondary-background-hover")
+                            })
+                        })
+                        .cursor_pointer()
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .text_size(px(13.))
+                        .font_weight(FontWeight(600.))
+                        .text_color(if active {
+                            color("--white")
+                        } else {
+                            color("--text-strong")
+                        })
+                        .child(label)
+                        .on_click(cx.listener(move |this, _, _, cx| {
+                            if let Some(m) = this.safety_tools.as_mut()
+                                && m.feedback != Some(kind)
+                            {
+                                m.feedback = Some(kind);
+                                this.put_app_toast(dc_intl::t("gd/Yqs").to_owned(), true, cx);
+                            }
+                            cx.notify();
+                        }))
+                };
+                // Module 198916: Safety Tips + "More you can do" (`K5FKtc`) + "Was this helpful?" (`L84yVm`).
                 div()
-                    .rounded(px(8.))
-                    .overflow_hidden()
-                    .bg(color("--background-base-lower"))
                     .flex()
                     .flex_col()
+                    .gap(px(16.))
                     .child(
                         div()
-                            .p(px(16.))
-                            .bg(linear_gradient(
-                                270.,
-                                linear_color_stop(rgba(0x5865f2aa), 0.),
-                                linear_color_stop(color("--brand-500"), 0.71),
-                            ))
+                            .rounded(px(8.))
+                            .overflow_hidden()
+                            .bg(color("--background-base-lower"))
+                            .flex()
+                            .flex_col()
                             .child(
                                 div()
-                                    .max_w(px(280.))
-                                    .text_size(px(20.))
-                                    .line_height(px(24.))
+                                    .p(px(16.))
+                                    .bg(linear_gradient(
+                                        270.,
+                                        linear_color_stop(rgba(0x5865f2aa), 0.),
+                                        linear_color_stop(color("--brand-500"), 0.71),
+                                    ))
+                                    .child(
+                                        div()
+                                            .max_w(px(280.))
+                                            .text_size(px(20.))
+                                            .line_height(px(24.))
+                                            .font_weight(FontWeight(600.))
+                                            .text_color(color("--white"))
+                                            .child(dc_intl::t("0QSL1C")),
+                                    ),
+                            )
+                            .child(list),
+                    )
+                    .child(
+                        div()
+                            .flex()
+                            .flex_col()
+                            .gap(px(6.))
+                            .child(
+                                div()
+                                    .text_size(px(13.))
                                     .font_weight(FontWeight(600.))
-                                    .text_color(color("--white"))
-                                    .child(dc_intl::t("0QSL1C")),
+                                    .text_color(color("--text-muted"))
+                                    .child(dc_intl::t("K5FKtc")),
+                            )
+                            .child(
+                                div()
+                                    .id("safety-tips-more-actions")
+                                    .p(px(12.))
+                                    .rounded(px(8.))
+                                    .bg(color("--background-base-lower"))
+                                    .hover(|s| s.bg(color("--background-mod-subtle")))
+                                    .cursor_pointer()
+                                    .flex()
+                                    .items_center()
+                                    .justify_between()
+                                    .text_size(px(14.))
+                                    .font_weight(FontWeight(500.))
+                                    .text_color(color("--text-strong"))
+                                    .child(dc_intl::t("MAhAp6"))
+                                    .child(icon("shop_arrow_right", 14., "--text-muted"))
+                                    .on_click(cx.listener(|this, _, _, cx| {
+                                        if let Some(m) = this.safety_tools.as_mut() {
+                                            m.slide = Slide::Actions;
+                                        }
+                                        cx.notify();
+                                    })),
                             ),
                     )
-                    .child(list)
+                    .child(
+                        div()
+                            .px(px(12.))
+                            .py(px(10.))
+                            .rounded(px(8.))
+                            .bg(color("--background-base-lower"))
+                            .border_1()
+                            .border_color(color("--border-subtle"))
+                            .flex()
+                            .items_center()
+                            .justify_between()
+                            .child(
+                                div()
+                                    .text_size(px(13.))
+                                    .font_weight(FontWeight(500.))
+                                    .text_color(color("--text-default"))
+                                    .child(dc_intl::t("L84yVm")),
+                            )
+                            .child(
+                                div()
+                                    .flex()
+                                    .items_center()
+                                    .gap(px(6.))
+                                    .child(vote_btn(
+                                        "safety-tips-vote-up",
+                                        SafetyFeedback::Upvote,
+                                        "👍",
+                                    ))
+                                    .child(vote_btn(
+                                        "safety-tips-vote-down",
+                                        SafetyFeedback::Downvote,
+                                        "👎",
+                                    )),
+                            ),
+                    )
                     .into_any_element()
             }
             Slide::AboutSafetyAlerts => {

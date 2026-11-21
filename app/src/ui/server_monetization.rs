@@ -1322,8 +1322,24 @@ impl Root {
         match arg.trim() {
             "close" => {
                 self.monetization_team_onboarding_modal = None;
+                self.monetization_onboarding_modal = None;
                 cx.notify();
                 "monetization-team: closed".to_owned()
+            }
+            "earn" | "earn-ineligible" | "earn-appeal" | "earn-pending" => {
+                self.monetization_team_onboarding_modal = None;
+                self.monetization_onboarding_modal = Some(MonetizationOnboardingModal {
+                    guild_id: gid,
+                    eligible: arg.trim() != "earn-ineligible",
+                    terms_checked: arg.trim() == "earn",
+                    can_submit_owner: true,
+                    v1_rejected: matches!(arg.trim(), "earn-appeal" | "earn-pending"),
+                    app_pending: arg.trim() == "earn-pending",
+                    appeal_notice: None,
+                    error: None,
+                });
+                cx.notify();
+                format!("monetization-team: {}", arg.trim())
             }
             "empty" => {
                 self.monetization_team_onboarding_modal = Some(MonetizationTeamOnboardingModal {
@@ -1371,6 +1387,311 @@ impl Root {
                 "monetization-team: teams".to_owned()
             }
         }
+    }
+}
+
+/// Creator Monetization "Earn money on Discord / Start Earning" onboarding card modal (module 890290:
+/// `PqYfh/`, `41wkMc`, `Af4klP`, `NL5ZNS`, `OrkTBn`, `YKw/NQ`; `POST /guilds/{id}/creator-monetization/accept-terms`,
+/// `POST /guilds/{id}/creator-monetization/enable-requests`).
+#[derive(Clone, Debug)]
+pub(crate) struct MonetizationOnboardingModal {
+    pub guild_id: Id,
+    pub eligible: bool,
+    pub terms_checked: bool,
+    pub can_submit_owner: bool,
+    pub v1_rejected: bool,
+    pub app_pending: bool,
+    pub appeal_notice: Option<String>,
+    pub error: Option<String>,
+}
+
+/// Renders the Creator Monetization "Earn money on Discord" onboarding modal (module 890290).
+impl Root {
+    pub(in crate::ui) fn monetization_onboarding_layer(
+        &self,
+        cx: &mut Context<Self>,
+    ) -> Option<AnyElement> {
+        let modal = self.monetization_onboarding_modal.as_ref()?;
+        let gid = modal.guild_id;
+        let _art_alt = dc_intl::t("Af4klP");
+        const COINS_ART: &str = "https://cdn.discordapp.com/assets/content/2fb67de5cada50399335a03ac11b8e83271559ab2335135f2727d6a40c51e4a6.svg";
+        let _ = COINS_ART;
+
+        let cta_section: AnyElement = if !modal.eligible {
+            // State A: ineligible — Start Earning opens Eligibility Checklist (267912 / 715395).
+            div()
+                .id("monetization-earn-ineligible")
+                .self_start()
+                .h(px(38.))
+                .px(px(16.))
+                .rounded(px(8.))
+                .bg(color("--control-primary-background-default"))
+                .hover(|s| s.bg(color("--control-primary-background-hover")))
+                .cursor_pointer()
+                .flex()
+                .items_center()
+                .gap(px(8.))
+                .text_size(px(14.))
+                .font_weight(FontWeight(600.))
+                .text_color(color("--white"))
+                .child(icon("circle_info", 16., "--white"))
+                .child(dc_intl::t("NL5ZNS"))
+                .on_click(cx.listener(move |this, _, _, cx| {
+                    this.monetization_onboarding_modal = None;
+                    this.open_monetization_eligibility(gid, cx);
+                }))
+                .into_any_element()
+        } else if !modal.v1_rejected {
+            // State B: eligible — Terms checkbox + Start Earning (`POST /accept-terms`).
+            let can_go = modal.terms_checked && modal.can_submit_owner;
+            div()
+                .flex()
+                .flex_col()
+                .gap(px(14.))
+                .child(
+                    div()
+                        .id("monetization-earn-terms-check")
+                        .cursor_pointer()
+                        .flex()
+                        .items_center()
+                        .gap(px(10.))
+                        .on_click(cx.listener(|this, _, _, cx| {
+                            if let Some(m) = this.monetization_onboarding_modal.as_mut() {
+                                m.terms_checked = !m.terms_checked;
+                            }
+                            cx.notify();
+                        }))
+                        .child(super::server_games::checkbox(modal.terms_checked))
+                        .child(
+                            div()
+                                .flex_1()
+                                .text_size(px(13.))
+                                .line_height(px(18.))
+                                .text_color(color("--text-default"))
+                                .child(
+                                    "I accept the Server Monetization Terms and Creator Policy.",
+                                ),
+                        ),
+                )
+                .child(
+                    div()
+                        .id("monetization-earn-accept")
+                        .self_start()
+                        .h(px(38.))
+                        .px(px(18.))
+                        .rounded(px(8.))
+                        .bg(color("--control-primary-background-default"))
+                        .when(!can_go, |b| b.opacity(0.5))
+                        .when(can_go, |b| {
+                            b.cursor_pointer()
+                                .hover(|s| s.bg(color("--control-primary-background-hover")))
+                                .on_click(cx.listener(move |this, _, _, cx| {
+                                    let _ = this.requests.send(crate::net::Request::Rest {
+                                        key: Some(format!("monetization:accept-terms:{gid}")),
+                                        method: reqwest::Method::POST,
+                                        route: format!(
+                                            "/guilds/{gid}/creator-monetization/accept-terms"
+                                        ),
+                                        body: None,
+                                    });
+                                    this.monetization_onboarding_modal = None;
+                                    cx.notify();
+                                }))
+                        })
+                        .flex()
+                        .items_center()
+                        .text_size(px(14.))
+                        .font_weight(FontWeight(600.))
+                        .text_color(color("--white"))
+                        .child(dc_intl::t("NL5ZNS")),
+                )
+                .when_some(modal.error.clone(), |col, err| {
+                    col.child(
+                        div()
+                            .p(px(10.))
+                            .rounded(px(6.))
+                            .bg(rgba(0xf23f421a))
+                            .border_1()
+                            .border_color(color("--status-danger"))
+                            .text_size(px(13.))
+                            .text_color(color("--text-feedback-critical"))
+                            .child(err),
+                    )
+                })
+                .into_any_element()
+        } else if modal.app_pending {
+            // State C1: appeal pending review (`OrkTBn`).
+            div()
+                .p(px(12.))
+                .rounded(px(8.))
+                .bg(rgba(0xf0b2321a))
+                .border_1()
+                .border_color(color("--status-warning"))
+                .text_size(px(13.))
+                .line_height(px(18.))
+                .text_color(color("--text-default"))
+                .child(dc_intl::t("OrkTBn"))
+                .into_any_element()
+        } else {
+            // State C2: rejected in V1 with appeal CTA (`YKw/NQ` -> `POST /enable-requests`).
+            let notice = modal.appeal_notice.clone().unwrap_or_else(|| {
+                "Your previous request was not approved. You can submit an appeal for review."
+                    .to_owned()
+            });
+            div()
+                .p(px(12.))
+                .rounded(px(8.))
+                .bg(rgba(0xf0b2321a))
+                .border_1()
+                .border_color(color("--status-warning"))
+                .flex()
+                .flex_col()
+                .gap(px(10.))
+                .child(
+                    div()
+                        .text_size(px(13.))
+                        .line_height(px(18.))
+                        .text_color(color("--text-default"))
+                        .child(notice),
+                )
+                .child(
+                    div()
+                        .id("monetization-earn-appeal")
+                        .self_start()
+                        .h(px(34.))
+                        .px(px(14.))
+                        .rounded(px(6.))
+                        .bg(color("--control-secondary-background-default"))
+                        .hover(|s| s.bg(color("--control-secondary-background-hover")))
+                        .cursor_pointer()
+                        .flex()
+                        .items_center()
+                        .text_size(px(13.))
+                        .font_weight(FontWeight(600.))
+                        .text_color(color("--text-strong"))
+                        .child(dc_intl::t("YKw/NQ"))
+                        .on_click(cx.listener(move |this, _, _, cx| {
+                            let _ = this.requests.send(crate::net::Request::Rest {
+                                key: Some(format!("monetization:enable-request:{gid}")),
+                                method: reqwest::Method::POST,
+                                route: format!(
+                                    "/guilds/{gid}/creator-monetization/enable-requests"
+                                ),
+                                body: None,
+                            });
+                            if let Some(m) = this.monetization_onboarding_modal.as_mut() {
+                                m.app_pending = true;
+                            }
+                            cx.notify();
+                        })),
+                )
+                .into_any_element()
+        };
+
+        let card = div()
+            .id("monetization-onboarding-modal")
+            .occlude()
+            .w(px(640.))
+            .p(px(24.))
+            .rounded(px(12.))
+            .bg(color("--modal-background"))
+            .border_1()
+            .border_color(color("--border-subtle"))
+            .flex()
+            .items_center()
+            .gap(px(24.))
+            .on_click(cx.listener(|_, _, _, cx| cx.stop_propagation()))
+            // Left coins illustration box
+            .child(
+                div()
+                    .flex_none()
+                    .w(px(200.))
+                    .h(px(160.))
+                    .rounded(px(10.))
+                    .bg(gpui::linear_gradient(
+                        135.,
+                        gpui::linear_color_stop(rgba(0x5865f233), 0.),
+                        gpui::linear_color_stop(rgba(0xf0b23233), 1.),
+                    ))
+                    .border_1()
+                    .border_color(color("--border-subtle"))
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .child(icon(
+                        "storefront_store",
+                        52.,
+                        "--control-primary-background-default",
+                    )),
+            )
+            // Right content (`PqYfh/`, `41wkMc`, CTA)
+            .child(
+                div()
+                    .flex_1()
+                    .min_w_0()
+                    .flex()
+                    .flex_col()
+                    .gap(px(12.))
+                    .child(
+                        div()
+                            .flex()
+                            .items_center()
+                            .justify_between()
+                            .child(
+                                div()
+                                    .text_size(px(22.))
+                                    .line_height(px(28.))
+                                    .font_weight(FontWeight(700.))
+                                    .text_color(color("--text-strong"))
+                                    .child(dc_intl::t("PqYfh/")),
+                            )
+                            .child(
+                                div()
+                                    .id("monetization-earn-close")
+                                    .size(px(28.))
+                                    .rounded(px(6.))
+                                    .cursor_pointer()
+                                    .hover(|s| s.bg(color("--background-mod-subtle")))
+                                    .flex()
+                                    .items_center()
+                                    .justify_center()
+                                    .child(icon("modal_close", 16., "--interactive-icon-default"))
+                                    .on_click(cx.listener(|this, _, _, cx| {
+                                        this.monetization_onboarding_modal = None;
+                                        cx.notify();
+                                    })),
+                            ),
+                    )
+                    .child(
+                        div()
+                            .text_size(px(14.))
+                            .line_height(px(20.))
+                            .text_color(color("--text-default"))
+                            .child(dc_intl::t("41wkMc")),
+                    )
+                    .child(div().mt(px(4.)).child(cta_section)),
+            );
+
+        Some(
+            gpui::deferred(
+                div()
+                    .id("monetization-onboarding-backdrop")
+                    .occlude()
+                    .absolute()
+                    .inset_0()
+                    .bg(rgba(0x000000b3))
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        this.monetization_onboarding_modal = None;
+                        cx.notify();
+                    }))
+                    .child(card),
+            )
+            .with_priority(96)
+            .into_any_element(),
+        )
     }
 }
 

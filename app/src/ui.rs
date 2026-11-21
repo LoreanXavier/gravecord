@@ -846,6 +846,12 @@ pub struct Root {
     /// Server monetization team onboarding modal (module 75834).
     monetization_team_onboarding_modal:
         Option<server_monetization::MonetizationTeamOnboardingModal>,
+    /// Server monetization "Earn Money on Discord" onboarding modal (module 890290).
+    monetization_onboarding_modal: Option<server_monetization::MonetizationOnboardingModal>,
+    /// Sticker Nitro upsell modal (module 397313).
+    sticker_upsell: Option<premium_upsell::StickerNitroUpsell>,
+    /// Server Theme Editor NUX modal (module 214103).
+    guild_theme_editor: Option<guild_theme_nux::GuildThemeEditor>,
     /// App guild-subscription Server Selection modal (module 399143).
     guild_sub_selection_modal: Option<app_storefront::GuildSubscriptionSelectionModal>,
     /// Quest reward code claim instructions sub-modal (module 639852).
@@ -1479,6 +1485,9 @@ impl Root {
             sensitive_media_modal: None,
             forum_post_perms_modal: None,
             monetization_team_onboarding_modal: None,
+            monetization_onboarding_modal: None,
+            sticker_upsell: None,
+            guild_theme_editor: None,
             guild_sub_selection_modal: None,
             quest_code_instructions_modal: None,
             orb_multiplier_modal: None,
@@ -11835,6 +11844,9 @@ impl Render for Root {
                         || this.sensitive_media_modal.is_some()
                         || this.forum_post_perms_modal.is_some()
                         || this.monetization_team_onboarding_modal.is_some()
+                        || this.monetization_onboarding_modal.is_some()
+                        || this.sticker_upsell.is_some()
+                        || this.guild_theme_editor.is_some()
                         || this.guild_sub_selection_modal.is_some()
                         || this.quest_code_instructions_modal.is_some()
                         || this.orb_multiplier_modal.is_some()
@@ -11925,6 +11937,9 @@ impl Render for Root {
                     this.sensitive_media_modal = None;
                     this.forum_post_perms_modal = None;
                     this.monetization_team_onboarding_modal = None;
+                    this.monetization_onboarding_modal = None;
+                    this.sticker_upsell = None;
+                    this.guild_theme_editor = None;
                     this.guild_sub_selection_modal = None;
                     this.quest_code_instructions_modal = None;
                     this.orb_multiplier_modal = None;
@@ -13174,6 +13189,9 @@ impl Render for Root {
             .children(self.sensitive_media_modal_layer(cx))
             .children(self.forum_post_perms_layer(cx))
             .children(self.monetization_team_onboarding_layer(cx))
+            .children(self.monetization_onboarding_layer(cx))
+            .children(self.sticker_nitro_upsell_layer(cx))
+            .children(self.guild_theme_editor_layer(cx))
             .children(self.guild_sub_selection_layer(cx))
             .children(self.orb_multiplier_layer(cx))
             .children(self.forum_default_reaction_layer(cx))

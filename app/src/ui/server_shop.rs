@@ -35,6 +35,14 @@ pub(crate) struct ServerProductInfoModal {
     pub contents_expanded: bool,
 }
 
+/// Report a Server Shop Listing SKU dialog state (module 200073: `avKMZo`, `+78Pfm`, `ETE/oC`,
+/// `jkvpmk`, `sUvCKU`, `7KJnk0`).
+#[derive(Clone, Debug)]
+pub(crate) struct ServerShopReportModal {
+    pub sku_name: String,
+    pub submitted: bool,
+}
+
 #[derive(Clone, Debug)]
 #[allow(dead_code)]
 pub(crate) struct ServerShopModal {
@@ -46,14 +54,19 @@ pub(crate) struct ServerShopModal {
     pub promo_dismissed: bool,
     /// Active Product Info detail dialog (module 733230).
     pub detail: Option<ServerProductInfoModal>,
+    /// Active Report Listing SKU dialog (module 200073).
+    pub report: Option<ServerShopReportModal>,
 }
 
 impl Root {
     pub(crate) fn close_server_shop(&mut self) -> bool {
-        if let Some(m) = self.server_shop_modal.as_mut()
-            && m.detail.take().is_some()
-        {
-            return true;
+        if let Some(m) = self.server_shop_modal.as_mut() {
+            if m.report.take().is_some() {
+                return true;
+            }
+            if m.detail.take().is_some() {
+                return true;
+            }
         }
         self.server_shop_modal.take().is_some()
     }
@@ -63,6 +76,9 @@ impl Root {
         cx: &mut Context<Self>,
     ) -> Option<AnyElement> {
         let modal = self.server_shop_modal.as_ref()?;
+        if let Some(report) = modal.report.as_ref() {
+            return Some(self.server_shop_report_dialog(report, cx));
+        }
         if let Some(detail) = modal.detail.as_ref() {
             return Some(self.server_product_info_dialog(
                 &modal.guild_name,
@@ -703,21 +719,53 @@ impl Root {
                     )
                     .child(
                         div()
-                            .id("srv-prod-info-close")
-                            .size(px(28.))
-                            .rounded(px(6.))
-                            .cursor_pointer()
-                            .hover(|s| s.bg(color("--background-mod-subtle")))
                             .flex()
                             .items_center()
-                            .justify_center()
-                            .child(icon("modal_close", 16., "--interactive-icon-default"))
-                            .on_click(cx.listener(|this, _, _, cx| {
-                                if let Some(m) = this.server_shop_modal.as_mut() {
-                                    m.detail = None;
-                                }
-                                cx.notify();
-                            })),
+                            .gap(px(4.))
+                            .child({
+                                let report_name = product.name.clone();
+                                div()
+                                    .id("srv-prod-info-report")
+                                    .h(px(28.))
+                                    .px(px(8.))
+                                    .rounded(px(6.))
+                                    .cursor_pointer()
+                                    .hover(|s| s.bg(color("--background-mod-subtle")))
+                                    .flex()
+                                    .items_center()
+                                    .text_size(px(12.))
+                                    .font_weight(FontWeight(500.))
+                                    .text_color(color("--text-muted"))
+                                    .child(dc_intl::t("+78Pfm"))
+                                    .on_click(cx.listener(move |this, _, _, cx| {
+                                        cx.stop_propagation();
+                                        if let Some(m) = this.server_shop_modal.as_mut() {
+                                            m.report = Some(ServerShopReportModal {
+                                                sku_name: report_name.clone(),
+                                                submitted: false,
+                                            });
+                                        }
+                                        cx.notify();
+                                    }))
+                            })
+                            .child(
+                                div()
+                                    .id("srv-prod-info-close")
+                                    .size(px(28.))
+                                    .rounded(px(6.))
+                                    .cursor_pointer()
+                                    .hover(|s| s.bg(color("--background-mod-subtle")))
+                                    .flex()
+                                    .items_center()
+                                    .justify_center()
+                                    .child(icon("modal_close", 16., "--interactive-icon-default"))
+                                    .on_click(cx.listener(|this, _, _, cx| {
+                                        if let Some(m) = this.server_shop_modal.as_mut() {
+                                            m.detail = None;
+                                        }
+                                        cx.notify();
+                                    })),
+                            ),
                     ),
             )
             // Body
@@ -853,6 +901,241 @@ impl Root {
         .into_any_element()
     }
 
+    /// Renders the Report a Server Shop Listing SKU dialog (module 200073: `avKMZo`, `+78Pfm`,
+    /// `ETE/oC`, `jkvpmk` with Server Monetization Terms & Community Guidelines links, and post-submit
+    /// `sUvCKU` / `7KJnk0` confirmation).
+    fn server_shop_report_dialog(
+        &self,
+        report: &ServerShopReportModal,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        const MONETIZATION_TERMS: &str =
+            "https://support.discord.com/hc/en-us/articles/5330075836311";
+        const COMMUNITY_GUIDELINES: &str = "https://discord.com/guidelines";
+        let title = if report.submitted {
+            dc_intl::t("sUvCKU").to_owned()
+        } else {
+            dc_intl::format(
+                "avKMZo",
+                &[("listingName", report.sku_name.as_str().into())],
+            )
+        };
+        let body_text = if report.submitted {
+            dc_intl::format("7KJnk0", &[("skuName", report.sku_name.as_str().into())])
+        } else {
+            dc_intl::format_runs(
+                "jkvpmk",
+                &[
+                    ("listingName", report.sku_name.as_str().into()),
+                    ("monetizationTermsUrl", MONETIZATION_TERMS.into()),
+                    ("communityGuidelinesUrl", COMMUNITY_GUIDELINES.into()),
+                ],
+            )
+            .into_iter()
+            .map(|(s, _)| s)
+            .collect()
+        };
+        let dialog = div()
+            .id("server-shop-report-modal")
+            .occlude()
+            .w(px(440.))
+            .rounded(px(12.))
+            .bg(color("--modal-background"))
+            .border_1()
+            .border_color(color("--border-subtle"))
+            .overflow_hidden()
+            .flex()
+            .flex_col()
+            .on_click(cx.listener(|_, _, _, cx| cx.stop_propagation()))
+            .child(
+                div()
+                    .px(px(20.))
+                    .pt(px(18.))
+                    .pb(px(10.))
+                    .flex()
+                    .items_center()
+                    .justify_between()
+                    .child(
+                        div()
+                            .text_size(px(18.))
+                            .font_weight(FontWeight(700.))
+                            .text_color(color("--text-strong"))
+                            .child(title),
+                    )
+                    .child(
+                        div()
+                            .id("srv-shop-report-close")
+                            .size(px(28.))
+                            .rounded(px(6.))
+                            .cursor_pointer()
+                            .hover(|s| s.bg(color("--background-mod-subtle")))
+                            .flex()
+                            .items_center()
+                            .justify_center()
+                            .child(icon("modal_close", 16., "--interactive-icon-default"))
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                if let Some(m) = this.server_shop_modal.as_mut() {
+                                    m.report = None;
+                                }
+                                cx.notify();
+                            })),
+                    ),
+            )
+            .child(
+                div()
+                    .px(px(20.))
+                    .pb(px(18.))
+                    .flex()
+                    .flex_col()
+                    .gap(px(10.))
+                    .child(
+                        div()
+                            .text_size(px(14.))
+                            .line_height(px(20.))
+                            .text_color(color("--text-default"))
+                            .child(body_text),
+                    )
+                    .when(!report.submitted, |col| {
+                        col.child(
+                            div()
+                                .flex()
+                                .items_center()
+                                .gap(px(12.))
+                                .child(
+                                    div()
+                                        .id("srv-shop-report-terms")
+                                        .cursor_pointer()
+                                        .text_size(px(13.))
+                                        .text_color(color("--text-link"))
+                                        .hover(|s| s.underline())
+                                        .child("Server Monetization Terms")
+                                        .on_click(cx.listener(|_, _, _, cx| {
+                                            cx.open_url(MONETIZATION_TERMS);
+                                        })),
+                                )
+                                .child(
+                                    div()
+                                        .id("srv-shop-report-guidelines")
+                                        .cursor_pointer()
+                                        .text_size(px(13.))
+                                        .text_color(color("--text-link"))
+                                        .hover(|s| s.underline())
+                                        .child("Community Guidelines")
+                                        .on_click(cx.listener(|_, _, _, cx| {
+                                            cx.open_url(COMMUNITY_GUIDELINES);
+                                        })),
+                                ),
+                        )
+                    }),
+            )
+            .child(
+                div()
+                    .px(px(20.))
+                    .py(px(14.))
+                    .bg(color("--modal-footer-background"))
+                    .border_t_1()
+                    .border_color(color("--border-subtle"))
+                    .flex()
+                    .items_center()
+                    .justify_end()
+                    .gap(px(8.))
+                    .when(!report.submitted, |bar| {
+                        bar.child(
+                            div()
+                                .id("srv-shop-report-cancel")
+                                .h(px(36.))
+                                .px(px(16.))
+                                .rounded(px(8.))
+                                .bg(color("--control-secondary-background-default"))
+                                .hover(|s| s.bg(color("--control-secondary-background-hover")))
+                                .cursor_pointer()
+                                .flex()
+                                .items_center()
+                                .text_size(px(14.))
+                                .font_weight(FontWeight(500.))
+                                .text_color(color("--text-strong"))
+                                .child(dc_intl::t("ETE/oC"))
+                                .on_click(cx.listener(|this, _, _, cx| {
+                                    if let Some(m) = this.server_shop_modal.as_mut() {
+                                        m.report = None;
+                                    }
+                                    cx.notify();
+                                })),
+                        )
+                        .child(
+                            div()
+                                .id("srv-shop-report-confirm")
+                                .h(px(36.))
+                                .px(px(16.))
+                                .rounded(px(8.))
+                                .bg(color("--status-danger"))
+                                .hover(|s| s.opacity(0.9))
+                                .cursor_pointer()
+                                .flex()
+                                .items_center()
+                                .text_size(px(14.))
+                                .font_weight(FontWeight(600.))
+                                .text_color(color("--white"))
+                                .child(dc_intl::t("+78Pfm"))
+                                .on_click(cx.listener(|this, _, _, cx| {
+                                    if let Some(r) = this
+                                        .server_shop_modal
+                                        .as_mut()
+                                        .and_then(|m| m.report.as_mut())
+                                    {
+                                        r.submitted = true;
+                                    }
+                                    cx.notify();
+                                })),
+                        )
+                    })
+                    .when(report.submitted, |bar| {
+                        bar.child(
+                            div()
+                                .id("srv-shop-report-done")
+                                .h(px(36.))
+                                .px(px(18.))
+                                .rounded(px(8.))
+                                .bg(color("--control-primary-background-default"))
+                                .hover(|s| s.bg(color("--control-primary-background-hover")))
+                                .cursor_pointer()
+                                .flex()
+                                .items_center()
+                                .text_size(px(14.))
+                                .font_weight(FontWeight(600.))
+                                .text_color(color("--white"))
+                                .child(dc_intl::t("BddRzS"))
+                                .on_click(cx.listener(|this, _, _, cx| {
+                                    if let Some(m) = this.server_shop_modal.as_mut() {
+                                        m.report = None;
+                                    }
+                                    cx.notify();
+                                })),
+                        )
+                    }),
+            );
+        deferred(
+            div()
+                .id("server-shop-report-backdrop")
+                .occlude()
+                .absolute()
+                .inset_0()
+                .bg(rgba(0x000000b3))
+                .flex()
+                .items_center()
+                .justify_center()
+                .on_click(cx.listener(|this, _, _, cx| {
+                    if let Some(m) = this.server_shop_modal.as_mut() {
+                        m.report = None;
+                    }
+                    cx.notify();
+                }))
+                .child(dialog),
+        )
+        .with_priority(4)
+        .into_any_element()
+    }
+
     #[cfg(feature = "capture")]
     pub(crate) fn script_server_shop(&mut self, arg: &str, cx: &mut Context<Self>) -> String {
         let sample_bundle = ServerShopProduct {
@@ -904,6 +1187,17 @@ impl Root {
             }),
             _ => None,
         };
+        let report = match arg {
+            "report" => Some(ServerShopReportModal {
+                sku_name: "Starter Wallpaper Pack".to_owned(),
+                submitted: false,
+            }),
+            "report-submitted" => Some(ServerShopReportModal {
+                sku_name: "Starter Wallpaper Pack".to_owned(),
+                submitted: true,
+            }),
+            _ => None,
+        };
         self.server_shop_modal = Some(ServerShopModal {
             guild_name: "gravecord fixture".to_owned(),
             tab: if arg == "subs" {
@@ -912,10 +1206,11 @@ impl Root {
                 ServerShopTab::Products
             },
             products,
-            is_creator_preview: arg != "member" && detail.is_none(),
+            is_creator_preview: arg != "member" && detail.is_none() && report.is_none(),
             is_tab_layout: arg != "page",
             promo_dismissed: false,
             detail,
+            report,
         });
         cx.notify();
         format!("server-shop: {arg}")

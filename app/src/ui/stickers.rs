@@ -717,9 +717,9 @@ impl Root {
         match self.sticker_sendability(&sticker) {
             Sendability::Sendable => {}
             Sendability::SendableWithPremium => {
-                // The picker's upsell: a sticker of another server needs Nitro.
+                // Module 397313: open Sticker Pack Nitro Upsell modal when clicking a Nitro sticker.
                 self.picker = None;
-                self.open_nitro(cx);
+                self.open_sticker_nitro_upsell(None, cx);
                 return;
             }
             Sendability::Nonsendable | Sendability::SendableWithBoostedGuild => return,

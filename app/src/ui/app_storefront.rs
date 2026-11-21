@@ -49,12 +49,14 @@ const MAX_BENEFITS: usize = 5;
 /// The card width of `productSection_OnNQXM`'s grid columns.
 const CARD: f32 = 287.;
 
-/// Active card detail overlay inside the App Storefront (`168393` SubscriptionDetailsModal /
-/// `963179` ItemDetailsModal, opened by clicking a card in module 55709).
+/// Active card detail overlay inside the App Storefront (`550732` AppProductModal wrapper,
+/// `168393` SubscriptionDetailsModal, `963179` ItemDetailsModal, and `0Bf80I` Product Unavailable).
 #[derive(Clone, Debug, PartialEq)]
+#[allow(dead_code)]
 pub(super) enum StorefrontDetail {
     Subscription(Listing),
     Item(Sku),
+    Unavailable,
 }
 
 /// Subscription card availability & ownership state (`185438` + `376374.rc` + `55709`).
@@ -1211,14 +1213,126 @@ impl Root {
         )
     }
 
-    /// Card details modal (modules 168393 `SubscriptionDetailsModal` & 963179 `ItemDetailsModal`,
-    /// opened by clicking any card in module 55709).
+    /// App Product Details Modal wrapper & "Product Unavailable" small modal (module 550732:
+    /// `0Bf80I`, `omH3bq`, `BddRzS`, `3ZY+0D`, `8S0kcM`, `ZpyeCm`, `WqhZss`, `L/PwZf`;
+    /// wrapping `168393` SubscriptionDetailsModal & `963179` ItemDetailsModal).
     fn storefront_detail_modal(
         &mut self,
         app: &str,
         detail: &StorefrontDetail,
         cx: &mut Context<Self>,
     ) -> AnyElement {
+        if matches!(detail, StorefrontDetail::Unavailable) {
+            let dialog = div()
+                .id("app-product-unavailable-modal")
+                .occlude()
+                .w(px(400.))
+                .rounded(px(12.))
+                .bg(color("--modal-background"))
+                .border_1()
+                .border_color(color("--border-subtle"))
+                .overflow_hidden()
+                .flex()
+                .flex_col()
+                .on_click(cx.listener(|_, _, _, cx| cx.stop_propagation()))
+                .child(
+                    div()
+                        .px(px(20.))
+                        .pt(px(18.))
+                        .pb(px(10.))
+                        .flex()
+                        .items_center()
+                        .justify_between()
+                        .child(
+                            div()
+                                .text_size(px(18.))
+                                .font_weight(FontWeight(700.))
+                                .text_color(color("--text-strong"))
+                                .child(dc_intl::t("0Bf80I")),
+                        )
+                        .child(
+                            div()
+                                .id("app-prod-unavail-close")
+                                .size(px(28.))
+                                .rounded(px(6.))
+                                .cursor_pointer()
+                                .hover(|s| s.bg(color("--background-mod-subtle")))
+                                .flex()
+                                .items_center()
+                                .justify_center()
+                                .child(icon("modal_close", 16., "--interactive-icon-default"))
+                                .on_click(cx.listener(|this, _, _, cx| {
+                                    this.app_storefront = None;
+                                    cx.notify();
+                                })),
+                        ),
+                )
+                .child(
+                    div()
+                        .px(px(20.))
+                        .pb(px(18.))
+                        .text_size(px(14.))
+                        .line_height(px(20.))
+                        .text_color(color("--text-default"))
+                        .child(dc_intl::t("omH3bq")),
+                )
+                .child(
+                    div()
+                        .px(px(20.))
+                        .py(px(14.))
+                        .bg(color("--modal-footer-background"))
+                        .border_t_1()
+                        .border_color(color("--border-subtle"))
+                        .flex()
+                        .justify_end()
+                        .child(modal::content_button(
+                            modal::button(
+                                "app-prod-unavail-ok",
+                                dc_intl::t("BddRzS"),
+                                Tone::Primary,
+                                |this, _, cx| {
+                                    this.app_storefront = None;
+                                    cx.notify();
+                                },
+                            ),
+                            cx,
+                        )),
+                );
+            return deferred(
+                div()
+                    .id("app-product-unavailable-backdrop")
+                    .occlude()
+                    .absolute()
+                    .inset_0()
+                    .bg(gpui::rgba(0x000000b3))
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        this.app_storefront = None;
+                        cx.notify();
+                    }))
+                    .child(dialog),
+            )
+            .with_priority(3)
+            .into_any_element();
+        }
+        let sku_id_for_link = match detail {
+            StorefrontDetail::Subscription(l) => l.sku.clone(),
+            StorefrontDetail::Item(s) => s.id.clone(),
+            StorefrontDetail::Unavailable => String::new(),
+        };
+        let copy_url =
+            format!("https://discord.com/discovery/applications/{app}/store/{sku_id_for_link}");
+        let application = self.fetched.get(&key("app", app)).cloned();
+        let terms_url = application
+            .as_ref()
+            .and_then(|a| a["terms_of_service_url"].as_str())
+            .map(str::to_owned);
+        let privacy_url = application
+            .as_ref()
+            .and_then(|a| a["privacy_policy_url"].as_str())
+            .map(str::to_owned);
         let (title, badge, description, extra_body, cta): (
             String,
             Option<String>,
@@ -1226,6 +1340,7 @@ impl Root {
             Option<AnyElement>,
             AnyElement,
         ) = match detail {
+            StorefrontDetail::Unavailable => unreachable!(),
             StorefrontDetail::Subscription(listing) => {
                 let is_guild = (listing.sku_flags & GUILD_SUBSCRIPTION) != 0;
                 let tag = if is_guild {
@@ -1434,8 +1549,85 @@ impl Root {
                     .border_color(color("--border-subtle"))
                     .flex()
                     .items_center()
-                    .justify_end()
-                    .child(cta),
+                    .justify_between()
+                    .gap(px(12.))
+                    .child(if terms_url.is_some() || privacy_url.is_some() {
+                        div()
+                            .flex()
+                            .items_center()
+                            .gap(px(8.))
+                            .text_size(px(12.))
+                            .children(terms_url.map(|url| {
+                                div()
+                                    .id("storefront-detail-tos")
+                                    .cursor_pointer()
+                                    .text_color(color("--text-link"))
+                                    .hover(|s| s.underline())
+                                    .child(dc_intl::t("8S0kcM"))
+                                    .on_click(cx.listener(move |_, _, _, cx| cx.open_url(&url)))
+                            }))
+                            .children(privacy_url.map(|url| {
+                                div()
+                                    .id("storefront-detail-privacy")
+                                    .cursor_pointer()
+                                    .text_color(color("--text-link"))
+                                    .hover(|s| s.underline())
+                                    .child(dc_intl::t("ZpyeCm"))
+                                    .on_click(cx.listener(move |_, _, _, cx| cx.open_url(&url)))
+                            }))
+                            .into_any_element()
+                    } else {
+                        div()
+                            .flex_1()
+                            .min_w_0()
+                            .text_size(px(11.))
+                            .line_height(px(15.))
+                            .text_color(color("--text-muted"))
+                            .child(dc_intl::t("3ZY+0D"))
+                            .into_any_element()
+                    })
+                    .child(
+                        div()
+                            .flex()
+                            .items_center()
+                            .gap(px(8.))
+                            .child(
+                                self.with_tip(
+                                    "storefront-detail-copy-tip",
+                                    super::tooltip::Tip::text(
+                                        dc_intl::t("WqhZss"),
+                                        super::tooltip::Side::Top,
+                                    ),
+                                    div()
+                                        .id("storefront-detail-copy-link")
+                                        .size(px(36.))
+                                        .rounded(px(8.))
+                                        .bg(color("--control-secondary-background-default"))
+                                        .hover(|s| {
+                                            s.bg(color("--control-secondary-background-hover"))
+                                        })
+                                        .cursor_pointer()
+                                        .flex()
+                                        .items_center()
+                                        .justify_center()
+                                        .child(icon("clips_link", 16., "--text-strong"))
+                                        .on_click(cx.listener(move |this, _, _, cx| {
+                                            cx.stop_propagation();
+                                            cx.write_to_clipboard(gpui::ClipboardItem::new_string(
+                                                copy_url.clone(),
+                                            ));
+                                            this.put_app_toast(
+                                                dc_intl::t("L/PwZf").to_owned(),
+                                                true,
+                                                cx,
+                                            );
+                                            cx.notify();
+                                        })),
+                                    cx,
+                                ),
+                            )
+                            .child(cta),
+                    ),
             );
         deferred(
             div()
@@ -1914,8 +2106,18 @@ impl Root {
         match arg.trim() {
             "close" => {
                 self.guild_sub_selection_modal = None;
+                self.app_storefront = None;
                 cx.notify();
                 "app-guild-sub: closed".to_owned()
+            }
+            "unavailable" => {
+                self.app_storefront = Some(Open {
+                    app: "12345".to_owned(),
+                    guild: self.guild,
+                    detail: Some(StorefrontDetail::Unavailable),
+                });
+                cx.notify();
+                "app-guild-sub: unavailable".to_owned()
             }
             "empty" => {
                 self.guild_sub_selection_modal = Some(GuildSubscriptionSelectionModal {

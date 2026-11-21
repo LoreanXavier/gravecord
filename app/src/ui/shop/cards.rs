@@ -656,39 +656,15 @@ impl Root {
                 })
         });
         let actions = self.shop_card_actions(&product, orbs_only, cx);
-        let heart = {
-            let wished_sku = sku_owned.clone();
-            div()
-                .id(SharedString::from(format!("shop-card-heart-{sku}")))
-                .absolute()
-                .top(px(12.))
-                .right(px(12.))
-                .size(px(40.))
-                .rounded(px(8.))
-                .backdrop_blur(px(10.))
-                .bg(color("--control-overlay-secondary-background-default"))
-                .hover(|heart| heart.bg(color("--control-overlay-secondary-background-hover")))
-                .border_1()
-                .border_color(color("--border-muted"))
-                .cursor_pointer()
-                .flex()
-                .items_center()
-                .justify_center()
-                .invisible()
-                .group_hover(id.clone(), |heart| heart.visible())
-                .on_click(cx.listener(move |this, _, _, cx| {
-                    this.shop_toggle_wishlist(&wished_sku, cx);
-                }))
-                .child(icon(
-                    "shop_heart_card",
-                    20.,
-                    if wished {
-                        "--text-feedback-critical"
-                    } else {
-                        "--white"
-                    },
-                ))
-        };
+        let heart = self.shop_item_wishlist_button(
+            SharedString::from(format!("shop-card-heart-{sku}")),
+            sku_owned.clone(),
+            wished,
+            false,
+            Some(id.clone()),
+            hovering,
+            cx,
+        );
         outer
             .cursor_pointer()
             .on_click(cx.listener(move |this, _, _, cx| {
@@ -931,7 +907,112 @@ pub(crate) struct ShopProductEmbedPreview {
     pub sub_state: Option<(SubscriptionPlanButtonState, String)>,
 }
 
+/// Accessible label for the Shop Wishlist button (`7kFjeK`, module 301198).
+#[allow(dead_code)]
+pub(super) fn wishlist_button_aria_label(product_name: &str) -> String {
+    dc_intl::format("7kFjeK", &[("productName", product_name.into())])
+}
+
 impl Root {
+    /// Shared Shop Wishlist button (module 301198 + hook 124557: `7kFjeK`, `47Rhc3`/`PXjA0b`
+    /// first-time NUX tooltip, `50TX9k` disabled, `yr9TTf` Remove, `8DkMEQ` Add; stays visible
+    /// on cards when wishlisted and stops propagation so clicking never triggers card open).
+    ///
+    /// Perf: on grid cards, only attaches the `with_tip` canvas anchor probe when the card is
+    /// actively hovered (`attach_tip`), keeping shop scroll frames free of per-card probe overhead.
+    #[allow(clippy::too_many_arguments)]
+    pub(super) fn shop_item_wishlist_button(
+        &self,
+        id: SharedString,
+        sku: String,
+        wished: bool,
+        disabled: bool,
+        card_hover_group: Option<SharedString>,
+        attach_tip: bool,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let is_card = card_hover_group.is_some();
+        let mut btn = div()
+            .id(id)
+            .size(px(if is_card { 40. } else { 32. }))
+            .rounded(px(8.))
+            .flex()
+            .items_center()
+            .justify_center()
+            .when(is_card, |b| {
+                b.backdrop_blur(px(10.))
+                    .bg(color("--control-overlay-secondary-background-default"))
+                    .hover(|h| h.bg(color("--control-overlay-secondary-background-hover")))
+                    .border_1()
+                    .border_color(color("--border-muted"))
+            })
+            .when(!is_card, |b| b.bg(color("--background-base-lower")))
+            .when(disabled, |b| b.opacity(0.5))
+            .when(!disabled, |b| {
+                let wished_sku = sku.clone();
+                b.cursor_pointer()
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        cx.stop_propagation();
+                        this.shop_toggle_wishlist(&wished_sku, cx);
+                    }))
+            })
+            .child(icon(
+                if is_card {
+                    "shop_heart_card"
+                } else {
+                    "shop_heart_16"
+                },
+                if is_card { 20. } else { 16. },
+                if wished {
+                    "--text-feedback-critical"
+                } else if is_card {
+                    "--white"
+                } else {
+                    "--text-strong"
+                },
+            ));
+        if let Some(group) = card_hover_group {
+            // Module 301198: stay visible when wishlisted; only reveal on hover when un-wishlisted.
+            if !wished {
+                btn = btn.invisible().group_hover(group, |h| h.visible());
+            }
+            if !attach_tip {
+                return btn
+                    .absolute()
+                    .top(px(12.))
+                    .right(px(12.))
+                    .into_any_element();
+            }
+            let tip = self.wishlist_button_tip(wished, disabled);
+            return div()
+                .absolute()
+                .top(px(12.))
+                .right(px(12.))
+                .child(self.with_tip(format!("wish-tip-{sku}"), tip, btn, cx))
+                .into_any_element();
+        }
+        let tip = self.wishlist_button_tip(wished, disabled);
+        self.with_tip(format!("wish-modal-tip-{sku}"), tip, btn, cx)
+            .into_any_element()
+    }
+
+    fn wishlist_button_tip(&self, wished: bool, disabled: bool) -> super::super::tooltip::Tip {
+        let first_time = self.shop.wishlist.is_empty() && !wished;
+        let tip_body = if first_time && !disabled {
+            super::super::tooltip::Body::Rich(
+                dc_intl::t("47Rhc3").into(),
+                dc_intl::t("PXjA0b").into(),
+            )
+        } else if disabled {
+            super::super::tooltip::Body::Text(dc_intl::t("50TX9k").into())
+        } else if wished {
+            super::super::tooltip::Body::Text(dc_intl::t("yr9TTf").into())
+        } else {
+            super::super::tooltip::Body::Text(dc_intl::t("8DkMEQ").into())
+        };
+        super::super::tooltip::Tip::body(tip_body, super::super::tooltip::Side::Top)
+    }
+
     /// Renders the Social Layer Storefront product embed preview card (modules 50777 + 376374).
     pub(in crate::ui) fn shop_product_embed_layer(
         &self,
