@@ -1969,6 +1969,24 @@ pub async fn run(
                 let line = root.update(cx, |root, cx| root.script_powerup_perk(&arg, cx));
                 let _ = writeln!(output, "{line}");
             }
+            // `partner-reward [locked|claimed|error|close]`: Recurring Partner Reward Code Card (116011).
+            ["partner-reward", rest @ ..] => {
+                let arg = rest.join(" ");
+                let line = root.update(cx, |root, cx| root.script_partner_reward(&arg, cx));
+                let _ = writeln!(output, "{line}");
+            }
+            // `wishlist-nux [sku|close]`: "Added to your Wishlist!" NUX modal (38884).
+            ["wishlist-nux", rest @ ..] => {
+                let arg = rest.join(" ");
+                let line = root.update(cx, |root, cx| root.script_wishlist_nux(&arg, cx));
+                let _ = writeln!(output, "{line}");
+            }
+            // `add-connection [open|close]`: Add Connection modal with Apps & Claimed Games (58829).
+            ["add-connection", rest @ ..] => {
+                let arg = rest.join(" ");
+                let line = root.update(cx, |root, cx| root.script_add_connection(&arg, cx));
+                let _ = writeln!(output, "{line}");
+            }
             // `research-survey [active|exit|done|loading|close]`: Discord Research Survey modal (215978).
             ["research-survey", rest @ ..] => {
                 let arg = rest.join(" ");

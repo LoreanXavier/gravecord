@@ -91,23 +91,215 @@ impl Root {
         cx.notify();
     }
 
-    /// The heart: adds the sku to the wishlist or takes it off. The account write goes through the request path that a
-    /// harness run refuses; the request shapes are in `data` and tested there.
+    /// The heart (module 124557): optimistic toggle guarded by `wishlist_busy`, announces
+    /// `3T2jbf` ("Added to your Wishlist") + opens `38884` NUX modal on first add, or
+    /// `DSXOiP` ("Removed from your Wishlist"), and reverts with `F8FvUy` on error.
     pub(super) fn shop_toggle_wishlist(&mut self, sku: &str, cx: &mut Context<Self>) {
-        let write = if self.shop.wishlist.remove(sku) {
+        if self.shop.wishlist_busy {
+            return;
+        }
+        self.shop.wishlist_busy = true;
+        let removed = self.shop.wishlist.remove(sku);
+        if removed {
             match self.shop.wishlist_id.clone() {
-                Some(id) => data::wishlist_remove(&id, sku),
+                Some(id) => {
+                    self.shop_send(data::wishlist_remove(&id, sku));
+                    self.put_app_toast(dc_intl::t("DSXOiP").to_owned(), true, cx);
+                }
                 None => {
-                    cx.notify();
-                    return;
+                    self.shop.wishlist.insert(sku.to_owned());
+                    self.put_app_toast(dc_intl::t("F8FvUy").to_owned(), false, cx);
                 }
             }
         } else {
             self.shop.wishlist.insert(sku.to_owned());
-            data::wishlist_add(sku)
-        };
-        self.shop_send(write);
+            self.shop_send(data::wishlist_add(sku));
+            self.put_app_toast(dc_intl::t("3T2jbf").to_owned(), true, cx);
+            if !self.shop.wishlist_nux_seen {
+                self.shop.wishlist_nux_seen = true;
+                self.shop.wishlist_nux_sku = Some(sku.to_owned());
+            }
+        }
+        self.shop.wishlist_busy = false;
         cx.notify();
+    }
+
+    /// Capture helper for module 38884 ("Added to your Wishlist!" NUX modal: `wishlist-nux open|close`).
+    #[cfg(feature = "capture")]
+    pub(crate) fn script_wishlist_nux(&mut self, arg: &str, cx: &mut Context<Self>) -> String {
+        if arg.trim() == "close" {
+            self.shop.wishlist_nux_sku = None;
+            cx.notify();
+            return "wishlist-nux: closed".to_owned();
+        }
+        self.shop.wishlist_nux_sku = Some(arg.trim().to_owned());
+        cx.notify();
+        "wishlist-nux: open".to_owned()
+    }
+
+    /// Renders `"Added to your Wishlist!"` NUX modal (module 38884: `L4Wg3B`, `SXb73A`,
+    /// `TxBQzD` "View Wishlist", `tM4PUv` "Sounds good!", `480px`, purple gradient header).
+    pub(in crate::ui) fn wishlist_nux_overlay(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
+        let sku = self.shop.wishlist_nux_sku.as_ref()?;
+        let product_name = self
+            .shop_product(sku)
+            .map(|p| p.name.clone())
+            .filter(|n| !n.is_empty())
+            .unwrap_or_else(|| "Collectible Item".to_owned());
+        let card = div()
+            .id("wishlist-nux-modal")
+            .occlude()
+            .on_mouse_down(gpui::MouseButton::Left, |_, _, cx| cx.stop_propagation())
+            .relative()
+            .w(px(480.))
+            .rounded(px(12.))
+            .overflow_hidden()
+            .border_1()
+            .border_color(color("--border-subtle"))
+            .bg(color("--background-base-low"))
+            .flex()
+            .flex_col()
+            .child(
+                div()
+                    .w_full()
+                    .h(px(184.))
+                    .bg(gpui::linear_gradient(
+                        135.,
+                        gpui::linear_color_stop(gpui::rgba(0x7c3aedff), 0.),
+                        gpui::linear_color_stop(gpui::rgba(0x5865f2ff), 1.),
+                    ))
+                    .flex()
+                    .flex_col()
+                    .items_center()
+                    .justify_center()
+                    .gap(px(10.))
+                    .child(
+                        div()
+                            .size(px(80.))
+                            .rounded(px(16.))
+                            .bg(gpui::rgba(0xffffff22))
+                            .border_1()
+                            .border_color(gpui::rgba(0xffffff44))
+                            .flex()
+                            .items_center()
+                            .justify_center()
+                            .child(icon("golive_heart", 38., "--white")),
+                    )
+                    .child(text(13., 18., 600., "--white").child(product_name)),
+            )
+            .child(
+                div()
+                    .id("wishlist-nux-close")
+                    .absolute()
+                    .top(px(10.))
+                    .right(px(10.))
+                    .size(px(28.))
+                    .rounded(px(6.))
+                    .bg(gpui::rgba(0x00000044))
+                    .hover(|s| s.bg(gpui::rgba(0x00000066)))
+                    .cursor_pointer()
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        this.shop.wishlist_nux_sku = None;
+                        cx.notify();
+                    }))
+                    .child(icon("close", 16., "--white")),
+            )
+            .child(
+                div()
+                    .px(px(32.))
+                    .pt(px(24.))
+                    .pb(px(28.))
+                    .flex()
+                    .flex_col()
+                    .items_center()
+                    .gap(px(10.))
+                    .text_center()
+                    .child(text(22., 28., 700., "--text-strong").child(dc_intl::t("L4Wg3B")))
+                    .child(text(14., 20., 400., "--text-muted").child(dc_intl::t("SXb73A")))
+                    .child(
+                        div()
+                            .mt(px(14.))
+                            .w_full()
+                            .flex()
+                            .items_center()
+                            .gap(px(8.))
+                            .child(
+                                div()
+                                    .id("wishlist-nux-view")
+                                    .flex_1()
+                                    .h(px(40.))
+                                    .rounded(px(8.))
+                                    .border_1()
+                                    .border_color(color("--border-subtle"))
+                                    .bg(color("--control-secondary-background-default"))
+                                    .hover(|s| s.bg(color("--control-secondary-background-hover")))
+                                    .cursor_pointer()
+                                    .flex()
+                                    .items_center()
+                                    .justify_center()
+                                    .child(
+                                        text(14., 18., 600., "--text-strong")
+                                            .child(dc_intl::t("TxBQzD")),
+                                    )
+                                    .on_click(cx.listener(|this, _, window, cx| {
+                                        this.shop.wishlist_nux_sku = None;
+                                        this.shop.modal = None;
+                                        if let Some(me) =
+                                            this.stores.current_user.as_ref().map(|u| u.id)
+                                        {
+                                            this.open_full_profile(me, window, cx);
+                                        }
+                                        cx.notify();
+                                    })),
+                            )
+                            .child(
+                                div()
+                                    .id("wishlist-nux-done")
+                                    .flex_1()
+                                    .h(px(40.))
+                                    .rounded(px(8.))
+                                    .bg(color("--control-primary-background-default"))
+                                    .hover(|s| s.bg(color("--control-primary-background-hover")))
+                                    .cursor_pointer()
+                                    .flex()
+                                    .items_center()
+                                    .justify_center()
+                                    .child(
+                                        text(14., 18., 600., "--white").child(dc_intl::t("tM4PUv")),
+                                    )
+                                    .on_click(cx.listener(|this, _, _, cx| {
+                                        this.shop.wishlist_nux_sku = None;
+                                        cx.notify();
+                                    })),
+                            ),
+                    ),
+            );
+        Some(
+            deferred(
+                div()
+                    .id("wishlist-nux-backdrop")
+                    .occlude()
+                    .absolute()
+                    .inset_0()
+                    .bg(gpui::rgba(0x000000b3))
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .on_mouse_down(
+                        gpui::MouseButton::Left,
+                        cx.listener(|this, _, _, cx| {
+                            this.shop.wishlist_nux_sku = None;
+                            cx.notify();
+                        }),
+                    )
+                    .child(card),
+            )
+            .with_priority(96)
+            .into_any_element(),
+        )
     }
 
     /// A Nitro subscriber's free claim ("Add to your collection"): a Nitro-tier product whose Nitro price is zero.

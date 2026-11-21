@@ -711,6 +711,8 @@ pub struct Root {
     clear_activity_history_modal: Option<full_profile_recent::ClearActivityHistoryModal>,
     /// Guild Powerup Perk modal (module 945942, `boost_page`).
     powerup_perk_modal: Option<boost_page::PowerupPerkModal>,
+    /// Recurring Partner Reward Code Card modal (module 116011, `settings::gift_inventory_page`).
+    partner_reward_modal: Option<settings::gift_inventory_page::PartnerRewardState>,
     /// Nitro offer countdown & feature upsell modal (module 811611, `nitro_upsell`).
     nitro_upsell_modal: Option<nitro_upsell::NitroUpsellModal>,
     /// Gift Ready post-purchase delivery modal (module 998035, `gift_ready`).
@@ -1424,6 +1426,7 @@ impl Root {
             billing_address_modal: None,
             clear_activity_history_modal: None,
             powerup_perk_modal: None,
+            partner_reward_modal: None,
             nitro_upsell_modal: None,
             gift_ready_modal: None,
             boost_cancel_modal: None,
@@ -2539,6 +2542,10 @@ impl Root {
                 }
                 if key.starts_with(full_profile_recent::CLEAR_HISTORY_PREFIX) {
                     self.handle_clear_activity_history_response(&key, &body, cx);
+                    return;
+                }
+                if key.starts_with(settings::gift_inventory_page::PARTNER_REWARD_CLAIM_PREFIX) {
+                    self.handle_partner_reward_claim_response(&body, cx);
                     return;
                 }
                 if key == transfer_ownership::TRANSFER_KEY
@@ -11808,6 +11815,8 @@ impl Render for Root {
                     && (this.billing_address_modal.is_some()
                         || this.clear_activity_history_modal.is_some()
                         || this.powerup_perk_modal.is_some()
+                        || this.partner_reward_modal.is_some()
+                        || this.shop.wishlist_nux_sku.is_some()
                         || this.orb_wallet.delivered_modal.is_some()
                         || this.nitro_upsell_modal.is_some()
                         || this.gift_ready_modal.is_some()
@@ -11901,6 +11910,8 @@ impl Render for Root {
                     this.billing_address_modal = None;
                     this.clear_activity_history_modal = None;
                     this.powerup_perk_modal = None;
+                    this.partner_reward_modal = None;
+                    this.shop.wishlist_nux_sku = None;
                     this.orb_wallet.delivered_modal = None;
                     this.nitro_upsell_modal = None;
                     this.gift_ready_modal = None;
@@ -13299,6 +13310,8 @@ impl Render for Root {
             .children(self.billing_address_overlay(cx))
             .children(self.clear_activity_history_layer(cx))
             .children(self.powerup_perk_overlay(cx))
+            .children(self.partner_reward_overlay(cx))
+            .children(self.wishlist_nux_overlay(cx))
             .children(self.nitro_upsell_overlay(cx))
             .children(self.gift_ready_overlay(cx))
             .children(self.modify_attachment_modal(cx))

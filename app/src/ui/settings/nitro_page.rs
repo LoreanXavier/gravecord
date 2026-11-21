@@ -51,6 +51,27 @@ const ROWS: [(&str, Cell, Cell); 20] = [
     ("Keep Quest avatar decorations rewards longer", No, Included),
 ];
 
+/// Nitro Perk Card eligibility state (module 51965: `rJbFM3`, `2S/5mX`, `GcPSts`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[allow(dead_code)]
+pub(in crate::ui) enum PerkEligibility {
+    CanClaim,
+    Upsell,
+    BlockedTrial,
+    BlockedOther,
+}
+
+impl PerkEligibility {
+    /// Disabled tooltip text for locked perks (`2S/5mX` on trial, `GcPSts` otherwise).
+    pub(in crate::ui) fn locked_tooltip(self) -> Option<&'static str> {
+        match self {
+            Self::BlockedTrial => Some(dc_intl::t("2S/5mX")),
+            Self::BlockedOther => Some(dc_intl::t("GcPSts")),
+            Self::CanClaim | Self::Upsell => None,
+        }
+    }
+}
+
 /// The perk cards: title, text, and the card's top and height.
 const PERKS: [(&str, &str, f32, f32, f32); 9] = [
     (
@@ -432,7 +453,51 @@ impl Root {
                         18.,
                         400.,
                         "--text-default",
-                    ))),
+                    )))
+                    .when_some(
+                        {
+                            let elig = if self
+                                .premium_subscription()
+                                .is_some_and(|s| s.trial_id.is_some())
+                            {
+                                PerkEligibility::BlockedTrial
+                            } else {
+                                PerkEligibility::CanClaim
+                            };
+                            elig.locked_tooltip()
+                        },
+                        |col, tip_msg| {
+                            // Module 51965: locked perk button (`rJbFM3` "Not Available Yet") with `2S/5mX`/`GcPSts` tooltip.
+                            col.child(
+                                div()
+                                    .mt(px(8.))
+                                    .h(px(28.))
+                                    .px(px(12.))
+                                    .rounded(px(6.))
+                                    .bg(color("--background-mod-subtle"))
+                                    .opacity(0.65)
+                                    .flex()
+                                    .items_center()
+                                    .gap(px(4.))
+                                    .child(icon("access_lock", 12., "--text-muted"))
+                                    .child(text(
+                                        dc_intl::t("rJbFM3"),
+                                        12.,
+                                        16.,
+                                        600.,
+                                        "--text-muted",
+                                    )),
+                            )
+                            .child(
+                                div()
+                                    .mt(px(2.))
+                                    .text_size(px(10.))
+                                    .line_height(px(13.))
+                                    .text_color(color("--text-muted"))
+                                    .child(tip_msg),
+                            )
+                        },
+                    ),
             )
             .into_any_element()
     }

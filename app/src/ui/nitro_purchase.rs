@@ -43,6 +43,8 @@ pub(crate) enum Step {
     PredicateError,
     /// Post-purchase confirmation (module 231308 `G`, `B`, `b`; CSS 13792, 896554).
     Confirm,
+    /// Post-purchase tier activated celebration (module 115623: `wLFT6z`, `OsAK9h`, `JtWl+a`).
+    TierActivated,
 }
 
 /// Plan tier/interval identity used by module 231308's confirmation copy (`B`, `G`).
@@ -1090,6 +1092,7 @@ impl Root {
             (Step::AwaitingEmailAuth, _) => self.awaiting_email_auth_modal(window, cx),
             (Step::PredicateError, _) => self.predicate_error_modal(window, cx),
             (Step::Confirm, _) => self.confirm_modal(window, cx),
+            (Step::TierActivated, _) => self.tier_activated_modal(window, cx),
         })
     }
 
@@ -2601,6 +2604,102 @@ impl Root {
         )
     }
 
+    /// Post-purchase `"You now have {tier}!"` modal (module 115623: `wLFT6z`, `OsAK9h`, `JtWl+a`).
+    fn tier_activated_modal(&self, window: &Window, cx: &mut Context<Self>) -> AnyElement {
+        let tier = if self
+            .nitro
+            .purchase
+            .as_ref()
+            .is_some_and(|p| p.sku == sku::TIER_0)
+        {
+            "Nitro Basic"
+        } else {
+            "Nitro"
+        };
+        let title = dc_intl::format(
+            "wLFT6z",
+            &[("tier", dc_intl::Arg::Str(std::borrow::Cow::Borrowed(tier)))],
+        );
+        let subtitle = dc_intl::format(
+            "OsAK9h",
+            &[(
+                "timestamp",
+                dc_intl::Arg::Str(std::borrow::Cow::Borrowed("Dec 2, 2026")),
+            )],
+        );
+        let body = div()
+            .px(px(32.))
+            .py(px(32.))
+            .flex()
+            .flex_col()
+            .items_center()
+            .gap(px(14.))
+            .text_center()
+            .child(
+                div()
+                    .size(px(88.))
+                    .rounded_full()
+                    .bg(linear_gradient(
+                        135.,
+                        linear_color_stop(rgba(0x8547c6ff), 0.),
+                        linear_color_stop(rgba(0xeb459eff), 1.),
+                    ))
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .child(icon("nitro_wheel", 44., "--white")),
+            )
+            .child(
+                div()
+                    .text_size(px(22.))
+                    .line_height(px(28.))
+                    .font_weight(FontWeight(700.))
+                    .text_color(color("--text-strong"))
+                    .child(title),
+            )
+            .child(
+                div()
+                    .text_size(px(14.))
+                    .line_height(px(20.))
+                    .text_color(color("--text-muted"))
+                    .child(subtitle),
+            )
+            .child(
+                div()
+                    .id("nitro-tier-activated-done")
+                    .mt(px(8.))
+                    .w_full()
+                    .h(px(40.))
+                    .rounded(px(8.))
+                    .border_1()
+                    .border_color(color("--border-subtle"))
+                    .bg(color("--control-secondary-background-default"))
+                    .hover(|s| s.bg(color("--control-secondary-background-hover")))
+                    .cursor_pointer()
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .text_size(px(14.))
+                    .font_weight(FontWeight(600.))
+                    .text_color(color("--text-strong"))
+                    .child(dc_intl::t("JtWl+a"))
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        this.close_purchase();
+                        cx.notify();
+                    })),
+            );
+        self.purchase_shell(
+            "nitro-tier-activated",
+            480.,
+            "",
+            false,
+            body.into_any_element(),
+            None,
+            window,
+            cx,
+        )
+    }
+
     /// Post-purchase confirmation modal (`G` + `B` + `b` of module 231308; CSS `13792`, `896554`).
     fn confirm_modal(&self, window: &Window, cx: &mut Context<Self>) -> AnyElement {
         let Some(purchase) = self.nitro.purchase.as_ref() else {
@@ -2866,6 +2965,12 @@ impl Root {
                 self.nitro.purchase = Some(p);
                 cx.notify();
                 format!("nitro-offer-header: {mode}")
+            }
+            "tier-activated" => {
+                p.step = Step::TierActivated;
+                self.nitro.purchase = Some(p);
+                cx.notify();
+                "nitro-offer-header: tier-activated".to_owned()
             }
             "trial-fine-print" => {
                 p.offer_badge = Some(PurchaseOfferBadge::FreeTrial);
@@ -3223,6 +3328,66 @@ impl Root {
                             .text_color(color("--text-default"))
                             .child(plan_summary)
                             .child(raw_amount),
+                    )
+                    .child(
+                        // Module 24659 (`_J` Purchase Details + `Hc` Subscription details + `DK` renewal notice).
+                        div()
+                            .pt(px(6.))
+                            .border_t_1()
+                            .border_color(color("--border-subtle"))
+                            .flex()
+                            .flex_col()
+                            .gap(px(4.))
+                            .child(
+                                div()
+                                    .flex()
+                                    .items_center()
+                                    .justify_between()
+                                    .text_size(px(12.))
+                                    .font_weight(FontWeight(600.))
+                                    .text_color(color("--text-muted"))
+                                    .child(dc_intl::t("2eh+Co"))
+                                    .child(dc_intl::t("GGn3pp")),
+                            )
+                            .child(
+                                div()
+                                    .flex()
+                                    .items_center()
+                                    .justify_between()
+                                    .text_size(px(12.))
+                                    .text_color(color("--text-muted"))
+                                    .child(dc_intl::format(
+                                        "MR4VnX",
+                                        &[(
+                                            "renewalDate",
+                                            dc_intl::Arg::Str(std::borrow::Cow::Borrowed(
+                                                "Dec 2, 2026",
+                                            )),
+                                        )],
+                                    ))
+                                    .child(dc_intl::t("yvUaHi")),
+                            )
+                            .when(review.is_upgrade, |col| {
+                                let _totals = (
+                                    dc_intl::t("WrFWOV"),
+                                    dc_intl::t("SxKq52"),
+                                    dc_intl::t("jxUJkZ"),
+                                );
+                                col.child(
+                                    div()
+                                        .text_size(px(12.))
+                                        .text_color(color("--text-muted"))
+                                        .child(dc_intl::format(
+                                            "JWWD4E",
+                                            &[(
+                                                "renewalDate",
+                                                dc_intl::Arg::Str(std::borrow::Cow::Borrowed(
+                                                    "Dec 2, 2026",
+                                                )),
+                                            )],
+                                        )),
+                                )
+                            }),
                     )
                     .child(div().h(px(1.)).bg(color("--border-subtle")))
                     .child(

@@ -358,10 +358,36 @@ impl Root {
             .justify_between()
             .child(left)
             .child(div().flex().justify_end().child(button));
-        let cards: AnyElement = if orbs {
-            self.shop_feed_grid(&hero.skus, section, false, window, cx)
+        // Module 60140 (`HP8LNG` "Featured products"): filter out SKUs without a category / absent,
+        // showing 4 skeleton cards while resolving.
+        let _featured_label = dc_intl::t("HP8LNG");
+        let valid_skus: Vec<String> = hero
+            .skus
+            .iter()
+            .filter(|sku| {
+                !self.shop.absent.contains(*sku)
+                    && self
+                        .shop_product(sku)
+                        .is_none_or(|p| !p.category_sku_id.is_empty())
+            })
+            .cloned()
+            .collect();
+        let cards: AnyElement = if valid_skus.is_empty() && !hero.skus.is_empty() {
+            let skeletons: Vec<AnyElement> = (0..4)
+                .map(|index| skeleton_card(index, Some(CARD), window))
+                .collect();
+            div()
+                .w_full()
+                .h(px(CARD))
+                .overflow_hidden()
+                .flex()
+                .gap(px(GAP))
+                .children(skeletons)
+                .into_any_element()
+        } else if orbs {
+            self.shop_feed_grid(&valid_skus, section, false, window, cx)
         } else {
-            self.shop_shelf_row("hero", &hero.skus, section, false, window, cx)
+            self.shop_shelf_row("hero", &valid_skus, section, false, window, cx)
         };
         Some(
             div()

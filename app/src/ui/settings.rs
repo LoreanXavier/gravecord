@@ -22,7 +22,7 @@ mod connections;
 mod content_filters;
 mod controls;
 mod custom_theme;
-mod gift_inventory_page;
+pub(in crate::ui) mod gift_inventory_page;
 pub(in crate::ui) mod gift_redeem;
 mod keybinds;
 mod languages;

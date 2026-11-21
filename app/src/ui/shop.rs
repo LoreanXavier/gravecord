@@ -89,6 +89,12 @@ pub(super) struct State {
     pub balance: Option<i64>,
     /// Skus on the account's wishlist: read when the Shop opens, changed by the hearts.
     pub wishlist: HashSet<String>,
+    /// Module 124557: guard preventing overlapping wishlist writes.
+    pub wishlist_busy: bool,
+    /// Module 38884: "Added to your Wishlist!" NUX modal (`Some(sku)` when open).
+    pub wishlist_nux_sku: Option<String>,
+    /// Module 38884: whether the first-add NUX modal has already been shown this session.
+    pub wishlist_nux_seen: bool,
     pub filters: Filters,
     pub sort: Sort,
     /// Whether the shopper picked a sort: until then the filters choose it.

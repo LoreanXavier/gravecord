@@ -484,6 +484,19 @@ impl Root {
         let notice = selected_src.and_then(|s| picker_trial_notice(s, picker.is_trial));
         let dropdown_open = picker.dropdown_open;
 
+        let unsupported = picker.unsupported_card_variant;
+        let notice_6151 = picker.notice_message.clone();
+        let header_title = if unsupported {
+            dc_intl::t("u+Cw58")
+        } else {
+            dc_intl::tr("Payment Methods")
+        };
+        let empty_add_label = if unsupported {
+            dc_intl::t("rNF29q")
+        } else {
+            dc_intl::t("eQ2bLp")
+        };
+
         let dialog = div()
             .id("payment-source-picker-modal")
             .occlude()
@@ -515,7 +528,7 @@ impl Root {
                             .line_height(px(24.))
                             .font_weight(FontWeight(600.))
                             .text_color(color("--text-strong"))
-                            .child(dc_intl::tr("Payment Methods")),
+                            .child(header_title),
                     )
                     .child(
                         div()
@@ -549,18 +562,39 @@ impl Root {
                         col.child(
                             div()
                                 .id("payment-picker-add-empty")
-                                .h(px(40.))
+                                .min_h(px(if unsupported { 56. } else { 40. }))
+                                .px(px(14.))
                                 .w_full()
                                 .rounded(px(8.))
-                                .bg(color("--control-primary-background-default"))
+                                .when(unsupported, |d| {
+                                    d.border_1()
+                                        .border_color(color("--border-subtle"))
+                                        .bg(color("--background-mod-subtle"))
+                                        .hover(|s| s.bg(color("--background-mod-normal")))
+                                        .justify_between()
+                                })
+                                .when(!unsupported, |d| {
+                                    d.bg(color("--control-primary-background-default"))
+                                        .justify_center()
+                                })
                                 .cursor_pointer()
                                 .flex()
                                 .items_center()
-                                .justify_center()
                                 .text_size(px(14.))
                                 .font_weight(FontWeight(500.))
-                                .text_color(color("--white"))
-                                .child(dc_intl::t("eQ2bLp"))
+                                .text_color(if unsupported {
+                                    color("--text-strong")
+                                } else {
+                                    color("--white")
+                                })
+                                .child(empty_add_label)
+                                .when(unsupported, |d| {
+                                    d.child(crate::ui::icon(
+                                        "shop_arrow_right",
+                                        16.,
+                                        "--text-muted",
+                                    ))
+                                })
                                 .on_click(cx.listener(|this, _, _, cx| {
                                     this.payment_source_picker = None;
                                     this.billing_address_modal = Some(
@@ -570,6 +604,34 @@ impl Root {
                                     );
                                     cx.notify();
                                 })),
+                        )
+                    })
+                    .when_some(notice_6151, |col, msg| {
+                        // Module 6151 `.noticeMessageContainer_sFISJa`.
+                        col.child(
+                            div()
+                                .p(px(10.))
+                                .rounded(px(8.))
+                                .bg(color("--background-mod-subtle"))
+                                .border_1()
+                                .border_color(color("--border-subtle"))
+                                .flex()
+                                .items_start()
+                                .gap(px(8.))
+                                .child(crate::ui::icon(
+                                    "circle_info",
+                                    16.,
+                                    "--text-feedback-info",
+                                ))
+                                .child(
+                                    div()
+                                        .flex_1()
+                                        .min_w_0()
+                                        .text_size(px(12.))
+                                        .line_height(px(16.))
+                                        .text_color(color("--text-feedback-info"))
+                                        .child(msg),
+                                ),
                         )
                     })
                     .when(!picker.sources.is_empty(), |col| {
@@ -658,7 +720,7 @@ impl Root {
                                     .child(div().my(px(4.)).h(px(1.)).bg(color("--border-subtle")))
                                     .child(
                                         div()
-                                            .id("payment-picker-add-new")
+                                            .id(NEW_PAYMENT_SOURCE_ID)
                                             .h(px(36.))
                                             .px(px(10.))
                                             .rounded(px(6.))
@@ -736,30 +798,43 @@ impl Root {
         cx: &mut gpui::Context<Self>,
     ) -> String {
         use serde_json::json;
-        let sources: Vec<PaymentSource> = [
-            json!({"id": "1", "type": 1, "brand": "visa", "last_4": "4242", "expires_month": 3, "expires_year": 2029, "default": true}),
-            json!({"id": "2", "type": 2, "email": "billing@example.com"}),
-            json!({"id": "3", "type": 16, "bank": "rabobank"}),
-            json!({"id": "4", "type": 15, "bank": "bank_austria"}),
-            json!({"id": "5", "type": 20}),
-            json!({"id": "6", "type": 21}),
-        ]
-        .iter()
-        .filter_map(PaymentSource::from_server)
-        .collect();
+        let trimmed = arg.trim();
+        let unsupported = matches!(trimmed, "unsupported" | "unsupported-empty");
+        let sources: Vec<PaymentSource> = if trimmed == "unsupported-empty" {
+            Vec::new()
+        } else {
+            [
+                json!({"id": "1", "type": 1, "brand": "visa", "last_4": "4242", "expires_month": 3, "expires_year": 2029, "default": true}),
+                json!({"id": "2", "type": 2, "email": "billing@example.com"}),
+                json!({"id": "3", "type": 16, "bank": "rabobank"}),
+                json!({"id": "4", "type": 15, "bank": "bank_austria"}),
+                json!({"id": "5", "type": 20}),
+                json!({"id": "6", "type": 21}),
+            ]
+            .iter()
+            .filter_map(PaymentSource::from_server)
+            .collect()
+        };
         self.payment_source_picker = Some(PaymentSourcePickerState {
             sources,
             selected_id: Some("1".to_owned()),
-            hide_personal_info: arg == "streamer",
-            is_trial: true,
-            dropdown_open: true,
+            hide_personal_info: trimmed == "streamer",
+            is_trial: !unsupported,
+            dropdown_open: trimmed != "unsupported-empty",
+            unsupported_card_variant: unsupported,
+            notice_message: unsupported.then(|| {
+                "Your current payment method isn't supported for this purchase. Please add a new payment option.".to_owned()
+            }),
         });
         cx.notify();
         format!("payment-picker: {arg}")
     }
 }
 
-/// Interactive Payment Source Picker modal state (module 637141).
+/// Module 6151 (`a`): sentinel option ID for "Add new payment method".
+pub(in crate::ui) const NEW_PAYMENT_SOURCE_ID: &str = "new_payment_source_id";
+
+/// Interactive Payment Source Picker modal state (modules 637141 & 6151).
 #[derive(Clone, Debug)]
 pub(in crate::ui) struct PaymentSourcePickerState {
     pub sources: Vec<PaymentSource>,
@@ -767,6 +842,10 @@ pub(in crate::ui) struct PaymentSourcePickerState {
     pub hide_personal_info: bool,
     pub is_trial: bool,
     pub dropdown_open: bool,
+    /// Module 6151: `variant: "unsupported_payment_modal_card"` (`56px` min-h card + `u+Cw58`/`rNF29q`).
+    pub unsupported_card_variant: bool,
+    /// Module 6151: optional info notice banner (`.noticeMessageContainer_sFISJa`).
+    pub notice_message: Option<String>,
 }
 
 /// Official `T`/`Sm` option label formatter of module 637141 (all 18 payment source types + Streamer Mode masking).
@@ -973,5 +1052,8 @@ mod tests {
             let src = PaymentSource::from_server(&json!({"id": "x", "type": kind_id})).unwrap();
             assert!(!picker_option_label(&src, false).is_empty());
         }
+        assert_eq!(NEW_PAYMENT_SOURCE_ID, "new_payment_source_id");
+        assert_eq!(dc_intl::t("u+Cw58"), "Payment method");
+        assert_eq!(dc_intl::t("rNF29q"), "Add new payment method");
     }
 }

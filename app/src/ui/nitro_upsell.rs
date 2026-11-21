@@ -30,6 +30,8 @@ pub enum UpsellKind {
     MessageLengthInEditor,
     ClientThemeTryItOut,
     CustomProfileTryOut,
+    /// Module 34255: "Get Another Week of Nitro" (`M/ytwa`, `xMkRkc`, `j7LkaR`, `mPWeSh`).
+    TrialEndingWeek,
 }
 
 /// Active offer attached to a Nitro upsell modal (`trialOffer` / `discountOffer` of module 811611).
@@ -160,6 +162,10 @@ pub fn upsell_body_copy(kind: UpsellKind, is_tier0: bool) -> (Option<String>, St
             Some(dc_intl::t("8CVUrV").to_owned()),
             format_plain("fF+cgd", &[]),
         ),
+        UpsellKind::TrialEndingWeek => (
+            Some(dc_intl::t("M/ytwa").to_owned()),
+            format_plain("xMkRkc", &[("price", Arg::Str(Cow::Borrowed("$2.99")))]),
+        ),
     }
 }
 
@@ -169,6 +175,7 @@ impl Root {
         let now = Utc::now();
         let exp_days = (now + chrono::Duration::days(3)).to_rfc3339();
         let (kind, discount, heading, context) = match arg.trim() {
+            "trial-ending" => (UpsellKind::TrialEndingWeek, None, String::new(), None),
             "trial" => (UpsellKind::CustomProfileTryOut, None, String::new(), None),
             "upload" => (
                 UpsellKind::UploadError,
@@ -224,9 +231,170 @@ impl Root {
         format!("nitro-upsell: kind={kind:?}")
     }
 
-    /// Renders the Nitro Offer Countdown / Feature Upsell modal overlay (module 811611).
+    /// Renders the Nitro Offer Countdown / Feature Upsell modal overlay (modules 811611 & 34255).
     pub(super) fn nitro_upsell_overlay(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
         let modal = self.nitro_upsell_modal.as_ref()?;
+        // Module 34255: Nitro Trial Ending Modal ("Get Another Week of Nitro").
+        if modal.kind == UpsellKind::TrialEndingWeek {
+            let price = self
+                .plan_price(dc_state::premium::sku::TIER_2, false)
+                .map(|p| p.display())
+                .unwrap_or_else(|| "$2.99".to_owned());
+            let body_text =
+                dc_intl::format("xMkRkc", &[("price", Arg::Str(Cow::Borrowed(&price)))]);
+            let cta_text = dc_intl::format("mPWeSh", &[("price", Arg::Str(Cow::Borrowed(&price)))]);
+            let card = div()
+                .id("nitro-trial-ending-modal")
+                .occlude()
+                .on_mouse_down(gpui::MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                .relative()
+                .w(px(480.))
+                .rounded(px(12.))
+                .overflow_hidden()
+                .border_1()
+                .border_color(color("--border-subtle"))
+                .bg(color("--background-base-low"))
+                .flex()
+                .flex_col()
+                .child(
+                    div()
+                        .w_full()
+                        .h(px(184.))
+                        .bg(linear_gradient(
+                            135.,
+                            linear_color_stop(rgba(0xb845c1ff), 0.),
+                            linear_color_stop(rgba(0x5865f2ff), 1.),
+                        ))
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .child(
+                            div()
+                                .size(px(88.))
+                                .rounded_full()
+                                .bg(rgba(0xffffff22))
+                                .border_1()
+                                .border_color(rgba(0xffffff44))
+                                .flex()
+                                .items_center()
+                                .justify_center()
+                                .child(icon("nitro_wheel", 44., "--white")),
+                        ),
+                )
+                .child(
+                    div()
+                        .id("nitro-trial-ending-close")
+                        .absolute()
+                        .top(px(10.))
+                        .right(px(10.))
+                        .size(px(28.))
+                        .rounded(px(6.))
+                        .bg(rgba(0x00000044))
+                        .hover(|s| s.bg(rgba(0x00000066)))
+                        .cursor_pointer()
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .on_click(cx.listener(|this, _, _, cx| {
+                            this.nitro_upsell_modal = None;
+                            cx.notify();
+                        }))
+                        .child(icon("close", 16., "--white")),
+                )
+                .child(
+                    div()
+                        .px(px(32.))
+                        .pt(px(24.))
+                        .pb(px(28.))
+                        .flex()
+                        .flex_col()
+                        .items_center()
+                        .gap(px(12.))
+                        .text_center()
+                        .child(text(22., 28., 700., "--text-strong").child(dc_intl::t("M/ytwa")))
+                        .child(text(14., 20., 400., "--text-muted").child(body_text))
+                        .child(
+                            div()
+                                .mt(px(12.))
+                                .w_full()
+                                .flex()
+                                .items_center()
+                                .gap(px(8.))
+                                .child(
+                                    div()
+                                        .id("nitro-trial-ending-learn")
+                                        .flex_1()
+                                        .h(px(40.))
+                                        .rounded(px(8.))
+                                        .border_1()
+                                        .border_color(color("--border-subtle"))
+                                        .bg(color("--control-secondary-background-default"))
+                                        .hover(|s| {
+                                            s.bg(color("--control-secondary-background-hover"))
+                                        })
+                                        .cursor_pointer()
+                                        .flex()
+                                        .items_center()
+                                        .justify_center()
+                                        .child(
+                                            text(14., 18., 600., "--text-strong")
+                                                .child(dc_intl::t("j7LkaR")),
+                                        )
+                                        .on_click(cx.listener(|this, _, _, cx| {
+                                            this.nitro_upsell_modal = None;
+                                            this.open_nitro(cx);
+                                        })),
+                                )
+                                .child(
+                                    div()
+                                        .id("nitro-trial-ending-cta")
+                                        .flex_1()
+                                        .h(px(40.))
+                                        .rounded(px(8.))
+                                        .bg(linear_gradient(
+                                            90.,
+                                            linear_color_stop(rgba(0x8547c6ff), 0.),
+                                            linear_color_stop(rgba(0xeb459eff), 1.),
+                                        ))
+                                        .hover(|s| s.opacity(0.92))
+                                        .cursor_pointer()
+                                        .flex()
+                                        .items_center()
+                                        .justify_center()
+                                        .gap(px(6.))
+                                        .child(icon("nitro_wheel", 16., "--white"))
+                                        .child(text(14., 18., 600., "--white").child(cta_text))
+                                        .on_click(cx.listener(|this, _, _, cx| {
+                                            this.nitro_upsell_modal = None;
+                                            this.open_purchase(false, cx);
+                                        })),
+                                ),
+                        ),
+                );
+            return Some(
+                deferred(
+                    div()
+                        .id("nitro-trial-ending-backdrop")
+                        .occlude()
+                        .absolute()
+                        .inset_0()
+                        .bg(rgba(0x000000b3))
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .on_mouse_down(
+                            gpui::MouseButton::Left,
+                            cx.listener(|this, _, _, cx| {
+                                this.nitro_upsell_modal = None;
+                                cx.notify();
+                            }),
+                        )
+                        .child(card),
+                )
+                .with_priority(3)
+                .into_any_element(),
+            );
+        }
         let now_ms = Utc::now().timestamp_millis();
         let (default_heading, body_copy) = upsell_body_copy(modal.kind, modal.offer.is_tier0);
         let heading = if modal.heading.is_empty() {
@@ -500,5 +668,12 @@ mod tests {
         let (h_len, b_len) = upsell_body_copy(UpsellKind::MessageLengthInEditor, false);
         assert_eq!(h_len.as_deref(), Some("You've hit the character limit."));
         assert!(b_len.contains("4000") || b_len.contains("4,000"));
+
+        let (h_end, b_end) = upsell_body_copy(UpsellKind::TrialEndingWeek, false);
+        assert_eq!(h_end.as_deref(), Some("Get Another Week of Nitro"));
+        assert!(b_end.contains("$2.99"));
+        for k in ["M/ytwa", "xMkRkc", "j7LkaR", "mPWeSh"] {
+            assert!(dc_intl::has_key(k), "missing 34255 key {k}");
+        }
     }
 }
