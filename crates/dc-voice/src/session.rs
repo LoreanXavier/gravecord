@@ -1540,6 +1540,7 @@ pub(crate) async fn run(
                         bitrate_actual: est.as_ref().map_or(0, |e| e.encoder_rate),
                         bytes_sent: vs.bytes_sent,
                         packets_sent: vs.packets_sent,
+                        packets_lost: 0,
                         width: cam_w,
                         height: cam_h,
                         fps_encoded: encoded_fps,

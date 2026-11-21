@@ -610,7 +610,12 @@ impl Root {
             return None;
         }
         let me = self.stores.current_user.as_ref().map(|user| user.id);
-        let owns = me.is_some() && self.stores.guilds.iter().any(|guild| guild.owner_id == me);
+        let owns = me.is_some()
+            && self
+                .stores
+                .guilds
+                .iter()
+                .any(|guild| guild.viewing_roles.is_none() && guild.owner_id == me);
         let id = if tips.open == Some("create-first-server")
             && tips.should_show("create-first-server")
         {

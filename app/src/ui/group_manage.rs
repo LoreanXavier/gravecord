@@ -94,6 +94,44 @@ fn patch_body(
     (!body.is_empty()).then_some(serde_json::Value::Object(body))
 }
 
+/// Request key prefix for `PATCH /channels/{id}` group edits (module 396787 `XA` 429 rate-limit alert).
+pub(super) const GROUP_EDIT_KEY: &str = "group-edit:";
+
+/// Module 576470 (`Countdown`, `showUnits: true`): zero-padded `DDd HHh MMm SSs` omitting days when `0`.
+pub(super) fn format_countdown_units(remaining_secs: u64) -> String {
+    let days = remaining_secs / 86_400;
+    let hours = (remaining_secs % 86_400) / 3_600;
+    let minutes = (remaining_secs % 3_600) / 60;
+    let seconds = remaining_secs % 60;
+    let d_u = dc_intl::t("QJyuxY");
+    let h_u = dc_intl::t("1LyF1h");
+    let m_u = dc_intl::t("n7dksO");
+    let s_u = dc_intl::t("6m/6nM");
+    if days > 0 {
+        format!("{days:02}{d_u} {hours:02}{h_u} {minutes:02}{m_u} {seconds:02}{s_u}")
+    } else {
+        format!("{hours:02}{h_u} {minutes:02}{m_u} {seconds:02}{s_u}")
+    }
+}
+
+/// Builds module 396787's rate-limit alert (`Whhv4w` / `VIJkAy`) for a 429 response with `retry_after`.
+pub(super) fn rate_limit_alert(retry_after_secs: f64) -> super::chat_notices::Alert {
+    let wait = retry_after_secs.max(0.).ceil() as u64;
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(wait);
+    super::chat_notices::Alert {
+        id: "group-icon-rate-limit",
+        title: dc_intl::t("Whhv4w").to_owned(),
+        subtitle: None,
+        content: Some(super::chat_notices::Content::RateLimitCountdown { deadline }),
+        buttons: vec![super::chat_notices::AlertButton {
+            id: "group-icon-rate-limit-ok",
+            label: dc_intl::t("BddRzS").to_owned(),
+            tone: super::modal::Tone::Primary,
+            then: super::chat_notices::Then::Close,
+        }],
+    }
+}
+
 impl Root {
     /// Fetches the pictures the group rows, header and member list draw: each group's icon (or its first two people)
     /// plus every recipient's avatar and server tag badge.
@@ -966,13 +1004,52 @@ impl Root {
         };
         if let Some(body) = self.group_edit_changes(cx) {
             let _ = self.requests.send(Request::Rest {
-                key: None,
+                key: Some(format!("{GROUP_EDIT_KEY}{}", open.channel)),
                 method: reqwest::Method::PATCH,
                 route: format!("/channels/{}", open.channel),
                 body: Some(body),
             });
         }
         self.group_edit = None;
+        cx.notify();
+    }
+
+    /// Handles `PATCH /channels/{id}` responses for group edits (module 396787 `XA`): shows live ticking rate-limit
+    /// alert when HTTP 429 returns `retry_after`.
+    pub(super) fn group_edit_answered(&mut self, body: &serde_json::Value, cx: &mut Context<Self>) {
+        if body["ok"].as_bool() == Some(true) {
+            return;
+        }
+        let retry_after = body["body"]["retry_after"].as_f64();
+        let Some(secs) = retry_after.filter(|s| s.is_finite() && *s > 0.) else {
+            return;
+        };
+        self.chat_extra.alert = Some(rate_limit_alert(secs));
+        let ticks = (secs.ceil() as u64).min(3600);
+        cx.spawn(async move |this, cx| {
+            for _ in 0..ticks {
+                cx.background_executor()
+                    .timer(std::time::Duration::from_secs(1))
+                    .await;
+                let keep = this
+                    .update(cx, |this, cx| {
+                        let open = this
+                            .chat_extra
+                            .alert
+                            .as_ref()
+                            .is_some_and(|a| a.id == "group-icon-rate-limit");
+                        if open {
+                            cx.notify();
+                        }
+                        open
+                    })
+                    .unwrap_or(false);
+                if !keep {
+                    break;
+                }
+            }
+        })
+        .detach();
         cx.notify();
     }
 
@@ -1504,5 +1581,14 @@ mod tests {
         assert_eq!(member_count_text(&channel), "3 Members");
         channel.recipients.clear();
         assert_eq!(member_count_text(&channel), "1 Member");
+    }
+
+    #[test]
+    fn rate_limit_countdown_units_and_alert_match_396787_and_576470() {
+        assert_eq!(format_countdown_units(90), "00h 01m 30s");
+        assert_eq!(format_countdown_units(86_400 + 7_384), "01d 02h 03m 04s");
+        let alert = rate_limit_alert(45.2);
+        assert_eq!(alert.title, "You are being rate limited.");
+        assert!(!dc_intl::t("VIJkAy").is_empty());
     }
 }

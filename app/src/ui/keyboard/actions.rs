@@ -186,6 +186,7 @@ impl Root {
                 known
                     .sidebar_rows()
                     .iter()
+                    .filter(|row| self.view_as_role_shows(known, row))
                     .find(|row| row.kind == ChannelKind::Text)
                     .map(|row| row.id)
             })
@@ -269,6 +270,7 @@ impl Root {
             .sidebar_rows()
             .into_iter()
             .filter(|row| row.kind != ChannelKind::Category)
+            .filter(|row| self.view_as_role_shows(known, row))
             .filter(|row| self.followed_sidebar_row(known, row))
             .filter(|row| {
                 !self.hide_muted(guild)
@@ -391,6 +393,7 @@ impl Root {
         known
             .sidebar_rows()
             .into_iter()
+            .filter(|row| self.view_as_role_shows(known, row))
             .filter(|row| shown.contains(&row.id) || row.kind == ChannelKind::Voice)
             .map(|row| row.id)
             .collect()

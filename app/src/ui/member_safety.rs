@@ -443,7 +443,7 @@ impl Root {
                             .child(div().w(px(177.4)).flex_none().px(px(8.)).child(head("Name", false)))
                             .child(column(93.7).child(head("Member Since", true)))
                             .child(column(92.9).child(head("Joined Discord", true)))
-                            .child(column(94.3).child(head("Join Method", true)))
+                            .child(column(94.3).child(self.members_join_header(guild, cx)))
                             .child(column(169.5).child(head("Roles", true)))
                             .child(column(92.4).child(head("Signals", true))),
                     )

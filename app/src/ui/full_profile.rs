@@ -2967,7 +2967,15 @@ impl Root {
                     .text_size(px(14.))
                     .line_height(px(18.))
                     .text_color(default)
-                    .child(user.username.clone())
+                    .child({
+                        let (shown, concealed) = self.profile_username(&user);
+                        self.streamer_tip(
+                            format!("full-profile-username-streamer-{id}"),
+                            concealed,
+                            div().child(shown),
+                            cx,
+                        )
+                    })
                     .when_some(pronouns, |this, pronouns| {
                         this.child(div().size(px(4.)).rounded_full().bg(default))
                             .child(pronouns)

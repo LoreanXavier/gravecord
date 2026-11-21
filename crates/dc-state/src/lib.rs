@@ -527,6 +527,9 @@ pub struct Guild {
     /// View Server As Role (ImpersonateStore, module 164956 `getViewingRoles`): while set, permissions here are
     /// computed as a non-owner holding @everyone and only these roles. Purely local; nothing is sent.
     pub viewing_roles: Option<Vec<Id>>,
+    /// Epoch milliseconds when `viewing_roles` started (`ImpersonateStore.getViewingRolesTimestamp`, module 164956).
+    /// Used by the `891522` message-history gate when the impersonated role lacks `READ_MESSAGE_HISTORY`.
+    pub viewing_roles_timestamp: Option<u64>,
     /// 1 when moderation needs 2FA (`mfa_level` ELEVATED).
     pub mfa_level: u64,
     pub vanity_url_code: Option<String>,
@@ -925,6 +928,7 @@ impl Guild {
             my_flags: 0,
             my_timeout_until: None,
             viewing_roles: None,
+            viewing_roles_timestamp: None,
             mfa_level: properties["mfa_level"].as_u64().unwrap_or(0),
             vanity_url_code: text(&properties["vanity_url_code"]),
             features: properties["features"]
@@ -2733,6 +2737,7 @@ impl Stores {
                     // ImpersonateStore (164956) keeps a View Server As Role preview across a guild's replacement.
                     if let Some(prior) = self.guilds.iter().find(|known| known.id == guild.id) {
                         guild.viewing_roles = prior.viewing_roles.clone();
+                        guild.viewing_roles_timestamp = prior.viewing_roles_timestamp;
                     }
                     self.guilds.retain(|known| known.id != guild.id);
                     self.guilds.push(guild);
@@ -3755,10 +3760,16 @@ impl Stores {
         }
         // ImpersonateStore (164956) does not listen to READY: a View Server As Role preview survives a reconnect of
         // the same account (never handed to another one).
-        let viewing: Vec<(Id, Vec<Id>)> = if same_account {
+        let viewing: Vec<(Id, Vec<Id>, Option<u64>)> = if same_account {
             self.guilds
                 .iter()
-                .filter_map(|guild| Some((guild.id, guild.viewing_roles.clone()?)))
+                .filter_map(|guild| {
+                    Some((
+                        guild.id,
+                        guild.viewing_roles.clone()?,
+                        guild.viewing_roles_timestamp,
+                    ))
+                })
                 .collect()
         } else {
             Vec::new()
@@ -3767,9 +3778,10 @@ impl Stores {
             .as_array()
             .map(|guilds| guilds.iter().filter_map(Guild::from_value).collect())
             .unwrap_or_default();
-        for (id, roles) in viewing {
+        for (id, roles, ts) in viewing {
             if let Some(guild) = self.guilds.iter_mut().find(|guild| guild.id == id) {
                 guild.viewing_roles = Some(roles);
+                guild.viewing_roles_timestamp = ts;
             }
         }
         // `merged_members` lines up with `guilds`: the current user's member object in each.
@@ -5263,6 +5275,7 @@ mod tests {
             my_flags: 0,
             my_timeout_until: None,
             viewing_roles: None,
+            viewing_roles_timestamp: None,
             mfa_level: 0,
             vanity_url_code: None,
             invites_disabled_until: None,

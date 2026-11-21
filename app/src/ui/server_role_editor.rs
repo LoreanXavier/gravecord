@@ -1245,32 +1245,40 @@ impl Root {
                                             .text_color(color("--text-strong"))
                                             .child(format!("Edit Role \u{2014} {}", draft.name)),
                                     )
-                                    .when(!everyone, |this| {
-                                        this.child(
-                                            div()
-                                                .id("server-role-menu")
-                                                .relative()
-                                                .child(self.anchor_probe("server-role-menu"))
-                                                .cursor_pointer()
-                                                .child(icon("role_menu", 24., "--text-strong"))
-                                                .on_click(cx.listener(move |this, _, _, cx| {
-                                                    if let Some(state) = this
-                                                        .server_settings
-                                                        .as_mut()
-                                                        .and_then(|open| open.roles.as_mut())
-                                                    {
-                                                        state.menu_anchor =
-                                                            "server-role-menu".into();
-                                                        state.menu = if state.menu.is_some() {
-                                                            None
-                                                        } else {
-                                                            Some(role)
-                                                        };
-                                                    }
-                                                    cx.notify();
-                                                })),
-                                        )
-                                    }),
+                                    .when(
+                                        !everyone || self.can_view_as_role(guild, role),
+                                        |this| {
+                                            this.child(
+                                                div()
+                                                    .id("server-role-menu")
+                                                    .relative()
+                                                    .child(self.anchor_probe("server-role-menu"))
+                                                    .cursor_pointer()
+                                                    .child(icon("role_menu", 24., "--text-strong"))
+                                                    .on_click(cx.listener(
+                                                        move |this, _, _, cx| {
+                                                            if let Some(state) = this
+                                                                .server_settings
+                                                                .as_mut()
+                                                                .and_then(|open| {
+                                                                    open.roles.as_mut()
+                                                                })
+                                                            {
+                                                                state.menu_anchor =
+                                                                    "server-role-menu".into();
+                                                                state.menu = if state.menu.is_some()
+                                                                {
+                                                                    None
+                                                                } else {
+                                                                    Some(role)
+                                                                };
+                                                            }
+                                                            cx.notify();
+                                                        },
+                                                    )),
+                                            )
+                                        },
+                                    ),
                             )
                             .child(div().h(px(22.)))
                             .child(tabs),
@@ -1343,6 +1351,8 @@ impl Root {
         let role = state.menu?;
         let guild = open.guild;
         let anchor = self.tip_anchors.borrow().get(&state.menu_anchor).copied()?;
+        let everyone = role == guild;
+        let can_view = self.can_view_as_role(guild, role);
         let item =
             |id: &'static str, label: &'static str, icon_name: &'static str, tint: &'static str| {
                 div()
@@ -1358,6 +1368,7 @@ impl Root {
                     .child(icon(icon_name, 20., tint))
                     .child(
                         div()
+                            .whitespace_nowrap()
                             .text_size(px(14.))
                             .line_height(px(18.))
                             .font_weight(FontWeight(500.))
@@ -1377,7 +1388,7 @@ impl Root {
                     .absolute()
                     .left(anchor.left() + px(12.))
                     .top(anchor.top() + px(11.))
-                    .w(px(182.))
+                    .min_w(px(210.))
                     .p(px(8.))
                     .rounded(px(8.))
                     .border_1()
@@ -1393,34 +1404,63 @@ impl Root {
                         }
                         cx.notify();
                     }))
-                    .child(
-                        item(
-                            "server-role-duplicate",
-                            "Duplicate Role",
-                            "role_duplicate",
-                            "--interactive-text-default",
+                    .when(!everyone, |this| {
+                        this.child(
+                            item(
+                                "server-role-duplicate",
+                                "Duplicate Role",
+                                "role_duplicate",
+                                "--interactive-text-default",
+                            )
+                            .on_click(cx.listener(
+                                move |this, _, _, cx| {
+                                    if let Some(state) = this
+                                        .server_settings
+                                        .as_mut()
+                                        .and_then(|open| open.roles.as_mut())
+                                    {
+                                        state.menu = None;
+                                    }
+                                    this.duplicate_role(guild, role);
+                                    cx.notify();
+                                },
+                            )),
                         )
-                        .on_click(cx.listener(move |this, _, _, cx| {
-                            if let Some(state) = this
-                                .server_settings
-                                .as_mut()
-                                .and_then(|open| open.roles.as_mut())
-                            {
-                                state.menu = None;
-                            }
-                            this.duplicate_role(guild, role);
-                            cx.notify();
-                        })),
-                    )
+                    })
                     // Module 292024, behind `canImpersonateRole` (`ui/view_as_role.rs`).
-                    .when(self.can_view_as_role(guild, role), |this| {
+                    .when(can_view, |this| {
+                        this.when(!everyone, |this| {
+                            this.child(div().my(px(8.)).h(px(1.)).bg(color("--border-subtle")))
+                        })
+                        .child(
+                            item(
+                                "server-role-view-as",
+                                dc_intl::t("arFPfJ"),
+                                "discover_arrow_right",
+                                "--interactive-text-default",
+                            )
+                            .on_click(cx.listener(
+                                move |this, _, _, cx| {
+                                    if let Some(state) = this
+                                        .server_settings
+                                        .as_mut()
+                                        .and_then(|open| open.roles.as_mut())
+                                    {
+                                        state.menu = None;
+                                    }
+                                    this.start_view_as_role(guild, role, cx);
+                                },
+                            )),
+                        )
+                    })
+                    .when(!everyone, |this| {
                         this.child(div().my(px(8.)).h(px(1.)).bg(color("--border-subtle")))
                             .child(
                                 item(
-                                    "server-role-view-as",
-                                    dc_intl::t("arFPfJ"),
-                                    "discover_arrow_right",
-                                    "--interactive-text-default",
+                                    "server-role-delete",
+                                    "Delete",
+                                    "role_delete",
+                                    "--text-feedback-critical",
                                 )
                                 .on_click(cx.listener(
                                     move |this, _, _, cx| {
@@ -1430,32 +1470,13 @@ impl Root {
                                             .and_then(|open| open.roles.as_mut())
                                         {
                                             state.menu = None;
+                                            state.confirm_delete = Some(role);
                                         }
-                                        this.start_view_as_role(guild, role, cx);
+                                        cx.notify();
                                     },
                                 )),
                             )
-                    })
-                    .child(div().my(px(8.)).h(px(1.)).bg(color("--border-subtle")))
-                    .child(
-                        item(
-                            "server-role-delete",
-                            "Delete",
-                            "role_delete",
-                            "--text-feedback-critical",
-                        )
-                        .on_click(cx.listener(move |this, _, _, cx| {
-                            if let Some(state) = this
-                                .server_settings
-                                .as_mut()
-                                .and_then(|open| open.roles.as_mut())
-                            {
-                                state.menu = None;
-                                state.confirm_delete = Some(role);
-                            }
-                            cx.notify();
-                        })),
-                    ),
+                    }),
             )
             .with_priority(2)
             .into_any_element(),

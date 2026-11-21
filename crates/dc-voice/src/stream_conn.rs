@@ -267,6 +267,14 @@ impl Capture {
             Self::Sim(_) => "Simulated",
         }
     }
+    fn soundshare_failed(&self) -> bool {
+        match self {
+            Self::Screen(worker) => worker.soundshare_failed(),
+            Self::Synthetic(..) => false,
+            #[cfg(feature = "sim")]
+            Self::Sim(_) => false,
+        }
+    }
     /// The owner's own tile shows what the encoder takes, every picture, as the native engine's local video sink does
     /// (the self stream tile of module 555148 renders the stream's own video). Only the test pattern keeps the timed
     /// preview of `LOCAL_PREVIEW_INTERVAL`.
@@ -650,6 +658,8 @@ pub(crate) async fn run(
     let mut stream_audio_packets = 0u64;
     let mut stream_audio_bytes = 0u64;
     let mut decryption_failures = 0u64;
+    let mut video_packets_lost = 0u64;
+    let mut outbound_loss_rate: Option<f32> = None;
     let sent_dims = source.map(|s| {
         let l = s.limits();
         (l.width, l.height)
@@ -1257,6 +1267,7 @@ pub(crate) async fn run(
                                 bitrate_actual: est.as_ref().map_or(0, |e| e.encoder_rate),
                                 bytes_sent: vs.bytes_sent,
                                 packets_sent: vs.packets_sent,
+                                packets_lost: video_packets_lost,
                                 width: out_w,
                                 height: out_h,
                                 fps_encoded: encoded_fps,
@@ -1288,6 +1299,9 @@ pub(crate) async fn run(
                         owner_id: owner,
                         sending,
                         connected: enabled || waiting,
+                        paused: controls.borrow().paused,
+                        outbound_loss_rate,
+                        soundshare_failed: capture.as_ref().is_some_and(Capture::soundshare_failed),
                         transport: TransportStats {
                             hostname: Some(diag_host.clone()),
                             local_address: udp
@@ -1356,6 +1370,12 @@ pub(crate) async fn run(
                     if !sending {
                         receivers.sender_reports(&compound, Instant::now());
                     }
+                    if sending
+                        && video_ssrc != 0
+                        && let Some(rate) = rtp::outbound_loss(&compound, video_ssrc)
+                    {
+                        outbound_loss_rate = Some(rate);
+                    }
                     if let Some(sender) = sender.as_mut()
                         && let Some(crypto) = transport.as_mut()
                         && let Some(feedback) = rtp::feedback(&compound, video_ssrc)
@@ -1363,6 +1383,9 @@ pub(crate) async fn run(
                         && dave.ready
                         && !dave.transitioning()
                     {
+                        if let Some(cum) = feedback.cumulative_lost {
+                            video_packets_lost = video_packets_lost.max(cum);
+                        }
                         if !feedback.transport.is_empty() && crypto.sent.reports == 0 {
                             debug!("transport-wide feedback received; send-side estimation runs");
                         }

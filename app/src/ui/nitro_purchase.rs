@@ -454,6 +454,121 @@ pub(crate) struct ReviewContext {
     pub payment_restriction: Option<PaymentRestriction>,
     /// Module 335056: non-USD currency appends trailing `*` to total (`24659.U5`).
     pub non_usd_currency: bool,
+    /// Module 367210 (`IAsfR5`): active trial duration in days.
+    pub trial_days: Option<u32>,
+    /// Module 367210 (`wCkwJf` / `tUzT/U`): active discount offer percentage and interval months (`None` = yearly).
+    pub discount_percent: Option<u8>,
+    pub discount_interval_months: Option<u32>,
+    /// Module 367210 (`7sYIBL` / `uCXulJ` / `Mi5BH/`): multi-period gift savings percentage & interval months.
+    pub gift_savings_percent: Option<i64>,
+    pub gift_interval_months: Option<u32>,
+    /// Module 367210 (`2wPRSF` / `IGU7El`): months of existing subscription credit (optional payment method).
+    pub credit_months: Option<u32>,
+    /// Module 367210 (`Urtyu9`): days until next monthly Orbs drop after Nitro begins.
+    pub orbs_drop_days: Option<u32>,
+    /// Optional explicit subtotal/discount/tax cents (computed from plan defaults when `None`).
+    pub subtotal_cents: Option<i64>,
+    pub discount_cents: Option<i64>,
+    pub tax_cents: Option<i64>,
+}
+
+/// Module 367210 (`Y`): priority promotional/discount/savings notice runs `(text, bold)`.
+/// Priority: 1. Trial (`IAsfR5`) -> 2. Discount offer (`wCkwJf` / `tUzT/U`) -> 3. Multi-period gift savings (`7sYIBL` / `uCXulJ`).
+pub(crate) fn promotional_notice_runs(ctx: &ReviewContext) -> Option<Vec<(String, bool)>> {
+    let runs = if let Some(days) = ctx.trial_days.filter(|d| *d > 0) {
+        dc_intl::format_runs("IAsfR5", &[("daysCount", dc_intl::Arg::Num(days as f64))])
+    } else if let Some(pct) = ctx.discount_percent.filter(|p| *p > 0) {
+        if let Some(months) = ctx.discount_interval_months.filter(|m| *m > 0) {
+            dc_intl::format_runs(
+                "wCkwJf",
+                &[
+                    ("percentOff", dc_intl::Arg::Num(pct as f64)),
+                    ("intervalCount", dc_intl::Arg::Num(months as f64)),
+                ],
+            )
+        } else {
+            dc_intl::format_runs("tUzT/U", &[("percentOff", dc_intl::Arg::Num(pct as f64))])
+        }
+    } else if ctx.is_gift
+        && let Some(savings) = ctx.gift_savings_percent.filter(|s| *s > 0)
+    {
+        if ctx.gift_interval_months == Some(12) {
+            dc_intl::format_runs(
+                "7sYIBL",
+                &[("savingsPercent", dc_intl::Arg::Num(savings as f64))],
+            )
+        } else {
+            let months = ctx.gift_interval_months.unwrap_or(1);
+            dc_intl::format_runs(
+                "uCXulJ",
+                &[
+                    ("intervalCount", dc_intl::Arg::Num(months as f64)),
+                    ("savingsPercent", dc_intl::Arg::Num(savings as f64)),
+                ],
+            )
+        }
+    } else {
+        return None;
+    };
+    Some(
+        runs.into_iter()
+            .map(|(text, tag)| (text, tag.as_deref() == Some("$b")))
+            .collect(),
+    )
+}
+
+/// Module 367210 (`headerBadgeConfig` / `Mi5BH/`): `"{percentOff}% OFF"` badge for multi-period gift savings.
+pub(crate) fn review_gift_badge(ctx: &ReviewContext) -> Option<String> {
+    if !ctx.is_gift {
+        return None;
+    }
+    let savings = ctx.gift_savings_percent.filter(|s| *s > 0)?;
+    Some(dc_intl::format(
+        "Mi5BH/",
+        &[("percentOff", dc_intl::Arg::Num(savings as f64))],
+    ))
+}
+
+/// Module 367210: `"Total Due"` (`Zxav97`) for one-time gifts, `"Today's Total"` (`R0cZsM`) when billed immediately,
+/// else deferred renewal total (`11g67A`).
+pub(crate) fn review_total_label(ctx: &ReviewContext) -> &'static str {
+    if ctx.is_gift && !ctx.is_recurring_gift {
+        dc_intl::t("Zxav97")
+    } else if ctx.is_billed_immediately() {
+        dc_intl::t("R0cZsM")
+    } else {
+        dc_intl::t("11g67A")
+    }
+}
+
+fn format_usd_cents(cents: i64) -> String {
+    let neg = cents < 0;
+    let abs = cents.unsigned_abs();
+    if neg {
+        format!("-${}.{:02}", abs / 100, abs % 100)
+    } else {
+        format!("${}.{:02}", abs / 100, abs % 100)
+    }
+}
+
+fn styled_bold_runs(runs: Vec<(String, bool)>, bold_color: gpui::Rgba) -> gpui::StyledText {
+    let mut text = String::new();
+    let mut hl = Vec::new();
+    for (chunk, bold) in runs {
+        let start = text.len();
+        text.push_str(&chunk);
+        if bold && start < text.len() {
+            hl.push((
+                start..text.len(),
+                gpui::HighlightStyle {
+                    font_weight: Some(FontWeight(700.)),
+                    color: Some(bold_color.into()),
+                    ..gpui::HighlightStyle::default()
+                },
+            ));
+        }
+    }
+    gpui::StyledText::new(text).with_highlights(hl)
 }
 
 impl ReviewContext {
@@ -1062,8 +1177,15 @@ impl Root {
             .flex_col()
             .overflow_hidden()
             .child(header)
-            .child(body)
-            .children(footer);
+            .child(
+                div()
+                    .id(format!("{id}-body"))
+                    .flex_1()
+                    .min_h_0()
+                    .overflow_y_scroll()
+                    .child(body),
+            )
+            .children(footer.map(|f| div().flex_none().child(f)));
         let pose = crate::ui::motion::modal_pose(id);
         deferred(
             div()
@@ -2939,12 +3061,18 @@ impl Root {
                 cx.notify();
                 "nitro-offer-header: progress-basic".to_owned()
             }
-            mode @ ("review-upgrade" | "review-downgrade" | "review-paused" | "review-past-due"
-            | "review-trial" | "review-gift") => {
+            mode @ ("review-upgrade"
+            | "review-downgrade"
+            | "review-paused"
+            | "review-past-due"
+            | "review-trial"
+            | "review-gift"
+            | "review-discount"
+            | "review-gift-savings") => {
                 p.step = Step::Review;
                 p.review = ReviewContext {
                     is_recurring_gift: false,
-                    is_gift: mode == "review-gift",
+                    is_gift: matches!(mode, "review-gift" | "review-gift-savings"),
                     is_past_due: mode == "review-past-due",
                     is_prepaid: false,
                     has_active_sub: matches!(
@@ -2964,6 +3092,16 @@ impl Root {
                     payment_restriction: (mode == "review-downgrade")
                         .then_some(PaymentRestriction::SelectPaymentMethod),
                     non_usd_currency: mode == "review-downgrade",
+                    trial_days: (mode == "review-trial").then_some(14),
+                    discount_percent: (mode == "review-discount").then_some(30),
+                    discount_interval_months: (mode == "review-discount").then_some(3),
+                    gift_savings_percent: (mode == "review-gift-savings").then_some(16),
+                    gift_interval_months: (mode == "review-gift-savings").then_some(12),
+                    credit_months: (mode == "review-discount").then_some(1),
+                    orbs_drop_days: (mode == "review-discount").then_some(30),
+                    subtotal_cents: None,
+                    discount_cents: None,
+                    tax_cents: None,
                 };
                 if mode == "review-trial" {
                     p.offer_badge = Some(PurchaseOfferBadge::FreeTrial);
@@ -3148,26 +3286,56 @@ impl Root {
             ReviewPlanKind::NitroGroup => dc_intl::t("aFBQ3d"),
             _ => dc_intl::t("lG6a5x"),
         };
-        let billed_now = review.is_billed_immediately();
-        let total_label = if billed_now {
-            dc_intl::t("R0cZsM")
-        } else {
-            dc_intl::t("11g67A")
+        let total_label = review_total_label(&review);
+        let default_subtotal_cents: i64 = match review.plan_kind {
+            ReviewPlanKind::BasicMonthly => 299,
+            ReviewPlanKind::BasicYearly => 2999,
+            ReviewPlanKind::ClassicMonthly => 499,
+            ReviewPlanKind::ClassicYearly => 4999,
+            ReviewPlanKind::NitroYearly => 9999,
+            ReviewPlanKind::NitroGroup => 1499,
+            ReviewPlanKind::NitroMultiMonth(months) => 999 * i64::from(months.max(1)),
+            ReviewPlanKind::Boost => 499,
+            ReviewPlanKind::NitroMonthly => 999,
         };
-        let raw_amount = if review.is_trial_eligible {
-            "$0.00"
-        } else if matches!(
-            review.plan_kind,
-            ReviewPlanKind::BasicMonthly | ReviewPlanKind::BasicYearly
-        ) {
-            "$2.99"
+        let subtotal_cents = review.subtotal_cents.unwrap_or(default_subtotal_cents);
+        let discount_cents = review.discount_cents.unwrap_or_else(|| {
+            if let Some(pct) = review.discount_percent.filter(|p| *p > 0) {
+                (subtotal_cents * i64::from(pct)) / 100
+            } else {
+                0
+            }
+        });
+        let tax_cents = review.tax_cents.unwrap_or(0);
+        let total_cents = if review.is_trial_eligible {
+            0
         } else {
-            "$9.99"
+            (subtotal_cents - discount_cents + tax_cents).max(0)
         };
+        let raw_subtotal = format_usd_cents(subtotal_cents);
+        let raw_amount = format_usd_cents(total_cents);
         let formatted_total = if review.non_usd_currency {
             format!("{raw_amount}*")
         } else {
-            raw_amount.to_owned()
+            raw_amount.clone()
+        };
+        let promo_notice = promotional_notice_runs(&review);
+        let gift_badge = review_gift_badge(&review);
+        let credit_notice = review.credit_months.filter(|m| *m > 0).map(|months| {
+            dc_intl::format_runs("2wPRSF", &[("months", dc_intl::Arg::Num(months as f64))])
+                .into_iter()
+                .map(|(t, tag)| (t, tag.as_deref() == Some("$b")))
+                .collect::<Vec<_>>()
+        });
+        let orbs_notice = (!is_gift)
+            .then_some(review.orbs_drop_days)
+            .flatten()
+            .filter(|d| *d > 0)
+            .map(|days| dc_intl::format("Urtyu9", &[("days", dc_intl::Arg::Num(days as f64))]));
+        let payment_heading = if review.credit_months.is_some_and(|m| m > 0) {
+            dc_intl::t("IGU7El")
+        } else {
+            dc_intl::t("u+Cw58")
         };
         // Module 335056: plain switch notice (`spIYou` paused resume, `+y0Tjy` deferred downgrade).
         let switch_notice: Option<gpui::StyledText> = if review.is_past_due {
@@ -3223,7 +3391,88 @@ impl Root {
             .flex()
             .flex_col()
             .gap(px(12.))
-            .child(Self::nitro_heading(plan_summary, 24., 24., true))
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .justify_between()
+                    .gap(px(8.))
+                    .child(Self::nitro_heading(plan_summary, 24., 24., true))
+                    .when_some(gift_badge, |row, badge| {
+                        row.child(
+                            div()
+                                .px(px(8.))
+                                .py(px(3.))
+                                .rounded_full()
+                                .bg(color("--brand-500"))
+                                .text_size(px(11.))
+                                .font_weight(FontWeight(700.))
+                                .text_color(color("--white"))
+                                .child(badge),
+                        )
+                    }),
+            )
+            // Module 367210 (`Y` -> `H`): nitro-pink gradient promotional/discount/savings banner.
+            .when_some(promo_notice, |col, runs| {
+                col.child(
+                    div()
+                        .id("review-promo-banner")
+                        .w_full()
+                        .px(px(12.))
+                        .py(px(8.))
+                        .rounded(px(8.))
+                        .bg(gpui::linear_gradient(
+                            90.,
+                            gpui::linear_color_stop(
+                                color("--expressive-gradient-nitro-pink-start"),
+                                0.,
+                            ),
+                            gpui::linear_color_stop(
+                                color("--expressive-gradient-nitro-pink-end"),
+                                1.,
+                            ),
+                        ))
+                        .flex()
+                        .items_center()
+                        .gap(px(8.))
+                        .child(icon("nitro_wheel", 18., "--white"))
+                        .child(
+                            div()
+                                .flex_1()
+                                .min_w_0()
+                                .text_size(px(13.))
+                                .line_height(px(18.))
+                                .text_color(color("--white"))
+                                .child(styled_bold_runs(runs, color("--white"))),
+                        ),
+                )
+            })
+            .when_some(orbs_notice, |col, text| {
+                col.child(
+                    div()
+                        .px(px(12.))
+                        .py(px(8.))
+                        .rounded(px(8.))
+                        .bg(color("--background-mod-subtle"))
+                        .text_size(px(12.))
+                        .line_height(px(16.))
+                        .text_color(color("--text-default"))
+                        .child(text),
+                )
+            })
+            .when_some(credit_notice, |col, runs| {
+                col.child(
+                    div()
+                        .px(px(12.))
+                        .py(px(8.))
+                        .rounded(px(8.))
+                        .bg(color("--background-mod-subtle"))
+                        .text_size(px(12.))
+                        .line_height(px(16.))
+                        .text_color(color("--text-default"))
+                        .child(styled_bold_runs(runs, color("--text-strong"))),
+                )
+            })
             .when_some(switch_notice, |col, notice| {
                 col.child(
                     div()
@@ -3273,7 +3522,7 @@ impl Root {
                             .text_size(px(12.))
                             .font_weight(FontWeight(700.))
                             .text_color(color("--text-muted"))
-                            .child(dc_intl::t("mmDvV+")),
+                            .child(payment_heading),
                     )
                     .child(
                         div()
@@ -3333,8 +3582,37 @@ impl Root {
                             .text_size(px(13.))
                             .text_color(color("--text-default"))
                             .child(plan_summary)
-                            .child(raw_amount),
+                            .child(raw_subtotal),
                     )
+                    .when(discount_cents > 0, |col| {
+                        col.child(
+                            div()
+                                .flex()
+                                .items_center()
+                                .justify_between()
+                                .text_size(px(13.))
+                                .text_color(color("--text-feedback-positive"))
+                                .child(
+                                    review
+                                        .discount_percent
+                                        .map(|p| format!("Discount (-{p}%)"))
+                                        .unwrap_or_else(|| "Discount".to_owned()),
+                                )
+                                .child(format_usd_cents(-discount_cents)),
+                        )
+                    })
+                    .when(tax_cents > 0, |col| {
+                        col.child(
+                            div()
+                                .flex()
+                                .items_center()
+                                .justify_between()
+                                .text_size(px(13.))
+                                .text_color(color("--text-muted"))
+                                .child("Tax")
+                                .child(format_usd_cents(tax_cents)),
+                        )
+                    })
                     .child(
                         // Module 24659 (`_J` Purchase Details + `Hc` Subscription details + `DK` renewal notice).
                         div()
@@ -3858,5 +4136,71 @@ mod tests {
         assert_eq!(r.cta_label(), "Buy Gift");
         r.is_recurring_gift = true;
         assert_eq!(r.cta_label(), "Subscribe");
+    }
+
+    #[test]
+    fn review_promotional_notices_and_totals_match_module_367210() {
+        // Trial priority (IAsfR5)
+        let mut r = super::ReviewContext {
+            trial_days: Some(14),
+            discount_percent: Some(30),
+            ..Default::default()
+        };
+        let trial_text: String = super::promotional_notice_runs(&r)
+            .unwrap()
+            .into_iter()
+            .map(|(t, _)| t)
+            .collect();
+        assert!(trial_text.contains("14"));
+
+        // Monthly discount (wCkwJf)
+        r.trial_days = None;
+        r.discount_interval_months = Some(3);
+        let mo_text: String = super::promotional_notice_runs(&r)
+            .unwrap()
+            .into_iter()
+            .map(|(t, _)| t)
+            .collect();
+        assert!(mo_text.contains("30%"));
+        assert!(mo_text.contains("3"));
+
+        // Yearly discount (tUzT/U)
+        r.discount_interval_months = None;
+        let yr_text: String = super::promotional_notice_runs(&r)
+            .unwrap()
+            .into_iter()
+            .map(|(t, _)| t)
+            .collect();
+        assert!(yr_text.contains("30%"));
+
+        // Multi-period gift savings (7sYIBL / uCXulJ + Mi5BH/)
+        r.discount_percent = None;
+        r.is_gift = true;
+        r.gift_savings_percent = Some(16);
+        r.gift_interval_months = Some(12);
+        let gift_yr: String = super::promotional_notice_runs(&r)
+            .unwrap()
+            .into_iter()
+            .map(|(t, _)| t)
+            .collect();
+        assert!(gift_yr.contains("16%"));
+        assert_eq!(super::review_gift_badge(&r).as_deref(), Some("16% OFF"));
+        assert_eq!(super::review_total_label(&r), dc_intl::t("Zxav97"));
+
+        r.gift_interval_months = Some(3);
+        let gift_mo: String = super::promotional_notice_runs(&r)
+            .unwrap()
+            .into_iter()
+            .map(|(t, _)| t)
+            .collect();
+        assert!(gift_mo.contains("3"));
+        assert!(gift_mo.contains("16%"));
+
+        r.is_gift = false;
+        assert_eq!(super::review_total_label(&r), dc_intl::t("R0cZsM"));
+        assert!(!dc_intl::t("2wPRSF").is_empty());
+        assert!(!dc_intl::t("Urtyu9").is_empty());
+        assert!(!dc_intl::t("u+Cw58").is_empty());
+        assert!(!dc_intl::t("IGU7El").is_empty());
     }
 }

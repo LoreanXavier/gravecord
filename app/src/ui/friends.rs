@@ -693,17 +693,23 @@ impl Root {
                                                 super::name_styles::Display::Font,
                                             )),
                                     )
-                                    .child(
-                                        div()
-                                            .ml(px(5.))
-                                            .opacity(0.)
-                                            .group_hover(group, |style| style.opacity(1.))
-                                            .text_size(px(14.))
-                                            .line_height(px(16.))
-                                            .font_weight(FontWeight(500.))
-                                            .text_color(color("--text-default"))
-                                            .child(user.username.clone()),
-                                    ),
+                                    .child({
+                                        let (shown, concealed) = self.profile_username(user);
+                                        self.streamer_tip(
+                                            format!("friend-username-streamer-{}", user.id),
+                                            concealed,
+                                            div()
+                                                .ml(px(5.))
+                                                .opacity(0.)
+                                                .group_hover(group, |style| style.opacity(1.))
+                                                .text_size(px(14.))
+                                                .line_height(px(16.))
+                                                .font_weight(FontWeight(500.))
+                                                .text_color(color("--text-default"))
+                                                .child(shown),
+                                            cx,
+                                        )
+                                    }),
                             )
                             .child(
                                 div()

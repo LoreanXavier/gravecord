@@ -333,6 +333,8 @@ pub(super) enum Content {
     Text(String),
     /// Module 130577: non-interactive message preview (`hideAccessories`, `disableInteraction`, `hideAutomodDismiss`).
     RemovedMessage(Box<dc_state::Message>),
+    /// Module 396787 / 576470: live ticking rate-limit countdown (`VIJkAy`, `showUnits: true`).
+    RateLimitCountdown { deadline: std::time::Instant },
     /// Module 181622's `failedDestinations_PiyhYP` box of rows.
     FailedDestinations(Vec<Destination>),
     /// Module 228855: "This change affects" over the server's row.
@@ -1301,6 +1303,13 @@ impl Root {
         match content {
             Content::Text(text) => body_text(text),
             Content::RemovedMessage(message) => self.message_preview(&message),
+            Content::RateLimitCountdown { deadline } => {
+                let remaining = deadline
+                    .saturating_duration_since(std::time::Instant::now())
+                    .as_secs();
+                let duration = super::group_manage::format_countdown_units(remaining);
+                body_text(dc_intl::format("VIJkAy", &[("duration", duration.into())]))
+            }
             Content::ChannelTopic(channel) => self.channel_topic_body(channel, cx),
             Content::SoundboardKeybind { .. } => self.soundboard_keybind_body(cx),
             Content::FailedDestinations(destinations) => {

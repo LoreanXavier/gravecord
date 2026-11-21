@@ -4248,13 +4248,14 @@ impl Root {
                 let can_transfer = show_transfer_ownership
                     && (cfg!(feature = "capture")
                         || known.is_some_and(|g| {
-                            super::transfer_ownership::can_transfer_ownership_with_mfa(
-                                g.owner_id,
-                                g.mfa_level,
-                                me_id,
-                                self.stores.account.mfa_enabled,
-                                &target_user,
-                            )
+                            g.viewing_roles.is_none()
+                                && super::transfer_ownership::can_transfer_ownership_with_mfa(
+                                    g.owner_id,
+                                    g.mfa_level,
+                                    me_id,
+                                    self.stores.account.mfa_enabled,
+                                    &target_user,
+                                )
                         }));
                 moderation_user_items(
                     is_non_user_bot,

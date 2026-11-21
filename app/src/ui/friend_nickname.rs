@@ -59,8 +59,8 @@ impl Root {
 
     pub(super) fn dm_display_name(&self, user: &User) -> String {
         self.nickname_for(user.id)
-            .unwrap_or(user.display_name())
-            .to_owned()
+            .map(str::to_owned)
+            .unwrap_or_else(|| self.concealed_display_name(user).0)
     }
 
     pub(super) fn private_channel_name(&self, channel: &PrivateChannel) -> String {

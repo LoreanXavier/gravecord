@@ -306,6 +306,12 @@ impl crate::Stores {
     pub fn impersonate(&mut self, guild: Id, roles: Vec<Id>) {
         if let Some(known) = self.guilds.iter_mut().find(|known| known.id == guild) {
             known.viewing_roles = Some(roles.into_iter().filter(|role| *role != guild).collect());
+            if known.viewing_roles_timestamp.is_none() {
+                let now_ms = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map_or(0, |d| d.as_millis() as u64);
+                known.viewing_roles_timestamp = Some(now_ms);
+            }
         }
     }
 
@@ -314,7 +320,10 @@ impl crate::Stores {
         self.guilds
             .iter_mut()
             .find(|known| known.id == guild)
-            .and_then(|known| known.viewing_roles.take())
+            .and_then(|known| {
+                known.viewing_roles_timestamp = None;
+                known.viewing_roles.take()
+            })
             .is_some()
     }
 }

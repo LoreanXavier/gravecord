@@ -443,8 +443,9 @@ impl Root {
             to_end <= TRIGGER
         };
         let limit = message_window::load_more_limit(self.page());
+        let history_blocked = self.impersonate_history_cutoff(channel).is_some();
         let (before, after) = (
-            (state.has_more_before && near_before).then_some(first.id),
+            (state.has_more_before && near_before && !history_blocked).then_some(first.id),
             (state.has_more_after && near_after).then_some(last.id),
         );
         let (before, after) = match (before, after) {

@@ -8998,6 +8998,7 @@ mod tests {
             my_flags: 0,
             my_timeout_until: None,
             viewing_roles: None,
+            viewing_roles_timestamp: None,
             mfa_level: 0,
             vanity_url_code: None,
             invites_disabled_until: None,

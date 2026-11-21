@@ -973,6 +973,8 @@ pub struct Root {
     /// across runs).
     stage_welcome: Option<Id>,
     stage_welcome_seen: bool,
+    /// Stage channel where the user clicked "Continue without starting" (`!isOnStartStageScreen`, module 717965/394412).
+    stage_left_start_screen: Option<Id>,
     /// The caret of the Stage's leave button is open (its "End Stage for Everyone" menu), and the confirm question
     /// for that Stage channel.
     stage_leave_menu: bool,
@@ -1584,6 +1586,7 @@ impl Root {
             stage_coach_closed: false,
             stage_welcome: None,
             stage_welcome_seen: false,
+            stage_left_start_screen: None,
             stage_leave_menu: false,
             stage_end_confirm: None,
             voice_alert: None,
@@ -2414,6 +2417,10 @@ impl Root {
                 }
                 if let Some(rest) = key.strip_prefix(member_onboarding::SUBMIT_KEY) {
                     self.onboarding_submit_answered(rest, &body, cx);
+                    return;
+                }
+                if key.starts_with(group_manage::GROUP_EDIT_KEY) {
+                    self.group_edit_answered(&body, cx);
                     return;
                 }
                 if self.spotify_metadata_fetched(&key, &body, cx) {
@@ -4033,7 +4040,7 @@ impl Root {
         self.current_guild()
             .and_then(|guild| self.stores.members.get(guild.id, user.id))
             .and_then(|member| member.nick.clone())
-            .unwrap_or_else(|| user.display_name().to_owned())
+            .unwrap_or_else(|| self.concealed_display_name(user).0)
     }
 
     /// The official panel: 264px wide, 42px rows, section headers with their counts.
@@ -4473,13 +4480,19 @@ impl Root {
             .channel
             .and_then(|channel| self.stores.messages.get(&channel))
             .is_some_and(|list| !list.is_empty());
+        let history_cutoff = self
+            .channel
+            .and_then(|channel| self.impersonate_history_cutoff(channel));
         let (has_more_before, has_more_after) = self
             .channel
             .filter(|_| has_messages)
             .and_then(|channel| self.stores.windows.get(&channel))
             .filter(|window| window.has_fetched && !window.error)
             .map_or((false, false), |window| {
-                (window.has_more_before, window.has_more_after)
+                (
+                    window.has_more_before && history_cutoff.is_none(),
+                    window.has_more_after,
+                )
             });
         let skeleton_lines = if (has_more_before || has_more_after)
             && let Some(channel) = self.channel
@@ -4549,6 +4562,11 @@ impl Root {
         let collapse_deleted = self.message_logger_collapses();
         let mut stretch: [Option<Id>; blocked::FOLDS] = [None; blocked::FOLDS];
         for (index, message) in messages.iter().enumerate() {
+            if let Some(cutoff) = history_cutoff
+                && message.timestamp.timestamp_millis() < cutoff as i64
+            {
+                continue;
+            }
             let local = message.local_time();
             let day = (local.year(), local.ordinal());
             let new_day = last_day != Some(day);

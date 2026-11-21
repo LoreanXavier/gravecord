@@ -317,17 +317,28 @@ impl Root {
         self.request_image(GRAPHIC.to_owned(), GRAPHIC.to_owned());
     }
 
-    /// The Stage view: the waiting view over its gradient, or the live Stage. Both fill the page under the title bar
-    /// (stage-ann/stage-waiting and stage-live-hover: the page is 905 by 687 at (375, 33)).
+    /// The Stage view: the waiting view over its gradient, or the live/pre-start Stage room.
+    /// Module 717965: after clicking "Continue without starting", stays in the Stage room (`is_live = false`) with
+    /// event prompts (`394412`) and "Start the Stage" (`859894`) above bottom controls.
     pub(super) fn stage_view(&self, cx: &mut Context<Self>) -> AnyElement {
         let Some(channel) = self.current_channel() else {
             return div().into_any_element();
         };
         match self.stores.stage_instances.get_by_channel(channel.id) {
-            None => self.stage_waiting(channel, cx),
+            None => {
+                let connected_here = self
+                    .call
+                    .as_ref()
+                    .is_some_and(|call| call.channel == channel.id);
+                if connected_here && self.stage_left_start_screen == Some(channel.id) {
+                    self.stage_live(channel, channel.name.clone(), false, cx)
+                } else {
+                    self.stage_waiting(channel, cx)
+                }
+            }
             Some(instance) => {
                 let topic = instance.topic.clone();
-                self.stage_live(channel, topic, cx)
+                self.stage_live(channel, topic, true, cx)
             }
         }
     }
@@ -451,6 +462,7 @@ impl Root {
                                                 this.stage_welcome_seen = true;
                                                 this.stage_welcome = Some(target);
                                             } else if let Some(guild) = guild {
+                                                this.stage_left_start_screen = Some(target);
                                                 this.request_join_voice(guild, target, cx);
                                             }
                                             cx.notify();
@@ -523,7 +535,13 @@ impl Root {
 
     /// The live Stage on black: `participants_ZW-j0k` over the speakers' and audience's sections, the controls under
     /// them (`bottomControls_rTsZa_`).
-    fn stage_live(&self, channel: &Channel, topic: String, cx: &mut Context<Self>) -> AnyElement {
+    fn stage_live(
+        &self,
+        channel: &Channel,
+        topic: String,
+        is_live: bool,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
         let guild = self.guild.unwrap_or_default();
         let target = channel.id;
         let mut speakers = Vec::new();
@@ -571,7 +589,7 @@ impl Root {
                 && self
                     .stores
                     .guild(guild)
-                    .is_some_and(|g| g.owner_id == Some(person));
+                    .is_some_and(|g| g.viewing_roles.is_none() && g.owner_id == Some(person));
             let mod_badge = is_stage_mod.then(|| {
                 div()
                     .id(gpui::SharedString::from(format!(
@@ -868,6 +886,7 @@ impl Root {
                                     .justify_center()
                                     .on_click(cx.listener(move |this, _, _, cx| {
                                         this.stage_leave_menu = false;
+                                        this.stage_left_start_screen = None;
                                         this.leave_stage_or_ask(guild, target, cx);
                                         cx.notify();
                                     }))
@@ -1099,6 +1118,36 @@ impl Root {
                             .h(px(14.)),
                     )
             }))
+            // Module 717965 / 394412: when in the Stage room before going live (`!is_live`), render `.eventPrompts_Z_HbQM`
+            // above the bottom control bar for speakers and moderators (`showDismiss: true` + "Start the Stage").
+            .children({
+                let is_speaker_me = me.is_some_and(|id| speakers.iter().any(|u| u.id == id));
+                (!is_live && (is_speaker_me || moderator)).then(|| {
+                    let prompts = self.event_prompt_cards(guild, target, true, cx);
+                    div()
+                        .id("stage-live-event-prompts")
+                        .absolute()
+                        .left_0()
+                        .right_0()
+                        .bottom(px(80.))
+                        .flex()
+                        .flex_col()
+                        .items_center()
+                        .gap(px(8.))
+                        .children(prompts)
+                        .children(moderator.then(|| {
+                            div().w(px(400.)).child(self.stage_card(
+                                "stage-prelive-start-card",
+                                "stage_channel",
+                                "Start the Stage",
+                                "Pick a topic to start the conversation.",
+                                cx.listener(move |this, _, _, cx| {
+                                    this.open_start_stage(target, cx)
+                                }),
+                            ))
+                        }))
+                })
+            })
             .child(controls)
             .children(leave_menu)
             .children(self.tile_menu_layer(cx));
@@ -1980,6 +2029,7 @@ impl Root {
             this.stage_welcome = None;
             this.stage_welcome_seen = true;
             if let Some(guild) = this.guild {
+                this.stage_left_start_screen = Some(target);
                 this.request_join_voice(guild, target, cx);
             }
         };

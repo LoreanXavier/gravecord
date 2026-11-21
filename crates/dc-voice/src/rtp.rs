@@ -222,6 +222,8 @@ pub(crate) fn nack(sender: u32, media: u32, sequences: &[u16]) -> Option<([u8; 8
 pub(crate) struct Feedback {
     /// The worst loss fraction (over 256) the reports name for this source.
     pub loss: Option<u8>,
+    /// The highest cumulative lost packet count (24-bit signed, clamped `>= 0`) reported for this source.
+    pub cumulative_lost: Option<u64>,
     /// A picture loss indication for this source.
     pub keyframe: bool,
     /// Sequence numbers to resend, at most 128.
@@ -269,6 +271,14 @@ pub(crate) fn feedback(mut remaining: &[u8], video_ssrc: u32) -> Option<Feedback
                     if report[..4] == video_ssrc.to_be_bytes() {
                         feedback.loss =
                             Some(feedback.loss.map_or(report[4], |loss| loss.max(report[4])));
+                        let raw = ((i32::from(report[5]) << 16)
+                            | (i32::from(report[6]) << 8)
+                            | i32::from(report[7]))
+                            << 8
+                            >> 8;
+                        let cum = u64::try_from(raw).unwrap_or(0);
+                        feedback.cumulative_lost =
+                            Some(feedback.cumulative_lost.map_or(cum, |known| known.max(cum)));
                     }
                 }
             }

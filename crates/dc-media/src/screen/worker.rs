@@ -51,6 +51,8 @@ struct State {
     pending: AtomicBool,
     /// The network side is behind: frames are skipped before they are encoded, never after.
     held: AtomicBool,
+    /// System audio capture (`AudioCapture`) failed to start while video capture kept running.
+    soundshare_failed: AtomicBool,
     origin: Instant,
 }
 
@@ -97,6 +99,7 @@ impl Worker {
             cadence: Cadence::new(settings.fps),
             pending: AtomicBool::new(false),
             held: AtomicBool::new(false),
+            soundshare_failed: AtomicBool::new(false),
             origin: Instant::now(),
         });
         let (started_send, started) = mpsc::sync_channel::<Result<()>>(1);
@@ -134,8 +137,15 @@ impl Worker {
             }
         }
         if settings.audio {
-            // On failure `worker` drops here and stops the capture again.
-            worker._audio = Some(AudioCapture::start(audio)?);
+            match AudioCapture::start(audio) {
+                Ok(capture) => worker._audio = Some(capture),
+                Err(_) => {
+                    worker
+                        .state
+                        .soundshare_failed
+                        .store(true, Ordering::Release);
+                }
+            }
         }
         Ok(worker)
     }
@@ -188,6 +198,11 @@ impl Worker {
     /// Whether a hardware encoder failed or stalled mid-stream and openh264 took over.
     pub fn fell_back(&self) -> bool {
         self.state.fell_back.load(Ordering::Acquire)
+    }
+
+    /// Whether system audio capture failed to start while video capture kept running (`1001`).
+    pub fn soundshare_failed(&self) -> bool {
+        self.state.soundshare_failed.load(Ordering::Acquire)
     }
 
     /// Frames the capture API delivered that the pacing gate accepted.

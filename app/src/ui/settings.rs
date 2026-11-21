@@ -44,7 +44,7 @@ mod search;
 mod search_terms;
 mod server_boost_page;
 mod soundboard;
-mod streamer;
+pub(super) mod streamer;
 mod streamer_cover;
 mod tester;
 pub(crate) use render::radio_dot;
@@ -2014,7 +2014,15 @@ impl Root {
                         .flex()
                         .items_center()
                         .gap(px(16.))
-                        .child(value(user.username.clone()))
+                        .child({
+                            let (shown, concealed) = self.profile_username(&user);
+                            self.streamer_tip(
+                                "account-username-streamer",
+                                concealed,
+                                value(shown),
+                                cx,
+                            )
+                        })
                         .child(opens(
                             "username",
                             "settings-edit",

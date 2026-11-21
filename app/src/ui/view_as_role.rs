@@ -345,17 +345,52 @@ impl Root {
         let Some(known) = self.stores.guild(guild) else {
             return;
         };
-        // GAP: a thread in view is not checked (its parent's permissions decide in the official).
+        // Check the channel or thread in view (a thread's visibility is decided by its parent channel).
         let hidden = self.channel.is_some_and(|channel| {
-            known.channels.iter().any(|found| {
-                found.id == channel
-                    && !permissions::can_in_channel(known, found, me, permissions::VIEW_CHANNEL)
+            let target_channel = known
+                .channels
+                .iter()
+                .find(|found| found.id == channel)
+                .or_else(|| {
+                    known
+                        .threads
+                        .iter()
+                        .find(|thread| thread.id == channel)
+                        .and_then(|thread| known.channels.iter().find(|c| c.id == thread.parent_id))
+                });
+            target_channel.is_some_and(|found| {
+                !permissions::can_in_channel(known, found, me, permissions::VIEW_CHANNEL)
             })
         });
         if hidden && let Some(landing) = landing_channel(known, me) {
             self.select(guild, Some(landing));
         } else {
             self.rebuild_rows();
+        }
+    }
+
+    /// Module `891522` message-history gate: while viewing a server as a role that lacks `READ_MESSAGE_HISTORY`,
+    /// return `viewing_roles_timestamp` so older history is neither fetched nor rendered.
+    pub(super) fn impersonate_history_cutoff(&self, channel: Id) -> Option<u64> {
+        let guild_id = self.guild?;
+        let known = self.stores.guild(guild_id)?;
+        let ts = known.viewing_roles_timestamp?;
+        let me = self.stores.me()?;
+        let target = known
+            .channels
+            .iter()
+            .find(|found| found.id == channel)
+            .or_else(|| {
+                known
+                    .threads
+                    .iter()
+                    .find(|thread| thread.id == channel)
+                    .and_then(|thread| known.channels.iter().find(|c| c.id == thread.parent_id))
+            })?;
+        if permissions::can_in_channel(known, target, me, permissions::READ_MESSAGE_HISTORY) {
+            None
+        } else {
+            Some(ts)
         }
     }
 
@@ -686,14 +721,17 @@ impl Root {
                 .child(dc_intl::t("MNSTbY"))
                 .into_any_element()
         };
+        let left = ((anchor.left() + anchor.right()) / 2. - px(125.))
+            .max(px(8.))
+            .min((px(self.viewport.0) - px(258.)).max(px(8.)));
         Some(
             gpui::deferred(
-                // `container_V7nUkK`: 4px below the button, at most 250px wide, 8px 8px 4px.
+                // `container_V7nUkK`: 4px below the button, center-aligned, at most 250px wide, 8px 8px 4px.
                 div()
                     .id("view-as-role-picker")
                     .occlude()
                     .absolute()
-                    .left(anchor.left())
+                    .left(left)
                     .top(anchor.bottom() + px(4.))
                     .w(px(250.))
                     .pt(px(8.))

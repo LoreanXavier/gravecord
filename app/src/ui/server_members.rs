@@ -60,6 +60,9 @@ pub(crate) struct MembersState {
     /// The join-method menu is open, and on its Other Join Methods view (`h` of module 311567).
     join_open: bool,
     join_other: bool,
+    /// Keyboard focus state for `members-table-join-method-menu` (`165862` menu navigation).
+    join_focus_idx: Option<usize>,
+    join_focus: gpui::FocusHandle,
     /// The menu's invite code box.
     join_search: Entity<Editor>,
     /// Bumped by each keystroke in the box and by closing the menu, so only the last keystroke's 300ms settle applies
@@ -172,8 +175,8 @@ fn join_type_icon(kind: u64) -> Option<&'static str> {
         3 => Some("discover"),
         4 => Some("discover_hub"),
         5 | 6 => Some("member_invite_link"),
-        // GAP: Manual Verification's icon (module 509402, a pencil in a box) has no asset in app/assets/icons yet.
-        7 => None,
+        // Module 509402: Manual Verification icon.
+        7 => Some("manual_verification"),
         8 => Some("system_game_controller"),
         _ => None,
     }
@@ -355,6 +358,8 @@ impl Root {
             join: JoinFilter::default(),
             join_open: false,
             join_other: false,
+            join_focus_idx: None,
+            join_focus: cx.focus_handle(),
             join_search,
             join_typed: 0,
             invites: Vec::new(),
@@ -711,13 +716,18 @@ impl Root {
                 let created = id
                     .parse::<u64>()
                     .map_or(0, |id| ((id >> 22) as i64 + 1_420_070_400_000) / 1000);
-                let name = user
-                    .as_ref()
-                    .map(|user| user.display_name().to_owned())
-                    .unwrap_or_default();
+                let nick = member["nick"]
+                    .as_str()
+                    .filter(|s| !s.is_empty())
+                    .map(str::to_owned);
+                let name = nick.unwrap_or_else(|| {
+                    user.as_ref()
+                        .map(|user| self.concealed_display_name(user).0)
+                        .unwrap_or_default()
+                });
                 let username = user
                     .as_ref()
-                    .map(|user| user.username.clone())
+                    .map(|user| self.profile_username(user).0)
                     .unwrap_or_default();
                 let cell = |text: String| {
                     div()
@@ -1048,6 +1058,102 @@ impl Root {
             .into_any_element()
     }
 
+    /// Module 311567 / 165862 keyboard navigation for the Join Method menu rows.
+    fn members_join_key_down(
+        &mut self,
+        guild: Id,
+        event: &gpui::KeyDownEvent,
+        cx: &mut Context<Self>,
+    ) {
+        let hide = self.streamer_hides_invites();
+        let (other, count, cur, invites, join) = {
+            let Some(state) = self.members_state() else {
+                return;
+            };
+            let count = if state.join_other {
+                1 + OTHER_JOIN_TYPES.len()
+            } else {
+                let inv_count = if hide { 0 } else { state.invites.len() };
+                1 + inv_count + 1
+            };
+            (
+                state.join_other,
+                count,
+                state.join_focus_idx,
+                if hide {
+                    Vec::new()
+                } else {
+                    state.invites.clone()
+                },
+                state.join.clone(),
+            )
+        };
+        match event.keystroke.key.as_str() {
+            "escape" => {
+                self.close_join_menu();
+                cx.stop_propagation();
+                cx.notify();
+            }
+            "left" | "backspace" if other => {
+                if let Some(state) = self.members_state_mut() {
+                    state.join_other = false;
+                    state.join_focus_idx = None;
+                }
+                cx.stop_propagation();
+                cx.notify();
+            }
+            "down" => {
+                if let Some(state) = self.members_state_mut() {
+                    let next = cur.map_or(0, |i| (i + 1) % count.max(1));
+                    state.join_focus_idx = Some(next);
+                }
+                cx.stop_propagation();
+                cx.notify();
+            }
+            "up" => {
+                if let Some(state) = self.members_state_mut() {
+                    let next = cur.map_or(count.saturating_sub(1), |i| {
+                        if i == 0 {
+                            count.saturating_sub(1)
+                        } else {
+                            i - 1
+                        }
+                    });
+                    state.join_focus_idx = Some(next);
+                }
+                cx.stop_propagation();
+                cx.notify();
+            }
+            "enter" | "space" => {
+                let Some(idx) = cur else {
+                    return;
+                };
+                if other {
+                    if idx == 0 {
+                        if let Some(state) = self.members_state_mut() {
+                            state.join_other = false;
+                            state.join_focus_idx = None;
+                        }
+                        cx.notify();
+                    } else if let Some(&kind) = OTHER_JOIN_TYPES.get(idx - 1) {
+                        self.pick_join_filter(guild, join.pick(Some(kind)), cx);
+                    }
+                } else if idx == 0 {
+                    self.pick_join_filter(guild, join.pick(None), cx);
+                } else if idx <= invites.len() {
+                    let filter = JoinFilter::invite(&invites[idx - 1]);
+                    self.pick_join_filter(guild, filter, cx);
+                } else if let Some(state) = self.members_state_mut() {
+                    state.join_other = true;
+                    state.join_focus_idx = Some(0);
+                    cx.notify();
+                }
+                cx.stop_propagation();
+            }
+            _ => {}
+        }
+    }
+
     /// Module 311567's `members-table-join-method-menu` ("Server Join Method Options"), under the Join Method header
     /// (position bottom, align left, spacing 4). The main view: the invite code box, All, the server's invites (none under
     /// Streamer Mode's Hide Invite Links) and Other Join Methods with the picked type as its subtext; that row swaps in
@@ -1081,34 +1187,46 @@ impl Root {
         };
         let radio = |checked: bool| super::create_channel::radio(checked).ml(px(8.));
         let other = || dc_intl::t("Kz/cho");
+        let focused_idx = state.join_focus_idx;
+        let focus_handle = state.join_focus.clone();
+        let highlight = |row: gpui::Stateful<gpui::Div>, idx: usize| {
+            row.when(focused_idx == Some(idx), |d| {
+                d.bg(color("--interactive-background-hover"))
+                    .rounded(px(4.))
+            })
+        };
         let mut rows: Vec<AnyElement> = Vec::new();
         if state.join_other {
             rows.push(
-                join_row("server-members-join-back".into())
+                highlight(join_row("server-members-join-back".into()), 0)
                     .justify_start()
                     .child(icon("chevron_small_left", 20., "--interactive-text-default").mr(px(8.)))
                     .child(div().flex_1().whitespace_nowrap().child(other()))
                     .on_click(cx.listener(|this, _, _, cx| {
                         if let Some(state) = this.members_state_mut() {
                             state.join_other = false;
+                            state.join_focus_idx = None;
                         }
                         cx.notify();
                     }))
                     .into_any_element(),
             );
-            for kind in OTHER_JOIN_TYPES {
+            for (i, kind) in OTHER_JOIN_TYPES.into_iter().enumerate() {
                 let filter = join.pick(Some(kind));
                 rows.push(
-                    join_row(format!("join-source-type-option-{kind}").into())
-                        .child(join_label(
-                            kind,
-                            join_type_label(kind, vanity.as_deref(), hide),
-                        ))
-                        .child(radio(join.kind == Some(kind)))
-                        .on_click(cx.listener(move |this, _, _, cx| {
-                            this.pick_join_filter(guild, filter.clone(), cx)
-                        }))
-                        .into_any_element(),
+                    highlight(
+                        join_row(format!("join-source-type-option-{kind}").into()),
+                        i + 1,
+                    )
+                    .child(join_label(
+                        kind,
+                        join_type_label(kind, vanity.as_deref(), hide),
+                    ))
+                    .child(radio(join.kind == Some(kind)))
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        this.pick_join_filter(guild, filter.clone(), cx)
+                    }))
+                    .into_any_element(),
                 );
             }
         } else {
@@ -1138,9 +1256,10 @@ impl Root {
                     .into_any_element(),
             );
             rows.push(separator());
+            let mut nav_idx: usize = 0;
             let all = join.pick(None);
             rows.push(
-                join_row("join-source-type-option-all".into())
+                highlight(join_row("join-source-type-option-all".into()), nav_idx)
                     .child(
                         div()
                             .flex_1()
@@ -1153,18 +1272,23 @@ impl Root {
                     }))
                     .into_any_element(),
             );
+            nav_idx += 1;
             if !hide {
                 for code in &state.invites {
                     let filter = JoinFilter::invite(code);
                     rows.push(
-                        join_row(format!("join-source-type-option-{code}").into())
-                            .child(join_label(5, code.clone()))
-                            .child(radio(join.code.as_deref() == Some(code.as_str())))
-                            .on_click(cx.listener(move |this, _, _, cx| {
-                                this.pick_join_filter(guild, filter.clone(), cx)
-                            }))
-                            .into_any_element(),
+                        highlight(
+                            join_row(format!("join-source-type-option-{code}").into()),
+                            nav_idx,
+                        )
+                        .child(join_label(5, code.clone()))
+                        .child(radio(join.code.as_deref() == Some(code.as_str())))
+                        .on_click(cx.listener(move |this, _, _, cx| {
+                            this.pick_join_filter(guild, filter.clone(), cx)
+                        }))
+                        .into_any_element(),
                     );
+                    nav_idx += 1;
                 }
             }
             rows.push(separator());
@@ -1172,7 +1296,7 @@ impl Root {
                 .shown_kind()
                 .map(|kind| join_type_label(kind, vanity.as_deref(), hide));
             rows.push(
-                join_row("other-join-methods".into())
+                highlight(join_row("other-join-methods".into()), nav_idx)
                     .child(
                         div()
                             .flex_1()
@@ -1198,6 +1322,7 @@ impl Root {
                     .on_click(cx.listener(|this, _, _, cx| {
                         if let Some(state) = this.members_state_mut() {
                             state.join_other = true;
+                            state.join_focus_idx = Some(0);
                         }
                         cx.notify();
                     }))
@@ -1208,6 +1333,11 @@ impl Root {
             gpui::deferred(
                 div()
                     .id("members-table-join-method-menu")
+                    .aria_label(dc_intl::t("u/7Rdc"))
+                    .track_focus(&focus_handle)
+                    .on_key_down(cx.listener(move |this, event: &gpui::KeyDownEvent, _, cx| {
+                        this.members_join_key_down(guild, event, cx);
+                    }))
                     .popout(
                         "members-table-join-method-menu",
                         PopKind::Fade,

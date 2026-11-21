@@ -1485,14 +1485,24 @@ impl Root {
         format!("oauth-success: opened ({arg})")
     }
 
-    /// The consent modal, or its error / authorized success page (module 595244).
+    /// The consent modal, or its error / authorized success page (module 595244 / 321987).
     pub(super) fn oauth_layer(
         &mut self,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Option<AnyElement> {
+        // Module 321987 (`726249.HU`): set window title to `3S2494` ("Authorize access to your account") while OAuth
+        // is active, restoring the app title once dismissed.
+        let want_title = self.activities.oauth.is_some();
+        if want_title != self.activities.oauth_title_active {
+            self.activities.oauth_title_active = want_title;
+            window.set_window_title(if want_title {
+                dc_intl::t("3S2494")
+            } else {
+                "Gravecord"
+            });
+        }
         let flow = self.activities.oauth.as_ref()?;
-        let _auth_location = dc_intl::t("3S2494");
         if let View::Authorized(success) = &flow.view {
             let subtext = authorized_success_subtext(
                 success.app_name.as_deref(),
@@ -1876,6 +1886,7 @@ impl Root {
         let modal = div()
             .parity_with_border("oauth-modal", 1.)
             .id("oauth-modal")
+            .aria_label(dc_intl::t("3S2494"))
             .occlude()
             .w(px(480.))
             .h(px(height))

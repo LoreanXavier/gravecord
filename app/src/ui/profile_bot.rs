@@ -1666,13 +1666,19 @@ impl Root {
                                     .text_color(super::color("--text-strong"))
                                     .child(display_name),
                             )
-                            .child(
-                                div()
-                                    .text_size(px(13.))
-                                    .line_height(px(18.))
-                                    .text_color(super::color("--text-muted"))
-                                    .child(user.username.clone()),
-                            ),
+                            .child({
+                                let (shown, concealed) = self.profile_username(&user);
+                                self.streamer_tip(
+                                    format!("profile-bot-username-streamer-{}", user.id),
+                                    concealed,
+                                    div()
+                                        .text_size(px(13.))
+                                        .line_height(px(18.))
+                                        .text_color(super::color("--text-muted"))
+                                        .child(shown),
+                                    cx,
+                                )
+                            }),
                     ),
             )
             // Single Bio tab header (`ZzAR2Y`)

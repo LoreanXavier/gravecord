@@ -127,6 +127,8 @@ pub(crate) struct Activities {
     pub(super) host: Option<super::activity_host::ActivityHost>,
     /// The consent flow an SDK `AUTHORIZE` started.
     pub(super) oauth: Option<super::oauth::Flow>,
+    /// True while OS window title is set to `3S2494` ("Authorize access to your account", module 321987).
+    pub(super) oauth_title_active: bool,
     /// Application names the shelf has told, for rows of activities running in other channels.
     pub(super) names: std::collections::HashMap<String, String>,
     /// The call view painted the stage this frame.

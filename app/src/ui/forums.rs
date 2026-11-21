@@ -544,10 +544,17 @@ impl Root {
                                         .id(SharedString::from(format!(
                                             "forum-create-tag-{tag_id}"
                                         )))
+                                        .aria_label(dc_intl::format(
+                                            "iyRTLm",
+                                            &[("tagName", tag.name.as_str().into())],
+                                        ))
                                         .px(px(12.))
                                         .h(px(32.))
                                         .rounded_full()
                                         .cursor_pointer()
+                                        .flex()
+                                        .items_center()
+                                        .gap(px(4.))
                                         .bg(color(if form.tags.contains(&tag_id) {
                                             "--brand-500"
                                         } else {
@@ -556,6 +563,7 @@ impl Root {
                                         .text_color(color("--text-default"))
                                         .text_size(px(14.))
                                         .line_height(px(32.))
+                                        .children(tag.emoji_name.clone().filter(|e| !e.is_empty()))
                                         .child(tag.name.clone())
                                         .on_mouse_up(
                                             gpui::MouseButton::Right,
@@ -1332,6 +1340,14 @@ impl Root {
                                             },
                                         );
                                         // A name with a display name style keeps its font.
+                                        let author_id = m.author.id;
+                                        let author_guild = self.guild;
+                                        let author_aria = dc_intl::format(
+                                            "CSIeU1",
+                                            &[("name", name.as_str().into())],
+                                        );
+                                        let author_anchor = format!("forum-card-author-{}", m.id);
+                                        let author_anchor_click = author_anchor.clone();
                                         let name_element = match self
                                             .name_styles(&m.author, self.guild)
                                         {
@@ -1357,18 +1373,51 @@ impl Root {
                                             .min_w(px(0.))
                                             .child(
                                                 div()
+                                                    .id(SharedString::from(author_anchor.clone()))
+                                                    .aria_label(author_aria)
+                                                    .relative()
+                                                    .cursor_pointer()
                                                     .flex()
                                                     .flex_none()
                                                     .font_weight(FontWeight(600.))
+                                                    .child(self.anchor_probe(author_anchor))
                                                     .child(
                                                         div()
                                                             .text_color(author_color)
+                                                            .hover(|s| s.underline())
                                                             .child(name_element),
                                                     )
                                                     .child(
                                                         div()
                                                             .text_color(color("--text-default"))
                                                             .child(":"),
+                                                    )
+                                                    .on_click(cx.listener(move |this, _, _, cx| {
+                                                        cx.stop_propagation();
+                                                        let bounds = this
+                                                            .tip_anchors
+                                                            .borrow()
+                                                            .get(author_anchor_click.as_str())
+                                                            .copied();
+                                                        if let Some(bounds) = bounds {
+                                                            this.open_profile(
+                                                                author_id, bounds, false, cx,
+                                                            );
+                                                        }
+                                                    }))
+                                                    .on_mouse_up(
+                                                        gpui::MouseButton::Right,
+                                                        cx.listener(move |this, event: &gpui::MouseUpEvent, _, cx| {
+                                                            cx.stop_propagation();
+                                                            this.open_context_menu(
+                                                                super::context_menu::Target::User {
+                                                                    user: author_id,
+                                                                    guild: author_guild,
+                                                                },
+                                                                event.position,
+                                                                cx,
+                                                            );
+                                                        }),
                                                     ),
                                             )
                                             .child(
@@ -1602,28 +1651,67 @@ impl Root {
                             .text_color(color("--text-default"))
                             .children(message.map(|m| {
                                 // `.author_nwIAlp` body-sm/semibold; `.postCreationTimestamp_x1LvFB` is text-strong.
+                                let author_id = m.author.id;
+                                let author_guild = self.guild;
+                                let display = self.guild_display_name(&m.author);
+                                let author_aria =
+                                    dc_intl::format("CSIeU1", &[("name", display.as_str().into())]);
+                                let anchor_id = format!("forum-gallery-author-{}", m.id);
+                                let anchor_click = anchor_id.clone();
                                 div()
+                                    .id(SharedString::from(anchor_id.clone()))
+                                    .aria_label(author_aria)
+                                    .relative()
+                                    .cursor_pointer()
                                     .font_weight(FontWeight(600.))
                                     .text_color(
                                         self.guild_author_color(m.author.id, "--text-strong"),
                                     )
+                                    .hover(|s| s.underline())
+                                    .child(self.anchor_probe(anchor_id))
                                     .child(
                                         match self.role_gradient_of(&m.author).filter(|_| {
                                             self.name_styles(&m.author, self.guild).is_none()
                                         }) {
-                                            Some(colors) => super::role_gradient::name(
-                                                self.guild_display_name(&m.author),
-                                                colors,
-                                            )
-                                            .into_any_element(),
+                                            Some(colors) => {
+                                                super::role_gradient::name(display, colors)
+                                                    .into_any_element()
+                                            }
                                             None => super::name_styles::name(
                                                 format!("post-author-{}", m.id),
-                                                self.guild_display_name(&m.author),
+                                                display,
                                                 self.name_styles(&m.author, self.guild).as_ref(),
                                                 super::name_styles::Display::Font,
                                             )
                                             .into_any_element(),
                                         },
+                                    )
+                                    .on_click(cx.listener(move |this, _, _, cx| {
+                                        cx.stop_propagation();
+                                        let bounds = this
+                                            .tip_anchors
+                                            .borrow()
+                                            .get(anchor_click.as_str())
+                                            .copied();
+                                        if let Some(bounds) = bounds {
+                                            this.open_profile(author_id, bounds, false, cx);
+                                        }
+                                    }))
+                                    .on_mouse_up(
+                                        gpui::MouseButton::Right,
+                                        cx.listener(
+                                            move |this, event: &gpui::MouseUpEvent, _, cx| {
+                                                cx.stop_propagation();
+                                                this.open_context_menu(
+                                                    super::context_menu::Target::User {
+                                                        user: author_id,
+                                                        guild: author_guild,
+                                                    },
+                                                    event.position,
+                                                    cx,
+                                                );
+                                            },
+                                        ),
                                     )
                             }))
                             .child(
@@ -2584,7 +2672,14 @@ impl Root {
                                         let tag_id = tag.id;
                                         div()
                                             .id(SharedString::from(format!("forum-tag-{tag_id}")))
+                                            .aria_label(dc_intl::format(
+                                                "iyRTLm",
+                                                &[("tagName", tag.name.as_str().into())],
+                                            ))
                                             .flex_none()
+                                            .flex()
+                                            .items_center()
+                                            .gap(px(4.))
                                             // The chip is its measured label plus 2 x (12 padding + 1 border), as
                                             // `pill_snX-u4` is in Chromium (101.094 for a 75.094 label), painted
                                             // between the pixels its fractional edges round to. gpui rounds an
@@ -2626,6 +2721,7 @@ impl Root {
                                             .text_size(px(14.))
                                             .line_height(px(30.))
                                             .font_weight(FontWeight(600.))
+                                            .children(tag.emoji_name.clone().filter(|e| !e.is_empty()))
                                             .child(tag.name.clone())
                                             .on_mouse_up(
                                                 gpui::MouseButton::Right,
@@ -2942,10 +3038,17 @@ impl Root {
                                         // `.tag_r0937z` on `.pill_snX-u4`: 1px border, `body-sm/semibold`.
                                         .h(px(32.))
                                         .px(px(12.))
+                                        .aria_label(dc_intl::format(
+                                            "iyRTLm",
+                                            &[("tagName", tag.name.as_str().into())],
+                                        ))
                                         .border_1()
                                         .border_color(color("--border-subtle"))
                                         .rounded_full()
                                         .cursor_pointer()
+                                        .flex()
+                                        .items_center()
+                                        .gap(px(4.))
                                         .bg(color(if view.tags.contains(&tag_id) {
                                             "--brand-500"
                                         } else {
@@ -2955,6 +3058,7 @@ impl Root {
                                         .line_height(px(30.))
                                         .font_weight(FontWeight(600.))
                                         .text_color(color("--text-default"))
+                                        .children(tag.emoji_name.clone().filter(|e| !e.is_empty()))
                                         .child(tag.name.clone())
                                         .on_mouse_up(
                                             gpui::MouseButton::Right,

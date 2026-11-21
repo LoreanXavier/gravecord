@@ -233,7 +233,23 @@ impl Root {
                             .rounded(px(4.))
                     })
                     .child(self.account_avatar(account, 24.))
-                    .child(div().child(account.username.clone()))
+                    .child({
+                        let hide_private = self.streamer_hides_personal();
+                        let (shown, concealed) = match super::settings::streamer::concealed_tag(
+                            &account.username,
+                            &account.discriminator,
+                            hide_private,
+                        ) {
+                            Some(tag) => (tag, true),
+                            None => (account.username.clone(), false),
+                        };
+                        self.streamer_tip(
+                            format!("switch-account-streamer-{id}"),
+                            concealed,
+                            div().child(shown),
+                            cx,
+                        )
+                    })
                     .when(me == Some(id), |this| {
                         this.child(
                             div()
@@ -363,15 +379,29 @@ impl Root {
                                     .flex()
                                     .items_baseline()
                                     .gap(px(2.))
-                                    .child(
-                                        div()
-                                            .text_size(px(16.))
-                                            .line_height(px(20.))
-                                            .font_weight(FontWeight(600.))
-                                            .text_color(color("--text-strong"))
-                                            .truncate()
-                                            .child(account.username.clone()),
-                                    )
+                                    .child({
+                                        let (shown, concealed) =
+                                            match super::settings::streamer::concealed_tag(
+                                                &account.username,
+                                                &account.discriminator,
+                                                hide_private,
+                                            ) {
+                                                Some(tag) => (tag, true),
+                                                None => (account.username.clone(), false),
+                                            };
+                                        self.streamer_tip(
+                                            format!("manage-account-streamer-{id}"),
+                                            concealed,
+                                            div()
+                                                .text_size(px(16.))
+                                                .line_height(px(20.))
+                                                .font_weight(FontWeight(600.))
+                                                .text_color(color("--text-strong"))
+                                                .truncate()
+                                                .child(shown),
+                                            cx,
+                                        )
+                                    })
                                     .children(legacy_discrim.map(|disc| {
                                         div()
                                             .text_size(px(14.))

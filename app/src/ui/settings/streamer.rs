@@ -28,6 +28,24 @@ pub(in crate::ui) fn concealed_tag(
     (hide && (discriminator == "0" || discriminator == "0000")).then(|| format!("{first}\u{2026}"))
 }
 
+/// `getName` of module 427262 (`_`): when Streamer Mode hides personal information, a display name that matches the
+/// unique username (case-insensitively) is concealed to its first letter and an ellipsis (`o`).
+pub(in crate::ui) fn concealed_display_name_for(
+    display_name: &str,
+    username: &str,
+    discriminator: &str,
+    hide: bool,
+) -> (String, bool) {
+    if hide
+        && display_name.to_lowercase() == username.to_lowercase()
+        && (discriminator == "0" || discriminator == "0000")
+        && let Some(first) = display_name.chars().next()
+    {
+        return (format!("{first}\u{2026}"), true);
+    }
+    (display_name.to_owned(), false)
+}
+
 impl Root {
     fn streamer_option(&self, key: &str) -> bool {
         let user = self.stores.current_user.as_ref().map(|user| user.id);
@@ -51,6 +69,38 @@ impl Root {
         ) {
             Some(tag) => (tag, true),
             None => (user.username.clone(), false),
+        }
+    }
+
+    /// `427262.getName`: conceals a user's display name when it equals their unique username under Streamer Mode.
+    pub(in crate::ui) fn concealed_display_name(&self, user: &dc_state::User) -> (String, bool) {
+        concealed_display_name_for(
+            user.display_name(),
+            &user.username,
+            &user.discriminator,
+            self.streamer_hides_personal(),
+        )
+    }
+
+    /// Wraps a concealed `DiscordTag` (module 297413) in the `Br1ls3` ("Streamer Mode Enabled") tooltip.
+    pub(in crate::ui) fn streamer_tip(
+        &self,
+        key: impl Into<gpui::SharedString>,
+        concealed: bool,
+        child: impl gpui::IntoElement,
+        cx: &mut gpui::Context<Self>,
+    ) -> gpui::AnyElement {
+        use gpui::IntoElement as _;
+        if concealed {
+            self.with_tip(
+                key,
+                crate::ui::tooltip::Tip::text(dc_intl::t("Br1ls3"), crate::ui::tooltip::Side::Top),
+                child,
+                cx,
+            )
+            .into_any_element()
+        } else {
+            child.into_any_element()
         }
     }
 
@@ -138,5 +188,28 @@ mod tests {
         assert_eq!(concealed_tag("onugeccen", "0", false), None);
         // A legacy tag keeps its username (`getUserTag` returns it bare).
         assert_eq!(concealed_tag("old", "1234", true), None);
+    }
+
+    #[test]
+    fn get_name_conceals_display_name_only_when_it_matches_unique_username() {
+        assert_eq!(
+            concealed_display_name_for("Onugeccen", "onugeccen", "0", true),
+            ("O\u{2026}".into(), true)
+        );
+        // A distinct global display name stays visible (`427262.getName`).
+        assert_eq!(
+            concealed_display_name_for("Display Name", "onugeccen", "0", true),
+            ("Display Name".into(), false)
+        );
+        // Legacy discriminator is not concealed by `getName`.
+        assert_eq!(
+            concealed_display_name_for("old", "old", "1234", true),
+            ("old".into(), false)
+        );
+        // Streamer Mode off leaves the name intact.
+        assert_eq!(
+            concealed_display_name_for("onugeccen", "onugeccen", "0", false),
+            ("onugeccen".into(), false)
+        );
     }
 }

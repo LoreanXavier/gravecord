@@ -9,18 +9,16 @@
 //! - Rules (`q`): watching a stream (not our own, not paused), `stream-view-low-fps` when either window's frame rate is
 //!   under `B` of the stream's maximum frame rate (3, 8, 15 or 30) once incoming video has been on for 10 seconds,
 //!   `stream-view-high-packet-loss` over 10% loss; our own stream with viewers, `stream-send-low-encode-fps` under `B`
-//!   of what we send; our camera, `camera-send-low-encode-fps` under 10 frames a second. A stream's warning is the
-//!   first of `r` in module 821715 (sound share, packet loss, frame rate, network).
+//!   of what we send (skipped while paused), `stream-send-high-packet-loss` over 10% outbound loss,
+//!   `stream-soundshare-failed` when system audio capture failed to attach, and `stream-send-network-quality` when a
+//!   connected stream reports ping > 500 ms or outbound loss > 10% (`921747`); our camera, `camera-send-low-encode-fps`
+//!   under 10 frames a second. A stream's warning is the first of `r` in module 821715 (sound share, packet loss,
+//!   frame rate, network).
 //! - The icon (module 93067, `root_0_PsGx`): the 20px CircleErrorIcon in `--yellow-300`; over it (or focused) a 200px
 //!   popout under it (`popout_0_PsGx`: `--background-surface-high`, 8px 12px, the inset 1px `--border-subtle` and
-//!   the high shadow) with the message (275731 for a stream, 289552 for our camera) and "Error: {code}" linking the
-//!   AV error codes article, 8px under it; it closes 250 ms after the pointer leaves both.
-//!
-//! GAP: the media engine's sampling interval is not in the bundle (the native engine emits `connection-stats`); the
-//! statistics are sampled once a second here. The sink-wants checks of the two send rules (`hasActiveRemoteWants`, no
-//! wants within 20 seconds) are taken as met while anyone watches; `stream-send-high-packet-loss`,
-//! `stream-send-network-quality` and `stream-soundshare-failed` are not raised (the sent video's lost packets, the
-//! stream connection's quality and the sound-share hook error are not reported by `dc-voice`).
+//!   the high shadow) with the message (275731 for a stream, 289552 for our camera) and "Error: {code}" (plus
+//!   ` ({avError})` in Developer Mode) linking the AV error codes article, 8px under it; it closes 250 ms after the
+//!   pointer leaves both.
 
 use super::{Root, color, icon};
 use gpui::{AnyElement, Context, FontWeight, IntoElement, SharedString, div, prelude::*, px};
@@ -101,38 +99,101 @@ pub(super) fn low_fps_floor(max: u32) -> f32 {
 /// The warnings this client raises (`iy` of module 487329) with their codes.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum AvError {
+    StreamSoundshareFailed,
+    StreamSendHighPacketLoss,
     StreamViewHighPacketLoss,
     StreamViewLowFps,
     StreamSendLowFps,
+    StreamBadNetworkQuality,
     CameraSendLowFps,
 }
 
 impl AvError {
     pub fn code(self) -> u32 {
         match self {
+            AvError::StreamSoundshareFailed => 1001,
             AvError::StreamViewLowFps => 2002,
             AvError::StreamViewHighPacketLoss => 2003,
+            AvError::StreamSendHighPacketLoss => 2004,
             AvError::StreamSendLowFps => 2005,
+            AvError::StreamBadNetworkQuality => 2006,
             AvError::CameraSendLowFps => 2013,
         }
     }
 
-    /// `r` of module 821715: packet loss before frame rate.
+    /// Official `AVError` identifier string (`487329.iy`), appended in Developer Mode (`93067`).
+    pub fn av_name(self) -> &'static str {
+        match self {
+            AvError::StreamSoundshareFailed => "stream-soundshare-failed",
+            AvError::StreamViewLowFps => "stream-view-low-fps",
+            AvError::StreamViewHighPacketLoss => "stream-view-high-packet-loss",
+            AvError::StreamSendHighPacketLoss => "stream-send-high-packet-loss",
+            AvError::StreamSendLowFps => "stream-send-low-encode-fps",
+            AvError::StreamBadNetworkQuality => "stream-send-network-quality",
+            AvError::CameraSendLowFps => "camera-send-low-encode-fps",
+        }
+    }
+
+    /// `r` of module 821715: soundshare (0) -> packet loss (1) -> frame rate (2) -> network quality (3).
     fn rank(self) -> u8 {
         match self {
-            AvError::StreamViewHighPacketLoss => 1,
-            _ => 2,
+            AvError::StreamSoundshareFailed => 0,
+            AvError::StreamSendHighPacketLoss | AvError::StreamViewHighPacketLoss => 1,
+            AvError::StreamViewLowFps | AvError::StreamSendLowFps | AvError::CameraSendLowFps => 2,
+            AvError::StreamBadNetworkQuality => 3,
         }
     }
 
     /// The message of module 275731 or 289552.
     fn message(self) -> &'static str {
         match self {
-            AvError::StreamSendLowFps => dc_intl::t("1f1LHp"),
+            AvError::StreamSoundshareFailed => dc_intl::t("9lcych"),
+            AvError::StreamSendLowFps | AvError::StreamSendHighPacketLoss => dc_intl::t("1f1LHp"),
+            AvError::StreamBadNetworkQuality => dc_intl::t("Ic588B"),
             AvError::StreamViewHighPacketLoss | AvError::StreamViewLowFps => dc_intl::t("BcOifw"),
             AvError::CameraSendLowFps => dc_intl::t("1NyoVt"),
         }
     }
+}
+
+/// The rules for an outbound stream (`822209.q` + `921747` `get quality()`).
+pub(super) fn send_errors(
+    windows: Option<(Accumulated, Accumulated)>,
+    max_fps: Option<u32>,
+    viewers: bool,
+    paused: bool,
+    soundshare_failed: bool,
+    bad_network_quality: bool,
+) -> Vec<AvError> {
+    let mut out = Vec::new();
+    if soundshare_failed {
+        out.push(AvError::StreamSoundshareFailed);
+    }
+    if viewers && let Some((short, long)) = windows {
+        if short.loss_rate * 100. > 10. || long.loss_rate * 100. > 10. {
+            out.push(AvError::StreamSendHighPacketLoss);
+        }
+        if !paused && let Some(max) = max_fps {
+            let floor = low_fps_floor(max);
+            if short.frame_rate < floor || long.frame_rate < floor {
+                out.push(AvError::StreamSendLowFps);
+            }
+        }
+    }
+    if bad_network_quality {
+        out.push(AvError::StreamBadNetworkQuality);
+    }
+    out
+}
+
+/// `921747` `StreamRTCConnectionStore.getQuality() === BAD`:
+/// connected, ping present, and either ping > 500 ms or outbound loss > 10%.
+pub(super) fn stream_bad_network_quality(
+    connected: bool,
+    ping_ms: Option<u64>,
+    outbound_loss_rate: Option<f32>,
+) -> bool {
+    connected && (ping_ms.is_some_and(|p| p > 500) || outbound_loss_rate.is_some_and(|l| l > 10.0))
 }
 
 /// The rules for a watched stream.
@@ -225,53 +286,69 @@ impl Root {
         let mut streams = HashMap::new();
         for stream in &snapshot.streams {
             let owner = stream.owner_id;
+            let bad_net = stream_bad_network_quality(
+                stream.connected,
+                stream.transport.ping_ms,
+                stream.outbound_loss_rate,
+            );
             if stream.sending {
-                let Some(video) = stream.outbound.video.as_ref() else {
-                    continue;
-                };
                 let viewers = self
                     .video_stream_of(owner)
                     .is_some_and(|info| !info.viewer_ids.is_empty());
                 let max = self.own_started().map(|started| started.quality.1);
-                let history = self.av_errors.history.entry((owner, true)).or_default();
-                push(
-                    history,
-                    Sample {
-                        packets: video.packets_sent,
-                        lost: 0,
-                        fps: video.fps_encoded as f32,
-                    },
+                let wins = if let Some(video) = stream.outbound.video.as_ref() {
+                    let history = self.av_errors.history.entry((owner, true)).or_default();
+                    push(
+                        history,
+                        Sample {
+                            packets: video.packets_sent,
+                            lost: video.packets_lost,
+                            fps: video.fps_encoded as f32,
+                        },
+                    );
+                    windows(history)
+                } else {
+                    None
+                };
+                let errors = send_errors(
+                    wins,
+                    max,
+                    viewers,
+                    stream.paused,
+                    stream.soundshare_failed,
+                    bad_net,
                 );
-                if viewers && let (Some((short, long)), Some(max)) = (windows(history), max) {
-                    let floor = low_fps_floor(max);
-                    if short.frame_rate < floor || long.frame_rate < floor {
-                        streams.insert(owner, AvError::StreamSendLowFps);
-                    }
+                if let Some(error) = stream_warning(&errors) {
+                    streams.insert(owner, error);
                 }
             } else if owner != me {
-                let Some(video) = stream
+                let mut errors = if let Some(video) = stream
                     .inbound
                     .get(&owner)
                     .and_then(|user| user.video.as_ref())
-                else {
-                    continue;
+                {
+                    let max = self.video_stream_max_fps(owner);
+                    let since = *self.av_errors.since.entry(owner).or_insert(now);
+                    let history = self.av_errors.history.entry((owner, false)).or_default();
+                    push(
+                        history,
+                        Sample {
+                            packets: video.packets_received,
+                            lost: video.packets_lost,
+                            fps: video.fps_decoded as f32,
+                        },
+                    );
+                    view_errors(
+                        windows(history),
+                        max,
+                        now.duration_since(since) > INCOMING_SETTLE,
+                    )
+                } else {
+                    Vec::new()
                 };
-                let max = self.video_stream_max_fps(owner);
-                let since = *self.av_errors.since.entry(owner).or_insert(now);
-                let history = self.av_errors.history.entry((owner, false)).or_default();
-                push(
-                    history,
-                    Sample {
-                        packets: video.packets_received,
-                        lost: video.packets_lost,
-                        fps: video.fps_decoded as f32,
-                    },
-                );
-                let errors = view_errors(
-                    windows(history),
-                    max,
-                    now.duration_since(since) > INCOMING_SETTLE,
-                );
+                if bad_net {
+                    errors.push(AvError::StreamBadNetworkQuality);
+                }
                 if let Some(error) = stream_warning(&errors) {
                     streams.insert(owner, error);
                 }
@@ -349,6 +426,9 @@ impl Root {
         let hover_key = key.clone();
         let code = error.code();
         let message = error.message();
+        let dev_suffix = self
+            .developer_mode()
+            .then(|| format!(" ({})", error.av_name()));
         let line = dc_intl::format_runs(
             "If5Q0h",
             &[
@@ -356,7 +436,15 @@ impl Root {
                 ("helpDeskURL", CODES_ARTICLE.into()),
             ],
         );
-        let line: String = line.into_iter().map(|(run, _)| run).collect();
+        let mut line: String = line.into_iter().map(|(run, _)| run).collect();
+        if let Some(suffix) = &dev_suffix {
+            line.push_str(suffix);
+        }
+        let aria_code = dc_intl::format("ejOT95", &[("errorCode", (code as f64).into())]);
+        let mut aria_label = format!("{message} {aria_code}");
+        if let Some(suffix) = &dev_suffix {
+            aria_label.push_str(suffix);
+        }
         let popout = open.then(|| {
             div()
                 .absolute()
@@ -394,7 +482,7 @@ impl Root {
                 .relative()
                 .size(px(20.))
                 .flex_none()
-                .aria_label(format!("{message} Error: {code}"))
+                .aria_label(aria_label)
                 .child(icon("shop_circle_error", 20., "--yellow-300"))
                 .on_hover(cx.listener(move |this, inside: &bool, _, cx| {
                     if *inside {
@@ -435,11 +523,14 @@ impl Root {
             ),
             ["force", who, code] => {
                 let error = match *code {
+                    "1001" => AvError::StreamSoundshareFailed,
                     "2002" => AvError::StreamViewLowFps,
                     "2003" => AvError::StreamViewHighPacketLoss,
+                    "2004" => AvError::StreamSendHighPacketLoss,
                     "2005" => AvError::StreamSendLowFps,
+                    "2006" => AvError::StreamBadNetworkQuality,
                     "2013" => AvError::CameraSendLowFps,
-                    _ => return "codes: 2002 2003 2005 2013".to_owned(),
+                    _ => return "codes: 1001 2002 2003 2004 2005 2006 2013".to_owned(),
                 };
                 let owner = if *who == "camera" {
                     Some(0)
@@ -518,6 +609,62 @@ mod tests {
         assert_eq!(
             stream_warning(&both),
             Some(AvError::StreamViewHighPacketLoss)
+        );
+    }
+
+    #[test]
+    fn send_rules_and_priority_match_module_821715_and_275731() {
+        let ok = Accumulated {
+            frame_rate: 60.,
+            loss_rate: 0.01,
+            points: 15,
+        };
+        let slow = Accumulated {
+            frame_rate: 12.,
+            ..ok
+        };
+        let lossy = Accumulated {
+            loss_rate: 0.15,
+            ..ok
+        };
+        // Paused stream suppresses StreamSendLowFps (2005) while preserving loss/soundshare/network.
+        let paused_slow = send_errors(Some((slow, ok)), Some(60), true, true, false, false);
+        assert!(paused_slow.is_empty());
+
+        // Priority order: 1001 (soundshare) -> 2004 (loss) -> 2005 (fps) -> 2006 (network).
+        let all = send_errors(Some((slow, lossy)), Some(60), true, false, true, true);
+        assert_eq!(stream_warning(&all), Some(AvError::StreamSoundshareFailed));
+
+        let no_sound = send_errors(Some((slow, lossy)), Some(60), true, false, false, true);
+        assert_eq!(
+            stream_warning(&no_sound),
+            Some(AvError::StreamSendHighPacketLoss)
+        );
+
+        let fps_and_net = send_errors(Some((slow, ok)), Some(60), true, false, false, true);
+        assert_eq!(
+            stream_warning(&fps_and_net),
+            Some(AvError::StreamSendLowFps)
+        );
+
+        let net_only = send_errors(Some((ok, ok)), Some(60), true, false, false, true);
+        assert_eq!(
+            stream_warning(&net_only),
+            Some(AvError::StreamBadNetworkQuality)
+        );
+
+        // 921747 BAD network quality check: connected + (ping > 500 || outbound loss > 10%).
+        assert!(!stream_bad_network_quality(false, Some(900), Some(20.0)));
+        assert!(!stream_bad_network_quality(true, Some(500), Some(10.0)));
+        assert!(stream_bad_network_quality(true, Some(501), Some(0.0)));
+        assert!(stream_bad_network_quality(true, Some(40), Some(10.5)));
+
+        assert_eq!(AvError::StreamSoundshareFailed.code(), 1001);
+        assert_eq!(AvError::StreamSendHighPacketLoss.code(), 2004);
+        assert_eq!(AvError::StreamBadNetworkQuality.code(), 2006);
+        assert_eq!(
+            AvError::StreamSoundshareFailed.av_name(),
+            "stream-soundshare-failed"
         );
     }
 }
