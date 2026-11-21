@@ -93,6 +93,10 @@ pub(super) enum Then {
     Reapply {
         guild: Id,
     },
+    /// Okay of module 267: if the user is not a member of `guild`, go back in history or home.
+    DismissApplicationDenied {
+        guild: Id,
+    },
     /// The button of "Mute Notifications" (module 259763): the app's DM takes `muted`.
     MuteAppDm {
         channel: Id,
@@ -952,6 +956,15 @@ impl Root {
             Then::UseCommand { name, id } => self.use_command_mention(&name, id, window, cx),
             Then::WithdrawApplication { guild } => self.remove_join_request(guild),
             Then::Reapply { guild } => self.reapply(guild),
+            Then::DismissApplicationDenied { guild } => {
+                if self.stores.guild(guild).is_none() {
+                    if self.history.can_go_back() {
+                        self.go_back(cx);
+                    } else {
+                        self.select_home(None);
+                    }
+                }
+            }
             Then::MuteAppDm { channel, muted } => self.mute_app_dm(channel, muted),
             Then::ClearOverwrite { channel, target } => {
                 let _ = self.requests.send(Request::Rest {
@@ -1747,7 +1760,7 @@ impl Root {
         let picture = self.images.get(&format!("guild:{guild}")).cloned();
         // `R[SMALL]` of module 682163: the acronym's size by its length.
         let sizes = [14., 14., 12., 12., 10., 8., 6.];
-        let acronym_size = sizes[acronym.chars().count().saturating_sub(1).min(6)];
+        let acronym_size = sizes[acronym.chars().count().min(sizes.len() - 1)];
         div()
             .flex()
             .flex_col()

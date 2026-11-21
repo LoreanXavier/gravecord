@@ -73,7 +73,7 @@ pub(crate) struct QuestCodeInstructionsModal {
 
 /// Active state of the Quest Reward Split Modal (`670092`).
 #[derive(Clone, Debug)]
-#[allow(dead_code)]
+#[allow(dead_code, clippy::large_enum_variant)]
 pub(crate) enum QuestRewardModalState {
     Loading {
         quest_id: String,
@@ -91,6 +91,9 @@ pub(crate) enum QuestRewardModalState {
         is_game_quest: bool,
         cta_label: String,
         cta_url: String,
+        /// Module 459624 Orbs Balance Celebration (`WPNjGe`, `YMor7k`, `g4t9aw`, `WYchde`, `Lmysvd`, `loyTil`).
+        orbs_earned: Option<u64>,
+        orbs_balance: Option<u64>,
     },
 }
 
@@ -196,6 +199,15 @@ impl Root {
             let _ = self
                 .requests
                 .send(fetch_quest_reward_code_request(&quest.id));
+            let orbs_earned = quest.config.has_virtual_currency_reward().then(|| {
+                quest
+                    .config
+                    .orb_quantity(premium == dc_state::premium::PremiumType::Nitro)
+                    .unwrap_or(0)
+                    .max(1)
+            });
+            let orbs_balance =
+                orbs_earned.map(|earned| self.quests.currency.balance.unwrap_or(0).max(earned));
             self.quest_reward_modal = Some(QuestRewardModalState::Claimed {
                 quest_id: quest.id.clone(),
                 quest_name: quest.config.quest_name.clone(),
@@ -206,6 +218,8 @@ impl Root {
                 is_game_quest: !quest.config.game_title.is_empty(),
                 cta_label: right.cta_label,
                 cta_url: quest.config.cta_link.clone(),
+                orbs_earned,
+                orbs_balance,
             });
         } else {
             self.quest_reward_modal = Some(QuestRewardModalState::Error {
@@ -560,6 +574,8 @@ impl Root {
                 is_game_quest,
                 cta_label,
                 cta_url,
+                orbs_earned,
+                orbs_balance,
             } => {
                 let heading = dc_intl::format(
                     "EAYZAr",
@@ -677,8 +693,139 @@ impl Root {
                         div()
                             .flex()
                             .flex_row()
-                            // Left panel: Reward details & code
-                            .child(
+                            // Left panel: Orbs Balance Celebration (459624) or Reward details & code
+                            .child(if let Some(earned) = *orbs_earned {
+                                let earned_str = earned.to_string();
+                                let _earned_aria = dc_intl::format(
+                                    "WPNjGe",
+                                    &[("count", Arg::Num(earned as f64))],
+                                );
+                                let earned_num = dc_intl::format(
+                                    "YMor7k",
+                                    &[("count", Arg::Str(Cow::Borrowed(&earned_str)))],
+                                );
+                                let reward_header = format!(
+                                    "{} | {}",
+                                    dc_intl::t("loyTil").trim(),
+                                    dc_intl::t("Lmysvd")
+                                );
+                                let bal = orbs_balance.unwrap_or(earned);
+                                let bal_str = bal.to_string();
+                                let bal_runs = dc_intl::format_runs(
+                                    "g4t9aw",
+                                    &[("orbsBalance", Arg::Str(Cow::Borrowed(&bal_str)))],
+                                );
+                                let mut bal_text = String::new();
+                                let mut bal_hl = Vec::new();
+                                for (chunk, hook) in bal_runs {
+                                    let s = bal_text.len();
+                                    bal_text.push_str(&chunk);
+                                    if matches!(
+                                        hook.as_deref(),
+                                        Some("$b") | Some("orbsBalanceHook")
+                                    ) && s < bal_text.len()
+                                    {
+                                        bal_hl.push((
+                                            s..bal_text.len(),
+                                            HighlightStyle {
+                                                font_weight: Some(FontWeight(700.)),
+                                                color: Some(color("--text-strong").into()),
+                                                ..HighlightStyle::default()
+                                            },
+                                        ));
+                                    }
+                                }
+                                div()
+                                    .flex_1()
+                                    .min_w_0()
+                                    .p(px(24.))
+                                    .flex()
+                                    .flex_col()
+                                    .gap(px(16.))
+                                    .child(
+                                        div()
+                                            .text_size(px(12.))
+                                            .font_weight(FontWeight(600.))
+                                            .text_color(color("--text-muted"))
+                                            .child(reward_header),
+                                    )
+                                    .child(
+                                        div()
+                                            .rounded(px(12.))
+                                            .p(px(24.))
+                                            .bg(linear_gradient(
+                                                135.,
+                                                linear_color_stop(rgba(0x5865f244), 0.),
+                                                linear_color_stop(rgba(0xeb459e33), 1.),
+                                            ))
+                                            .border_1()
+                                            .border_color(color("--border-subtle"))
+                                            .flex()
+                                            .flex_col()
+                                            .items_center()
+                                            .gap(px(12.))
+                                            .child(
+                                                div()
+                                                    .size(px(64.))
+                                                    .rounded_full()
+                                                    .bg(rgba(0x5865f255))
+                                                    .flex()
+                                                    .items_center()
+                                                    .justify_center()
+                                                    .child(icon("shop_orb_18", 34., "--white")),
+                                            )
+                                            .child(
+                                                div()
+                                                    .flex()
+                                                    .items_center()
+                                                    .gap(px(8.))
+                                                    .child(icon("shop_orb_18", 24., "--text-strong"))
+                                                    .child(
+                                                        div()
+                                                            .text_size(px(28.))
+                                                            .line_height(px(32.))
+                                                            .font_weight(FontWeight(700.))
+                                                            .text_color(color("--text-strong"))
+                                                            .child(earned_num),
+                                                    ),
+                                            )
+                                            .child(
+                                                div()
+                                                    .text_center()
+                                                    .text_size(px(14.))
+                                                    .line_height(px(20.))
+                                                    .text_color(color("--text-muted"))
+                                                    .child(
+                                                        StyledText::new(bal_text)
+                                                            .with_highlights(bal_hl),
+                                                    ),
+                                            ),
+                                    )
+                                    .child(
+                                        div()
+                                            .id("quest-orbs-explore-shop")
+                                            .w_full()
+                                            .h(px(38.))
+                                            .rounded(px(8.))
+                                            .bg(color("--control-secondary-background-default"))
+                                            .hover(|s| {
+                                                s.bg(color("--control-secondary-background-hover"))
+                                            })
+                                            .cursor_pointer()
+                                            .flex()
+                                            .items_center()
+                                            .justify_center()
+                                            .text_size(px(14.))
+                                            .font_weight(FontWeight(600.))
+                                            .text_color(color("--text-strong"))
+                                            .child(dc_intl::t("WYchde"))
+                                            .on_click(cx.listener(|this, _, _, cx| {
+                                                this.quest_reward_modal = None;
+                                                this.quests_open_orbs_shop(cx);
+                                            })),
+                                    )
+                                    .into_any_element()
+                            } else {
                                 div()
                                     .flex_1()
                                     .min_w_0()
@@ -831,8 +978,9 @@ impl Root {
                                                             )),
                                                     ),
                                             )
-                                    })),
-                            )
+                                    }))
+                                    .into_any_element()
+                            })
                             // Right panel: Game / Discovery CTA
                             .child(
                                 div()
@@ -1178,6 +1326,24 @@ impl Root {
         cx: &mut Context<Self>,
     ) -> String {
         match arg.trim() {
+            "orbs" => {
+                self.member_quest_popout = None;
+                self.quest_reward_modal = Some(QuestRewardModalState::Claimed {
+                    quest_id: "quest_orbs_42".to_owned(),
+                    quest_name: "Starfall Odyssey".to_owned(),
+                    game_title: "Starfall Odyssey".to_owned(),
+                    publisher: "Nebula Studios".to_owned(),
+                    reward_name: "700 Orbs".to_owned(),
+                    reward_code: None,
+                    is_game_quest: true,
+                    cta_label: "Launch Game".to_owned(),
+                    cta_url: "https://discord.com/quests".to_owned(),
+                    orbs_earned: Some(700),
+                    orbs_balance: Some(1450),
+                });
+                cx.notify();
+                "quest-reward-modal: orbs".to_owned()
+            }
             "" | "claimed" => {
                 self.member_quest_popout = None;
                 self.quest_reward_modal = Some(QuestRewardModalState::Claimed {
@@ -1190,6 +1356,8 @@ impl Root {
                     is_game_quest: true,
                     cta_label: "Launch Game".to_owned(),
                     cta_url: "https://discord.com/quests".to_owned(),
+                    orbs_earned: None,
+                    orbs_balance: None,
                 });
                 cx.notify();
                 "quest-reward-modal: claimed".to_owned()

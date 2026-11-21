@@ -495,10 +495,7 @@ impl Root {
             .as_deref()
             .and_then(|url| self.images.get(url).cloned())
             .or_else(|| self.images.get(DEFAULT_SPLASH).cloned());
-        let acronym: String = name
-            .split_whitespace()
-            .filter_map(|word| word.chars().next())
-            .collect();
+        let acronym = dc_state::Guild::acronym_of(name);
         div()
             .relative()
             .w(px(254.))

@@ -19,6 +19,12 @@ pub(super) const VERIFY_RESEND_KEY: &str = "verify-email:resend";
 pub(super) const VERIFY_CHANGE_KEY: &str = "verify-email:change";
 
 #[derive(Clone, Debug)]
+pub(super) enum VerifyResendAlert {
+    Sent { email: String },
+    Error { message: String },
+}
+
+#[derive(Clone, Debug)]
 pub(super) struct VerifyEmailModal {
     pub email: String,
     pub password: String,
@@ -28,6 +34,8 @@ pub(super) struct VerifyEmailModal {
     pub busy: bool,
     pub email_error: Option<String>,
     pub password_error: Option<String>,
+    /// Standalone resend result alert (`940856`: `LykQYk`/`azKEPy` or `VbTh0E`/`XcrQN5`/`BddRzS`).
+    pub resend_alert: Option<VerifyResendAlert>,
 }
 
 /// Builds `POST /auth/verify/resend` (`830215.verifyResend`).
@@ -68,39 +76,94 @@ impl Root {
             busy: false,
             email_error: None,
             password_error: None,
+            resend_alert: None,
         });
         cx.notify();
     }
 
-    /// Handles `POST /auth/verify/resend` and `PATCH /users/@me` responses.
+    /// Triggers `POST /auth/verify/resend` outside the `9124` modal (module `940856.S`:
+    /// opens `LykQYk`/`azKEPy` on success or `VbTh0E`/`XcrQN5`/`BddRzS` on failure).
+    #[allow(dead_code)]
+    pub(super) fn trigger_verify_resend(&mut self, cx: &mut Context<Self>) {
+        let _ = self.requests.send(resend_request());
+        cx.notify();
+    }
+
+    /// Handles `POST /auth/verify/resend` and `PATCH /users/@me` responses (modules `9124` + `940856`).
     pub(super) fn handle_verify_email_response(
         &mut self,
         key: &str,
         body: &Value,
         cx: &mut Context<Self>,
     ) {
-        let Some(modal) = self.verify_email_modal.as_mut() else {
-            return;
+        let ok = body["ok"]
+            .as_bool()
+            .unwrap_or_else(|| body.get("code").is_none());
+        let inner = if body.get("body").is_some() {
+            &body["body"]
+        } else {
+            body
         };
-        modal.busy = false;
         if key == VERIFY_RESEND_KEY {
-            if body.get("code").is_none() {
-                modal.resent = true;
+            if ok {
+                if let Some(modal) = self.verify_email_modal.as_mut()
+                    && modal.resend_alert.is_none()
+                {
+                    modal.busy = false;
+                    modal.resent = true;
+                } else {
+                    let email = self
+                        .stores
+                        .account
+                        .email
+                        .clone()
+                        .unwrap_or_else(|| "your email".to_owned());
+                    self.verify_email_modal = Some(VerifyEmailModal {
+                        email: email.clone(),
+                        password: String::new(),
+                        change_mode: false,
+                        can_change: false,
+                        resent: true,
+                        busy: false,
+                        email_error: None,
+                        password_error: None,
+                        resend_alert: Some(VerifyResendAlert::Sent { email }),
+                    });
+                }
             } else {
-                self.put_app_toast(dc_intl::t("R0RpRX").to_owned(), false, cx);
+                let err_msg = inner["email"]
+                    .as_str()
+                    .filter(|s| !s.is_empty())
+                    .map(str::to_owned)
+                    .unwrap_or_else(|| dc_intl::t("XcrQN5").to_owned());
+                self.verify_email_modal = Some(VerifyEmailModal {
+                    email: self.stores.account.email.clone().unwrap_or_default(),
+                    password: String::new(),
+                    change_mode: false,
+                    can_change: false,
+                    resent: false,
+                    busy: false,
+                    email_error: None,
+                    password_error: None,
+                    resend_alert: Some(VerifyResendAlert::Error { message: err_msg }),
+                });
             }
             cx.notify();
             return;
         }
+        let Some(modal) = self.verify_email_modal.as_mut() else {
+            return;
+        };
+        modal.busy = false;
         if key == VERIFY_CHANGE_KEY {
-            if body.get("code").is_some() || body.is_null() {
-                modal.email_error = body["errors"]["email"]["_errors"][0]["message"]
+            if !ok || inner.is_null() {
+                modal.email_error = inner["errors"]["email"]["_errors"][0]["message"]
                     .as_str()
-                    .or_else(|| body["email"][0].as_str())
+                    .or_else(|| inner["email"][0].as_str())
                     .map(str::to_owned);
-                modal.password_error = body["errors"]["password"]["_errors"][0]["message"]
+                modal.password_error = inner["errors"]["password"]["_errors"][0]["message"]
                     .as_str()
-                    .or_else(|| body["password"][0].as_str())
+                    .or_else(|| inner["password"][0].as_str())
                     .map(str::to_owned);
                 if modal.email_error.is_none() && modal.password_error.is_none() {
                     self.put_app_toast(dc_intl::t("R0RpRX").to_owned(), false, cx);
@@ -113,9 +176,128 @@ impl Root {
         }
     }
 
-    /// Renders module `9124` Verify by Email modal.
+    /// Renders module `9124` Verify by Email modal and module `940856` Resend Result / Error modal.
     pub(super) fn verify_email_modal_layer(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
         let modal = self.verify_email_modal.as_ref()?;
+        if let Some(alert) = modal.resend_alert.as_ref() {
+            let (title, body_text) = match alert {
+                VerifyResendAlert::Sent { email } => (
+                    dc_intl::t("LykQYk"),
+                    dc_intl::format("azKEPy", &[("email", Arg::Str(Cow::Borrowed(email)))]),
+                ),
+                VerifyResendAlert::Error { message } => (dc_intl::t("VbTh0E"), message.clone()),
+            };
+            let is_err = matches!(alert, VerifyResendAlert::Error { .. });
+            let card = div()
+                .id("verify-resend-alert-modal")
+                .w(px(440.))
+                .rounded(px(12.))
+                .bg(color("--background-surface-high"))
+                .border_1()
+                .border_color(color("--border-subtle"))
+                .overflow_hidden()
+                .flex()
+                .flex_col()
+                .on_click(|_, _, cx| cx.stop_propagation())
+                .child(
+                    div()
+                        .px(px(24.))
+                        .pt(px(20.))
+                        .pb(px(8.))
+                        .flex()
+                        .items_center()
+                        .justify_between()
+                        .child(
+                            div()
+                                .flex()
+                                .items_center()
+                                .gap(px(8.))
+                                .when(is_err, |r| {
+                                    r.child(icon("circle_info", 20., "--status-danger"))
+                                })
+                                .child(
+                                    div()
+                                        .text_size(px(20.))
+                                        .font_weight(FontWeight(700.))
+                                        .text_color(color("--text-strong"))
+                                        .child(title),
+                                ),
+                        )
+                        .child(
+                            div()
+                                .id("verify-resend-alert-close")
+                                .size(px(28.))
+                                .cursor_pointer()
+                                .flex()
+                                .items_center()
+                                .justify_center()
+                                .child(icon("modal_close", 16., "--interactive-icon-default"))
+                                .on_click(cx.listener(|this, _, _, cx| {
+                                    this.verify_email_modal = None;
+                                    cx.notify();
+                                })),
+                        ),
+                )
+                .child(
+                    div()
+                        .px(px(24.))
+                        .pb(px(20.))
+                        .text_size(px(14.))
+                        .line_height(px(20.))
+                        .text_color(color("--text-default"))
+                        .child(body_text),
+                )
+                .child(
+                    div()
+                        .px(px(24.))
+                        .py(px(14.))
+                        .bg(color("--background-base-lower"))
+                        .border_t_1()
+                        .border_color(color("--border-subtle"))
+                        .flex()
+                        .justify_end()
+                        .child(
+                            div()
+                                .id("verify-resend-alert-ok")
+                                .cursor_pointer()
+                                .px(px(20.))
+                                .h(px(36.))
+                                .rounded(px(6.))
+                                .bg(color("--control-primary-background-default"))
+                                .hover(|s| s.bg(color("--control-primary-background-hover")))
+                                .flex()
+                                .items_center()
+                                .text_size(px(14.))
+                                .font_weight(FontWeight(600.))
+                                .text_color(color("--white"))
+                                .child(dc_intl::t("BddRzS"))
+                                .on_click(cx.listener(|this, _, _, cx| {
+                                    this.verify_email_modal = None;
+                                    cx.notify();
+                                })),
+                        ),
+                );
+            return Some(
+                gpui::deferred(
+                    div()
+                        .id("verify-resend-alert-backdrop")
+                        .occlude()
+                        .absolute()
+                        .inset_0()
+                        .bg(rgba(0x000000b8))
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .on_click(cx.listener(|this, _, _, cx| {
+                            this.verify_email_modal = None;
+                            cx.notify();
+                        }))
+                        .child(card),
+                )
+                .with_priority(98)
+                .into_any_element(),
+            );
+        }
         let can_resend = !modal.change_mode && !modal.email.is_empty();
         let can_submit_change =
             !modal.busy && !modal.email.trim().is_empty() && !modal.password.is_empty();
@@ -415,35 +597,54 @@ impl Root {
         )
     }
 
-    /// Capture helper: `verify-email [resend|resent|change|close]`.
+    /// Capture helper: `verify-email [resend|resent|change|resend-sent|resend-error|close]`.
     #[cfg(feature = "capture")]
     pub(crate) fn script_verify_email(&mut self, mode: &str, cx: &mut Context<Self>) -> String {
+        let base = |change_mode, resent, resend_alert| VerifyEmailModal {
+            email: "lorean@example.com".into(),
+            password: if change_mode {
+                "password123".into()
+            } else {
+                String::new()
+            },
+            change_mode,
+            can_change: true,
+            resent,
+            busy: false,
+            email_error: None,
+            password_error: None,
+            resend_alert,
+        };
         match mode.trim() {
+            "resend-sent" => {
+                self.verify_email_modal = Some(base(
+                    false,
+                    true,
+                    Some(VerifyResendAlert::Sent {
+                        email: "lorean@example.com".into(),
+                    }),
+                ));
+                cx.notify();
+                "verify-email: resend-sent".into()
+            }
+            "resend-error" => {
+                self.verify_email_modal = Some(base(
+                    false,
+                    false,
+                    Some(VerifyResendAlert::Error {
+                        message: dc_intl::t("XcrQN5").to_owned(),
+                    }),
+                ));
+                cx.notify();
+                "verify-email: resend-error".into()
+            }
             "resent" => {
-                self.verify_email_modal = Some(VerifyEmailModal {
-                    email: "lorean@example.com".into(),
-                    password: String::new(),
-                    change_mode: false,
-                    can_change: true,
-                    resent: true,
-                    busy: false,
-                    email_error: None,
-                    password_error: None,
-                });
+                self.verify_email_modal = Some(base(false, true, None));
                 cx.notify();
                 "verify-email: resent".into()
             }
             "change" => {
-                self.verify_email_modal = Some(VerifyEmailModal {
-                    email: "lorean@example.com".into(),
-                    password: "password123".into(),
-                    change_mode: true,
-                    can_change: true,
-                    resent: false,
-                    busy: false,
-                    email_error: None,
-                    password_error: None,
-                });
+                self.verify_email_modal = Some(base(true, false, None));
                 cx.notify();
                 "verify-email: change".into()
             }
@@ -453,16 +654,7 @@ impl Root {
                 "verify-email: closed".into()
             }
             _ => {
-                self.verify_email_modal = Some(VerifyEmailModal {
-                    email: "lorean@example.com".into(),
-                    password: String::new(),
-                    change_mode: false,
-                    can_change: true,
-                    resent: false,
-                    busy: false,
-                    email_error: None,
-                    password_error: None,
-                });
+                self.verify_email_modal = Some(base(false, false, None));
                 cx.notify();
                 "verify-email: resend".into()
             }

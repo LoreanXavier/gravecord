@@ -348,6 +348,7 @@ mod boost_uncancel;
 mod changelog;
 mod claim_account;
 mod conjure_menu;
+mod content_warning;
 mod copy_combo;
 mod dm_call;
 mod dm_call_view;
@@ -852,6 +853,8 @@ pub struct Root {
     sticker_upsell: Option<premium_upsell::StickerNitroUpsell>,
     /// Server Theme Editor NUX modal (module 214103).
     guild_theme_editor: Option<guild_theme_nux::GuildThemeEditor>,
+    /// Pre-send Content Warning popout (module 926262).
+    content_warning: Option<content_warning::ContentWarningPopout>,
     /// App guild-subscription Server Selection modal (module 399143).
     guild_sub_selection_modal: Option<app_storefront::GuildSubscriptionSelectionModal>,
     /// Quest reward code claim instructions sub-modal (module 639852).
@@ -1488,6 +1491,7 @@ impl Root {
             monetization_onboarding_modal: None,
             sticker_upsell: None,
             guild_theme_editor: None,
+            content_warning: None,
             guild_sub_selection_modal: None,
             quest_code_instructions_modal: None,
             orb_multiplier_modal: None,
@@ -2592,6 +2596,10 @@ impl Root {
                 }
                 if key == forum_default_reaction::DEFAULT_REACTION_PATCH_KEY {
                     self.handle_forum_default_reaction_response(&body, cx);
+                    return;
+                }
+                if key == sensitive_media_modal::SENSITIVE_REPORT_KEY {
+                    self.handle_sensitive_media_response(&body, cx);
                     return;
                 }
                 if key == orb_wallet::TOTAL_REDEEMED_KEY
@@ -4955,6 +4963,13 @@ impl Root {
         }
         // Built-in plugins that rewrite outgoing text (ClearURLs).
         let content = crate::plugins::outgoing(&content);
+        if self.intercept_content_warning(&content) {
+            return;
+        }
+        self.send_bypass_warning(content);
+    }
+
+    pub(super) fn send_bypass_warning(&mut self, content: String) {
         let staged = self.sticker_ui.take_staged();
         if content.is_empty() && self.pending_files.is_empty() && staged.is_none() {
             return;
@@ -11847,6 +11862,7 @@ impl Render for Root {
                         || this.monetization_onboarding_modal.is_some()
                         || this.sticker_upsell.is_some()
                         || this.guild_theme_editor.is_some()
+                        || this.content_warning.is_some()
                         || this.guild_sub_selection_modal.is_some()
                         || this.quest_code_instructions_modal.is_some()
                         || this.orb_multiplier_modal.is_some()
@@ -11940,6 +11956,7 @@ impl Render for Root {
                     this.monetization_onboarding_modal = None;
                     this.sticker_upsell = None;
                     this.guild_theme_editor = None;
+                    this.content_warning = None;
                     this.guild_sub_selection_modal = None;
                     this.quest_code_instructions_modal = None;
                     this.orb_multiplier_modal = None;
@@ -13192,6 +13209,7 @@ impl Render for Root {
             .children(self.monetization_onboarding_layer(cx))
             .children(self.sticker_nitro_upsell_layer(cx))
             .children(self.guild_theme_editor_layer(cx))
+            .children(self.content_warning_layer(cx))
             .children(self.guild_sub_selection_layer(cx))
             .children(self.orb_multiplier_layer(cx))
             .children(self.forum_default_reaction_layer(cx))

@@ -2924,6 +2924,10 @@ pub async fn run(
                 let msg = root.update(cx, |root, cx| root.script_sticker_upsell(mode, cx));
                 let _ = writeln!(output, "{msg}");
             }
+            ["content-warning", mode] => {
+                let msg = root.update(cx, |root, cx| root.script_content_warning(mode, cx));
+                let _ = writeln!(output, "{msg}");
+            }
             ["video-quest", mode] => {
                 let msg = root.update(cx, |root, cx| root.script_video_quest(mode, cx));
                 let _ = writeln!(output, "{msg}");

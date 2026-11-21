@@ -168,7 +168,7 @@ impl Root {
                     let acronym = known.map(dc_state::Guild::acronym).unwrap_or_default();
                     // `R[SMALLER]` of module 682163: the acronym's size by its length.
                     let sizes = [13., 13., 11., 11., 9., 7., 5.];
-                    let size = sizes[acronym.chars().count().saturating_sub(1).min(6)];
+                    let size = sizes[acronym.chars().count().min(sizes.len() - 1)];
                     div()
                         .size(px(SIZE))
                         .bg(color("--background-base-lower"))

@@ -811,6 +811,90 @@ pub fn subscribe_cta(
     }
 }
 
+/// Remaining time breakdown for a Nitro trial/discount offer countdown (module 105390:
+/// `qVGNkU`, `wyg9a9`, `IzmIlV`, `iiLbvu`, `/DTtr6`).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct OfferCountdown {
+    pub days: u64,
+    pub hours: u64,
+    pub minutes: u64,
+    pub is_discount: bool,
+    pub discount_percent: Option<u64>,
+    pub is_tier0: bool,
+    pub is_yearly: bool,
+}
+
+impl OfferCountdown {
+    /// Parses `GET /users/@me/billing/user-offer` JSON relative to `now_secs` (UNIX seconds).
+    /// Returns `None` if no active non-expired offer is present.
+    pub fn from_user_offer(offer: &Value, now_secs: i64) -> Option<Self> {
+        let (obj, is_discount) = if offer["user_discount_offer"].is_object() {
+            (&offer["user_discount_offer"], true)
+        } else if offer["user_trial_offer"].is_object() {
+            (&offer["user_trial_offer"], false)
+        } else {
+            return None;
+        };
+        let expires = obj["expires_at"].as_str()?;
+        let expires_secs = parse_rfc3339_epoch_secs(expires)?;
+        let rem = expires_secs - now_secs;
+        if rem <= 0 {
+            return None;
+        }
+        let rem = rem as u64;
+        let days = rem / 86_400;
+        let hours = (rem % 86_400) / 3_600;
+        let minutes = ((rem % 3_600) / 60).max(if days == 0 && hours == 0 { 1 } else { 0 });
+        let discount_percent = is_discount
+            .then(|| obj["discount"]["amount"].as_u64())
+            .flatten();
+        let plan_ids = obj["discount"]["plan_ids"]
+            .as_array()
+            .or_else(|| obj["subscription_trial"]["sku_id"].as_array());
+        let is_tier0 = obj["subscription_trial"]["sku_id"].as_str() == Some("978380684370378762");
+        let is_yearly = plan_ids.is_some_and(|arr| {
+            arr.iter()
+                .filter_map(Value::as_str)
+                .any(|s| s == "511651885459963904")
+        });
+        Some(Self {
+            days,
+            hours,
+            minutes,
+            is_discount,
+            discount_percent,
+            is_tier0,
+            is_yearly,
+        })
+    }
+}
+
+/// Minimal ISO-8601 / RFC-3339 UTC timestamp parser (`YYYY-MM-DDTHH:MM:SS...`) -> epoch seconds.
+fn parse_rfc3339_epoch_secs(s: &str) -> Option<i64> {
+    let b = s.as_bytes();
+    if b.len() < 19 || b[4] != b'-' || b[7] != b'-' || b[13] != b':' || b[16] != b':' {
+        return None;
+    }
+    let y: i64 = s[0..4].parse().ok()?;
+    let m: i64 = s[5..7].parse().ok()?;
+    let d: i64 = s[8..10].parse().ok()?;
+    let hh: i64 = s[11..13].parse().ok()?;
+    let mm: i64 = s[14..16].parse().ok()?;
+    let ss: i64 = s[17..19].parse().ok()?;
+    if !(1..=12).contains(&m) || !(1..=31).contains(&d) {
+        return None;
+    }
+    // Howard Hinnant's days-from-civil algorithm.
+    let y_adj = y - i64::from(m <= 2);
+    let era = y_adj.div_euclid(400);
+    let yoe = y_adj.rem_euclid(400);
+    let mp = m + if m > 2 { -3 } else { 9 };
+    let doy = (153 * mp + 2) / 5 + d - 1;
+    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+    let days_since_epoch = era * 146_097 + doe - 719_468;
+    Some(days_since_epoch * 86_400 + hh * 3_600 + mm * 60 + ss)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -85,8 +85,11 @@ pub(super) enum Menu {
     Filters,
 }
 
-/// Video Quest Player modal state (module 767868: persistent share overlay `WmfZHZ`/`RDE0Sc`/`+5kSoW`,
-/// desktop unsupported fallback `rStN/7` & web `E1du/q`, and end screen `mxaHfx`).
+/// Video Quest Player & Bounty Ad Watch-Time Progress modal state (modules 767868, 579666, 491812:
+/// persistent share overlay `WmfZHZ`/`RDE0Sc`/`+5kSoW`, close button `491812` `cpT0Cq`, watch-time
+/// progress `0F4Peo`/`45cddS`, `nLXlh+` Orbs target marker, `o6FLcF` Promoted footer, `w6PeBF`
+/// pause-on-unfocus message, `uLjCfn` claim error toast, `rStN/7`/`E1du/q` unsupported fallback,
+/// and `mxaHfx` end screen).
 #[derive(Clone, Debug)]
 pub(crate) struct VideoQuestModal {
     pub quest_id: String,
@@ -98,6 +101,10 @@ pub(crate) struct VideoQuestModal {
     pub unsupported_fallback: bool,
     pub watch_secs: u32,
     pub duration_secs: u32,
+    /// Module 579666 bounty ad watch-time mode (`None` for standard `767868` video quests).
+    pub bounty_orbs: Option<u64>,
+    pub paused_away: bool,
+    pub claim_error: bool,
 }
 
 pub(super) struct State {
@@ -2505,7 +2512,7 @@ pub(super) fn quest_asset_url(quest: &str, asset: &str) -> String {
 }
 
 impl Root {
-    /// Opens the in-app Video Quest Player modal (module 767868).
+    /// Opens the in-app Video Quest Player modal (module 767868 / 579666).
     pub(super) fn open_video_quest_modal(
         &mut self,
         quest_id: String,
@@ -2525,8 +2532,109 @@ impl Root {
             unsupported_fallback: false,
             watch_secs: 0,
             duration_secs: 30,
+            bounty_orbs: None,
+            paused_away: false,
+            claim_error: false,
         });
         cx.notify();
+    }
+
+    /// Claims a completed video bounty reward (`POST /quests/creatives/{bountyId}/claim-reward`,
+    /// module 579666 / 845890.Hq).
+    fn claim_video_bounty_reward(&self, bounty_id: &str) {
+        let _ = self.requests.send(Request::Rest {
+            key: Some(format!("quests:bounty-claim:{bounty_id}")),
+            method: reqwest::Method::POST,
+            route: format!("/quests/creatives/{bounty_id}/claim-reward"),
+            body: Some(serde_json::json!({})),
+        });
+    }
+
+    /// Shared Quest Claim Reward button with lock icon & tooltips (module 612378: `WYchde`
+    /// "Explore the Shop", `vTgCWx` "View Reward", `cfY4PE` "Claim Reward", `NJ6Bnm`
+    /// "Not eligible to claim", `USNO1K` "Complete the video to unlock and claim!").
+    #[allow(clippy::too_many_arguments)]
+    pub(in crate::ui) fn quest_claim_reward_button(
+        &self,
+        id: &'static str,
+        quest_id: String,
+        completed: bool,
+        claimed: bool,
+        is_orbs: bool,
+        is_expired: bool,
+        is_video: bool,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let label = if claimed {
+            if is_orbs {
+                dc_intl::t("WYchde")
+            } else {
+                dc_intl::t("vTgCWx")
+            }
+        } else {
+            dc_intl::t("cfY4PE")
+        };
+        let disabled = !completed && !claimed;
+        let tip_text = if !completed && is_expired {
+            Some(dc_intl::t("NJ6Bnm"))
+        } else if !completed && is_video {
+            Some(dc_intl::t("USNO1K"))
+        } else {
+            None
+        };
+        let btn = div()
+            .id(id)
+            .px(px(12.))
+            .h(px(32.))
+            .rounded(px(6.))
+            .bg(color("--control-secondary-background-default"))
+            .when(!disabled, |b| {
+                b.cursor_pointer()
+                    .hover(|s| s.bg(color("--control-secondary-background-hover")))
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        this.quest_activity_header = None;
+                        this.quests.video_modal = None;
+                        if claimed && is_orbs {
+                            this.quests_open_orbs_shop(cx);
+                        } else {
+                            this.open_quest_reward_modal(&quest_id, cx);
+                        }
+                    }))
+            })
+            .when(disabled, |b| b.opacity(0.55))
+            .flex()
+            .items_center()
+            .justify_center()
+            .gap(px(6.))
+            .when(!claimed, |b| {
+                b.child(icon(
+                    "access_lock",
+                    13.,
+                    if completed {
+                        "--icon-strong"
+                    } else {
+                        "--icon-muted"
+                    },
+                ))
+            })
+            .child(
+                div()
+                    .text_size(px(13.))
+                    .font_weight(gpui::FontWeight(600.))
+                    .text_color(color("--text-strong"))
+                    .child(label),
+            );
+        if let Some(tip) = tip_text {
+            self.with_tip(
+                format!("{id}-tip"),
+                super::tooltip::Tip::text(tip, super::tooltip::Side::Top),
+                btn,
+                cx,
+            )
+            .into_any_element()
+        } else {
+            btn.into_any_element()
+        }
     }
 
     /// Reports video quest watch progress (`POST /quests/{questId}/video-progress`, module 343559.uI / 767868).
@@ -2551,15 +2659,99 @@ impl Root {
         let share_url = format!("https://discord.com/quests/{}", modal.quest_id);
         let qid_progress = modal.quest_id.clone();
         let duration = modal.duration_secs.max(1);
+        let remaining = duration.saturating_sub(modal.watch_secs);
         let pct = ((modal.watch_secs as f32) / (duration as f32)).clamp(0., 1.);
         let cta_link = modal.cta_link.clone();
+        let cta_link_footer = modal.cta_link.clone();
         let end_subtitle = if modal.subtitle.is_empty() {
             dc_intl::t("mxaHfx").to_owned()
         } else {
             modal.subtitle.clone()
         };
+        let is_bounty = modal.bounty_orbs.is_some();
+        let bounty_orbs = modal.bounty_orbs.unwrap_or(50);
+        let orbs_balance = self.quests.currency.balance.unwrap_or(750);
+        let timer_label = if remaining == 0 {
+            dc_intl::t("0F4Peo").to_owned()
+        } else {
+            dc_intl::format("45cddS", &[("seconds", Arg::Num(f64::from(remaining)))])
+        };
+        let orbs_target_label = dc_intl::format(
+            "nLXlh+",
+            &[(
+                "orbAmount",
+                Arg::Str(std::borrow::Cow::Owned(bounty_orbs.to_string())),
+            )],
+        );
 
-        // Persistent top-right overlay (`ts` of module 767868): Copy Quest Link + Close.
+        // Module 579666 persistent top-left cluster: 32x32 circular watch-time timer (`0F4Peo`/`45cddS`)
+        // + Orbs balance pill.
+        let top_left_bounty = is_bounty.then(|| {
+            div()
+                .absolute()
+                .top(px(14.))
+                .left(px(14.))
+                .flex()
+                .items_center()
+                .gap(px(8.))
+                .child(
+                    div()
+                        .id("video-quest-watch-timer")
+                        .aria_label(timer_label.clone())
+                        .px(px(10.))
+                        .h(px(32.))
+                        .rounded_full()
+                        .bg(rgba(0x111214cc))
+                        .border_1()
+                        .border_color(if remaining == 0 {
+                            color("--status-positive")
+                        } else {
+                            rgba(0xffffff33)
+                        })
+                        .flex()
+                        .items_center()
+                        .gap(px(6.))
+                        .child(if remaining == 0 {
+                            icon("circle_check", 16., "--status-positive").into_any_element()
+                        } else {
+                            div()
+                                .text_size(px(12.))
+                                .font_weight(gpui::FontWeight(700.))
+                                .text_color(color("--white"))
+                                .child(format!("{remaining}s"))
+                                .into_any_element()
+                        })
+                        .child(
+                            div()
+                                .text_size(px(12.))
+                                .font_weight(gpui::FontWeight(500.))
+                                .text_color(color("--white"))
+                                .child(timer_label),
+                        ),
+                )
+                .child(
+                    div()
+                        .h(px(32.))
+                        .px(px(10.))
+                        .rounded_full()
+                        .bg(rgba(0x111214cc))
+                        .border_1()
+                        .border_color(rgba(0xffffff26))
+                        .flex()
+                        .items_center()
+                        .gap(px(5.))
+                        .child(icon("shop_orb_18", 14., "--white"))
+                        .child(
+                            div()
+                                .text_size(px(12.))
+                                .font_weight(gpui::FontWeight(600.))
+                                .text_color(color("--white"))
+                                .child(orbs_balance.to_string()),
+                        ),
+                )
+        });
+
+        // Persistent top-right overlay (`ts` of module 767868 + close button `491812` `cpT0Cq`).
         let top_overlay = div()
             .absolute()
             .top(px(14.))
@@ -2567,12 +2759,46 @@ impl Root {
             .flex()
             .items_center()
             .gap(px(8.))
+            .when(!is_bounty, |row| {
+                row.child(
+                    self.with_tip(
+                        "video-quest-share-tip",
+                        super::tooltip::Tip::text(
+                            dc_intl::t("WmfZHZ"),
+                            super::tooltip::Side::Bottom,
+                        ),
+                        div()
+                            .id("video-quest-share-btn")
+                            .size(px(34.))
+                            .rounded_full()
+                            .bg(rgba(0x111214cc))
+                            .hover(|s| s.bg(rgba(0x111214ee)))
+                            .border_1()
+                            .border_color(rgba(0xffffff26))
+                            .cursor_pointer()
+                            .flex()
+                            .items_center()
+                            .justify_center()
+                            .child(icon("clips_link", 16., "--white"))
+                            .on_click(cx.listener(move |this, _, _, cx| {
+                                cx.stop_propagation();
+                                cx.write_to_clipboard(gpui::ClipboardItem::new_string(
+                                    share_url.clone(),
+                                ));
+                                this.put_app_toast(dc_intl::t("+5kSoW").to_owned(), true, cx);
+                                cx.notify();
+                            })),
+                        cx,
+                    ),
+                )
+            })
             .child(
+                // Module 491812 (`ad-video-modal-close-btn`, `cpT0Cq` "Close")
                 self.with_tip(
-                    "video-quest-share-tip",
-                    super::tooltip::Tip::text(dc_intl::t("WmfZHZ"), super::tooltip::Side::Bottom),
+                    "ad-video-modal-close-tip",
+                    super::tooltip::Tip::text(dc_intl::t("cpT0Cq"), super::tooltip::Side::Bottom),
                     div()
-                        .id("video-quest-share-btn")
+                        .id("ad-video-modal-close-btn")
                         .size(px(34.))
                         .rounded_full()
                         .bg(rgba(0x111214cc))
@@ -2583,36 +2809,13 @@ impl Root {
                         .flex()
                         .items_center()
                         .justify_center()
-                        .child(icon("clips_link", 16., "--white"))
-                        .on_click(cx.listener(move |this, _, _, cx| {
-                            cx.stop_propagation();
-                            cx.write_to_clipboard(gpui::ClipboardItem::new_string(
-                                share_url.clone(),
-                            ));
-                            this.put_app_toast(dc_intl::t("+5kSoW").to_owned(), true, cx);
+                        .child(icon("modal_close", 16., "--white"))
+                        .on_click(cx.listener(|this, _, _, cx| {
+                            this.quests.video_modal = None;
                             cx.notify();
                         })),
                     cx,
                 ),
-            )
-            .child(
-                div()
-                    .id("video-quest-close-btn")
-                    .size(px(34.))
-                    .rounded_full()
-                    .bg(rgba(0x111214cc))
-                    .hover(|s| s.bg(rgba(0x111214ee)))
-                    .border_1()
-                    .border_color(rgba(0xffffff26))
-                    .cursor_pointer()
-                    .flex()
-                    .items_center()
-                    .justify_center()
-                    .child(icon("modal_close", 16., "--white"))
-                    .on_click(cx.listener(|this, _, _, cx| {
-                        this.quests.video_modal = None;
-                        cx.notify();
-                    })),
             );
 
         let viewport_body: AnyElement = if modal.unsupported_fallback {
@@ -2702,18 +2905,21 @@ impl Root {
                 .flex_col()
                 .justify_between()
                 .p(px(24.))
+                .when(is_bounty, |col| col.pt(px(56.)))
                 .child(
                     div()
                         .flex()
                         .flex_col()
                         .gap(px(4.))
-                        .child(
-                            div()
-                                .text_size(px(18.))
-                                .font_weight(gpui::FontWeight(700.))
-                                .text_color(color("--white"))
-                                .child(modal.title.clone()),
-                        )
+                        .when(!is_bounty, |col| {
+                            col.child(
+                                div()
+                                    .text_size(px(18.))
+                                    .font_weight(gpui::FontWeight(700.))
+                                    .text_color(color("--white"))
+                                    .child(modal.title.clone()),
+                            )
+                        })
                         .child(
                             div()
                                 .text_size(px(13.))
@@ -2736,38 +2942,178 @@ impl Root {
                             .child(icon("clips_play", 24., "--white"))
                             .on_click(cx.listener(move |this, _, _, cx| {
                                 cx.stop_propagation();
-                                this.report_video_quest_progress(&qid_progress, duration + 1);
+                                if is_bounty {
+                                    this.claim_video_bounty_reward(&qid_progress);
+                                } else {
+                                    this.report_video_quest_progress(&qid_progress, duration + 1);
+                                }
                                 if let Some(v) = this.quests.video_modal.as_mut() {
                                     v.watch_secs = v.duration_secs;
+                                    v.paused_away = false;
                                     v.ended = true;
                                 }
                                 cx.notify();
                             })),
                     ),
                 )
+                .when(modal.paused_away, |col| {
+                    // Module 755372 / 579666 pause-on-unfocus notice (`w6PeBF`)
+                    col.child(
+                        div()
+                            .mb(px(8.))
+                            .px(px(12.))
+                            .py(px(8.))
+                            .rounded(px(8.))
+                            .bg(rgba(0x111214dd))
+                            .border_1()
+                            .border_color(rgba(0xffffff22))
+                            .text_size(px(12.))
+                            .text_color(color("--white"))
+                            .child(dc_intl::t("w6PeBF")),
+                    )
+                })
+                .when(modal.claim_error, |col| {
+                    // Module 579666 claim failure banner (`uLjCfn`)
+                    col.child(
+                        div()
+                            .mb(px(8.))
+                            .px(px(12.))
+                            .py(px(8.))
+                            .rounded(px(8.))
+                            .bg(rgba(0xda373c33))
+                            .border_1()
+                            .border_color(color("--status-danger"))
+                            .text_size(px(12.))
+                            .text_color(color("--text-strong"))
+                            .child(dc_intl::t("uLjCfn")),
+                    )
+                })
                 .child(
                     div()
-                        .w_full()
-                        .h(px(6.))
-                        .rounded_full()
-                        .bg(rgba(0xffffff26))
-                        .overflow_hidden()
+                        .flex()
+                        .flex_col()
+                        .gap(px(6.))
+                        .when(is_bounty, |bar| {
+                            bar.child(
+                                div()
+                                    .flex()
+                                    .items_center()
+                                    .justify_end()
+                                    .gap(px(4.))
+                                    .text_size(px(12.))
+                                    .font_weight(gpui::FontWeight(600.))
+                                    .text_color(color("--white"))
+                                    .child(icon("shop_orb_18", 14., "--white"))
+                                    .child(orbs_target_label),
+                            )
+                        })
                         .child(
                             div()
-                                .h_full()
-                                .w(gpui::relative(pct))
-                                .bg(color("--control-primary-background-default")),
+                                .w_full()
+                                .h(px(6.))
+                                .rounded_full()
+                                .bg(rgba(0xffffff26))
+                                .overflow_hidden()
+                                .child(
+                                    div()
+                                        .h_full()
+                                        .w(gpui::relative(pct))
+                                        .bg(color("--control-primary-background-default")),
+                                ),
                         ),
                 )
                 .into_any_element()
         };
+
+        // Footer (module 579666 `738883` Promoted `o6FLcF` + module 612378 Claim Reward button)
+        let footer = div()
+            .px(px(20.))
+            .py(px(12.))
+            .bg(color("--background-surface-high"))
+            .border_t_1()
+            .border_color(color("--border-subtle"))
+            .flex()
+            .items_center()
+            .justify_between()
+            .gap(px(12.))
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap(px(10.))
+                    .child(
+                        div()
+                            .size(px(36.))
+                            .rounded(px(8.))
+                            .bg(rgba(0x5865f233))
+                            .flex()
+                            .items_center()
+                            .justify_center()
+                            .child(icon("home_quests", 18., "--white")),
+                    )
+                    .child(
+                        div()
+                            .flex()
+                            .flex_col()
+                            .child(
+                                div()
+                                    .text_size(px(14.))
+                                    .font_weight(gpui::FontWeight(600.))
+                                    .text_color(color("--text-strong"))
+                                    .child(modal.title.clone()),
+                            )
+                            .child(
+                                div()
+                                    .text_size(px(12.))
+                                    .text_color(color("--text-muted"))
+                                    .child(dc_intl::t("o6FLcF")),
+                            ),
+                    ),
+            )
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap(px(8.))
+                    .child(self.quest_claim_reward_button(
+                        "video-quest-claim-btn",
+                        modal.quest_id.clone(),
+                        remaining == 0,
+                        false,
+                        is_bounty,
+                        false,
+                        true,
+                        cx,
+                    ))
+                    .child(
+                        div()
+                            .id("video-quest-footer-cta")
+                            .cursor_pointer()
+                            .px(px(14.))
+                            .h(px(32.))
+                            .rounded(px(6.))
+                            .bg(color("--control-primary-background-default"))
+                            .hover(|s| s.bg(color("--control-primary-background-hover")))
+                            .flex()
+                            .items_center()
+                            .text_size(px(13.))
+                            .font_weight(gpui::FontWeight(600.))
+                            .text_color(color("--white"))
+                            .child(modal.cta_label.clone())
+                            .on_click(cx.listener(move |_, _, _, cx| {
+                                if !cta_link_footer.is_empty() {
+                                    cx.open_url(&cta_link_footer);
+                                }
+                            })),
+                    ),
+            );
 
         let dialog = div()
             .id("video-quest-modal")
             .occlude()
             .relative()
             .w(px(720.))
-            .h(px(405.))
+            .h(px(465.))
             .rounded(px(12.))
             .bg(rgba(0x111214ff))
             .border_1()
@@ -2776,8 +3122,18 @@ impl Root {
             .flex()
             .flex_col()
             .on_click(cx.listener(|_, _, _, cx| cx.stop_propagation()))
-            .child(viewport_body)
-            .child(top_overlay);
+            .child(
+                div()
+                    .relative()
+                    .flex_1()
+                    .min_h_0()
+                    .flex()
+                    .flex_col()
+                    .child(viewport_body)
+                    .children(top_left_bounty)
+                    .child(top_overlay),
+            )
+            .child(footer);
 
         Some(
             deferred(
@@ -2801,7 +3157,7 @@ impl Root {
         )
     }
 
-    /// Capture harness: `video-quest [playing|end|unsupported|close]` (module 767868).
+    /// Capture harness: `video-quest [playing|end|unsupported|bounty|bounty-earned|bounty-error|close]` (modules 767868, 579666, 491812, 612378).
     #[cfg(feature = "capture")]
     pub(crate) fn script_video_quest(&mut self, arg: &str, cx: &mut Context<Self>) -> String {
         match arg.trim() {
@@ -2811,6 +3167,8 @@ impl Root {
                 "video-quest: closed".to_owned()
             }
             mode => {
+                let is_bounty = mode.starts_with("bounty");
+                let earned = mode == "bounty-earned" || mode == "end";
                 self.quests.video_modal = Some(VideoQuestModal {
                     quest_id: "q_767868".to_owned(),
                     title: "Starfall Odyssey Launch Trailer".to_owned(),
@@ -2819,8 +3177,11 @@ impl Root {
                     cta_link: "https://discord.com/quests".to_owned(),
                     ended: mode == "end",
                     unsupported_fallback: mode == "unsupported",
-                    watch_secs: if mode == "end" { 30 } else { 12 },
+                    watch_secs: if earned { 30 } else { 12 },
                     duration_secs: 30,
+                    bounty_orbs: is_bounty.then_some(50),
+                    paused_away: mode == "bounty",
+                    claim_error: mode == "bounty-error",
                 });
                 cx.notify();
                 format!("video-quest: {mode}")

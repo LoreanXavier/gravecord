@@ -460,18 +460,76 @@ impl Root {
                         dc_intl::tr("Switch Plans")
                     }),
             );
+        // Module 774774 (`Lj` / `rm` / `HU`): "free trial activated" / "discount applied" / "{percent}% discount" / "2-WEEK TRIAL" pill.
+        let offer_badge: Option<String> = {
+            let discount_pct = self
+                .fetched
+                .get("user-offer")
+                .and_then(|v| v["user_discount_offer"]["discount"]["amount"].as_u64());
+            let has_trial = sub.trial_id.is_some() || sub.trial_ends_at.is_some();
+            if tier == PremiumType::Basic {
+                has_trial.then(|| dc_intl::t("qYKftX").to_owned())
+            } else if let Some(pct) = discount_pct {
+                Some(dc_intl::format(
+                    "iiLbvu",
+                    &[("percent", dc_intl::Arg::Num(pct as f64))],
+                ))
+            } else if has_trial {
+                Some(dc_intl::t("qYKftX").to_owned())
+            } else if self
+                .fetched
+                .get("user-offer")
+                .is_some_and(|v| v["user_discount_offer"].is_object())
+            {
+                Some(dc_intl::t("EyjDRE").to_owned())
+            } else {
+                None
+            }
+        };
+        let _trial_copy = dc_intl::t("IBYG5U");
+        let _two_week_copy = dc_intl::t("gtNqJQ");
         banner
             .child(
                 div()
-                    .text_size(px(24.))
-                    .line_height(px(28.))
-                    .font_weight(FontWeight(800.))
-                    .font_family(crate::ui::nitro::NITRO_FONT)
+                    .flex()
+                    .items_center()
+                    .gap(px(10.))
                     .child(
-                        sub.display_name()
-                            .unwrap_or(dc_intl::tr("Nitro"))
-                            .to_uppercase(),
-                    ),
+                        div()
+                            .text_size(px(24.))
+                            .line_height(px(28.))
+                            .font_weight(FontWeight(800.))
+                            .font_family(crate::ui::nitro::NITRO_FONT)
+                            .child(
+                                sub.display_name()
+                                    .unwrap_or(dc_intl::tr("Nitro"))
+                                    .to_uppercase(),
+                            ),
+                    )
+                    .when_some(offer_badge, |row, badge| {
+                        // Module 774774 `HU` (`PremiumPillWithSparkles`, `PREMIUM_TIER_2_WHITE_FILL`)
+                        row.child(
+                            div()
+                                .id("subscription-offer-pill")
+                                .h(px(22.))
+                                .px(px(10.))
+                                .rounded_full()
+                                .bg(gpui::rgb(0xffffff))
+                                .flex()
+                                .items_center()
+                                .gap(px(4.))
+                                .text_size(px(11.))
+                                .font_weight(FontWeight(700.))
+                                .text_color(if tier == PremiumType::Basic {
+                                    color("--premium-tier-0-purple-for-gradients")
+                                } else {
+                                    color("--premium-tier-2-purple-for-gradients")
+                                })
+                                .child("✦")
+                                .child(badge.to_uppercase())
+                                .child("✦"),
+                        )
+                    }),
             )
             .child(info)
             .child(tools)

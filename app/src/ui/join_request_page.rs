@@ -26,6 +26,7 @@ pub(crate) enum JoinConfirmKind {
 #[derive(Clone, Debug)]
 #[allow(dead_code)]
 pub(crate) struct JoinRequestModal {
+    pub guild_id: Option<dc_state::Id>,
     pub guild_name: Option<String>,
     pub status: JoinRequestStatus,
     pub rejection_reason: Option<String>,
@@ -146,6 +147,11 @@ impl Root {
                                 .text_color(color("--white"))
                                 .child(dc_intl::t("p89ACt"))
                                 .on_click(cx.listener(|this, _, _, cx| {
+                                    if let Some(gid) =
+                                        this.join_request_modal.as_ref().and_then(|m| m.guild_id)
+                                    {
+                                        this.remove_join_request(gid);
+                                    }
                                     this.close_join_request_modal();
                                     cx.notify();
                                 })),
@@ -323,6 +329,11 @@ impl Root {
                                 .text_color(color("--text-strong"))
                                 .child(dc_intl::t("I1LYVk"))
                                 .on_click(cx.listener(|this, _, _, cx| {
+                                    if let Some(gid) =
+                                        this.join_request_modal.as_ref().and_then(|m| m.guild_id)
+                                    {
+                                        this.reapply(gid);
+                                    }
                                     if let Some(m) = this.join_request_modal.as_mut() {
                                         m.status = JoinRequestStatus::Incomplete;
                                         m.rejection_reason = None;
@@ -457,6 +468,7 @@ impl Root {
             ),
         };
         self.join_request_modal = Some(JoinRequestModal {
+            guild_id: self.guild.or(Some(100)),
             guild_name: Some("gravecord fixture".to_owned()),
             status,
             rejection_reason: reason,

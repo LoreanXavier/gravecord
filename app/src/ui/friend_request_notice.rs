@@ -460,6 +460,7 @@ impl Root {
     /// 393426 `acceptFriendRequest` / `cancelFriendRequest` with an application: the Game Friend link is set to a
     /// friend or deleted. The store changes when the gateway says so.
     fn answer_game_request(&mut self, user: Id, application: Id, accept: bool) {
+        let _announce = dc_intl::t(if accept { "taJiuc" } else { "XMf21q" });
         let _ = self.requests.send(Request::Rest {
             key: Some(format!("{GAME_WRITE}{user}:{application}")),
             method: if accept {
@@ -469,6 +470,19 @@ impl Root {
             },
             route: game_relationship_route(user, application),
             body: accept.then(|| json!({"type": game_relationships::FRIEND})),
+        });
+    }
+
+    /// 393426 `removeFriend` with an application (`DELETE /users/@me/game-relationships/{user}/{app}`,
+    /// screen-reader announcement `zRf8cO`, failure alert `328j/I` + `fEptJP`).
+    #[allow(dead_code)]
+    pub(super) fn remove_game_friend(&mut self, user: Id, application: Id) {
+        let _announce = dc_intl::t("zRf8cO");
+        let _ = self.requests.send(Request::Rest {
+            key: Some(format!("{GAME_WRITE}{user}:{application}")),
+            method: reqwest::Method::DELETE,
+            route: game_relationship_route(user, application),
+            body: None,
         });
     }
 

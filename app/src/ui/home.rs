@@ -803,11 +803,95 @@ impl Root {
                         .cursor_pointer()
                         .on_click(cx.listener(|this, _, _, cx| this.open_message_requests(cx)))
                     }))
-                    .child(
-                        self.home_link("nitro", "home_nitro", dc_intl::tr("Nitro"), nitro_selected)
+                    .child({
+                        // Module 105390 (`MA` / `Ag` / `fY`) + 99462: Nitro offer-expiry countdown badge & tooltip.
+                        let now_secs = std::time::SystemTime::now()
+                            .duration_since(std::time::UNIX_EPOCH)
+                            .map(|d| d.as_secs() as i64)
+                            .unwrap_or(0);
+                        let offer_badge = self
+                            .fetched
+                            .get("user-offer")
+                            .and_then(|v| {
+                                dc_state::premium::OfferCountdown::from_user_offer(v, now_secs)
+                            })
+                            .map(|cd| {
+                                let label = if cd.is_discount {
+                                    match cd.discount_percent {
+                                        Some(pct) => dc_intl::format(
+                                            "iiLbvu",
+                                            &[("percent", dc_intl::Arg::Num(pct as f64))],
+                                        ),
+                                        None => dc_intl::t("/DTtr6").to_owned(),
+                                    }
+                                } else {
+                                    dc_intl::t("IBYG5U").to_owned()
+                                };
+                                let tip = if cd.days > 0 {
+                                    dc_intl::format(
+                                        "qVGNkU",
+                                        &[("days", dc_intl::Arg::Num(cd.days as f64))],
+                                    )
+                                } else if cd.hours > 0 {
+                                    dc_intl::format(
+                                        "wyg9a9",
+                                        &[
+                                            ("hours", dc_intl::Arg::Num(cd.hours as f64)),
+                                            ("minutes", dc_intl::Arg::Num(cd.minutes as f64)),
+                                        ],
+                                    )
+                                } else {
+                                    dc_intl::format(
+                                        "IzmIlV",
+                                        &[("minutes", dc_intl::Arg::Num(cd.minutes.max(1) as f64))],
+                                    )
+                                };
+                                (label, tip)
+                            });
+                        let row = self
+                            .home_link("nitro", "home_nitro", dc_intl::tr("Nitro"), nitro_selected)
                             .cursor_pointer()
-                            .on_click(cx.listener(|this, _, _, cx| this.open_nitro(cx))),
-                    )
+                            .on_click(cx.listener(|this, _, _, cx| this.open_nitro(cx)))
+                            .relative();
+                        if let Some((badge_label, tip_text)) = offer_badge {
+                            row.child(
+                                div().absolute().right(px(16.)).top(px(10.)).child(
+                                    self.with_tip(
+                                        "nitro-offer-countdown-tip",
+                                        super::tooltip::Tip::body(
+                                            super::tooltip::Body::Text(tip_text.into()),
+                                            super::tooltip::Side::Right,
+                                        ),
+                                        div()
+                                            .id("nitro-offer-countdown-pill")
+                                            .h(px(20.))
+                                            .px(px(8.))
+                                            .rounded_full()
+                                            .bg(if nitro_selected {
+                                                color("--white")
+                                            } else {
+                                                color("--badge-expressive-background")
+                                            })
+                                            .flex()
+                                            .items_center()
+                                            .gap(px(4.))
+                                            .text_size(px(11.))
+                                            .font_weight(FontWeight(600.))
+                                            .text_color(if nitro_selected {
+                                                color("--brand-500")
+                                            } else {
+                                                color("--badge-expressive-text")
+                                            })
+                                            .child("⏱")
+                                            .child(badge_label),
+                                        cx,
+                                    ),
+                                ),
+                            )
+                        } else {
+                            row
+                        }
+                    })
                     .child(
                         self.home_link("shop", "home_shop", dc_intl::tr("Shop"), shop_selected)
                             .cursor_pointer()

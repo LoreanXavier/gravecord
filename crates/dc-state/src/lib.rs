@@ -1107,8 +1107,9 @@ impl Guild {
         Self::acronym_of(&self.name)
     }
 
-    /// The acronym of any server name (module 23339 `oN`: strip `'s `, collapse each word run to its
-    /// first character while preserving punctuation such as `.`, and drop whitespace).
+    /// The acronym of any server name (module 23339 `oN`:
+    /// `e.replace(/'s /g, " ").replace(/\w+/g, e => e[0]).replace(/\s/g, "")`).
+    /// Note JS `\w` is ASCII `[A-Za-z0-9_]`, so non-ASCII letters and punctuation (like `.`) are kept.
     pub fn acronym_of(name: &str) -> String {
         let cleaned = name.replace("'s ", " ");
         let mut out = String::new();
@@ -1116,7 +1117,7 @@ impl Guild {
         for ch in cleaned.chars() {
             if ch.is_whitespace() {
                 in_word = false;
-            } else if ch.is_alphanumeric() || ch == '_' {
+            } else if ch.is_ascii_alphanumeric() || ch == '_' {
                 if !in_word {
                     out.push(ch);
                     in_word = true;
@@ -5849,6 +5850,8 @@ mod tests {
         stores.dispatch("READY", &ready());
         assert_eq!(stores.guilds[0].acronym(), "gf");
         assert_eq!(Guild::acronym_of("fun.club"), "f.c");
+        assert_eq!(Guild::acronym_of("f.c"), "f.c");
+        assert_eq!(Guild::acronym_of("f. club"), "f.c");
         assert_eq!(Guild::acronym_of("Bob's Place Here"), "BPH");
         assert_eq!(Guild::acronym_of("b"), "b");
     }

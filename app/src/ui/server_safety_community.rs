@@ -997,11 +997,7 @@ impl Root {
             .filter(|(bit, _)| everyone & bit == 0)
             .map(|(_, name)| *name)
             .collect();
-        let acronym: String = known
-            .name
-            .split_whitespace()
-            .filter_map(|word| word.chars().next())
-            .collect();
+        let acronym = known.acronym();
         let modal = div()
             .id("safety-risky-dialog")
             .occlude()

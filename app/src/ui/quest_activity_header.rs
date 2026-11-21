@@ -145,26 +145,16 @@ impl Root {
                             ),
                     )
                     .child(if state.enrolled {
-                        div()
-                            .id("quest-activity-claim-cta")
-                            .when(pct >= 100, |d| d.cursor_pointer())
-                            .when(pct < 100, |d| d.opacity(0.5))
-                            .px(px(12.))
-                            .h(px(30.))
-                            .rounded(px(6.))
-                            .bg(color("--control-primary-background-default"))
-                            .flex()
-                            .items_center()
-                            .text_size(px(12.))
-                            .font_weight(FontWeight(600.))
-                            .text_color(color("--white"))
-                            .child(dc_intl::t("cfY4PE"))
-                            .on_click(cx.listener(move |this, _, _, cx| {
-                                if pct >= 100 {
-                                    this.quest_activity_header = None;
-                                    this.open_quest_reward_modal(&quest_id_claim, cx);
-                                }
-                            }))
+                        self.quest_claim_reward_button(
+                            "quest-activity-claim-cta",
+                            quest_id_claim,
+                            pct >= 100,
+                            false,
+                            false,
+                            false,
+                            false,
+                            cx,
+                        )
                     } else {
                         div()
                             .id("quest-activity-accept-cta")
@@ -187,6 +177,7 @@ impl Root {
                                 }
                                 cx.notify();
                             }))
+                            .into_any_element()
                     }),
             );
 

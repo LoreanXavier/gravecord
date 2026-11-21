@@ -124,7 +124,7 @@ pub(super) fn application_denied_alert(
                 id: "application-denied-okay",
                 label: dc_intl::t("BddRzS").to_owned(),
                 tone: Tone::Critical,
-                then: Then::Close,
+                then: Then::DismissApplicationDenied { guild },
             },
         ],
     }
