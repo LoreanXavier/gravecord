@@ -32,6 +32,7 @@ pub use ast::Node;
 pub use chunk::catalog_json;
 pub use format::{Arg, Args};
 pub use hash::message_key;
+pub use locale_data::month_names;
 pub use relative::{humanize, humanize_in};
 
 use std::borrow::Cow;

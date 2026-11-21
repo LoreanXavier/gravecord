@@ -16,5 +16,6 @@ pub use matcher::{
     normalize_path,
 };
 pub use processes::{
-    Process, foreground_pid, main_window, process_age, running_processes, visible_window_pids,
+    Process, foreground_pid, is_current_process_elevated, is_process_elevated, main_window,
+    process_age, running_processes, visible_window_pids,
 };

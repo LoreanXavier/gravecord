@@ -331,6 +331,8 @@ pub(super) struct AlertButton {
 pub(super) enum Content {
     /// `body-md/normal` in `text-default` (module 130577's notice).
     Text(String),
+    /// Module 130577: non-interactive message preview (`hideAccessories`, `disableInteraction`, `hideAutomodDismiss`).
+    RemovedMessage(Box<dc_state::Message>),
     /// Module 181622's `failedDestinations_PiyhYP` box of rows.
     FailedDestinations(Vec<Destination>),
     /// Module 228855: "This change affects" over the server's row.
@@ -372,6 +374,23 @@ pub(super) fn channel_topic_alert(channel: Id) -> Alert {
         subtitle: None,
         content: Some(Content::ChannelTopic(channel)),
         buttons: Vec::new(),
+    }
+}
+
+/// Formats module 181094's linked-lobby notice (`Ud5ryv`) before the clickable "Learn more" link.
+fn linked_lobby_notice_text(application_name: &str) -> String {
+    let raw = dc_intl::t!("Ud5ryv", applicationName = application_name);
+    let stripped = raw
+        .split('•')
+        .next()
+        .unwrap_or(&raw)
+        .replace("**", "")
+        .trim()
+        .to_owned();
+    if stripped.is_empty() {
+        format!("This channel is linked to {application_name}")
+    } else {
+        stripped
     }
 }
 
@@ -1064,8 +1083,40 @@ impl Root {
 
     /// Opens Channel Topic (module 181094) for a server channel that has a topic.
     pub(super) fn open_channel_topic(&mut self, channel: Id, cx: &mut Context<Self>) {
+        if let Some(app_id) = self
+            .topic_channel(channel)
+            .and_then(|(known, _)| known.linked_lobby_application_id)
+        {
+            let key = format!("linked-lobby-app:{app_id}");
+            if !self.fetched.contains_key(&key) && self.requested.insert(key.clone()) {
+                let _ = self.requests.send(crate::net::Request::Fetch {
+                    key,
+                    route: format!("/applications/public?application_ids={app_id}"),
+                });
+            }
+        }
         self.chat_extra.alert = Some(channel_topic_alert(channel));
         cx.notify();
+    }
+
+    fn linked_lobby_application_name(&self, app_id: Id) -> Option<String> {
+        let key = format!("linked-lobby-app:{app_id}");
+        if let Some(name) = self.fetched.get(&key).and_then(|body| {
+            body.as_array()
+                .and_then(|list| list.first())
+                .or(Some(body))
+                .and_then(|entry| entry.get("name"))
+                .and_then(Value::as_str)
+                .filter(|name| !name.is_empty())
+        }) {
+            return Some(name.to_owned());
+        }
+        let target = app_id.to_string();
+        self.detect
+            .store
+            .visible_game()
+            .filter(|game| game.id.as_deref() == Some(target.as_str()))
+            .and_then(|game| game.name.clone())
     }
 
     fn topic_channel(&self, channel: Id) -> Option<(&dc_state::Channel, bool)> {
@@ -1100,17 +1151,77 @@ impl Root {
         )
     }
 
-    /// The topic of module 181094: `parseTopic` (lines kept) in `body-md/normal` (16/20) `text-default`.
+    /// The topic of module 181094: selectable `parseTopic` (lines kept) in `body-md/normal` (16/20) `text-default`,
+    /// followed by `.linkedLobbyNotice__UjoAR` (`Ud5ryv`) when the channel has `linked_lobby.application_id`.
     fn channel_topic_body(&self, channel: Id, cx: &mut Context<Self>) -> AnyElement {
-        let topic = self
-            .topic_channel(channel)
-            .and_then(|(known, _)| known.topic.clone())
-            .unwrap_or_default();
+        const LINKED_LOBBIES_HELP: &str =
+            "https://support.discord.com/hc/en-us/articles/29216887858967";
+        let (topic, linked_app_name) = match self.topic_channel(channel) {
+            Some((known, _)) => (
+                known.topic.clone().unwrap_or_default(),
+                known
+                    .linked_lobby_application_id
+                    .and_then(|app_id| self.linked_lobby_application_name(app_id)),
+            ),
+            None => (String::new(), None),
+        };
         div()
-            .text_size(px(16.))
-            .line_height(px(20.))
-            .text_color(super::color("--text-default"))
-            .child(self.topic_text_full(&topic, super::color("--text-default").into(), cx))
+            .flex()
+            .flex_col()
+            .child(
+                div()
+                    .text_size(px(16.))
+                    .line_height(px(20.))
+                    .text_color(super::color("--text-default"))
+                    .child(self.topic_text_full(
+                        channel,
+                        &topic,
+                        super::color("--text-default").into(),
+                        cx,
+                    )),
+            )
+            .when_some(linked_app_name, |col, app_name| {
+                let text = linked_lobby_notice_text(&app_name);
+                col.child(
+                    div()
+                        .mt(px(16.))
+                        .px(px(12.))
+                        .py(px(8.))
+                        .rounded(px(8.))
+                        .bg(super::color("--background-base-lower"))
+                        .flex()
+                        .items_center()
+                        .gap(px(8.))
+                        .child(div().flex_none().child(super::icon(
+                            "system_refresh",
+                            16.,
+                            "--text-default",
+                        )))
+                        .child(
+                            div()
+                                .flex()
+                                .flex_wrap()
+                                .items_center()
+                                .gap(px(4.))
+                                .text_size(px(14.))
+                                .line_height(px(18.))
+                                .text_color(super::color("--text-default"))
+                                .child(text)
+                                .child("•")
+                                .child(
+                                    div()
+                                        .id("linked-lobby-learn-more")
+                                        .cursor_pointer()
+                                        .text_color(super::color("--text-link"))
+                                        .hover(|s| s.underline())
+                                        .child(dc_intl::tr("Learn more"))
+                                        .on_click(cx.listener(|_, _, _, cx| {
+                                            cx.open_url(LINKED_LOBBIES_HELP);
+                                        })),
+                                ),
+                        ),
+                )
+            })
             .into_any_element()
     }
 
@@ -1189,6 +1300,7 @@ impl Root {
         let raid_resolve = matches!(content, Content::RaidResolve { .. });
         match content {
             Content::Text(text) => body_text(text),
+            Content::RemovedMessage(message) => self.message_preview(&message),
             Content::ChannelTopic(channel) => self.channel_topic_body(channel, cx),
             Content::SoundboardKeybind { .. } => self.soundboard_keybind_body(cx),
             Content::FailedDestinations(destinations) => {
@@ -1514,28 +1626,43 @@ impl Root {
                 }
             }
             AutomodDeleted::Dialog => {
-                // Module 130577: "Your post was removed" with the post's name under it for a thread, else "Your
-                // message was removed"; the notice under the title.
+                // Module 130577: "Your post was removed" (`8czF24`) with the post's name under it for a thread, else
+                // "Your message was removed" (`StrErG`); renders full message preview (`636922`) when both message
+                // and channel/thread resolve, else falls back to `notice` text.
                 let thread = &data["thread"];
                 let notice = data["notice"].as_str().unwrap_or_default().to_owned();
+                let content = if let Some(msg) = message {
+                    let has_channel = self.guild_of_channel(msg.channel_id).is_some()
+                        || self
+                            .stores
+                            .private_channels
+                            .iter()
+                            .any(|ch| ch.id == msg.channel_id)
+                        || !thread.is_null();
+                    if has_channel {
+                        let (key, url) = super::avatar_source(&msg.author);
+                        self.want_image(key, url, cx);
+                        Some(Content::RemovedMessage(Box::new(msg)))
+                    } else {
+                        Some(Content::Text(notice))
+                    }
+                } else {
+                    Some(Content::Text(notice))
+                };
                 self.chat_extra.alert = Some(Alert {
                     id: "automod-removed",
                     title: if thread.is_null() {
-                        dc_intl::tr("Your message was removed").to_owned()
+                        dc_intl::t("StrErG").to_owned()
                     } else {
-                        dc_intl::tr("Your post was removed").to_owned()
+                        dc_intl::t("8czF24").to_owned()
                     },
                     subtitle: thread["name"]
                         .as_str()
                         .map(|name| vec![(name.to_owned(), false)]),
-                    content: Some(Content::Text(
-                        message
-                            .as_ref()
-                            .map_or(notice, |message| message.content.clone()),
-                    )),
+                    content,
                     buttons: vec![AlertButton {
                         id: "automod-removed-okay",
-                        label: dc_intl::tr("Okay").to_owned(),
+                        label: dc_intl::t("BddRzS").to_owned(),
                         tone: Tone::Primary,
                         then: Then::Close,
                     }],
@@ -2090,5 +2217,13 @@ mod tests {
         );
         assert_eq!(alert.buttons[0].tone, Tone::Secondary);
         assert_eq!(alert.buttons[1].label, "Go");
+    }
+
+    #[test]
+    fn linked_lobby_notice_formats_application_name_from_ud5ryv() {
+        let text = linked_lobby_notice_text("Valorant");
+        assert!(text.contains("Valorant"));
+        assert!(!text.contains("**"));
+        assert!(!dc_intl::t("/QvRak").is_empty());
     }
 }

@@ -219,6 +219,7 @@ impl Root {
                 },
                 pid: Some(found.pid),
                 is_launcher: found.is_launcher,
+                elevated: found.elevated,
                 ..Game::default()
             })
             .collect();

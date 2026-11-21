@@ -201,6 +201,7 @@ impl Root {
                     Some("home-request-badge"),
                 ))
             })
+            .children(self.tutorial_friends_list_tip(cx))
     }
 
     /// Friends, Nitro, Shop and Quests rows.
@@ -753,6 +754,7 @@ impl Root {
                         div()
                             .parity("find-button")
                             .id("find-button")
+                            .relative()
                             .cursor_pointer()
                             .on_click(cx.listener(|this, _, window, cx| {
                                 this.open_quick_switcher(window, cx);
@@ -767,7 +769,8 @@ impl Root {
                             .line_height(px(18.))
                             .font_weight(FontWeight(500.))
                             .text_color(color("--text-strong"))
-                            .child(dc_intl::tr("Find or start a conversation")),
+                            .child(dc_intl::tr("Find or start a conversation"))
+                            .children(self.tutorial_direct_messages_tip(cx)),
                     ),
             )
             .child(

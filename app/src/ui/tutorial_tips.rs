@@ -481,16 +481,44 @@ const ADD_SERVER_PLACE: Place = Place {
     inline: Some(((-32., 0.), (48., 48.))),
     offset: (0., 0.),
 };
+/// Module 596339: Home sidebar "Find or start a conversation" button (`direct-messages`).
+const DIRECT_MESSAGES_PLACE: Place = Place {
+    position: Side::Right,
+    inline: None,
+    offset: (-52., 0.),
+};
+/// Module 396655: Rail Home (Discord) button (`friends-list`).
+const FRIENDS_LIST_PLACE: Place = Place {
+    position: Side::Right,
+    inline: Some(((-16., 0.), (48., 48.))),
+    offset: (0., 0.),
+};
+/// Module 289287: Member list first section header (`whos-online`).
+const WHOS_ONLINE_PLACE: Place = Place {
+    position: Side::Left,
+    inline: Some(((38., 11.), (232., 40.))),
+    offset: (0., 0.),
+};
+/// Module 260269: Guild sidebar header dropdown button (`server-settings`).
+const SERVER_SETTINGS_PLACE: Place = Place {
+    position: Side::Bottom,
+    inline: Some(((-8., -48.), (40., 40.))),
+    offset: (0., 0.),
+};
 
 /// The tips of the channel list (their popout only opens while a server's channel list is the sidebar).
 const CHANNEL_LIST_TIPS: [&str; 2] = ["organize-by-topic", "voice-conversations"];
-/// Every tip with a target here (the rail button takes one of its two, by whether the account owns a server).
+/// Every tip with a target here (8 mounted targets across rail, home, channel list, guild header, member list).
 #[cfg(feature = "capture")]
-const MOUNTED: [&str; 4] = [
+const MOUNTED: [&str; 8] = [
     "organize-by-topic",
     "voice-conversations",
     "create-first-server",
     "create-more-servers",
+    "direct-messages",
+    "friends-list",
+    "whos-online",
+    "server-settings",
 ];
 
 /// Where the indicator sits inside its target's box (`left` or, from the far edge, `right`; then `top`).
@@ -583,15 +611,78 @@ impl Root {
         }
         let me = self.stores.current_user.as_ref().map(|user| user.id);
         let owns = me.is_some() && self.stores.guilds.iter().any(|guild| guild.owner_id == me);
-        let id = if owns {
-            "create-more-servers"
-        } else {
+        let id = if tips.open == Some("create-first-server")
+            && tips.should_show("create-first-server")
+        {
             "create-first-server"
+        } else if (tips.open == Some("create-more-servers") || owns)
+            && tips.should_show("create-more-servers")
+        {
+            "create-more-servers"
+        } else if tips.should_show("create-first-server") {
+            "create-first-server"
+        } else {
+            return None;
         };
-        if !tips.should_show(id) {
+        Some(self.tutorial_indicator(definition(id)?, inset(ADD_SERVER_PLACE, 40.), cx))
+    }
+
+    /// `direct-messages` on the Home sidebar "Find or start a conversation" button (module 596339).
+    pub(super) fn tutorial_direct_messages_tip(
+        &self,
+        cx: &mut Context<Self>,
+    ) -> Option<AnyElement> {
+        let tips = &self.tutorial_tips;
+        if !tips.should_show("direct-messages") {
             return None;
         }
-        Some(self.tutorial_indicator(definition(id)?, inset(ADD_SERVER_PLACE, 40.), cx))
+        Some(self.tutorial_indicator(
+            definition("direct-messages")?,
+            inset(DIRECT_MESSAGES_PLACE, 32.),
+            cx,
+        ))
+    }
+
+    /// `friends-list` on the rail Home (Discord) button (module 396655).
+    pub(super) fn tutorial_friends_list_tip(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
+        let tips = &self.tutorial_tips;
+        if !tips.should_show("friends-list") {
+            return None;
+        }
+        Some(self.tutorial_indicator(
+            definition("friends-list")?,
+            inset(FRIENDS_LIST_PLACE, 40.),
+            cx,
+        ))
+    }
+
+    /// `whos-online` on the member list's first section header (module 289287).
+    pub(super) fn tutorial_whos_online_tip(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
+        let tips = &self.tutorial_tips;
+        if !tips.should_show("whos-online") {
+            return None;
+        }
+        Some(self.tutorial_indicator(
+            definition("whos-online")?,
+            inset(WHOS_ONLINE_PLACE, 40.),
+            cx,
+        ))
+    }
+
+    /// `server-settings` on the guild sidebar header dropdown button (module 260269).
+    pub(super) fn tutorial_server_settings_tip(
+        &self,
+        cx: &mut Context<Self>,
+    ) -> Option<AnyElement> {
+        let tips = &self.tutorial_tips;
+        if !tips.should_show("server-settings") {
+            return None;
+        }
+        Some(self.tutorial_indicator(
+            definition("server-settings")?,
+            inset(SERVER_SETTINGS_PLACE, 32.),
+            cx,
+        ))
     }
 
     /// "Got it!": the tip is confirmed (module 787541 `X8`).
@@ -720,17 +811,60 @@ impl Root {
             exclaim_y,
             dot_y,
         ] = pulse(motion::now(), definition.high_priority, full_motion);
-        // GAP: the four SVGs of `indicator_hqoWiU` (c200a7504d42173d, 5c37dde2c8764c10, dabf5fea0bb87bf8,
-        // fd5f7ebed980d3e1) are not in the snapshot, so the indicator keeps its box, anchor and click but draws no
-        // art rather than a guessed one; the pulse values stay computed for when the art is added.
-        let _ = (
-            inner_opacity,
-            inner_scale,
-            outer_opacity,
-            outer_scale,
-            exclaim_y,
-            dot_y,
-        );
+        // Concentric pulsing circles (`indicator_hqoWiU` `innerCircle` / `outerCircle` + high-priority exclaim/dot).
+        let outer_size = (INDICATOR * outer_scale).clamp(16., 44.);
+        let inner_size = (20. * inner_scale).clamp(12., 28.);
+        let outer_ring = div()
+            .absolute()
+            .left(px((INDICATOR - outer_size) / 2.))
+            .top(px((INDICATOR - outer_size) / 2.))
+            .size(px(outer_size))
+            .rounded_full()
+            .border_2()
+            .border_color(color("--brand-500"))
+            .opacity(outer_opacity.clamp(0.15, 1.));
+        let inner_circle = div()
+            .absolute()
+            .left(px((INDICATOR - inner_size) / 2.))
+            .top(px((INDICATOR - inner_size) / 2.))
+            .size(px(inner_size))
+            .rounded_full()
+            .bg(color("--brand-500"))
+            .border_2()
+            .border_color(color("--white"))
+            .opacity((inner_opacity + 0.55).clamp(0.6, 1.))
+            .flex()
+            .flex_col()
+            .items_center()
+            .justify_center()
+            .when(definition.high_priority, |circle| {
+                circle
+                    .child(
+                        div()
+                            .w(px(2.))
+                            .h(px(6.))
+                            .rounded(px(1.))
+                            .bg(color("--white"))
+                            .mt(px(exclaim_y * 0.25)),
+                    )
+                    .child(
+                        div()
+                            .mt(px(2. + dot_y * 0.25))
+                            .size(px(2.))
+                            .rounded_full()
+                            .bg(color("--white")),
+                    )
+            });
+        let tick_canvas = (animating && full_motion && !motion::is_frozen()).then(|| {
+            gpui::canvas(
+                |_, _, _| {},
+                |_, _, window, _| {
+                    window.request_animation_frame();
+                },
+            )
+            .absolute()
+            .size_full()
+        });
         let placed = match inset {
             Inset::Left(x, y) => div().absolute().left(px(x)).top(px(y)),
             Inset::Right(x, y) => div().absolute().right(px(x)).top(px(y)),
@@ -742,6 +876,9 @@ impl Root {
             .size(px(INDICATOR))
             .opacity(opacity)
             .child(self.anchor_probe(format!("tutorial-{id}")))
+            .child(outer_ring)
+            .child(inner_circle)
+            .children(tick_canvas)
             .on_click(cx.listener(move |this, _: &gpui::ClickEvent, _, cx| {
                 // The popout's target toggles it (`onClick` of module 600160 `E`, the Popout of 265872); the row or
                 // button under it does not take the click.
@@ -756,7 +893,7 @@ impl Root {
             .into_any_element()
     }
 
-    /// The open tip's popout, beside its indicator at `at`.
+    /// The open tip's popout, beside its indicator at `at`, with module 44808's translate-in animation.
     fn tutorial_popout(
         &self,
         definition: &'static Definition,
@@ -779,12 +916,25 @@ impl Root {
                 )
             }
         };
+        // Module 44808 translate-in entrance (8px slide along popout axis over 150ms ease-out).
+        let enter = motion::enter(
+            motion::key(&("tutorial-popout-enter", id)),
+            motion::Drive::Css(motion::css(150., motion::Ease::EaseOut)),
+        );
+        let slide = (1. - enter) * 8.;
+        let (dx, dy) = match definition.popout_position {
+            Side::Right => (-slide, 0.),
+            Side::Left => (slide, 0.),
+            Side::Bottom => (0., -slide),
+            Side::Top => (0., slide),
+        };
         // A press outside the popout and its indicator closes it (`onRequestClose`).
         let indicator = gpui::Bounds::new(
             point(px(at.0), px(at.1)),
             gpui::size(px(INDICATOR), px(INDICATOR)),
         );
         let frame = div()
+            .opacity(enter)
             .on_mouse_down_out(
                 cx.listener(move |this, event: &gpui::MouseDownEvent, _, cx| {
                     if this.tutorial_tips.open == Some(id) && !indicator.contains(&event.position) {
@@ -795,11 +945,10 @@ impl Root {
             )
             .on_mouse_down(gpui::MouseButton::Left, |_, _, cx| cx.stop_propagation())
             .child(body);
-        // GAP: the Popout's translate-in animation (module 44808) is not played.
         deferred(
             anchored()
                 .anchor(corner)
-                .position(point(px(x), px(y)))
+                .position(point(px(x + dx), px(y + dy)))
                 .snap_to_window_with_margin(px(8.))
                 .child(frame),
         )
@@ -847,9 +996,10 @@ impl Root {
         }
     }
 
-    /// Module 244083 (`contentNarrowNoMedia_KWWX2H`, left aligned): 280 wide, 16 padding, radius 8,
-    /// `--background-surface-highest` with `--shadow-high`; the title `body-md/semibold` in `--text-strong` with 4
-    /// below, the body 14/18 medium in `--text-default` with 16 below, then "Got it!" and "Skip all tips" 8 apart.
+    /// Module 244083 (`contentNarrowNoMedia_KWWX2H` / `contentWideNoMedia_KWWX2H`): 280 wide (`!isLongText`) or 300
+    /// wide (`isLongText`), 16 padding, radius 8, `--background-surface-highest` with `--shadow-high`, exact 8px
+    /// triangle arrow (`popoutRoot_KWWX2H:before`), title `body-md/semibold` in `--text-strong`, body 14/18 medium in
+    /// `--text-default`, "Got it!" and "Skip all tips".
     fn tutorial_coachmark(
         &self,
         definition: &'static Definition,
@@ -857,31 +1007,84 @@ impl Root {
     ) -> AnyElement {
         let id = definition.id;
         let (title, body) = coachmark_text(id).unwrap_or_default();
-        // `popoutRoot_KWWX2H:before`: an 8px border triangle in the surface colour, 10px from the top beside a left or
-        // right popout, centred under or over a top or bottom one. GAP: the 16x10 tooltip caret stands in for it.
-        let (turn, arrow) = match definition.popout_position {
-            Side::Right => (FRAC_PI_2, div().absolute().left(px(-13.)).top(px(13.))),
-            Side::Left => (-FRAC_PI_2, div().absolute().right(px(-13.)).top(px(13.))),
-            Side::Bottom => (PI, div().absolute().left(px(132.)).top(px(-10.))),
-            Side::Top => (0., div().absolute().left(px(132.)).bottom(px(-10.))),
-        };
-        let arrow = arrow.w(px(16.)).h(px(10.)).child(
-            svg()
+        let is_long_text = body.len() > 120;
+        let width: f32 = if is_long_text { 300. } else { 280. };
+        let side = definition.popout_position;
+        let fill = color("--background-surface-highest");
+        // Exact 8px CSS border-triangle (`16x8` / `8x16`) matching `popoutRoot_KWWX2H:before`.
+        let arrow = match side {
+            Side::Right => div()
                 .absolute()
+                .left(px(-8.))
+                .top(px(10.))
+                .w(px(8.))
+                .h(px(16.)),
+            Side::Left => div()
+                .absolute()
+                .right(px(-8.))
+                .top(px(10.))
+                .w(px(8.))
+                .h(px(16.)),
+            Side::Bottom => div()
+                .absolute()
+                .left(px(width / 2. - 8.))
+                .top(px(-8.))
                 .w(px(16.))
-                .h(px(10.))
-                .path("icons/tooltip_caret_fill.svg")
-                .text_color(color("--background-surface-highest"))
-                .with_transformation(Transformation::rotate(Radians(turn))),
+                .h(px(8.)),
+            Side::Top => div()
+                .absolute()
+                .left(px(width / 2. - 8.))
+                .bottom(px(-8.))
+                .w(px(16.))
+                .h(px(8.)),
+        }
+        .child(
+            gpui::canvas(
+                |_, _, _| {},
+                move |bounds, _, window, _| {
+                    let x = bounds.origin.x;
+                    let y = bounds.origin.y;
+                    let w = bounds.size.width;
+                    let h = bounds.size.height;
+                    let mut path = gpui::PathBuilder::fill();
+                    match side {
+                        Side::Right => {
+                            path.move_to(point(x + w, y));
+                            path.line_to(point(x + w, y + h));
+                            path.line_to(point(x, y + h / 2.));
+                        }
+                        Side::Left => {
+                            path.move_to(point(x, y));
+                            path.line_to(point(x, y + h));
+                            path.line_to(point(x + w, y + h / 2.));
+                        }
+                        Side::Bottom => {
+                            path.move_to(point(x, y + h));
+                            path.line_to(point(x + w, y + h));
+                            path.line_to(point(x + w / 2., y));
+                        }
+                        Side::Top => {
+                            path.move_to(point(x, y));
+                            path.line_to(point(x + w, y));
+                            path.line_to(point(x + w / 2., y + h));
+                        }
+                    }
+                    path.close();
+                    if let Ok(built) = path.build() {
+                        window.paint_path(built, fill);
+                    }
+                },
+            )
+            .size_full(),
         );
         div()
             .id(SharedString::from(format!("tutorial-coachmark-{id}")))
             .occlude()
             .relative()
-            .w(px(280.))
+            .w(px(width))
             .p(px(16.))
             .rounded(px(8.))
-            .bg(color("--background-surface-highest"))
+            .bg(fill)
             .shadow(vec![gpui::BoxShadow {
                 color: gpui::hsla(0., 0., 0., 0.24),
                 offset: point(px(0.), px(12.)),

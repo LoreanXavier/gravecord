@@ -200,6 +200,7 @@ pub struct Detected {
     pub id: Option<String>,
     pub name: String,
     pub is_launcher: bool,
+    pub elevated: bool,
 }
 
 /// Keeps the detected games that draw a window, and launchers. A detectable entry names an executable by a path
@@ -400,6 +401,7 @@ impl Detectables {
                 name,
                 is_launcher: found.as_ref().is_some_and(|found| found.launcher)
                     || index.launchers.contains(exe_name.as_str()),
+                elevated: process.elevated,
             };
             if found.as_ref().is_some_and(|found| found.non_game) {
                 scan.observed.push((detected, Kind::NonGame));
@@ -539,6 +541,7 @@ mod tests {
             id: Some("1124353358434684998".into()),
             name: "Mark of the Ninja: Remastered".into(),
             is_launcher: launcher,
+            elevated: false,
         };
         let mut games = vec![detected(10, false), detected(11, false), detected(12, true)];
         keep_windowed(&mut games, &HashSet::from([11]));
@@ -555,6 +558,7 @@ mod tests {
             pid,
             name: path.rsplit(['\\', '/']).next().unwrap().to_owned(),
             path: path.to_owned(),
+            elevated: false,
         }
     }
 
@@ -788,6 +792,7 @@ mod tests {
                     pid: 12,
                     name: "HytaleLauncher.exe".to_owned(),
                     path: "HytaleLauncher.exe".to_owned(),
+                    elevated: false,
                 },
             ],
             WINDOWS,

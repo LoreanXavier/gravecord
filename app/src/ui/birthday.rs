@@ -21,10 +21,12 @@ use crate::net::Request;
 use crate::ui::motion::Transitions as _;
 use chrono::{Datelike, Months, NaiveDate};
 use gpui::{
-    AnyElement, Context, FontWeight, IntoElement, ScrollHandle, SharedString, deferred, div,
-    prelude::*, px, relative,
+    AnyElement, Context, FocusHandle, FontWeight, IntoElement, KeyDownEvent, ScrollHandle,
+    SharedString, Window, deferred, div, prelude::*, px, relative,
 };
 use serde_json::{Value, json};
+use std::cell::RefCell;
+use std::time::{Duration, Instant};
 
 /// `getArticleURL(MVz.AGE_GATE)` (module 652215: article 360040724612).
 const AGE_GATE_ARTICLE: &str = "https://support.discord.com/hc/en-us/articles/360040724612";
@@ -39,21 +41,8 @@ const DISCORD_EPOCH: u64 = 1_420_070_400_000;
 const OPTION_HEIGHT: f32 = 40.;
 /// `maxVisibleItems: 6`.
 const VISIBLE: usize = 6;
-/// GAP: moment's `localeData().months()` of the current locale; English names in every locale here.
-const MONTHS: [&str; 12] = [
-    "January",
-    "February",
-    "March",
-    "April",
-    "May",
-    "June",
-    "July",
-    "August",
-    "September",
-    "October",
-    "November",
-    "December",
-];
+/// Type-ahead buffer reset window (`201505` `f`: `1000ms`).
+const TYPEAHEAD_RESET: Duration = Duration::from_millis(1000);
 
 /// One of the three selects.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -295,11 +284,36 @@ fn today() -> NaiveDate {
     chrono::Local::now().date_naive()
 }
 
-fn month_label(month: u32) -> &'static str {
-    MONTHS
+fn month_label_for(locale: &str, month: u32) -> &'static str {
+    dc_intl::month_names(locale)
         .get(month.wrapping_sub(1) as usize)
         .copied()
         .unwrap_or("")
+}
+
+fn month_label(month: u32) -> &'static str {
+    month_label_for(dc_intl::locale(), month)
+}
+
+/// First option matching a lowercased alphanumeric type-ahead prefix (`201505` `f`).
+fn typeahead_match(part: Part, year: i32, buffer: &str) -> Option<i32> {
+    if buffer.is_empty() {
+        return None;
+    }
+    options(part, year)
+        .into_iter()
+        .find(|(_, label)| label.to_lowercase().starts_with(buffer))
+        .map(|(value, _)| value)
+}
+
+/// `popoutPosition: "top"` (`201505`): prefer above the select when it fits, else flip below.
+fn popout_top(bounds_top: f32, bounds_bottom: f32, height: f32, window_height: f32) -> f32 {
+    let above = bounds_top - (4. + height);
+    if above >= 0. {
+        above
+    } else {
+        (bounds_bottom + 4.).min((window_height - height).max(0.))
+    }
 }
 
 /// The options of a select: 1 to 31, the months, this year back 100 years.
@@ -312,6 +326,14 @@ fn options(part: Part, year: i32) -> Vec<(i32, String)> {
         Part::Year => (0..=100)
             .map(|back| (year - back, (year - back).to_string()))
             .collect(),
+    }
+}
+
+fn part_slot(part: Part) -> usize {
+    match part {
+        Part::Day => 0,
+        Part::Month => 1,
+        Part::Year => 2,
     }
 }
 
@@ -334,11 +356,21 @@ pub(crate) struct Input {
     pub year: Option<i32>,
     open: Option<Part>,
     scroll: ScrollHandle,
+    focus: RefCell<Option<[FocusHandle; 3]>>,
+    typeahead: String,
+    typeahead_at: Option<Instant>,
 }
 
 impl Input {
     pub(crate) fn entry(&self) -> Entry {
         entry(self.day, self.month, self.year)
+    }
+
+    fn focus_handle(&self, part: Part, cx: &mut Context<Root>) -> FocusHandle {
+        let mut guard = self.focus.borrow_mut();
+        let handles =
+            guard.get_or_insert_with(|| [cx.focus_handle(), cx.focus_handle(), cx.focus_handle()]);
+        handles[part_slot(part)].clone()
     }
 
     fn value(&self, part: Part) -> Option<i32> {
@@ -368,6 +400,7 @@ pub(crate) struct Modal {
     submitting: bool,
     /// `L === 1`: under 18, the "You submitted that you're N years old" step.
     confirm: bool,
+    submit_focus: FocusHandle,
 }
 
 #[derive(Default)]
@@ -380,6 +413,7 @@ pub(crate) struct State {
     pub(crate) nuf: Input,
     nuf_error: Option<String>,
     nuf_submitting: bool,
+    nuf_submit_focus: RefCell<Option<FocusHandle>>,
     /// The last submit's body and whether it went out (held in capture runs and staged states); the harness prints it.
     #[cfg_attr(not(feature = "capture"), allow(dead_code))]
     last: Option<(Owner, Value, bool)>,
@@ -421,6 +455,7 @@ impl Root {
             error: None,
             submitting: false,
             confirm: false,
+            submit_focus: cx.focus_handle(),
         });
         cx.notify();
     }
@@ -526,12 +561,130 @@ impl Root {
         cx.notify();
     }
 
-    fn birthday_pick(&mut self, owner: Owner, part: Part, value: i32, cx: &mut Context<Self>) {
+    fn birthday_pick(
+        &mut self,
+        owner: Owner,
+        part: Part,
+        value: i32,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         if let Some(input) = self.birthday_input_mut(owner) {
             input.set(part, Some(value));
             input.open = None;
         }
+        // Module 201505 auto-advance & `onPopulated`: focus the next select in locale order, or the submit button once
+        // the last select is populated.
+        let order = field_order(long_date_format(dc_intl::locale()));
+        if let Some(idx) = order.iter().position(|p| *p == part) {
+            if let Some(&next_part) = order.get(idx + 1) {
+                if let Some(handle) = self
+                    .birthday_input_of(owner)
+                    .map(|input| input.focus_handle(next_part, cx))
+                {
+                    window.focus(&handle, cx);
+                }
+            } else {
+                let submit_handle = match owner {
+                    Owner::Modal => self
+                        .birthday
+                        .modal
+                        .as_ref()
+                        .map(|modal| modal.submit_focus.clone()),
+                    Owner::Nuf => Some(
+                        self.birthday
+                            .nuf_submit_focus
+                            .borrow_mut()
+                            .get_or_insert_with(|| cx.focus_handle())
+                            .clone(),
+                    ),
+                };
+                if let Some(handle) = submit_handle {
+                    window.focus(&handle, cx);
+                }
+            }
+        }
         cx.notify();
+    }
+
+    fn birthday_key_down(
+        &mut self,
+        owner: Owner,
+        part: Part,
+        event: &KeyDownEvent,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let key = event.keystroke.key.as_str();
+        match key {
+            "enter" | "space" => {
+                self.birthday_toggle(owner, part, cx);
+                cx.stop_propagation();
+            }
+            "up" | "down" => {
+                let opts = options(part, today().year());
+                let cur = self
+                    .birthday_input_of(owner)
+                    .and_then(|input| input.value(part));
+                let pos = cur.and_then(|v| opts.iter().position(|(ov, _)| *ov == v));
+                let next_idx = match (key, pos) {
+                    ("down", Some(i)) => (i + 1).min(opts.len().saturating_sub(1)),
+                    ("down", None) => 0,
+                    ("up", Some(i)) => i.saturating_sub(1),
+                    ("up", None) => opts.len().saturating_sub(1),
+                    _ => 0,
+                };
+                if let Some((val, _)) = opts.get(next_idx)
+                    && let Some(input) = self.birthday_input_mut(owner)
+                {
+                    input.set(part, Some(*val));
+                    cx.notify();
+                }
+                cx.stop_propagation();
+            }
+            _ => {
+                // Module 201505 `f`: alphanumeric type-ahead with 1000ms reset window.
+                if event.keystroke.modifiers.control
+                    || event.keystroke.modifiers.alt
+                    || event.keystroke.modifiers.platform
+                {
+                    return;
+                }
+                let ch = event
+                    .keystroke
+                    .key_char
+                    .as_deref()
+                    .filter(|s| s.chars().count() == 1)
+                    .and_then(|s| s.chars().next())
+                    .filter(|c| c.is_ascii_alphanumeric());
+                let Some(ch) = ch else {
+                    return;
+                };
+                let now = Instant::now();
+                let buf = {
+                    let Some(input) = self.birthday_input_mut(owner) else {
+                        return;
+                    };
+                    if input
+                        .typeahead_at
+                        .is_none_or(|prev| now.duration_since(prev) > TYPEAHEAD_RESET)
+                    {
+                        input.typeahead.clear();
+                    }
+                    input.typeahead.push(ch.to_ascii_lowercase());
+                    input.typeahead_at = Some(now);
+                    input.typeahead.clone()
+                };
+                if let Some(matched) = typeahead_match(part, today().year(), &buf) {
+                    if let Some(input) = self.birthday_input_mut(owner) {
+                        input.set(part, Some(matched));
+                    }
+                    let _ = window;
+                    cx.notify();
+                }
+                cx.stop_propagation();
+            }
+        }
     }
 
     /// `j` of 189282: under 18 asks again first, else `x`.
@@ -719,20 +872,24 @@ impl Root {
             .into_any_element()
     }
 
-    /// One select of module 843282.
+    /// One select of module 843282 / 201505: min-widths (`calc(2ch + 70px)` / `calc(4ch + 70px)`), focus handle +
+    /// focus ring, and alphanumeric type-ahead + keyboard navigation.
     fn birthday_select(
         &self,
         owner: Owner,
         part: Part,
         input: &Input,
+        window: Option<&Window>,
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let key = anchor_key(owner, part);
         let open = input.open == Some(part);
-        let (width, placeholder) = match part {
-            Part::Day => (0.30, dc_intl::t("Voklre")),
-            Part::Month => (0.35, dc_intl::t("UDlN8W")),
-            Part::Year => (0.30, dc_intl::t("ZWr5WA")),
+        let focus_handle = input.focus_handle(part, cx);
+        let focused = window.is_some_and(|w| focus_handle.is_focused(w));
+        let (width, min_width, placeholder) = match part {
+            Part::Day => (0.30, Some(86.), dc_intl::t("Voklre")),
+            Part::Month => (0.35, None, dc_intl::t("UDlN8W")),
+            Part::Year => (0.30, Some(102.), dc_intl::t("ZWr5WA")),
         };
         let value: Option<String> = match part {
             Part::Day => input.day.map(|day| day.to_string()),
@@ -740,19 +897,27 @@ impl Root {
             Part::Year => input.year.map(|year| year.to_string()),
         };
         let shown = value.is_some();
+        let click_focus = focus_handle.clone();
         // As `channel_settings.rs` draws the same `selectField_vWC4bk`.
         div()
             .id(key)
             .relative()
+            .track_focus(&focus_handle)
             .w(relative(width))
+            .when_some(min_width, |d, mw| d.min_w(px(mw)))
             .h(px(40.))
             .rounded(px(8.))
-            .border_1()
-            .border_color(color(if open {
-                "--input-border-active"
-            } else {
-                "--input-border-default"
-            }))
+            .when(focused && !open, |d| {
+                d.border_2().border_color(color("--border-focus"))
+            })
+            .when(!focused || open, |d| {
+                d.border_1().border_color(color(if open {
+                    "--input-border-active"
+                } else {
+                    "--input-border-default"
+                }))
+            })
+            .focus(|style| style.border_color(color("--border-focus")))
             .rule(crate::ui::motion::Rule::TextField)
             .bg(color("--input-background-default"))
             .flex()
@@ -787,7 +952,13 @@ impl Root {
                         )),
                 ),
             )
-            .on_click(cx.listener(move |this, _, _, cx| this.birthday_toggle(owner, part, cx)))
+            .on_key_down(cx.listener(move |this, event: &KeyDownEvent, window, cx| {
+                this.birthday_key_down(owner, part, event, window, cx);
+            }))
+            .on_click(cx.listener(move |this, _, window, cx| {
+                window.focus(&click_focus, cx);
+                this.birthday_toggle(owner, part, cx);
+            }))
             .into_any_element()
     }
 
@@ -798,6 +969,7 @@ impl Root {
         owner: Owner,
         required: bool,
         error: Option<&str>,
+        window: Option<&Window>,
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let Some(input) = self.birthday_input_of(owner) else {
@@ -811,7 +983,7 @@ impl Root {
         };
         let selects: Vec<AnyElement> = order
             .iter()
-            .map(|part| self.birthday_select(owner, *part, input, cx))
+            .map(|part| self.birthday_select(owner, *part, input, window, cx))
             .collect();
         div()
             .flex()
@@ -862,51 +1034,51 @@ impl Root {
             gpui::size(inner.size.width + px(2.), inner.size.height + px(2.)),
         );
         let all = options(part, today().year());
-        // `selectDropdown_vWC4bk` as `channel_settings.rs` draws it: 40px rows in a 4px padded list (20px at the
-        // scrollbar side), `maxOptionsVisible: 6`, below the field 4px off it, or above when it does not fit.
+        // `selectDropdown_vWC4bk`: `maxOptionsVisible: 6`, `popoutPosition: "top"` (prefers above the select when it
+        // fits, flipping below only when insufficient room above).
         let height = (all.len().min(VISIBLE) as f32 * OPTION_HEIGHT + 8.) + 2.;
-        let below = bounds.bottom() + px(4.);
-        let top = if below + px(height) <= window_height {
-            below
-        } else {
-            bounds.top() - px(4. + height)
-        };
+        let top = px(popout_top(
+            f32::from(bounds.top()),
+            f32::from(bounds.bottom()),
+            height,
+            f32::from(window_height),
+        ));
         let picked = input.value(part);
-        let items: Vec<AnyElement> =
-            all.into_iter()
-                .enumerate()
-                .map(|(index, (value, label))| {
-                    let chosen = picked == Some(value);
-                    div()
-                        .id(SharedString::from(format!("{key}-option-{index}")))
-                        .flex_none()
-                        .h(px(OPTION_HEIGHT))
-                        .rounded(px(4.))
-                        .cursor_pointer()
-                        .hover(|style| style.bg(color("--interactive-background-hover")))
-                        .flex()
-                        .items_center()
-                        .child(
-                            div()
-                                .flex_1()
-                                .pl(px(8.))
-                                .text_size(px(16.))
-                                .text_color(color("--text-strong"))
-                                .child(label),
-                        )
-                        .when(chosen, |row| {
-                            row.child(div().px(px(4.)).child(icon(
-                                "select_check",
-                                20.,
-                                "--text-strong",
-                            )))
-                        })
-                        .on_click(cx.listener(move |this, _, _, cx| {
-                            this.birthday_pick(owner, part, value, cx)
-                        }))
-                        .into_any_element()
-                })
-                .collect();
+        let items: Vec<AnyElement> = all
+            .into_iter()
+            .enumerate()
+            .map(|(index, (value, label))| {
+                let chosen = picked == Some(value);
+                div()
+                    .id(SharedString::from(format!("{key}-option-{index}")))
+                    .flex_none()
+                    .h(px(OPTION_HEIGHT))
+                    .rounded(px(4.))
+                    .cursor_pointer()
+                    .hover(|style| style.bg(color("--interactive-background-hover")))
+                    .flex()
+                    .items_center()
+                    .child(
+                        div()
+                            .flex_1()
+                            .pl(px(8.))
+                            .text_size(px(16.))
+                            .text_color(color("--text-strong"))
+                            .child(label),
+                    )
+                    .when(chosen, |row| {
+                        row.child(div().px(px(4.)).child(icon(
+                            "select_check",
+                            20.,
+                            "--text-strong",
+                        )))
+                    })
+                    .on_click(cx.listener(move |this, _, window, cx| {
+                        this.birthday_pick(owner, part, value, window, cx)
+                    }))
+                    .into_any_element()
+            })
+            .collect();
         let list = div()
             .id("birthday-popout")
             .occlude()
@@ -1018,7 +1190,13 @@ impl Root {
                         }
                         _ => Self::birthday_link_text("age-gate-subtitle", "n3QjDE", cx),
                     };
-                    let body = self.birthday_input(Owner::Modal, false, open.error.as_deref(), cx);
+                    let body = self.birthday_input(
+                        Owner::Modal,
+                        false,
+                        open.error.as_deref(),
+                        Some(window),
+                        cx,
+                    );
                     let tone = if open.submitting {
                         Tone::PrimaryLoading
                     } else if matches!(entry, Entry::Valid(_)) {
@@ -1026,6 +1204,13 @@ impl Root {
                     } else {
                         Tone::PrimaryDisabled
                     };
+                    let mut submit_btn = modal::button(
+                        "age-gate-submit",
+                        dc_intl::t("uBFuok"),
+                        tone,
+                        |this, _, cx| this.birthday_modal_submit(cx),
+                    );
+                    submit_btn.focus = Some(open.submit_focus.clone());
                     let spec = modal::Spec {
                         id: "age-gate",
                         title: title.into(),
@@ -1038,12 +1223,7 @@ impl Root {
                                 Tone::Secondary,
                                 |this, _, cx| this.birthday_close(cx),
                             ),
-                            modal::button(
-                                "age-gate-submit",
-                                dc_intl::t("uBFuok"),
-                                tone,
-                                |this, _, cx| this.birthday_modal_submit(cx),
-                            ),
+                            submit_btn,
                         ],
                         close: Box::new(|this, _, cx| this.birthday_close(cx)),
                     };
@@ -1063,9 +1243,22 @@ impl Root {
     pub(super) fn birthday_nuf_content(&self, cx: &mut Context<Self>) -> AnyElement {
         let ready = matches!(self.birthday.nuf.entry(), Entry::Valid(_));
         let submitting = self.birthday.nuf_submitting;
-        let input = self.birthday_input(Owner::Nuf, true, self.birthday.nuf_error.as_deref(), cx);
+        let input = self.birthday_input(
+            Owner::Nuf,
+            true,
+            self.birthday.nuf_error.as_deref(),
+            None,
+            cx,
+        );
+        let nuf_submit_focus = self
+            .birthday
+            .nuf_submit_focus
+            .borrow_mut()
+            .get_or_insert_with(|| cx.focus_handle())
+            .clone();
         let next = div()
             .id("birthday-nuf-next")
+            .track_focus(&nuf_submit_focus)
             .relative()
             .w_full()
             .h(px(44.))
@@ -1397,5 +1590,21 @@ mod tests {
         assert_eq!(years.len(), 101);
         assert_eq!(years[0].0, 2026);
         assert_eq!(years[100].0, 1926);
+    }
+
+    #[test]
+    fn localized_months_typeahead_and_top_popout_match_201505() {
+        assert_eq!(month_label_for("en-US", 1), "January");
+        assert_eq!(month_label_for("tr", 1), "Ocak");
+        assert_eq!(month_label_for("de", 3), "März");
+        assert_eq!(month_label_for("ja", 12), "12月");
+
+        assert_eq!(typeahead_match(Part::Month, 2026, "sep"), Some(9));
+        assert_eq!(typeahead_match(Part::Day, 2026, "24"), Some(24));
+        assert_eq!(typeahead_match(Part::Year, 2026, "1999"), Some(1999));
+
+        // popoutPosition="top": prefers above when room exists, falls back below when cramped at top.
+        assert_eq!(popout_top(300., 340., 250., 720.), 46.);
+        assert_eq!(popout_top(100., 140., 250., 720.), 144.);
     }
 }

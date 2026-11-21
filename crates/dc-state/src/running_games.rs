@@ -25,6 +25,8 @@ pub struct Game {
     pub start: Option<u64>,
     pub hidden: bool,
     pub is_launcher: bool,
+    /// Process runs elevated (admin privileges) on Windows (module 397369 / 119191).
+    pub elevated: bool,
     /// Added by hand through "Add it!".
     pub add: bool,
 }
@@ -741,7 +743,12 @@ mod tests {
     #[test]
     fn non_launcher_game_beats_preceding_launcher_for_visible_and_activity() {
         let mut store = RunningGames::default();
-        let mut launcher = running(10, Some("1"), "Hytale Launcher", "c:/games/hytalelauncher.exe");
+        let mut launcher = running(
+            10,
+            Some("1"),
+            "Hytale Launcher",
+            "c:/games/hytalelauncher.exe",
+        );
         launcher.is_launcher = true;
         let client = running(20, Some("1"), "Hytale", "c:/games/hytaleclient.exe");
 

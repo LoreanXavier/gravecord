@@ -139,7 +139,11 @@ impl Root {
     fn overlay_set_global(&mut self, key: &str, on: bool) {
         let mut global = self.overlay_global();
         // `a` of the Enable Overlay and Enable Legacy Overlay cards (158935): switching one off asks why (387101).
-        let was = if key == OOP { global.oop } else { global.legacy };
+        let was = if key == OOP {
+            global.oop
+        } else {
+            global.legacy
+        };
         if was && !on {
             self.overlay_switched_off();
         }
@@ -501,6 +505,18 @@ impl Root {
                                 .child(dc_intl::tr(
                                     "The overlay keybind has been disabled due to an invalid keybind (only shift). Please change the keybind to a different key.",
                                 )),
+                        )
+                    })
+                    .when(self.overlay_keybind_admin_warning(), |this| {
+                        // Module 119191 (`PIeSHF`): elevated game admin warning.
+                        this.child(
+                            div()
+                                .pt(px(4.))
+                                .text_size(px(12.))
+                                .line_height(px(16.))
+                                .font_weight(FontWeight(600.))
+                                .text_color(color("--text-feedback-warning"))
+                                .child(dc_intl::t("PIeSHF")),
                         )
                     }),
             )

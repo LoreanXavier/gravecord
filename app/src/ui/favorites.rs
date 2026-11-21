@@ -14,8 +14,8 @@ use gpui::{
     img, prelude::*, px, svg,
 };
 
-/// `FavoriteChannelType.REFERENCE`: a channel the list points at (categories made by the account are not built).
-use dc_proto::settings::FAVORITE_REFERENCE;
+/// `FavoriteChannelType.REFERENCE` (1) and `FavoriteChannelType.CATEGORY` (2).
+use dc_proto::settings::{FAVORITE_CATEGORY, FAVORITE_REFERENCE};
 
 impl Root {
     /// Whether the rail shows the star (`favoriteGuildEnabled`).
@@ -155,6 +155,54 @@ impl Root {
                 self.open_favorites(cx);
                 "favorites: opened".to_owned()
             }
+            ["category", id, rest @ ..] => {
+                if let Ok(cat_id) = id.parse::<u64>() {
+                    let name = if rest.is_empty() {
+                        "Pinned".to_owned()
+                    } else {
+                        rest.join(" ")
+                    };
+                    let mut favorites = self.stores.favorites();
+                    let pos = favorites.channels.len() as u64;
+                    if let Some((_, existing)) = favorites
+                        .channels
+                        .iter_mut()
+                        .find(|(cid, _)| *cid == cat_id)
+                    {
+                        existing.nickname = name.clone();
+                        existing.kind = FAVORITE_CATEGORY;
+                    } else {
+                        favorites.channels.push((
+                            cat_id,
+                            dc_proto::settings::FavoriteChannel {
+                                nickname: name.clone(),
+                                kind: FAVORITE_CATEGORY,
+                                position: pos,
+                                parent_id: 0,
+                                channel_type: Some(4),
+                                collapsed: false,
+                            },
+                        ));
+                    }
+                    // Assign first reference channel into this category if one has no parent yet.
+                    if let Some((_, first_ref)) = favorites
+                        .channels
+                        .iter_mut()
+                        .find(|(_, known)| known.kind == FAVORITE_REFERENCE && known.parent_id == 0)
+                    {
+                        first_ref.parent_id = cat_id;
+                    }
+                    favorites.guild_visible = Some(true);
+                    let (patch, _) = dc_proto::settings::set_favorites(&[], &favorites);
+                    self.stores.dispatch(
+                        "USER_SETTINGS_PROTO_UPDATE",
+                        &serde_json::json!({"settings": {"type": 1, "proto": patch}, "partial": true}),
+                    );
+                    format!("favorites: category {cat_id} '{name}'")
+                } else {
+                    "usage: favorites category <id> <name>".to_owned()
+                }
+            }
             ["state"] => {
                 let favorites = self.stores.favorites();
                 format!(
@@ -264,35 +312,158 @@ impl Root {
         )
     }
 
-    /// The channel list of the Favorites server: the header (`header_XH4OpX`: star, name, chevron, the add button) and
-    /// the favourites in list order. The first-run suggestions (affinity data of the account) are not drawn.
-    pub(super) fn favorites_sidebar(&self, cx: &mut Context<Self>) -> impl IntoElement {
-        let ids = self.favorite_ids();
-        let mut rows: Vec<AnyElement> = Vec::new();
-        for (id, nickname) in &ids {
-            if let Some(dm) = self
-                .stores
-                .private_channels
-                .iter()
-                .find(|known| known.id == *id)
-            {
-                if dm.kind == 1 {
-                    rows.extend(self.favorite_dm_row(dm, nickname, cx));
-                } else {
-                    rows.extend(self.dm_row(dm, cx));
-                }
-                continue;
+    /// Toggles collapsed state of a `FAVORITE_CATEGORY` entry and persists it via settings-proto.
+    pub(super) fn toggle_favorite_category(&mut self, category_id: Id, cx: &mut Context<Self>) {
+        let mut favorites = self.stores.favorites();
+        if let Some((_, entry)) = favorites
+            .channels
+            .iter_mut()
+            .find(|(id, known)| *id == category_id && known.kind == FAVORITE_CATEGORY)
+        {
+            entry.collapsed = !entry.collapsed;
+            self.send_favorites(&favorites, "Collapse Category");
+            cx.notify();
+        }
+    }
+
+    /// Deletes a `FAVORITE_CATEGORY` entry, un-parenting any child channels so they remain in Favorites.
+    pub(super) fn delete_favorite_category(&mut self, category_id: Id, cx: &mut Context<Self>) {
+        let mut favorites = self.stores.favorites();
+        let before = favorites.channels.len();
+        favorites
+            .channels
+            .retain(|(id, known)| !(*id == category_id && known.kind == FAVORITE_CATEGORY));
+        if favorites.channels.len() == before {
+            return;
+        }
+        for (_, known) in &mut favorites.channels {
+            if known.parent_id == category_id {
+                known.parent_id = 0;
             }
-            let Some((guild, channel)) = self.favorite_channel(*id) else {
-                continue;
-            };
-            if self.guild == Some(guild) && nickname.is_empty() {
-                rows.push(self.channel_row(channel, cx));
-                if channel.kind == ChannelKind::Text || channel.is_forum() {
-                    rows.extend(self.thread_rows(channel.id, cx));
-                }
+        }
+        self.send_favorites(&favorites, "Delete Category");
+        cx.notify();
+    }
+
+    fn push_favorite_ref_rows(
+        &self,
+        rows: &mut Vec<AnyElement>,
+        id: Id,
+        nickname: &str,
+        cx: &mut Context<Self>,
+    ) {
+        if let Some(dm) = self
+            .stores
+            .private_channels
+            .iter()
+            .find(|known| known.id == id)
+        {
+            if dm.kind == 1 {
+                rows.extend(self.favorite_dm_row(dm, nickname, cx));
             } else {
-                rows.push(self.favorite_row(guild, channel, nickname, cx));
+                rows.extend(self.dm_row(dm, cx));
+            }
+            return;
+        }
+        let Some((guild, channel)) = self.favorite_channel(id) else {
+            return;
+        };
+        if self.guild == Some(guild) && nickname.is_empty() {
+            rows.push(self.channel_row(channel, cx));
+            if channel.kind == ChannelKind::Text || channel.is_forum() {
+                rows.extend(self.thread_rows(channel.id, cx));
+            }
+        } else {
+            rows.push(self.favorite_row(guild, channel, nickname, cx));
+        }
+    }
+
+    /// The channel list of the Favorites server: the header (`header_XH4OpX`: star, name, chevron, the add button),
+    /// uncategorized favourite channels, and collapsible `FAVORITE_CATEGORY` groups with their child channels.
+    pub(super) fn favorites_sidebar(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let favorites = self.stores.favorites();
+        let mut categories: Vec<(Id, String, u64, bool)> = favorites
+            .channels
+            .iter()
+            .filter(|(_, known)| known.kind == FAVORITE_CATEGORY)
+            .map(|(id, known)| (*id, known.nickname.clone(), known.position, known.collapsed))
+            .collect();
+        categories.sort_by_key(|(_, _, pos, _)| *pos);
+        let category_ids: std::collections::HashSet<Id> =
+            categories.iter().map(|(id, _, _, _)| *id).collect();
+        let mut refs: Vec<(Id, String, u64, Id)> = favorites
+            .channels
+            .iter()
+            .filter(|(_, known)| known.kind == FAVORITE_REFERENCE)
+            .map(|(id, known)| (*id, known.nickname.clone(), known.position, known.parent_id))
+            .collect();
+        refs.sort_by_key(|(_, _, pos, _)| *pos);
+
+        let mut rows: Vec<AnyElement> = Vec::new();
+        for (id, nickname, _, parent) in &refs {
+            if *parent == 0 || !category_ids.contains(parent) {
+                self.push_favorite_ref_rows(&mut rows, *id, nickname, cx);
+            }
+        }
+        for (cat_id, cat_name, _, collapsed) in &categories {
+            let cat_id = *cat_id;
+            let collapsed = *collapsed;
+            let label = if cat_name.trim().is_empty() {
+                dc_intl::tr("Favorites").to_uppercase()
+            } else {
+                cat_name.to_uppercase()
+            };
+            let chevron = if collapsed {
+                "overlay_chevron_right"
+            } else {
+                "overlay_chevron_down"
+            };
+            rows.push(
+                div()
+                    .id(("favorite-category", cat_id))
+                    .flex()
+                    .items_center()
+                    .gap(px(4.))
+                    .h(px(28.))
+                    .mt(px(12.))
+                    .px(px(8.))
+                    .cursor_pointer()
+                    .text_size(px(12.))
+                    .line_height(px(16.))
+                    .font_weight(FontWeight(600.))
+                    .text_color(color("--channels-default"))
+                    .hover(|s| s.text_color(color("--interactive-text-hover")))
+                    .child(icon(chevron, 12., "--channels-default"))
+                    .child(
+                        div()
+                            .min_w(px(0.))
+                            .overflow_hidden()
+                            .text_ellipsis()
+                            .whitespace_nowrap()
+                            .child(label),
+                    )
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        this.toggle_favorite_category(cat_id, cx);
+                    }))
+                    .on_mouse_up(
+                        MouseButton::Right,
+                        cx.listener(move |this, event: &gpui::MouseUpEvent, _, cx| {
+                            this.open_context_menu(
+                                context_menu::Target::FavoriteCategory(cat_id),
+                                event.position,
+                                cx,
+                            );
+                            cx.stop_propagation();
+                        }),
+                    )
+                    .into_any_element(),
+            );
+            if !collapsed {
+                for (id, nickname, _, parent) in &refs {
+                    if *parent == cat_id {
+                        self.push_favorite_ref_rows(&mut rows, *id, nickname, cx);
+                    }
+                }
             }
         }
         div()

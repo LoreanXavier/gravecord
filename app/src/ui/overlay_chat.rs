@@ -293,8 +293,17 @@ impl Root {
             .private_channels
             .iter()
             .any(|known| known.id == channel);
+        let mod_report = !private
+            && self.stores.guilds.iter().any(|guild| {
+                guild
+                    .channels
+                    .iter()
+                    .any(|known| known.id == channel && known.is_moderator_report_channel())
+            });
         let target = if private {
             super::context_menu::Target::OverlayDm(channel)
+        } else if mod_report {
+            super::context_menu::Target::OverlayModReportChannel(channel)
         } else {
             super::context_menu::Target::Channel(channel)
         };

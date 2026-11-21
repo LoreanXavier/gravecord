@@ -248,6 +248,25 @@ enum Visual {
     Disabled,
 }
 
+#[derive(Clone, Copy)]
+enum PictureMenu {
+    MessageMedia { video: bool },
+    StandaloneImage,
+}
+
+fn is_video_media(media: &dc_state::components::Media) -> bool {
+    if media
+        .content_type
+        .as_deref()
+        .is_some_and(|ct| ct.to_ascii_lowercase().starts_with("video/"))
+    {
+        return true;
+    }
+    let path = media.url.split(['?', '#']).next().unwrap_or_default();
+    let lower = path.to_ascii_lowercase();
+    lower.ends_with(".mp4") || lower.ends_with(".webm") || lower.ends_with(".mov")
+}
+
 impl Root {
     /// The components of a message, or nothing.
     pub(super) fn message_components(
@@ -434,16 +453,16 @@ impl Root {
             }
             Component::Thumbnail {
                 id,
-                media: _,
+                media,
                 description: _,
                 spoiler: _,
-            } => self.picture(
+            } => self.picture_with_kind(
                 message,
                 id,
-                (0, None),
-                THUMBNAIL as f32,
-                THUMBNAIL as f32,
+                (0, Some(&media.url)),
+                (THUMBNAIL as f32, THUMBNAIL as f32),
                 [8.; 4],
+                PictureMenu::StandaloneImage,
             ),
             Component::MediaGallery { id, items } => {
                 self.gallery(message, id, items, inside_container)
@@ -576,25 +595,28 @@ impl Root {
         div().flex().flex_col().children(parts).into_any_element()
     }
 
-    fn picture(
+    fn picture_with_kind(
         &self,
         message: &Message,
         id: &str,
         (index, url): (usize, Option<&str>),
-        width: f32,
-        height: f32,
+        (width, height): (f32, f32),
         corners: [f32; 4],
+        menu_kind: PictureMenu,
     ) -> AnyElement {
         let key = media_key(message.id, id, index);
         let shown = self.images.get(&key).cloned();
         let [tl, tr, br, bl] = corners.map(px);
-        // A right press on a tile opens the message's menu with this media item (module 232430 `nP` calls
+        // A right press on a gallery tile opens the message's menu with this media item (module 232430 `nP` calls
         // `getOnMediaItemContextMenu`, built by `VL` of module 21299 for any message but an ephemeral one); module
-        // 761304 then adds the image and link groups for `mediaItem.url`.
-        // A Thumbnail (module 232430 `nZ`) has no menu of its own.
-        let menu = url
-            .filter(|_| message.flags & (1 << 6) == 0)
-            .map(str::to_owned);
+        // 761304 then adds the image/video and link groups.
+        // A Thumbnail (module 232430 `nZ`) falls through to the standalone Image Actions menu (module 177079).
+        let menu = match menu_kind {
+            PictureMenu::MessageMedia { .. } => url
+                .filter(|_| message.flags & (1 << 6) == 0)
+                .map(str::to_owned),
+            PictureMenu::StandaloneImage => url.filter(|u| !u.is_empty()).map(str::to_owned),
+        };
         let weak = self.weak.clone();
         div()
             .when_some(menu, |this, url| {
@@ -602,10 +624,29 @@ impl Root {
                     gpui::MouseButton::Right,
                     move |event: &gpui::MouseUpEvent, _, app: &mut gpui::App| {
                         let (url, key) = (url.clone(), key.clone());
-                        let _ = weak.update(app, |this, _| {
-                            this.menu_hit =
-                                Some((event.position, super::menu::Hit::Media { url, key }));
-                        });
+                        let pos = event.position;
+                        match menu_kind {
+                            PictureMenu::MessageMedia { video } => {
+                                let _ = weak.update(app, |this, _| {
+                                    this.menu_hit = Some((
+                                        pos,
+                                        if video {
+                                            super::menu::Hit::Video {
+                                                src: url.clone(),
+                                                url,
+                                            }
+                                        } else {
+                                            super::menu::Hit::Media { url, key }
+                                        },
+                                    ));
+                                });
+                            }
+                            PictureMenu::StandaloneImage => {
+                                let _ = weak.update(app, |this, cx| {
+                                    this.open_image_context_menu(url, Some(key), pos, cx);
+                                });
+                            }
+                        }
                     },
                 )
             })
@@ -702,13 +743,15 @@ impl Root {
             let large = 2. * (width - 4.) / 3.;
             let small = (large - 4.) / 2.;
             let tile = |index: usize, w: f32, h: f32, corners: [f32; 4]| {
-                self.picture(
+                self.picture_with_kind(
                     message,
                     id,
                     (index, Some(&items[index].media.url)),
-                    w,
-                    h,
+                    (w, h),
                     corners,
+                    PictureMenu::MessageMedia {
+                        video: is_video_media(&items[index].media),
+                    },
                 )
             };
             div()
@@ -739,13 +782,15 @@ impl Root {
                             } else {
                                 corner(row, col, cells.len(), total)
                             };
-                            self.picture(
+                            self.picture_with_kind(
                                 message,
                                 id,
                                 (index, Some(&items[index].media.url)),
-                                w,
-                                h,
+                                (w, h),
                                 corners,
+                                PictureMenu::MessageMedia {
+                                    video: is_video_media(&items[index].media),
+                                },
                             )
                         }))
                 }))

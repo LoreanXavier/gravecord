@@ -96,6 +96,8 @@ pub(super) enum Action {
     /// A picture of the message (module 115184).
     CopyImage,
     SaveImage,
+    /// "Mark As Not Sensitive" (module 761304 `report-image-false-positive` / `ZH7P2h`): opens `544135`.
+    MarkNotSensitive,
     /// Not in the pinned client: ReverseImageSearch's "Search Image" submenu (`plugin_hooks.rs`).
     SearchImage,
     /// Not in the pinned client: Translate+'s "Translate" (`plugin_hooks/translate_plus.rs`).
@@ -158,6 +160,8 @@ pub(super) struct SavedState {
     pub link: LinkKind,
     /// The pointer was on a picture the app can copy and save.
     pub image: bool,
+    /// Sensitive/obfuscated media under the pointer (module 761304 `report-image-false-positive` / `ZH7P2h`).
+    pub sensitive_media: bool,
     /// Not in the pinned client: ReverseImageSearch offers "Search Image" for the picture under the pointer.
     pub search_image: bool,
     /// Not in the pinned client: Translate+ offers "Translate" for a message with text.
@@ -587,6 +591,14 @@ pub(super) fn message_items_saved(own: bool, saved: SavedState) -> Vec<Item> {
             false,
         ));
     }
+    if saved.sensitive_media {
+        pictures.push(Item::Entry(
+            "Mark As Not Sensitive",
+            "circle_warning",
+            Action::MarkNotSensitive,
+            false,
+        ));
+    }
     if saved.voice_file {
         pictures.push(Item::Entry(
             "Save File",
@@ -881,6 +893,19 @@ impl Root {
             no_thread: self.guild.is_none(),
             failed: self.send_state_of(message) == Some(super::send_state::SendState::Failed),
             image: matches!(&self.menu_extra.hit, Some(Hit::Media { key, .. }) if self.images.contains_key(key)),
+            sensitive_media: matches!(
+                &self.menu_extra.hit,
+                Some(Hit::Media { .. } | Hit::Video { .. })
+            ) && found.is_some_and(|known| {
+                let hit_url = match &self.menu_extra.hit {
+                    Some(Hit::Media { url, .. } | Hit::Video { url, .. }) => Some(url.as_str()),
+                    _ => None,
+                };
+                known.attachments.iter().any(|att| {
+                    att.flags & super::media_image::ATTACHMENT_HARM_FLAGS_ALL != 0
+                        && hit_url.is_none_or(|url| att.url == url || att.proxy_url == url)
+                })
+            }),
             search_image: matches!(&self.menu_extra.hit, Some(Hit::Media { .. }))
                 && super::plugin_hooks::reverse_image_search(),
             voice_file: found
@@ -1812,7 +1837,15 @@ impl Root {
         let rows = match submenu.kind {
             SubmenuKind::Reminder => self.reminder_rows(channel, submenu.message, cx),
             SubmenuKind::Reaction => self.reaction_rows(channel, submenu.message, cx),
-            SubmenuKind::Apps => self.app_rows(channel, submenu.message, cx),
+            SubmenuKind::Apps => {
+                return Some(self.apps_message_submenu(
+                    channel,
+                    submenu.message,
+                    submenu.row,
+                    window,
+                    cx,
+                ));
+            }
             SubmenuKind::RemoveReactions => self.remove_reaction_rows(channel, submenu.message, cx),
             SubmenuKind::SearchImage => self.search_image_rows(cx),
         };

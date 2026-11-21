@@ -217,67 +217,76 @@ impl Root {
 
     /// `to` of module 427830 while unlocked: the toolbar at the top right.
     pub(super) fn overlay_toolbar(&self, keybind: String, cx: &mut Context<Self>) -> AnyElement {
+        let admin_warning = self.overlay_keybind_admin_warning();
         div()
             .absolute()
             .top(px(24.))
             .right(px(24.))
             .flex()
-            .items_start()
-            .justify_end()
-            .gap(px(8.))
+            .flex_col()
+            .items_end()
+            .gap(px(6.))
             .child(
                 div()
                     .flex()
+                    .items_start()
+                    .justify_end()
                     .gap(px(8.))
-                    .child(self.overlay_small_button(
-                        "overlay-widgets-browse-button",
-                        "overlay_widgets",
-                        dc_intl::tr("Widgets"),
-                        self.overlay.widgets_panel,
-                        |this, _| this.overlay.widgets_panel = !this.overlay.widgets_panel,
+                    .child(
+                        div()
+                            .flex()
+                            .gap(px(8.))
+                            .child(self.overlay_small_button(
+                                "overlay-widgets-browse-button",
+                                "overlay_widgets",
+                                dc_intl::tr("Widgets"),
+                                self.overlay.widgets_panel,
+                                |this, _| this.overlay.widgets_panel = !this.overlay.widgets_panel,
+                                cx,
+                            ))
+                            .child(self.overlay_small_button(
+                                "overlay-widgets-hide-all-button",
+                                "overlay_eye_slash",
+                                dc_intl::tr("Hide All"),
+                                false,
+                                |this, _| this.overlay_change_layout(|layout| layout.hide_all()),
+                                cx,
+                            ))
+                            .child(self.overlay_small_button(
+                                "overlay-widgets-reset-button",
+                                "overlay_refresh",
+                                dc_intl::tr("Reset Default Layout"),
+                                false,
+                                |this, _| {
+                                    this.overlay_change_layout(|layout| {
+                                        layout.reset(&mut super::overlay::new_widget_id);
+                                        true
+                                    })
+                                },
+                                cx,
+                            )),
+                    )
+                    // Report opens the Report a Problem dialog (module 967055).
+                    .child(self.overlay_round_button(
+                        "overlay-report-button",
+                        "overlay_flag",
+                        None,
+                        |this, cx| this.overlay_open_report(cx),
                         cx,
                     ))
-                    .child(self.overlay_small_button(
-                        "overlay-widgets-hide-all-button",
-                        "overlay_eye_slash",
-                        dc_intl::tr("Hide All"),
-                        false,
-                        |this, _| this.overlay_change_layout(|layout| layout.hide_all()),
-                        cx,
-                    ))
-                    .child(self.overlay_small_button(
-                        "overlay-widgets-reset-button",
-                        "overlay_refresh",
-                        dc_intl::tr("Reset Default Layout"),
-                        false,
-                        |this, _| {
-                            this.overlay_change_layout(|layout| {
-                                layout.reset(&mut super::overlay::new_widget_id);
-                                true
-                            })
+                    .child(self.overlay_round_button(
+                        "overlay-close-button",
+                        "overlay_x_large",
+                        (!admin_warning).then_some(keybind),
+                        |this, cx| {
+                            if !this.overlay.locked {
+                                this.overlay_toggle_lock(cx);
+                            }
                         },
                         cx,
                     )),
             )
-            // Report opens the Report a Problem dialog (module 967055).
-            .child(self.overlay_round_button(
-                "overlay-report-button",
-                "overlay_flag",
-                None,
-                |this, cx| this.overlay_open_report(cx),
-                cx,
-            ))
-            .child(self.overlay_round_button(
-                "overlay-close-button",
-                "overlay_x_large",
-                Some(keybind),
-                |this, cx| {
-                    if !this.overlay.locked {
-                        this.overlay_toggle_lock(cx);
-                    }
-                },
-                cx,
-            ))
+            .children(self.overlay_keybind_admin_banner(true, true, cx))
             .into_any_element()
     }
 

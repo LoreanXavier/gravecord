@@ -18,6 +18,8 @@ pub struct Process {
     pub name: String,
     /// The full image path as the system reports it, or the file name when the query is refused.
     pub path: String,
+    /// Whether the process runs elevated (admin privileges) on Windows (module 119191 / 397369).
+    pub elevated: bool,
 }
 
 /// Every process this user may see.
@@ -47,6 +49,16 @@ pub fn process_age(pid: u32) -> Option<std::time::Duration> {
     native::process_age(pid)
 }
 
+/// Whether `pid` is elevated (running with administrator privileges) on Windows.
+pub fn is_process_elevated(pid: u32) -> bool {
+    native::is_process_elevated(pid)
+}
+
+/// Whether this process itself runs elevated on Windows.
+pub fn is_current_process_elevated() -> bool {
+    native::is_current_process_elevated()
+}
+
 #[cfg(windows)]
 mod native {
     use super::{MAX_PROCESSES, Process};
@@ -71,6 +83,57 @@ mod native {
             .position(|unit| *unit == 0)
             .unwrap_or(buffer.len());
         String::from_utf16_lossy(&buffer[..end])
+    }
+
+    fn query_token_elevated(handle: HANDLE) -> Option<bool> {
+        use windows_sys::Win32::Security::{
+            GetTokenInformation, TOKEN_ELEVATION, TOKEN_QUERY, TokenElevation,
+        };
+        use windows_sys::Win32::System::Threading::OpenProcessToken;
+        unsafe {
+            let mut token: HANDLE = std::ptr::null_mut();
+            if OpenProcessToken(handle, TOKEN_QUERY, &mut token) == 0 || token.is_null() {
+                return None;
+            }
+            let mut elevation = TOKEN_ELEVATION { TokenIsElevated: 0 };
+            let mut len: u32 = 0;
+            let ok = GetTokenInformation(
+                token,
+                TokenElevation,
+                (&mut elevation as *mut TOKEN_ELEVATION).cast(),
+                std::mem::size_of::<TOKEN_ELEVATION>() as u32,
+                &mut len,
+            );
+            CloseHandle(token);
+            (ok != 0).then_some(elevation.TokenIsElevated != 0)
+        }
+    }
+
+    pub fn is_current_process_elevated() -> bool {
+        use windows_sys::Win32::System::Threading::GetCurrentProcess;
+        static SELF_ELEVATED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+        *SELF_ELEVATED.get_or_init(|| {
+            // SAFETY: pseudo-handle for current process, never closed.
+            let handle = unsafe { GetCurrentProcess() };
+            query_token_elevated(handle).unwrap_or(false)
+        })
+    }
+
+    pub fn is_process_elevated(pid: u32) -> bool {
+        use windows_sys::Win32::Foundation::{ERROR_ACCESS_DENIED, GetLastError};
+        // SAFETY: read-only handle queried and closed immediately.
+        unsafe {
+            let handle: HANDLE = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid);
+            if handle.is_null() {
+                return GetLastError() == ERROR_ACCESS_DENIED && !is_current_process_elevated();
+            }
+            let result = match query_token_elevated(handle) {
+                Some(elevated) => elevated,
+                None => GetLastError() == ERROR_ACCESS_DENIED && !is_current_process_elevated(),
+            };
+            CloseHandle(handle);
+            result
+        }
     }
 
     fn image_path(pid: u32) -> Option<String> {
@@ -104,7 +167,13 @@ mod native {
                 let pid = entry.th32ProcessID;
                 if pid != 0 && !name.is_empty() {
                     let path = image_path(pid).unwrap_or_else(|| name.clone());
-                    out.push(Process { pid, name, path });
+                    let elevated = is_process_elevated(pid);
+                    out.push(Process {
+                        pid,
+                        name,
+                        path,
+                        elevated,
+                    });
                 }
                 more = Process32NextW(snapshot, &mut entry) != 0;
             }
@@ -289,6 +358,14 @@ mod native {
 
     pub fn process_age(_pid: u32) -> Option<std::time::Duration> {
         None
+    }
+
+    pub fn is_process_elevated(_pid: u32) -> bool {
+        false
+    }
+
+    pub fn is_current_process_elevated() -> bool {
+        false
     }
 }
 

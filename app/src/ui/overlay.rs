@@ -1329,7 +1329,7 @@ impl Root {
         if self.overlay_notification_disabled(store::WELCOME_GENERAL) {
             return;
         }
-        let hint = dc_intl::format("z8/sgJ", &[("keybind", self.overlay_keybind_text().into())]);
+        let hint = self.overlay_keybind_hint_text("z8/sgJ");
         let toast = Toast {
             kind: ToastKind::Welcome,
             icon: None,
@@ -1372,7 +1372,7 @@ impl Root {
         if !self.images.contains_key(&key) {
             self.request_image(key.clone(), url);
         }
-        let hint = dc_intl::format("ykjOAJ", &[("keybind", self.overlay_keybind_text().into())]);
+        let hint = self.overlay_keybind_hint_text("ykjOAJ");
         let toast = Toast {
             kind: ToastKind::Text,
             icon: Some(key),
@@ -1602,6 +1602,90 @@ impl Root {
     pub(super) fn overlay_keybind_text(&self) -> String {
         self.overlay_lock_text()
     }
+
+    /// Module 119191 (`sI`) / `RunningGameStore.canShowAdminWarning`: on Windows, keybinds cannot reach an elevated
+    /// game unless our client is elevated too (no Discord input system service is installed).
+    pub(super) fn overlay_keybind_admin_warning(&self) -> bool {
+        let game_elevated = self
+            .detect
+            .store
+            .visible_game()
+            .is_some_and(|game| game.elevated);
+        overlay_admin_warning_needed(
+            cfg!(windows),
+            game_elevated,
+            dc_detect::is_current_process_elevated(),
+        )
+    }
+
+    /// Formats an overlay keybind hint message (`z8/sgJ`, `ykjOAJ`, `1XA04X`) or falls back to module 119191's
+    /// elevated-game admin warning (`PIeSHF` "Keybinds disabled — requires admin privileges").
+    pub(super) fn overlay_keybind_hint_text(&self, key: &str) -> String {
+        if self.overlay_keybind_admin_warning() {
+            dc_intl::t("PIeSHF").to_owned()
+        } else {
+            dc_intl::format(key, &[("keybind", self.overlay_keybind_text().into())])
+        }
+    }
+
+    /// Module 119191 `sI`: elevated-game admin warning line (`12/16` semibold, `--text-feedback-warning` when
+    /// `highlight` else `--text-muted`). When `can_open_settings` is true, renders clickable `MVS9pV` opening Game
+    /// Overlay settings and locking the overlay; otherwise renders `PIeSHF`.
+    pub(super) fn overlay_keybind_admin_banner(
+        &self,
+        highlight: bool,
+        can_open_settings: bool,
+        cx: &mut Context<Self>,
+    ) -> Option<AnyElement> {
+        if !self.overlay_keybind_admin_warning() {
+            return None;
+        }
+        let tint = onyx(if highlight {
+            "--text-feedback-warning"
+        } else {
+            "--text-muted"
+        });
+        let text = if can_open_settings {
+            dc_intl::t("MVS9pV")
+                .replace("$[", "")
+                .replace("](onSettingsClick)", "")
+        } else {
+            dc_intl::t("PIeSHF").to_owned()
+        };
+        let row = div()
+            .id("overlay-keybind-admin-warning")
+            .px(px(10.))
+            .py(px(6.))
+            .rounded(px(8.))
+            .bg(onyx("--background-surface-higher"))
+            .border_1()
+            .border_color(onyx("--border-subtle"))
+            .text_size(px(12.))
+            .line_height(px(16.))
+            .font_weight(FontWeight(600.))
+            .text_color(tint)
+            .when(can_open_settings, |this| {
+                this.cursor_pointer()
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        cx.stop_propagation();
+                        if !this.overlay.locked {
+                            this.overlay_toggle_lock(cx);
+                        }
+                        this.open_settings_section(dc_intl::tr("Game Overlay"), cx);
+                    }))
+            })
+            .child(text);
+        Some(row.into_any_element())
+    }
+}
+
+/// Pure predicate for module 119191 (`showAdminWarning`).
+pub(super) fn overlay_admin_warning_needed(
+    is_windows: bool,
+    visible_game_elevated: bool,
+    self_elevated: bool,
+) -> bool {
+    is_windows && visible_game_elevated && !self_elevated
 }
 
 // ----- drawing the voice widget -----
@@ -2393,7 +2477,7 @@ impl Root {
                 match *kind {
                     "welcome" => self.overlay_welcome(cx),
                     "text" => {
-                        let hint = dc_intl::format("ykjOAJ", &[("keybind", self.overlay_keybind_text().into())]);
+                        let hint = self.overlay_keybind_hint_text("ykjOAJ");
                         let toast = Toast {
                             hint: Some(hint),
                             ..made_up(
@@ -2822,5 +2906,15 @@ mod tests {
         assert!(!chat.pinned);
         assert!(!quick.pinned);
         assert!(!dc_overlay::widgets::chat_container_shown(true, true, true));
+    }
+
+    #[test]
+    fn elevated_game_triggers_admin_keybind_warning_only_when_unprivileged_on_windows() {
+        assert!(overlay_admin_warning_needed(true, true, false));
+        assert!(!overlay_admin_warning_needed(true, false, false));
+        assert!(!overlay_admin_warning_needed(true, true, true));
+        assert!(!overlay_admin_warning_needed(false, true, false));
+        assert!(!dc_intl::t("PIeSHF").is_empty());
+        assert!(!dc_intl::t("MVS9pV").is_empty());
     }
 }

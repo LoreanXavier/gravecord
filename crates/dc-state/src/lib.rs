@@ -391,7 +391,12 @@ pub struct Channel {
     pub default_forum_layout: u64,
     /// `default_reaction_emoji`: forum/media default post reaction (module 939940).
     pub default_reaction_emoji: Option<DefaultReactionEmoji>,
+    /// `linked_lobby.application_id`: application linked to this channel (module 181094 `Ud5ryv`).
+    pub linked_lobby_application_id: Option<Id>,
 }
+
+/// `ChannelFlags.IS_MODERATOR_REPORT_CHANNEL` (module 746080 `lx`, `1 << 19`).
+pub const IS_MODERATOR_REPORT_CHANNEL: u64 = 1 << 19;
 
 /// Default reaction emoji configured on a forum or media channel (`default_reaction_emoji`).
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -454,6 +459,11 @@ impl Channel {
         self.kind == ChannelKind::Other(16)
     }
 
+    /// `channel.isModeratorReportChannel()` (module 95701 / 95616): `ChannelFlags.IS_MODERATOR_REPORT_CHANNEL`.
+    pub fn is_moderator_report_channel(&self) -> bool {
+        self.flags & IS_MODERATOR_REPORT_CHANNEL != 0
+    }
+
     fn from_value(value: &Value) -> Option<Self> {
         Some(Self {
             id: id(&value["id"])?,
@@ -475,6 +485,7 @@ impl Channel {
             default_reaction_emoji: DefaultReactionEmoji::from_value(
                 &value["default_reaction_emoji"],
             ),
+            linked_lobby_application_id: id(&value["linked_lobby"]["application_id"]),
         })
     }
 }
@@ -486,6 +497,8 @@ pub struct Guild {
     pub icon: Option<String>,
     /// The server banner's hash (`banner`), for the plugins that open it (ViewIcons).
     pub banner: Option<String>,
+    /// The server invite splash hash (`splash`), for module 140354 (`GuildOnboardingBlockedPage`).
+    pub splash: Option<String>,
     /// `description`, `preferred_locale` and `verification_level`, for ServerInfo.
     pub description: Option<String>,
     pub preferred_locale: Option<String>,
@@ -878,6 +891,7 @@ impl Guild {
             name: text(&properties["name"])?,
             icon: text(&properties["icon"]),
             banner: text(&properties["banner"]),
+            splash: text(&properties["splash"]),
             description: text(&properties["description"]),
             preferred_locale: text(&properties["preferred_locale"]),
             verification_level: properties["verification_level"].as_u64(),
@@ -966,6 +980,9 @@ impl Guild {
             self.name = name;
         }
         self.icon = text(&value["icon"]);
+        if value.get("splash").is_some() {
+            self.splash = text(&value["splash"]);
+        }
         self.owner_id = id(&value["owner_id"]).or(self.owner_id);
         if value.get("home_header").is_some() {
             self.home_header = text(&value["home_header"]);
@@ -5226,6 +5243,7 @@ mod tests {
             name: String::new(),
             icon: None,
             banner: None,
+            splash: None,
             description: None,
             preferred_locale: None,
             verification_level: None,

@@ -257,6 +257,39 @@ impl Root {
                 }
             }
             Action::SaveImage => self.save_menu_image(cx),
+            Action::MarkNotSensitive => {
+                let hit_url = self.menu_url();
+                let mut attachment_ids: Vec<dc_state::Id> = message
+                    .attachments
+                    .iter()
+                    .filter(|att| {
+                        let flagged =
+                            att.flags & super::media_image::ATTACHMENT_HARM_FLAGS_ALL != 0;
+                        flagged
+                            && hit_url
+                                .as_deref()
+                                .is_none_or(|url| att.url == url || att.proxy_url == url)
+                    })
+                    .map(|att| att.id)
+                    .collect();
+                if attachment_ids.is_empty() {
+                    attachment_ids = message
+                        .attachments
+                        .iter()
+                        .filter(|att| {
+                            att.flags & super::media_image::ATTACHMENT_HARM_FLAGS_ALL != 0
+                        })
+                        .map(|att| att.id)
+                        .collect();
+                }
+                self.open_sensitive_media_modal(
+                    message.channel_id,
+                    message.id,
+                    attachment_ids,
+                    Vec::new(),
+                    cx,
+                );
+            }
             Action::SaveVoiceFile => {
                 if let Some(attachment) = message.attachments.first() {
                     self.download_attachment(attachment, cx);
@@ -342,6 +375,16 @@ impl Root {
         let (Some(image), Some(url)) = (self.menu_image(), self.menu_url()) else {
             return;
         };
+        self.save_picture(image, &url, cx);
+    }
+
+    /// Module 115184 / 177079 `saveImage`: saves an already-cached image to disk via the native save dialog.
+    pub(super) fn save_picture(
+        &mut self,
+        image: std::sync::Arc<gpui::Image>,
+        url: &str,
+        cx: &mut Context<Self>,
+    ) {
         let name = url
             .split(['?', '#'])
             .next()

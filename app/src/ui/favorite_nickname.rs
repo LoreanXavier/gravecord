@@ -52,7 +52,8 @@ pub(super) fn renamed(
 }
 
 impl Root {
-    /// The placeholder of the field (module 47167 `Ay`): the channel's own name, a direct message's recipient.
+    /// The placeholder of the field (module 47167 `Ay`): the channel's own name, a direct message's recipient, or for
+    /// a synthetic `FAVORITE_CATEGORY` its current name (falling back to "Category Name").
     fn favorite_placeholder(&self, channel: Id) -> String {
         if let Some(known) = self
             .stores
@@ -62,11 +63,26 @@ impl Root {
         {
             return known.name.clone();
         }
-        self.stores
+        if let Some(dm) = self
+            .stores
             .private_channels
             .iter()
             .find(|dm| dm.id == channel)
-            .map(|dm| self.private_channel_name(dm))
+        {
+            return self.private_channel_name(dm);
+        }
+        self.stores
+            .favorites()
+            .channels
+            .into_iter()
+            .find(|(id, known)| *id == channel && known.kind == FAVORITE_CATEGORY)
+            .map(|(_, known)| {
+                if known.nickname.trim().is_empty() {
+                    dc_intl::t("OCAkGP").to_owned()
+                } else {
+                    known.nickname
+                }
+            })
             .unwrap_or_default()
     }
 

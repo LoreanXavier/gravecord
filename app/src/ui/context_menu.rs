@@ -161,6 +161,13 @@ pub(super) enum Target {
     GameShopSku,
     /// Overlay DM / Group DM context menu (`overlay-user-context` module 92016 / `overlay-gdm-context` module 320442).
     OverlayDm(Id),
+    /// Overlay Report-to-Mod channel context menu (`overlay-report-to-mod-channel-context`, module 95616).
+    OverlayModReportChannel(Id),
+    /// Favorites server category context menu (`FAVORITE_CATEGORY`, module 250737 `"Rename Category"`).
+    FavoriteCategory(Id),
+    /// Standalone Image Actions fallback context menu (`image-context`, module 177079); URL & cache key in
+    /// `State::image_target`.
+    Image,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -432,13 +439,17 @@ pub(super) enum Act {
     OverlayFavoriteUser,
     /// "Add to Favorites" / "Remove from Favorites" in overlay GDM menu (module 708653 `Ay` / 320442 `4wcdE/` / `Bou7lT`).
     OverlayFavoriteChannel,
+    /// Image Actions fallback menu (module 177079 / 115184 / 777933): Copy Image, Save Image, Open Link.
+    CopyImage,
+    SaveImage,
+    OpenLink,
 }
 
 impl Act {
     /// Every row kind once (`Correction` with its first index). `ordinal` is an exhaustive match, so adding a variant
     /// without listing it here fails the build or the `act_list_is_complete` test.
     #[cfg(test)]
-    pub(super) const ALL: [Act; 184] = [
+    pub(super) const ALL: [Act; 187] = [
         Act::InventoryAbout,
         Act::InventoryHide,
         Act::ReportApp,
@@ -623,6 +634,9 @@ impl Act {
         Act::OverlayOpenChat,
         Act::OverlayFavoriteUser,
         Act::OverlayFavoriteChannel,
+        Act::CopyImage,
+        Act::SaveImage,
+        Act::OpenLink,
     ];
 
     #[cfg(test)]
@@ -812,6 +826,9 @@ impl Act {
             Act::OverlayOpenChat => 181,
             Act::OverlayFavoriteUser => 182,
             Act::OverlayFavoriteChannel => 183,
+            Act::CopyImage => 184,
+            Act::SaveImage => 185,
+            Act::OpenLink => 186,
         }
     }
 }
@@ -852,7 +869,10 @@ pub(super) fn status(act: Act) -> Status {
         | Act::OverlayCloseChat
         | Act::OverlayOpenChat
         | Act::OverlayFavoriteUser
-        | Act::OverlayFavoriteChannel => Wired,
+        | Act::OverlayFavoriteChannel
+        | Act::CopyImage
+        | Act::SaveImage
+        | Act::OpenLink => Wired,
         Act::ModerationSettings => Wired,
         Act::ToggleProgressBar => Wired,
         Act::RemovePermission => Wired,
@@ -2067,8 +2087,38 @@ pub(super) fn menu_aria_label(target: Target) -> Option<&'static str> {
         Target::EditProfileMenu(_) => Some(dc_intl::t("AXIHpV")),
         Target::DmListMore => Some(dc_intl::t("/QQnjy")),
         Target::GdmCleanupSort => Some(dc_intl::t("yySzqH")),
+        Target::OverlayModReportChannel(_) => Some(dc_intl::t("zp+z/E")),
+        Target::Image => Some(dc_intl::t("Zow2V5")),
         _ => None,
     }
+}
+
+/// Module 177079 (`image-context`, `aria-label` `Zow2V5` "Image Actions"):
+/// Group 1 (`115184`): Copy Image (`tvUqWn`), Save Image (`PeXhgO`).
+/// Group 2 (`777933`): Copy Image/Media/Link + Open Image/Media/Link.
+pub(super) fn image_context_items(url: &str) -> Vec<Entry> {
+    use super::menu::LinkKind;
+    let (copy_label, open_label) = match LinkKind::of(url) {
+        LinkKind::ImageLink => (dc_intl::t("8xHmxo"), dc_intl::t("w8ldGK")),
+        LinkKind::MediaLink => (dc_intl::t("92CPQ+"), dc_intl::t("q5FbIB")),
+        _ => (dc_intl::t("WqhZss"), dc_intl::t("wuRE8M")),
+    };
+    let mut out = Vec::new();
+    group(
+        &mut out,
+        vec![
+            Row::new(Act::CopyImage, dc_intl::t("tvUqWn")),
+            Row::new(Act::SaveImage, dc_intl::t("PeXhgO")),
+        ],
+    );
+    group(
+        &mut out,
+        vec![
+            Row::new(Act::CopyLink, copy_label),
+            Row::new(Act::OpenLink, open_label),
+        ],
+    );
+    tidy(out)
 }
 
 /// Module 740024 (Link Options): Copy Media Link, Copy Text.
@@ -2215,6 +2265,21 @@ pub(super) fn favorite_channel_items(unread: bool, level: &str) -> Vec<Entry> {
     group(
         &mut out,
         vec![Row::new(Act::Favorite, dc_intl::tr("Remove from Favorites")).danger()],
+    );
+    tidy(out)
+}
+
+/// Favorites server category context menu (module 250737 `isCategory` branch: `"Rename Category"` `xXYKiP`).
+pub(super) fn favorite_category_items(collapsed: bool) -> Vec<Entry> {
+    let mut out = vec![
+        Entry::Row(Row::new(Act::FavoritesNickname, dc_intl::t("xXYKiP"))),
+        Entry::Row(
+            Row::new(Act::CollapseCategory, dc_intl::tr("Collapse Category")).check(collapsed),
+        ),
+    ];
+    group(
+        &mut out,
+        vec![Row::new(Act::DeleteChannel, dc_intl::tr("Delete Category")).danger()],
     );
     tidy(out)
 }
@@ -2763,6 +2828,57 @@ pub(super) fn game_shop_sku_items(developer: bool) -> Vec<Entry> {
     )]
 }
 
+/// Overlay Report-to-Mod channel context menu (`overlay-report-to-mod-channel-context`, module 95616, aria-label
+/// `zp+z/E` "Mod Queue Channel Actions"): 4 groups — Mark As Read + Overlay chat toggle + Overlay favorites toggle |
+/// Copy Link | Mute Channel + Notification Settings | Copy Channel ID (developer mode).
+pub(super) fn overlay_mod_report_channel_items(
+    unread: bool,
+    chat_open: bool,
+    overlay_favorite: bool,
+    level: &'static str,
+    developer: bool,
+) -> Vec<Entry> {
+    let mut out = Vec::new();
+    let chat_row = if chat_open {
+        Row::new(Act::OverlayCloseChat, dc_intl::t("ERApc4"))
+    } else {
+        Row::new(Act::OverlayOpenChat, dc_intl::t("KWrMk5"))
+    };
+    let fav_row = if overlay_favorite {
+        Row::new(Act::OverlayFavoriteChannel, dc_intl::t("Bou7lT")).danger()
+    } else {
+        Row::new(Act::OverlayFavoriteChannel, dc_intl::t("4wcdE/"))
+    };
+    group(
+        &mut out,
+        vec![
+            Row::new(Act::MarkRead, dc_intl::tr("Mark As Read")).disabled(!unread),
+            chat_row,
+            fav_row,
+        ],
+    );
+    group(
+        &mut out,
+        vec![Row::new(Act::CopyLink, dc_intl::t("WqhZss"))],
+    );
+    group(
+        &mut out,
+        vec![
+            Row::new(Act::Mute, dc_intl::tr("Mute Channel")).caret(),
+            Row::new(Act::Notifications, dc_intl::tr("Notification Settings"))
+                .sub(level)
+                .caret(),
+        ],
+    );
+    if developer {
+        group(
+            &mut out,
+            vec![Row::new(Act::CopyId, dc_intl::t("gFHI3k")).icon("menu_id")],
+        );
+    }
+    tidy(out)
+}
+
 /// Overlay Group DM context menu (`overlay-gdm-context`, module 320442 + 297460 + 708653): Mark As Read, Close/Open
 /// overlay chat, Add/Remove overlay Favorites, Invites (owner), Edit Group, Mute Conversation, Leave Group.
 pub(super) fn overlay_group_dm_items(
@@ -3189,6 +3305,13 @@ pub(super) struct State {
     pub in_overlay: bool,
     /// The address and file name of the attachment chip whose menu is open.
     pub attachment_link: Option<(String, String)>,
+    /// Standalone Image Actions target (`Target::Image`, module 177079): `(url, optional cache key)`.
+    pub image_target: Option<(String, Option<String>)>,
+    /// Apps submenu (module 173500) search box and active nested app section.
+    pub apps_search: Option<gpui::Entity<crate::editor::Editor>>,
+    pub apps_search_sub: Option<gpui::Subscription>,
+    pub apps_active_section: Option<String>,
+    pub apps_active_bounds: Option<gpui::Bounds<Pixels>>,
     /// The roles (name, colour) of the invite whose "+N" opened `invite-roles-menu`.
     pub invite_roles: Vec<(String, u32)>,
     /// The next channel menu is the channel header's (module 834881 from module 289287); `true` when it was opened
@@ -3840,13 +3963,15 @@ impl Root {
                 .map_or((false, None), |thread| {
                     (thread.joined && thread.muted, thread.mute_end)
                 }),
-            Target::Channel(id) | Target::Category(id) => match self.guild_of_channel(id) {
-                Some(guild) => {
-                    let entry = self.stores.guild_settings.channel(guild, id);
-                    (entry.muted, entry.mute_end)
+            Target::Channel(id) | Target::Category(id) | Target::OverlayModReportChannel(id) => {
+                match self.guild_of_channel(id) {
+                    Some(guild) => {
+                        let entry = self.stores.guild_settings.channel(guild, id);
+                        (entry.muted, entry.mute_end)
+                    }
+                    None => (false, None),
                 }
-                None => (false, None),
-            },
+            }
             Target::Dm(id) | Target::OverlayDm(id) => {
                 let entry = self.stores.guild_settings.channel(0, id);
                 (entry.muted, entry.mute_end)
@@ -4474,12 +4599,48 @@ impl Root {
                     ),
                 )
             }
+            Target::Image => {
+                let Some((url, _)) = self.context.image_target.as_ref() else {
+                    return;
+                };
+                image_context_items(url)
+            }
             Target::GameShopSku => {
                 let items = game_shop_sku_items(developer);
                 if items.is_empty() {
                     return;
                 }
                 items
+            }
+            Target::FavoriteCategory(category_id) => {
+                let collapsed = self
+                    .stores
+                    .favorites()
+                    .channels
+                    .iter()
+                    .find(|(id, _)| *id == category_id)
+                    .is_some_and(|(_, known)| known.collapsed);
+                favorite_category_items(collapsed)
+            }
+            Target::OverlayModReportChannel(channel) => {
+                let Some(guild) = self.guild_of_channel(channel) else {
+                    return;
+                };
+                let chat_open = self.overlay.text_chat.is_tracked(channel)
+                    || self.overlay.text_chat.selected() == Some(channel);
+                let level = level_label(
+                    self.stores
+                        .guild_settings
+                        .channel(guild, channel)
+                        .message_notifications,
+                );
+                overlay_mod_report_channel_items(
+                    self.has_unread_or_mentions(channel),
+                    chat_open,
+                    self.overlay.favorite_channels.contains(&channel),
+                    level,
+                    developer,
+                )
             }
             Target::OverlayDm(channel) => {
                 let Some(dm) = self
@@ -4543,7 +4704,7 @@ impl Root {
                 else {
                     return;
                 };
-                if dm.kind == 3 {
+                let mut items = if dm.kind == 3 {
                     group_items(
                         self.has_unread_or_mentions(channel),
                         dm.owner_id.is_some()
@@ -4580,7 +4741,22 @@ impl Root {
                         ..UserFacts::default()
                     };
                     user_items(&facts)
+                };
+                // Module 250737 inside DM / Group DM menus (`4027` / `914907`): show "Change Nickname" (`dilOF6`)
+                // when inside the Favorites server (`in_favorites()`).
+                if self.in_favorites() && self.stores.favorites().is_favorite(channel) {
+                    let pos = items
+                        .iter()
+                        .position(
+                            |entry| matches!(entry, Entry::Row(row) if row.act == Act::Favorite),
+                        )
+                        .map_or(items.len(), |idx| idx + 1);
+                    items.insert(
+                        pos,
+                        Entry::Row(Row::new(Act::FavoritesNickname, dc_intl::t("dilOF6"))),
+                    );
                 }
+                items
             }
             Target::User { user, guild } => {
                 // The Apps submenu lists the user commands of the channel's index (module 173500).
@@ -4807,8 +4983,21 @@ impl Root {
         lines.join(" | ")
     }
 
+    pub(super) fn open_image_context_menu(
+        &mut self,
+        url: String,
+        cache_key: Option<String>,
+        at: Point<Pixels>,
+        cx: &mut Context<Self>,
+    ) {
+        self.context.image_target = Some((url, cache_key));
+        self.open_context_menu(Target::Image, at, cx);
+    }
+
     pub(super) fn close_context_menu(&mut self, cx: &mut Context<Self>) {
         if self.context.open.take().is_some() {
+            self.context.apps_active_section = None;
+            self.context.apps_active_bounds = None;
             cx.notify();
         }
     }
@@ -5399,15 +5588,22 @@ impl Root {
                 Target::Channel(channel)
                 | Target::Thread(channel)
                 | Target::Dm(channel)
-                | Target::OverlayDm(channel),
+                | Target::OverlayDm(channel)
+                | Target::OverlayModReportChannel(channel),
             ) => {
                 self.mark_channel_read(channel);
             }
-            (Act::OverlayCloseChat, Target::OverlayDm(channel)) => {
+            (
+                Act::OverlayCloseChat,
+                Target::OverlayDm(channel) | Target::OverlayModReportChannel(channel),
+            ) => {
                 let voice = self.call.as_ref().map(|call| call.channel);
                 self.overlay.text_chat.remove(channel, voice);
             }
-            (Act::OverlayOpenChat, Target::OverlayDm(channel)) => {
+            (
+                Act::OverlayOpenChat,
+                Target::OverlayDm(channel) | Target::OverlayModReportChannel(channel),
+            ) => {
                 self.overlay_chat_select(channel, cx);
             }
             (Act::OverlayFavoriteUser, Target::OverlayDm(channel)) => {
@@ -5417,7 +5613,10 @@ impl Root {
                     self.overlay.favorite_users.insert(user);
                 }
             }
-            (Act::OverlayFavoriteChannel, Target::OverlayDm(channel)) => {
+            (
+                Act::OverlayFavoriteChannel,
+                Target::OverlayDm(channel) | Target::OverlayModReportChannel(channel),
+            ) => {
                 if !self.overlay.favorite_channels.remove(&channel) {
                     self.overlay.favorite_channels.insert(channel);
                 }
@@ -5467,6 +5666,40 @@ impl Root {
                     self.show_success_toast(dc_intl::t!("+5kSoW").to_owned(), cx);
                 }
             }
+            (Act::CopyImage, Target::Image) => {
+                let picture = self
+                    .context
+                    .image_target
+                    .as_ref()
+                    .and_then(|(_, key)| key.as_deref())
+                    .and_then(|key| self.images.get(key).cloned());
+                if let Some(picture) = picture {
+                    self.copy_picture(picture, cx);
+                } else {
+                    self.show_app_toast(dc_intl::t("PTPbjx"), cx);
+                }
+            }
+            (Act::SaveImage, Target::Image) => {
+                let target = self.context.image_target.clone();
+                if let Some((url, key)) = target
+                    && let Some(picture) = key.as_deref().and_then(|k| self.images.get(k).cloned())
+                {
+                    self.save_picture(picture, &url, cx);
+                } else {
+                    self.show_app_toast(dc_intl::t("8Ve/S0"), cx);
+                }
+            }
+            (Act::CopyLink, Target::Image) => {
+                if let Some((url, _)) = self.context.image_target.clone() {
+                    cx.write_to_clipboard(ClipboardItem::new_string(url));
+                    self.show_success_toast(dc_intl::t("L/PwZf").to_owned(), cx);
+                }
+            }
+            (Act::OpenLink, Target::Image) => {
+                if let Some((url, _)) = self.context.image_target.clone() {
+                    cx.open_url(&url);
+                }
+            }
             (Act::CopyLink, Target::AttachmentLink) => {
                 if let Some((url, _)) = self.context.attachment_link.take() {
                     cx.write_to_clipboard(ClipboardItem::new_string(url));
@@ -5492,7 +5725,12 @@ impl Root {
                     super::plugin_hooks::copy_user_url(user, cx);
                 }
             }
-            (Act::CopyLink, Target::Channel(channel) | Target::Thread(channel)) => {
+            (
+                Act::CopyLink,
+                Target::Channel(channel)
+                | Target::Thread(channel)
+                | Target::OverlayModReportChannel(channel),
+            ) => {
                 let guild = self.guild_of_channel(channel).unwrap_or_default();
                 cx.write_to_clipboard(ClipboardItem::new_string(format!(
                     "https://discord.com/channels/{guild}/{channel}"
@@ -5511,6 +5749,8 @@ impl Root {
                     | Target::Thread(id)
                     | Target::Dm(id)
                     | Target::OverlayDm(id)
+                    | Target::OverlayModReportChannel(id)
+                    | Target::FavoriteCategory(id)
                     | Target::ChannelMention(id)
                     | Target::AuditChannel(id) => id,
                     Target::User { user, .. }
@@ -5550,6 +5790,7 @@ impl Root {
                     | Target::GdmCleanupSort
                     | Target::BadgeCustomization { .. }
                     | Target::GameShopSku
+                    | Target::Image
                     | Target::InviteRoles => {
                         return;
                     }
@@ -5571,6 +5812,9 @@ impl Root {
                     self.server_settings = None;
                     self.select(guild, Some(channel));
                 }
+            }
+            (Act::DeleteChannel, Target::FavoriteCategory(category_id)) => {
+                self.delete_favorite_category(category_id, cx);
             }
             (Act::DeleteChannel, Target::Channel(channel) | Target::Category(channel)) => {
                 self.open_channel_settings(channel, window, cx);
@@ -5624,6 +5868,9 @@ impl Root {
                         body: Some(body),
                     });
                 }
+            }
+            (Act::CollapseCategory, Target::FavoriteCategory(category_id)) => {
+                self.toggle_favorite_category(category_id, cx);
             }
             (Act::CollapseCategory, Target::Category(category)) => {
                 if let Some(guild) = self.guild_of_channel(category) {
@@ -6160,7 +6407,8 @@ impl Root {
                 | Target::Category(_)
                 | Target::Thread(_)
                 | Target::Dm(_)
-                | Target::OverlayDm(_),
+                | Target::OverlayDm(_)
+                | Target::OverlayModReportChannel(_),
             ) => match target {
                 Target::Guild(guild) => {
                     self.patch_guild_setting(guild, "muted", json!(false));
@@ -6172,7 +6420,9 @@ impl Root {
                 }
                 // Unmute Thread (module 57907): the account's thread member setting, not a channel override.
                 Target::Thread(id) => self.patch_thread_settings(id, json!({"muted": false})),
-                Target::Channel(id) | Target::Category(id) => {
+                Target::Channel(id)
+                | Target::Category(id)
+                | Target::OverlayModReportChannel(id) => {
                     if let Some(guild) = self.guild_of_channel(id) {
                         self.patch_channel_override(
                             guild,
@@ -6244,9 +6494,13 @@ impl Root {
             }
             (Act::HideFavorites, Target::Favorites) => self.set_favorites_guild(false, cx),
             (Act::FavoritesSettings, Target::Favorites) => self.open_favorites_settings(cx),
-            (Act::FavoritesNickname, Target::Channel(id)) => {
-                self.open_favorite_nickname(id, window, cx)
-            }
+            (
+                Act::FavoritesNickname,
+                Target::Channel(id)
+                | Target::Category(id)
+                | Target::Dm(id)
+                | Target::FavoriteCategory(id),
+            ) => self.open_favorite_nickname(id, window, cx),
             // A direct message is pinned by its own override on the "@me" settings (`xl` of module 816662).
             (Act::PinDm, Target::Dm(id)) => {
                 let flags = self.stores.guild_settings.channel(0, id).flags ^ PINNED;
@@ -6572,9 +6826,14 @@ impl Root {
                     .collect()
             }
             Act::Notifications => {
-                let channel = matches!(target, Target::Channel(_) | Target::Thread(_));
+                let channel = matches!(
+                    target,
+                    Target::Channel(_) | Target::Thread(_) | Target::OverlayModReportChannel(_)
+                );
                 let current = match target {
-                    Target::Channel(id) | Target::Thread(id) => self
+                    Target::Channel(id)
+                    | Target::Thread(id)
+                    | Target::OverlayModReportChannel(id) => self
                         .guild_of_channel(id)
                         .map_or(INHERIT, |guild| self.channel_level(guild, id)),
                     Target::Guild(guild) => self
@@ -6589,7 +6848,9 @@ impl Root {
                 if channel {
                     // What "Use Category Default" would give: the category's level, else the server's.
                     let inherited = match target {
-                        Target::Channel(id) | Target::Thread(id) => self.inherited_level_label(id),
+                        Target::Channel(id)
+                        | Target::Thread(id)
+                        | Target::OverlayModReportChannel(id) => self.inherited_level_label(id),
                         _ => dc_intl::t!("n/bTaY"),
                     };
                     rows.push(SubRow {
@@ -6949,7 +7210,9 @@ impl Root {
                     Target::Thread(id) => {
                         self.patch_thread_settings(id, Self::thread_mute_body(seconds));
                     }
-                    Target::Channel(id) | Target::Category(id) => {
+                    Target::Channel(id)
+                    | Target::Category(id)
+                    | Target::OverlayModReportChannel(id) => {
                         if let Some(guild) = self.guild_of_channel(id) {
                             self.patch_channel_override(
                                 guild,
@@ -6978,8 +7241,13 @@ impl Root {
                     let value = LEVELS[index].0;
                     self.patch_guild_setting(guild, "message_notifications", json!(value));
                 }
-                Target::Channel(id) | Target::Category(id) => {
-                    let channel = matches!(target, Target::Channel(_));
+                Target::Channel(id)
+                | Target::Category(id)
+                | Target::OverlayModReportChannel(id) => {
+                    let channel = matches!(
+                        target,
+                        Target::Channel(_) | Target::OverlayModReportChannel(_)
+                    );
                     let value = if channel && index == 0 {
                         INHERIT
                     } else {
@@ -7127,6 +7395,11 @@ impl Root {
         .with_priority(2)
         .into_any_element();
         let sub = open.sub.and_then(|(act, row)| {
+            if act == Act::Apps
+                && let Target::User { user, guild } = target
+            {
+                return Some(self.apps_user_submenu(user, guild, row, window, cx));
+            }
             let labels = self.context_sub_rows(act, target);
             if labels.is_empty() {
                 return None;
@@ -8040,6 +8313,7 @@ mod tests {
             default_sort_order: None,
             default_forum_layout: 0,
             default_reaction_emoji: None,
+            linked_lobby_application_id: None,
         }
     }
 
@@ -8974,5 +9248,83 @@ mod tests {
         assert!(gdm.contains(&"Add to Favorites".to_owned()));
         assert!(gdm.contains(&"Invites".to_owned()));
         assert!(gdm.contains(&"Edit Group".to_owned()));
+    }
+
+    #[test]
+    fn overlay_mod_report_channel_menu_matches_95616_groups() {
+        let rows = labels(&overlay_mod_report_channel_items(
+            true,
+            true,
+            false,
+            "All Messages",
+            true,
+        ));
+        assert_eq!(
+            rows,
+            [
+                "Mark As Read",
+                "Close overlay chat",
+                "Add to Favorites",
+                "-",
+                "Copy Link",
+                "-",
+                "Mute Channel",
+                "Notification Settings",
+                "-",
+                "Copy Channel ID",
+            ]
+        );
+        let non_dev = labels(&overlay_mod_report_channel_items(
+            false,
+            false,
+            true,
+            "All Messages",
+            false,
+        ));
+        assert!(non_dev.contains(&"Open Overlay Chat".to_owned()));
+        assert!(non_dev.contains(&"Remove from Favorites".to_owned()));
+        assert!(!non_dev.contains(&"Copy Channel ID".to_owned()));
+        assert_eq!(dc_intl::t("zp+z/E"), "Mod Queue Channel Actions");
+    }
+
+    #[test]
+    fn favorite_category_menu_exposes_rename_category_250737() {
+        let rows = labels(&favorite_category_items(false));
+        assert_eq!(
+            rows,
+            [
+                "Rename Category",
+                "Collapse Category",
+                "-",
+                "Delete Category"
+            ]
+        );
+    }
+
+    #[test]
+    fn image_context_menu_matches_177079_groups_and_labels() {
+        assert_eq!(menu_aria_label(Target::Image), Some("Image Actions"));
+        assert_eq!(
+            menu_aria_label(Target::OverlayModReportChannel(1)),
+            Some("Mod Queue Channel Actions")
+        );
+        let cdn_img = labels(&image_context_items(
+            "https://cdn.discordapp.com/avatars/1/abc.png",
+        ));
+        assert_eq!(
+            cdn_img,
+            [
+                "Copy Image",
+                "Save Image",
+                "-",
+                "Copy Image Link",
+                "Open Image Link",
+            ]
+        );
+        let plain = labels(&image_context_items("https://example.com/banner"));
+        assert_eq!(
+            plain,
+            ["Copy Image", "Save Image", "-", "Copy Link", "Open Link"]
+        );
     }
 }

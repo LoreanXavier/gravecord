@@ -142,6 +142,18 @@ pub(super) fn gating_channel(
 thread_local! {
     /// The last press on a topic's text was on a link, a mention or an emoji (read once by the header's click).
     static TOPIC_PIECE_PRESSED: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    /// Per-channel overflow flag written when the spoiler gate's 3-line clamped topic paints (`873614` / `/QvRak`).
+    static SPOILER_TOPIC_CUT: std::cell::RefCell<std::collections::HashMap<Id, std::rc::Rc<std::cell::Cell<bool>>>> =
+        std::cell::RefCell::new(std::collections::HashMap::new());
+}
+
+fn spoiler_topic_cut_cell(channel: Id) -> std::rc::Rc<std::cell::Cell<bool>> {
+    SPOILER_TOPIC_CUT.with(|map| {
+        map.borrow_mut()
+            .entry(channel)
+            .or_insert_with(|| std::rc::Rc::new(std::cell::Cell::new(false)))
+            .clone()
+    })
 }
 
 /// Whether the press that ends now was on a link, a mention or an emoji of a topic; clears it.
@@ -166,14 +178,20 @@ impl Root {
     }
 
     /// A channel topic as `parseTopic` of module 46054 draws it (Channel Topic, module 181094): every line kept,
-    /// 16/20 `body-md/normal`. GAP: the dialog's text is `selectable` there; it is not here.
+    /// 16/20 `body-md/normal`, selectable so the user can highlight and copy text.
     pub(super) fn topic_text_full(
         &self,
+        channel: Id,
         topic: &str,
         text: gpui::Hsla,
         cx: &mut Context<Self>,
     ) -> AnyElement {
         self.topic_inline(topic, text, (16., 400., 20.), true, cx)
+            .selectable(
+                (channel, u32::MAX),
+                self.selection.clone(),
+                gpui::Hsla::from(gpui::rgba(0x093d_a7ff)),
+            )
             .into_any_element()
     }
 
@@ -345,13 +363,16 @@ impl Root {
                 .into_any_element(),
             None => dc_intl::t("q38/ae").into_any_element(),
         };
-        // GAP: "See More" (shown when the three lines cut the topic; it opens Channel Topic, `open_channel_topic`) is
-        // not drawn: the cut is only known when the text is painted.
+        // Module 873614: clamp topic to 3 lines and show "See More" (`/QvRak`) opening Channel Topic (`181094`)
+        // whenever the 3-line clamp truncates the topic.
+        let cut_cell = spoiler_topic_cut_cell(gating);
+        let is_cut = cut_cell.get();
         let topic = channel
             .and_then(|channel| channel.topic.as_deref())
             .map(str::trim)
             .filter(|topic| !topic.is_empty())
             .map(|topic| {
+                let cut_for_inline = cut_cell.clone();
                 div()
                     .w_full()
                     .flex()
@@ -366,22 +387,34 @@ impl Root {
                             .line_height(px(20.))
                             .font_weight(FontWeight(500.))
                             .text_color(color("--text-muted"))
-                            .map(|this| {
-                                // GAP: the inline text that draws markdown cannot centre its lines, so a topic with
-                                // markup is drawn left-aligned and a plain one as centred plain text.
-                                if has_markup(topic) {
-                                    this.child(self.topic_text(
-                                        topic,
-                                        color("--text-muted").into(),
-                                        (16., 500., 20.),
-                                        3,
-                                        cx,
-                                    ))
-                                } else {
-                                    this.line_clamp(3).child(topic.to_owned())
-                                }
-                            }),
+                            .child(
+                                self.topic_inline(
+                                    topic,
+                                    color("--text-muted").into(),
+                                    (16., 500., 20.),
+                                    false,
+                                    cx,
+                                )
+                                .line_clamp(3, cut_for_inline),
+                            ),
                     )
+                    .when(is_cut, |col| {
+                        col.child(
+                            div()
+                                .id("spoiler-gate-see-more")
+                                .mt(px(4.))
+                                .cursor_pointer()
+                                .text_size(px(16.))
+                                .line_height(px(20.))
+                                .font_weight(FontWeight(500.))
+                                .text_color(color("--text-brand"))
+                                .hover(|style| style.underline())
+                                .child(dc_intl::t("/QvRak"))
+                                .on_click(cx.listener(move |this, _, _, cx| {
+                                    this.open_channel_topic(gating, cx);
+                                })),
+                        )
+                    })
                     .child(
                         div()
                             .w_full()
@@ -490,6 +523,7 @@ mod tests {
             default_sort_order: None,
             default_forum_layout: 0,
             default_reaction_emoji: None,
+            linked_lobby_application_id: None,
         }
     }
 

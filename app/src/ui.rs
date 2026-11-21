@@ -625,6 +625,7 @@ pub struct Root {
     pub(crate) menu_scroll: gpui::ScrollHandle,
     channel_browser_open: bool,
     channel_browser: Option<channel_browser::Browser>,
+    onboarding_flow: Option<member_onboarding::OnboardingFlow>,
     hovered_nameplate: Option<Id>,
     /// The pointer is on a DM's welcome block (891522 animates the styled name then).
     hovered_welcome: bool,
@@ -1374,6 +1375,7 @@ impl Root {
             menu_scroll: gpui::ScrollHandle::new(),
             channel_browser_open: false,
             channel_browser: None,
+            onboarding_flow: None,
             hovered_nameplate: None,
             hovered_welcome: false,
             group_header_hover: false,
@@ -2408,6 +2410,10 @@ impl Root {
                 }
                 if let Some(rest) = key.strip_prefix(deep_link_route::CHANNEL_CHECK_KEY) {
                     self.link_channel_checked(rest, &body, cx);
+                    return;
+                }
+                if let Some(rest) = key.strip_prefix(member_onboarding::SUBMIT_KEY) {
+                    self.onboarding_submit_answered(rest, &body, cx);
                     return;
                 }
                 if self.spotify_metadata_fetched(&key, &body, cx) {
@@ -3581,6 +3587,13 @@ impl Root {
         self.nitro_open = false;
         self.guild_guide_open = false;
         self.channel_browser_open = false;
+        if self
+            .onboarding_flow
+            .as_ref()
+            .is_some_and(|flow| flow.guild_id != guild)
+        {
+            self.onboarding_flow = None;
+        }
         self.voice_record_stop_leaving(channel);
         self.guild = Some(guild);
         self.channel = channel;
@@ -3760,6 +3773,7 @@ impl Root {
         self.request_stored_app_icon();
         self.request_role_icon_images();
         self.request_stage_art();
+        self.request_onboarding_splash();
         let guilds: Vec<(Id, String)> = self
             .stores
             .guilds
@@ -4120,10 +4134,16 @@ impl Root {
                     )
                     // Not in the pinned client: RoleColorEverywhere's `memberList`
                     // (`plugin_hooks/role_color_everywhere.rs`).
+                    .relative()
                     .child(plugin_hooks::role_colored_label(
                         self.role_color_everywhere_role(id),
                         format!("{} \u{2014} {count}", group_label(id, roles)),
                     ))
+                    .children(
+                        (row_index == 0)
+                            .then(|| self.tutorial_whos_online_tip(cx))
+                            .flatten(),
+                    )
                     // Not in the pinned client: BetterRoleContext's role menu on a right click
                     // (`plugin_hooks/better_role_context.rs`).
                     .when_some(
@@ -5850,6 +5870,7 @@ impl Root {
                         tool("add_server", 20.),
                         cx,
                     )
+                    .relative()
                     .cursor_pointer()
                     // `tX` of module 396655: at the server limit the upsell of module 716480 opens instead.
                     .on_click(cx.listener(|this, _, window, cx| {
@@ -6602,6 +6623,7 @@ impl Root {
                                 // `--background-mod-subtle` while hovered, with no transition.
                                 div()
                                     .id("guild-name")
+                                    .relative()
                                     // `.headerContent_XH4OpX` `gap: 4px` between the dropdown and the invite button, which
                                     // a long name closes up to (boost/boosted-guild-dropdown: chevron right edge 323.7).
                                     .mr(px(4.))
@@ -6617,6 +6639,7 @@ impl Root {
                                     .on_click(
                                         cx.listener(|this, _, _, cx| this.toggle_guild_menu(cx)),
                                     )
+                                    .children(self.tutorial_server_settings_tip(cx))
                                     .children(guild.and_then(tooltip::badge_image).map(|badge| {
                                         img(badge).ml(px(1.)).mr(px(9.)).size(px(18.)).flex_none()
                                     }))
@@ -12963,6 +12986,8 @@ impl Render for Root {
                             .is_some_and(|view| Some(view.guild) == self.guild)
                         {
                             self.member_safety_view(cx)
+                        } else if self.onboarding_flow_active() {
+                            self.onboarding_flow_page(cx)
                         } else if !self.guild_guide_open
                             && !self.channel_browser_open
                             && self.onboarding_blocked()
