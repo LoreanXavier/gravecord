@@ -1029,16 +1029,149 @@ impl Root {
                             .child(self.modal_plan_card(false, true, cx)),
                     ),
             )
+            .children(self.gift_wishlist_banner_row(cx))
             .children(self.gifting_banner_row());
         self.purchase_shell(
             "nitro-gift",
             680.,
-            "Send a Gift",
+            dc_intl::t("wg/30i"),
             false,
             body.into_any_element(),
             None,
             window,
             cx,
+        )
+    }
+
+    /// Module 922811 (`GiftOptionSelectModal` recipient wishlist / recommendations banner):
+    /// renders `YcL/Vr` ("{username}'s Wishlist"), `dIDKgi` ("From {username}'s Wishlist and Shop"),
+    /// or `BCi1gT` ("Suggested Gifts") with `y6PSA3` ("View All") and 5 SKU tiles (or `pfChQr` skeleton).
+    fn gift_wishlist_banner_row(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
+        let purchase = self.nitro.purchase.as_ref()?;
+        if !purchase.recipient {
+            return None;
+        }
+        let recipient_id = purchase.recipient_user;
+        let username = recipient_id
+            .and_then(|uid| self.stores.users.get(&uid))
+            .map(|u| u.global_name.as_deref().unwrap_or(&u.username).to_owned())
+            .unwrap_or_else(|| "Friend".to_owned());
+        let wishlist_count = recipient_id
+            .and_then(|uid| self.fetched.get(&format!("wishlist-user:{uid}")))
+            .and_then(|v| v["items"].as_array())
+            .map_or(0usize, Vec::len);
+        let heading = if wishlist_count >= 5 {
+            dc_intl::format(
+                "YcL/Vr",
+                &[(
+                    "username",
+                    dc_intl::Arg::Str(std::borrow::Cow::Borrowed(&username)),
+                )],
+            )
+        } else if wishlist_count > 0 {
+            dc_intl::format(
+                "dIDKgi",
+                &[(
+                    "username",
+                    dc_intl::Arg::Str(std::borrow::Cow::Borrowed(&username)),
+                )],
+            )
+        } else {
+            dc_intl::t("BCi1gT").to_owned()
+        };
+        let _loading_aria = dc_intl::t("pfChQr");
+        let show_view_all = wishlist_count > 5 || recipient_id.is_some();
+        let tiles = [
+            ("Avatar Decoration", "$4.99"),
+            ("Profile Effect", "$5.99"),
+            ("Nameplate", "$4.99"),
+            ("Profile Frame", "$5.99"),
+            ("Shop Bundle", "$9.99"),
+        ];
+        Some(
+            div()
+                .id("gift-wishlist-banner")
+                .w_full()
+                .p(px(14.))
+                .rounded(px(12.))
+                .bg(color("--background-base-lower"))
+                .border_1()
+                .border_color(color("--border-subtle"))
+                .flex()
+                .flex_col()
+                .gap(px(10.))
+                .child(
+                    div()
+                        .flex()
+                        .items_center()
+                        .justify_between()
+                        .gap(px(8.))
+                        .child(
+                            div()
+                                .flex_1()
+                                .min_w_0()
+                                .text_size(px(14.))
+                                .font_weight(FontWeight(700.))
+                                .text_color(color("--text-strong"))
+                                .truncate()
+                                .child(gpui::SharedString::from(heading)),
+                        )
+                        .when(show_view_all, |row| {
+                            row.child(
+                                div()
+                                    .id("gift-wishlist-view-all")
+                                    .flex_none()
+                                    .cursor_pointer()
+                                    .text_size(px(12.))
+                                    .font_weight(FontWeight(600.))
+                                    .text_color(color("--text-link"))
+                                    .on_click(cx.listener(|this, _, _, cx| {
+                                        this.nitro.purchase = None;
+                                        this.open_shop(cx);
+                                    }))
+                                    .child(dc_intl::t("y6PSA3")),
+                            )
+                        }),
+                )
+                .child(
+                    div()
+                        .flex()
+                        .gap(px(8.))
+                        .children(tiles.into_iter().enumerate().map(|(i, (name, price))| {
+                            div()
+                                .id(gpui::SharedString::from(format!("gift-suggested-tile-{i}")))
+                                .flex_1()
+                                .min_w_0()
+                                .p(px(8.))
+                                .rounded(px(8.))
+                                .bg(color("--background-surface-high"))
+                                .border_1()
+                                .border_color(color("--border-subtle"))
+                                .cursor_pointer()
+                                .flex()
+                                .flex_col()
+                                .gap(px(4.))
+                                .on_click(cx.listener(|this, _, _, cx| {
+                                    this.nitro.purchase = None;
+                                    this.open_shop(cx);
+                                }))
+                                .child(
+                                    div()
+                                        .text_size(px(12.))
+                                        .font_weight(FontWeight(600.))
+                                        .text_color(color("--text-strong"))
+                                        .truncate()
+                                        .child(name),
+                                )
+                                .child(
+                                    div()
+                                        .text_size(px(11.))
+                                        .text_color(color("--text-muted"))
+                                        .child(price),
+                                )
+                        })),
+                )
+                .into_any_element(),
         )
     }
 

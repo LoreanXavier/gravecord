@@ -989,6 +989,309 @@ impl Root {
     }
 }
 
+/// Variant of the single-recipient Share a Nitro Trial modal (module 536110).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[allow(dead_code)]
+pub enum ShareTrialVariant {
+    Profile,
+    HdStreaming,
+}
+
+/// Single-recipient Share a Nitro Trial modal state (module 536110 + 810852).
+#[derive(Clone, Debug)]
+pub(crate) struct SingleShareTrialModal {
+    pub recipient_id: u64,
+    pub recipient_name: String,
+    pub variant: ShareTrialVariant,
+    pub referrals_remaining: Option<u32>,
+    pub sending: bool,
+    pub confirmed: bool,
+    pub failed: bool,
+}
+
+impl Root {
+    /// Renders module `536110` Single-Recipient Share a Nitro Trial modal.
+    pub(in crate::ui) fn single_share_trial_layer(
+        &self,
+        cx: &mut Context<Self>,
+    ) -> Option<AnyElement> {
+        let modal = self.single_share_trial_modal.as_ref()?;
+        let _loading_aria = dc_intl::t("c1wxcb");
+        let name = &modal.recipient_name;
+        let is_hd = modal.variant == ShareTrialVariant::HdStreaming;
+        let heading = if modal.confirmed {
+            dc_intl::t(if modal.failed { "7VBEue" } else { "tKCltd" }).to_owned()
+        } else {
+            dc_intl::format(
+                if is_hd { "rdh1ou" } else { "LVlgM4" },
+                &[(
+                    "recipientName",
+                    dc_intl::Arg::Str(std::borrow::Cow::Borrowed(name)),
+                )],
+            )
+        };
+        let body = if modal.confirmed {
+            if is_hd {
+                dc_intl::format(
+                    "s8VHbZ",
+                    &[
+                        (
+                            "recipientName",
+                            dc_intl::Arg::Str(std::borrow::Cow::Borrowed(name)),
+                        ),
+                        (
+                            "helpdeskArticle",
+                            dc_intl::Arg::Str(std::borrow::Cow::Borrowed(
+                                "https://support.discord.com",
+                            )),
+                        ),
+                    ],
+                )
+            } else {
+                dc_intl::format(
+                    "AwGSWl",
+                    &[(
+                        "helpdeskArticle",
+                        dc_intl::Arg::Str(std::borrow::Cow::Borrowed(
+                            "https://support.discord.com",
+                        )),
+                    )],
+                )
+            }
+        } else if is_hd {
+            dc_intl::t("NkgMIP").to_owned()
+        } else {
+            dc_intl::format(
+                "2nw1yD",
+                &[(
+                    "helpdeskArticle",
+                    dc_intl::Arg::Str(std::borrow::Cow::Borrowed("https://support.discord.com")),
+                )],
+            )
+        };
+        let err_msg = modal.failed.then(|| {
+            dc_intl::format(
+                "RO3T4B",
+                &[(
+                    "userName",
+                    dc_intl::Arg::Str(std::borrow::Cow::Borrowed(name)),
+                )],
+            )
+        });
+        let can_send = !modal.sending && modal.referrals_remaining.unwrap_or(0) > 0;
+        let rid = modal.recipient_id;
+
+        let card = div()
+            .id("single-share-trial-modal")
+            .w(px(440.))
+            .rounded(px(12.))
+            .bg(color("--background-surface-high"))
+            .border_1()
+            .border_color(color("--border-subtle"))
+            .overflow_hidden()
+            .flex()
+            .flex_col()
+            .on_click(|_, _, cx| cx.stop_propagation())
+            .child(
+                div()
+                    .h(px(96.))
+                    .px(px(20.))
+                    .bg(gpui::linear_gradient(
+                        135.,
+                        gpui::linear_color_stop(gpui::rgb(0x8547c6), 0.),
+                        gpui::linear_color_stop(gpui::rgb(0xb845c1), 1.),
+                    ))
+                    .flex()
+                    .items_center()
+                    .justify_between()
+                    .child(icon("nitro_wheel", 36., "--white"))
+                    .child(
+                        div()
+                            .id("single-share-trial-close")
+                            .size(px(28.))
+                            .cursor_pointer()
+                            .flex()
+                            .items_center()
+                            .justify_center()
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                this.single_share_trial_modal = None;
+                                cx.notify();
+                            }))
+                            .child(icon("modal_close", 16., "--white")),
+                    ),
+            )
+            .child(
+                div()
+                    .p(px(24.))
+                    .flex()
+                    .flex_col()
+                    .gap(px(12.))
+                    .child(
+                        div()
+                            .text_size(px(20.))
+                            .font_weight(FontWeight(700.))
+                            .text_color(color("--text-strong"))
+                            .child(SharedString::from(heading)),
+                    )
+                    .child(
+                        div()
+                            .text_size(px(14.))
+                            .line_height(px(20.))
+                            .text_color(color("--text-muted"))
+                            .child(SharedString::from(body)),
+                    )
+                    .when_some(err_msg, |col, err| {
+                        col.child(
+                            div()
+                                .p(px(10.))
+                                .rounded(px(6.))
+                                .bg(rgba(0xda373c22))
+                                .border_1()
+                                .border_color(color("--status-danger"))
+                                .text_size(px(13.))
+                                .text_color(color("--text-feedback-critical"))
+                                .child(SharedString::from(err)),
+                        )
+                    }),
+            )
+            .child(
+                div()
+                    .px(px(24.))
+                    .py(px(16.))
+                    .bg(color("--background-base-lower"))
+                    .border_t_1()
+                    .border_color(color("--border-subtle"))
+                    .flex()
+                    .gap(px(10.))
+                    .when(!modal.confirmed, |bar| {
+                        bar.child(
+                            div()
+                                .id("single-share-trial-cancel")
+                                .flex_1()
+                                .h(px(38.))
+                                .rounded(px(8.))
+                                .bg(color("--control-secondary-background-default"))
+                                .cursor_pointer()
+                                .flex()
+                                .items_center()
+                                .justify_center()
+                                .text_size(px(14.))
+                                .text_color(color("--control-secondary-text-default"))
+                                .on_click(cx.listener(|this, _, _, cx| {
+                                    this.single_share_trial_modal = None;
+                                    cx.notify();
+                                }))
+                                .child(dc_intl::t("ETE/oC")),
+                        )
+                        .child(
+                            div()
+                                .id("single-share-trial-send")
+                                .flex_1()
+                                .h(px(38.))
+                                .rounded(px(8.))
+                                .bg(color("--control-primary-background-default"))
+                                .when(can_send, |s| s.cursor_pointer())
+                                .when(!can_send, |s| s.opacity(0.5))
+                                .flex()
+                                .items_center()
+                                .justify_center()
+                                .text_size(px(14.))
+                                .font_weight(FontWeight(600.))
+                                .text_color(color("--white"))
+                                .on_click(cx.listener(move |this, _, _, cx| {
+                                    if !can_send {
+                                        return;
+                                    }
+                                    let _ = this.requests.send(crate::net::Request::Rest {
+                                        key: None,
+                                        method: reqwest::Method::POST,
+                                        route: format!("/users/@me/referrals/{rid}"),
+                                        body: Some(serde_json::json!({})),
+                                    });
+                                    if let Some(m) = this.single_share_trial_modal.as_mut() {
+                                        m.confirmed = true;
+                                    }
+                                    cx.notify();
+                                }))
+                                .child(dc_intl::t(if is_hd { "dzQxHq" } else { "ItpQxk" })),
+                        )
+                    })
+                    .when(modal.confirmed, |bar| {
+                        bar.child(
+                            div()
+                                .id("single-share-trial-done")
+                                .w_full()
+                                .h(px(38.))
+                                .rounded(px(8.))
+                                .bg(color("--control-primary-background-default"))
+                                .cursor_pointer()
+                                .flex()
+                                .items_center()
+                                .justify_center()
+                                .text_size(px(14.))
+                                .font_weight(FontWeight(600.))
+                                .text_color(color("--white"))
+                                .on_click(cx.listener(|this, _, _, cx| {
+                                    this.single_share_trial_modal = None;
+                                    cx.notify();
+                                }))
+                                .child(dc_intl::t("cpT0Cq")),
+                        )
+                    }),
+            );
+
+        Some(
+            deferred(
+                div()
+                    .id("single-share-trial-backdrop")
+                    .occlude()
+                    .absolute()
+                    .inset_0()
+                    .bg(rgba(0x000000b8))
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        this.single_share_trial_modal = None;
+                        cx.notify();
+                    }))
+                    .child(card),
+            )
+            .with_priority(6)
+            .into_any_element(),
+        )
+    }
+
+    #[cfg(feature = "capture")]
+    pub(crate) fn script_nitro_share_trial(
+        &mut self,
+        mode: &str,
+        cx: &mut Context<Self>,
+    ) -> String {
+        if mode.trim() == "close" {
+            self.single_share_trial_modal = None;
+            cx.notify();
+            return "nitro-share-trial: closed".into();
+        }
+        let variant = if mode.trim().starts_with("hd") {
+            ShareTrialVariant::HdStreaming
+        } else {
+            ShareTrialVariant::Profile
+        };
+        self.single_share_trial_modal = Some(SingleShareTrialModal {
+            recipient_id: 1001,
+            recipient_name: "plü".into(),
+            variant,
+            referrals_remaining: Some(3),
+            sending: false,
+            confirmed: mode.trim() == "confirmed",
+            failed: mode.trim() == "hd-error",
+        });
+        cx.notify();
+        format!("nitro-share-trial: {}", mode.trim())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

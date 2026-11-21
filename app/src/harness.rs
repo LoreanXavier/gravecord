@@ -1837,6 +1837,48 @@ pub async fn run(
                 let line = root.update(cx, |root, cx| root.script_app_widget_state(&arg, cx));
                 let _ = writeln!(output, "{line}");
             }
+            // `forum-tag-editor [create|edit|close]`: Forum Tag Editor modal (950989).
+            ["forum-tag-editor", rest @ ..] => {
+                let arg = rest.join(" ");
+                let line = root.update(cx, |root, cx| root.script_forum_tag_editor(&arg, cx));
+                let _ = writeln!(output, "{line}");
+            }
+            // `quest-call-sheet [call-unenrolled|call-progress|call-completed|sheet|sheet-error|close]`: Quest Call Header Card & Sponsored Quest Sheet (10394 + 194267).
+            ["quest-call-sheet", rest @ ..] => {
+                let arg = rest.join(" ");
+                let line = root.update(cx, |root, cx| root.script_quest_call_sheet(&arg, cx));
+                let _ = writeln!(output, "{line}");
+            }
+            // `game-leaderboard [podium|empty|sharing|popular|close]`: Guild Space Game Leaderboard & Popular Games/Music (220744).
+            ["game-leaderboard", rest @ ..] => {
+                let arg = rest.join(" ");
+                let line = root.update(cx, |root, cx| root.script_game_leaderboard(&arg, cx));
+                let _ = writeln!(output, "{line}");
+            }
+            // `icymi [open|close]`: ICYMI ("In Case You Missed It") feed page (411831).
+            ["icymi", rest @ ..] => {
+                let arg = rest.join(" ");
+                let line = root.update(cx, |root, cx| root.script_icymi(&arg, cx));
+                let _ = writeln!(output, "{line}");
+            }
+            // `verify-email [resend|resent|change|close]`: Verify by Email modal (9124).
+            ["verify-email", rest @ ..] => {
+                let arg = rest.join(" ");
+                let line = root.update(cx, |root, cx| root.script_verify_email(&arg, cx));
+                let _ = writeln!(output, "{line}");
+            }
+            // `server-shop-success [open|error|close]`: Server Shop Product Purchase Success modal (779457).
+            ["server-shop-success", rest @ ..] => {
+                let arg = rest.join(" ");
+                let line = root.update(cx, |root, cx| root.script_server_shop_success(&arg, cx));
+                let _ = writeln!(output, "{line}");
+            }
+            // `nitro-share-trial [profile|hd|hd-error|confirmed|close]`: Single-recipient Share a Nitro Trial modal (536110).
+            ["nitro-share-trial", rest @ ..] => {
+                let arg = rest.join(" ");
+                let line = root.update(cx, |root, cx| root.script_nitro_share_trial(&arg, cx));
+                let _ = writeln!(output, "{line}");
+            }
             // `search last` / `search answer <total>`: the open search's request, and an answer to it;
             // `search page <n>`: the pager turns to page n.
             ["search", rest @ ..] => {

@@ -477,6 +477,386 @@ impl Root {
     }
 }
 
+/// Server Shop Product Purchase Success modal (module 779457 + 179499 + 228105).
+#[derive(Clone, Debug)]
+#[allow(dead_code)]
+pub(crate) struct ServerShopPurchaseSuccessModal {
+    pub guild_id: u64,
+    pub guild_name: String,
+    pub product_id: String,
+    pub product_name: String,
+    pub product_type: String,
+    pub total_paid: String,
+    pub attachments: Vec<(String, String)>,
+    pub role_name: Option<String>,
+    pub loading: bool,
+    pub error: bool,
+}
+
+impl Root {
+    /// Renders module `779457` Server Shop Product Purchase Success modal.
+    pub(in crate::ui) fn server_shop_purchase_success_layer(
+        &self,
+        cx: &mut Context<Self>,
+    ) -> Option<AnyElement> {
+        let modal = self.server_shop_purchase_success.as_ref()?;
+        let _extra_keys = (dc_intl::t("R0RpRX"), dc_intl::t("eAn6z2"));
+        let card: AnyElement = if modal.error {
+            // Product refresh failure alert (`OCwKlu` / `VQ0lXY` / `NX+WJN`)
+            div()
+                .id("server-shop-success-err")
+                .w(px(420.))
+                .rounded(px(12.))
+                .bg(color("--background-surface-high"))
+                .border_1()
+                .border_color(color("--border-subtle"))
+                .p(px(24.))
+                .flex()
+                .flex_col()
+                .gap(px(12.))
+                .on_click(|_, _, cx| cx.stop_propagation())
+                .child(
+                    div()
+                        .text_size(px(18.))
+                        .font_weight(FontWeight(700.))
+                        .text_color(color("--text-strong"))
+                        .child(dc_intl::t("OCwKlu")),
+                )
+                .child(
+                    div()
+                        .text_size(px(14.))
+                        .line_height(px(20.))
+                        .text_color(color("--text-muted"))
+                        .child(dc_intl::t("VQ0lXY")),
+                )
+                .child(
+                    div().flex().justify_end().child(
+                        div()
+                            .id("server-shop-success-err-ok")
+                            .h(px(36.))
+                            .px(px(18.))
+                            .rounded(px(8.))
+                            .bg(color("--control-primary-background-default"))
+                            .cursor_pointer()
+                            .flex()
+                            .items_center()
+                            .text_size(px(14.))
+                            .font_weight(FontWeight(600.))
+                            .text_color(color("--white"))
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                this.server_shop_purchase_success = None;
+                                cx.notify();
+                            }))
+                            .child(dc_intl::t("NX+WJN")),
+                    ),
+                )
+                .into_any_element()
+        } else {
+            let subtitle = dc_intl::format(
+                "X6yvvo",
+                &[(
+                    "productName",
+                    dc_intl::Arg::Str(std::borrow::Cow::Borrowed(&modal.product_name)),
+                )],
+            );
+            let role_granted = modal.role_name.as_deref().map(|role| {
+                dc_intl::format(
+                    "IeJDKs",
+                    &[(
+                        "roleName",
+                        dc_intl::Arg::Str(std::borrow::Cow::Borrowed(role)),
+                    )],
+                )
+            });
+            let has_attachments = !modal.attachments.is_empty();
+            let single_attachment = modal.attachments.len() == 1;
+            let gid = modal.guild_id;
+            let pid = modal.product_id.clone();
+            let first_aid = modal.attachments.first().map(|(id, _)| id.clone());
+
+            div()
+                .id("server-shop-purchase-success-modal")
+                .w(px(500.))
+                .rounded(px(12.))
+                .bg(color("--background-surface-high"))
+                .border_1()
+                .border_color(color("--border-subtle"))
+                .p(px(24.))
+                .flex()
+                .flex_col()
+                .gap(px(14.))
+                .on_click(|_, _, cx| cx.stop_propagation())
+                // Header (`dhAgv3` "You're all set." + `X6yvvo`)
+                .child(
+                    div()
+                        .flex()
+                        .items_start()
+                        .justify_between()
+                        .gap(px(12.))
+                        .child(
+                            div()
+                                .flex_1()
+                                .min_w_0()
+                                .flex()
+                                .flex_col()
+                                .gap(px(4.))
+                                .child(
+                                    div()
+                                        .text_size(px(20.))
+                                        .font_weight(FontWeight(700.))
+                                        .text_color(color("--text-strong"))
+                                        .child(dc_intl::t("dhAgv3")),
+                                )
+                                .child(
+                                    div()
+                                        .text_size(px(14.))
+                                        .line_height(px(20.))
+                                        .text_color(color("--text-muted"))
+                                        .child(SharedString::from(subtitle)),
+                                ),
+                        )
+                        .child(
+                            div()
+                                .id("server-shop-success-close")
+                                .size(px(28.))
+                                .flex_none()
+                                .cursor_pointer()
+                                .flex()
+                                .items_center()
+                                .justify_center()
+                                .on_click(cx.listener(|this, _, _, cx| {
+                                    this.server_shop_purchase_success = None;
+                                    cx.notify();
+                                }))
+                                .child(icon("modal_close", 16., "--icon-subtle")),
+                        ),
+                )
+                // Dynamic description (`A/RnkK`, `IeJDKs`, `9S3QHF`)
+                .child(
+                    div()
+                        .flex()
+                        .flex_col()
+                        .gap(px(6.))
+                        .text_size(px(13.))
+                        .line_height(px(18.))
+                        .text_color(color("--text-default"))
+                        .when(has_attachments, |col| col.child(dc_intl::t("A/RnkK")))
+                        .when_some(role_granted, |col, msg| col.child(SharedString::from(msg)))
+                        .child(dc_intl::t("9S3QHF")),
+                )
+                // Receipt summary card (`5dWOZX`: "Total paid")
+                .child(
+                    div()
+                        .p(px(14.))
+                        .rounded(px(10.))
+                        .bg(color("--background-base-lower"))
+                        .border_1()
+                        .border_color(color("--border-subtle"))
+                        .flex()
+                        .items_center()
+                        .justify_between()
+                        .gap(px(12.))
+                        .child(
+                            div()
+                                .flex_1()
+                                .min_w_0()
+                                .flex()
+                                .flex_col()
+                                .gap(px(2.))
+                                .child(
+                                    div()
+                                        .text_size(px(15.))
+                                        .font_weight(FontWeight(700.))
+                                        .text_color(color("--text-strong"))
+                                        .child(SharedString::from(modal.product_name.clone())),
+                                )
+                                .child(
+                                    div()
+                                        .text_size(px(12.))
+                                        .text_color(color("--text-muted"))
+                                        .child(SharedString::from(format!(
+                                            "{} · {}",
+                                            modal.product_type, modal.guild_name
+                                        ))),
+                                ),
+                        )
+                        .child(
+                            div()
+                                .flex_none()
+                                .flex()
+                                .flex_col()
+                                .items_end()
+                                .child(
+                                    div()
+                                        .text_size(px(16.))
+                                        .font_weight(FontWeight(700.))
+                                        .text_color(color("--text-strong"))
+                                        .child(SharedString::from(modal.total_paid.clone())),
+                                )
+                                .child(
+                                    div()
+                                        .text_size(px(11.))
+                                        .text_color(color("--text-muted"))
+                                        .child(dc_intl::t("5dWOZX")),
+                                ),
+                        ),
+                )
+                // Divider
+                .child(div().h(px(1.)).bg(color("--border-subtle")))
+                // Unlocked benefits: Downloadable (`HOkHPB`) + Role (`gWBNet`)
+                .when(has_attachments, |col| {
+                    col.child(
+                        div()
+                            .flex()
+                            .items_center()
+                            .justify_between()
+                            .gap(px(10.))
+                            .child(
+                                div()
+                                    .flex_1()
+                                    .min_w_0()
+                                    .flex()
+                                    .flex_col()
+                                    .gap(px(4.))
+                                    .child(
+                                        div()
+                                            .text_size(px(13.))
+                                            .font_weight(FontWeight(700.))
+                                            .text_color(color("--text-strong"))
+                                            .child(dc_intl::t("HOkHPB")),
+                                    )
+                                    .child(
+                                        div()
+                                            .text_size(px(12.))
+                                            .text_color(color("--text-muted"))
+                                            .child(SharedString::from(
+                                                modal
+                                                    .attachments
+                                                    .iter()
+                                                    .map(|(_, n)| n.as_str())
+                                                    .collect::<Vec<_>>()
+                                                    .join(", "),
+                                            )),
+                                    ),
+                            )
+                            .child(
+                                div()
+                                    .id("server-shop-download-btn")
+                                    .flex_none()
+                                    .h(px(34.))
+                                    .px(px(14.))
+                                    .rounded(px(8.))
+                                    .bg(color("--control-primary-background-default"))
+                                    .cursor_pointer()
+                                    .flex()
+                                    .items_center()
+                                    .text_size(px(13.))
+                                    .font_weight(FontWeight(600.))
+                                    .text_color(color("--white"))
+                                    .on_click(cx.listener(move |this, _, _, cx| {
+                                        if let Some(aid) = first_aid.as_deref() {
+                                            let _ = this.requests.send(
+                                                crate::net::Request::Rest {
+                                                    key: None,
+                                                    method: reqwest::Method::POST,
+                                                    route: format!(
+                                                        "/guilds/{gid}/products/listings/{pid}/attachments/{aid}/download"
+                                                    ),
+                                                    body: None,
+                                                },
+                                            );
+                                        }
+                                        cx.notify();
+                                    }))
+                                    .child(dc_intl::t(if single_attachment {
+                                        "t9bE9b"
+                                    } else {
+                                        "UyuiUE"
+                                    })),
+                            ),
+                    )
+                })
+                .when_some(modal.role_name.clone(), |col, role| {
+                    col.child(
+                        div()
+                            .flex()
+                            .items_center()
+                            .justify_between()
+                            .child(
+                                div()
+                                    .text_size(px(13.))
+                                    .font_weight(FontWeight(700.))
+                                    .text_color(color("--text-strong"))
+                                    .child(dc_intl::t("gWBNet")),
+                            )
+                            .child(
+                                div()
+                                    .px(px(10.))
+                                    .py(px(4.))
+                                    .rounded(px(12.))
+                                    .bg(color("--background-base-lower"))
+                                    .border_1()
+                                    .border_color(color("--border-subtle"))
+                                    .text_size(px(12.))
+                                    .font_weight(FontWeight(600.))
+                                    .text_color(color("--text-default"))
+                                    .child(SharedString::from(role)),
+                            ),
+                    )
+                })
+                .into_any_element()
+        };
+
+        Some(
+            deferred(
+                div()
+                    .id("server-shop-purchase-success-backdrop")
+                    .occlude()
+                    .absolute()
+                    .inset_0()
+                    .bg(rgba(0x000000b8))
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        this.server_shop_purchase_success = None;
+                        cx.notify();
+                    }))
+                    .child(card),
+            )
+            .with_priority(6)
+            .into_any_element(),
+        )
+    }
+
+    #[cfg(feature = "capture")]
+    pub(crate) fn script_server_shop_success(
+        &mut self,
+        mode: &str,
+        cx: &mut Context<Self>,
+    ) -> String {
+        if mode.trim() == "close" {
+            self.server_shop_purchase_success = None;
+            cx.notify();
+            return "server-shop-success: closed".into();
+        }
+        self.server_shop_purchase_success = Some(ServerShopPurchaseSuccessModal {
+            guild_id: 100,
+            guild_name: "gravecord fixture".into(),
+            product_id: "p1".into(),
+            product_name: "Starter Wallpaper Pack".into(),
+            product_type: "Bundle".into(),
+            total_paid: "$3.99".into(),
+            attachments: vec![("a1".into(), "4k-wallpapers.zip".into())],
+            role_name: Some("Patron".into()),
+            loading: false,
+            error: mode.trim() == "error",
+        });
+        cx.notify();
+        format!("server-shop-success: {}", mode.trim())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     #[test]

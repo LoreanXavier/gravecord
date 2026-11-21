@@ -348,11 +348,15 @@ mod claim_account;
 mod copy_combo;
 mod dm_call;
 mod dm_call_view;
+mod forum_tag_editor;
+mod game_leaderboard;
+mod icymi;
 mod incoming_call;
 mod member_safety;
 mod member_window;
 mod nitro_trials_picker;
 mod premium_uncancel;
+mod quest_call_and_sheet;
 mod quest_menu;
 mod quest_promoted;
 mod quest_split_modal;
@@ -389,6 +393,7 @@ mod upload_error;
 mod upload_progress;
 mod uploads;
 mod user_activity_card;
+mod verify_email;
 mod video_player;
 mod video_stats;
 mod video_tiles;
@@ -747,6 +752,20 @@ pub struct Root {
     accept_invite_modal: Option<accept_invite::AcceptInviteModal>,
     /// Game Stats Application Widget sync/connect/reconnect overlay (module 591410, `app_widget`).
     app_widget_state_overlay: Option<app_widget::AppWidgetStateOverlay>,
+    /// Forum Tag Editor modal (module 950989, `forum_tag_editor`).
+    forum_tag_editor: Option<forum_tag_editor::ForumTagEditorModal>,
+    /// Quest Call Header Card (10394) & Sponsored Quest Sheet (194267) overlay.
+    quest_call_sheet_overlay: Option<quest_call_and_sheet::QuestCallOrSheetOverlay>,
+    /// Guild Space Game Leaderboard & Popular Games/Music overlay (module 220744).
+    game_leaderboard_overlay: Option<game_leaderboard::LeaderboardOverlayMode>,
+    /// ICYMI ("In Case You Missed It") feed page state (module 411831).
+    icymi: icymi::IcymiState,
+    /// Verify by Email modal (module 9124).
+    verify_email_modal: Option<verify_email::VerifyEmailModal>,
+    /// Server Shop Product Purchase Success modal (module 779457).
+    server_shop_purchase_success: Option<server_shop::ServerShopPurchaseSuccessModal>,
+    /// Single-recipient Share a Nitro Trial modal (module 536110).
+    single_share_trial_modal: Option<nitro_trials_picker::SingleShareTrialModal>,
     /// Suspended User Safety Hub full page + embedded standing/violations body (module 187686 + 37380).
     suspended_safety_hub: Option<suspended_safety_hub::SuspendedSafetyHub>,
     /// Send Nitro Trials Picker & confirmation modal (module 303682 + 810852, `nitro_trials_picker`).
@@ -1329,6 +1348,13 @@ impl Root {
             app_test_mode_active: Default::default(),
             accept_invite_modal: None,
             app_widget_state_overlay: None,
+            forum_tag_editor: None,
+            quest_call_sheet_overlay: None,
+            game_leaderboard_overlay: None,
+            icymi: Default::default(),
+            verify_email_modal: None,
+            server_shop_purchase_success: None,
+            single_share_trial_modal: None,
             suspended_safety_hub: None,
             nitro_trials_picker: None,
             user_activity_preview: None,
@@ -2386,6 +2412,20 @@ impl Root {
                 }
                 if key.starts_with(app_widget::REFRESH_PREFIX) {
                     self.handle_app_widget_refresh_response(&body, cx);
+                    return;
+                }
+                if key == forum_tag_editor::TAG_SAVE_KEY || key == forum_tag_editor::TAG_DELETE_KEY
+                {
+                    self.handle_forum_tag_response(&key, &body, cx);
+                    return;
+                }
+                if key == verify_email::VERIFY_RESEND_KEY || key == verify_email::VERIFY_CHANGE_KEY
+                {
+                    self.handle_verify_email_response(&key, &body, cx);
+                    return;
+                }
+                if key == icymi::ICYMI_FEED_KEY || key == icymi::ICYMI_HYDRATE_KEY {
+                    self.handle_icymi_response(&key, &body, cx);
                     return;
                 }
                 if key == channel_link::UNLINK_LOBBY_KEY {
@@ -11573,6 +11613,13 @@ impl Render for Root {
                         || this.accept_invite_modal.is_some()
                         || this.schedule.upsell_open
                         || this.app_widget_state_overlay.is_some()
+                        || this.forum_tag_editor.is_some()
+                        || this.quest_call_sheet_overlay.is_some()
+                        || this.game_leaderboard_overlay.is_some()
+                        || this.icymi.open
+                        || this.verify_email_modal.is_some()
+                        || this.server_shop_purchase_success.is_some()
+                        || this.single_share_trial_modal.is_some()
                         || this.quests.split_modal.is_some()
                         || this.quests.enrollment_blocked_modal.is_some()
                         || this.quests.promoted_preview_quest.is_some()
@@ -11619,6 +11666,13 @@ impl Render for Root {
                     this.accept_invite_modal = None;
                     this.schedule.upsell_open = false;
                     this.app_widget_state_overlay = None;
+                    this.forum_tag_editor = None;
+                    this.quest_call_sheet_overlay = None;
+                    this.game_leaderboard_overlay = None;
+                    this.icymi.open = false;
+                    this.verify_email_modal = None;
+                    this.server_shop_purchase_success = None;
+                    this.single_share_trial_modal = None;
                     this.quests.split_modal = None;
                     this.quests.enrollment_blocked_modal = None;
                     this.quests.promoted_preview_quest = None;
@@ -12828,6 +12882,13 @@ impl Render for Root {
             .children(self.accept_invite_modal_layer(cx))
             .children(self.schedule_upsell_modal_layer(cx))
             .children(self.app_widget_state_overlay_layer(cx))
+            .children(self.forum_tag_editor_layer(cx))
+            .children(self.quest_call_sheet_overlay_layer(cx))
+            .children(self.game_leaderboard_overlay_layer(cx))
+            .children(self.icymi_overlay_layer(cx))
+            .children(self.verify_email_modal_layer(cx))
+            .children(self.server_shop_purchase_success_layer(cx))
+            .children(self.single_share_trial_layer(cx))
             .children(self.quest_split_modal_layer(cx))
             .children(self.quest_promoted_overlay_layer(cx))
             .children(self.quest_disclosure_and_alert_layer(cx))

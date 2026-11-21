@@ -945,13 +945,45 @@ impl Root {
             CtaAction::OpenGameLink
             | CtaAction::WatchVideo
             | CtaAction::WatchOnMobile
-            | CtaAction::LaunchActivity
-            | CtaAction::ViewEligibleGames => {
+            | CtaAction::LaunchActivity => {
                 if !cta_link.is_empty() {
                     cx.open_url(cta_link);
                 } else {
                     self.open_quests(cx);
                 }
+            }
+            CtaAction::ViewEligibleGames => {
+                // Module 194267: open SPONSORED_QUEST_SHEET for package quests.
+                let (pkg, games) = self
+                    .quests
+                    .store
+                    .quests
+                    .iter()
+                    .find(|q| q.id == quest_id)
+                    .map(|q| {
+                        let pkg = q.config.features.iter().find_map(|f| match f {
+                            12 => Some("PACKAGE_ACTION_ADVENTURE".to_owned()),
+                            13 => Some("PACKAGE_RPG_MMO".to_owned()),
+                            14 => Some("PACKAGE_RACING_SPORTS".to_owned()),
+                            15 => Some("PACKAGE_SANDBOX_CREATIVE".to_owned()),
+                            16 => Some("PACKAGE_FAMILY_FRIENDLY".to_owned()),
+                            17 => Some("PACKAGE_HOLIDAY_SEASON".to_owned()),
+                            18 => Some("PACKAGE_NEW_YEARS".to_owned()),
+                            _ => None,
+                        });
+                        let list = vec![super::quest_call_and_sheet::EligibleGameTile {
+                            app_id: q.id.clone(),
+                            name: if q.config.game_title.is_empty() {
+                                q.config.quest_name.clone()
+                            } else {
+                                q.config.game_title.clone()
+                            },
+                            store_url: (!cta_link.is_empty()).then(|| cta_link.to_owned()),
+                        }];
+                        (pkg, list)
+                    })
+                    .unwrap_or_else(|| (None, Vec::new()));
+                self.open_sponsored_quest_sheet(pkg, games, cx);
             }
             CtaAction::ClaimReward => {
                 self.trigger_quest_claim(quest_id, cx);

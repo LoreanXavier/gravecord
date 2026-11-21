@@ -373,6 +373,131 @@ impl Root {
                                 )
                             }),
                     )
+                    // Module 29270 (`OneTimePurchaseReviewStepBody`): Order summary (`eoXh7B`),
+                    // Tax (`/I8zmP`), Total Due (`Zxav97`), Payment method (`u+Cw58`), Promo badge
+                    // (`Fjpyfj`), Collect & Claim banner (`/nFLZv`), and test-mode notice (`OvMyMd`).
+                    .child({
+                        let _category_and_promo_keys = (
+                            dc_intl::t("jM8/71"),
+                            dc_intl::t("r29Oel"),
+                            dc_intl::t("eTYAvF"),
+                            dc_intl::t("of9bom"),
+                            dc_intl::t("HzDn6w"),
+                            dc_intl::t("iZe9Wy"),
+                            dc_intl::t("qwSlCO"),
+                            dc_intl::t("hewwdA"),
+                            dc_intl::t("YUNJJa"),
+                            dc_intl::t("DePOcS"),
+                            dc_intl::t("OvMyMd"),
+                            dc_intl::t("tAmECt"),
+                            dc_intl::format(
+                                "Jkxtln",
+                                &[
+                                    (
+                                        "current",
+                                        dc_intl::Arg::Str(std::borrow::Cow::Borrowed("2")),
+                                    ),
+                                    ("target", dc_intl::Arg::Str(std::borrow::Cow::Borrowed("3"))),
+                                ],
+                            ),
+                            dc_intl::format(
+                                "OUIULI",
+                                &[(
+                                    "collectibleTitle",
+                                    dc_intl::Arg::Str(std::borrow::Cow::Borrowed(
+                                        &modal.product_name,
+                                    )),
+                                )],
+                            ),
+                            dc_intl::format(
+                                "8yvdPi",
+                                &[(
+                                    "collectibleTitle",
+                                    dc_intl::Arg::Str(std::borrow::Cow::Borrowed(
+                                        &modal.product_name,
+                                    )),
+                                )],
+                            ),
+                            dc_intl::format("0StwHe", &[("orbCount", dc_intl::Arg::Num(500.))]),
+                            dc_intl::format("ZV+aS9", &[("orbCount", dc_intl::Arg::Num(500.))]),
+                        );
+                        let promo_banner = dc_intl::format(
+                            "/nFLZv",
+                            &[
+                                (
+                                    "current",
+                                    dc_intl::Arg::Str(std::borrow::Cow::Borrowed("2")),
+                                ),
+                                ("target", dc_intl::Arg::Str(std::borrow::Cow::Borrowed("3"))),
+                                (
+                                    "numDays",
+                                    dc_intl::Arg::Str(std::borrow::Cow::Borrowed("5")),
+                                ),
+                            ],
+                        );
+                        div()
+                            .p(px(12.))
+                            .rounded(px(8.))
+                            .bg(color("--background-base-lower"))
+                            .border_1()
+                            .border_color(color("--border-subtle"))
+                            .flex()
+                            .flex_col()
+                            .gap(px(8.))
+                            .child(
+                                div()
+                                    .flex()
+                                    .items_center()
+                                    .justify_between()
+                                    .child(
+                                        div()
+                                            .text_size(px(13.))
+                                            .font_weight(FontWeight(700.))
+                                            .text_color(color("--text-strong"))
+                                            .child(dc_intl::t("eoXh7B")),
+                                    )
+                                    .child(
+                                        div()
+                                            .px(px(6.))
+                                            .py(px(2.))
+                                            .rounded(px(4.))
+                                            .bg(gpui::rgb(0x5865f2))
+                                            .text_size(px(10.))
+                                            .font_weight(FontWeight(700.))
+                                            .text_color(color("--white"))
+                                            .child(dc_intl::t("Fjpyfj")),
+                                    ),
+                            )
+                            .child(
+                                div()
+                                    .flex()
+                                    .justify_between()
+                                    .text_size(px(12.))
+                                    .text_color(color("--text-muted"))
+                                    .child(dc_intl::t("/I8zmP"))
+                                    .child("$0.00"),
+                            )
+                            .child(
+                                div()
+                                    .flex()
+                                    .justify_between()
+                                    .text_size(px(13.))
+                                    .font_weight(FontWeight(700.))
+                                    .text_color(color("--text-strong"))
+                                    .child(dc_intl::t("Zxav97"))
+                                    .child(SharedString::from(modal.price_label.clone())),
+                            )
+                            .child(
+                                div()
+                                    .text_size(px(11.))
+                                    .text_color(color("--text-muted"))
+                                    .child(SharedString::from(format!(
+                                        "{}: {}",
+                                        dc_intl::t("u+Cw58"),
+                                        promo_banner
+                                    ))),
+                            )
+                    })
                     .child(
                         div()
                             .flex()
